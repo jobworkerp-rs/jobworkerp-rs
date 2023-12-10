@@ -1,0 +1,108 @@
+name: CI
+on:
+  pull_request:
+    branches:
+    - main
+  push:
+    branches:
+    - main
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Install last version of Protoc
+      uses: arduino/setup-protoc@v2
+      with:
+        version: '24.x'
+#        repo-token: ${{ secrets.GITHUB_TOKEN }}
+    - name: Checkout Crate
+      uses: actions/checkout@v4
+      with:
+        submodules: true
+    - name: Set Toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: stable
+        components: rustfmt, clippy
+    - name: Run check
+      run: cargo check
+    - name: Run rustfmt
+      run: cargo fmt --all -- --check
+    - name: Run clippy
+      run: cargo clippy -- -D warnings
+
+  job-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      db:
+        image: mariadb:10.9
+        ports:
+          - 3306:3306
+        env:
+          MYSQL_HOST: db
+          MYSQL_USER: mysql
+          MYSQL_PASSWORD: mysql
+          MYSQL_DATABASE: test
+          MYSQL_ROOT_PASSWORD: ""
+          MYSQL_ALLOW_EMPTY_PASSWORD: yes
+          MYSQL_ROOT_HOST: "0.0.0.0"
+        options: --health-cmd "mysqladmin ping" --health-interval 10s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis
+        env:
+          REDIS_HOST: redis
+        ports:
+          - 6379:6379
+        # Set health checks to wait until redis has started
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis-cluster:
+        image: grokzen/redis-cluster:7.0.10
+        env:
+          REDIS_CLUSTER_IP: 127.0.0.1
+          IP: 127.0.0.1
+          INITIAL_PORT: 7000
+          BIND_ADDRESS: 0.0.0.0
+        ports:
+          - 7000:7000
+          - 7001:7001
+          - 7002:7002
+          - 7003:7003
+          - 7004:7004
+          - 7005:7005
+
+    steps:
+    - name: Install last version of Protoc
+      uses: arduino/setup-protoc@v2
+      with:
+        version: '24.x'
+#        repo-token: ${{ secrets.GITHUB_TOKEN }}
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
+    - uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+    - uses: actions-rs/cargo@v1
+      with:
+        command: build
+        args: --release --all-features
+    - name: Run test
+      run: cargo test
+

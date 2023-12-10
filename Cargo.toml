@@ -1,0 +1,125 @@
+[workspace]
+
+members = [
+    "common",
+    "proto",
+    "infra",
+    "worker-app",
+    "grpc-front",
+    "worker-main",
+    "plugins/hello_runner",
+]
+
+resolver = "2"
+
+[workspace.package]
+name = "jobworkerp-rs"
+version = "0.1.0"
+edition = "2021"
+authors = ["sutr <jobworkerp-rs at. sutr.app>"]
+description = "Job-Worker system with gRPC front server"
+repository = "https://github.com/jobworkerp-rs/jobworkerp-rs"
+keywords = ["job-worker", "concurrency"]
+categories = ["web-programming"]
+license = "BSD"
+
+[workspace.dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+clap = "4.0"
+chrono = "0.4"
+deadpool = { version = "0.10", features = ["rt_tokio_1"] }
+deadpool-redis = { version = "0.13", features = ["rt_tokio_1"] }
+deadpool-redis-cluster = "0.1" # future works
+debug_stub_derive = "0.3"
+bollard = { version = "0.15", features = ["buildkit", "chrono"] }
+bytes = "1.3"
+console-subscriber = { version = "0.2", features = ["parking_lot"] }
+envy = "0.4"
+dotenvy = "0.15"
+futures = { version = "0.3", default-features = false, features = ["alloc"] }
+futures-util = "0.3"
+http = "0.2"
+itertools = "0.12"
+lazy_static = "1.4"
+libloading = "0.8"
+log = "0.4"
+num_cpus = "1.0"
+num-derive = "0.4"
+num-traits = "0.2"
+once_cell = "1"
+opentelemetry = "0.21"
+opentelemetry_sdk = "0.21"
+opentelemetry-otlp = { version = "0.14", features = ["metrics"] }
+opentelemetry-semantic-conventions = "0.13"
+opentelemetry-stdout = { version = "0.2", features = ["trace"] }
+opentelemetry-jaeger = { version = "0.20", features = ["rt-tokio"] }
+opentelemetry-zipkin = { version = "0.19", features = [
+    "reqwest-client",
+], default-features = false }
+pnet = "0.34"
+prost = "0.12"
+prost-types = "0.12"
+regex = "1.7"
+rs-snowflake = "0.6"
+serde = "1.0"
+serde_json = "1.0"
+serde_derive = "1.0"
+serde_with = "3.0"
+serde_yaml = "0.9"
+signal-hook = "0.3"
+signal-hook-tokio = "0.3"
+sqlx = { version = "0.6", features = [
+    "runtime-tokio-native-tls",
+    "any",
+    "sqlite",
+    "mysql",
+    "macros",
+    "chrono",
+] }
+stretto = { version = "0.8", features = ["async"] }
+strum = "0.25"
+strum_macros = "0.25"
+rand = "0.8"
+redis = { version = "0.23", features = [
+    "tokio-rustls-comp",
+    "r2d2",
+    "ahash",
+    "cluster-async",
+] }
+reqwest = "0.11"
+thiserror = "1.0"
+tonic = { version = "0.10" }
+# tonic = { version = "0.10", features = ["tls", "compression"] }
+tonic-build = "0.10"
+tonic-health = "0.10"
+tonic-reflection = "0.10"
+tonic-web = "0.10"
+tokio-compat = "0.1"
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["codec"] }
+tokio = { version = "1.35", features = [
+    "macros",
+    "rt-multi-thread",
+    "signal",
+    "sync",
+    "time",
+    "process",
+    "parking_lot",
+] }
+tracing = "0.1"
+tracing-opentelemetry = "0.22"
+tracing-subscriber = { version = "0.3", features = [
+    "tracing-log",
+    "env-filter",
+    "json",
+] }
+url = "2.4"
+
+[profile.release]
+# Tell `rustc` to optimize for small code size.
+opt-level = "s"
+panic = "unwind"
+
+[profile.dev]
+panic = "unwind"

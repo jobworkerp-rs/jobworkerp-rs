@@ -1,0 +1,46 @@
+[package]
+name = "jobworker"
+version.workspace = true
+authors.workspace = true
+edition = "2021"
+
+
+[lib]
+name = "lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "all-in-one"
+path = "src/main.rs"
+
+[[bin]]
+name = "worker"
+path = "src/bin/worker.rs"
+
+
+[dependencies]
+proto = { path = "../proto" }
+common = { path = "../common" }
+infra = { path = "../infra" }
+app = { path = "../app" }
+worker-app = { path = "../worker-app" }
+grpc-front = { path = "../grpc-front" }
+
+anyhow = { workspace = true }
+dotenvy = { workspace = true }
+envy = { workspace = true }
+opentelemetry = { workspace = true }
+tokio = { workspace = true, features = [
+    "macros",
+    "rt-multi-thread",
+    "sync",
+    "time",
+    "process",
+    "parking_lot",
+] }
+tracing = { workspace = true }
+
+[profile.release]
+panic = "unwind"
+[profile.dev]
+panic = "unwind"

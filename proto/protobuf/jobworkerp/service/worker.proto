@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package jobworkerp.service;
+
+import "jobworkerp/data/common.proto";
+import "jobworkerp/data/worker.proto";
+import "jobworkerp/service/common.proto";
+
+message CreateWorkerRequest {
+    string name                                          = 1; // worker name
+    jobworkerp.data.RunnerType type                      = 2; // runner type
+    string operation                                     = 3; // worker operation (depends on worker type. command line string, request url etc)
+    optional jobworkerp.data.RetryPolicy retry_policy    = 4; // retry policy (default: no retry)
+    optional uint32 periodic_interval                    = 5; // periodic interval milliseconds (None or 0: non-periodic) (if enabled, cannot use response_type:direct)
+    optional string channel                              = 6; // channel name (if empty, use default channel)
+    optional jobworkerp.data.QueueType queue_type        = 7; // queue type (ignored if not valid by storage type config (use rdb storage, redis queue not available, fallback to rdb if available))
+    optional jobworkerp.data.ResponseType response_type  = 8; // response type (NO_RESULT, LISTEN_AFTER, DIRECT). default: NO_RESULT
+    optional bool store_success                          = 9; // if true, store result to db when process succeeded (default: false)
+    optional bool store_failure                          = 10; // if true, store result to db when process failed (default: false)
+    repeated jobworkerp.data.WorkerId next_workers       = 11; // if exists, enqueue jobs after jobs of the worker
+    optional bool use_static                             = 12; // if true, use as static (default: false. run the concurrency number of workers in the channel (runner) at a time with lock(pool))
+}
+
+
+message CreateWorkerResponse {
+    jobworkerp.data.WorkerId id = 1; // generated id
+}
+
+message OptionalWorkerResponse {
+    optional jobworkerp.data.Worker data = 1;
+}
+
+message WorkerNameRequest {
+    string name = 1;
+}
+
+
+service WorkerService {
+  rpc Create(CreateWorkerRequest) returns (CreateWorkerResponse);
+  rpc Update(jobworkerp.data.Worker) returns (SuccessResponse);
+  rpc Delete(jobworkerp.data.WorkerId) returns (SuccessResponse);
+  rpc Find(jobworkerp.data.WorkerId) returns (OptionalWorkerResponse);
+  rpc FindByName(WorkerNameRequest) returns (OptionalWorkerResponse);
+  rpc FindList(FindListRequest) returns (stream jobworkerp.data.Worker);
+  rpc Count(CountCondition) returns (CountResponse);
+}

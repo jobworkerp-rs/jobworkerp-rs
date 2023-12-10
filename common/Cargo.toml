@@ -1,0 +1,76 @@
+[package]
+name = "common"
+version.workspace = true
+authors.workspace = true
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+clap = { workspace = true }
+chrono = { workspace = true }
+console-subscriber = { workspace = true, features = ["parking_lot"] }
+deadpool = { workspace = true, features = ["rt_tokio_1"] }
+deadpool-redis = { workspace = true }
+deadpool-redis-cluster = { workspace = true, features = ["serde"] }
+debug_stub_derive = { workspace = true }
+dotenvy = { workspace = true }
+envy = { workspace = true }
+futures = { workspace = true }
+itertools = { workspace = true }
+log = { workspace = true }
+once_cell = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-jaeger = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry-semantic-conventions = { workspace = true }
+opentelemetry-stdout = { workspace = true }
+opentelemetry-zipkin = { workspace = true, features = [
+    "reqwest-client",
+], default-features = false }
+pnet = { workspace = true }
+prost = { workspace = true }
+rand = { workspace = true }
+redis = { workspace = true, features = [
+    "tokio-comp",
+    "r2d2",
+    "ahash",
+    "cluster-async",
+] }
+regex = { workspace = true }
+rs-snowflake = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_derive = { workspace = true }
+serde_with = { workspace = true }
+sqlx = { workspace = true, features = [
+    "runtime-tokio-native-tls",
+    "any",
+    "sqlite",
+    "mysql",
+    "macros",
+    "chrono",
+] }
+stretto = { workspace = true, features = ["async"] }
+strum = { workspace = true }
+strum_macros = { workspace = true }
+tokio = { workspace = true, features = [
+    "macros",
+    "rt-multi-thread",
+    "sync",
+    "time",
+    "process",
+    "parking_lot",
+] }
+tokio-compat = { workspace = true }
+tonic = { workspace = true }
+tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+tracing-subscriber = { workspace = true, features = [
+    "tracing-log",
+    "env-filter",
+    "json",
+] }

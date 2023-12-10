@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package jobworkerp.data;
+
+import "jobworkerp/data/common.proto";
+
+message WorkerData {
+    string name                                 = 1; // worker name
+    jobworkerp.data.RunnerType type             = 2; // runner type
+    string operation                            = 3; // worker operation (command line, k8s definition etc)
+    jobworkerp.data.RetryPolicy retry_policy    = 4; // retry policy
+    uint32 periodic_interval                    = 5; // periodic interval milliseconds (0: non-periodic) (if enabled, cannot use direct_response)
+    optional string channel                     = 6; // channel name (if empty, use default channel)
+    jobworkerp.data.QueueType queue_type        = 7; // queue type (only for instant job in hybrid storage type, ignored if not valid by storage type config or run_after, periodic job)
+    jobworkerp.data.ResponseType response_type  = 8; // response type
+    bool store_success                          = 9; // if true, store result to db when process succeeded
+    bool store_failure                          = 10; // if true, store result to db when process failed
+    repeated WorkerId next_workers              = 11; // if exists, enqueue jobs after jobs of the worker
+    bool use_static                             = 12; // if true, use as static (run only one worker(runner) at a time with lock)
+}
+
+message WorkerId {
+    int64 value = 1;
+}
+
+message Worker {
+  WorkerId id = 1;
+  WorkerData data = 2;
+}
