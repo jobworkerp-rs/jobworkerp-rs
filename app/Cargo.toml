@@ -1,0 +1,45 @@
+[package]
+name = "app"
+version.workspace = true
+authors.workspace = true
+edition = "2021"
+
+[dependencies]
+
+proto = { path = "../proto" }
+command-utils = { path = "../modules/command-utils" }
+infra-utils = { path = "../modules/infra-utils" }
+infra = { path = "../infra" }
+
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+debug_stub_derive = { workspace = true }
+envy = { workspace = true }
+num_cpus = { workspace = true }
+once_cell = { workspace = true }
+serde = { workspace = true }
+stretto = { workspace = true, features = ["async"] }
+strum = { workspace = true }
+strum_macros = { workspace = true }
+tokio = { workspace = true, features = [
+    "macros",
+    "rt-multi-thread",
+    "sync",
+    "time",
+    "process",
+    "parking_lot",
+] }
+tokio-stream = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+sqlx = { workspace = true, features = [
+    "runtime-tokio-native-tls",
+    "any",
+    "sqlite",
+    "mysql",
+    "macros",
+    "chrono",
+] }
+dotenvy = { workspace = true }

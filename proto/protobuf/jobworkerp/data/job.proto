@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package jobworkerp.data;
+
+import "jobworkerp/data/common.proto";
+import "jobworkerp/data/worker.proto";
+
+message JobData {
+    jobworkerp.data.WorkerId worker_id = 1;
+    // job argument
+    bytes arg = 2;
+    // unique key: cannot register jobs with same uniq_key at once
+    optional string uniq_key = 3;
+    // job enqueue-ed(registered) time
+    int64 enqueue_time = 4;
+    // time that the job grabbed until to process on worker (not specify manually)
+    optional int64 grabbed_until_time = 5;
+    // specify time that the job run after
+    int64 run_after_time = 6;
+    uint32 retried = 7;
+    jobworkerp.data.Priority priority = 8; // Priority: -1, 0, 1 (in service/job.proto: because cannot reference enum in other proto (bug?))
+    uint64 timeout = 9;
+}
+
+message JobId {
+    int64 value = 1;
+}
+
+message Job {
+  JobId id = 1;
+  JobData data = 2;
+}

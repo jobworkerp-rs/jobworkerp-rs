@@ -1,0 +1,50 @@
+[package]
+name = "grpc-front"
+version.workspace = true
+authors.workspace = true
+edition = "2021"
+
+
+[[bin]]
+name = "grpc-front"
+path = "src/bin/front.rs"
+
+[dependencies]
+proto = { path = "../proto" }
+command-utils = { path = "../modules/command-utils" }
+infra-utils = { path = "../modules/infra-utils" }
+infra = { path = "../infra" }
+app = { path = "../app" }
+
+anyhow = { workspace = true }
+async-stream = "0.3"
+debug_stub_derive = "0.3"
+dotenvy = { workspace = true }
+futures = { workspace = true }
+opentelemetry = { workspace = true }
+#opentelemetry-jaeger = { version = "0.17", features = ["rt-tokio"] }
+prost = { workspace = true }
+sqlx = { workspace = true, features = [
+    "runtime-tokio-native-tls",
+    "any",
+    "sqlite",
+    "mysql",
+    "macros",
+    "chrono",
+] }
+tokio = { workspace = true, features = [
+    "macros",
+    "rt-multi-thread",
+    "sync",
+    "time",
+    "process",
+    "parking_lot",
+] }
+tonic = { workspace = true }
+tonic-health = { workspace = true }
+tonic-reflection = { workspace = true }
+tonic-web = { workspace = true }
+tracing = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }

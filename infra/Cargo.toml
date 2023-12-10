@@ -1,0 +1,45 @@
+[package]
+name = "infra"
+version.workspace = true
+authors.workspace = true
+edition = "2021"
+
+[dependencies]
+
+proto = { path = "../proto" }
+command-utils = { path = "../modules/command-utils" }
+infra-utils = { path = "../modules/infra-utils" }
+
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+bollard = { workspace = true }
+chrono = { workspace = true }
+deadpool-redis = { workspace = true }
+debug_stub_derive = { workspace = true }
+envy = { workspace = true }
+futures = { workspace = true }
+itertools = { workspace = true }
+#kube-client = "0.86"
+once_cell = { workspace = true }
+prost = { workspace = true }
+redis = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+signal-hook = { workspace = true }
+signal-hook-tokio = { workspace = true }
+sqlx = { workspace = true, features = [
+    "runtime-tokio-native-tls",
+    "any",
+    "sqlite",
+    "mysql",
+    "macros",
+    "chrono",
+] }
+thiserror = { workspace = true }
+
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tonic = { workspace = true }
+tracing = { workspace = true }
