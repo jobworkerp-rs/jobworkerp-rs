@@ -21,7 +21,7 @@ description = "Job-Worker system with gRPC front server"
 repository = "https://github.com/jobworkerp-rs/jobworkerp-rs"
 keywords = ["job-worker", "concurrency"]
 categories = ["web-programming"]
-license = "BSD"
+license = "Apache 2.0"
 
 [workspace.dependencies]
 anyhow = "1.0"
