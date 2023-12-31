@@ -21,12 +21,7 @@ itertools = { workspace = true }
 #kube-client = "0.86"
 once_cell = { workspace = true }
 prost = { workspace = true }
-redis = { workspace = true, features = [
-    "tokio-comp",
-    "r2d2",
-    "ahash",
-    "cluster-async",
-] }
+redis = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

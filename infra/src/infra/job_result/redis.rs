@@ -41,7 +41,7 @@ where
                     .set_ex(
                         Self::job_id_cache_key(jid),
                         &v,
-                        self.job_queue_config().expire_job_result_seconds as usize,
+                        self.job_queue_config().expire_job_result_seconds as u64,
                     )
                     .await
                     .map_err(|e| JobWorkerError::RedisError(e).into());
@@ -80,7 +80,7 @@ where
                     .set_ex(
                         Self::job_id_cache_key(jid),
                         &v,
-                        self.job_queue_config().expire_job_result_seconds as usize,
+                        self.job_queue_config().expire_job_result_seconds as u64,
                     )
                     .await
                     .map_err(|e| JobWorkerError::RedisError(e).into());
@@ -106,7 +106,7 @@ where
                 .set_ex(
                     Self::job_id_cache_key(jid),
                     &v,
-                    self.job_queue_config().expire_job_result_seconds as usize,
+                    self.job_queue_config().expire_job_result_seconds as u64,
                 )
                 .await
                 .map_err(|e| JobWorkerError::RedisError(e).into())

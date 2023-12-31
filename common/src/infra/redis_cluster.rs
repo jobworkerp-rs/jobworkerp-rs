@@ -2,10 +2,10 @@ use anyhow::anyhow;
 use anyhow::Result;
 use async_trait::async_trait;
 use deadpool::managed::PoolConfig;
+use deadpool_redis::cluster::{Config, Connection, Pool};
+use deadpool_redis::redis::cmd;
+use deadpool_redis::redis::AsyncCommands as PoolAsyncCommands;
 use deadpool_redis::Timeouts;
-use deadpool_redis_cluster::redis::AsyncCommands as PoolAsyncCommands;
-use deadpool_redis_cluster::{redis::cmd, Config, Connection, Pool};
-// use deadpool_redis::{Config, Connection, Pool, Runtime};
 use debug_stub_derive::DebugStub;
 use redis::cluster::ClusterClient;
 use redis::cluster_async::ClusterConnection;
@@ -183,8 +183,8 @@ pub trait UseRedisClusterLock: UseRedisClusterPool {
 mod test {
     use crate::infra::redis_cluster::{UseRedisClusterLock, UseRedisClusterPool};
     use anyhow::Result;
-    use deadpool_redis_cluster::redis::AsyncCommands as PoolAsyncCommands;
-    use deadpool_redis_cluster::Pool;
+    use deadpool_redis::cluster::Pool;
+    use redis::AsyncCommands;
     use serde::Deserialize;
 
     #[tokio::test]
@@ -293,7 +293,7 @@ mod test {
                 .connection()
                 .await
                 .unwrap()
-                .blpop::<&str, (String, i64)>("foobl", 1)
+                .blpop::<&str, (String, i64)>("foobl", 1.0)
                 .await
             {
                 println!("============ Blocking pop result on {}: {}", k, v);

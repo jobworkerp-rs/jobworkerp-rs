@@ -267,7 +267,7 @@ async fn pool_test() -> Result<()> {
             .connection()
             .await
             .unwrap()
-            .blpop::<&str, (String, i64)>("foobl", 1)
+            .blpop::<&str, (String, i64)>("foobl", 1.0)
             .await
         {
             println!("============ Blocking pop result on {}: {}", k, v);

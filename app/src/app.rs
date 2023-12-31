@@ -229,6 +229,7 @@ pub trait JobBuilder {
 mod tests {
     use super::*;
     use chrono::{Days, Timelike};
+    use tracing::Level;
     // test for _calc_next_run_after_time()
     // old_run_after_time is 0:00 last year and new run_after_time is 0:00 tomorrow if periodic_interval is 1 day
     #[test]
@@ -242,9 +243,9 @@ mod tests {
         let start_time = now.timestamp_millis() - 2000;
         let periodic_interval = 24 * 60 * 60 * 1000; // 1 day millis
 
-        // old run_after_time: last year, last month
+        // old run_after_time: last year, last month, first day (current day may be not found in last month)
         let old_run_after_time =
-            datetime::ymdhms(now.year() - 1, now.month() - 1, now.day(), 0, 0, 0).unwrap();
+            datetime::ymdhms(now.year() - 1, now.month() - 1, 1, 0, 0, 0).unwrap();
         let run_after_time = TestImpl::_calc_next_run_after_time(
             start_time,
             old_run_after_time.timestamp_millis(),
