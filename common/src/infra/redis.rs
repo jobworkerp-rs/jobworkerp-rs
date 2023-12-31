@@ -1,3 +1,4 @@
+use crate::infra::test::REDIS_CONFIG;
 use anyhow::anyhow;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -185,15 +186,7 @@ async fn single_test() {
         name: String,
         mail: String,
     }
-    let config = RedisConfig {
-        username: None,
-        password: None,
-        url: "redis://127.0.0.1:6379".to_string(),
-        pool_create_timeout_msec: None,
-        pool_wait_timeout_msec: None,
-        pool_recycle_timeout_msec: None,
-        pool_size: 10,
-    };
+    let config = REDIS_CONFIG.clone();
     let mut cli = new_redis_connection(config).await.unwrap();
     cli.del::<&str, u32>("foo").await.unwrap();
     let v: Option<String> = cli.get("foo").await.unwrap();
@@ -346,15 +339,7 @@ async fn lock_unlock_test() -> Result<()> {
     }
     impl UseRedisLock for RedisPool {}
 
-    let config = RedisConfig {
-        username: None,
-        password: None,
-        url: "redis://127.0.0.1:6379".to_string(),
-        pool_create_timeout_msec: None,
-        pool_wait_timeout_msec: None,
-        pool_recycle_timeout_msec: None,
-        pool_size: 5,
-    };
+    let config = REDIS_CONFIG.clone();
     let p = new_redis_pool(config).await.unwrap();
     let client = RedisPool { pool: p };
     let key = "lock_test";
