@@ -51,7 +51,7 @@ where
             let _r: bool = con
                 .expire(
                     &cn,
-                    self.job_queue_config().expire_job_result_seconds as usize,
+                    self.job_queue_config().expire_job_result_seconds as i64,
                 )
                 .await?;
             Ok(true)
@@ -83,7 +83,7 @@ where
                 handle.close();
                 Err(JobWorkerError::OtherError("interrupt direct waiting process".to_string()).into())
             },
-            val = th_p.blpop::<String, Vec<Vec<u8>>>(c.clone(), (*timeout.unwrap_or(&0)/1000) as usize) => {
+            val = th_p.blpop::<String, Vec<Vec<u8>>>(c.clone(), (*timeout.unwrap_or(&0)/1000) as f64) => {
                 let r: Result<JobResult> = val.map_err(|e|JobWorkerError::RedisError(e).into())
                     .flat_map(|v| Self::deserialize_job_result(&v[1]));
                 r

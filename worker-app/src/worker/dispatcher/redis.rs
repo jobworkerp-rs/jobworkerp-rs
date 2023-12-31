@@ -134,7 +134,7 @@ pub trait RedisJobDispatcher:
                             tracing::debug!("got sigint signal.... channel {}", &cn);
                             break 'outer;
                         },
-                        val = th.blpop::<Vec<String>, Vec<Vec<u8>>>(c.clone(), 0) => {
+                        val = th.blpop::<Vec<String>, Vec<Vec<u8>>>(c.clone(), 0f64) => {
                             tracing::trace!("got job.... channel {}", &cn);
                             self.process_deque_job(
                                 val

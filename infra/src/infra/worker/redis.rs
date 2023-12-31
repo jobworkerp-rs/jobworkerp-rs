@@ -65,7 +65,7 @@ where
             if res {
                 // on created
                 if let Some(ex) = self.expire_sec() {
-                    p.expire(Self::NAME_CACHE_KEY, ex).await?
+                    p.expire(Self::NAME_CACHE_KEY, ex as i64).await?
                 };
             }
             if !for_cache {
@@ -99,7 +99,7 @@ where
             .map_err(|e| JobWorkerError::RedisError(e).into());
         if res.as_ref().exists(|r| *r) {
             if let Some(ex) = self.expire_sec() {
-                p.expire(Self::CACHE_KEY, ex).await?;
+                p.expire(Self::CACHE_KEY, ex as i64).await?;
             };
         }
         res

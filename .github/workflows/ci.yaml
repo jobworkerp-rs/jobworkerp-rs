@@ -1,3 +1,4 @@
+#TODO cannot compile without cuda (use image with cuda or use cpu only feature)
 name: CI
 on:
   pull_request:
