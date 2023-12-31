@@ -229,7 +229,7 @@ pub trait JobBuilder {
 mod tests {
     use super::*;
     use chrono::{Days, Timelike};
-    use tracing::Level;
+
     // test for _calc_next_run_after_time()
     // old_run_after_time is 0:00 last year and new run_after_time is 0:00 tomorrow if periodic_interval is 1 day
     #[test]

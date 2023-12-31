@@ -31,14 +31,16 @@ pub mod test {
         max_connections: 20,
     });
 
-    pub static MYSQL_CONFIG: Lazy<RDBConfig> = Lazy::new(|| RDBConfig {
-        host: "127.0.0.1".to_string(),
-        // host: "db".to_string(),
-        port: "3306".to_string(),
-        user: "mysql".to_string(),
-        password: "mysql".to_string(),
-        dbname: "test".to_string(),
-        max_connections: 20,
+    pub static MYSQL_CONFIG: Lazy<RDBConfig> = Lazy::new(|| {
+        let host = std::env::var("TEST_MYSQL_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+        RDBConfig {
+            host,
+            port: "3306".to_string(),
+            user: "mysql".to_string(),
+            password: "mysql".to_string(),
+            dbname: "test".to_string(),
+            max_connections: 20,
+        }
     });
 
     pub async fn setup_test_sqlite<T: Into<String>>(dir: T) -> &'static Pool<Any> {
@@ -79,15 +81,19 @@ pub mod test {
             .await
     }
 
-    pub static REDIS_CONFIG: Lazy<RedisConfig> = Lazy::new(|| RedisConfig {
-        username: None,
-        password: None,
-        //url: "redis://redis:6379".to_string(),
-        url: "redis://127.0.0.1:6379".to_string(),
-        pool_create_timeout_msec: None,
-        pool_wait_timeout_msec: None,
-        pool_recycle_timeout_msec: None,
-        pool_size: 10,
+    pub static REDIS_CONFIG: Lazy<RedisConfig> = Lazy::new(|| {
+        let url = std::env::var("TEST_REDIS_HOST")
+            .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        RedisConfig {
+            username: None,
+            password: None,
+            //url: "redis://redis:6379".to_string(),
+            url,
+            pool_create_timeout_msec: None,
+            pool_wait_timeout_msec: None,
+            pool_recycle_timeout_msec: None,
+            pool_size: 10,
+        }
     });
 
     static REDIS: tokio::sync::OnceCell<RedisPool> = tokio::sync::OnceCell::const_new();

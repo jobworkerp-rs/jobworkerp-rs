@@ -120,11 +120,9 @@ impl InfraConfigModule {
 }
 // using from other test
 pub mod test {
-    use std::sync::Arc;
-
-    use once_cell::sync::Lazy;
-
     use super::{InfraConfigModule, JobQueueConfig};
+    use once_cell::sync::Lazy;
+    use std::sync::Arc;
 
     pub static JOB_QUEUE_CONFIG: Lazy<JobQueueConfig> = Lazy::new(|| JobQueueConfig {
         expire_job_result_seconds: 60,
