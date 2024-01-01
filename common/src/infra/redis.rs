@@ -1,4 +1,3 @@
-use crate::infra::test::REDIS_CONFIG;
 use anyhow::anyhow;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -177,6 +176,7 @@ pub trait UseRedisLock: UseRedisPool {
 
 #[tokio::test]
 async fn single_test() {
+    use crate::infra::test::REDIS_CONFIG;
     use redis::AsyncCommands;
     use serde::{Deserialize, Serialize};
 
@@ -328,6 +328,7 @@ async fn pool_test() -> Result<()> {
 // lock and unlock test with UseRedisLock
 #[tokio::test]
 async fn lock_unlock_test() -> Result<()> {
+    use crate::infra::test::REDIS_CONFIG;
     #[derive(Clone)]
     struct RedisPool {
         pool: Pool,

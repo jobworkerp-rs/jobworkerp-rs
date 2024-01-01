@@ -244,8 +244,7 @@ mod tests {
         let periodic_interval = 24 * 60 * 60 * 1000; // 1 day millis
 
         // old run_after_time: last year, last month, first day (current day may be not found in last month)
-        let old_run_after_time =
-            datetime::ymdhms(now.year() - 1, now.month() - 1, 1, 0, 0, 0).unwrap();
+        let old_run_after_time = datetime::ymdhms(now.year() - 1, now.month(), 1, 0, 0, 0).unwrap();
         let run_after_time = TestImpl::_calc_next_run_after_time(
             start_time,
             old_run_after_time.timestamp_millis(),

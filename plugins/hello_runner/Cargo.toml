@@ -6,7 +6,7 @@ edition = "2021"
 description = "Example for jobworkerp runner plugin"
 
 [lib]
-crate-type = ["dylib"]
+crate-type = ["cdylib"]
 
 [dependencies]
 common = { path = "../../common" }
