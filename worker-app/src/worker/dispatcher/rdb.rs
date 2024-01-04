@@ -179,6 +179,13 @@ pub trait RdbJobDispatcher:
                         self.result_processor()
                             .process_result(id, res, w)
                             .await
+                            .tap_err(|e| {
+                                tracing::error!(
+                                    "failed to process result: worker_id={:?}, err={:?}",
+                                    &wid,
+                                    e
+                                )
+                            })
                             .map(Some)
                     } else {
                         tracing::debug!("failed to grab job: {:?}", job.data);
