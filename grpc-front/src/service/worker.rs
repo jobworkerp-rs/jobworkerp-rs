@@ -338,7 +338,6 @@ mod tests {
     static JOB_QUEUE_CONFIG: JobQueueConfig = infra::infra::JobQueueConfig {
         fetch_interval: 1000,
         expire_job_result_seconds: 1000,
-        without_recovery_hybrid: false,
     };
     static mut STORAGE_CONFIG: StorageConfig = StorageConfig {
         r#type: StorageType::RDB,

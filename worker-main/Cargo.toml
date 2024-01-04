@@ -39,8 +39,3 @@ tokio = { workspace = true, features = [
     "parking_lot",
 ] }
 tracing = { workspace = true }
-
-[profile.release]
-panic = "unwind"
-[profile.dev]
-panic = "unwind"

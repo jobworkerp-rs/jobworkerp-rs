@@ -7,13 +7,12 @@ members = [
     "worker-app",
     "grpc-front",
     "worker-main",
-    "plugins/hello_runner",
+#    "plugins/hello_runner",
 ]
 
 resolver = "2"
 
 [workspace.package]
-name = "jobworkerp-rs"
 version = "0.1.0"
 edition = "2021"
 authors = ["sutr <jobworkerp-rs at. sutr.app>"]

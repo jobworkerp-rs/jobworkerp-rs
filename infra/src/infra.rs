@@ -65,7 +65,6 @@ pub struct JobQueueConfig {
     pub expire_job_result_seconds: u32,
     /// msec for periodic or run_after job
     pub fetch_interval: u32,
-    pub without_recovery_hybrid: bool,
 }
 
 impl Default for JobQueueConfig {
@@ -74,7 +73,6 @@ impl Default for JobQueueConfig {
         Self {
             expire_job_result_seconds: 24 * 60 * 60, // 1day
             fetch_interval: 1000,                    // 5sec
-            without_recovery_hybrid: false,
         }
     }
 }
@@ -127,7 +125,6 @@ pub mod test {
     pub static JOB_QUEUE_CONFIG: Lazy<JobQueueConfig> = Lazy::new(|| JobQueueConfig {
         expire_job_result_seconds: 60,
         fetch_interval: 1000,
-        without_recovery_hybrid: false,
     });
     pub fn new_for_test_config_mysql() -> InfraConfigModule {
         use common::infra::test::{MYSQL_CONFIG, REDIS_CONFIG};

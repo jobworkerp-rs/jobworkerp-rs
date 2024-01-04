@@ -231,7 +231,6 @@ mod test {
         let job_queue_config = Arc::new(JobQueueConfig {
             expire_job_result_seconds: 10,
             fetch_interval: 1000,
-            without_recovery_hybrid: false,
         });
         // clear queue before test
         redis_pool
@@ -284,7 +283,6 @@ mod test {
         let job_queue_config = Arc::new(JobQueueConfig {
             expire_job_result_seconds: 10,
             fetch_interval: 1000,
-            without_recovery_hybrid: false,
         });
         let repo = RedisJobQueueRepositoryImpl {
             job_queue_config,

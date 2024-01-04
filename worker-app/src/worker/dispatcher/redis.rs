@@ -13,15 +13,13 @@ use app::module::{AppConfigModule, AppModule};
 use async_trait::async_trait;
 use common::infra::redis::UseRedisClient;
 use common::infra::redis::{RedisPool, UseRedisPool};
-use common::util::option::FlatMap;
-use common::util::result::{Tap, TapErr};
+use common::util::result::TapErr;
 use common::util::shutdown::ShutdownLock;
 use futures::TryFutureExt;
 use infra::error::JobWorkerError;
 use infra::infra::job::rdb::queue::RdbJobQueueRepository;
 use infra::infra::job::rdb::{RdbJobRepository, RdbJobRepositoryImpl, UseRdbJobRepositoryOptional};
 use infra::infra::job::redis::job_status::JobStatusRepository;
-use infra::infra::job::redis::queue::RedisJobQueueRepository;
 use infra::infra::job::redis::RedisJobRepositoryImpl;
 use infra::infra::job::redis::UseRedisJobRepository;
 use infra::infra::job::rows::UseJobqueueAndCodec;
@@ -87,12 +85,6 @@ pub trait RedisJobDispatcher:
             for _ in 0..conc {
                 self.pop_and_execute(ch.clone(), lock.clone(), recv.clone());
             }
-        }
-        if self.rdb_job_repository_opt().is_some()
-            && !self.job_queue_config().without_recovery_hybrid
-        {
-            // recovery process thread for timeouts
-            let _ = self.recover_timeouts_loop_from_backup(recv.clone());
         }
 
         // run after job dispatcher (need when use only redis)
@@ -279,92 +271,6 @@ pub trait RedisJobDispatcher:
                 }
             }
             Err(JobWorkerError::OtherError(mes).into())
-        }
-    }
-
-    // TODO under construction
-    fn recover_timeouts_loop_from_backup(
-        &'static self,
-        mut shutdown_recv: tokio::sync::watch::Receiver<bool>,
-    ) -> Result<()> {
-        if let Some(rdb_repository) = self.rdb_job_repository_opt() {
-            tokio::spawn(async move {
-                // same as fetching job interval
-                let mut interval = tokio::time::interval(Duration::from_millis(
-                    self.job_queue_config().fetch_interval as u64,
-                ));
-                loop {
-                    // using tokio::select and tokio::signal::ctrl_c, break loop by ctrl-c
-                    tokio::select! {
-                        _ = interval.tick() => {
-                            tracing::debug!("execute recovery of timeouts jobs from backup");
-                            self._recover_timeouts(rdb_repository).await;
-                        }
-                        _ = shutdown_recv.changed() => {
-                            tracing::debug!("break recovery of timeouts");
-                            break;
-                        }
-                    }
-                    // shutdown received (not selected case)
-                    if *shutdown_recv.borrow() {
-                        break;
-                    }
-                }
-            });
-            tracing::debug!("end execute recovery of timeouts");
-        } else {
-            tracing::debug!("rdb_repository not found, not start recovery process")
-        }
-        Ok(())
-    }
-    #[inline]
-    async fn _recover_timeouts(&self, rdb_repository: &RdbJobRepositoryImpl) {
-        // XXX limit fixed to 500
-        let limit = 500;
-        match rdb_repository
-            .fetch_timeouted_backup_jobs(limit, 0)
-            .await
-            .map_err(|e| {
-                tracing::error!("failed to recovery timeouts: {:?}", e);
-                e
-            }) {
-            Ok(jobs) => {
-                // TODO bulk insert? (pipelined)
-                for j in jobs {
-                    match self
-                        .worker_app()
-                        .find_data_by_opt(j.data.as_ref().flat_map(|d| d.worker_id.as_ref()))
-                        .await
-                    {
-                        Ok(Some(wd)) => {
-                            // cannot recover direct job(not store to rdb)
-                            // XXX shouldn't recover not retryable job?
-                            if wd.queue_type != QueueType::Hybrid as i32 {
-                                continue;
-                            }
-                            let _ = self
-                                .redis_job_repository()
-                                .enqueue_job(wd.channel.as_ref(), &j)
-                                .await
-                                .tap_err(|e| {
-                                    tracing::error!("failed to enqueue job for recovery: {:?}", e)
-                                })
-                                .tap(|_| {
-                                    // maybe set timeout value too short?(warn)
-                                    tracing::warn!(
-                                        "timeout job has be recovered from rdb: job_id={}",
-                                        j.id.as_ref().map(|d| d.value).unwrap_or_default()
-                                    )
-                                });
-                        }
-                        Ok(None) => tracing::error!("worker not found for job: {:?}", &j),
-                        Err(e) => tracing::error!("failed to enqueue job: {:?}", e),
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::error!("error in finding recovery timeouts: {:?}", e);
-            }
         }
     }
 }

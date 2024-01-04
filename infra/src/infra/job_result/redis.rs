@@ -229,7 +229,6 @@ async fn redis_test() -> Result<()> {
     let job_queue_config = Arc::new(JobQueueConfig {
         expire_job_result_seconds: 60,
         fetch_interval: 1000,
-        without_recovery_hybrid: false,
     });
 
     let repo = RedisJobResultRepositoryImpl {
