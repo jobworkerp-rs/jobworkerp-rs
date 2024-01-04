@@ -95,7 +95,9 @@ impl ResultProcessorImpl {
             // the job finished
             // enqueue next worker jobs
             self.enqueue_next_worker_jobs(id, dat, worker).await?;
-            // if finished periodic job, enqueue next periodic job
+            // complete job
+            let res = self.job_app().complete_job(id, dat).await.map(|_| ());
+            // if finished periodic job, enqueue next periodic job (after delete previous job (if unique key exists))
             if let Some(pj) = Self::build_next_periodic_job(dat, worker) {
                 let pjres = self
                     .job_app()
@@ -115,7 +117,7 @@ impl ResultProcessorImpl {
                     &pj.worker_id
                 );
             };
-            self.job_app().complete_job(id, dat).await.map(|_| ())
+            res
         }
     }
     //TODO test

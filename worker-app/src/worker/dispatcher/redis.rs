@@ -136,9 +136,16 @@ pub trait RedisJobDispatcher:
                         },
                         val = th.blpop::<Vec<String>, Vec<Vec<u8>>>(c.clone(), 0f64) => {
                             tracing::trace!("got job.... channel {}", &cn);
-                            self.process_deque_job(
+                            match self.process_deque_job(
                                 val
-                            ).await?;
+                            ).await {
+                                Ok(r) => {
+                                    tracing::trace!("job result: {:?}", &r);
+                                },
+                                Err(e) => {
+                                    tracing::warn!("process job error: {:?}", e);
+                                }
+                            };
                         },
                     }
                 } else {
