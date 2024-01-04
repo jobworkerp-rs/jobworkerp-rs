@@ -64,7 +64,6 @@ tokio = { workspace = true, features = [
     "process",
     "parking_lot",
 ] }
-tokio-compat = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }

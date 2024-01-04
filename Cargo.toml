@@ -94,7 +94,6 @@ tonic-build = "0.10"
 tonic-health = "0.10"
 tonic-reflection = "0.10"
 tonic-web = "0.10"
-tokio-compat = "0.1"
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["codec"] }
 tokio = { version = "1.35", features = [
