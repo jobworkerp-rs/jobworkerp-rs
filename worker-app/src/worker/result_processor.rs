@@ -138,20 +138,26 @@ impl ResultProcessorImpl {
                     if w.data
                         .as_ref()
                         .exists(|wd| wd.r#type == RunnerType::Builtin as i32)
-                        && BuiltinWorkerIds::iter()
-                            .any(|i| w.id.as_ref().exists(|wid| wid.value == i as i64))
                     {
                         // no result data, no enqueue
                         if dat.output.is_none()
                             || dat.output.as_ref().exists(|o| o.items.is_empty())
                         {
-                            tracing::debug!(
+                            tracing::warn!(
                                 "(builtin) noop because output is empty: next_worker: {:?}, from worker: {}, job_result: {:?}",
                                 &w.data.as_ref().map(|d|&d.name),
                                 &worker.name,
                                 &id
                             );
-                            continue;
+                        } else if !BuiltinWorkerIds::iter()
+                            .any(|i| w.id.as_ref().exists(|wid| wid.value == i as i64))
+                        {
+                            // ERROR: builtin type worker not found in BuiltinWorkerIds
+                            tracing::error!(
+                                "next builtin-worker is not defined as builtin: id={:?}, worker={:?}",
+                                wid,
+                                worker
+                            );
                         } else {
                             self.job_app()
                                 .enqueue_job(
@@ -181,8 +187,8 @@ impl ResultProcessorImpl {
                         {
                             // no result, no enqueue
                             if arg.is_empty() {
-                                tracing::debug!(
-                                    "(builtin) noop because output is empty: next_worker: {:?}, from worker: {}, job_result: {:?}",
+                                tracing::warn!(
+                                    "noop because output is empty: next_worker: {:?}, from worker: {}, job_result: {:?}",
                                     &w.data.as_ref().map(|d|&d.name),
                                     &worker.name,
                                     &id
@@ -202,6 +208,8 @@ impl ResultProcessorImpl {
                                 .await?;
                         }
                     }
+                } else {
+                    tracing::error!("next worker not found: id={:?}, worker={:?}", wid, worker);
                 }
             }
         }
