@@ -92,12 +92,12 @@ impl ResultProcessorImpl {
             self.job_app().update_job(&j).await?;
             Ok(())
         } else {
+            // complete job (delete first for unique key)
+            let res = self.job_app().complete_job(id, dat).await.map(|_| ());
             // the job finished
             // enqueue next worker jobs
             self.enqueue_next_worker_jobs(id, dat, worker).await?;
-            // complete job
-            let res = self.job_app().complete_job(id, dat).await.map(|_| ());
-            // if finished periodic job, enqueue next periodic job (after delete previous job (if unique key exists))
+            // if finished periodic job, enqueue next periodic job
             if let Some(pj) = Self::build_next_periodic_job(dat, worker) {
                 let pjres = self
                     .job_app()
