@@ -2,14 +2,19 @@
 
 # 概要
 
-jobworkerp-rs(ジョブワーカープラスと読みます)は実行する仕事を[worker](proto/protobuf/jobworkerp/service/worker.proto)として定義し、workerに対して[job](proto/protobuf/jobworkerp/service/job.proto)をキューイングして仕事を実行できるRust製ジョブワーカーシステムです。gRPCで各種操作を実行できます。
-プラグイン形式でワーカーの実行機能(runner)を追加することができます。
-All-in-One binaryの他、grpc-front (gRPCによるworker、jobのキューイング受け付けフロントサーバ) とworker (jobのデキューとrunnerの実行) に分かれた実行バイナリーを利用できます。
-ジョブキューとして利用する、あるいは結果を取得・保存するストレージを設定により3種類(RDB、Redis、Hybrid(Redis + MySQL))から選択できます。
+jobworkerp-rs(ジョブワーカープラスと読みます)はRust製ジョブワーカーシステムです。
+実行する処理を[worker](proto/protobuf/jobworkerp/service/worker.proto)として定義し、workerに対して実行命令となる[job](proto/protobuf/jobworkerp/service/job.proto)を登録(enqueue)することでジョブを実行できます。
+プラグイン形式でworkerの実行機能(runner)を追加することができます。
 
-All-in-One バイナリを設定なしに単独実行した場合はSQLiteを使ってシンプルな1インスタンスのRDBキューを使ったジョブワーカーシステムとして起動します。
-また grpc-frontとworkerを別々にKubernetes上などで実行、Hybrid storage構成設定をすることで耐障害性をもったジョブワーカーシステムとして利用することもできます。
-
+### 主な機能
+- 3種類のジョブキュー: Redis, RDB(mysql or sqlite), Hybrid (Redis + mysql)
+  - rdbを利用することで必要に応じてジョブのバックアップをとりつつジョブ実行することができます
+- 3種類の結果取得方法: 直接(DIRECT)、後から取得(LISTEN_AFTER)、結果取得しない(NONE)
+- ジョブ実行チャネルの設定とチャネル毎の並列実行数の設定
+  - 例えばgpuチャネルでは並列度1で実行、通常チャネルでは並列度4で実行などの設定ができます
+- 指定時刻実行、一定間隔での定期実行
+- リトライ: リトライ回数や間隔の設定 (Exponential backoffなど)
+- プラグインによる実行ジョブ内容(Runner)の拡張
 
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->

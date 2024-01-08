@@ -1,14 +1,23 @@
 # jobworkerp-rs
+[Japanese ver.](README_ja.md)
 
 # Overview
 
-*jobworkerp-rs* is a job worker system, built with Rust, that allows you to define, queue, and execute jobs.
-A worker execution function (runner) can be added in the form of a plugin.
-In addition to the All-in-One binary, execution binaries divided into grpc-front (worker by gRPC, front server accepting job queuing) and worker (job dequeueing and runner execution) are available.
-Three types of storage (RDB, Redis, and Hybrid (Redis + MySQL)) can be selected for use as job queues or for retrieving and storing results.
+jobworkerp-rs (pronounsed  "jobworker plus") is a job worker system implemented by Rust.
+The function to be executed is defined as [worker](proto/protobuf/jobworkerp/service/worker.proto), and [job](proto/protobuf/jobworkerp/service/job.proto), which is an execution instruction to the worker, and then register (enqueue) the job to execute the function.
 
-Running the All-in-One binary without any settings will start a simple, single-instance job worker system using SQLite for RDB queuing."
-Alternatively, grpc-front and worker can be run separately on Kubernetes, etc., and used as a fault-tolerant job worker system by configuring a hybrid storage configuration.
+A worker execution function (runner) can be added in the form of a plugin.
+
+### Features
+- 3 types of job queues: Redis, RDB(mysql or sqlite), Hybrid (Redis + mysql)
+  - RDB allows jobs to be backed up as needed
+- Three ways to retrieve results: directly (DIRECT), listen and get later (LISTEN_AFTER), or not get results (NONE)
+- Customizable Job execution channel and number of parallel executions per channel
+  - For example, the `'gpu'` channel can be set to run at a parallelism 1, while the normal channel can be set to run at a parallelism 4, etc.
+- Execution at specified time, periodic execution at regular intervals
+- Retry: Set retry count and interval (e.g., Exponential backoff)
+- Extension of execution runner by plug-ins
+
 
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
