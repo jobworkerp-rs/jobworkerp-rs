@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package jobworkerp.data;
+
+import "jobworkerp/data/common.proto";
+import "jobworkerp/data/job.proto";
+import "jobworkerp/data/worker.proto";
+
+message ResultOutput {
+    repeated bytes items = 1;
+}
+
+// JobResult is not own id
+message JobResultData {
+    jobworkerp.data.JobId job_id               = 1;
+    jobworkerp.data.WorkerId worker_id         = 2;
+    string worker_name                         = 3;
+    bytes arg                                  = 4;
+    optional string uniq_key                   = 5;
+    jobworkerp.data.ResultStatus status        = 6; // job result status
+    ResultOutput output                        = 7; // job response data
+    uint32 retried                             = 8;
+    uint32 max_retry                           = 9;
+    jobworkerp.data.Priority priority          = 10;
+    uint64 timeout                             = 11; // timeout milliseconds
+    int64 enqueue_time                         = 12; // job enqueue time
+    int64 run_after_time                       = 13; // job run after this time (specified by client)
+    int64 start_time                           = 14; // job start time
+    int64 end_time                             = 15; // job end time
+    jobworkerp.data.ResponseType response_type = 16; // job response type
+    bool store_success                         = 17; // if true, store result to db when process succeeded
+    bool store_failure                         = 18; // if true, store result to db when process failed
+}
+
+message JobResultId {
+    int64 value = 1;
+}
+
+message JobResult {
+    JobResultId id = 1;
+    JobResultData data = 2;
+}

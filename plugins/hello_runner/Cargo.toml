@@ -1,0 +1,17 @@
+[package]
+name = "plugin_runner_hello"
+version.workspace = true
+authors.workspace = true
+edition = "2021"
+description = "Example for jobworkerp runner plugin"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+common = { path = "../../common" }
+
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }

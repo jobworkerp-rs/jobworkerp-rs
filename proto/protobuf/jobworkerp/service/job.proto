@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package jobworkerp.service;
+
+import "jobworkerp/data/common.proto";
+import "jobworkerp/data/job_result.proto";
+import "jobworkerp/data/worker.proto";
+import "jobworkerp/data/job.proto";
+import "jobworkerp/service/common.proto";
+
+message CreateJobResponse {
+    jobworkerp.data.JobId id = 1; // generated id
+    optional jobworkerp.data.JobResult result = 2; // direct job result worker only
+}
+
+message OptionalJobResponse {
+    optional jobworkerp.data.Job data = 1;
+}
+
+message JobRequest {
+    oneof worker { // worker to execute (specified by id or name)
+        jobworkerp.data.WorkerId worker_id = 1;
+        string worker_name = 2;
+    }
+    bytes arg = 3; // argument for the job
+    optional string uniq_key = 4; // prevent from registering the same keys job in queue at the same time
+    optional int64 run_after_time = 5; // time to execute job (epoch milliseconds) (must not specify 0 explicitly)
+    optional jobworkerp.data.Priority priority = 6; // job priority(high, medium, low)
+    optional uint64 timeout = 7; // valid only for run_after or periodic worker jobs
+}
+
+
+service JobService {
+    rpc Enqueue(JobRequest) returns (CreateJobResponse);
+    rpc Delete(jobworkerp.data.JobId) returns (SuccessResponse);
+    // only use db or redis+db queue type, run after or periodic worker jobs
+    rpc Find(jobworkerp.data.JobId) returns (OptionalJobResponse);
+    // only use db or redis+db queue type, run after or periodic worker jobs
+    rpc FindList(FindListRequest) returns (stream jobworkerp.data.Job);
+    rpc Count(CountCondition) returns (CountResponse);
+}
+
+message JobStatusResponse {
+    jobworkerp.data.JobId id = 1;
+    jobworkerp.data.JobStatus status = 2;
+}
+
+message OptionalJobStatusResponse {
+    optional jobworkerp.data.JobStatus status = 1;
+}
+
+service JobStatusService {
+    rpc Find(jobworkerp.data.JobId) returns (OptionalJobStatusResponse);
+    rpc FindAll(jobworkerp.data.Empty) returns (stream JobStatusResponse);
+}
+
+message JobRestoreRequest {
+    // restore jobs includes grabbed to run process (maybe run twice or more)
+    optional bool include_grabbed = 1;
+    optional int32 limit = 2;
+}
+
+// [for hybrid storage only] restore jobs from rdb to redis (for lost job insident in redis)
+// (except for periodic jobs and jobs with run_after_time)
+service JobRestoreService {
+    rpc Restore(JobRestoreRequest) returns (SuccessResponse);
+    // find all jobs to restore
+    rpc FindAll(JobRestoreRequest) returns (stream jobworkerp.data.Job);
+}
