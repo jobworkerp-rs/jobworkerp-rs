@@ -599,19 +599,7 @@ mod tests {
     async fn create_test_app(
         use_mock_id: bool,
     ) -> Result<(HybridJobAppImpl, JobResultSubscribeAppImpl)> {
-        use infra_utils::infra::test::setup_test_mysql;
         dotenvy::dotenv().ok();
-        let mysql_pool = setup_test_mysql("../infra/sql/mysql").await;
-        sqlx::query("TRUNCATE TABLE job;")
-            .execute(mysql_pool)
-            .await?;
-        sqlx::query("TRUNCATE TABLE worker;")
-            .execute(mysql_pool)
-            .await?;
-        sqlx::query("TRUNCATE TABLE job_result;")
-            .execute(mysql_pool)
-            .await?;
-
         let rdb_module = setup_test_rdb_module().await;
         let redis_module = setup_test_redis_module().await;
         let repositories = Arc::new(HybridRepositoryModule {
