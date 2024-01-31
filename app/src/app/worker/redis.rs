@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use command_utils::util::option::FlatMap;
 use command_utils::util::result::TapErr;
 use infra::infra::module::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
+use infra::infra::worker::event::UseWorkerPublish;
 use infra::infra::worker::redis::{RedisWorkerRepository, UseRedisWorkerRepository};
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use infra_utils::infra::memory::UseMemoryCache;
@@ -46,10 +47,14 @@ impl WorkerApp for RedisWorkerAppImpl {
             id: Some(wid.clone()),
             data: Some(worker.clone()),
         };
-        self.redis_worker_repository().upsert(&w, false).await?;
+        self.redis_worker_repository().upsert(&w).await?;
         // clear list cache
         let kl = Arc::new(Self::find_all_list_cache_key());
         self.delete_cache(&kl).await;
+        let _ = self
+            .redis_worker_repository()
+            .publish_worker_changed(&wid, worker)
+            .await;
         Ok(wid)
     }
 
@@ -59,9 +64,13 @@ impl WorkerApp for RedisWorkerAppImpl {
                 id: Some(id.clone()),
                 data: Some(w.clone()),
             };
-            self.redis_worker_repository().upsert(&wk, false).await?;
+            self.redis_worker_repository().upsert(&wk).await?;
             // clear memory cache (XXX without limit offset cache)
             self.clear_cache(id).await;
+            let _ = self
+                .redis_worker_repository()
+                .publish_worker_changed(id, w)
+                .await;
             Ok(true)
         } else {
             // empty data, delete
@@ -70,14 +79,21 @@ impl WorkerApp for RedisWorkerAppImpl {
     }
 
     async fn delete(&self, id: &WorkerId) -> Result<bool> {
-        let res = self.redis_worker_repository().delete(id, false).await?;
+        let res = self.redis_worker_repository().delete(id).await?;
         self.clear_cache(id).await;
+        let _ = self
+            .redis_worker_repository()
+            .publish_worker_deleted(id)
+            .await;
         Ok(res)
     }
 
     async fn delete_all(&self) -> Result<bool> {
         let res = self.redis_worker_repository().delete_all().await?;
         self.clear_all_cache().await;
+        self.redis_worker_repository()
+            .publish_worker_all_deleted()
+            .await?;
         Ok(res)
     }
 

@@ -6,6 +6,7 @@ use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::module::rdb::{RdbRepositoryModule, UseRdbRepositoryModule};
 use infra::infra::module::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
 use infra::infra::module::HybridRepositoryModule;
+use infra::infra::worker::event::UseWorkerPublish;
 use infra::infra::worker::rdb::{RdbWorkerRepository, UseRdbWorkerRepository};
 use infra::infra::worker::redis::{RedisWorkerRepository, UseRedisWorkerRepository};
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
@@ -53,14 +54,14 @@ impl WorkerApp for HybridWorkerAppImpl {
             tx.commit().await.map_err(JobWorkerError::DBError)?;
             id
         };
-        let w = Worker {
-            id: Some(wid.clone()),
-            data: Some(worker.clone()),
-        };
-        self.redis_worker_repository().upsert(&w, false).await?;
+        let _ = self.redis_worker_repository().delete_all().await;
         // clear list cache
         let kl = Arc::new(Self::find_all_list_cache_key());
         self.delete_cache(&kl).await;
+        let _ = self
+            .redis_worker_repository()
+            .publish_worker_changed(&wid, worker)
+            .await;
         Ok(wid)
     }
 
@@ -72,15 +73,16 @@ impl WorkerApp for HybridWorkerAppImpl {
             self.rdb_worker_repository().update(&mut tx, id, w).await?;
             tx.commit().await.map_err(JobWorkerError::DBError)?;
 
-            let wk = Worker {
-                id: Some(id.clone()),
-                data: worker.clone(),
-            };
-
-            self.redis_worker_repository().upsert(&wk, false).await?;
+            let _ = self.redis_worker_repository().delete_all().await;
             // clear memory cache (XXX without limit offset cache)
             self.clear_cache(id).await;
             self.clear_cache_by_name(&w.name).await;
+
+            let _ = self
+                .redis_worker_repository()
+                .publish_worker_changed(id, w)
+                .await;
+
             Ok(true)
         } else {
             // empty data, only clear cache
@@ -91,9 +93,13 @@ impl WorkerApp for HybridWorkerAppImpl {
 
     // TODO clear cache by name
     async fn delete(&self, id: &WorkerId) -> Result<bool> {
-        let _ = self.redis_worker_repository().delete(id, false).await?;
+        let _ = self.redis_worker_repository().delete(id).await?;
         let res = self.rdb_worker_repository().delete(id).await?;
         self.clear_cache(id).await;
+        let _ = self
+            .redis_worker_repository()
+            .publish_worker_deleted(id)
+            .await;
         Ok(res)
     }
 
@@ -101,6 +107,10 @@ impl WorkerApp for HybridWorkerAppImpl {
         let res = self.rdb_worker_repository().delete_all().await?;
         let _ = self.redis_worker_repository().delete_all().await?;
         self.clear_all_cache().await;
+        let _ = self
+            .redis_worker_repository()
+            .publish_worker_all_deleted()
+            .await;
         Ok(res)
     }
 
@@ -132,28 +142,12 @@ impl WorkerApp for HybridWorkerAppImpl {
                 Ok(Some(v)) => Ok(Some(v)),
                 Ok(None) => {
                     // fallback to rdb if rdb is enabled
-                    let dbr = self.rdb_worker_repository().find(id).await;
-                    if let Ok(Some(w)) = &dbr {
-                        if w.data.is_some() {
-                            self.redis_worker_repository().upsert(w, true).await?;
-                        } else {
-                            tracing::debug!("not find from rdb");
-                        }
-                    }
-                    dbr
+                    self.rdb_worker_repository().find(id).await
                 }
                 Err(err) => {
                     tracing::warn!("not find from redis by error: {}", err);
                     // fallback to rdb if rdb is enabled
-                    let dbr = self.rdb_worker_repository().find(id).await;
-                    if let Ok(Some(w)) = &dbr {
-                        if w.data.is_some() {
-                            self.redis_worker_repository().upsert(w, true).await?;
-                        } else {
-                            tracing::debug!("not find from rdb");
-                        }
-                    }
-                    dbr
+                    self.rdb_worker_repository().find(id).await
                 }
             }
             .map(|r| r.map(|o| vec![o]).unwrap_or_default()) // XXX cache type: vector
@@ -183,24 +177,12 @@ impl WorkerApp for HybridWorkerAppImpl {
                 Ok(Some(v)) => Ok(Some(v)),
                 Ok(None) => {
                     // fallback to rdb if rdb is enabled
-                    let dbr = self.rdb_worker_repository().find_by_name(name).await;
-                    if let Ok(Some(w)) = &dbr {
-                        self.redis_worker_repository()
-                            .upsert(w, true) // store as cache
-                            .await?;
-                    }
-                    dbr
+                    self.rdb_worker_repository().find_by_name(name).await
                 }
                 Err(err) => {
                     tracing::warn!("not find from redis by error: {}", err);
                     // fallback to rdb if rdb is enabled
-                    let dbr = self.rdb_worker_repository().find_by_name(name).await;
-                    if let Ok(Some(w)) = &dbr {
-                        self.redis_worker_repository()
-                            .upsert(w, true) // store as cache
-                            .await?;
-                    }
-                    dbr
+                    self.rdb_worker_repository().find_by_name(name).await
                 }
             }
             .map(|r| r.map(|o| vec![o]).unwrap_or_default()) // XXX cache type: vector
@@ -218,6 +200,7 @@ impl WorkerApp for HybridWorkerAppImpl {
             // not use rdb in normal case
             match self.redis_worker_repository().find_all().await {
                 Ok(v) if !v.is_empty() => {
+                    tracing::debug!("worker list from redis: ({:?}, {:?})", limit, offset);
                     // soft paging
                     let start = offset.unwrap_or(0);
                     if let Some(l) = limit {
@@ -231,13 +214,37 @@ impl WorkerApp for HybridWorkerAppImpl {
                 }
                 // empty
                 Ok(_v) => {
+                    tracing::debug!("worker list from rdb: ({:?}, {:?})", limit, offset);
                     // fallback to rdb if rdb is enabled
-                    self.rdb_worker_repository().find_list(limit, offset).await
+                    let list = self
+                        .rdb_worker_repository()
+                        .find_list(limit, offset)
+                        .await?;
+                    if !list.is_empty() {
+                        for w in list.iter() {
+                            let _ = self.redis_worker_repository().upsert(w).await;
+                        }
+                    }
+                    Ok(list)
                 }
                 Err(err) => {
+                    tracing::debug!(
+                        "worker list from rdb (redis error): ({:?}, {:?})",
+                        limit,
+                        offset
+                    );
                     tracing::warn!("workers find error from redis: {:?}", err);
                     // fallback to rdb if rdb is enabled
-                    self.rdb_worker_repository().find_list(limit, offset).await
+                    let list = self
+                        .rdb_worker_repository()
+                        .find_list(limit, offset)
+                        .await?;
+                    if !list.is_empty() {
+                        for w in list.iter() {
+                            let _ = self.redis_worker_repository().upsert(w).await;
+                        }
+                    }
+                    Ok(list)
                 }
             }
         })
@@ -259,7 +266,7 @@ impl WorkerApp for HybridWorkerAppImpl {
                     let list = self.rdb_worker_repository().find_list(None, None).await;
                     if let Ok(l) = list.as_ref() {
                         for w in l {
-                            let _ = self.redis_worker_repository().upsert(w, true).await;
+                            let _ = self.redis_worker_repository().upsert(w).await;
                         }
                     }
                     list
@@ -281,7 +288,7 @@ impl WorkerApp for HybridWorkerAppImpl {
         // find from redis first
         let cnt = self.redis_worker_repository().count().await?;
         if cnt > 0 {
-            return Ok(cnt + BuiltinWorker::workers_list().len() as i64);
+            return Ok(cnt);
         }
         // fallback to rdb if rdb is enabled
         self.rdb_worker_repository().count().await
@@ -318,3 +325,112 @@ impl UseMemoryCache<Arc<String>, Vec<Worker>> for HybridWorkerAppImpl {
 }
 impl UseJobqueueAndCodec for HybridWorkerAppImpl {}
 impl WorkerAppCacheHelper for HybridWorkerAppImpl {}
+
+// create test
+#[cfg(test)]
+mod tests {
+    use std::env;
+    use std::sync::Arc;
+
+    use crate::app::worker::hybrid::HybridWorkerAppImpl;
+    use crate::app::worker::WorkerApp;
+    use crate::app::{StorageConfig, StorageType};
+    use anyhow::Result;
+    use command_utils::util::option::FlatMap;
+    use infra::infra::module::rdb::test::setup_test_rdb_module;
+    use infra::infra::module::redis::test::setup_test_redis_module;
+    use infra::infra::module::HybridRepositoryModule;
+    use infra::infra::IdGeneratorWrapper;
+    use proto::jobworkerp::data::{Worker, WorkerData};
+
+    async fn create_test_app(use_mock_id: bool) -> Result<HybridWorkerAppImpl> {
+        dotenvy::dotenv().ok();
+
+        let rdb_module = setup_test_rdb_module().await;
+        let redis_module = setup_test_redis_module().await;
+        let repositories = Arc::new(HybridRepositoryModule {
+            redis_module,
+            rdb_module,
+        });
+        // mock id generator (generate 1 until called set method)
+        let id_generator = if use_mock_id {
+            Arc::new(IdGeneratorWrapper::new_mock())
+        } else {
+            Arc::new(IdGeneratorWrapper::new())
+        };
+        let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
+            num_counters: 10000,
+            max_cost: 10000,
+            use_metrics: false,
+        };
+        let worker_memory_cache =
+            infra_utils::infra::memory::new_memory_cache::<Arc<String>, Vec<Worker>>(&mc_config);
+        let storage_config = Arc::new(StorageConfig {
+            r#type: StorageType::Hybrid,
+            restore_at_startup: Some(false),
+        });
+        let worker_app = HybridWorkerAppImpl::new(
+            storage_config.clone(),
+            id_generator.clone(),
+            worker_memory_cache,
+            repositories.clone(),
+        );
+        Ok(worker_app)
+    }
+
+    #[tokio::test]
+    async fn test_integrated() -> Result<()> {
+        env::set_var("TEST_REDIS_HOST", "redis://redis");
+        // test create 3 workers and find list and update 1 worker and find list and delete 1 worker and find list
+        let app = create_test_app(false).await?;
+        let w1 = WorkerData {
+            name: "test1".to_string(),
+            ..Default::default()
+        };
+        let w2 = WorkerData {
+            name: "test2".to_string(),
+            ..Default::default()
+        };
+        let w3 = WorkerData {
+            name: "test3".to_string(),
+            ..Default::default()
+        };
+        let id1 = app.create(&w1).await?;
+        let id2 = app.create(&w2).await?;
+        let id3 = app.create(&w3).await?;
+        assert_eq!(id1.value, 1);
+        assert_eq!(id2.value, 2);
+        assert_eq!(id3.value, 3);
+        // find list
+        let list = app.find_list(None, None).await?;
+        println!("==== created: {:#?}", list);
+        assert_eq!(list.len(), 3);
+        assert_eq!(app.count().await?, 3);
+        // update
+        let w4 = WorkerData {
+            name: "test4".to_string(),
+            ..Default::default()
+        };
+        let res = app.update(&id1, &Some(w4.clone())).await?;
+        assert!(res);
+
+        let f = app.find(&id1).await?;
+        assert!(f.is_some());
+        let fd = f.flat_map(|w| w.data);
+        assert!(fd.is_some());
+        assert_eq!(fd.unwrap().name, w4.name);
+        // find list
+        let list = app.find_list(None, None).await?;
+        println!("==== updated: {:#?}", list);
+        assert_eq!(list.len(), 3);
+        assert_eq!(app.count().await?, 3);
+        // delete
+        let res = app.delete(&id1).await?;
+        assert!(res);
+        // find list
+        let list = app.find_list(None, None).await?;
+        assert_eq!(app.count().await?, 2);
+        assert_eq!(list.len(), 2);
+        Ok(())
+    }
+}

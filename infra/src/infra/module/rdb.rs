@@ -56,6 +56,8 @@ impl UseRdbRepositoryModule for RdbRepositoryModule {
 }
 
 pub mod test {
+    use anyhow::Result;
+    use sqlx::{Any, Pool};
     // create RdbRepositoryModule for test
     use super::RdbRepositoryModule;
     use crate::infra::{
@@ -65,11 +67,20 @@ pub mod test {
     use infra_utils::infra::test::setup_test_mysql;
 
     pub async fn setup_test_rdb_module() -> RdbRepositoryModule {
-        let pool = setup_test_mysql("sql/mysql").await;
+        let pool = setup_test_mysql("../infra/sql/mysql").await;
+        truncate_tables(pool).await.unwrap();
         RdbRepositoryModule {
             worker_repository: RdbWorkerRepositoryImpl::new(pool),
             job_repository: RdbJobRepositoryImpl::new(pool),
             job_result_repository: RdbJobResultRepositoryImpl::new(pool),
         }
+    }
+    pub async fn truncate_tables(pool: &Pool<Any>) -> Result<()> {
+        sqlx::query("TRUNCATE TABLE job;").execute(pool).await?;
+        sqlx::query("TRUNCATE TABLE worker;").execute(pool).await?;
+        sqlx::query("TRUNCATE TABLE job_result;")
+            .execute(pool)
+            .await?;
+        Ok(())
     }
 }
