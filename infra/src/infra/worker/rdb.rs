@@ -103,11 +103,11 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         .bind(worker.r#type)
         .bind(worker.use_static)
         .bind(&worker.operation)
-        .bind(rp.map(|p| p.r#type))
-        .bind(rp.map(|p| p.interval as i64))
-        .bind(rp.map(|p| p.max_interval as i64))
-        .bind(rp.map(|p| p.max_retry as i64))
-        .bind(rp.map(|p| p.basis))
+        .bind(rp.map(|p| p.r#type).unwrap_or(0))
+        .bind(rp.map(|p| p.interval as i64).unwrap_or(0))
+        .bind(rp.map(|p| p.max_interval as i64).unwrap_or(0))
+        .bind(rp.map(|p| p.max_retry as i64).unwrap_or(0))
+        .bind(rp.map(|p| p.basis).unwrap_or(2.0))
         .bind(worker.periodic_interval as i64)
         .bind(
             worker
