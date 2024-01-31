@@ -4,7 +4,7 @@ PRAGMA encoding = 'UTF-8';
 
 CREATE TABLE IF NOT EXISTS `worker` (
     `id` INTEGER PRIMARY KEY AUTOINCREMENT,
-    `name` TEXT NOT NULL,
+    `name` TEXT NOT NULL UNIQUE,
     `type` INT NOT NULL,
     `operation` TEXT NOT NULL,
     `retry_type` INT NOT NULL,
@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS `job` (
     `id` INTEGER PRIMARY KEY,
     `worker_id` BIGINT NOT NULL,
     `arg` TEXT NOT NULL,
-    `uniq_key` TEXT,
+    `uniq_key` TEXT UNIQUE,
     `enqueue_time` BIGINT NOT NULL,
     `grabbed_until_time` BIGINT,
     `run_after_time` BIGINT NOT NULL,

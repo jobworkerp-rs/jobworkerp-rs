@@ -26,7 +26,6 @@ where
     fn expire_sec(&self) -> Option<usize>;
 
     /// update if exists, create if not exists
-    /// if update, publish event
     /// if worker.data.name is None, do nothing
     ///
     /// XXX different key for id
@@ -34,12 +33,12 @@ where
     /// # Returns
     /// - Ok(true) if created
     /// - Ok(false) if updated or not exists
-    async fn upsert(&self, worker: &Worker, for_cache: bool) -> Result<bool> {
-        self._upsert_by_name(worker, for_cache).await?;
+    async fn upsert(&self, worker: &Worker) -> Result<bool> {
+        self._upsert_by_name(worker).await?;
         if let (Some(i), Some(d)) = (worker.id.as_ref(), worker.data.as_ref()) {
             self._upsert_by_id(i, d).await
         } else if let Some(i) = worker.id.as_ref() {
-            self.delete(i, for_cache).await?;
+            self.delete(i).await?;
             Ok(false)
         } else {
             Ok(false)
@@ -47,7 +46,6 @@ where
     }
 
     /// update if exists, create if not exists specified with worker name
-    /// if update, publish event
     /// if worker.data.name is None, do nothing
     ///
     /// XXX different key for id
@@ -55,7 +53,7 @@ where
     /// # Returns
     /// - Ok(true) if created
     /// - Ok(false) if updated
-    async fn _upsert_by_name(&self, worker: &Worker, for_cache: bool) -> Result<()> {
+    async fn _upsert_by_name(&self, worker: &Worker) -> Result<()> {
         if let Some(n) = worker.data.as_ref().map(|d| &d.name) {
             let mut p = self.redis_pool().get().await?;
             let res = p
@@ -68,11 +66,6 @@ where
                     p.expire(Self::NAME_CACHE_KEY, ex as i64).await?
                 };
             }
-            if !for_cache {
-                if let (Some(i), Some(d)) = (worker.id.as_ref(), worker.data.as_ref()) {
-                    self.publish_worker_changed(i, d).await?;
-                }
-            }
             Ok(())
         } else {
             // do nothing
@@ -81,7 +74,6 @@ where
     }
 
     /// update if exists, create if not exists
-    /// if update, publish event
     ///
     /// # Returns
     /// - Ok(true) if created
@@ -105,28 +97,22 @@ where
         res
     }
 
-    async fn delete(&self, id: &WorkerId, for_cache: bool) -> Result<bool> {
+    async fn delete(&self, id: &WorkerId) -> Result<bool> {
         let g = self.find(id).await?;
         if let Some(wn) = g.as_ref().flat_map(|w| w.data.as_ref().map(|d| &d.name)) {
             self.delete_by_name(wn).await?;
-            self.delete_by_id(id, for_cache).await
+            self.delete_by_id(id).await
         } else {
             Ok(false)
         }
     }
-    async fn delete_by_id(&self, id: &WorkerId, for_cache: bool) -> Result<bool> {
-        let res = self
-            .redis_pool()
+    async fn delete_by_id(&self, id: &WorkerId) -> Result<bool> {
+        self.redis_pool()
             .get()
             .await?
             .hdel(Self::CACHE_KEY, id.value)
             .await
-            .map_err(|e| JobWorkerError::RedisError(e).into());
-        // publish if not for cache
-        if !for_cache {
-            self.publish_worker_deleted(id).await?;
-        }
-        res
+            .map_err(|e| JobWorkerError::RedisError(e).into())
     }
 
     async fn delete_by_name(&self, name: &String) -> Result<bool> {
@@ -145,15 +131,12 @@ where
             .del(Self::CACHE_KEY)
             .await
             .map_err(JobWorkerError::RedisError)?;
-        let r = self
-            .redis_pool()
+        self.redis_pool()
             .get()
             .await?
             .del(Self::NAME_CACHE_KEY)
             .await
-            .map_err(|e| JobWorkerError::RedisError(e).into());
-        self.publish_worker_all_deleted().await?;
-        r
+            .map_err(|e| JobWorkerError::RedisError(e).into())
     }
 
     async fn find(&self, id: &WorkerId) -> Result<Option<Worker>> {
@@ -296,14 +279,14 @@ async fn redis_test() -> Result<()> {
         use_static: false,
     };
     // clear first
-    repo.delete(&id, false).await?;
+    repo.delete(&id).await?;
     let wk = Worker {
         id: Some(id.clone()),
         data: Some(worker.clone()),
     };
     // create and find
-    assert!(repo.upsert(&wk, false).await?); // newly created
-    assert!(!(repo.upsert(&wk, false).await?)); // already exists (update)
+    assert!(repo.upsert(&wk).await?); // newly created
+    assert!(!(repo.upsert(&wk).await?)); // already exists (update)
     let res = repo.find(&id).await?;
     assert_eq!(res.flat_map(|r| r.data).as_ref(), Some(worker));
 
@@ -330,12 +313,12 @@ async fn redis_test() -> Result<()> {
         data: Some(worker2.clone()),
     };
     // update and find
-    assert!(!repo.upsert(&wk2, false).await?);
+    assert!(!repo.upsert(&wk2).await?);
     let res2 = repo.find(&id).await?;
     assert_eq!(res2.flat_map(|r| r.data).as_ref(), Some(&worker2));
 
     // delete and not found
-    assert!(repo.delete(&id, false).await?);
+    assert!(repo.delete(&id).await?);
     assert_eq!(repo.find(&id).await?, None);
 
     Ok(())
