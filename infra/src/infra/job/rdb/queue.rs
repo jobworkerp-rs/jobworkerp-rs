@@ -30,7 +30,7 @@ pub trait RdbJobQueueRepository: UseRdbPool + Sync + Send {
                 r#"
                 SELECT * FROM job
                 WHERE run_after_time <= ? {} AND grabbed_until_time <= ?
-                ORDER BY priority DESC
+                ORDER BY run_after_time, priority DESC
                 LIMIT ? OFFSET ?
             "#,
                 future_query
@@ -45,7 +45,7 @@ pub trait RdbJobQueueRepository: UseRdbPool + Sync + Send {
                 r#"
                 SELECT * FROM job
                 WHERE run_after_time <= ? {} AND grabbed_until_time <= ? AND worker_id IN ({})
-                ORDER BY priority DESC
+                ORDER BY run_after_time, priority DESC
                 LIMIT ? OFFSET ?
             "#,
                 future_query, in_clause
@@ -83,7 +83,7 @@ pub trait RdbJobQueueRepository: UseRdbPool + Sync + Send {
             r#"
             SELECT * FROM job
             WHERE grabbed_until_time > 0 AND grabbed_until_time <= ? AND run_after_time = 0
-            ORDER BY priority DESC
+            ORDER BY run_after_time, priority DESC
             LIMIT ? OFFSET ?"#,
         )
         .bind(now)
