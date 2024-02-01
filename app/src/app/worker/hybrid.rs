@@ -50,7 +50,10 @@ impl WorkerApp for HybridWorkerAppImpl {
         let wid = {
             let db = self.rdb_worker_repository().db_pool();
             let mut tx = db.begin().await.map_err(JobWorkerError::DBError)?;
-            let id = self.rdb_worker_repository().create(&mut tx, worker).await?;
+            let id = self
+                .rdb_worker_repository()
+                .create(&mut *tx, worker)
+                .await?;
             tx.commit().await.map_err(JobWorkerError::DBError)?;
             id
         };
@@ -70,7 +73,7 @@ impl WorkerApp for HybridWorkerAppImpl {
             // use rdb
             let pool = self.rdb_worker_repository().db_pool();
             let mut tx = pool.begin().await.map_err(JobWorkerError::DBError)?;
-            self.rdb_worker_repository().update(&mut tx, id, w).await?;
+            self.rdb_worker_repository().update(&mut *tx, id, w).await?;
             tx.commit().await.map_err(JobWorkerError::DBError)?;
 
             let _ = self.redis_worker_repository().delete_all().await;
@@ -344,8 +347,6 @@ mod tests {
     use proto::jobworkerp::data::{Worker, WorkerData};
 
     async fn create_test_app(use_mock_id: bool) -> Result<HybridWorkerAppImpl> {
-        dotenvy::dotenv().ok();
-
         let rdb_module = setup_test_rdb_module().await;
         let redis_module = setup_test_redis_module().await;
         let repositories = Arc::new(HybridRepositoryModule {
@@ -380,7 +381,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_integrated() -> Result<()> {
-        env::set_var("TEST_REDIS_HOST", "redis://redis");
         // test create 3 workers and find list and update 1 worker and find list and delete 1 worker and find list
         let app = create_test_app(false).await?;
         let w1 = WorkerData {

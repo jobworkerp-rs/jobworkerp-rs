@@ -98,7 +98,7 @@ pub trait RdbJobResultRepository: UseRdbPool + Sync + Send {
         .bind(job_result.start_time)
         .bind(job_result.end_time)
         .bind(id.value)
-        .execute(tx)
+        .execute(&mut **tx)
         .await
         .map(|r| r.rows_affected() > 0)
         .map_err(JobWorkerError::DBError)
@@ -304,7 +304,7 @@ mod test {
 
         // delete record
         tx = db.begin().await.context("error in test")?;
-        let del = repository.delete_tx(&mut tx, &id).await?;
+        let del = repository.delete_tx(&mut *tx, &id).await?;
         tx.commit().await.context("error in test delete commit")?;
         assert!(del, "delete error");
         Ok(())

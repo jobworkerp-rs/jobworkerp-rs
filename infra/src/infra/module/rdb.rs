@@ -56,7 +56,6 @@ impl UseRdbRepositoryModule for RdbRepositoryModule {
 }
 
 pub mod test {
-    use anyhow::Result;
     use sqlx::{Any, Pool};
     // create RdbRepositoryModule for test
     use super::RdbRepositoryModule;
@@ -68,19 +67,25 @@ pub mod test {
 
     pub async fn setup_test_rdb_module() -> RdbRepositoryModule {
         let pool = setup_test_mysql("../infra/sql/mysql").await;
-        truncate_tables(pool).await.unwrap();
+        truncate_tables(pool).await;
         RdbRepositoryModule {
             worker_repository: RdbWorkerRepositoryImpl::new(pool),
             job_repository: RdbJobRepositoryImpl::new(pool),
             job_result_repository: RdbJobResultRepositoryImpl::new(pool),
         }
     }
-    pub async fn truncate_tables(pool: &Pool<Any>) -> Result<()> {
-        sqlx::query("TRUNCATE TABLE job;").execute(pool).await?;
-        sqlx::query("TRUNCATE TABLE worker;").execute(pool).await?;
+    pub async fn truncate_tables(pool: &Pool<Any>) {
+        sqlx::query("TRUNCATE TABLE job;")
+            .execute(pool)
+            .await
+            .expect("truncate job table");
+        sqlx::query("TRUNCATE TABLE worker;")
+            .execute(pool)
+            .await
+            .expect("truncate worker table");
         sqlx::query("TRUNCATE TABLE job_result;")
             .execute(pool)
-            .await?;
-        Ok(())
+            .await
+            .expect("truncate worker table");
     }
 }

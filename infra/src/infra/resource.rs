@@ -18,6 +18,7 @@ pub async fn setup_rdb_by_env() -> &'static Pool<Any> {
 // new rdb pool and store as static
 // (if failed initializing, panic!)
 pub async fn setup_rdb(db_config: &RDBConfig) -> &'static Pool<Any> {
+    sqlx::any::install_default_drivers();
     RDB_POOL
         .get_or_init(|| async {
             infra_utils::infra::rdb::new_rdb_pool(db_config, Some(&SQLITE_SCHEMA.to_string()))

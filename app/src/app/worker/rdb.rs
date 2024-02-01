@@ -43,7 +43,10 @@ impl WorkerApp for RdbWorkerAppImpl {
     async fn create(&self, worker: &WorkerData) -> Result<WorkerId> {
         let db = self.rdb_worker_repository().db_pool();
         let mut tx = db.begin().await.map_err(JobWorkerError::DBError)?;
-        let wid = self.rdb_worker_repository().create(&mut tx, worker).await?;
+        let wid = self
+            .rdb_worker_repository()
+            .create(&mut *tx, worker)
+            .await?;
         tx.commit().await.map_err(JobWorkerError::DBError)?;
         // clear list cache
         let kl = Arc::new(Self::find_all_list_cache_key());
@@ -55,7 +58,7 @@ impl WorkerApp for RdbWorkerAppImpl {
         if let Some(w) = worker {
             let pool = self.rdb_worker_repository().db_pool();
             let mut tx = pool.begin().await.map_err(JobWorkerError::DBError)?;
-            self.rdb_worker_repository().update(&mut tx, id, w).await?;
+            self.rdb_worker_repository().update(&mut *tx, id, w).await?;
             tx.commit().await.map_err(JobWorkerError::DBError)?;
 
             // clear memory cache (XXX without limit offset cache)

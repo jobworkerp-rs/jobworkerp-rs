@@ -8,7 +8,7 @@ members = [
     "worker-app",
     "grpc-front",
     "worker-main",
-#    "plugins/hello_runner",
+    #    "plugins/hello_runner",
 ]
 
 resolver = "2"
@@ -48,14 +48,14 @@ num-derive = "0.4"
 num-traits = "0.2"
 once_cell = "1"
 opentelemetry = "0.21"
-opentelemetry_sdk = "0.21"
-opentelemetry-otlp = { version = "0.14", features = ["metrics"] }
-opentelemetry-semantic-conventions = "0.13"
-opentelemetry-stdout = { version = "0.2", features = ["trace"] }
-opentelemetry-jaeger = { version = "0.20", features = ["rt-tokio"] }
-opentelemetry-zipkin = { version = "0.19", features = [
-    "reqwest-client",
-], default-features = false }
+#opentelemetry_sdk = "0.21"
+#opentelemetry-otlp = { version = "0.14", features = ["metrics"] }
+#opentelemetry-semantic-conventions = "0.13"
+#opentelemetry-stdout = { version = "0.2", features = ["trace"] }
+#opentelemetry-jaeger = { version = "0.20", features = ["rt-tokio"] }
+#opentelemetry-zipkin = { version = "0.19", features = [
+#    "reqwest-client",
+#], default-features = false }
 pnet = "0.34"
 prost = "0.12"
 prost-types = "0.12"
@@ -76,8 +76,8 @@ serde_with = "3.0"
 serde_yaml = "0.9"
 signal-hook = "0.3"
 signal-hook-tokio = "0.3"
-sqlx = { version = "0.6", features = [
-    "runtime-tokio-native-tls",
+sqlx = { version = "0.7", features = [
+    "runtime-tokio-rustls",
     "any",
     "sqlite",
     "mysql",
