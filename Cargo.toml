@@ -8,7 +8,7 @@ members = [
     "worker-app",
     "grpc-front",
     "worker-main",
-#    "plugins/hello_runner",
+    #    "plugins/hello_runner",
 ]
 
 resolver = "2"
@@ -28,8 +28,8 @@ anyhow = "1.0"
 async-trait = "0.1"
 clap = "4.0"
 chrono = "0.4"
-deadpool = { version = "0.10", features = ["rt_tokio_1"] }
-deadpool-redis = { version = "0.14", features = ["rt_tokio_1", "cluster"] }
+deadpool = { version = "0.12", features = ["rt_tokio_1"] }
+deadpool-redis = { version = "0.15", features = ["rt_tokio_1", "cluster"] }
 debug_stub_derive = "0.3"
 bollard = { version = "0.16", features = ["buildkit", "chrono"] }
 bytes = "1.3"
@@ -38,8 +38,8 @@ envy = "0.4"
 dotenvy = "0.15"
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 futures-util = "0.3"
-http = "0.2"
-itertools = "0.12"
+http = "1.1"
+itertools = "0.13"
 lazy_static = "1.4"
 libloading = "0.8"
 log = "0.4"
@@ -47,12 +47,12 @@ num_cpus = "1.0"
 num-derive = "0.4"
 num-traits = "0.2"
 once_cell = "1"
-pnet = "0.34"
+pnet = "0.35"
 prost = "0.12"
 prost-types = "0.12"
 rand = "0.8"
 regex = "1.7"
-redis = { version = "0.24", features = [
+redis = { version = "0.25", features = [
     "tokio-rustls-comp",
     "r2d2",
     "ahash",
@@ -67,12 +67,12 @@ serde_with = "3.0"
 serde_yaml = "0.9"
 signal-hook = "0.3"
 signal-hook-tokio = "0.3"
-sqlx = { version = "0.6", features = [
-    "runtime-tokio-native-tls",
+sqlx = { git = "https://github.com/sutr-app/sqlx.git", branch = "fix-any", features = [ # tag = "v0.7.3",
+    "runtime-tokio",
+    "tls-rustls",
     "any",
     "sqlite",
     "mysql",
-    "macros",
     "chrono",
 ] }
 stretto = { version = "0.8", features = ["async"] }

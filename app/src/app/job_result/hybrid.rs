@@ -273,6 +273,7 @@ mod tests {
     use infra::infra::module::redis::test::setup_test_redis_module;
     use infra::infra::module::HybridRepositoryModule;
     use infra::infra::IdGeneratorWrapper;
+    use infra_utils::infra::test::TEST_RUNTIME;
     use proto::jobworkerp::data::worker_operation::Operation;
     use proto::jobworkerp::data::Priority;
     use proto::jobworkerp::data::QueueType;
@@ -335,50 +336,54 @@ mod tests {
         assert!(!HybridJobResultAppImpl::_should_store(&job_result_data));
     }
 
-    async fn setup() -> Result<HybridJobResultAppImpl> {
+    fn setup() -> Result<HybridJobResultAppImpl> {
         // dotenv::dotenv().ok();
-        let rdb_module = setup_test_rdb_module().await;
-        let redis_module = setup_test_redis_module().await;
-        let repositories = Arc::new(HybridRepositoryModule {
-            redis_module,
-            rdb_module,
-        });
-        let id_generator = Arc::new(IdGeneratorWrapper::new());
-        let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
-            num_counters: 10000,
-            max_cost: 10000,
-            use_metrics: false,
-        };
-        let worker_memory_cache =
-            infra_utils::infra::memory::new_memory_cache::<Arc<String>, Vec<Worker>>(&mc_config);
-        // let job_memory_cache =
-        //     common::infra::memory::new_memory_cache::<Arc<String>, Vec<Job>>(&mc_config);
+        let rdb_module = setup_test_rdb_module();
+        TEST_RUNTIME.block_on(async {
+            let redis_module = setup_test_redis_module().await;
+            let repositories = Arc::new(HybridRepositoryModule {
+                redis_module,
+                rdb_module,
+            });
+            let id_generator = Arc::new(IdGeneratorWrapper::new());
+            let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
+                num_counters: 10000,
+                max_cost: 10000,
+                use_metrics: false,
+            };
+            let worker_memory_cache = infra_utils::infra::memory::new_memory_cache::<
+                Arc<String>,
+                Vec<Worker>,
+            >(&mc_config);
+            // let job_memory_cache =
+            //     common::infra::memory::new_memory_cache::<Arc<String>, Vec<Job>>(&mc_config);
 
-        let storage_config = Arc::new(StorageConfig {
-            r#type: StorageType::Hybrid,
-            restore_at_startup: Some(false),
-        });
-        // let job_queue_config = Arc::new(JobQueueConfig {
-        //     expire_job_result_seconds: 60,
-        //     fetch_interval: 1000,
-        // });
+            let storage_config = Arc::new(StorageConfig {
+                r#type: StorageType::Hybrid,
+                restore_at_startup: Some(false),
+            });
+            // let job_queue_config = Arc::new(JobQueueConfig {
+            //     expire_job_result_seconds: 60,
+            //     fetch_interval: 1000,
+            // });
 
-        let worker_app = Arc::new(HybridWorkerAppImpl::new(
-            storage_config.clone(),
-            id_generator.clone(),
-            worker_memory_cache,
-            repositories.clone(),
-        ));
-        Ok(HybridJobResultAppImpl::new(
-            storage_config,
-            id_generator.clone(),
-            repositories,
-            worker_app,
-        ))
+            let worker_app = Arc::new(HybridWorkerAppImpl::new(
+                storage_config.clone(),
+                id_generator.clone(),
+                worker_memory_cache,
+                repositories.clone(),
+            ));
+            Ok(HybridJobResultAppImpl::new(
+                storage_config,
+                id_generator.clone(),
+                repositories,
+                worker_app,
+            ))
+        })
     }
-    #[tokio::test]
-    async fn test_create_job_result_if_necessary() -> Result<()> {
-        let app = setup().await?;
+    #[test]
+    fn test_create_job_result_if_necessary() -> Result<()> {
+        let app = setup()?;
         let operation = WorkerOperation {
             operation: Some(Operation::Command(
                 proto::jobworkerp::data::CommandOperation {
@@ -400,121 +405,123 @@ mod tests {
             next_workers: vec![],
             use_static: false,
         };
-        let worker_id = app.worker_app().create(&worker_data).await?;
-        let worker = Worker {
-            id: Some(worker_id.clone()),
-            data: Some(worker_data.clone()),
-        };
+        TEST_RUNTIME.block_on(async {
+            let worker_id = app.worker_app().create(&worker_data).await?;
+            let worker = Worker {
+                id: Some(worker_id.clone()),
+                data: Some(worker_data.clone()),
+            };
 
-        // app.worker_app.create(&worker_data).await?;
-        let id = JobResultId {
-            value: app.id_generator().generate_id()?,
-        };
-        let job_id = JobId { value: 100 };
-        let arg = RunnerArg {
-            data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
-                proto::jobworkerp::data::CommandArg {
-                    args: vec!["arg1".to_string()],
-                },
-            )),
-        };
-        let mut data = JobResultData {
-            job_id: Some(job_id.clone()),
-            worker_id: worker.id.clone(),
-            status: ResultStatus::Success as i32,
-            worker_name: worker_data.name.clone(),
-            arg: Some(arg),
-            uniq_key: Some("uniq_key".to_string()),
-            output: Some(ResultOutput {
-                items: vec![b"data".to_vec()],
-            }),
-            retried: 0,
-            max_retry: worker_data
-                .retry_policy
-                .clone()
-                .map(|p| p.max_retry)
-                .unwrap_or(0),
-            priority: Priority::High as i32,
-            timeout: 0,
-            enqueue_time: datetime::now_millis(),
-            run_after_time: 0,
-            response_type: worker_data.response_type,
-            start_time: datetime::now_millis(),
-            end_time: datetime::now_millis(),
-            store_success: worker_data.store_success,
-            store_failure: worker_data.store_failure,
-        };
-        let result = JobResult {
-            id: Some(id.clone()),
-            data: Some(data.clone()),
-        };
-        assert!(app.create_job_result_if_necessary(&id, &data).await?);
-        assert_eq!(app.find_job_result_from_db(&id).await?.unwrap(), result);
-        assert_eq!(
-            app.find_job_result_by_job_id(&job_id).await?.unwrap(),
-            result
-        );
-        // in retry
-        let id = JobResultId {
-            value: app.id_generator().generate_id()?,
-        };
-        let job_id = JobId { value: 101 };
-        data.status = ResultStatus::ErrorAndRetry as i32;
-        data.job_id = Some(job_id.clone());
-        let result = JobResult {
-            id: Some(id.clone()),
-            data: Some(data.clone()),
-        };
-        assert!(app.create_job_result_if_necessary(&id, &data).await?);
-        assert_eq!(app.find_job_result_from_db(&id).await?.unwrap(), result);
-        // found from db
-        assert_eq!(
-            app.find_job_result_by_job_id(&job_id).await?.unwrap(),
-            result
-        );
+            // app.worker_app.create(&worker_data).await?;
+            let id = JobResultId {
+                value: app.id_generator().generate_id()?,
+            };
+            let job_id = JobId { value: 100 };
+            let arg = RunnerArg {
+                data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
+                    proto::jobworkerp::data::CommandArg {
+                        args: vec!["arg1".to_string()],
+                    },
+                )),
+            };
+            let mut data = JobResultData {
+                job_id: Some(job_id.clone()),
+                worker_id: worker.id.clone(),
+                status: ResultStatus::Success as i32,
+                worker_name: worker_data.name.clone(),
+                arg: Some(arg),
+                uniq_key: Some("uniq_key".to_string()),
+                output: Some(ResultOutput {
+                    items: vec![b"data".to_vec()],
+                }),
+                retried: 0,
+                max_retry: worker_data
+                    .retry_policy
+                    .clone()
+                    .map(|p| p.max_retry)
+                    .unwrap_or(0),
+                priority: Priority::High as i32,
+                timeout: 0,
+                enqueue_time: datetime::now_millis(),
+                run_after_time: 0,
+                response_type: worker_data.response_type,
+                start_time: datetime::now_millis(),
+                end_time: datetime::now_millis(),
+                store_success: worker_data.store_success,
+                store_failure: worker_data.store_failure,
+            };
+            let result = JobResult {
+                id: Some(id.clone()),
+                data: Some(data.clone()),
+            };
+            assert!(app.create_job_result_if_necessary(&id, &data).await?);
+            assert_eq!(app.find_job_result_from_db(&id).await?.unwrap(), result);
+            assert_eq!(
+                app.find_job_result_by_job_id(&job_id).await?.unwrap(),
+                result
+            );
+            // in retry
+            let id = JobResultId {
+                value: app.id_generator().generate_id()?,
+            };
+            let job_id = JobId { value: 101 };
+            data.status = ResultStatus::ErrorAndRetry as i32;
+            data.job_id = Some(job_id.clone());
+            let result = JobResult {
+                id: Some(id.clone()),
+                data: Some(data.clone()),
+            };
+            assert!(app.create_job_result_if_necessary(&id, &data).await?);
+            assert_eq!(app.find_job_result_from_db(&id).await?.unwrap(), result);
+            // found from db
+            assert_eq!(
+                app.find_job_result_by_job_id(&job_id).await?.unwrap(),
+                result
+            );
 
-        // no store, store in redis
-        let id = JobResultId {
-            value: app.id_generator().generate_id()?,
-        };
-        let job_id = JobId { value: 202 };
-        data.status = ResultStatus::FatalError as i32;
-        // no store to db
-        data.store_failure = false;
-        data.job_id = Some(job_id.clone());
-        data.response_type = ResponseType::ListenAfter as i32;
-        let result = JobResult {
-            id: Some(id.clone()),
-            data: Some(data.clone()),
-        };
-        // store only to redis for listen after
-        assert!(app.create_job_result_if_necessary(&id, &data).await?);
-        assert_eq!(app.find_job_result_from_db(&id).await?, None);
-        // store ended result in cache for listen_after
-        let mut res = app.find_job_result_by_job_id(&job_id).await?.unwrap();
-        // restore store_failure by worker data, rewrite for skip in test
-        let mut d = res.data.unwrap().clone();
-        d.store_failure = false;
-        d.response_type = ResponseType::ListenAfter as i32;
-        res.data = Some(d);
-        assert_eq!(res, result);
+            // no store, store in redis
+            let id = JobResultId {
+                value: app.id_generator().generate_id()?,
+            };
+            let job_id = JobId { value: 202 };
+            data.status = ResultStatus::FatalError as i32;
+            // no store to db
+            data.store_failure = false;
+            data.job_id = Some(job_id.clone());
+            data.response_type = ResponseType::ListenAfter as i32;
+            let result = JobResult {
+                id: Some(id.clone()),
+                data: Some(data.clone()),
+            };
+            // store only to redis for listen after
+            assert!(app.create_job_result_if_necessary(&id, &data).await?);
+            assert_eq!(app.find_job_result_from_db(&id).await?, None);
+            // store ended result in cache for listen_after
+            let mut res = app.find_job_result_by_job_id(&job_id).await?.unwrap();
+            // restore store_failure by worker data, rewrite for skip in test
+            let mut d = res.data.unwrap().clone();
+            d.store_failure = false;
+            d.response_type = ResponseType::ListenAfter as i32;
+            res.data = Some(d);
+            assert_eq!(res, result);
 
-        // no store
-        let id = JobResultId {
-            value: app.id_generator().generate_id()?,
-        };
-        let job_id = JobId { value: 303 };
-        data.status = ResultStatus::ErrorAndRetry as i32;
-        data.job_id = Some(job_id.clone());
-        assert!(
-            !(app.create_job_result_if_necessary(&id, &data).await?),
-            "no store"
-        );
-        assert_eq!(app.find_job_result_from_db(&id).await?, None);
-        // no store retrying result in cache
-        assert_eq!(app.find_job_result_by_job_id(&job_id).await?, None);
+            // no store
+            let id = JobResultId {
+                value: app.id_generator().generate_id()?,
+            };
+            let job_id = JobId { value: 303 };
+            data.status = ResultStatus::ErrorAndRetry as i32;
+            data.job_id = Some(job_id.clone());
+            assert!(
+                !(app.create_job_result_if_necessary(&id, &data).await?),
+                "no store"
+            );
+            assert_eq!(app.find_job_result_from_db(&id).await?, None);
+            // no store retrying result in cache
+            assert_eq!(app.find_job_result_by_job_id(&job_id).await?, None);
 
-        Ok(())
+            Ok(())
+        })
     }
 
     // #[tokio::test]

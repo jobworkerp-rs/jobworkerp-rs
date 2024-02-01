@@ -4,7 +4,6 @@ use crate::plugins::Plugins;
 use crate::worker::runner::factory::RunnerFactory;
 use anyhow::{anyhow, Result};
 use app::app::WorkerConfig;
-use async_trait::async_trait;
 use deadpool::managed::Timeouts;
 use deadpool::{
     managed::{Manager, Metrics, Object, Pool, PoolConfig, RecycleResult},
@@ -31,7 +30,6 @@ impl RunnerPoolManagerImpl {
     }
 }
 
-#[async_trait]
 impl Manager for RunnerPoolManagerImpl {
     type Type = Arc<Mutex<Box<dyn Runner + Send + Sync>>>;
     type Error = anyhow::Error;
