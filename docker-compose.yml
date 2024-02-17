@@ -1,0 +1,24 @@
+version: '3.9'
+
+services:
+  jobworkerp-all:
+    image: ghcr.io/jobworkerp-rs/jobworkerp:latest
+    env_file:
+      # Ensure that the variables in .env match your environment
+      - compose.env
+    security_opt:
+      - seccomp:unconfined
+    cap_add:
+      - SYS_PTRACE
+    volumes:
+      - ./log:/home/jobworkerp/log
+      - ./plugins:/home/jobworkerp/plugins
+      - /var/run/docker.sock:/var/run/docker.sock
+    user: jobworkerp
+    ports:
+      - 9000:9000
+
+  redis:
+    hostname: redis
+    image: redis:7
+    command: [ "redis-server" ]
