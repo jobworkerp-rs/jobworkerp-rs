@@ -73,6 +73,22 @@ $ ./target/release/worker &
 
 ```
 
+- run with docker (minimum configuration: not recommended)
+  ```
+   $ mkdir log
+   $ chmod 777 log
+   $ docker run -p 9000:9000 -v ./plugins:/home/jobworkerp/plugins -v ./dot.env:/home/jobworkerp/.env -v ./log:/home/jobworkerp/log ghcr.io/jobworkerp-rs/jobworkerp:latest
+  ```
+
+- run with docker compose example (hybrid storage configuration)
+  ```
+   $ mkdir log
+   $ chmod 777 log
+   $ mkdir plugins
+   (copy plugin files to ./plugins and edit compose.env for plugin settings)
+   $ docker-compose up
+  ```
+
 #### RDB schemas for your setup
 
 - [MySQL schema](infra/sql/mysql/002_worker.sql)
