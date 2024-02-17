@@ -43,7 +43,7 @@ impl Default for RunnerPluginLoader {
 
 impl PluginLoader for RunnerPluginLoader {
     fn load(&mut self, path: &Path) -> Result<()> {
-        // XXX load plugin for getting name
+        // XXX load plugin only for getting name
         let lib = unsafe { Library::new(path) }?;
         let load_plugin: LoaderFunc = unsafe { lib.get(b"load_plugin") }?;
         let plugin = load_plugin();

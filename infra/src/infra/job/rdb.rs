@@ -207,7 +207,7 @@ pub trait RdbJobRepository: RdbJobQueueRepository + UseRdbPool + Sync + Send {
 
                 } else {
             sqlx::query_as::<_, (i64,)>(
-                    "SELECT id FROM job WHERE run_after_time = 0 AND grabbed_until_time = 0 AND grabbed_until_time < ? ORDER BY id DESC LIMIT ? OFFSET ?;"
+                    "SELECT id FROM job WHERE run_after_time = 0 AND (grabbed_until_time = 0 OR grabbed_until_time < ?) ORDER BY id DESC LIMIT ? OFFSET ?;"
             )
             .bind(datetime::now_millis())
             .bind(l)
@@ -217,7 +217,7 @@ pub trait RdbJobRepository: RdbJobQueueRepository + UseRdbPool + Sync + Send {
         } else if include_grabbed { // fetch all!
             sqlx::query_as::<_, (i64,)>("SELECT id FROM job WHERE run_after_time = 0 ORDER BY id DESC;").fetch_all(self.db_pool())
         }else {
-            sqlx::query_as::<_, (i64,)>("SELECT id FROM job WHERE run_after_time = 0 AND grabbed_until_time = 0 AND grabbed_until_time < ? ORDER BY id DESC;")
+            sqlx::query_as::<_, (i64,)>("SELECT id FROM job WHERE run_after_time = 0 AND (grabbed_until_time = 0 OR grabbed_until_time < ?) ORDER BY id DESC;")
                  .bind(datetime::now_millis()).fetch_all(self.db_pool())
         }
         .await
@@ -354,13 +354,75 @@ mod test {
         assert!(del, "delete error");
         Ok(())
     }
+    async fn _test_find_id_set_in_instant(pool: &'static Pool<Any>) -> Result<()> {
+        let repository = RdbJobRepositoryImpl::new(pool);
+        let data = Some(JobData {
+            worker_id: Some(WorkerId { value: 2 }),
+            arg: "hoge1".as_bytes().to_vec(),
+            uniq_key: Some("fuga1".to_string()),
+            enqueue_time: 5,
+            grabbed_until_time: Some(6),
+            run_after_time: 0,
+            retried: 8,
+            priority: 2,
+            timeout: 10000,
+        });
+        let job = Job {
+            id: Some(JobId { value: 1 }),
+            data: data.clone(),
+        };
+        repository.create(&job).await?;
+        // future job
+        let data = Some(JobData {
+            worker_id: Some(WorkerId { value: 2 }),
+            arg: "hoge2".as_bytes().to_vec(),
+            uniq_key: Some("fuga2".to_string()),
+            enqueue_time: 5,
+            grabbed_until_time: None,
+            run_after_time: 10,
+            retried: 8,
+            priority: 2,
+            timeout: 10000,
+        });
+        let job = Job {
+            id: Some(JobId { value: 2 }),
+            data: data.clone(),
+        };
+        repository.create(&job).await?;
+        // grabbed job
+        let data = Some(JobData {
+            worker_id: Some(WorkerId { value: 2 }),
+            arg: "hoge3".as_bytes().to_vec(),
+            uniq_key: Some("fuga3".to_string()),
+            enqueue_time: 5,
+            grabbed_until_time: Some(command_utils::util::datetime::now_millis() + 10000), // grabbed until 10 sec later
+            run_after_time: 0,
+            retried: 8,
+            priority: 2,
+            timeout: 10000,
+        });
+        let job = Job {
+            id: Some(JobId { value: 3 }),
+            data: data.clone(),
+        };
+        repository.create(&job).await?;
+        let ids = repository.find_id_set_in_instant(true, None, None).await?;
+        assert_eq!(2, ids.len());
+        assert!(ids.contains(&1));
+        assert!(ids.contains(&3)); // include grabbed
+        let ids = repository.find_id_set_in_instant(false, None, None).await?;
+        assert_eq!(1, ids.len());
+        assert!(ids.contains(&1));
+        Ok(())
+    }
 
     #[sqlx::test]
     async fn test_sqlite() -> Result<()> {
         use infra_utils::infra::test::setup_test_sqlite;
         let sqlite_pool = setup_test_sqlite("sql/sqlite").await;
         sqlx::query("DELETE FROM job;").execute(sqlite_pool).await?;
-        _test_repository(sqlite_pool).await
+        _test_repository(sqlite_pool).await?;
+        _test_find_id_set_in_instant(sqlite_pool).await
     }
 
     #[sqlx::test]
@@ -370,6 +432,10 @@ mod test {
         sqlx::query("TRUNCATE TABLE job;")
             .execute(mysql_pool)
             .await?;
-        _test_repository(mysql_pool).await
+        _test_repository(mysql_pool).await?;
+        sqlx::query("TRUNCATE TABLE job;")
+            .execute(mysql_pool)
+            .await?;
+        _test_find_id_set_in_instant(mysql_pool).await
     }
 }
