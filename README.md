@@ -4,8 +4,8 @@
 
 ## Overview
 
-jobworkerp-rs (pronounsed  "jobworker plus") is a job worker system implemented by Rust.
-The function to be executed is defined as [worker](proto/protobuf/jobworkerp/service/worker.proto), and [job](proto/protobuf/jobworkerp/service/job.proto), which is an execution instruction to the worker, and then register (enqueue) the job to execute the function.
+jobworkerp-rs is a job worker system implemented in Rust.
+The function to be executed is defined as [worker](proto/protobuf/jobworkerp/data/worker.proto), and [job](proto/protobuf/jobworkerp/data/job.proto), which is an execution instruction to the worker, and then register (enqueue) the job to execute the function.
 
 A worker execution function (runner) can be added in the form of a plugin.
 
@@ -89,7 +89,7 @@ $ ./target/release/worker &
    $ docker-compose up
   ```
 
-#### RDB schemas for your setup
+#### RDB schemas for setup
 
 - [MySQL schema](infra/sql/mysql/002_worker.sql)
 - [SQLite schema](infra/sql/sqlite/001_schema.sql)
@@ -179,7 +179,7 @@ A worker defines a job to be executed, and a runner executes the job according t
   - Using bollard library for docker API call.
   - DOCKER_GID must be specified in .env.
     - Specify a GID with permission to connect to /var/run/docker.sock. You must have permission to use this GID as an execution process.
-  - Running on k8s pod is currently untested. (Due to the above limitations, you will probably need to configure your docker image to allow DockerOutsideOfDocker or DockerInDocker).
+  - Running on k8s pod is currently untested. (Due to the above limitations, you will probably need to configure docker image to allow DockerOutsideOfDocker or DockerInDocker).
 - PLUGIN: Run plugin ([PluginRunner](worker-app/src/plugins/runner.rs)): Specify the runner.name of the implemented plugin in worker.operation and the arg to be passed to plugin arg to be passed to the plugin runner.
   - [Sample imprementation](plugins/hello_runner/Cargo.toml)
 - You can imprement Custom Runner: implement Runner trait, add RunnerType, create Runner in factory.
