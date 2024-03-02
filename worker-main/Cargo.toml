@@ -30,7 +30,6 @@ grpc-front = { path = "../grpc-front" }
 anyhow = { workspace = true }
 dotenvy = { workspace = true }
 envy = { workspace = true }
-opentelemetry = { workspace = true }
 tokio = { workspace = true, features = [
     "macros",
     "rt-multi-thread",

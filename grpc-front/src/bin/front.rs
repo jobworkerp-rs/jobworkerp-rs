@@ -23,7 +23,7 @@ async fn main() -> Result<()> {
     tracing::info!("waiting shutdown");
     wait.wait().await;
     tracing::info!("shutdown");
-    opentelemetry::global::shutdown_tracer_provider();
+    command_utils::util::tracing::shutdown_tracer_provider();
 
     ret
 }
