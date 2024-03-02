@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
     wait.wait().await;
 
     tracing::debug!("shutdown telemetry");
-    opentelemetry::global::shutdown_tracer_provider();
+    command_utils::util::tracing::shutdown_tracer_provider();
 
     tracing::debug!("worker handler");
     let _ret = jh.await?;
