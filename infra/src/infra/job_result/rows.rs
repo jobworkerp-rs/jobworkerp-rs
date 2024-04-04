@@ -1,4 +1,7 @@
-use crate::{error::JobWorkerError, infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec}};
+use crate::{
+    error::JobWorkerError,
+    infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec},
+};
 use anyhow::Result;
 use command_utils::util::result::{TapErr, ToOption};
 use prost::Message;

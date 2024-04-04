@@ -41,9 +41,6 @@ where
 
     //////////////////////
     // for docker exec
-    /// An object mapping ports to an empty object in the form:  `{\"<port>/<tcp|udp|sctp>\": {}}`
-    pub exposed_ports: Option<HashMap<String, HashMap<(), ()>>>,
-
     /// A list of environment variables to set inside the container in the form `[\"VAR=value\", ...]`. A variable without `=` is removed from the environment, rather than to have an empty value.
     pub env: Option<Vec<String>>,
 
@@ -55,12 +52,14 @@ where
 
     /// The entry point for the container as a string or an array of strings.  If the array consists of exactly one empty string (`[\"\"]`) then the entry point is reset to system default (i.e., the entry point used by docker when there is no `ENTRYPOINT` instruction in the `Dockerfile`).
     pub entrypoint: Option<Vec<String>>,
+    // An object mapping ports to an empty object in the form:  `{\"<port>/<tcp|udp|sctp>\": {}}`
+    // pub exposed_ports: Option<HashMap<String, HashMap<(), ()>>>,
 
-    /// Disable networking for the container.
-    pub network_disabled: Option<bool>,
+    // Disable networking for the container.
+    // pub network_disabled: Option<bool>,
 
-    /// MAC address of the container.  Deprecated: this field is deprecated in API v1.44 and up. Use EndpointSettings.MacAddress instead.
-    pub mac_address: Option<String>,
+    // MAC address of the container.  Deprecated: this field is deprecated in API v1.44 and up. Use EndpointSettings.MacAddress instead.
+    // pub mac_address: Option<String>,
 }
 impl<T> CreateRunnerOptions<T>
 where
@@ -88,13 +87,13 @@ where
     pub fn to_docker_exec_config(&self) -> Config<String> {
         Config {
             image: self.from_image.clone().map(|s| s.into()),
-            exposed_ports: self.exposed_ports.clone(),
+            // exposed_ports: self.exposed_ports.clone(),
             env: self.env.clone(),
             volumes: self.volumes.clone(),
             working_dir: self.working_dir.clone(),
             entrypoint: self.entrypoint.clone(),
-            network_disabled: self.network_disabled,
-            mac_address: self.mac_address.clone(),
+            // network_disabled: self.network_disabled,
+            // mac_address: self.mac_address.clone(),
             ..Default::default()
         }
     }
@@ -112,7 +111,41 @@ where
             repo: op.repo.map(|s| s.into()),
             tag: op.tag.map(|s| s.into()),
             platform: op.platform.map(|s| s.into()),
-            ..Default::default()
+            //exposed_ports: if op.exposed_ports.is_empty() {
+            //    None
+            //} else {
+            //    Some(
+            //        op.exposed_ports
+            //            .iter()
+            //            .cloned()
+            //            .map(|port| (port, HashMap::new()))
+            //            .collect::<HashMap<_, _>>(),
+            //    )
+            //},
+            env: if op.env.is_empty() {
+                None
+            } else {
+                Some(op.env)
+            },
+            volumes: if op.volumes.is_empty() {
+                None
+            } else {
+                Some(
+                    op.volumes
+                        .iter()
+                        .cloned()
+                        .map(|volume| (volume, HashMap::new()))
+                        .collect::<HashMap<_, _>>(),
+                )
+            },
+            working_dir: op.working_dir,
+            entrypoint: if op.entrypoint.is_empty() {
+                None
+            } else {
+                Some(op.entrypoint)
+            },
+            // network_disabled: op.network_disabled,
+            // mac_address: op.mac_address,
         }
     }
 }

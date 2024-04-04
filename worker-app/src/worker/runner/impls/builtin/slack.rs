@@ -65,7 +65,7 @@ impl Runner for SlackResultNotificationRunner {
                     );
                     let r = self
                         .slack
-                        .send_result(&data, status != ResultStatus::Success as i32)
+                        .send_result(data, status != ResultStatus::Success as i32)
                         .await;
                     match r {
                         Ok(()) => {
