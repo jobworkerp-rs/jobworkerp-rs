@@ -237,7 +237,7 @@ impl ResultProcessorImpl {
             worker_name: dat.worker_name.clone(),
             status: dat.status,
             output: dat.output.clone(),
-            retried: dat.retried as u32,
+            retried: dat.retried,
             enqueue_time: dat.enqueue_time,
             run_after_time: dat.run_after_time,
             start_time: dat.start_time,

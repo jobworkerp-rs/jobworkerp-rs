@@ -5,9 +5,9 @@ use async_trait::async_trait;
 use command_utils::util::{option::FlatMap as _, result::ToOption as _};
 use infra_utils::infra::rdb::UseRdbPool;
 use itertools::Itertools;
+use prost::Message;
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use sqlx::{Any, Executor, Pool};
-use prost::Message;
 
 #[async_trait]
 pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
@@ -198,7 +198,11 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
     async fn find_list(&self, limit: Option<i32>, offset: Option<i64>) -> Result<Vec<Worker>> {
         self.find_row_list_tx(self.db_pool(), limit, offset)
             .await
-            .map(|r| r.iter().flat_map(|r2| r2.to_proto().to_option()).collect_vec())
+            .map(|r| {
+                r.iter()
+                    .flat_map(|r2| r2.to_proto().to_option())
+                    .collect_vec()
+            })
     }
 
     async fn find_row_list_tx<'c, E: Executor<'c, Database = Any>>(

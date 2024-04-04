@@ -33,7 +33,7 @@ message DockerOperation {
     optional string platform = 5;
 
     /// An object mapping ports to an empty object in the form:  `{\"<port>/<tcp|udp|sctp>\": {}}`
-    repeated string exposed_ports = 6;
+    // repeated string exposed_ports = 6;
 
     /// A list of environment variables to set inside the container in the form `[\"VAR=value\", ...]`. A variable without `=` is removed from the environment, rather than to have an empty value.
     repeated string env = 7;
@@ -48,10 +48,10 @@ message DockerOperation {
     repeated string entrypoint = 10;
 
     /// Disable networking for the container.
-    optional bool network_disabled = 11;
+    // optional bool network_disabled = 11;
 
     /// MAC address of the container.  Deprecated: this field is deprecated in API v1.44 and up. Use EndpointSettings.MacAddress instead.
-    optional string mac_address = 12;
+    // optional string mac_address = 12;
 
 
 }

@@ -2,8 +2,8 @@ use crate::error::JobWorkerError;
 use anyhow::Result;
 use prost::Message;
 use proto::jobworkerp::data::{
-    worker_operation::Operation, Job, JobData, JobId, JobResult, JobResultData, JobResultId,
-    RunnerArg, RunnerType, Worker, WorkerId, WorkerOperation,
+    Job, JobData, JobId, JobResult, JobResultData, JobResultId, RunnerArg, Worker, WorkerId,
+    WorkerOperation,
 };
 use std::io::Cursor;
 
@@ -137,61 +137,6 @@ pub trait UseJobqueueAndCodec {
     fn deserialize_worker_operation(buf: &Vec<u8>) -> Result<WorkerOperation> {
         WorkerOperation::decode(&mut Cursor::new(buf))
             .map_err(|e| JobWorkerError::CodecError(e).into())
-    }
-    fn deserialize_worker_operation_by_type(
-        rtype: RunnerType,
-        buf: &Vec<u8>,
-    ) -> Result<WorkerOperation> {
-        match rtype {
-            RunnerType::Command => {
-                let operation =
-                    proto::jobworkerp::data::CommandOperation::decode(&mut Cursor::new(buf))
-                        .map_err(|e| JobWorkerError::CodecError(e))?;
-                Ok(WorkerOperation {
-                    operation: Some(Operation::Command(operation)),
-                })
-            }
-            RunnerType::Plugin => {
-                let operation =
-                    proto::jobworkerp::data::PluginOperation::decode(&mut Cursor::new(buf))
-                        .map_err(|e| JobWorkerError::CodecError(e))?;
-                Ok(WorkerOperation {
-                    operation: Some(Operation::Plugin(operation)),
-                })
-            }
-            RunnerType::GrpcUnary => {
-                let operation =
-                    proto::jobworkerp::data::GrpcUnaryOperation::decode(&mut Cursor::new(buf))
-                        .map_err(|e| JobWorkerError::CodecError(e))?;
-                Ok(WorkerOperation {
-                    operation: Some(Operation::GrpcUnary(operation)),
-                })
-            }
-            RunnerType::HttpRequest => {
-                let operation =
-                    proto::jobworkerp::data::HttpRequestOperation::decode(&mut Cursor::new(buf))
-                        .map_err(|e| JobWorkerError::CodecError(e))?;
-                Ok(WorkerOperation {
-                    operation: Some(Operation::HttpRequest(operation)),
-                })
-            }
-            RunnerType::Docker => {
-                let operation =
-                    proto::jobworkerp::data::DockerOperation::decode(&mut Cursor::new(buf))
-                        .map_err(|e| JobWorkerError::CodecError(e))?;
-                Ok(WorkerOperation {
-                    operation: Some(Operation::Docker(operation)),
-                })
-            }
-            RunnerType::SlackInternal => {
-                let operation =
-                    proto::jobworkerp::data::SlackJobResultOperation::decode(&mut Cursor::new(buf))
-                        .map_err(|e| JobWorkerError::CodecError(e))?;
-                Ok(WorkerOperation {
-                    operation: Some(Operation::SlackInternal(operation)),
-                })
-            }
-        }
     }
 }
 

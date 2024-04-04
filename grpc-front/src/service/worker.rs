@@ -48,7 +48,6 @@ pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig {
                 Operation::Plugin(_) => Ok(RunnerType::Plugin),
                 Operation::SlackInternal(_) => Ok(RunnerType::SlackInternal),
                 Operation::HttpRequest(_) => Ok(RunnerType::HttpRequest),
-                _ => Err(tonic::Status::invalid_argument("not implemented operation")),
             },
             _ => Err(tonic::Status::invalid_argument("operation not found")),
         }
