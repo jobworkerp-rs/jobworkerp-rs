@@ -167,6 +167,8 @@ impl JobApp for HybridJobAppImpl {
                 timeout,
             };
             if let Some(w) = worker.data.as_ref() {
+                // validate argument types
+                self.validate_worker_and_job_arg(w, job_data.arg.as_ref())?;
                 // cannot wait for direct response
                 if run_after_time > 0 && w.response_type == ResponseType::Direct as i32 {
                     return Err(JobWorkerError::InvalidParameter(format!(
@@ -283,6 +285,9 @@ impl JobApp for HybridJobAppImpl {
                 .find_data_by_opt(data.worker_id.as_ref())
                 .await
             {
+                // validate argument types
+                self.validate_worker_and_job_arg(&w, data.arg.as_ref())?;
+
                 // use db queue (run after, periodic, queue_type=DB worker)
                 let res_db = if is_run_after_job_data
                     || w.periodic_interval > 0
