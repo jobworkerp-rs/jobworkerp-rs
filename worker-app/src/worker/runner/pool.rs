@@ -127,7 +127,7 @@ impl RunnerFactoryWithPool {
 mod tests {
     use super::*;
     use anyhow::Result;
-    use app::app::worker::builtin::slack::SLACK_RUNNER_NAME;
+    use app::app::worker::builtin::slack::{SLACK_RUNNER_OPERATION, SLACK_WORKER_NAME};
     use proto::jobworkerp::data::{RunnerType, WorkerData};
 
     #[tokio::test]
@@ -138,8 +138,8 @@ mod tests {
         plugins.load_plugins_from_env()?;
         let factory = RunnerFactoryWithPool::new(
             Arc::new(WorkerData {
-                r#type: RunnerType::Builtin as i32,
-                operation: SLACK_RUNNER_NAME.to_string(),
+                r#type: RunnerType::SlackInternal as i32,
+                operation: Some(SLACK_RUNNER_OPERATION.clone()),
                 channel: None,
                 use_static: true,
                 ..Default::default()
@@ -154,7 +154,7 @@ mod tests {
         .await?;
         let runner = factory.get().await?;
         let name = runner.lock().await.name().await;
-        assert_eq!(name, SLACK_RUNNER_NAME);
+        assert_eq!(name, SLACK_WORKER_NAME);
         let res = factory.timeout_get(&Timeouts::wait_millis(1000)).await;
         // timeout
         assert!(res.is_err());
@@ -175,8 +175,8 @@ mod tests {
         plugins.load_plugins_from_env()?;
         assert!(RunnerFactoryWithPool::new(
             Arc::new(WorkerData {
-                r#type: RunnerType::Builtin as i32,
-                operation: "not_found".to_string(),
+                r#type: RunnerType::SlackInternal as i32,
+                operation: Some(SLACK_RUNNER_OPERATION.clone()),
                 channel: None,
                 use_static: false,
                 ..Default::default()

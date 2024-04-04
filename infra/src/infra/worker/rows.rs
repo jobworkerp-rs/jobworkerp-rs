@@ -1,5 +1,8 @@
+use anyhow::Result;
 use itertools::Itertools;
 use proto::jobworkerp::data::{RetryPolicy, Worker, WorkerData, WorkerId};
+
+use crate::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
 
 // db row definitions
 #[derive(sqlx::FromRow)]
@@ -7,7 +10,7 @@ pub struct WorkerRow {
     pub id: i64,
     pub name: String,
     pub r#type: i32,
-    pub operation: String,
+    pub operation: Vec<u8>,
     pub retry_type: i32,
     pub interval: i64,     // u32 // cannot use u32 in sqlx any db
     pub max_interval: i64, // u32
@@ -24,13 +27,14 @@ pub struct WorkerRow {
 }
 
 impl WorkerRow {
-    pub fn to_proto(&self) -> Worker {
-        Worker {
+    pub fn to_proto(&self) -> Result<Worker> {
+        let operation = JobqueueAndCodec::deserialize_worker_operation(&self.operation)?;
+        Ok(Worker {
             id: Some(WorkerId { value: self.id }),
             data: Some(WorkerData {
                 name: self.name.clone(),
                 r#type: self.r#type,
-                operation: self.operation.clone(),
+                operation: Some(operation),
                 retry_policy: Some(RetryPolicy {
                     r#type: self.retry_type,
                     interval: self.interval as u32,
@@ -47,7 +51,7 @@ impl WorkerRow {
                 next_workers: Self::deserialize_worker_ids(self.next_workers.as_str()),
                 use_static: self.use_static,
             }),
-        }
+        })
     }
     fn deserialize_worker_ids(s: &str) -> Vec<WorkerId> {
         s.split(',')

@@ -19,7 +19,7 @@ use infra_utils::infra::memory::UseMemoryCache;
 use infra_utils::infra::redis::{RedisClient, UseRedisClient};
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobStatus, QueueType, ResponseType,
-    WorkerId,
+    RunnerArg, WorkerId,
 };
 use std::{sync::Arc, time::Duration};
 use stretto::AsyncCache;
@@ -61,7 +61,7 @@ impl JobApp for RedisJobAppImpl {
         &self,
         worker_id: Option<&WorkerId>,
         worker_name: Option<&String>,
-        arg: Vec<u8>,
+        arg: Option<RunnerArg>,
         uniq_key: Option<String>,
         run_after_time: i64,
         priority: i32,

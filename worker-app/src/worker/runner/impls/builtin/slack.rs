@@ -4,12 +4,11 @@ pub mod repository;
 use crate::worker::runner::Runner;
 
 use self::repository::SlackRepository;
-use anyhow::{anyhow, Context, Result};
-use app::app::worker::builtin::slack::SLACK_RUNNER_NAME;
+use anyhow::{anyhow, Result};
+use app::app::worker::builtin::slack::SLACK_WORKER_NAME;
 use async_trait::async_trait;
 use infra::error::JobWorkerError;
-use prost::Message;
-use proto::jobworkerp::data::{JobResult, ResultStatus};
+use proto::jobworkerp::data::{runner_arg::Data, ResultStatus, RunnerArg};
 use serde::Deserialize;
 
 #[derive(Clone, Deserialize, Debug, Default)] // for test only
@@ -45,33 +44,43 @@ impl Default for SlackResultNotificationRunner {
 #[async_trait]
 impl Runner for SlackResultNotificationRunner {
     async fn name(&self) -> String {
-        String::from(SLACK_RUNNER_NAME)
+        String::from(SLACK_WORKER_NAME)
     }
-    async fn run(&mut self, arg: Vec<u8>) -> Result<Vec<Vec<u8>>> {
-        let res =
-            JobResult::decode(arg.as_slice()).context("decode JobResult in slack notification")?;
-        match res {
-            JobResult {
-                id: Some(id),
-                data: Some(data),
-            } => {
+    async fn run(&mut self, arg: &RunnerArg) -> Result<Vec<Vec<u8>>> {
+        let res = match &arg.data {
+            Some(Data::SlackJobResult(arg)) => Ok(arg),
+            _ => Err(anyhow!("invalid arg type: {:?}", arg)),
+        }?;
+        match &res.message {
+            // XXX not use channel ()
+            Some(data) => {
                 let status = data.status;
                 // result in success or error -> notify to slack
                 if status == ResultStatus::Success as i32
                     || status != ResultStatus::ErrorAndRetry as i32
                 {
-                    tracing::debug!("try to send slack notification: result id={}", &id.value);
+                    tracing::debug!(
+                        "try to send slack notification: result id={}",
+                        &data.result_id
+                    );
                     let r = self
                         .slack
                         .send_result(&data, status != ResultStatus::Success as i32)
                         .await;
                     match r {
                         Ok(()) => {
-                            tracing::debug!("slack notification was sent: result_id={}", &id.value);
+                            tracing::debug!(
+                                "slack notification was sent: result_id={}",
+                                &data.result_id
+                            );
                             Ok(vec!["OK".bytes().collect()])
                         }
                         Err(e) => {
-                            tracing::error!("slack error: result_id: {:?} {:?}", &id, e);
+                            tracing::error!(
+                                "slack error: result_id: {:?} {:?}",
+                                &data.result_id,
+                                e
+                            );
                             Err(anyhow!("slack error: {:?}", e))
                         }
                     }
@@ -81,7 +90,7 @@ impl Runner for SlackResultNotificationRunner {
                 }
             }
             jr => {
-                tracing::error!("cannot decode all job result data: {jr:?}");
+                tracing::error!("cannot get job result data: {jr:?}");
                 Err(
                     JobWorkerError::InvalidParameter(format!("cannot get job result data: {jr:?}"))
                         .into(),

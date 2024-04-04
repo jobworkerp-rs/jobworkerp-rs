@@ -2,10 +2,12 @@ use super::rows::WorkerRow;
 use crate::{error::JobWorkerError, infra::job::rows::UseJobqueueAndCodec};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use command_utils::util::{option::FlatMap as _, result::ToOption as _};
 use infra_utils::infra::rdb::UseRdbPool;
 use itertools::Itertools;
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use sqlx::{Any, Executor, Pool};
+use prost::Message;
 
 #[async_trait]
 pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
@@ -15,6 +17,11 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         worker: &WorkerData,
     ) -> Result<WorkerId> {
         let rp = worker.retry_policy.as_ref();
+        let operation_bytes = worker.operation.as_ref().map(|o| {
+            let mut buf = Vec::<u8>::new();
+            o.encode(&mut buf).unwrap();
+            buf
+        });
         let res = sqlx::query::<Any>(
             "INSERT INTO worker (
             `name`,
@@ -38,7 +45,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         .bind(&worker.name)
         .bind(worker.r#type)
         .bind(worker.use_static)
-        .bind(&worker.operation)
+        .bind(&operation_bytes)
         .bind(rp.map(|p| p.r#type).unwrap_or(0))
         .bind(rp.map(|p| p.interval as i64).unwrap_or(0))
         .bind(rp.map(|p| p.max_interval as i64).unwrap_or(0))
@@ -79,6 +86,11 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         worker: &WorkerData,
     ) -> Result<bool> {
         let rp = worker.retry_policy.as_ref();
+        let operation_bytes = worker.operation.as_ref().map(|o| {
+            let mut buf = Vec::<u8>::new();
+            o.encode(&mut buf).unwrap();
+            buf
+        });
         sqlx::query(
             "UPDATE `worker` SET
             `name` = ?,
@@ -102,7 +114,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         .bind(&worker.name)
         .bind(worker.r#type)
         .bind(worker.use_static)
-        .bind(&worker.operation)
+        .bind(&operation_bytes)
         .bind(rp.map(|p| p.r#type).unwrap_or(0))
         .bind(rp.map(|p| p.interval as i64).unwrap_or(0))
         .bind(rp.map(|p| p.max_interval as i64).unwrap_or(0))
@@ -161,13 +173,13 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
             .await
             .map_err(JobWorkerError::DBError)
             .context(format!("error in find: name = {}", name))
-            .map(|r| r.map(|r2| r2.to_proto()))
+            .map(|r| r.flat_map(|r2| r2.to_proto().to_option()))
     }
 
     async fn find(&self, id: &WorkerId) -> Result<Option<Worker>> {
         self.find_row_tx(self.db_pool(), id)
             .await
-            .map(|r| r.map(|r2| r2.to_proto()))
+            .map(|r| r.flat_map(|r2| r2.to_proto().to_option()))
     }
 
     async fn find_row_tx<'c, E: Executor<'c, Database = Any>>(
@@ -186,7 +198,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
     async fn find_list(&self, limit: Option<i32>, offset: Option<i64>) -> Result<Vec<Worker>> {
         self.find_row_list_tx(self.db_pool(), limit, offset)
             .await
-            .map(|r| r.iter().map(|r2| r2.to_proto()).collect_vec())
+            .map(|r| r.iter().flat_map(|r2| r2.to_proto().to_option()).collect_vec())
     }
 
     async fn find_row_list_tx<'c, E: Executor<'c, Database = Any>>(
@@ -253,12 +265,15 @@ mod test {
     use anyhow::Context;
     use anyhow::Result;
     use infra_utils::infra::rdb::UseRdbPool;
+    use proto::jobworkerp::data::worker_operation::Operation;
+    use proto::jobworkerp::data::CommandOperation;
     use proto::jobworkerp::data::QueueType;
     use proto::jobworkerp::data::ResponseType;
     use proto::jobworkerp::data::RetryPolicy;
     use proto::jobworkerp::data::Worker;
     use proto::jobworkerp::data::WorkerData;
     use proto::jobworkerp::data::WorkerId;
+    use proto::jobworkerp::data::WorkerOperation;
     use sqlx::{Any, Pool};
 
     async fn _test_repository(pool: &'static Pool<Any>) -> Result<()> {
@@ -266,8 +281,12 @@ mod test {
         let db = repository.db_pool();
         let data = Some(WorkerData {
             name: "hoge1".to_string(),
-            r#type: 3,
-            operation: "hoge3".to_string(),
+            r#type: 3, // not used
+            operation: Some(WorkerOperation {
+                operation: Some(Operation::Command(CommandOperation {
+                    name: "fuga2".to_string(),
+                })),
+            }),
             retry_policy: Some(RetryPolicy {
                 r#type: 5,
                 interval: 6,
@@ -309,7 +328,11 @@ mod test {
         let update = WorkerData {
             name: "fuga1".to_string(),
             r#type: 4,
-            operation: "fuga3".to_string(),
+            operation: Some(WorkerOperation {
+                operation: Some(Operation::Command(CommandOperation {
+                    name: "fuga3".to_string(),
+                })),
+            }),
             retry_policy: Some(RetryPolicy {
                 r#type: 6,
                 interval: 7,
