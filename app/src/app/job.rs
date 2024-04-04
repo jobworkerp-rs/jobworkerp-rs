@@ -13,8 +13,8 @@ use infra::infra::{
     UseJobQueueConfig,
 };
 use proto::jobworkerp::data::{
-    Job, JobId, JobResult, JobResultData, JobResultId, JobStatus, ResponseType, WorkerData,
-    WorkerId,
+    Job, JobId, JobResult, JobResultData, JobResultId, JobStatus, ResponseType, RunnerArg,
+    WorkerData, WorkerId,
 };
 use std::{sync::Arc, time::Duration};
 
@@ -45,7 +45,7 @@ pub trait JobApp: Send + Sync {
         &self,
         worker_id: Option<&WorkerId>,
         worker_name: Option<&String>,
-        arg: Vec<u8>,
+        arg: Option<RunnerArg>,
         uniq_key: Option<String>,
         run_after_time: i64,
         priority: i32,

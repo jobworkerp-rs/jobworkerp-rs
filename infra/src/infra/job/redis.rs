@@ -189,7 +189,7 @@ pub trait UseRedisJobRepository {
 #[tokio::test]
 async fn redis_test() -> Result<()> {
     use command_utils::util::option::FlatMap;
-    use proto::jobworkerp::data::WorkerId;
+    use proto::jobworkerp::data::{RunnerArg, WorkerId};
 
     let pool = infra_utils::infra::test::setup_test_redis_pool().await;
     let job_queue_config = Arc::new(JobQueueConfig {
@@ -203,9 +203,18 @@ async fn redis_test() -> Result<()> {
         redis_client: infra_utils::infra::test::setup_test_redis_client()?,
     };
     let id = JobId { value: 1 };
+    let jarg = RunnerArg {
+        data: Some(proto::jobworkerp::data::runner_arg::Data::HttpRequest(
+            proto::jobworkerp::data::HttpRequestArg {
+                method: "GET".to_string(),
+                path: "/".to_string(),
+                ..Default::default()
+            },
+        )),
+    };
     let job = &JobData {
         worker_id: Some(WorkerId { value: 2 }),
-        arg: "hoge2".as_bytes().to_vec(),
+        arg: Some(jarg),
         uniq_key: Some("hoge3".to_string()),
         enqueue_time: 5,
         grabbed_until_time: Some(6),
@@ -225,7 +234,15 @@ async fn redis_test() -> Result<()> {
 
     let mut job2 = job.clone();
     job2.worker_id = Some(WorkerId { value: 3 });
-    job2.arg = "fuga2".as_bytes().to_vec();
+    job2.arg = Some(RunnerArg {
+        data: Some(proto::jobworkerp::data::runner_arg::Data::HttpRequest(
+            proto::jobworkerp::data::HttpRequestArg {
+                method: "POST".to_string(),
+                path: "/form".to_string(),
+                ..Default::default()
+            },
+        )),
+    });
     job2.uniq_key = Some("fuga3".to_string());
     job2.enqueue_time = 6;
     job2.grabbed_until_time = Some(7);

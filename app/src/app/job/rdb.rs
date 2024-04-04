@@ -12,8 +12,7 @@ use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQue
 use infra_utils::infra::memory::UseMemoryCache;
 use infra_utils::infra::rdb::UseRdbPool;
 use proto::jobworkerp::data::{
-    Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobStatus, QueueType, ResponseType,
-    Worker, WorkerId,
+    Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobStatus, QueueType, ResponseType, RunnerArg, Worker, WorkerId
 };
 use std::{sync::Arc, time::Duration};
 use stretto::AsyncCache;
@@ -57,7 +56,7 @@ impl JobApp for RdbJobAppImpl {
         &self,
         worker_id: Option<&WorkerId>,
         worker_name: Option<&String>,
-        arg: Vec<u8>,
+        arg: Option<RunnerArg>,
         uniq_key: Option<String>,
         run_after_time: i64,
         priority: i32,

@@ -201,14 +201,14 @@ where
 pub struct RedisWorkerRepositoryImpl {
     #[debug_stub = "&`static RedisPool"]
     pub redis_pool: &'static RedisPool,
-    pub redis_client: redis::Client, // for pubsub
+    pub redis_client: deadpool_redis::redis::Client, // for pubsub
     pub timeout_sec: Option<usize>,
 }
 
 impl RedisWorkerRepositoryImpl {
     pub fn new(
         redis_pool: &'static RedisPool,
-        redis_client: redis::Client,
+        redis_client: deadpool_redis::redis::Client,
         timeout_sec: Option<usize>,
     ) -> Self {
         Self {
@@ -225,7 +225,7 @@ impl UseRedisPool for RedisWorkerRepositoryImpl {
     }
 }
 impl UseRedisClient for RedisWorkerRepositoryImpl {
-    fn redis_client(&self) -> &redis::Client {
+    fn redis_client(&self) -> &deadpool_redis::redis::Client {
         &self.redis_client
     }
 }
@@ -246,8 +246,12 @@ pub trait UseRedisWorkerRepository {
 #[tokio::test]
 async fn redis_test() -> Result<()> {
     use command_utils::util::option::FlatMap;
+    use proto::jobworkerp::data::worker_operation::Operation;
     use proto::jobworkerp::data::RetryPolicy;
-    use proto::jobworkerp::data::{QueueType, ResponseType, WorkerData, WorkerId};
+    use proto::jobworkerp::data::{
+        CommandOperation, QueueType, ResponseType, RunnerType, WorkerData, WorkerId,
+        WorkerOperation,
+    };
 
     let pool = infra_utils::infra::test::setup_test_redis_pool().await;
     let cli = infra_utils::infra::test::setup_test_redis_client()?;
@@ -260,8 +264,12 @@ async fn redis_test() -> Result<()> {
     let id = WorkerId { value: 1 };
     let worker = &WorkerData {
         name: "hoge1".to_string(),
-        r#type: 3,
-        operation: "hoge3".to_string(),
+        r#type: RunnerType::Command as i32,
+        operation: Some(WorkerOperation {
+            operation: Some(Operation::Command(CommandOperation {
+                name: "echo".to_string(),
+            })),
+        }),
         retry_policy: Some(RetryPolicy {
             r#type: 5,
             interval: 6,
@@ -293,7 +301,11 @@ async fn redis_test() -> Result<()> {
     let mut worker2 = worker.clone();
     worker2.name = "fuga1".to_string();
     worker2.r#type = 4;
-    worker2.operation = "fuga3".to_string();
+    worker2.operation = Some(WorkerOperation {
+        operation: Some(Operation::Command(CommandOperation {
+            name: "ls".to_string(),
+        })),
+    });
     worker2.retry_policy = Some(RetryPolicy {
         r#type: 6,
         interval: 7,

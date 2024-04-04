@@ -190,8 +190,18 @@ mod test {
         let worker_id2 = WorkerId { value: 21 };
 
         let jid = JobId { value: 1 };
+        let jarg = proto::jobworkerp::data::RunnerArg {
+            data: Some(proto::jobworkerp::data::runner_arg::Data::HttpRequest(
+                proto::jobworkerp::data::HttpRequestArg {
+                    method: "GET".to_string(),
+                    path: "/".to_string(),
+                    ..Default::default()
+                },
+            )),
+        };
         let instant_job_data = JobData {
             worker_id: Some(worker_id.clone()),
+            arg: Some(jarg.clone()),
             grabbed_until_time: Some(0),
             run_after_time: 0,
             ..Default::default()
@@ -203,6 +213,7 @@ mod test {
         assert!(repo.create(&job0).await?);
         let current_job_data = JobData {
             worker_id: Some(worker_id2.clone()),
+            arg: Some(jarg.clone()),
             grabbed_until_time: Some(0),
             run_after_time: datetime::now_millis(),
             ..Default::default()
@@ -216,6 +227,7 @@ mod test {
 
         let future_job_data = JobData {
             worker_id: Some(worker_id.clone()),
+            arg: Some(jarg.clone()),
             grabbed_until_time: Some(0),
             run_after_time: datetime::now_millis() + 10000,
             ..Default::default()
@@ -331,11 +343,21 @@ mod test {
         let worker_id = WorkerId { value: 11 };
         let worker_id2 = WorkerId { value: 21 };
         let jid0 = JobId { value: 1 };
+        let jarg = proto::jobworkerp::data::RunnerArg {
+            data: Some(proto::jobworkerp::data::runner_arg::Data::HttpRequest(
+                proto::jobworkerp::data::HttpRequestArg {
+                    method: "GET".to_string(),
+                    path: "/".to_string(),
+                    ..Default::default()
+                },
+            )),
+        };
         let now_millis = datetime::now_millis();
 
         // for redis job: run_after_time:0, not timeouted (grabbed)
         let instant_job_data_for_redis = JobData {
             worker_id: Some(worker_id.clone()),
+            arg: Some(jarg.clone()),
             grabbed_until_time: Some(now_millis + 10000),
             run_after_time: 0,
             ..Default::default()
@@ -349,6 +371,7 @@ mod test {
         // for redis job: run_after_time:0, timeouted
         let timeouted_job_data_for_redis = JobData {
             worker_id: Some(worker_id.clone()),
+            arg: Some(jarg.clone()),
             grabbed_until_time: Some(now_millis - 1000),
             run_after_time: 0,
             ..Default::default()
@@ -363,6 +386,7 @@ mod test {
         // for rdb job, timeouted
         let current_job_data_for_rdb = JobData {
             worker_id: Some(worker_id2.clone()),
+            arg: Some(jarg.clone()),
             grabbed_until_time: Some(now_millis - 1000),
             run_after_time: datetime::now_millis(),
             ..Default::default()
@@ -377,6 +401,7 @@ mod test {
         // for rdb future job
         let future_job_data = JobData {
             worker_id: Some(worker_id.clone()),
+            arg: Some(jarg.clone()),
             grabbed_until_time: Some(0),
             run_after_time: datetime::now_millis() + 10000,
             ..Default::default()

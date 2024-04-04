@@ -331,9 +331,9 @@ impl ResponseProcessor for WorkerGrpcImpl {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::jobworkerp::data::RunnerType;
+    use crate::proto::jobworkerp::data::{RunnerType, WorkerOperation};
     use infra::infra::JobQueueConfig;
-    use proto::jobworkerp::data::RetryType;
+    use proto::jobworkerp::data::{worker_operation::Operation, RetryType};
 
     static JOB_QUEUE_CONFIG: JobQueueConfig = infra::infra::JobQueueConfig {
         fetch_interval: 1000,
@@ -425,10 +425,17 @@ mod tests {
         let v = Validator {
             storage_type: StorageType::RDB,
         };
+        let operation = WorkerOperation {
+            operation: Some(Operation::Command(
+                proto::jobworkerp::data::CommandOperation {
+                    name: "ls".to_string(),
+                },
+            )),
+        };
         let mut w = WorkerData {
             name: "ListCommand".to_string(),
             r#type: RunnerType::Command as i32,
-            operation: "ls".to_string(),
+            operation: Some(operation),
             queue_type: QueueType::Rdb as i32,
             response_type: ResponseType::Direct as i32,
             store_failure: true,
@@ -477,10 +484,17 @@ mod tests {
         let v = Validator {
             storage_type: StorageType::Hybrid,
         };
+        let operation = WorkerOperation {
+            operation: Some(Operation::Command(
+                proto::jobworkerp::data::CommandOperation {
+                    name: "ls".to_string(),
+                },
+            )),
+        };
         let mut w = WorkerData {
             name: "ListCommand".to_string(),
             r#type: RunnerType::Command as i32,
-            operation: "ls".to_string(),
+            operation: Some(operation),
             queue_type: QueueType::Rdb as i32,
             response_type: ResponseType::NoResult as i32,
             store_failure: true,

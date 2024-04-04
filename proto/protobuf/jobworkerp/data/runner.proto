@@ -1,0 +1,104 @@
+syntax = "proto3";
+
+package jobworkerp.data;
+
+import "jobworkerp/data/common.proto";
+
+// CommandArg is a list of arguments for a CommandRunner.
+message CommandArg {
+  repeated string args = 1;
+}
+
+message KeyValue {
+  string key = 1;
+  string value = 2;
+}
+
+message HttpRequestArg {
+    repeated KeyValue headers = 1;
+    string  method = 2;
+    string  path = 3;
+    optional string  body = 4;
+    repeated KeyValue queries = 5;
+}
+
+// no arguments
+message PluginArg {
+    // raw bytes argument (depends on the plugin implementation)
+    bytes arg = 1;
+}
+
+message GrpcUnaryArg {
+    string path = 1;
+    bytes request = 2;
+}
+
+message DockerArg {
+    /// The name of the image to use when creating the container (valid only for DockerRunner)
+    optional string image = 1;
+
+    /// User-defined key/value metadata.
+    // pub labels: Option<HashMap<String, String>>,
+
+    /// The user that commands are run as inside the container.
+    optional string user = 2;
+
+    /// An object mapping ports to an empty object in the form:  `{\"<port>/<tcp|udp|sctp>\": {}}`
+    repeated string exposed_ports = 3;
+
+    /// A list of environment variables to set inside the container in the form `[\"VAR=value\", ...]`. A variable without `=` is removed from the environment, rather than to have an empty value.
+    repeated string env = 4;
+
+    /// Command to run specified as a string or an array of strings.
+    repeated string cmd = 5;
+
+    /// Command is already escaped (Windows only)
+    optional bool args_escaped = 6;
+
+    /// An object mapping mount point paths inside the container to empty objects.
+    repeated string volumes = 7;
+
+    /// The working directory for commands to run in.
+    optional string working_dir = 8;
+
+    /// The entry point for the container as a string or an array of strings.  If the array consists of exactly one empty string (`[\"\"]`) then the entry point is reset to system default (i.e., the entry point used by docker when there is no `ENTRYPOINT` instruction in the `Dockerfile`).
+    repeated string entrypoint = 9;
+
+    /// Disable networking for the container.
+    optional bool network_disabled = 10;
+
+    /// MAC address of the container.  Deprecated: this field is deprecated in API v1.44 and up. Use EndpointSettings.MacAddress instead.
+    optional string mac_address = 11;
+
+    /// Shell for when `RUN`, `CMD`, and `ENTRYPOINT` uses a shell.
+    repeated string shell = 12;
+}
+
+message SlackJobResultArg {
+    message ResultMessageData {
+        int64 result_id                            = 1; // job result id (jobworkerp.data.JobResultId::value)
+        int64 job_id                               = 2; // job id (jobworkerp.data.JobId::value)
+        string worker_name                         = 3;
+        jobworkerp.data.ResultStatus status        = 4; // job result status
+        ResultOutput output                        = 5; // job response data
+        uint32 retried                             = 6;
+        int64 enqueue_time                         = 7; // job enqueue time
+        int64 run_after_time                       = 8; // job run after this time (specified by client)
+        int64 start_time                           = 9; // job start time
+        int64 end_time                             = 10; // job end time
+    }
+    ResultMessageData message = 1;
+    optional string channel = 2;
+}
+
+// defines the arguments for a runner (should define to match the worker operation and runner type)
+message RunnerArg {
+    oneof data {
+        SlackJobResultArg slack_job_result = 1;
+        CommandArg command = 2;
+        PluginArg plugin = 3;
+        HttpRequestArg http_request = 4;
+        GrpcUnaryArg grpc_unary = 5;
+        DockerArg docker = 6;
+    }
+}

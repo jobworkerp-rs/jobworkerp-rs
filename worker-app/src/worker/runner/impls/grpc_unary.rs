@@ -1,10 +1,8 @@
-use std::str::FromStr;
-
 use super::super::Runner;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use infra::error::JobWorkerError;
-use serde::Deserialize;
+use proto::jobworkerp::data::{runner_arg::Data, GrpcUnaryArg, RunnerArg};
 use tonic::{transport::Channel, IntoRequest};
 
 /// grpc unary request runner.
@@ -14,35 +12,17 @@ use tonic::{transport::Channel, IntoRequest};
 #[derive(Debug, Clone)]
 pub struct GrpcUnaryRunner {
     pub client: tonic::client::Grpc<Channel>,
-    pub path: http::uri::PathAndQuery,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-struct Operation {
-    url: String,
-    path: String,
 }
 
 impl GrpcUnaryRunner {
     // TODO Error type
     // operation: parse as json string: url
-    pub async fn new(operation: &str) -> Result<GrpcUnaryRunner> {
-        let operation: Operation = serde_json::from_str(operation)?;
-
-        let conn = tonic::transport::Endpoint::new(operation.url.clone())?
+    pub async fn new(host: &str, port: &u32) -> Result<GrpcUnaryRunner> {
+        let conn = tonic::transport::Endpoint::new(format!("{}:{}", host, port))?
             .connect()
             .await?;
-        let path = http::uri::PathAndQuery::from_str(
-            if operation.path.starts_with('/') {
-                operation.path
-            } else {
-                format!("/{}", operation.path)
-            }
-            .as_str(),
-        )?;
         Ok(GrpcUnaryRunner {
             client: tonic::client::Grpc::new(conn),
-            path,
         })
     }
 }
@@ -51,13 +31,17 @@ impl GrpcUnaryRunner {
 // arg: {headers:{<headers map>}, queries:[<query string array>], body: <body string or struct>}
 impl Runner for GrpcUnaryRunner {
     async fn name(&self) -> String {
-        format!("GrpcUnaryRunner: {}", self.path)
+        format!("GrpcUnaryRunner")
     }
-    async fn run(&mut self, arg: Vec<u8>) -> Result<Vec<Vec<u8>>> {
+    async fn run(&mut self, arg: &RunnerArg) -> Result<Vec<Vec<u8>>> {
+        let req: &GrpcUnaryArg = match &arg.data {
+            Some(Data::GrpcUnary(arg)) => Ok(arg),
+            _ => Err(anyhow!("argument error for grpc unary runner: {:?}", arg)),
+        }?;
         let codec = tonic::codec::ProstCodec::default();
         // todo
         // let mut client = tonic::client::Grpc::new(self.conn.clone());
-        let bytes = bytes::Bytes::from(arg);
+        // let bytes = bytes::Bytes::from(req.request);
         self.client.ready().await.map_err(|e| {
             tonic::Status::new(
                 tonic::Code::Unknown,
@@ -65,7 +49,11 @@ impl Runner for GrpcUnaryRunner {
             )
         })?;
         self.client
-            .unary(bytes.into_request(), self.path.clone(), codec)
+            .unary(
+                req.request.clone().into_request(),
+                req.path.clone().try_into()?,
+                codec,
+            )
             .await
             .map_err(|e| {
                 tracing::warn!("grpc request error: status={:?}", e);
@@ -86,14 +74,17 @@ impl Runner for GrpcUnaryRunner {
 #[ignore] // need to start front server and fix handling empty stream...
 async fn run_request() -> Result<()> {
     // common::util::tracing::tracing_init_test(tracing::Level::INFO);
-    use prost::Message;
     use proto::jobworkerp;
-    let mut runner = GrpcUnaryRunner::new(
-        r#"{"url":"http://localhost:9000","path":"jobworkerp.service.WorkerService/FindList"}"#,
-    )
-    .await?;
-    let arg = jobworkerp::data::Empty {};
-    let res = runner.run(arg.encode_to_vec()).await;
+    let mut runner = GrpcUnaryRunner::new("http://localhost", &9000u32).await?;
+    let arg = jobworkerp::data::GrpcUnaryArg {
+        path: "/jobworkerp.service.JobService/Count".to_string(),
+        // path: "/jobworkerp.service.WorkerService/FindList".to_string(),
+        request: b"".to_vec(),
+    };
+    let arg = RunnerArg {
+        data: Some(Data::GrpcUnary(arg)),
+    };
+    let res = runner.run(&arg).await;
     println!("arg: {:?}, res: {:?}", arg, res); // XXX missing response error
                                                 // TODO
     assert!(res.is_ok());

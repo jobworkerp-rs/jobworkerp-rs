@@ -341,7 +341,8 @@ mod tests {
     use infra::infra::module::redis::test::setup_test_redis_module;
     use infra::infra::module::HybridRepositoryModule;
     use infra::infra::IdGeneratorWrapper;
-    use proto::jobworkerp::data::{Worker, WorkerData};
+    use proto::jobworkerp::data::worker_operation::Operation;
+    use proto::jobworkerp::data::{Worker, WorkerData, WorkerOperation};
 
     async fn create_test_app(use_mock_id: bool) -> Result<HybridWorkerAppImpl> {
         dotenvy::dotenv().ok();
@@ -383,16 +384,26 @@ mod tests {
         env::set_var("TEST_REDIS_HOST", "redis://redis");
         // test create 3 workers and find list and update 1 worker and find list and delete 1 worker and find list
         let app = create_test_app(false).await?;
+        let operation = WorkerOperation {
+            operation: Some(Operation::Command(
+                proto::jobworkerp::data::CommandOperation {
+                    name: "ls".to_string(),
+                },
+            )),
+        };
         let w1 = WorkerData {
             name: "test1".to_string(),
+            operation: Some(operation.clone()),
             ..Default::default()
         };
         let w2 = WorkerData {
             name: "test2".to_string(),
+            operation: Some(operation.clone()),
             ..Default::default()
         };
         let w3 = WorkerData {
             name: "test3".to_string(),
+            operation: Some(operation.clone()),
             ..Default::default()
         };
         let id1 = app.create(&w1).await?;
@@ -403,12 +414,13 @@ mod tests {
         assert_eq!(id3.value, 3);
         // find list
         let list = app.find_list(None, None).await?;
-        println!("==== created: {:#?}", list);
+        // println!("==== created: {:#?}", list);
         assert_eq!(list.len(), 3);
         assert_eq!(app.count().await?, 3);
         // update
         let w4 = WorkerData {
             name: "test4".to_string(),
+            operation: Some(operation.clone()),
             ..Default::default()
         };
         let res = app.update(&id1, &Some(w4.clone())).await?;
@@ -421,7 +433,7 @@ mod tests {
         assert_eq!(fd.unwrap().name, w4.name);
         // find list
         let list = app.find_list(None, None).await?;
-        println!("==== updated: {:#?}", list);
+        // println!("==== updated: {:#?}", list);
         assert_eq!(list.len(), 3);
         assert_eq!(app.count().await?, 3);
         // delete

@@ -3,6 +3,7 @@ use infra::error::JobWorkerError;
 use super::super::Runner;
 use anyhow::Result;
 use async_trait::async_trait;
+use proto::jobworkerp::data::{runner_arg::Data, RunnerArg};
 use std::{mem, process::Stdio};
 use tokio::process::{Child, Command};
 use tokio_stream::StreamExt;
@@ -64,15 +65,16 @@ impl Runner for CommandRunnerImpl {
         format!("CommandRunner: {}", &self.command)
     }
     // arg: assumed as utf-8 string, specify multiple arguments with \n separated
-    async fn run(&mut self, arg: Vec<u8>) -> Result<Vec<Vec<u8>>> {
+    async fn run(&mut self, arg: &RunnerArg) -> Result<Vec<Vec<u8>>> {
+        let args: &Vec<String> = match &arg.data {
+            Some(Data::Command(args)) => Ok(&args.args),
+            _ => Err(JobWorkerError::ParseError(format!(
+                "invalid arg: {:?}",
+                arg
+            ))),
+        }?;
         let mut messages = Vec::<Vec<u8>>::new();
-        // decode using from_utf8_lossy and split at \n
-        let args = String::from_utf8_lossy(arg.as_ref())
-            .split('\n')
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| s.trim().to_string())
-            .collect::<Vec<String>>();
-        tracing::info!("run command: {}, args: {:?}", &self.command, &args);
+        tracing::info!("run command: {}, args: {:?}", &self.command, args);
         match self
             .command()
             .args(args)
@@ -119,6 +121,7 @@ impl Runner for CommandRunnerImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proto::jobworkerp::data::CommandArg;
     use tokio::time::{sleep, Duration};
 
     #[tokio::test]
@@ -127,11 +130,18 @@ mod tests {
             process: None,
             command: Box::new("/usr/bin/curl".to_string()),
         };
-        let res = runner.run(b"-vvv\nhttp://google.com".to_vec()).await;
+        let arg = CommandArg {
+            args: vec!["-vvv".to_string(), "https://www.google.com".to_string()],
+        };
+        let res = runner
+            .run(&RunnerArg {
+                data: Some(Data::Command(arg)),
+            })
+            .await;
         assert!(res.is_ok());
         let r = res.unwrap().pop().unwrap();
         let mes = String::from_utf8_lossy(r.as_ref()).to_string();
-        print!("====== res: {:?}", &mes);
+        // print!("====== res: {:?}", &mes);
 
         assert!(!mes.is_empty());
     }
@@ -142,7 +152,15 @@ mod tests {
             process: None,
             command: Box::new("/bin/sleep".to_string()),
         };
-        let res = runner.run(b"10".to_vec()).await;
+        let arg = CommandArg {
+            args: vec!["10".to_string()],
+        };
+        let res = runner
+            .run(&RunnerArg {
+                data: Some(Data::Command(arg)),
+            })
+            .await;
+
         print!("====== run and cancel res: {:?}", res);
         assert!(res.is_ok());
         assert!(res.unwrap()[0].is_empty());

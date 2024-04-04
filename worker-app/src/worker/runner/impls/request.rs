@@ -1,14 +1,14 @@
-use std::{collections::HashMap, str::FromStr, time::Duration};
+use std::{str::FromStr, time::Duration};
 
 use super::super::Runner;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use infra::error::JobWorkerError;
+use proto::jobworkerp::data::{runner_arg::Data, RunnerArg};
 use reqwest::{
     header::{HeaderMap, HeaderName},
     Method, Url,
 };
-use serde::Deserialize;
 
 #[derive(Clone, Debug)]
 pub struct RequestRunner {
@@ -16,23 +16,14 @@ pub struct RequestRunner {
     pub url: Url,
 }
 
-#[derive(Deserialize, Debug, Clone)]
-struct Arg {
-    headers: Option<HashMap<String, Vec<String>>>,
-    queries: Option<Vec<(String, String)>>,
-    method: Option<String>,
-    body: Option<String>,
-    path: Option<String>,
-}
-
 impl RequestRunner {
     // TODO Error type
     // operation: base url (+ arg.path)
-    pub fn new(operation: &str) -> Result<RequestRunner> {
-        let u = Url::from_str(operation).map_err(|e| {
+    pub fn new(base_url: &str) -> Result<RequestRunner> {
+        let u = Url::from_str(base_url).map_err(|e| {
             JobWorkerError::ParseError(format!(
                 "cannot parse url from operation: {}, error= {:?}",
-                operation, e
+                base_url, e
             ))
         })?;
         // TODO http client option from settings
@@ -51,42 +42,48 @@ impl Runner for RequestRunner {
     async fn name(&self) -> String {
         format!("RequestRunner: url {}", self.url)
     }
-    async fn run(&mut self, arg: Vec<u8>) -> Result<Vec<Vec<u8>>> {
-        // parse arg
-        let res: Arg = serde_json::from_slice(arg.as_ref())?;
-        let met = Method::from_str(res.method.as_deref().unwrap_or("GET"))?;
-        let u = self.url.join(res.path.as_deref().unwrap_or(""))?;
+    async fn run(&mut self, arg: &RunnerArg) -> Result<Vec<Vec<u8>>> {
+        let arg = match &arg.data {
+            Some(Data::HttpRequest(d)) => Ok(d),
+            _ => Err(anyhow!("argument error: {:?}", arg)),
+        }?;
+
+        let met = Method::from_str(arg.method.as_str())?;
+        let u = self.url.join(arg.path.as_str())?;
         // create request
         let req = self.client.request(met, u);
         // set body
-        let req = if let Some(b) = res.body {
-            req.body(b)
+        let req = if let Some(b) = &arg.body {
+            req.body(b.to_owned())
         } else {
             req
         };
         // set queries
-        let req = if let Some(q) = res.queries {
-            req.query(&q)
-        } else {
+        let req = if arg.queries.is_empty() {
             req
+        } else {
+            req.query(
+                &arg.queries
+                    .iter()
+                    .map(|kv| (kv.key.as_str(), kv.value.as_str()))
+                    .collect::<Vec<_>>(),
+            )
         };
         // set headers
-        let req = if let Some(headers) = res.headers {
+        let req = if arg.headers.is_empty() {
+            req
+        } else {
             let mut hm = HeaderMap::new();
-            for (k, vec) in headers.into_iter() {
-                for v in vec.iter() {
-                    let k1: HeaderName = k.parse().map_err(|e| {
-                        JobWorkerError::ParseError(format!("header value error: {:?}", e))
-                    })?;
-                    let v1 = v.parse().map_err(|e| {
-                        JobWorkerError::ParseError(format!("header value error: {:?}", e))
-                    })?;
-                    hm.append(k1, v1);
-                }
+            for kv in arg.headers.iter() {
+                let k1: HeaderName = kv.key.parse().map_err(|e| {
+                    JobWorkerError::ParseError(format!("header value error: {:?}", e))
+                })?;
+                let v1 = kv.value.parse().map_err(|e| {
+                    JobWorkerError::ParseError(format!("header value error: {:?}", e))
+                })?;
+                hm.append(k1, v1);
             }
             req.headers(hm)
-        } else {
-            req
         };
         // send request and await
         req.send()
@@ -105,19 +102,38 @@ impl Runner for RequestRunner {
 
 #[tokio::test]
 async fn run_request() {
-    let mut runner = RequestRunner::new("https://www.google.com/").unwrap();
-    let arg = r#"{"headers":{"Content-Type":["plain/text"]},"queries":[["q","rust async"],["ie","UTF-8"]],"path":"search","method":"GET"}"#
-        .as_bytes()
-        .to_vec();
-    let _r: Result<Arg, serde_json::Error> = serde_json::from_slice(arg.as_ref());
+    use proto::jobworkerp::data::{runner_arg::Data, HttpRequestArg, KeyValue, RunnerArg};
 
-    let res = runner.run(arg.clone()).await;
-    assert!(res.is_ok());
+    let mut runner = RequestRunner::new("https://www.google.com/").unwrap();
+    let arg = RunnerArg {
+        data: Some(Data::HttpRequest(HttpRequestArg {
+            headers: vec![KeyValue {
+                key: "Content-Type".to_string(),
+                value: "plain/text".to_string(),
+            }],
+            queries: vec![
+                KeyValue {
+                    key: "q".to_string(),
+                    value: "rust async".to_string(),
+                },
+                KeyValue {
+                    key: "ie".to_string(),
+                    value: "UTF-8".to_string(),
+                },
+            ],
+            method: "GET".to_string(),
+            body: None,
+            path: "search".to_string(),
+        })),
+    };
+
+    let res = runner.run(&arg).await;
 
     let out = res.as_ref().unwrap().first().unwrap();
     println!(
-        "arg: {}, res: {:?}",
-        String::from_utf8_lossy(arg.as_slice()),
+        "arg: {:?}, res: {:?}",
+        arg,
         String::from_utf8_lossy(out.as_slice()),
     );
+    assert!(res.is_ok());
 }
