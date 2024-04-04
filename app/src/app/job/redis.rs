@@ -93,6 +93,9 @@ impl JobApp for RedisJobAppImpl {
             // need to store to db
             //TODO handle properly for periodic or run_after_time job
             if let Some(wd) = &w.data {
+                // validate argument types
+                self.validate_worker_and_job_arg(wd, job_data.arg.as_ref())?;
+
                 let job = Job {
                     id: Some(JobId {
                         value: self.id_generator().generate_id()?,
@@ -137,6 +140,9 @@ impl JobApp for RedisJobAppImpl {
                 .find_data_by_opt(data.worker_id.as_ref())
                 .await
             {
+                // validate argument types
+                self.validate_worker_and_job_arg(&d, data.arg.as_ref())?;
+
                 // need to store to db
                 // use same id
                 //TODO handle properly for periodic or run_after_time job

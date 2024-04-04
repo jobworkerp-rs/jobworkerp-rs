@@ -1,4 +1,4 @@
-use crate::proto::jobworkerp::data::{QueueType, ResponseType};
+use crate::proto::jobworkerp::data::{QueueType, ResponseType, RunnerType};
 use crate::proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use crate::proto::jobworkerp::service::worker_service_server::WorkerService;
 use crate::proto::jobworkerp::service::{
@@ -16,7 +16,8 @@ use futures::stream::BoxStream;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::UseJobQueueConfig;
 use infra_utils::trace::Tracing;
-use proto::jobworkerp::data::RetryPolicy;
+use proto::jobworkerp::data::worker_operation::Operation;
+use proto::jobworkerp::data::{RetryPolicy, WorkerOperation};
 use std::fmt::Debug;
 use std::sync::Arc;
 use tonic::Response;
@@ -33,10 +34,31 @@ pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig {
             StorageType::Hybrid => QueueType::Redis,
         }
     }
+    fn validate_type_from_operation(
+        &self,
+        op: Option<&WorkerOperation>,
+    ) -> Result<RunnerType, tonic::Status> {
+        match op {
+            Some(WorkerOperation {
+                operation: Some(op),
+            }) => match op {
+                Operation::Command(_) => Ok(RunnerType::Command),
+                Operation::Docker(_) => Ok(RunnerType::Docker),
+                Operation::GrpcUnary(_) => Ok(RunnerType::GrpcUnary),
+                Operation::Plugin(_) => Ok(RunnerType::Plugin),
+                Operation::SlackInternal(_) => Ok(RunnerType::SlackInternal),
+                Operation::HttpRequest(_) => Ok(RunnerType::HttpRequest),
+                _ => Err(tonic::Status::invalid_argument("not implemented operation")),
+            },
+            _ => Err(tonic::Status::invalid_argument("operation not found")),
+        }
+    }
     fn validate_create(&self, dat: CreateWorkerRequest) -> Result<WorkerData, tonic::Status> {
         let data = WorkerData {
             name: dat.name,
-            r#type: dat.r#type,
+            r#type: self
+                .validate_type_from_operation(dat.operation.as_ref())?
+                .into(),
             operation: dat.operation,
             retry_policy: dat.retry_policy,
             periodic_interval: dat.periodic_interval.unwrap_or(0),
@@ -136,6 +158,12 @@ pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig {
         if let Some(rp) = req.retry_policy.as_ref() {
             self.validate_retry_policy(rp)?
         }
+        // check operation and type
+        if self.validate_type_from_operation(req.operation.as_ref())? != req.r#type() {
+            Err(tonic::Status::invalid_argument("operation type mismatch"))
+        } else {
+            Ok(())
+        }?;
         Ok(())
     }
     fn validate_retry_policy(&self, rp: &RetryPolicy) -> Result<(), tonic::Status> {
