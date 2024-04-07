@@ -1,5 +1,5 @@
 use super::rows::JobResultRow;
-use crate::error::JobWorkerError;
+use crate::{error::JobWorkerError, infra::job::rows::UseJobqueueAndCodec};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use infra_utils::infra::rdb::UseRdbPool;
@@ -8,7 +8,7 @@ use proto::jobworkerp::data::{JobId, JobResult, JobResultData, JobResultId};
 use sqlx::{Any, Executor, Pool, Transaction};
 
 #[async_trait]
-pub trait RdbJobResultRepository: UseRdbPool + Sync + Send {
+pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
     async fn create(&self, id: &JobResultId, job_result: &JobResultData) -> Result<bool> {
         let res = sqlx::query::<Any>(
             "INSERT INTO job_result (
@@ -31,7 +31,7 @@ pub trait RdbJobResultRepository: UseRdbPool + Sync + Send {
         .bind(id.value)
         .bind(job_result.job_id.as_ref().unwrap().value) //XXX unwrap
         .bind(job_result.worker_id.as_ref().unwrap().value) //XXX unwrap
-        .bind(&job_result.arg)
+        .bind(job_result.arg.as_ref().map(Self::serialize_runner_arg))
         .bind(&job_result.uniq_key)
         .bind(job_result.status)
         .bind(
@@ -80,7 +80,7 @@ pub trait RdbJobResultRepository: UseRdbPool + Sync + Send {
         )
         .bind(job_result.job_id.as_ref().unwrap().value) //XXX unwrap
         .bind(job_result.worker_id.as_ref().unwrap().value) //XXX unwrap
-        .bind(&job_result.arg)
+        .bind(job_result.arg.as_ref().map(Self::serialize_runner_arg))
         .bind(&job_result.uniq_key)
         .bind(job_result.status)
         .bind(
@@ -214,29 +214,39 @@ impl UseRdbPool for RdbJobResultRepositoryImpl {
 
 impl RdbJobResultRepository for RdbJobResultRepositoryImpl {}
 
+impl UseJobqueueAndCodec for RdbJobResultRepositoryImpl {}
+
 mod test {
     use super::RdbJobResultRepository;
     use super::RdbJobResultRepositoryImpl;
     use anyhow::Context;
     use anyhow::Result;
     use infra_utils::infra::rdb::UseRdbPool;
+    use proto::jobworkerp::data::runner_arg::Data;
+    use proto::jobworkerp::data::CommandArg;
     use proto::jobworkerp::data::JobId;
     use proto::jobworkerp::data::JobResult;
     use proto::jobworkerp::data::JobResultData;
     use proto::jobworkerp::data::JobResultId;
     use proto::jobworkerp::data::ResultOutput;
     use proto::jobworkerp::data::ResultStatus;
+    use proto::jobworkerp::data::RunnerArg;
     use proto::jobworkerp::data::WorkerId;
     use sqlx::{Any, Pool};
 
     async fn _test_repository(pool: &'static Pool<Any>) -> Result<()> {
         let repository = RdbJobResultRepositoryImpl::new(pool);
         let db = repository.db_pool();
+        let arg = RunnerArg {
+            data: Some(Data::Command(CommandArg {
+                args: vec!["hoge".to_string()],
+            })),
+        };
         let data = Some(JobResultData {
             job_id: Some(JobId { value: 1 }),
             worker_id: Some(WorkerId { value: 2 }),
             worker_name: "".to_string(),
-            arg: "hoge3".as_bytes().to_vec(),
+            arg: Some(arg),
             uniq_key: Some("hoge4".to_string()),
             status: ResultStatus::ErrorAndRetry as i32,
             output: Some(ResultOutput {
@@ -270,11 +280,16 @@ mod test {
 
         // update
         let mut tx = db.begin().await.context("error in test")?;
+        let arg = RunnerArg {
+            data: Some(Data::Command(CommandArg {
+                args: vec!["fuga".to_string()],
+            })),
+        };
         let update = JobResultData {
             job_id: Some(JobId { value: 2 }),
             worker_id: Some(WorkerId { value: 3 }),
             worker_name: "".to_string(), // fixed
-            arg: "fuga3".as_bytes().to_vec(),
+            arg: Some(arg),
             uniq_key: Some("fuga4".to_string()),
             status: ResultStatus::FatalError as i32,
             output: Some(ResultOutput {

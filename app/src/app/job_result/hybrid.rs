@@ -273,9 +273,12 @@ mod tests {
     use infra::infra::module::redis::test::setup_test_redis_module;
     use infra::infra::module::HybridRepositoryModule;
     use infra::infra::IdGeneratorWrapper;
+    use proto::jobworkerp::data::worker_operation::Operation;
     use proto::jobworkerp::data::Priority;
     use proto::jobworkerp::data::QueueType;
     use proto::jobworkerp::data::ResultOutput;
+    use proto::jobworkerp::data::RunnerArg;
+    use proto::jobworkerp::data::WorkerOperation;
     use proto::jobworkerp::data::{
         JobId, JobResult, ResponseType, ResultStatus, RunnerType, Worker, WorkerData,
     };
@@ -283,12 +286,19 @@ mod tests {
 
     #[test]
     fn test_should_store() {
+        let arg = RunnerArg {
+            data: Some(proto::jobworkerp::data::runner_arg::Data::Plugin(
+                proto::jobworkerp::data::PluginArg {
+                    arg: b"test".to_vec(),
+                },
+            )),
+        };
         let mut job_result_data = JobResultData {
             job_id: None,
             worker_id: None,
             status: ResultStatus::Success as i32,
             worker_name: "".to_string(),
-            arg: b"arg1".to_vec(),
+            arg: Some(arg),
             uniq_key: None,
             output: Some(ResultOutput {
                 items: vec![b"data".to_vec()],
@@ -369,10 +379,17 @@ mod tests {
     #[tokio::test]
     async fn test_create_job_result_if_necessary() -> Result<()> {
         let app = setup().await?;
+        let operation = WorkerOperation {
+            operation: Some(Operation::Command(
+                proto::jobworkerp::data::CommandOperation {
+                    name: "ls".to_string(),
+                },
+            )),
+        };
         let worker_data = WorkerData {
             name: "test".to_string(),
             r#type: RunnerType::Command as i32,
-            operation: "ls".to_string(),
+            operation: Some(operation),
             retry_policy: None,
             periodic_interval: 0,
             channel: Some("hoge".to_string()),
@@ -394,12 +411,19 @@ mod tests {
             value: app.id_generator().generate_id()?,
         };
         let job_id = JobId { value: 100 };
+        let arg = RunnerArg {
+            data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
+                proto::jobworkerp::data::CommandArg {
+                    args: vec!["arg1".to_string()],
+                },
+            )),
+        };
         let mut data = JobResultData {
             job_id: Some(job_id.clone()),
             worker_id: worker.id.clone(),
             status: ResultStatus::Success as i32,
             worker_name: worker_data.name.clone(),
-            arg: b"arg1".to_vec(),
+            arg: Some(arg),
             uniq_key: Some("uniq_key".to_string()),
             output: Some(ResultOutput {
                 items: vec![b"data".to_vec()],

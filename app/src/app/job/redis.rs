@@ -19,7 +19,7 @@ use infra_utils::infra::memory::UseMemoryCache;
 use infra_utils::infra::redis::{RedisClient, UseRedisClient};
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobStatus, QueueType, ResponseType,
-    WorkerId,
+    RunnerArg, WorkerId,
 };
 use std::{sync::Arc, time::Duration};
 use stretto::AsyncCache;
@@ -61,7 +61,7 @@ impl JobApp for RedisJobAppImpl {
         &self,
         worker_id: Option<&WorkerId>,
         worker_name: Option<&String>,
-        arg: Vec<u8>,
+        arg: Option<RunnerArg>,
         uniq_key: Option<String>,
         run_after_time: i64,
         priority: i32,
@@ -93,6 +93,9 @@ impl JobApp for RedisJobAppImpl {
             // need to store to db
             //TODO handle properly for periodic or run_after_time job
             if let Some(wd) = &w.data {
+                // validate argument types
+                self.validate_worker_and_job_arg(wd, job_data.arg.as_ref())?;
+
                 let job = Job {
                     id: Some(JobId {
                         value: self.id_generator().generate_id()?,
@@ -137,6 +140,9 @@ impl JobApp for RedisJobAppImpl {
                 .find_data_by_opt(data.worker_id.as_ref())
                 .await
             {
+                // validate argument types
+                self.validate_worker_and_job_arg(&d, data.arg.as_ref())?;
+
                 // need to store to db
                 // use same id
                 //TODO handle properly for periodic or run_after_time job

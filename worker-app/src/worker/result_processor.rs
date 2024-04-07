@@ -15,13 +15,17 @@ use app::app::WorkerConfig;
 use app::module::AppConfigModule;
 use app::module::AppModule;
 use command_utils::util::option::Exists;
+use command_utils::util::result::TapErr;
 use debug_stub_derive::DebugStub;
 use infra::infra::job::rows::UseJobqueueAndCodec;
-use prost::Message;
+use proto::jobworkerp::data::runner_arg::Data;
+use proto::jobworkerp::data::slack_job_result_arg::ResultMessageData;
 use proto::jobworkerp::data::JobResultData;
 use proto::jobworkerp::data::JobResultId;
 use proto::jobworkerp::data::ResultStatus;
+use proto::jobworkerp::data::RunnerArg;
 use proto::jobworkerp::data::RunnerType;
+use proto::jobworkerp::data::SlackJobResultArg;
 use proto::jobworkerp::data::{JobResult, WorkerData};
 use std::sync::Arc;
 use strum::IntoEnumIterator;
@@ -136,10 +140,10 @@ impl ResultProcessorImpl {
             );
             for wid in worker.next_workers.iter() {
                 if let Ok(Some(w)) = self.worker_app().find(wid).await {
-                    // builtin worker
+                    // builtin worker (only slack internal now)
                     if w.data
                         .as_ref()
-                        .exists(|wd| wd.r#type == RunnerType::Builtin as i32)
+                        .exists(|wd| wd.r#type == RunnerType::SlackInternal as i32)
                     {
                         // no result data, no enqueue
                         if dat.output.is_none()
@@ -154,23 +158,25 @@ impl ResultProcessorImpl {
                         } else if !BuiltinWorkerIds::iter()
                             .any(|i| w.id.as_ref().exists(|wid| wid.value == i as i64))
                         {
-                            // ERROR: builtin type worker not found in BuiltinWorkerIds
+                            // ERROR: builtin type worker not found in BuiltinWorkerIds (matched worker in db)
                             tracing::error!(
                                 "next builtin-worker is not defined as builtin: id={:?}, worker={:?}",
                                 wid,
                                 worker
                             );
                         } else {
+                            let arg = RunnerArg {
+                                data: Some(Data::SlackJobResult(SlackJobResultArg {
+                                    message: Some(Self::job_result_to_message(id, dat)),
+                                    channel: None, // TODO
+                                })),
+                            };
                             self.job_app()
                                 .enqueue_job(
                                     w.id.as_ref(),
                                     None,
                                     // specify job result as argument for builtin worker
-                                    JobResult {
-                                        id: Some(id.clone()),
-                                        data: Some(dat.clone()),
-                                    }
-                                    .encode_to_vec(),
+                                    Some(arg),
                                     dat.uniq_key.clone(),
                                     dat.run_after_time,
                                     dat.priority,
@@ -197,11 +203,18 @@ impl ResultProcessorImpl {
                                 );
                                 continue;
                             }
+                            // expect argument structure
+                            let arg = Self::deserialize_runner_arg(arg).tap_err(|e| {
+                                tracing::error!(
+                                    "deserialize output for next_worker: next_worker id={:?}, err: {:?}",
+                                    &wid, e
+                                )
+                            })?;
                             self.job_app()
                                 .enqueue_job(
                                     w.id.as_ref(),
                                     None,
-                                    arg.clone(),
+                                    Some(arg),
                                     dat.uniq_key.clone(),
                                     dat.run_after_time,
                                     dat.priority,
@@ -217,7 +230,22 @@ impl ResultProcessorImpl {
         }
         Ok(())
     }
+    fn job_result_to_message(id: &JobResultId, dat: &JobResultData) -> ResultMessageData {
+        ResultMessageData {
+            result_id: id.value,
+            job_id: dat.job_id.as_ref().map(|j| j.value).unwrap_or(0),
+            worker_name: dat.worker_name.clone(),
+            status: dat.status,
+            output: dat.output.clone(),
+            retried: dat.retried,
+            enqueue_time: dat.enqueue_time,
+            run_after_time: dat.run_after_time,
+            start_time: dat.start_time,
+            end_time: dat.end_time,
+        }
+    }
 }
+
 impl UseJobqueueAndCodec for ResultProcessorImpl {}
 impl UseJobResultApp for ResultProcessorImpl {
     fn job_result_app(&self) -> &Arc<dyn JobResultApp + 'static> {

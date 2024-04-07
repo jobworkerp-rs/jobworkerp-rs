@@ -223,7 +223,7 @@ pub trait UseRedisJobResultRepository {
 #[tokio::test]
 async fn redis_test() -> Result<()> {
     use command_utils::util::option::FlatMap;
-    use proto::jobworkerp::data::{JobId, ResponseType, ResultOutput, WorkerId};
+    use proto::jobworkerp::data::{JobId, ResponseType, ResultOutput, RunnerArg, WorkerId};
 
     let pool = infra_utils::infra::test::setup_test_redis_pool().await;
     let job_queue_config = Arc::new(JobQueueConfig {
@@ -236,11 +236,19 @@ async fn redis_test() -> Result<()> {
         redis_pool: pool,
     };
     let id = JobResultId { value: 1 };
+    let jarg = RunnerArg {
+        data: Some(proto::jobworkerp::data::runner_arg::Data::GrpcUnary(
+            proto::jobworkerp::data::GrpcUnaryArg {
+                path: "test".to_string(),
+                request: b"test".to_vec(),
+            },
+        )),
+    };
     let job_result = &JobResultData {
         job_id: Some(JobId { value: 1 }),
         worker_id: Some(WorkerId { value: 2 }),
         worker_name: "hoge2".to_string(),
-        arg: "hoge3".as_bytes().to_vec(),
+        arg: Some(jarg),
         uniq_key: Some("hoge4".to_string()),
         status: 6,
         output: Some(ResultOutput {
@@ -270,7 +278,14 @@ async fn redis_test() -> Result<()> {
     let mut job_result2 = job_result.clone();
     job_result2.worker_id = Some(WorkerId { value: 3 });
     job_result2.worker_name = "fuga2".to_string();
-    job_result2.arg = "fuga3".as_bytes().to_vec();
+    job_result2.arg = Some(RunnerArg {
+        data: Some(proto::jobworkerp::data::runner_arg::Data::GrpcUnary(
+            proto::jobworkerp::data::GrpcUnaryArg {
+                path: "test2".to_string(),
+                request: b"test2".to_vec(),
+            },
+        )),
+    });
     job_result2.uniq_key = Some("fuga4".to_string());
     job_result2.status = 7;
     job_result2.output = Some(ResultOutput {

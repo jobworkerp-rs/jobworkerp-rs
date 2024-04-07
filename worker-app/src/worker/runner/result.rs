@@ -229,7 +229,8 @@ mod tests {
     use super::*;
     use anyhow::Result;
     use proto::jobworkerp::data::{
-        Job, JobData, JobId, ResponseType, RetryType, RunnerType, WorkerData, WorkerId,
+        worker_operation::Operation, Job, JobData, JobId, ResponseType, RetryType, RunnerArg,
+        RunnerType, WorkerData, WorkerId, WorkerOperation,
     };
     use serde::de::Error;
 
@@ -246,9 +247,16 @@ mod tests {
     #[tokio::test]
     async fn test_job_result_status() -> Result<()> {
         let runner = MockResultHandler::new();
+        let operation = WorkerOperation {
+            operation: Some(Operation::Command(
+                proto::jobworkerp::data::CommandOperation {
+                    name: "ls".to_string(),
+                },
+            )),
+        };
         let worker = WorkerData {
             name: "test".to_string(),
-            operation: "test".to_string(),
+            operation: Some(operation.clone()),
             r#type: RunnerType::Command as i32,
             retry_policy: Some(RetryPolicy {
                 r#type: RetryType::Linear as i32,
@@ -264,7 +272,7 @@ mod tests {
         };
         let no_retry_worker = WorkerData {
             name: "test".to_string(),
-            operation: "test".to_string(),
+            operation: Some(operation),
             r#type: RunnerType::Command as i32,
             retry_policy: None,
             channel: None,
@@ -273,11 +281,18 @@ mod tests {
             store_failure: false,
             ..Default::default()
         };
+        let arg = RunnerArg {
+            data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
+                proto::jobworkerp::data::CommandArg {
+                    args: vec!["test".to_string()],
+                },
+            )),
+        };
         let job = Job {
             id: Some(JobId { value: 1 }),
             data: Some(JobData {
                 worker_id: Some(WorkerId { value: 1 }),
-                arg: b"test".to_vec(),
+                arg: Some(arg),
                 uniq_key: Some("test".to_string()),
                 retried: 0,
                 priority: 0,

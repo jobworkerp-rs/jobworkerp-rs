@@ -16,18 +16,23 @@ impl BuiltinWorkerIds {
 pub mod slack {
     use once_cell::sync::Lazy;
     use proto::jobworkerp::data::{
-        QueueType, ResponseType, RetryPolicy, RetryType, RunnerType, Worker, WorkerData,
+        worker_operation, QueueType, ResponseType, RetryPolicy, RetryType, RunnerType,
+        SlackJobResultOperation, Worker, WorkerData, WorkerOperation,
     };
     pub const SLACK_WORKER_NAME: &str = "__SLACK_NOTIFICATION_WORKER__"; //XXX
-    pub const SLACK_RUNNER_NAME: &str = "SlackResultNotificationRunner";
+    pub const SLACK_RUNNER_OPERATION: WorkerOperation = WorkerOperation {
+        operation: Some(worker_operation::Operation::SlackInternal(
+            SlackJobResultOperation {},
+        )),
+    };
 
     /// treat arg as serialized JobResult
     pub static SLACK_WORKER: Lazy<Worker> = Lazy::new(|| Worker {
         id: Some(super::BuiltinWorkerIds::SlackWorkerId.to_worker_id()),
         data: Some(WorkerData {
             name: SLACK_WORKER_NAME.to_string(),
-            r#type: RunnerType::Builtin as i32,
-            operation: SLACK_RUNNER_NAME.to_string(),
+            r#type: RunnerType::SlackInternal as i32,
+            operation: Some(SLACK_RUNNER_OPERATION.clone()),
             channel: None,
             response_type: ResponseType::NoResult as i32,
             periodic_interval: 0,
@@ -69,7 +74,7 @@ impl BuiltinWorkerTrait for BuiltinWorker {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::worker::builtin::slack::{SLACK_RUNNER_NAME, SLACK_WORKER};
+    use crate::app::worker::builtin::slack::{SLACK_RUNNER_OPERATION, SLACK_WORKER};
 
     #[test]
     fn test_find_worker_by_id() {
@@ -77,7 +82,10 @@ mod tests {
         let worker = BuiltinWorker::find_worker_by_id(&worker_id);
         assert!(worker.is_some());
         assert_eq!(worker.clone().unwrap().id.unwrap(), worker_id);
-        assert_eq!(worker.unwrap().data.unwrap().operation, SLACK_RUNNER_NAME);
+        assert_eq!(
+            worker.unwrap().data.unwrap().operation.unwrap(),
+            SLACK_RUNNER_OPERATION
+        );
     }
 
     #[test]

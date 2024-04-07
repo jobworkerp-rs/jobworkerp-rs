@@ -3,7 +3,7 @@ pub mod queue;
 use std::collections::HashSet;
 
 use self::queue::RdbJobQueueRepository;
-use super::rows::JobRow;
+use super::rows::{JobRow, UseJobqueueAndCodec};
 use crate::error::JobWorkerError;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -14,7 +14,9 @@ use proto::jobworkerp::data::{Job, JobData, JobId, JobStatus};
 use sqlx::{Any, Executor, Pool};
 
 #[async_trait]
-pub trait RdbJobRepository: RdbJobQueueRepository + UseRdbPool + Sync + Send {
+pub trait RdbJobRepository:
+    RdbJobQueueRepository + UseJobqueueAndCodec + UseRdbPool + Sync + Send
+{
     async fn create(&self, job: &Job) -> Result<bool> {
         self.create_tx(self.db_pool(), job).await
     }
@@ -41,7 +43,7 @@ pub trait RdbJobRepository: RdbJobQueueRepository + UseRdbPool + Sync + Send {
             )
             .bind(id.value)
             .bind(data.worker_id.as_ref().unwrap().value) // XXX unwrap
-            .bind(&data.arg)
+            .bind(data.arg.as_ref().map(|a| Self::serialize_runner_arg(a)))
             .bind(&data.uniq_key)
             .bind(data.enqueue_time)
             .bind(data.grabbed_until_time.unwrap_or(0))
@@ -82,7 +84,7 @@ pub trait RdbJobRepository: RdbJobQueueRepository + UseRdbPool + Sync + Send {
             WHERE id = ?;",
         )
         .bind(job.worker_id.as_ref().unwrap().value) // XXX unwrap
-        .bind(&job.arg)
+        .bind(job.arg.as_ref().map(|a| Self::serialize_runner_arg(a)))
         .bind(&job.uniq_key)
         .bind(job.enqueue_time)
         .bind(job.grabbed_until_time.unwrap_or(0))
@@ -286,23 +288,33 @@ impl RdbJobQueueRepository for RdbJobRepositoryImpl {}
 
 impl RdbJobRepository for RdbJobRepositoryImpl {}
 
+impl UseJobqueueAndCodec for RdbJobRepositoryImpl {}
+
 mod test {
     use super::RdbJobRepository;
     use super::RdbJobRepositoryImpl;
     use anyhow::Result;
     use infra_utils::infra::rdb::UseRdbPool;
+    use proto::jobworkerp::data::runner_arg::Data;
+    use proto::jobworkerp::data::CommandArg;
     use proto::jobworkerp::data::Job;
     use proto::jobworkerp::data::JobData;
     use proto::jobworkerp::data::JobId;
+    use proto::jobworkerp::data::RunnerArg;
     use proto::jobworkerp::data::WorkerId;
     use sqlx::{Any, Pool};
 
     async fn _test_repository(pool: &'static Pool<Any>) -> Result<()> {
         let repository = RdbJobRepositoryImpl::new(pool);
         let id = JobId { value: 1 };
+        let arg = RunnerArg {
+            data: Some(Data::Command(CommandArg {
+                args: vec!["hoge".to_string()],
+            })),
+        };
         let data = Some(JobData {
             worker_id: Some(WorkerId { value: 2 }),
-            arg: "hoge2".as_bytes().to_vec(),
+            arg: Some(arg),
             uniq_key: Some("hoge3".to_string()),
             enqueue_time: 5,
             grabbed_until_time: Some(6),
@@ -325,11 +337,16 @@ mod test {
         // find
         let found = repository.find(&id1).await?;
         assert_eq!(Some(&expect), found.as_ref());
+        let arg2 = RunnerArg {
+            data: Some(Data::Command(CommandArg {
+                args: vec!["fuga3".to_string()],
+            })),
+        };
 
         // update
         let update = JobData {
             worker_id: Some(WorkerId { value: 3 }),
-            arg: "fuga2".as_bytes().to_vec(),
+            arg: Some(arg2),
             uniq_key: Some("fuga3".to_string()),
             enqueue_time: 6,
             grabbed_until_time: Some(7),
@@ -356,9 +373,14 @@ mod test {
     }
     async fn _test_find_id_set_in_instant(pool: &'static Pool<Any>) -> Result<()> {
         let repository = RdbJobRepositoryImpl::new(pool);
+        let arg = RunnerArg {
+            data: Some(Data::Command(CommandArg {
+                args: vec!["hoge1".to_string()],
+            })),
+        };
         let data = Some(JobData {
             worker_id: Some(WorkerId { value: 2 }),
-            arg: "hoge1".as_bytes().to_vec(),
+            arg: Some(arg),
             uniq_key: Some("fuga1".to_string()),
             enqueue_time: 5,
             grabbed_until_time: Some(6),
@@ -373,9 +395,14 @@ mod test {
         };
         repository.create(&job).await?;
         // future job
+        let arg2 = RunnerArg {
+            data: Some(Data::Command(CommandArg {
+                args: vec!["hoge2".to_string()],
+            })),
+        };
         let data = Some(JobData {
             worker_id: Some(WorkerId { value: 2 }),
-            arg: "hoge2".as_bytes().to_vec(),
+            arg: Some(arg2),
             uniq_key: Some("fuga2".to_string()),
             enqueue_time: 5,
             grabbed_until_time: None,
@@ -390,9 +417,14 @@ mod test {
         };
         repository.create(&job).await?;
         // grabbed job
+        let arg3 = RunnerArg {
+            data: Some(Data::Command(CommandArg {
+                args: vec!["hoge3".to_string()],
+            })),
+        };
         let data = Some(JobData {
             worker_id: Some(WorkerId { value: 2 }),
-            arg: "hoge3".as_bytes().to_vec(),
+            arg: Some(arg3),
             uniq_key: Some("fuga3".to_string()),
             enqueue_time: 5,
             grabbed_until_time: Some(command_utils::util::datetime::now_millis() + 10000), // grabbed until 10 sec later

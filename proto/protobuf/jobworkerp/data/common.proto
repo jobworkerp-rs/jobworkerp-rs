@@ -10,13 +10,15 @@ enum Priority {
     PRIORITY_HIGH = 1;
 }
 
+// deprecated: use runner operation type
 enum RunnerType {
-    COMMAND    = 0;
-    BUILTIN    = -1;
-    PLUGIN     = 1;
-    REQUEST    = 2;
-    GRPC_UNARY = 3;
-    DOCKER     = 4;
+    option deprecated = true;
+    COMMAND        = 0;
+    SLACK_INTERNAL = -1;
+    PLUGIN         = 1;
+    HTTP_REQUEST   = 2;
+    GRPC_UNARY     = 3;
+    DOCKER         = 4;
 }
 
 enum RetryType {
@@ -61,7 +63,7 @@ enum QueueType {
     HYBRID = 2; // enqueue to redis and backup to db (record to redis for job queue + db for recovery in redis clush or restart in memory only use. force to rdb in jobs with run_after_time or periodic_interval)
 }
 
-message FindListRequest {
-    optional int32 limit  = 1;
-    optional int64 offset = 2;
+message ResultOutput {
+    repeated bytes items = 1;
 }
+

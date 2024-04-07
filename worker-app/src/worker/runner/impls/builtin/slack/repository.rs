@@ -4,7 +4,7 @@ use super::client::{Attachment, AttachmentField, PostMessageRequest, SlackMessag
 use anyhow::{anyhow, Result};
 use command_utils::util::datetime;
 use itertools::Itertools;
-use proto::jobworkerp::data::JobResultData;
+use proto::jobworkerp::data::slack_job_result_arg::ResultMessageData;
 
 use super::SlackConfig;
 
@@ -34,7 +34,7 @@ impl SlackRepository {
         Self::new(load_slack_config_from_env().unwrap_or_default())
     }
 
-    pub async fn send_result(&self, res: &JobResultData, is_error: bool) -> Result<()> {
+    pub async fn send_result(&self, res: &ResultMessageData, is_error: bool) -> Result<()> {
         if is_error && !self.config.notify_failure || !is_error && !self.config.notify_success {
             // not notify by setting and status
             tracing::debug!(
@@ -75,7 +75,12 @@ impl SlackRepository {
         Ok(())
     }
 
-    fn build_message(&self, res: &JobResultData, text: &str, is_error: bool) -> PostMessageRequest {
+    fn build_message(
+        &self,
+        res: &ResultMessageData,
+        text: &str,
+        is_error: bool,
+    ) -> PostMessageRequest {
         let title = self
             .config
             .title

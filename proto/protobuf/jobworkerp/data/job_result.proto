@@ -3,22 +3,19 @@ syntax = "proto3";
 package jobworkerp.data;
 
 import "jobworkerp/data/common.proto";
+import "jobworkerp/data/runner.proto";
 import "jobworkerp/data/job.proto";
 import "jobworkerp/data/worker.proto";
-
-message ResultOutput {
-    repeated bytes items = 1;
-}
 
 // JobResult is not own id
 message JobResultData {
     jobworkerp.data.JobId job_id               = 1;
     jobworkerp.data.WorkerId worker_id         = 2;
     string worker_name                         = 3;
-    bytes arg                                  = 4;
+    jobworkerp.data.RunnerArg arg              = 4;
     optional string uniq_key                   = 5;
     jobworkerp.data.ResultStatus status        = 6; // job result status
-    ResultOutput output                        = 7; // job response data
+    jobworkerp.data.ResultOutput output        = 7; // job response data
     uint32 retried                             = 8;
     uint32 max_retry                           = 9;
     jobworkerp.data.Priority priority          = 10;
