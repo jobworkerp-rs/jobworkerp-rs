@@ -40,8 +40,8 @@ pub fn load_db_config_from_env() -> Result<RDBConfig> {
 
 // TODO
 static _REDIS: tokio::sync::OnceCell<RedisPool> = tokio::sync::OnceCell::const_new();
-pub async fn setup_redis_client(config: RedisConfig) -> redis::Client {
-    redis::Client::open(config.url.clone())
+pub async fn setup_redis_client(config: RedisConfig) -> deadpool_redis::redis::Client {
+    deadpool_redis::redis::Client::open(config.url.clone())
         .unwrap_or_else(|_| panic!("cannot open redis client: config={:?}", &config))
 }
 

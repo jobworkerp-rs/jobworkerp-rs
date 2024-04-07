@@ -8,8 +8,8 @@ import "jobworkerp/service/common.proto";
 
 message CreateWorkerRequest {
     string name                                          = 1; // worker name
-    jobworkerp.data.RunnerType type                      = 2; // runner type
-    string operation                                     = 3; // worker operation (depends on worker type. command line string, request url etc)
+    // jobworkerp.data.RunnerType type                      = 2; // runner type (deprecated, use operation type instead)
+    jobworkerp.data.WorkerOperation operation            = 3; // worker operation (command line, docker operation etc. see WorkerOperation proto matching with runner type)
     optional jobworkerp.data.RetryPolicy retry_policy    = 4; // retry policy (default: no retry)
     optional uint32 periodic_interval                    = 5; // periodic interval milliseconds (None or 0: non-periodic) (if enabled, cannot use response_type:direct)
     optional string channel                              = 6; // channel name (if empty, use default channel)

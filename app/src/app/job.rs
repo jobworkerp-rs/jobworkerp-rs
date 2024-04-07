@@ -5,16 +5,19 @@ pub mod redis;
 use super::{JobBuilder, StorageConfig, UseStorageConfig};
 use anyhow::Result;
 use async_trait::async_trait;
-use infra::infra::{
-    job::redis::{
-        job_status::JobStatusRepository, queue::RedisJobQueueRepository,
-        schedule::RedisJobScheduleRepository, UseRedisJobRepository,
+use infra::{
+    error::JobWorkerError,
+    infra::{
+        job::redis::{
+            job_status::JobStatusRepository, queue::RedisJobQueueRepository,
+            schedule::RedisJobScheduleRepository, UseRedisJobRepository,
+        },
+        UseJobQueueConfig,
     },
-    UseJobQueueConfig,
 };
 use proto::jobworkerp::data::{
-    Job, JobId, JobResult, JobResultData, JobResultId, JobStatus, ResponseType, WorkerData,
-    WorkerId,
+    runner_arg::Data, worker_operation::Operation, Job, JobId, JobResult, JobResultData,
+    JobResultId, JobStatus, ResponseType, RunnerArg, WorkerData, WorkerId, WorkerOperation,
 };
 use std::{sync::Arc, time::Duration};
 
@@ -45,7 +48,7 @@ pub trait JobApp: Send + Sync {
         &self,
         worker_id: Option<&WorkerId>,
         worker_name: Option<&String>,
-        arg: Vec<u8>,
+        arg: Option<RunnerArg>,
         uniq_key: Option<String>,
         run_after_time: i64,
         priority: i32,
@@ -103,6 +106,96 @@ pub trait JobApp: Send + Sync {
         include_grabbed: bool,
         limit: Option<&i32>,
     ) -> Result<Vec<Job>>;
+
+    // check valid type of worker operation and job arg
+    fn validate_worker_and_job_arg(
+        &self,
+        worker: &WorkerData,
+        job_arg: Option<&RunnerArg>,
+    ) -> Result<()> {
+        match worker.operation {
+            Some(WorkerOperation {
+                operation: Some(Operation::Command(_)),
+            }) => match job_arg {
+                Some(RunnerArg {
+                    data: Some(Data::Command(_)),
+                }) => Ok(()),
+                _ => Err(JobWorkerError::InvalidParameter(format!(
+                    "invalid job arg for command worker: {:?}",
+                    &job_arg
+                ))
+                .into()),
+            },
+            Some(WorkerOperation {
+                operation: Some(Operation::Plugin(_)),
+            }) => match job_arg {
+                Some(RunnerArg {
+                    data: Some(Data::Plugin(_)),
+                }) => Ok(()),
+                _ => Err(JobWorkerError::InvalidParameter(format!(
+                    "invalid job arg for plugin worker: {:?}",
+                    job_arg
+                ))
+                .into()),
+            },
+            Some(WorkerOperation {
+                operation: Some(Operation::GrpcUnary(_)),
+            }) => match job_arg {
+                Some(RunnerArg {
+                    data: Some(Data::GrpcUnary(_)),
+                }) => Ok(()),
+                _ => Err(JobWorkerError::InvalidParameter(format!(
+                    "invalid job arg for grpc unary worker: {:?}",
+                    job_arg
+                ))
+                .into()),
+            },
+            Some(WorkerOperation {
+                operation: Some(Operation::HttpRequest(_)),
+            }) => match job_arg {
+                Some(RunnerArg {
+                    data: Some(Data::HttpRequest(_)),
+                }) => Ok(()),
+                _ => Err(JobWorkerError::InvalidParameter(format!(
+                    "invalid job arg for http request worker: {:?}",
+                    job_arg
+                ))
+                .into()),
+            },
+            Some(WorkerOperation {
+                operation: Some(Operation::Docker(_)),
+            }) => match job_arg {
+                Some(RunnerArg {
+                    data: Some(Data::Docker(_)),
+                }) => Ok(()),
+                _ => Err(JobWorkerError::InvalidParameter(format!(
+                    "invalid job arg for docker worker: {:?}",
+                    job_arg
+                ))
+                .into()),
+            },
+            Some(WorkerOperation {
+                operation: Some(Operation::SlackInternal(_)),
+            }) => match job_arg {
+                Some(RunnerArg {
+                    data: Some(Data::SlackJobResult(_)),
+                }) => Ok(()),
+                _ => Err(JobWorkerError::InvalidParameter(format!(
+                    "invalid job arg for docker worker: {:?}",
+                    job_arg
+                ))
+                .into()),
+            },
+            Some(WorkerOperation { operation: None }) => Err(JobWorkerError::WorkerNotFound(
+                "invalid worker operation: operation=None".to_string(),
+            )
+            .into()),
+            None => Err(JobWorkerError::WorkerNotFound(
+                "invalid worker operation: None".to_string(),
+            )
+            .into()),
+        }
+    }
 }
 
 pub trait UseJobApp {

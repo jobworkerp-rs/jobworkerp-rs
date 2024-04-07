@@ -4,6 +4,7 @@ package jobworkerp.service;
 
 import "jobworkerp/data/common.proto";
 import "jobworkerp/data/job_result.proto";
+import "jobworkerp/data/runner.proto";
 import "jobworkerp/data/worker.proto";
 import "jobworkerp/data/job.proto";
 import "jobworkerp/service/common.proto";
@@ -22,7 +23,7 @@ message JobRequest {
         jobworkerp.data.WorkerId worker_id = 1;
         string worker_name = 2;
     }
-    bytes arg = 3; // argument for the job
+    jobworkerp.data.RunnerArg arg = 3; // argument for the job
     optional string uniq_key = 4; // prevent from registering the same keys job in queue at the same time
     optional int64 run_after_time = 5; // time to execute job (epoch milliseconds) (must not specify 0 explicitly)
     optional jobworkerp.data.Priority priority = 6; // job priority(high, medium, low)

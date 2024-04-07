@@ -72,11 +72,6 @@ $ ./target/release/grpc-front &
 
 ```
 
-#### RDBの定義
-
-- [MySQL schema](infra/sql/mysql/002_worker.sql)
-- [SQLite schema](infra/sql/sqlite/001_schema.sql)
-
 ### grpcurl による実行例
 
 [protoファイル](proto/protobuf/jobworkerp/service/)
@@ -200,6 +195,11 @@ workerは実行する仕事を定義します。runnerはworkerの定義に則�
     - 環境変数にSLACK_で始まる設定が必要になります ([例](dot.env))
 - (テスト中) runnerプロセスを並列度の分だけstaticに確保することが可能 (worker.use_static)
   - worker.use_static=trueに指定することでrunerをpoolingして初期化を都度行わないで使いまわします。
+
+### RDBの定義
+
+- [MySQL schema](infra/sql/mysql/002_worker.sql)
+- [SQLite schema](infra/sql/sqlite/001_schema.sql)
 
 ### その他の機能
 

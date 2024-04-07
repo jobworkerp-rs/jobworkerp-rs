@@ -205,6 +205,7 @@ mod test {
     use infra_utils::infra::test::setup_test_redis_pool;
     use proto::jobworkerp::data::JobResultData;
     use proto::jobworkerp::data::ResultOutput;
+    use proto::jobworkerp::data::RunnerArg;
     use proto::jobworkerp::data::{Job, JobData, JobId, ResultStatus, WorkerId};
     use redis::AsyncCommands;
 
@@ -245,11 +246,18 @@ mod test {
             job_queue_config,
             redis_pool,
         };
+        let arg = RunnerArg {
+            data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
+                proto::jobworkerp::data::CommandArg {
+                    args: vec!["test".to_string()],
+                },
+            )),
+        };
         let job = Job {
             id: None,
             data: Some(JobData {
                 worker_id: Some(WorkerId { value: 1 }),
-                arg: "test".as_bytes().to_owned(),
+                arg: Some(arg),
                 uniq_key: Some("test".to_string()),
                 enqueue_time: datetime::now_millis(),
                 grabbed_until_time: None,

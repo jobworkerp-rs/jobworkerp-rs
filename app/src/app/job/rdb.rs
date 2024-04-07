@@ -13,7 +13,7 @@ use infra_utils::infra::memory::UseMemoryCache;
 use infra_utils::infra::rdb::UseRdbPool;
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobStatus, QueueType, ResponseType,
-    Worker, WorkerId,
+    RunnerArg, Worker, WorkerId,
 };
 use std::{sync::Arc, time::Duration};
 use stretto::AsyncCache;
@@ -57,7 +57,7 @@ impl JobApp for RdbJobAppImpl {
         &self,
         worker_id: Option<&WorkerId>,
         worker_name: Option<&String>,
-        arg: Vec<u8>,
+        arg: Option<RunnerArg>,
         uniq_key: Option<String>,
         run_after_time: i64,
         priority: i32,
@@ -79,6 +79,9 @@ impl JobApp for RdbJobAppImpl {
             data: Some(wd),
         }) = worker_res
         {
+            // validate argument types
+            self.validate_worker_and_job_arg(&wd, arg.as_ref())?;
+
             let id = self.id_generator().generate_id()?;
             let jid = JobId { value: id };
 
@@ -126,7 +129,14 @@ impl JobApp for RdbJobAppImpl {
     async fn update_job(&self, job: &Job) -> Result<()> {
         if let Some(data) = &job.data {
             if let Some(wid) = data.worker_id.as_ref() {
-                if let Ok(Some(_w)) = self.worker_app().find(wid).await {
+                if let Ok(Some(Worker {
+                    id: Some(_wid),
+                    data: Some(wd),
+                })) = self.worker_app().find(wid).await
+                {
+                    // validate argument types
+                    self.validate_worker_and_job_arg(&wd, data.arg.as_ref())?;
+
                     self.rdb_job_repository()
                         .update(job.id.as_ref().unwrap(), data)
                         .await?;

@@ -1,4 +1,7 @@
-use crate::error::JobWorkerError;
+use crate::{
+    error::JobWorkerError,
+    infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec},
+};
 use anyhow::Result;
 use command_utils::util::result::{TapErr, ToOption};
 use prost::Message;
@@ -37,7 +40,7 @@ impl JobResultRow {
                     value: self.worker_id,
                 }),
                 worker_name: String::from(""),
-                arg: self.arg.clone(),
+                arg: JobqueueAndCodec::deserialize_runner_arg(&self.arg).to_option(),
                 uniq_key: self.uniq_key.clone(),
                 status: self.status,
                 output: Self::deserialize_result_output(&self.output)

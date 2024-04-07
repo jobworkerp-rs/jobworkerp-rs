@@ -17,7 +17,7 @@ use futures::future::FutureExt;
 use infra::error::JobWorkerError;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use proto::jobworkerp::data::{
-    Job, JobResultData, ResultOutput, ResultStatus, WorkerData, WorkerId,
+    Job, JobResultData, ResultOutput, ResultStatus, RunnerArg, WorkerData, WorkerId,
 };
 use std::{panic::AssertUnwindSafe, time::Duration};
 use tracing;
@@ -25,7 +25,7 @@ use tracing;
 #[async_trait]
 pub trait Runner: Send + Sync {
     async fn name(&self) -> String;
-    async fn run(&mut self, arg: Vec<u8>) -> Result<Vec<Vec<u8>>>;
+    async fn run(&mut self, arg: &RunnerArg) -> Result<Vec<Vec<u8>>>;
     async fn cancel(&mut self);
 }
 
@@ -128,7 +128,8 @@ pub trait JobRunner:
         job: Job,
         runner: &mut Box<dyn Runner + Send + Sync>,
     ) -> JobResultData {
-        let data = job.data.as_ref().unwrap(); // TODO unwrap
+        let data = job.data.as_ref().unwrap(); // XXX unwrap
+        let arg = data.arg.as_ref().unwrap(); // XXX unwrap, clone
         let run_after_time = data.run_after_time;
 
         let wait = run_after_time - datetime::now_millis();
@@ -149,7 +150,7 @@ pub trait JobRunner:
         // implement timeout
         let res = if data.timeout > 0 {
             tokio::select! {
-                r = AssertUnwindSafe(runner.run(data.arg.clone())).catch_unwind() => {
+                r = AssertUnwindSafe(runner.run(arg)).catch_unwind() => {
                     r.map_err(|e| {
                         let msg = format!("Caught panic from runner {}: {:?}", &name, e);
                         tracing::error!(msg);
@@ -165,7 +166,7 @@ pub trait JobRunner:
                 }
             }
         } else {
-            AssertUnwindSafe(runner.run(data.arg.clone()))
+            AssertUnwindSafe(runner.run(arg))
                 .catch_unwind()
                 .await
                 .map_err(|e| {
@@ -232,7 +233,8 @@ mod tests {
     use app::app::WorkerConfig;
     use libloading::Library;
     use proto::jobworkerp::data::{
-        Job, JobData, JobId, ResponseType, RunnerType, WorkerData, WorkerId,
+        worker_operation::Operation, Job, JobData, JobId, ResponseType, RunnerType, WorkerData,
+        WorkerId, WorkerOperation,
     };
 
     // create JobRunner for test
@@ -275,11 +277,18 @@ mod tests {
         static JOB_RUNNER: Lazy<Box<MockJobRunner>> = Lazy::new(|| Box::new(MockJobRunner::new()));
 
         let run_after = datetime::now_millis() + 1000;
+        let jarg = RunnerArg {
+            data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
+                proto::jobworkerp::data::CommandArg {
+                    args: vec!["1".to_string()],
+                },
+            )),
+        };
         let job = Job {
             id: Some(JobId { value: 1 }),
             data: Some(JobData {
                 worker_id: Some(WorkerId { value: 1 }),
-                arg: b"1".to_vec(),
+                arg: Some(jarg),
                 uniq_key: Some("test".to_string()),
                 retried: 0,
                 priority: 0,
@@ -290,9 +299,17 @@ mod tests {
             }),
         };
         let worker_id = WorkerId { value: 1 };
+        let operation = WorkerOperation {
+            operation: Some(Operation::Command(
+                proto::jobworkerp::data::CommandOperation {
+                    name: "sleep".to_string(),
+                },
+            )),
+        };
+
         let worker = WorkerData {
             name: "test".to_string(),
-            operation: "sleep".to_string(),
+            operation: Some(operation),
             r#type: RunnerType::Command as i32,
             retry_policy: None,
             channel: Some("test".to_string()),
@@ -313,12 +330,19 @@ mod tests {
         assert!(res.start_time >= run_after); // wait until run_after (expect short time)
         assert!(res.end_time > res.start_time);
         assert!(res.end_time - res.start_time >= 1000); // sleep
+        let jarg = RunnerArg {
+            data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
+                proto::jobworkerp::data::CommandArg {
+                    args: vec!["2".to_string()],
+                },
+            )),
+        };
 
         let timeout_job = Job {
             id: Some(JobId { value: 2 }),
             data: Some(JobData {
-                arg: b"2".to_vec(), // sleep 2sec
-                timeout: 1000,      // timeout 1sec
+                arg: Some(jarg), // sleep 2sec
+                timeout: 1000,   // timeout 1sec
                 ..job.data.as_ref().unwrap().clone()
             }),
         };

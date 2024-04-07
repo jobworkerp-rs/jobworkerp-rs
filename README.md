@@ -89,11 +89,6 @@ $ ./target/release/worker &
    $ docker-compose up
   ```
 
-#### RDB schemas for setup
-
-- [MySQL schema](infra/sql/mysql/002_worker.sql)
-- [SQLite schema](infra/sql/sqlite/001_schema.sql)
-
 ### Example of execution (grpcurl)
 
 [protobuf definitions](proto/protobuf/jobworkerp/)
@@ -219,6 +214,11 @@ A worker defines a job to be executed, and a runner executes the job according t
     - The environment variable must start with SLACK_ ([example](dot.env))
 - By specifying worker.use_static=true, you can pool runners and use them without initializing them each time.
 - When using SQLite, it does not have high parallel execution performance. (Recommend using MySQL or combination with Redis)
+
+### RDB schemas for setup
+
+- [MySQL schema](infra/sql/mysql/002_worker.sql)
+- [SQLite schema](infra/sql/sqlite/001_schema.sql)
 
 ### Other functions
 
