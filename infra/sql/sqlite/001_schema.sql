@@ -16,10 +16,10 @@ CREATE TABLE IF NOT EXISTS `worker` (
     `channel` TEXT,
     `queue_type` INT NOT NULL,
     `response_type` INT NOT NULL,
-    `store_success` TINYINT UNSIGNED NOT NULL,
-    `store_failure` TINYINT UNSIGNED NOT NULL,
+    `store_success` BOOLEAN NOT NULL,
+    `store_failure` BOOLEAN NOT NULL,
     `next_workers` TEXT NOT NULL,
-    `use_static` TINYINT UNSIGNED NOT NULL
+    `use_static` BOOLEAN NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS `job` (

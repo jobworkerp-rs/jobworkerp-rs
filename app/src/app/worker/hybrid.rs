@@ -50,7 +50,10 @@ impl WorkerApp for HybridWorkerAppImpl {
         let wid = {
             let db = self.rdb_worker_repository().db_pool();
             let mut tx = db.begin().await.map_err(JobWorkerError::DBError)?;
-            let id = self.rdb_worker_repository().create(&mut tx, worker).await?;
+            let id = self
+                .rdb_worker_repository()
+                .create(&mut *tx, worker)
+                .await?;
             tx.commit().await.map_err(JobWorkerError::DBError)?;
             id
         };
@@ -70,7 +73,7 @@ impl WorkerApp for HybridWorkerAppImpl {
             // use rdb
             let pool = self.rdb_worker_repository().db_pool();
             let mut tx = pool.begin().await.map_err(JobWorkerError::DBError)?;
-            self.rdb_worker_repository().update(&mut tx, id, w).await?;
+            self.rdb_worker_repository().update(&mut *tx, id, w).await?;
             tx.commit().await.map_err(JobWorkerError::DBError)?;
 
             let _ = self.redis_worker_repository().delete_all().await;
@@ -329,7 +332,6 @@ impl WorkerAppCacheHelper for HybridWorkerAppImpl {}
 // create test
 #[cfg(test)]
 mod tests {
-    use std::env;
     use std::sync::Arc;
 
     use crate::app::worker::hybrid::HybridWorkerAppImpl;
@@ -341,108 +343,112 @@ mod tests {
     use infra::infra::module::redis::test::setup_test_redis_module;
     use infra::infra::module::HybridRepositoryModule;
     use infra::infra::IdGeneratorWrapper;
+    use infra_utils::infra::test::TEST_RUNTIME;
     use proto::jobworkerp::data::worker_operation::Operation;
     use proto::jobworkerp::data::{Worker, WorkerData, WorkerOperation};
 
-    async fn create_test_app(use_mock_id: bool) -> Result<HybridWorkerAppImpl> {
-        dotenvy::dotenv().ok();
-
-        let rdb_module = setup_test_rdb_module().await;
-        let redis_module = setup_test_redis_module().await;
-        let repositories = Arc::new(HybridRepositoryModule {
-            redis_module,
-            rdb_module,
-        });
-        // mock id generator (generate 1 until called set method)
-        let id_generator = if use_mock_id {
-            Arc::new(IdGeneratorWrapper::new_mock())
-        } else {
-            Arc::new(IdGeneratorWrapper::new())
-        };
-        let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
-            num_counters: 10000,
-            max_cost: 10000,
-            use_metrics: false,
-        };
-        let worker_memory_cache =
-            infra_utils::infra::memory::new_memory_cache::<Arc<String>, Vec<Worker>>(&mc_config);
-        let storage_config = Arc::new(StorageConfig {
-            r#type: StorageType::Hybrid,
-            restore_at_startup: Some(false),
-        });
-        let worker_app = HybridWorkerAppImpl::new(
-            storage_config.clone(),
-            id_generator.clone(),
-            worker_memory_cache,
-            repositories.clone(),
-        );
-        Ok(worker_app)
+    fn create_test_app(use_mock_id: bool) -> Result<HybridWorkerAppImpl> {
+        let rdb_module = setup_test_rdb_module();
+        TEST_RUNTIME.block_on(async {
+            let redis_module = setup_test_redis_module().await;
+            let repositories = Arc::new(HybridRepositoryModule {
+                redis_module,
+                rdb_module,
+            });
+            // mock id generator (generate 1 until called set method)
+            let id_generator = if use_mock_id {
+                Arc::new(IdGeneratorWrapper::new_mock())
+            } else {
+                Arc::new(IdGeneratorWrapper::new())
+            };
+            let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
+                num_counters: 10000,
+                max_cost: 10000,
+                use_metrics: false,
+            };
+            let worker_memory_cache = infra_utils::infra::memory::new_memory_cache::<
+                Arc<String>,
+                Vec<Worker>,
+            >(&mc_config);
+            let storage_config = Arc::new(StorageConfig {
+                r#type: StorageType::Hybrid,
+                restore_at_startup: Some(false),
+            });
+            let worker_app = HybridWorkerAppImpl::new(
+                storage_config.clone(),
+                id_generator.clone(),
+                worker_memory_cache,
+                repositories.clone(),
+            );
+            Ok(worker_app)
+        })
     }
 
-    #[tokio::test]
-    async fn test_integrated() -> Result<()> {
-        env::set_var("TEST_REDIS_HOST", "redis://redis");
+    #[test]
+    fn test_integrated() -> Result<()> {
         // test create 3 workers and find list and update 1 worker and find list and delete 1 worker and find list
-        let app = create_test_app(false).await?;
-        let operation = WorkerOperation {
-            operation: Some(Operation::Command(
-                proto::jobworkerp::data::CommandOperation {
-                    name: "ls".to_string(),
-                },
-            )),
-        };
-        let w1 = WorkerData {
-            name: "test1".to_string(),
-            operation: Some(operation.clone()),
-            ..Default::default()
-        };
-        let w2 = WorkerData {
-            name: "test2".to_string(),
-            operation: Some(operation.clone()),
-            ..Default::default()
-        };
-        let w3 = WorkerData {
-            name: "test3".to_string(),
-            operation: Some(operation.clone()),
-            ..Default::default()
-        };
-        let id1 = app.create(&w1).await?;
-        let id2 = app.create(&w2).await?;
-        let id3 = app.create(&w3).await?;
-        assert_eq!(id1.value, 1);
-        assert_eq!(id2.value, 2);
-        assert_eq!(id3.value, 3);
-        // find list
-        let list = app.find_list(None, None).await?;
-        // println!("==== created: {:#?}", list);
-        assert_eq!(list.len(), 3);
-        assert_eq!(app.count().await?, 3);
-        // update
-        let w4 = WorkerData {
-            name: "test4".to_string(),
-            operation: Some(operation.clone()),
-            ..Default::default()
-        };
-        let res = app.update(&id1, &Some(w4.clone())).await?;
-        assert!(res);
+        let app = create_test_app(false)?;
+        TEST_RUNTIME.block_on(async {
+            let operation = WorkerOperation {
+                operation: Some(Operation::Command(
+                    proto::jobworkerp::data::CommandOperation {
+                        name: "ls".to_string(),
+                    },
+                )),
+            };
+            let w1 = WorkerData {
+                name: "test1".to_string(),
+                operation: Some(operation.clone()),
+                ..Default::default()
+            };
+            let w2 = WorkerData {
+                name: "test2".to_string(),
+                operation: Some(operation.clone()),
+                ..Default::default()
+            };
+            let w3 = WorkerData {
+                name: "test3".to_string(),
+                operation: Some(operation.clone()),
+                ..Default::default()
+            };
+            let id1 = app.create(&w1).await?;
+            let id2 = app.create(&w2).await?;
+            let id3 = app.create(&w3).await?;
+            assert_eq!(id1.value, 1);
+            assert_eq!(id2.value, 2);
+            assert_eq!(id3.value, 3);
+            // find list
+            let list = app.find_list(None, None).await?;
+            // println!("==== created: {:#?}", list);
+            assert_eq!(list.len(), 3);
+            assert_eq!(app.count().await?, 3);
+            // update
+            let w4 = WorkerData {
+                name: "test4".to_string(),
+                operation: Some(operation.clone()),
+                ..Default::default()
+            };
+            let res = app.update(&id1, &Some(w4.clone())).await?;
+            assert!(res);
 
-        let f = app.find(&id1).await?;
-        assert!(f.is_some());
-        let fd = f.flat_map(|w| w.data);
-        assert!(fd.is_some());
-        assert_eq!(fd.unwrap().name, w4.name);
-        // find list
-        let list = app.find_list(None, None).await?;
-        // println!("==== updated: {:#?}", list);
-        assert_eq!(list.len(), 3);
-        assert_eq!(app.count().await?, 3);
-        // delete
-        let res = app.delete(&id1).await?;
-        assert!(res);
-        // find list
-        let list = app.find_list(None, None).await?;
-        assert_eq!(app.count().await?, 2);
-        assert_eq!(list.len(), 2);
-        Ok(())
+            let f = app.find(&id1).await?;
+            assert!(f.is_some());
+            let fd = f.flat_map(|w| w.data);
+            assert!(fd.is_some());
+            assert_eq!(fd.unwrap().name, w4.name);
+            // find list
+            let list = app.find_list(None, None).await?;
+            // println!("==== updated: {:#?}", list);
+            assert_eq!(list.len(), 3);
+            assert_eq!(app.count().await?, 3);
+            // delete
+            let res = app.delete(&id1).await?;
+            assert!(res);
+            // find list
+            let list = app.find_list(None, None).await?;
+            assert_eq!(app.count().await?, 2);
+            assert_eq!(list.len(), 2);
+            Ok(())
+        })
     }
 }
