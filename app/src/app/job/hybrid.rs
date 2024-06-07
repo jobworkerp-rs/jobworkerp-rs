@@ -578,6 +578,7 @@ mod tests {
     use infra::infra::module::redis::test::setup_test_redis_module;
     use infra::infra::module::HybridRepositoryModule;
     use infra::infra::IdGeneratorWrapper;
+    use infra_utils::infra::test::TEST_RUNTIME;
     use proto::jobworkerp::data::worker_operation::Operation;
     use proto::jobworkerp::data::{
         JobResult, JobResultId, Priority, QueueType, ResponseType, ResultOutput, ResultStatus,
@@ -602,302 +603,306 @@ mod tests {
     impl UseJobqueueAndCodec for JobResultSubscribeAppImpl {}
     impl JobResultSubscribeApp for JobResultSubscribeAppImpl {}
 
-    async fn create_test_app(
-        use_mock_id: bool,
-    ) -> Result<(HybridJobAppImpl, JobResultSubscribeAppImpl)> {
-        dotenvy::dotenv().ok();
-        let rdb_module = setup_test_rdb_module().await;
-        let redis_module = setup_test_redis_module().await;
-        let repositories = Arc::new(HybridRepositoryModule {
-            redis_module,
-            rdb_module,
-        });
-        // mock id generator (generate 1 until called set method)
-        let id_generator = if use_mock_id {
-            Arc::new(IdGeneratorWrapper::new_mock())
-        } else {
-            Arc::new(IdGeneratorWrapper::new())
-        };
-        let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
-            num_counters: 10000,
-            max_cost: 10000,
-            use_metrics: false,
-        };
-        let worker_memory_cache =
-            infra_utils::infra::memory::new_memory_cache::<Arc<String>, Vec<Worker>>(&mc_config);
-        let job_memory_cache =
-            infra_utils::infra::memory::new_memory_cache::<Arc<String>, Vec<Job>>(&mc_config);
-        let storage_config = Arc::new(StorageConfig {
-            r#type: StorageType::Hybrid,
-            restore_at_startup: Some(false),
-        });
-        let job_queue_config = Arc::new(JobQueueConfig {
-            expire_job_result_seconds: 10,
-            fetch_interval: 1000,
-        });
-        let worker_config = Arc::new(WorkerConfig {
-            default_concurrency: 4,
-            channels: vec!["test".to_string()],
-            channel_concurrencies: vec![2],
-        });
-        let worker_app = HybridWorkerAppImpl::new(
-            storage_config.clone(),
-            id_generator.clone(),
-            worker_memory_cache,
-            repositories.clone(),
-        );
-        let subscrber =
-            JobResultSubscribeAppImpl::new(repositories.redis_module.redis_client.clone());
-        let config_module = Arc::new(AppConfigModule {
-            storage_config,
-            worker_config,
-            job_queue_config,
-        });
-        Ok((
-            HybridJobAppImpl::new(
-                config_module,
-                id_generator,
-                repositories,
-                Arc::new(worker_app),
-                job_memory_cache,
-            ),
-            subscrber,
-        ))
+    fn create_test_app(use_mock_id: bool) -> Result<(HybridJobAppImpl, JobResultSubscribeAppImpl)> {
+        let rdb_module = setup_test_rdb_module();
+        TEST_RUNTIME.block_on(async {
+            let redis_module = setup_test_redis_module().await;
+            let repositories = Arc::new(HybridRepositoryModule {
+                redis_module,
+                rdb_module,
+            });
+            // mock id generator (generate 1 until called set method)
+            let id_generator = if use_mock_id {
+                Arc::new(IdGeneratorWrapper::new_mock())
+            } else {
+                Arc::new(IdGeneratorWrapper::new())
+            };
+            let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
+                num_counters: 10000,
+                max_cost: 10000,
+                use_metrics: false,
+            };
+            let worker_memory_cache = infra_utils::infra::memory::new_memory_cache::<
+                Arc<String>,
+                Vec<Worker>,
+            >(&mc_config);
+            let job_memory_cache =
+                infra_utils::infra::memory::new_memory_cache::<Arc<String>, Vec<Job>>(&mc_config);
+            let storage_config = Arc::new(StorageConfig {
+                r#type: StorageType::Hybrid,
+                restore_at_startup: Some(false),
+            });
+            let job_queue_config = Arc::new(JobQueueConfig {
+                expire_job_result_seconds: 10,
+                fetch_interval: 1000,
+            });
+            let worker_config = Arc::new(WorkerConfig {
+                default_concurrency: 4,
+                channels: vec!["test".to_string()],
+                channel_concurrencies: vec![2],
+            });
+            let worker_app = HybridWorkerAppImpl::new(
+                storage_config.clone(),
+                id_generator.clone(),
+                worker_memory_cache,
+                repositories.clone(),
+            );
+            let subscrber =
+                JobResultSubscribeAppImpl::new(repositories.redis_module.redis_client.clone());
+            let config_module = Arc::new(AppConfigModule {
+                storage_config,
+                worker_config,
+                job_queue_config,
+            });
+            Ok((
+                HybridJobAppImpl::new(
+                    config_module,
+                    id_generator,
+                    repositories,
+                    Arc::new(worker_app),
+                    job_memory_cache,
+                ),
+                subscrber,
+            ))
+        })
     }
 
-    #[tokio::test]
-    async fn test_create_direct_job_complete() -> Result<()> {
+    #[test]
+    fn test_create_direct_job_complete() -> Result<()> {
         // enqueue, find, complete, find, delete, find
-        let (app, _) = create_test_app(true).await?;
-        let operation = WorkerOperation {
-            operation: Some(Operation::Command(
-                proto::jobworkerp::data::CommandOperation {
-                    name: "ls".to_string(),
-                },
-            )),
-        };
-        let wd = WorkerData {
-            name: "testworker".to_string(),
-            r#type: RunnerType::Command as i32,
-            operation: Some(operation),
-            channel: None,
-            response_type: ResponseType::Direct as i32,
-            periodic_interval: 0,
-            retry_policy: None,
-            queue_type: QueueType::Redis as i32,
-            store_failure: false,
-            store_success: false,
-            next_workers: vec![],
-            use_static: false,
-        };
-        let worker_id = app.worker_app().create(&wd).await?;
-        let jarg = RunnerArg {
-            data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
-                proto::jobworkerp::data::CommandArg {
-                    args: vec!["/".to_string()],
-                },
-            )),
-        };
+        let (app, _) = create_test_app(true)?;
+        TEST_RUNTIME.block_on(async {
+            let operation = WorkerOperation {
+                operation: Some(Operation::Command(
+                    proto::jobworkerp::data::CommandOperation {
+                        name: "ls".to_string(),
+                    },
+                )),
+            };
+            let wd = WorkerData {
+                name: "testworker".to_string(),
+                r#type: RunnerType::Command as i32,
+                operation: Some(operation),
+                channel: None,
+                response_type: ResponseType::Direct as i32,
+                periodic_interval: 0,
+                retry_policy: None,
+                queue_type: QueueType::Redis as i32,
+                store_failure: false,
+                store_success: false,
+                next_workers: vec![],
+                use_static: false,
+            };
+            let worker_id = app.worker_app().create(&wd).await?;
+            let jarg = RunnerArg {
+                data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
+                    proto::jobworkerp::data::CommandArg {
+                        args: vec!["/".to_string()],
+                    },
+                )),
+            };
 
-        // move
-        let worker_id1 = worker_id.clone();
-        let jarg1 = jarg.clone();
-        let app1 = app.clone();
-        // need waiting for direct response
-        let jh = tokio::spawn(async move {
-            let res = app1
-                .enqueue_job(Some(&worker_id1), None, Some(jarg1), None, 0, 0, 0)
-                .await;
-            tracing::info!("!!!res: {:?}", res);
-            let (jid, job_res) = res.unwrap();
-            assert!(jid.value > 0);
-            assert!(job_res.is_some());
-            // cannot find job in direct response type
-            let job = app1
-                .find_job(
-                    &job_res
-                        .clone()
-                        .flat_map(|j| j.data.flat_map(|d| d.job_id))
-                        .unwrap(),
-                    Some(Duration::from_millis(100)),
-                )
-                .await
-                .unwrap();
-            assert!(job.is_none());
+            // move
+            let worker_id1 = worker_id.clone();
+            let jarg1 = jarg.clone();
+            let app1 = app.clone();
+            // need waiting for direct response
+            let jh = tokio::spawn(async move {
+                let res = app1
+                    .enqueue_job(Some(&worker_id1), None, Some(jarg1), None, 0, 0, 0)
+                    .await;
+                tracing::info!("!!!res: {:?}", res);
+                let (jid, job_res) = res.unwrap();
+                assert!(jid.value > 0);
+                assert!(job_res.is_some());
+                // cannot find job in direct response type
+                let job = app1
+                    .find_job(
+                        &job_res
+                            .clone()
+                            .flat_map(|j| j.data.flat_map(|d| d.job_id))
+                            .unwrap(),
+                        Some(Duration::from_millis(100)),
+                    )
+                    .await
+                    .unwrap();
+                assert!(job.is_none());
+                assert_eq!(
+                    app1.redis_job_repository().find_status(&jid).await.unwrap(),
+                    None
+                );
+
+                (jid, job_res)
+            });
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let rid = JobResultId {
+                value: app.id_generator().generate_id().unwrap(),
+            };
+            let result = JobResult {
+                id: Some(rid.clone()),
+                data: Some(JobResultData {
+                    job_id: Some(JobId { value: 1 }), // generated by mock generator
+                    worker_id: Some(worker_id.clone()),
+                    worker_name: wd.name.clone(),
+                    arg: Some(jarg),
+                    uniq_key: None,
+                    status: ResultStatus::Success as i32,
+                    output: Some(ResultOutput {
+                        items: { vec!["test".as_bytes().to_vec()] },
+                    }),
+                    retried: 0,
+                    max_retry: 0,
+                    priority: 0,
+                    timeout: 0,
+                    enqueue_time: datetime::now_millis(),
+                    run_after_time: 0,
+                    start_time: datetime::now_millis(),
+                    end_time: datetime::now_millis(),
+                    response_type: ResponseType::Direct as i32,
+                    store_success: false,
+                    store_failure: false,
+                }),
+            };
+            assert!(
+                app.complete_job(&rid, result.data.as_ref().unwrap())
+                    .await?
+            );
+            let (jid, job_res) = jh.await?;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            assert_eq!(&job_res.unwrap(), &result);
+            let job0 = app.find_job(&jid, None).await?;
+            assert!(job0.is_none());
             assert_eq!(
-                app1.redis_job_repository().find_status(&jid).await.unwrap(),
+                app.redis_job_repository().find_status(&jid).await.unwrap(),
                 None
             );
-
-            (jid, job_res)
-        });
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        let rid = JobResultId {
-            value: app.id_generator().generate_id().unwrap(),
-        };
-        let result = JobResult {
-            id: Some(rid.clone()),
-            data: Some(JobResultData {
-                job_id: Some(JobId { value: 1 }), // generated by mock generator
-                worker_id: Some(worker_id.clone()),
-                worker_name: wd.name.clone(),
-                arg: Some(jarg),
-                uniq_key: None,
-                status: ResultStatus::Success as i32,
-                output: Some(ResultOutput {
-                    items: { vec!["test".as_bytes().to_vec()] },
-                }),
-                retried: 0,
-                max_retry: 0,
-                priority: 0,
-                timeout: 0,
-                enqueue_time: datetime::now_millis(),
-                run_after_time: 0,
-                start_time: datetime::now_millis(),
-                end_time: datetime::now_millis(),
-                response_type: ResponseType::Direct as i32,
-                store_success: false,
-                store_failure: false,
-            }),
-        };
-        assert!(
-            app.complete_job(&rid, result.data.as_ref().unwrap())
-                .await?
-        );
-        let (jid, job_res) = jh.await?;
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        assert_eq!(&job_res.unwrap(), &result);
-        let job0 = app.find_job(&jid, None).await?;
-        assert!(job0.is_none());
-        assert_eq!(
-            app.redis_job_repository().find_status(&jid).await.unwrap(),
-            None
-        );
-        Ok(())
+            Ok(())
+        })
     }
 
-    #[tokio::test]
-    async fn test_create_listen_after_job_complete() -> Result<()> {
+    #[test]
+    fn test_create_listen_after_job_complete() -> Result<()> {
         // enqueue, find, complete, find, delete, find
-        let (app, subscriber) = create_test_app(true).await?;
-        let operation = WorkerOperation {
-            operation: Some(Operation::Command(
-                proto::jobworkerp::data::CommandOperation {
-                    name: "ls".to_string(),
-                },
-            )),
-        };
-        let wd = WorkerData {
-            name: "testworker".to_string(),
-            r#type: RunnerType::Command as i32,
-            operation: Some(operation),
-            channel: None,
-            response_type: ResponseType::ListenAfter as i32,
-            periodic_interval: 0,
-            retry_policy: None,
-            queue_type: QueueType::Redis as i32, // store to rdb for failback (can find job from rdb but not from redis)
-            store_failure: false,
-            store_success: false,
-            next_workers: vec![],
-            use_static: false,
-        };
-        let worker_id = app.worker_app().create(&wd).await?;
-        let jarg = RunnerArg {
-            data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
-                proto::jobworkerp::data::CommandArg {
-                    args: vec!["/".to_string()],
-                },
-            )),
-        };
-
-        // wait for direct response
-        let job_id = app
-            .enqueue_job(Some(&worker_id), None, Some(jarg.clone()), None, 0, 0, 0)
-            .await?
-            .0;
-        let job = Job {
-            id: Some(job_id.clone()),
-            data: Some(JobData {
-                worker_id: Some(worker_id.clone()),
-                arg: Some(jarg.clone()),
-                uniq_key: None,
-                enqueue_time: datetime::now_millis(),
-                grabbed_until_time: None,
-                run_after_time: 0,
-                retried: 0,
-                priority: 0,
-                timeout: 0,
-            }),
-        };
-        assert_eq!(
-            app.redis_job_repository()
-                .find_status(&job_id)
-                .await
-                .unwrap(),
-            Some(JobStatus::Pending)
-        );
-
-        let result = JobResult {
-            id: Some(JobResultId { value: 15555 }),
-            data: Some(JobResultData {
-                job_id: Some(job_id.clone()),
-                worker_id: Some(worker_id.clone()),
-                worker_name: wd.name.clone(),
-                arg: Some(jarg),
-                uniq_key: None,
-                status: ResultStatus::Success as i32,
-                output: Some(ResultOutput {
-                    items: { vec!["test".as_bytes().to_vec()] },
-                }),
-                retried: 0,
-                max_retry: 0,
-                priority: 0,
-                timeout: 0,
-                enqueue_time: job.data.as_ref().unwrap().enqueue_time,
-                run_after_time: job.data.as_ref().unwrap().run_after_time,
-                start_time: datetime::now_millis(),
-                end_time: datetime::now_millis(),
+        let (app, subscriber) = create_test_app(true)?;
+        TEST_RUNTIME.block_on(async {
+            let operation = WorkerOperation {
+                operation: Some(Operation::Command(
+                    proto::jobworkerp::data::CommandOperation {
+                        name: "ls".to_string(),
+                    },
+                )),
+            };
+            let wd = WorkerData {
+                name: "testworker".to_string(),
+                r#type: RunnerType::Command as i32,
+                operation: Some(operation),
+                channel: None,
                 response_type: ResponseType::ListenAfter as i32,
-                store_success: false,
+                periodic_interval: 0,
+                retry_policy: None,
+                queue_type: QueueType::Redis as i32, // store to rdb for failback (can find job from rdb but not from redis)
                 store_failure: false,
-            }),
-        };
-        let jid = job_id.clone();
-        let res = result.clone();
-        let jh = tokio::task::spawn(async move {
-            // assert_eq!(job_result.data.as_ref().unwrap().retried, 0);
-            let job_result = subscriber.subscribe_result(&jid, None).await.unwrap();
-            assert!(job_result.id.unwrap().value > 0);
-            assert_eq!(&job_result.data, &res.data);
-        });
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        assert!(
-            // send mock result as completed job result
-            app.complete_job(result.id.as_ref().unwrap(), result.data.as_ref().unwrap())
+                store_success: false,
+                next_workers: vec![],
+                use_static: false,
+            };
+            let worker_id = app.worker_app().create(&wd).await?;
+            let jarg = RunnerArg {
+                data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
+                    proto::jobworkerp::data::CommandArg {
+                        args: vec!["/".to_string()],
+                    },
+                )),
+            };
+
+            // wait for direct response
+            let job_id = app
+                .enqueue_job(Some(&worker_id), None, Some(jarg.clone()), None, 0, 0, 0)
                 .await?
-        );
-        jh.await?;
+                .0;
+            let job = Job {
+                id: Some(job_id.clone()),
+                data: Some(JobData {
+                    worker_id: Some(worker_id.clone()),
+                    arg: Some(jarg.clone()),
+                    uniq_key: None,
+                    enqueue_time: datetime::now_millis(),
+                    grabbed_until_time: None,
+                    run_after_time: 0,
+                    retried: 0,
+                    priority: 0,
+                    timeout: 0,
+                }),
+            };
+            assert_eq!(
+                app.redis_job_repository()
+                    .find_status(&job_id)
+                    .await
+                    .unwrap(),
+                Some(JobStatus::Pending)
+            );
 
-        let job0 = app
-            .find_job(&job_id, Some(Duration::from_millis(1)))
-            .await
-            .unwrap();
-        assert!(job0.is_none());
-        assert_eq!(
-            app.redis_job_repository()
-                .find_status(&job_id)
+            let result = JobResult {
+                id: Some(JobResultId { value: 15555 }),
+                data: Some(JobResultData {
+                    job_id: Some(job_id.clone()),
+                    worker_id: Some(worker_id.clone()),
+                    worker_name: wd.name.clone(),
+                    arg: Some(jarg),
+                    uniq_key: None,
+                    status: ResultStatus::Success as i32,
+                    output: Some(ResultOutput {
+                        items: { vec!["test".as_bytes().to_vec()] },
+                    }),
+                    retried: 0,
+                    max_retry: 0,
+                    priority: 0,
+                    timeout: 0,
+                    enqueue_time: job.data.as_ref().unwrap().enqueue_time,
+                    run_after_time: job.data.as_ref().unwrap().run_after_time,
+                    start_time: datetime::now_millis(),
+                    end_time: datetime::now_millis(),
+                    response_type: ResponseType::ListenAfter as i32,
+                    store_success: false,
+                    store_failure: false,
+                }),
+            };
+            let jid = job_id.clone();
+            let res = result.clone();
+            let jh = tokio::task::spawn(async move {
+                // assert_eq!(job_result.data.as_ref().unwrap().retried, 0);
+                let job_result = subscriber.subscribe_result(&jid, None).await.unwrap();
+                assert!(job_result.id.unwrap().value > 0);
+                assert_eq!(&job_result.data, &res.data);
+            });
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(
+                // send mock result as completed job result
+                app.complete_job(result.id.as_ref().unwrap(), result.data.as_ref().unwrap())
+                    .await?
+            );
+            jh.await?;
+
+            let job0 = app
+                .find_job(&job_id, Some(Duration::from_millis(1)))
                 .await
-                .unwrap(),
-            None
-        );
-
-        Ok(())
+                .unwrap();
+            assert!(job0.is_none());
+            assert_eq!(
+                app.redis_job_repository()
+                    .find_status(&job_id)
+                    .await
+                    .unwrap(),
+                None
+            );
+            Ok(())
+        })
     }
-    #[tokio::test]
-    async fn test_create_normal_job_complete() -> Result<()> {
+    #[test]
+    fn test_create_normal_job_complete() -> Result<()> {
         // enqueue, find, complete, find, delete, find
-        let (app, _) = create_test_app(true).await?;
+        let (app, _) = create_test_app(true)?;
         let operation = WorkerOperation {
             operation: Some(Operation::Command(
                 proto::jobworkerp::data::CommandOperation {
@@ -919,235 +924,238 @@ mod tests {
             next_workers: vec![],
             use_static: false,
         };
-        let worker_id = app.worker_app().create(&wd).await?;
-        let jarg = RunnerArg {
-            data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
-                proto::jobworkerp::data::CommandArg {
-                    args: vec!["/".to_string()],
-                },
-            )),
-        };
+        TEST_RUNTIME.block_on(async {
+            let worker_id = app.worker_app().create(&wd).await?;
+            let jarg = RunnerArg {
+                data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
+                    proto::jobworkerp::data::CommandArg {
+                        args: vec!["/".to_string()],
+                    },
+                )),
+            };
 
-        // wait for direct response
-        let (job_id, res) = app
-            .enqueue_job(Some(&worker_id), None, Some(jarg.clone()), None, 0, 0, 0)
-            .await?;
-        assert!(job_id.value > 0);
-        assert!(res.is_none());
-        let job = app
-            .find_job(&job_id, Some(Duration::from_millis(100)))
-            .await?
-            .unwrap();
-        assert_eq!(job.id.as_ref().unwrap(), &job_id);
-        assert_eq!(
-            job.data.as_ref().unwrap().worker_id.as_ref(),
-            Some(&worker_id)
-        );
-        assert_eq!(job.data.as_ref().unwrap().retried, 0);
-        assert_eq!(
-            app.redis_job_repository()
-                .find_status(&job_id)
-                .await
-                .unwrap(),
-            Some(JobStatus::Pending)
-        );
-
-        let result = JobResult {
-            id: Some(JobResultId {
-                value: app.id_generator().generate_id().unwrap(),
-            }),
-            data: Some(JobResultData {
-                job_id: Some(job_id.clone()),
-                worker_id: Some(worker_id.clone()),
-                worker_name: wd.name.clone(),
-                arg: Some(jarg),
-                uniq_key: None,
-                status: ResultStatus::Success as i32,
-                output: Some(ResultOutput {
-                    items: { vec!["test".as_bytes().to_vec()] },
-                }),
-                retried: 0,
-                max_retry: 0,
-                priority: 0,
-                timeout: 0,
-                enqueue_time: job.data.as_ref().unwrap().enqueue_time,
-                run_after_time: job.data.as_ref().unwrap().run_after_time,
-                start_time: datetime::now_millis(),
-                end_time: datetime::now_millis(),
-                response_type: ResponseType::NoResult as i32,
-                store_success: true,
-                store_failure: false,
-            }),
-        };
-        assert!(
-            app.complete_job(result.id.as_ref().unwrap(), result.data.as_ref().unwrap())
+            // wait for direct response
+            let (job_id, res) = app
+                .enqueue_job(Some(&worker_id), None, Some(jarg.clone()), None, 0, 0, 0)
+                .await?;
+            assert!(job_id.value > 0);
+            assert!(res.is_none());
+            let job = app
+                .find_job(&job_id, Some(Duration::from_millis(100)))
                 .await?
-        );
-        // not fetched job (because of not use job_dispatcher)
-        assert!(app.find_job(&job_id, None).await?.is_none());
-        assert_eq!(
-            app.redis_job_repository()
-                .find_status(&job_id)
-                .await
-                .unwrap(),
-            None
-        );
+                .unwrap();
+            assert_eq!(job.id.as_ref().unwrap(), &job_id);
+            assert_eq!(
+                job.data.as_ref().unwrap().worker_id.as_ref(),
+                Some(&worker_id)
+            );
+            assert_eq!(job.data.as_ref().unwrap().retried, 0);
+            assert_eq!(
+                app.redis_job_repository()
+                    .find_status(&job_id)
+                    .await
+                    .unwrap(),
+                Some(JobStatus::Pending)
+            );
 
-        Ok(())
+            let result = JobResult {
+                id: Some(JobResultId {
+                    value: app.id_generator().generate_id().unwrap(),
+                }),
+                data: Some(JobResultData {
+                    job_id: Some(job_id.clone()),
+                    worker_id: Some(worker_id.clone()),
+                    worker_name: wd.name.clone(),
+                    arg: Some(jarg),
+                    uniq_key: None,
+                    status: ResultStatus::Success as i32,
+                    output: Some(ResultOutput {
+                        items: { vec!["test".as_bytes().to_vec()] },
+                    }),
+                    retried: 0,
+                    max_retry: 0,
+                    priority: 0,
+                    timeout: 0,
+                    enqueue_time: job.data.as_ref().unwrap().enqueue_time,
+                    run_after_time: job.data.as_ref().unwrap().run_after_time,
+                    start_time: datetime::now_millis(),
+                    end_time: datetime::now_millis(),
+                    response_type: ResponseType::NoResult as i32,
+                    store_success: true,
+                    store_failure: false,
+                }),
+            };
+            assert!(
+                app.complete_job(result.id.as_ref().unwrap(), result.data.as_ref().unwrap())
+                    .await?
+            );
+            // not fetched job (because of not use job_dispatcher)
+            assert!(app.find_job(&job_id, None).await?.is_none());
+            assert_eq!(
+                app.redis_job_repository()
+                    .find_status(&job_id)
+                    .await
+                    .unwrap(),
+                None
+            );
+            Ok(())
+        })
     }
 
-    #[tokio::test]
-    async fn test_restore_jobs_from_rdb() -> Result<()> {
+    #[test]
+    fn test_restore_jobs_from_rdb() -> Result<()> {
         let priority = Priority::Medium;
         let channel: Option<&String> = None;
 
-        let (app, _) = create_test_app(false).await?;
-        // create command worker with hybrid queue
-        let operation = WorkerOperation {
-            operation: Some(Operation::Command(
-                proto::jobworkerp::data::CommandOperation {
-                    name: "ls".to_string(),
-                },
-            )),
-        };
-        let wd = WorkerData {
-            name: "testworker".to_string(),
-            r#type: RunnerType::Command as i32,
-            operation: Some(operation),
-            channel: channel.cloned(),
-            response_type: ResponseType::NoResult as i32,
-            periodic_interval: 0,
-            retry_policy: None,
-            queue_type: QueueType::Hybrid as i32,
-            store_success: true,
-            store_failure: false,
-            next_workers: vec![],
-            use_static: false,
-        };
-        let worker_id = app.worker_app().create(&wd).await?;
+        let (app, _) = create_test_app(false)?;
+        TEST_RUNTIME.block_on(async {
+            // create command worker with hybrid queue
+            let operation = WorkerOperation {
+                operation: Some(Operation::Command(
+                    proto::jobworkerp::data::CommandOperation {
+                        name: "ls".to_string(),
+                    },
+                )),
+            };
+            let wd = WorkerData {
+                name: "testworker".to_string(),
+                r#type: RunnerType::Command as i32,
+                operation: Some(operation),
+                channel: channel.cloned(),
+                response_type: ResponseType::NoResult as i32,
+                periodic_interval: 0,
+                retry_policy: None,
+                queue_type: QueueType::Hybrid as i32,
+                store_success: true,
+                store_failure: false,
+                next_workers: vec![],
+                use_static: false,
+            };
+            let worker_id = app.worker_app().create(&wd).await?;
 
-        // enqueue job
-        let jarg = RunnerArg {
-            data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
-                proto::jobworkerp::data::CommandArg {
-                    args: vec!["/".to_string()],
-                },
-            )),
-        };
-        assert_eq!(
-            app.redis_job_repository()
-                .count_queue(channel, priority)
-                .await?,
-            0
-        );
-        let (job_id, res) = app
-            .enqueue_job(
-                Some(&worker_id),
-                None,
-                Some(jarg.clone()),
-                None,
-                0,
-                priority as i32,
-                0,
-            )
-            .await?;
-        assert!(job_id.value > 0);
-        assert!(res.is_none());
-        // job2
-        let (job_id2, res2) = app
-            .enqueue_job(
-                Some(&worker_id),
-                None,
-                Some(jarg.clone()),
-                None,
-                0,
-                priority as i32,
-                0,
-            )
-            .await?;
-        assert!(job_id2.value > 0);
-        assert!(res2.is_none());
+            // enqueue job
+            let jarg = RunnerArg {
+                data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
+                    proto::jobworkerp::data::CommandArg {
+                        args: vec!["/".to_string()],
+                    },
+                )),
+            };
+            assert_eq!(
+                app.redis_job_repository()
+                    .count_queue(channel, priority)
+                    .await?,
+                0
+            );
+            let (job_id, res) = app
+                .enqueue_job(
+                    Some(&worker_id),
+                    None,
+                    Some(jarg.clone()),
+                    None,
+                    0,
+                    priority as i32,
+                    0,
+                )
+                .await?;
+            assert!(job_id.value > 0);
+            assert!(res.is_none());
+            // job2
+            let (job_id2, res2) = app
+                .enqueue_job(
+                    Some(&worker_id),
+                    None,
+                    Some(jarg.clone()),
+                    None,
+                    0,
+                    priority as i32,
+                    0,
+                )
+                .await?;
+            assert!(job_id2.value > 0);
+            assert!(res2.is_none());
 
-        // get job from redis
-        let job = app
-            .find_job(&job_id, Some(Duration::from_millis(100)))
-            .await?
-            .unwrap();
-        assert_eq!(job.id.as_ref().unwrap(), &job_id);
-        assert_eq!(
-            job.data.as_ref().unwrap().worker_id.as_ref(),
-            Some(&worker_id)
-        );
-
-        // check job status
-        assert_eq!(
-            app.redis_job_repository()
-                .find_status(&job_id)
-                .await
-                .unwrap(),
-            Some(JobStatus::Pending)
-        );
-        assert_eq!(
-            app.redis_job_repository()
-                .find_status(&job_id2)
-                .await
-                .unwrap(),
-            Some(JobStatus::Pending)
-        );
-
-        // no jobs to restore  (exists in both redis and rdb)
-        assert_eq!(
-            app.redis_job_repository()
-                .count_queue(channel, priority)
-                .await?,
-            2
-        );
-        app.restore_jobs_from_rdb(false, None).await?;
-        assert_eq!(
-            app.redis_job_repository()
-                .count_queue(channel, priority)
-                .await?,
-            2
-        );
-
-        // find job for delete (grabbed_until_time is SOme(0) in queue)
-        let job_d = app
-            .redis_job_repository()
-            .find_from_queue(channel, priority, &job_id)
-            .await?
-            .unwrap();
-        // lost only from redis (delete)
-        assert!(
-            app.redis_job_repository()
-                .delete_from_queue(channel, priority, &job_d)
+            // get job from redis
+            let job = app
+                .find_job(&job_id, Some(Duration::from_millis(100)))
                 .await?
-                > 0
-        );
-        assert_eq!(
-            app.redis_job_repository()
-                .count_queue(channel, priority)
-                .await?,
-            1
-        );
+                .unwrap();
+            assert_eq!(job.id.as_ref().unwrap(), &job_id);
+            assert_eq!(
+                job.data.as_ref().unwrap().worker_id.as_ref(),
+                Some(&worker_id)
+            );
 
-        // restore 1 lost jobs
-        app.restore_jobs_from_rdb(false, None).await?;
-        assert!(app
-            .redis_job_repository()
-            .find_from_queue(channel, priority, &job_id)
-            .await?
-            .is_some());
-        assert!(app
-            .redis_job_repository()
-            .find_from_queue(channel, priority, &job_id2)
-            .await?
-            .is_some());
-        assert_eq!(
-            app.redis_job_repository()
-                .count_queue(channel, priority)
-                .await?,
-            2
-        );
-        Ok(())
+            // check job status
+            assert_eq!(
+                app.redis_job_repository()
+                    .find_status(&job_id)
+                    .await
+                    .unwrap(),
+                Some(JobStatus::Pending)
+            );
+            assert_eq!(
+                app.redis_job_repository()
+                    .find_status(&job_id2)
+                    .await
+                    .unwrap(),
+                Some(JobStatus::Pending)
+            );
+
+            // no jobs to restore  (exists in both redis and rdb)
+            assert_eq!(
+                app.redis_job_repository()
+                    .count_queue(channel, priority)
+                    .await?,
+                2
+            );
+            app.restore_jobs_from_rdb(false, None).await?;
+            assert_eq!(
+                app.redis_job_repository()
+                    .count_queue(channel, priority)
+                    .await?,
+                2
+            );
+
+            // find job for delete (grabbed_until_time is SOme(0) in queue)
+            let job_d = app
+                .redis_job_repository()
+                .find_from_queue(channel, priority, &job_id)
+                .await?
+                .unwrap();
+            // lost only from redis (delete)
+            assert!(
+                app.redis_job_repository()
+                    .delete_from_queue(channel, priority, &job_d)
+                    .await?
+                    > 0
+            );
+            assert_eq!(
+                app.redis_job_repository()
+                    .count_queue(channel, priority)
+                    .await?,
+                1
+            );
+
+            // restore 1 lost jobs
+            app.restore_jobs_from_rdb(false, None).await?;
+            assert!(app
+                .redis_job_repository()
+                .find_from_queue(channel, priority, &job_id)
+                .await?
+                .is_some());
+            assert!(app
+                .redis_job_repository()
+                .find_from_queue(channel, priority, &job_id2)
+                .await?
+                .is_some());
+            assert_eq!(
+                app.redis_job_repository()
+                    .count_queue(channel, priority)
+                    .await?,
+                2
+            );
+            Ok(())
+        })
     }
 }

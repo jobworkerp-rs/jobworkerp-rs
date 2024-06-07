@@ -12,10 +12,10 @@ pub struct WorkerRow {
     pub r#type: i32,
     pub operation: Vec<u8>,
     pub retry_type: i32,
-    pub interval: i64,     // u32 // cannot use u32 in sqlx any db
-    pub max_interval: i64, // u32
-    pub max_retry: i64,    // u32
-    pub basis: f32,
+    pub interval: i64,          // u32 // cannot use u32 in sqlx any db
+    pub max_interval: i64,      // u32
+    pub max_retry: i64,         // u32
+    pub basis: f64,             // f32 (for sqlx sqlite3)
     pub periodic_interval: i64, // u32
     pub channel: Option<String>,
     pub queue_type: i32,
@@ -40,7 +40,7 @@ impl WorkerRow {
                     interval: self.interval as u32,
                     max_interval: self.max_interval as u32,
                     max_retry: self.max_retry as u32,
-                    basis: self.basis,
+                    basis: self.basis as f32, // XXX downcast
                 }),
                 periodic_interval: self.periodic_interval as u32,
                 channel: self.channel.clone(),
@@ -48,7 +48,7 @@ impl WorkerRow {
                 response_type: self.response_type,
                 store_success: self.store_success,
                 store_failure: self.store_failure,
-                next_workers: Self::deserialize_worker_ids(self.next_workers.as_str()),
+                next_workers: Self::deserialize_worker_ids(self.next_workers.as_ref()),
                 use_static: self.use_static,
             }),
         })

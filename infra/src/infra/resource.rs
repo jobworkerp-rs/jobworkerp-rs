@@ -1,7 +1,7 @@
 use crate::error::JobWorkerError;
 use anyhow::Result;
 use infra_utils::infra::{
-    rdb::RDBConfig,
+    rdb::{RDBConfig, RDBConfigImpl, RDBUrlConfigImpl},
     redis::{RedisConfig, RedisPool},
 };
 use sqlx::{Any, Pool};
@@ -11,13 +11,16 @@ const SQLITE_SCHEMA: &str = include_str!("../../sql/sqlite/001_schema.sql");
 static RDB_POOL: tokio::sync::OnceCell<Pool<Any>> = tokio::sync::OnceCell::const_new();
 
 pub async fn setup_rdb_by_env() -> &'static Pool<Any> {
-    let conf = load_db_config_from_env().unwrap_or_default();
+    let conf = load_db_config_from_env().unwrap_or(
+        load_db_url_config_from_env().unwrap_or(RDBConfig::Separate(RDBConfigImpl::default())),
+    );
     setup_rdb(&conf).await
 }
 
 // new rdb pool and store as static
 // (if failed initializing, panic!)
 pub async fn setup_rdb(db_config: &RDBConfig) -> &'static Pool<Any> {
+    sqlx::any::install_default_drivers();
     RDB_POOL
         .get_or_init(|| async {
             infra_utils::infra::rdb::new_rdb_pool(db_config, Some(&SQLITE_SCHEMA.to_string()))
@@ -27,11 +30,32 @@ pub async fn setup_rdb(db_config: &RDBConfig) -> &'static Pool<Any> {
         .await
 }
 
-pub fn load_db_config_from_env() -> Result<RDBConfig> {
-    // sqlite の設定優先
+pub fn load_db_url_config_from_env() -> Result<RDBConfig> {
+    // sqlite first
     envy::prefixed("SQLITE_")
-        .from_env::<RDBConfig>()
-        .or_else(|_| envy::prefixed("MYSQL_").from_env::<RDBConfig>())
+        .from_env::<RDBUrlConfigImpl>()
+        .map(RDBConfig::Url)
+        .or_else(|_| {
+            envy::prefixed("MYSQL_")
+                .from_env::<RDBUrlConfigImpl>()
+                .map(RDBConfig::Url)
+        })
+        .map_err(|e| {
+            JobWorkerError::RuntimeError(format!("cannot read redis config from env: {:?}", e))
+                .into()
+        })
+}
+
+pub fn load_db_config_from_env() -> Result<RDBConfig> {
+    // sqlite first
+    envy::prefixed("SQLITE_")
+        .from_env::<RDBConfigImpl>()
+        .map(RDBConfig::Separate)
+        .or_else(|_| {
+            envy::prefixed("MYSQL_")
+                .from_env::<RDBConfigImpl>()
+                .map(RDBConfig::Separate)
+        })
         .map_err(|e| {
             JobWorkerError::RuntimeError(format!("cannot read redis config from env: {:?}", e))
                 .into()
