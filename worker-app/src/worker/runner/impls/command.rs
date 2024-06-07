@@ -124,6 +124,7 @@ mod tests {
     use proto::jobworkerp::data::CommandArg;
     use tokio::time::{sleep, Duration};
 
+    #[ignore = "outbound network test"]
     #[tokio::test]
     async fn test_run() {
         let mut runner = CommandRunnerImpl {

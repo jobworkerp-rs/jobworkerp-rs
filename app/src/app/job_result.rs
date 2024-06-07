@@ -36,7 +36,7 @@ pub trait JobResultAppHelper: UseWorkerApp {
             .find_data_by_opt(d.worker_id.as_ref())
             .await
         {
-            d.worker_name = w.name.clone();
+            d.worker_name.clone_from(&w.name);
             d.max_retry = w.retry_policy.as_ref().map(|p| p.max_retry).unwrap_or(0);
             d.response_type = w.response_type;
             d.store_success = w.store_success;

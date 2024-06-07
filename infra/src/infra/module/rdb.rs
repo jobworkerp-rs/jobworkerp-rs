@@ -56,31 +56,30 @@ impl UseRdbRepositoryModule for RdbRepositoryModule {
 }
 
 pub mod test {
-    use anyhow::Result;
-    use sqlx::{Any, Pool};
-    // create RdbRepositoryModule for test
     use super::RdbRepositoryModule;
     use crate::infra::{
         job::rdb::RdbJobRepositoryImpl, job_result::rdb::RdbJobResultRepositoryImpl,
         worker::rdb::RdbWorkerRepositoryImpl,
     };
-    use infra_utils::infra::test::setup_test_mysql;
+    use infra_utils::infra::test::{setup_test_mysql, TEST_RUNTIME};
+    use sqlx::{Any, Executor, Pool};
 
-    pub async fn setup_test_rdb_module() -> RdbRepositoryModule {
-        let pool = setup_test_mysql("../infra/sql/mysql").await;
-        truncate_tables(pool).await.unwrap();
-        RdbRepositoryModule {
-            worker_repository: RdbWorkerRepositoryImpl::new(pool),
-            job_repository: RdbJobRepositoryImpl::new(pool),
-            job_result_repository: RdbJobResultRepositoryImpl::new(pool),
-        }
+    pub fn setup_test_rdb_module() -> RdbRepositoryModule {
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_mysql("../infra/sql/mysql").await;
+            pool.execute("SELECT 1;").await.expect("test connection");
+            truncate_tables(pool).await;
+            RdbRepositoryModule {
+                worker_repository: RdbWorkerRepositoryImpl::new(pool),
+                job_repository: RdbJobRepositoryImpl::new(pool),
+                job_result_repository: RdbJobResultRepositoryImpl::new(pool),
+            }
+        })
     }
-    pub async fn truncate_tables(pool: &Pool<Any>) -> Result<()> {
-        sqlx::query("TRUNCATE TABLE job;").execute(pool).await?;
-        sqlx::query("TRUNCATE TABLE worker;").execute(pool).await?;
-        sqlx::query("TRUNCATE TABLE job_result;")
+    pub async fn truncate_tables(pool: &Pool<Any>) {
+        sqlx::raw_sql("TRUNCATE TABLE job; TRUNCATE TABLE worker; TRUNCATE TABLE job_result;")
             .execute(pool)
-            .await?;
-        Ok(())
+            .await
+            .expect("truncate all tables");
     }
 }

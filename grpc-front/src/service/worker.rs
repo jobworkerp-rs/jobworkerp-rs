@@ -380,6 +380,7 @@ mod tests {
         }
     }
     impl UseStorageConfig for Validator {
+        #[allow(static_mut_refs)] // use for only test
         fn storage_config(&self) -> &StorageConfig {
             unsafe { STORAGE_CONFIG.r#type = self.storage_type };
             unsafe { &STORAGE_CONFIG }

@@ -54,7 +54,7 @@ pub trait RdbJobRepository:
             .execute(tx)
             .await
             .map_err(JobWorkerError::DBError)?;
-            Ok(res.rows_affected() > 0)
+            Ok(res.rows_affected > 0)
         } else {
             Err(JobWorkerError::RuntimeError(format!("Cannot insert empty job: {:?}", job)).into())
         }
@@ -95,7 +95,7 @@ pub trait RdbJobRepository:
         .bind(id.value)
         .execute(tx)
         .await
-        .map(|r| r.rows_affected() > 0)
+        .map(|r| r.rows_affected > 0)
         .map_err(JobWorkerError::DBError)
         .context(format!("error in update: id = {}", id.value))
     }
@@ -113,7 +113,7 @@ pub trait RdbJobRepository:
             .bind(id.value)
             .execute(tx)
             .await
-            .map(|r| r.rows_affected() > 0)
+            .map(|r| r.rows_affected > 0)
             .map_err(|e| JobWorkerError::DBError(e).into())
     }
 
@@ -448,26 +448,32 @@ mod test {
         Ok(())
     }
 
-    #[sqlx::test]
-    async fn test_sqlite() -> Result<()> {
+    #[test]
+    fn test_sqlite() -> Result<()> {
         use infra_utils::infra::test::setup_test_sqlite;
-        let sqlite_pool = setup_test_sqlite("sql/sqlite").await;
-        sqlx::query("DELETE FROM job;").execute(sqlite_pool).await?;
-        _test_repository(sqlite_pool).await?;
-        _test_find_id_set_in_instant(sqlite_pool).await
+        use infra_utils::infra::test::TEST_RUNTIME;
+        TEST_RUNTIME.block_on(async {
+            let sqlite_pool = setup_test_sqlite("sql/sqlite").await;
+            sqlx::query("DELETE FROM job;").execute(sqlite_pool).await?;
+            _test_repository(sqlite_pool).await?;
+            _test_find_id_set_in_instant(sqlite_pool).await
+        })
     }
 
-    #[sqlx::test]
-    async fn test_mysql() -> Result<()> {
+    #[test]
+    fn test_mysql() -> Result<()> {
         use infra_utils::infra::test::setup_test_mysql;
-        let mysql_pool = setup_test_mysql("sql/mysql").await;
-        sqlx::query("TRUNCATE TABLE job;")
-            .execute(mysql_pool)
-            .await?;
-        _test_repository(mysql_pool).await?;
-        sqlx::query("TRUNCATE TABLE job;")
-            .execute(mysql_pool)
-            .await?;
-        _test_find_id_set_in_instant(mysql_pool).await
+        use infra_utils::infra::test::TEST_RUNTIME;
+        TEST_RUNTIME.block_on(async {
+            let mysql_pool = setup_test_mysql("sql/mysql").await;
+            sqlx::query("TRUNCATE TABLE job;")
+                .execute(mysql_pool)
+                .await?;
+            _test_repository(mysql_pool).await?;
+            sqlx::query("TRUNCATE TABLE job;")
+                .execute(mysql_pool)
+                .await?;
+            _test_find_id_set_in_instant(mysql_pool).await
+        })
     }
 }
