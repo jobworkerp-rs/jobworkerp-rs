@@ -2,20 +2,24 @@
 
 ## 概要
 
-jobworkerp-rs(ジョブワーカープラスと読みます)はRust製ジョブワーカーシステムです。
-実行する処理を[worker](proto/protobuf/jobworkerp/service/worker.proto)として定義し、workerに対して実行命令となる[job](proto/protobuf/jobworkerp/service/job.proto)を登録(enqueue)することでジョブを実行できます。
-プラグイン形式でworkerの実行機能(runner)を追加することができます。
+jobworkerp-rs は、Rustで実装されたスケーラブルなジョブワーカーシステムです。
+ジョブワーカーシステムは、CPU負荷やI/O負荷の高いタスクを非同期に処理するために利用されます。
+GRPCをつかってワーカー定義・ジョブの登録、実行結果の取得などを実行できます。
+
+実行タスクを[worker](proto/protobuf/jobworkerp/service/worker.proto)として定義し、workerに対して実行命令となる[job](proto/protobuf/jobworkerp/service/job.proto)を登録（enqueue）することでジョブを実行させることができます。
+また、プラグイン形式でworkerの実行機能（runner）を追加することができます。
 
 ### 主な機能
 
-- 3種類のジョブキュー: Redis, RDB(mysql or sqlite), Hybrid (Redis + mysql)
-  - rdbを利用することで必要に応じてジョブのバックアップをとりつつジョブ実行することができます
-- 3種類の結果取得方法: 直接(DIRECT)、後から取得(LISTEN_AFTER)、結果取得しない(NONE)
+- ジョブキューとして利用できるストレージ種別: Redis、RDB（MySQLまたはSQLite）、Hybrid（Redis + MySQL）
+  - Hybrid構成では、RDBを利用して必要に応じてジョブのバックアップを取りつつジョブを実行することができます
+- 3種類のジョブ実行結果の取得方法: 直接取得（DIRECT）、後から取得（LISTEN_AFTER）、結果取得しない（NONE）
 - ジョブ実行チャネルの設定とチャネル毎の並列実行数の設定
-  - 例えばgpuチャネルでは並列度1で実行、通常チャネルでは並列度4で実行などの設定ができます
+  - 例えば、GPUチャネルでは並列度1で実行、通常チャネルでは並列度4で実行などの設定ができます
 - 指定時刻実行、一定間隔での定期実行
-- リトライ: リトライ回数や間隔の設定 (Exponential backoffなど)
-- プラグインによる実行ジョブ内容(Runner)の拡張
+- ジョブ実行失敗時のリトライ機能: リトライ回数や間隔の設定（Exponential backoffなど）
+- プラグインによる実行ジョブ内容（Runner）の拡張
+
 
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
@@ -24,8 +28,8 @@ jobworkerp-rs(ジョブワーカープラスと読みます)はRust製ジョブ�
 
 - [概要](#%E6%A6%82%E8%A6%81)
 - [Command Examples](#command-examples)
-  - [起動(ビルド)例](#%E8%B5%B7%E5%8B%95%E3%83%93%E3%83%AB%E3%83%89%E4%BE%8B)
-    - [RDBの定義:](#rdb%E3%81%AE%E5%AE%9A%E7%BE%A9)
+  - [ビルド、実行例](#%E3%83%93%E3%83%AB%E3%83%89%E3%80%81%E5%AE%9F%E8%A1%8C%E4%BE%8B)
+    - [RDBの定義](#rdb%E3%81%AE%E5%AE%9A%E7%BE%A9)
   - [grpcurl による実行例](#grpcurl-%E3%81%AB%E3%82%88%E3%82%8B%E5%AE%9F%E8%A1%8C%E4%BE%8B)
     - [注意](#%E6%B3%A8%E6%84%8F)
 - [jobworkerp-workerの機能詳細](#jobworkerp-worker%E3%81%AE%E6%A9%9F%E8%83%BD%E8%A9%B3%E7%B4%B0)
@@ -50,21 +54,22 @@ jobworkerp-rs(ジョブワーカープラスと読みます)はRust製ジョブ�
 
 --------
 
-### 起動(ビルド)例
+### ビルド、実行例
 
 ```shell
-# Run all-in-one binary from cargo (RDB storage: sqlite3)
-$ cargo run --bin all-in-one
-
-# build release binaries
-$ cargo build --release
 
 # prepare .env file for customizing settings
 $ cp dot.env .env
 # (modify to be appliable to your environment)
 
+# build release binaries
+$ cargo build --release
+
 # Run the all-in-one server by release binary
 $ ./target/release/all-in-one
+
+# Run all-in-one binary from cargo (RDB storage: sqlite3)
+$ cargo run --bin all-in-one
 
 # Run gRPC front server and worker by release binary
 $ ./target/release/worker &
@@ -82,13 +87,13 @@ one shot job (no result)
 
 # create worker
 
-1. $ grpcurl -d '{"name":"EchoWorker","type":"COMMAND","operation":"echo","next_workers":[],"retry_policy":{"type":"EXPONENTIAL","interval":"1000","max_interval":"60000","max_retry":"3","basis":"2"},"store_failure":true}' \
+1. $ grpcurl -d '{"name":"EchoWorker","operation":{"command":{"name":"echo"}},"next_workers":[],"retry_policy":{"type":"EXPONENTIAL","interval":"1000","max_interval":"60000","max_retry":"3","basis":"2"},"store_failure":true}' \
     -plaintext \
     localhost:9000 jobworkerp.service.WorkerService/Create
 
 # enqueue job (echo 'こんにちわ!')
 # specify worker_id created by WorkerService/Create (command 1. response)
-2. $ grpcurl -d '{"arg":"44GT44KT44Gr44Gh44KP77yBCg==","worker_id":{"value":"1"},"timeout":"360000","run_after_time":"3000"}' \
+2. $ grpcurl -d '{"arg":{"command":{"args":"44GT44KT44Gr44Gh44KP77yBCg=="}},"worker_id":{"value":"1"},"timeout":"360000","run_after_time":"3000"}' \
     -plaintext \
     localhost:9000 jobworkerp.service.JobService/Enqueue
 
@@ -99,20 +104,20 @@ one shot job (listen result)
 ```shell
 
 # create sleep worker (need store_success and store_failure to be true in rdb storage)
-1. $ grpcurl -d '{"name":"ListenSleepResultWorker","type":"COMMAND","operation":"sleep","next_workers":[],"retry_policy":{"type":"EXPONENTIAL","interval":"1000","max_interval":"60000","max_retry":"3","basis":"2"},"response_type":"LISTEN_AFTER","store_success":true,"store_failure":true}' \
+1. $ grpcurl -d '{"name":"ListenSleepResultWorker","operation":{"command":{"name":"sleep"}},"next_workers":[],"retry_policy":{"type":"EXPONENTIAL","interval":"1000","max_interval":"60000","max_retry":"3","basis":"2"},"response_type":"LISTEN_AFTER","store_success":true,"store_failure":true}' \
     -plaintext \
     localhost:9000 jobworkerp.service.WorkerService/Create
 
 # enqueue job
 # specify worker_id created by WorkerService/Create (command 1. response)
 # (timeout value(milliseconds) must be greater than sleep time)
-2. $ grpcurl -d '{"arg":"MjAK","worker_id":{"value":"2"},"timeout":"22000"}' \
+2. $ grpcurl -d '{"arg":{"command":{"args":"MjAK"}},"worker_id":{"value":"2"},"timeout":"22000"}' \
     -plaintext \
     localhost:9000 jobworkerp.service.JobService/Enqueue
 
 # listen job
 # specify job_id created by JobService/Enqueue (command 2. response)
-$ grpcurl -d '{"job_id":{"value":"<got job id above>"},"worker_id":{"value":"2"},"timeout":"22000"}' \
+$ grpcurl -d '{"job_id":{"value":"<got job id above>"},"worker_id":{"value":"<got worker id of ListenSleepResultWorker>"},"timeout":"22000"}' \
     -plaintext \
     localhost:9000 jobworkerp.service.JobResultService/Listen
 
@@ -125,7 +130,7 @@ periodic job
 ```shell
 
 # create periodic worker (repeat per 3 seconds)
-$ grpcurl -d '{"name":"EchoPeriodicWorker","type":"COMMAND","operation":"echo","retry_policy":{"type":"EXPONENTIAL","interval":"1000","max_interval":"60000","max_retry":"3","basis":"2"},"periodic_interval":3000,"store_failure":true}' \
+$ grpcurl -d '{"name":"EchoPeriodicWorker","operation":{"command":{"name":"echo"}},"retry_policy":{"type":"EXPONENTIAL","interval":"1000","max_interval":"60000","max_retry":"3","basis":"2"},"periodic_interval":3000,"store_failure":true}' \
     -plaintext \
     localhost:9000 jobworkerp.service.WorkerService/Create
 
@@ -133,7 +138,7 @@ $ grpcurl -d '{"name":"EchoPeriodicWorker","type":"COMMAND","operation":"echo","
 # specify worker_id created by WorkerService/Create (↑)
 # start job at [epoch second] % 3 == 1, per 3 seconds by run_after_time (epoch milliseconds) (see info log of jobworkerp-worker)
 # (If run_after_time is not specified, the command is executed repeatedly based on enqueue_time)
-$ grpcurl -d '{"arg":"44GT44KT44Gr44Gh44KP77yBCg==","worker_id":{"value":"10"},"timeout":"60000","run_after_time":"1000"}' \
+$ grpcurl -d '{"arg":{"command":{"args":"44GT44KT44Gr44Gh44KP77yBCg=="}},"worker_id":{"value":"10"},"timeout":"60000","run_after_time":"1000"}' \
     -plaintext \
     localhost:9000 jobworkerp.service.JobService/Enqueue
 ```
