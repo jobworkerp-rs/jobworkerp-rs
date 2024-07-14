@@ -33,7 +33,7 @@ deadpool-redis = { version = "0.15", features = ["rt_tokio_1", "cluster"] }
 debug_stub_derive = "0.3"
 bollard = { version = "0.16", features = ["buildkit", "chrono"] }
 bytes = "1.3"
-console-subscriber = { version = "0.2", features = ["parking_lot"] }
+console-subscriber = { version = "0.3", features = ["parking_lot"] }
 envy = "0.4"
 dotenvy = "0.15"
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
@@ -48,8 +48,8 @@ num-derive = "0.4"
 num-traits = "0.2"
 once_cell = "1"
 pnet = "0.35"
-prost = "0.12"
-prost-types = "0.12"
+prost = "0.13"
+prost-types = "0.13"
 rand = "0.8"
 regex = "1.7"
 redis = { version = "0.25", features = [
@@ -79,11 +79,11 @@ stretto = { version = "0.8", features = ["async"] }
 strum = "0.26"
 strum_macros = "0.26"
 thiserror = "1.0"
-tonic = { version = "0.11" }
-tonic-build = "0.11"
-tonic-health = "0.11"
-tonic-reflection = "0.11"
-tonic-web = "0.11"
+tonic = { version = "0.12" }
+tonic-build = "0.12"
+tonic-health = "0.12"
+tonic-reflection = "0.12"
+tonic-web = "0.12"
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["codec"] }
 tokio = { version = "1.35", features = [
@@ -96,7 +96,7 @@ tokio = { version = "1.35", features = [
     "parking_lot",
 ] }
 tracing = "0.1"
-tracing-opentelemetry = "0.23"
+tracing-opentelemetry = "0.24"
 tracing-subscriber = { version = "0.3", features = [
     "tracing-log",
     "env-filter",
