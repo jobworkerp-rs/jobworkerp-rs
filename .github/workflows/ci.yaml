@@ -106,4 +106,7 @@ jobs:
         args: --release --all-features
     - name: Run test
       run: cargo test
+    - name: Run test with mysql
+      run: cargo test --features "mysql"
+
 

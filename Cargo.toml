@@ -67,10 +67,9 @@ serde_with = "3.0"
 serde_yaml = "0.9"
 signal-hook = "0.3"
 signal-hook-tokio = "0.3"
-sqlx = { git = "https://github.com/sutr-app/sqlx.git", branch = "fix-any", features = [ # tag = "v0.7.3",
+sqlx = { version = "0.7", features = [
     "runtime-tokio",
     "tls-rustls",
-    "any",
     "sqlite",
     "mysql",
     "chrono",

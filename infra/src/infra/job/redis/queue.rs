@@ -39,7 +39,7 @@ where
     #[inline]
     async fn enqueue_result_direct(&self, id: &JobResultId, res: &JobResultData) -> Result<bool> {
         let mut con = self.redis_pool().clone().get().await?;
-        let v = Self::serialize_job_result(id.clone(), res.clone());
+        let v = Self::serialize_job_result(*id, res.clone());
         if let Some(jid) = res.job_id.as_ref() {
             tracing::debug!("send_result_direct: job_id: {:?}", jid);
             let cn = Self::result_queue_name(jid);
@@ -83,7 +83,7 @@ where
                 handle.close();
                 Err(JobWorkerError::OtherError("interrupt direct waiting process".to_string()).into())
             },
-            val = th_p.blpop::<String, Vec<Vec<u8>>>(c.clone(), (*timeout.unwrap_or(&0)/1000) as f64) => {
+            val = th_p.blpop::<'_, String, Vec<Vec<u8>>>(c, (*timeout.unwrap_or(&0)/1000) as f64) => {
                 let r: Result<JobResult> = val.map_err(|e|JobWorkerError::RedisError(e).into())
                     .flat_map(|v| Self::deserialize_job_result(&v[1]));
                 r
@@ -111,7 +111,7 @@ where
         let mut i = 0;
         while i < length {
             let mut r = redis
-                .lrange::<String, Vec<Vec<u8>>>(c.clone(), i, i + limit)
+                .lrange::<'_, String, Vec<Vec<u8>>>(c.clone(), i, i + limit)
                 .await
                 .map_err(JobWorkerError::RedisError)?;
             i += limit;
@@ -147,7 +147,7 @@ where
         let mut i = 0;
         while i < length {
             let mut r = redis
-                .lrange::<String, Vec<Vec<u8>>>(c.clone(), i, i + limit)
+                .lrange::<'_, String, Vec<Vec<u8>>>(c.clone(), i, i + limit)
                 .await
                 .map_err(JobWorkerError::RedisError)?;
             i += limit;
@@ -173,7 +173,7 @@ where
         );
         let mut redis = self.redis_pool().get().await.unwrap();
         redis
-            .lrem::<String, Vec<u8>, i32>(c, 0, Self::serialize_job(job))
+            .lrem::<'_, String, Vec<u8>, i32>(c, 0, Self::serialize_job(job))
             .await
             .map_err(|e| JobWorkerError::RedisError(e).into())
     }
@@ -237,7 +237,7 @@ mod test {
         redis_pool
             .get()
             .await?
-            .del::<String, i64>(RedisJobQueueRepositoryImpl::queue_channel_name(
+            .del::<'_, String, i64>(RedisJobQueueRepositoryImpl::queue_channel_name(
                 RedisJobQueueRepositoryImpl::DEFAULT_CHANNEL_NAME,
                 Some(&1),
             ))
@@ -299,7 +299,7 @@ mod test {
         let job_result_id = JobResultId { value: 111 };
         let job_id = JobId { value: 1 };
         let job_result_data = JobResultData {
-            job_id: Some(job_id.clone()),
+            job_id: Some(job_id),
             status: ResultStatus::Success as i32,
             output: Some(ResultOutput {
                 items: vec!["test".as_bytes().to_owned()],

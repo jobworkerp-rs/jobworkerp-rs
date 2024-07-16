@@ -152,9 +152,9 @@ pub trait JobBuilder {
                 .map(|n| dat.end_time + n as i64)
                 .unwrap_or(0);
             Some(Job {
-                id: dat.job_id.clone(),
+                id: dat.job_id,
                 data: Some(JobData {
-                    worker_id: dat.worker_id.clone(),
+                    worker_id: dat.worker_id,
                     arg: dat.arg.clone(),
                     uniq_key: dat.uniq_key.clone(),
                     retried: previous_retry_count + 1, // increment retried
@@ -181,7 +181,7 @@ pub trait JobBuilder {
                 worker.periodic_interval as i64,
             );
             Some(JobData {
-                worker_id: dat.worker_id.clone(),
+                worker_id: dat.worker_id,
                 arg: dat.arg.clone(),
                 uniq_key: dat.uniq_key.clone(),
                 enqueue_time: dat.enqueue_time,

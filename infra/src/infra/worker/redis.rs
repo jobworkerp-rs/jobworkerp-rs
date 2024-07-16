@@ -80,7 +80,7 @@ where
     /// - Ok(false) if updated
     async fn _upsert_by_id(&self, id: &WorkerId, worker: &WorkerData) -> Result<bool> {
         let w = Worker {
-            id: Some(id.clone()),
+            id: Some(*id),
             data: Some(worker.clone()),
         };
         let m = Self::serialize_worker(&w);
@@ -289,7 +289,7 @@ async fn redis_test() -> Result<()> {
     // clear first
     repo.delete(&id).await?;
     let wk = Worker {
-        id: Some(id.clone()),
+        id: Some(id),
         data: Some(worker.clone()),
     };
     // create and find
@@ -321,7 +321,7 @@ async fn redis_test() -> Result<()> {
     worker2.store_failure = false;
 
     let wk2 = Worker {
-        id: Some(id.clone()),
+        id: Some(id),
         data: Some(worker2.clone()),
     };
     // update and find

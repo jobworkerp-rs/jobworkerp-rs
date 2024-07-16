@@ -28,7 +28,7 @@ where
     async fn create(&self, id: &JobResultId, job_result: &JobResultData) -> Result<()> {
         let job_id = job_result.job_id.as_ref();
         let mut con = self.redis_pool().get().await?;
-        let v = Self::serialize_job_result(id.clone(), job_result.clone());
+        let v = Self::serialize_job_result(*id, job_result.clone());
         let res: Result<bool> = con
             .hset_nx(Self::CACHE_KEY, id.value, &v)
             .await
@@ -67,7 +67,7 @@ where
     async fn upsert(&self, id: &JobResultId, job_result: &JobResultData) -> Result<bool> {
         let job_id = job_result.job_id.as_ref();
         let mut con = self.redis_pool().get().await?;
-        let v = Self::serialize_job_result(id.clone(), job_result.clone());
+        let v = Self::serialize_job_result(*id, job_result.clone());
         let res: Result<bool> = con
             .hset(Self::CACHE_KEY, id.value, &v)
             .await
@@ -97,7 +97,7 @@ where
         job_result: &JobResultData,
     ) -> Result<bool> {
         let job_id = job_result.job_id.as_ref();
-        let v = Self::serialize_job_result(id.clone(), job_result.clone());
+        let v = Self::serialize_job_result(*id, job_result.clone());
         if let Some(jid) = job_id {
             // set cache for job_id
             self.redis_pool()
