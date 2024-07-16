@@ -86,9 +86,9 @@ impl JobApp for RdbJobAppImpl {
             let jid = JobId { value: id };
 
             let job = Job {
-                id: Some(jid.clone()),
+                id: Some(jid),
                 data: Some(JobData {
-                    worker_id: Some(wid.clone()),
+                    worker_id: Some(wid),
                     arg,
                     uniq_key,
                     enqueue_time: datetime::now_millis(),

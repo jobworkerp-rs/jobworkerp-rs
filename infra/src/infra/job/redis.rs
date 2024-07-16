@@ -87,7 +87,7 @@ where
         {
             Ok(Some(v)) => Self::deserialize_to_job(&v).map(|d| {
                 Some(Job {
-                    id: Some(id.clone()),
+                    id: Some(*id),
                     data: Some(d),
                 })
             }),

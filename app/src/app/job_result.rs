@@ -55,7 +55,7 @@ pub trait JobResultAppHelper: UseWorkerApp {
         if let Some(d) = result.data {
             match self._fill_worker_data_to_data(d).await {
                 Ok(res) => Ok(JobResult {
-                    id: result.id.clone(),
+                    id: result.id,
                     data: Some(res),
                 }),
                 Err(e) => {

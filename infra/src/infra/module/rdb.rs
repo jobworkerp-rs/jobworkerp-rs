@@ -61,12 +61,15 @@ pub mod test {
         job::rdb::RdbJobRepositoryImpl, job_result::rdb::RdbJobResultRepositoryImpl,
         worker::rdb::RdbWorkerRepositoryImpl,
     };
-    use infra_utils::infra::test::{setup_test_mysql, TEST_RUNTIME};
-    use sqlx::{Any, Executor, Pool};
+    use infra_utils::infra::test::{setup_test_rdb_from, TEST_RUNTIME};
+    use sqlx::Executor;
 
+    #[cfg(not(feature = "mysql"))]
     pub fn setup_test_rdb_module() -> RdbRepositoryModule {
+        use infra_utils::infra::test::truncate_tables;
+
         TEST_RUNTIME.block_on(async {
-            let pool = setup_test_mysql("../infra/sql/mysql").await;
+            let pool = setup_test_rdb_from("../infra/sql/sqlite").await;
             pool.execute("SELECT 1;").await.expect("test connection");
             truncate_tables(pool).await;
             RdbRepositoryModule {
@@ -76,10 +79,18 @@ pub mod test {
             }
         })
     }
-    pub async fn truncate_tables(pool: &Pool<Any>) {
-        sqlx::raw_sql("TRUNCATE TABLE job; TRUNCATE TABLE worker; TRUNCATE TABLE job_result;")
-            .execute(pool)
-            .await
-            .expect("truncate all tables");
+    #[cfg(feature = "mysql")]
+    pub fn setup_test_rdb_module() -> RdbRepositoryModule {
+        use infra_utils::infra::test::truncate_tables;
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_rdb_from("../infra/sql/mysql").await;
+            pool.execute("SELECT 1;").await.expect("test connection");
+            truncate_tables(pool).await;
+            RdbRepositoryModule {
+                worker_repository: RdbWorkerRepositoryImpl::new(pool),
+                job_repository: RdbJobRepositoryImpl::new(pool),
+                job_result_repository: RdbJobResultRepositoryImpl::new(pool),
+            }
+        })
     }
 }

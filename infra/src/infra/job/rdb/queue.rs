@@ -1,11 +1,11 @@
 use crate::{error::JobWorkerError, infra::job::rows::JobRow};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use command_utils::util::datetime;
-use infra_utils::infra::rdb::UseRdbPool;
+use infra_utils::infra::rdb::{Rdb, RdbArguments, UseRdbPool};
 use itertools::Itertools;
 use proto::jobworkerp::data::{Job, JobId, WorkerId};
-use sqlx::{any::AnyArguments, Any, Arguments, FromRow};
+use sqlx::{Arguments, FromRow};
 
 pub const GRAB_MERGIN_MILLISEC: i64 = 10000;
 
@@ -51,19 +51,15 @@ pub trait RdbJobQueueRepository: UseRdbPool + Sync + Send {
                 future_query, in_clause
             )
         };
-        let mut args = AnyArguments::default();
-        args.add(now + mergin_msec as i64)
-            .map_err(|e| anyhow!("arg error: {:?}", e))?;
-        args.add(now).map_err(|e| anyhow!("arg error: {:?}", e))?;
+        let mut args = RdbArguments::default();
+        args.add(now + mergin_msec as i64);
+        args.add(now);
         for id in &worker_ids {
-            args.add(id.value)
-                .map_err(|e| anyhow!("arg error: {:?}", e))?;
+            args.add(id.value);
         }
-        args.add(limit as i64)
-            .map_err(|e| anyhow!("arg error: {:?}", e))?;
-        args.add(offset)
-            .map_err(|e| anyhow!("arg error: {:?}", e))?;
-        let mut rows = sqlx::query_with::<Any, _>(&query, args)
+        args.add(limit as i64);
+        args.add(offset);
+        let mut rows = sqlx::query_with::<Rdb, _>(&query, args)
             .fetch_all(self.db_pool())
             .await
             .map_err(JobWorkerError::DBError)
@@ -85,7 +81,7 @@ pub trait RdbJobQueueRepository: UseRdbPool + Sync + Send {
     /// (from backuped records)
     async fn fetch_timeouted_backup_jobs(&self, limit: u32, offset: i64) -> Result<Vec<Job>> {
         let now = datetime::now_millis();
-        sqlx::query_as::<Any, JobRow>(
+        sqlx::query_as::<Rdb, JobRow>(
             r#"
             SELECT * FROM job
             WHERE grabbed_until_time > 0 AND grabbed_until_time <= ? AND run_after_time = 0
@@ -128,7 +124,7 @@ pub trait RdbJobQueueRepository: UseRdbPool + Sync + Send {
             .await
             .map_err(JobWorkerError::DBError)
             .context("failed to execute query")?;
-        Ok(res.rows_affected > 0)
+        Ok(res.rows_affected() > 0)
     }
     /// unix time (millis) to re-execute if the job does not finish after a while (timeout + GRAB_MERGIN_MILLISEC)
     fn grabbed_until_time(timeout: Option<u64>, now: i64) -> i64 {
@@ -172,7 +168,7 @@ pub trait RdbJobQueueRepository: UseRdbPool + Sync + Send {
         .await
         .map_err(JobWorkerError::DBError)
         .context("failed to execute query")?;
-        Ok(res.rows_affected > 0)
+        Ok(res.rows_affected() > 0)
     }
 }
 
@@ -185,13 +181,13 @@ mod test {
     use anyhow::Result;
     use command_utils::util::datetime;
     use command_utils::util::option::FlatMap;
+    use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::test::TEST_RUNTIME;
     use proto::jobworkerp::data::Job;
     use proto::jobworkerp::data::JobData;
     use proto::jobworkerp::data::WorkerId;
-    use sqlx::{Any, Pool};
 
-    async fn _test_job_queue_repository(pool: &'static Pool<Any>) -> Result<()> {
+    async fn _test_job_queue_repository(pool: &'static RdbPool) -> Result<()> {
         let repo = RdbJobRepositoryImpl::new(pool);
         let worker_id = WorkerId { value: 11 };
         let worker_id2 = WorkerId { value: 21 };
@@ -207,19 +203,19 @@ mod test {
             )),
         };
         let instant_job_data = JobData {
-            worker_id: Some(worker_id.clone()),
+            worker_id: Some(worker_id),
             arg: Some(jarg.clone()),
             grabbed_until_time: Some(0),
             run_after_time: 0,
             ..Default::default()
         };
         let job0 = Job {
-            id: Some(jid.clone()),
+            id: Some(jid),
             data: Some(instant_job_data.clone()),
         };
         assert!(repo.create(&job0).await?);
         let current_job_data = JobData {
-            worker_id: Some(worker_id2.clone()),
+            worker_id: Some(worker_id2),
             arg: Some(jarg.clone()),
             grabbed_until_time: Some(0),
             run_after_time: datetime::now_millis(),
@@ -227,13 +223,13 @@ mod test {
         };
         let jid1 = JobId { value: 2 };
         let job1 = Job {
-            id: Some(jid1.clone()),
+            id: Some(jid1),
             data: Some(current_job_data.clone()),
         };
         assert!(repo.create(&job1).await?);
 
         let future_job_data = JobData {
-            worker_id: Some(worker_id.clone()),
+            worker_id: Some(worker_id),
             arg: Some(jarg.clone()),
             grabbed_until_time: Some(0),
             run_after_time: datetime::now_millis() + 10000,
@@ -241,7 +237,7 @@ mod test {
         };
         let jid2 = JobId { value: 3 };
         let job2 = Job {
-            id: Some(jid2.clone()),
+            id: Some(jid2),
             data: Some(future_job_data.clone()),
         };
 
@@ -318,21 +314,23 @@ mod test {
         Ok(())
     }
 
+    #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_sqlite() -> Result<()> {
-        use infra_utils::infra::test::setup_test_sqlite;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let sqlite_pool = setup_test_sqlite("sql/sqlite").await;
+            let sqlite_pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job;").execute(sqlite_pool).await?;
             _test_job_queue_repository(sqlite_pool).await
         })
     }
 
+    #[cfg(feature = "mysql")]
     #[test]
     fn test_mysql() -> Result<()> {
-        use infra_utils::infra::test::setup_test_mysql;
+        use infra_utils::infra::test::setup_test_rdb_from;
         TEST_RUNTIME.block_on(async {
-            let mysql_pool = setup_test_mysql("sql/mysql").await;
+            let mysql_pool = setup_test_rdb_from("sql/mysql").await;
             println!("1");
             sqlx::query("TRUNCATE TABLE job;")
                 .execute(mysql_pool)
@@ -344,14 +342,11 @@ mod test {
 
     #[test]
     fn test_fetch_timeouted_backup_jobs() -> Result<()> {
-        use infra_utils::infra::test::setup_test_mysql;
+        use infra_utils::infra::test::setup_test_rdb;
         use proto::jobworkerp::data::JobData;
         use proto::jobworkerp::data::WorkerId;
         TEST_RUNTIME.block_on(async {
-            let mysql_pool = setup_test_mysql("sql/mysql").await;
-            sqlx::query("TRUNCATE TABLE job;")
-                .execute(mysql_pool)
-                .await?;
+            let mysql_pool = setup_test_rdb().await;
             let repo = RdbJobRepositoryImpl::new(mysql_pool);
             let worker_id = WorkerId { value: 11 };
             let worker_id2 = WorkerId { value: 21 };
@@ -369,21 +364,21 @@ mod test {
 
             // for redis job: run_after_time:0, not timeouted (grabbed)
             let instant_job_data_for_redis = JobData {
-                worker_id: Some(worker_id.clone()),
+                worker_id: Some(worker_id),
                 arg: Some(jarg.clone()),
                 grabbed_until_time: Some(now_millis + 10000),
                 run_after_time: 0,
                 ..Default::default()
             };
             let job0 = Job {
-                id: Some(jid0.clone()),
+                id: Some(jid0),
                 data: Some(instant_job_data_for_redis.clone()),
             };
             assert!(repo.create(&job0).await?);
 
             // for redis job: run_after_time:0, timeouted
             let timeouted_job_data_for_redis = JobData {
-                worker_id: Some(worker_id.clone()),
+                worker_id: Some(worker_id),
                 arg: Some(jarg.clone()),
                 grabbed_until_time: Some(now_millis - 1000),
                 run_after_time: 0,
@@ -391,14 +386,14 @@ mod test {
             };
             let jid1 = JobId { value: 11 };
             let job1 = Job {
-                id: Some(jid1.clone()),
+                id: Some(jid1),
                 data: Some(timeouted_job_data_for_redis.clone()),
             };
             assert!(repo.create(&job1).await?);
 
             // for rdb job, timeouted
             let current_job_data_for_rdb = JobData {
-                worker_id: Some(worker_id2.clone()),
+                worker_id: Some(worker_id2),
                 arg: Some(jarg.clone()),
                 grabbed_until_time: Some(now_millis - 1000),
                 run_after_time: datetime::now_millis(),
@@ -406,14 +401,14 @@ mod test {
             };
             let jid2 = JobId { value: 22 };
             let job2 = Job {
-                id: Some(jid2.clone()),
+                id: Some(jid2),
                 data: Some(current_job_data_for_rdb.clone()),
             };
             assert!(repo.create(&job2).await?);
 
             // for rdb future job
             let future_job_data = JobData {
-                worker_id: Some(worker_id.clone()),
+                worker_id: Some(worker_id),
                 arg: Some(jarg.clone()),
                 grabbed_until_time: Some(0),
                 run_after_time: datetime::now_millis() + 10000,
@@ -421,7 +416,7 @@ mod test {
             };
             let jid3 = JobId { value: 33 };
             let job3 = Job {
-                id: Some(jid3.clone()),
+                id: Some(jid3),
                 data: Some(future_job_data.clone()),
             };
             assert!(repo.create(&job3).await?);
