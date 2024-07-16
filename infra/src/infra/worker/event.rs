@@ -9,7 +9,7 @@ pub trait UseWorkerPublish: UseJobqueueAndCodec + UseRedisClient + Send + Sync {
     // publish worker changed event using redis<
     async fn publish_worker_changed(&self, id: &WorkerId, data: &WorkerData) -> Result<()> {
         let worker = Worker {
-            id: Some(id.clone()),
+            id: Some(*id),
             data: Some(data.clone()),
         };
         let worker_data = Self::serialize_worker(&worker);
@@ -19,7 +19,7 @@ pub trait UseWorkerPublish: UseJobqueueAndCodec + UseRedisClient + Send + Sync {
     // publish worker deleted event using redis
     async fn publish_worker_deleted(&self, worker_id: &WorkerId) -> Result<()> {
         let worker = Worker {
-            id: Some(worker_id.clone()),
+            id: Some(*worker_id),
             data: None,
         };
         let worker_data = Self::serialize_worker(&worker);

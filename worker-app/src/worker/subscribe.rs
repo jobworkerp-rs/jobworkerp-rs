@@ -84,7 +84,7 @@ mod test {
         module::load_worker_config,
     };
     use infra::infra::{
-        test::new_for_test_config_mysql, worker::event::UseWorkerPublish, IdGeneratorWrapper,
+        test::new_for_test_config_rdb, worker::event::UseWorkerPublish, IdGeneratorWrapper,
     };
     use infra_utils::infra::test::setup_test_redis_client;
     use proto::jobworkerp::data::{
@@ -127,7 +127,7 @@ mod test {
             restore_at_startup: Some(false),
         });
         let id_generator = Arc::new(IdGeneratorWrapper::new());
-        let module = new_for_test_config_mysql();
+        let module = new_for_test_config_rdb();
         let repositories =
             Arc::new(infra::infra::module::HybridRepositoryModule::new(&module).await);
         let memory_cache = infra_utils::infra::memory::new_memory_cache::<Arc<String>, Vec<Worker>>(

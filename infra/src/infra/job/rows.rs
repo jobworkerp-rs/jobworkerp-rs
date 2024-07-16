@@ -213,7 +213,7 @@ mod tests {
         impl UseJobqueueAndCodec for JobQueueImpl {}
 
         let id = JobResultId { value: 1234 };
-        let serialized = JobQueueImpl::serialize_job_result(id.clone(), job_result_data.clone());
+        let serialized = JobQueueImpl::serialize_job_result(id, job_result_data.clone());
         let deserialized = JobQueueImpl::deserialize_job_result(&serialized).unwrap();
         assert_eq!(id, deserialized.id.unwrap());
         assert_eq!(job_result_data, deserialized.data.unwrap());

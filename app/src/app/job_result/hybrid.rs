@@ -408,7 +408,7 @@ mod tests {
         TEST_RUNTIME.block_on(async {
             let worker_id = app.worker_app().create(&worker_data).await?;
             let worker = Worker {
-                id: Some(worker_id.clone()),
+                id: Some(worker_id),
                 data: Some(worker_data.clone()),
             };
 
@@ -425,8 +425,8 @@ mod tests {
                 )),
             };
             let mut data = JobResultData {
-                job_id: Some(job_id.clone()),
-                worker_id: worker.id.clone(),
+                job_id: Some(job_id),
+                worker_id: worker.id,
                 status: ResultStatus::Success as i32,
                 worker_name: worker_data.name.clone(),
                 arg: Some(arg),
@@ -435,11 +435,7 @@ mod tests {
                     items: vec![b"data".to_vec()],
                 }),
                 retried: 0,
-                max_retry: worker_data
-                    .retry_policy
-                    .clone()
-                    .map(|p| p.max_retry)
-                    .unwrap_or(0),
+                max_retry: worker_data.retry_policy.map(|p| p.max_retry).unwrap_or(0),
                 priority: Priority::High as i32,
                 timeout: 0,
                 enqueue_time: datetime::now_millis(),
@@ -451,7 +447,7 @@ mod tests {
                 store_failure: worker_data.store_failure,
             };
             let result = JobResult {
-                id: Some(id.clone()),
+                id: Some(id),
                 data: Some(data.clone()),
             };
             assert!(app.create_job_result_if_necessary(&id, &data).await?);
@@ -466,9 +462,9 @@ mod tests {
             };
             let job_id = JobId { value: 101 };
             data.status = ResultStatus::ErrorAndRetry as i32;
-            data.job_id = Some(job_id.clone());
+            data.job_id = Some(job_id);
             let result = JobResult {
-                id: Some(id.clone()),
+                id: Some(id),
                 data: Some(data.clone()),
             };
             assert!(app.create_job_result_if_necessary(&id, &data).await?);
@@ -487,10 +483,10 @@ mod tests {
             data.status = ResultStatus::FatalError as i32;
             // no store to db
             data.store_failure = false;
-            data.job_id = Some(job_id.clone());
+            data.job_id = Some(job_id);
             data.response_type = ResponseType::ListenAfter as i32;
             let result = JobResult {
-                id: Some(id.clone()),
+                id: Some(id),
                 data: Some(data.clone()),
             };
             // store only to redis for listen after
@@ -511,7 +507,7 @@ mod tests {
             };
             let job_id = JobId { value: 303 };
             data.status = ResultStatus::ErrorAndRetry as i32;
-            data.job_id = Some(job_id.clone());
+            data.job_id = Some(job_id);
             assert!(
                 !(app.create_job_result_if_necessary(&id, &data).await?),
                 "no store"

@@ -214,7 +214,7 @@ where
         job: &Job,
         worker: &WorkerData,
     ) -> Result<(JobId, Option<JobResult>)> {
-        let job_id = job.id.clone().unwrap();
+        let job_id = job.id.unwrap();
         // job in the future(need to wait) (use for redis only mode in future)
         let res = match if self.is_run_after_job(job) {
             // schedule
@@ -241,9 +241,9 @@ where
                         job.data.as_ref().map(|d| d.timeout),
                     )
                     .await
-                    .map(|r| (job_id.clone(), Some(r)))
+                    .map(|r| (job_id, Some(r)))
                 } else {
-                    Ok((job_id.clone(), None))
+                    Ok((job_id, None))
                 }
             }
             Err(e) => Err(e),

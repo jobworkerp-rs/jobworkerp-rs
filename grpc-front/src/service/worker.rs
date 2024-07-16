@@ -181,7 +181,7 @@ pub trait ResponseProcessor: UseJobqueueAndCodec {
         if let Some(d) = w.data {
             let dat = self.process_data(d);
             Worker {
-                id: w.id.clone(),
+                id: w.id,
                 data: Some(dat),
             }
         } else {
@@ -444,7 +444,7 @@ mod tests {
             max_interval: 0,
         };
         assert!(v.validate_retry_policy(&rp).is_ok());
-        let mut r = rp.clone();
+        let mut r = rp;
         r.basis = 0.3;
         assert!(v.validate_retry_policy(&r).is_err());
     }

@@ -17,7 +17,7 @@ pub trait JobResultPublishApp: UseRedisClient + UseJobqueueAndCodec {
             &jid.value,
             &id.value
         );
-        let result_data = Self::serialize_job_result(id.clone(), data.clone());
+        let result_data = Self::serialize_job_result(*id, data.clone());
         self.publish(
             Self::job_result_pubsub_channel_name(jid).as_str(),
             &result_data,
@@ -99,20 +99,20 @@ mod test {
         let job_id = JobId { value: 1 };
         let job_result_id = JobResultId { value: 1212 };
         let data = JobResultData {
-            job_id: Some(job_id.clone()),
+            job_id: Some(job_id),
             output: Some(ResultOutput {
                 items: vec![b"test".to_vec()],
             }),
             ..JobResultData::default()
         };
         let job_result = JobResult {
-            id: Some(job_result_id.clone()),
+            id: Some(job_result_id),
             data: Some(data.clone()),
         };
 
         // 2 subscribers
         let app2 = app.clone();
-        let job_id2 = job_id.clone();
+        let job_id2 = job_id;
         let jr2 = job_result.clone();
         let jh = tokio::spawn(async move {
             let res = app2.subscribe_result(&job_id2, None).await.unwrap();
@@ -120,7 +120,7 @@ mod test {
             assert_eq!(res.data, jr2.data);
         });
         let app2 = app.clone();
-        let job_id2 = job_id.clone();
+        let job_id2 = job_id;
         let jr2 = job_result.clone();
         let jh2 = tokio::spawn(async move {
             let res = app2.subscribe_result(&job_id2, Some(&1000)).await.unwrap();
