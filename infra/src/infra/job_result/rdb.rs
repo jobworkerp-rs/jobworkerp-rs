@@ -2,15 +2,15 @@ use super::rows::JobResultRow;
 use crate::{error::JobWorkerError, infra::job::rows::UseJobqueueAndCodec};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use infra_utils::infra::rdb::UseRdbPool;
+use infra_utils::infra::rdb::{Rdb, RdbPool, UseRdbPool};
 use itertools::Itertools;
 use proto::jobworkerp::data::{JobId, JobResult, JobResultData, JobResultId};
-use sqlx::{Any, Executor, Pool, Transaction};
+use sqlx::{Executor, Transaction};
 
 #[async_trait]
 pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
     async fn create(&self, id: &JobResultId, job_result: &JobResultData) -> Result<bool> {
-        let res = sqlx::query::<Any>(
+        let res = sqlx::query::<Rdb>(
             "INSERT INTO job_result (
                 id,
                 job_id,
@@ -52,12 +52,12 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
         .await
         .map_err(JobWorkerError::DBError)?;
 
-        Ok(res.rows_affected > 0)
+        Ok(res.rows_affected() > 0)
     }
 
     async fn update(
         &self,
-        tx: &mut Transaction<'_, Any>,
+        tx: &mut Transaction<'_, Rdb>,
         id: &JobResultId,
         job_result: &JobResultData,
     ) -> Result<bool> {
@@ -100,7 +100,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
         .bind(id.value)
         .execute(&mut **tx)
         .await
-        .map(|r| r.rows_affected > 0)
+        .map(|r| r.rows_affected() > 0)
         .map_err(JobWorkerError::DBError)
         .context(format!(
             "error in update: id = {:?}, job id = {:?}",
@@ -113,22 +113,22 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
         self.delete_tx(self.db_pool(), id).await
     }
 
-    async fn delete_tx<'c, E: Executor<'c, Database = Any>>(
+    async fn delete_tx<'c, E: Executor<'c, Database = Rdb>>(
         &self,
         tx: E,
         id: &JobResultId,
     ) -> Result<bool> {
-        let del = sqlx::query::<Any>("DELETE FROM job_result WHERE id = ?;")
+        let del = sqlx::query::<Rdb>("DELETE FROM job_result WHERE id = ?;")
             .bind(id.value)
             .execute(tx)
             .await
-            .map(|r| r.rows_affected > 0)
+            .map(|r| r.rows_affected() > 0)
             .map_err(JobWorkerError::DBError)?;
         Ok(del)
     }
 
     async fn find_latest_by_job_id(&self, job_id: &JobId) -> Result<Option<JobResult>> {
-        sqlx::query_as::<Any, JobResultRow>(
+        sqlx::query_as::<Rdb, JobResultRow>(
             "SELECT * FROM job_result WHERE job_id = ? ORDER BY end_time DESC LIMIT 1;",
         )
         .bind(job_id.value)
@@ -142,7 +142,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
     /// find latest 1000 records by job_id
     /// XXX limit 1000 (max retry)
     async fn find_list_by_job_id(&self, job_id: &JobId) -> Result<Vec<JobResult>> {
-        sqlx::query_as::<Any, JobResultRow>(
+        sqlx::query_as::<Rdb, JobResultRow>(
             "SELECT * FROM job_result WHERE job_id = ? ORDER BY end_time DESC LIMIT 1000;",
         )
         .bind(job_id.value)
@@ -154,7 +154,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
     }
 
     async fn find(&self, id: &JobResultId) -> Result<Option<JobResult>> {
-        sqlx::query_as::<Any, JobResultRow>("SELECT * FROM job_result WHERE id = ?;")
+        sqlx::query_as::<Rdb, JobResultRow>("SELECT * FROM job_result WHERE id = ?;")
             .bind(id.value)
             .fetch_optional(self.db_pool())
             .await
@@ -182,7 +182,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
         .context(format!("error in find_list: ({:?}, {:?})", limit, offset))
     }
 
-    async fn count_list_tx<'c, E: Executor<'c, Database = Any>>(&self, tx: E) -> Result<i64> {
+    async fn count_list_tx<'c, E: Executor<'c, Database = Rdb>>(&self, tx: E) -> Result<i64> {
         sqlx::query_scalar("SELECT count(*) as count FROM job_result;")
             .fetch_one(tx)
             .await
@@ -193,7 +193,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
 
 #[derive(Clone, Debug)]
 pub struct RdbJobResultRepositoryImpl {
-    pool: &'static Pool<Any>,
+    pool: &'static RdbPool,
 }
 
 pub trait UseRdbJobResultRepository {
@@ -201,13 +201,13 @@ pub trait UseRdbJobResultRepository {
 }
 
 impl RdbJobResultRepositoryImpl {
-    pub fn new(pool: &'static Pool<Any>) -> Self {
+    pub fn new(pool: &'static RdbPool) -> Self {
         Self { pool }
     }
 }
 
 impl UseRdbPool for RdbJobResultRepositoryImpl {
-    fn db_pool(&self) -> &Pool<Any> {
+    fn db_pool(&self) -> &RdbPool {
         self.pool
     }
 }
@@ -221,6 +221,7 @@ mod test {
     use super::RdbJobResultRepositoryImpl;
     use anyhow::Context;
     use anyhow::Result;
+    use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::rdb::UseRdbPool;
     use proto::jobworkerp::data::runner_arg::Data;
     use proto::jobworkerp::data::CommandArg;
@@ -232,9 +233,8 @@ mod test {
     use proto::jobworkerp::data::ResultStatus;
     use proto::jobworkerp::data::RunnerArg;
     use proto::jobworkerp::data::WorkerId;
-    use sqlx::{Any, Pool};
 
-    async fn _test_repository(pool: &'static Pool<Any>) -> Result<()> {
+    async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
         let repository = RdbJobResultRepositoryImpl::new(pool);
         let db = repository.db_pool();
         let arg = RunnerArg {
@@ -268,9 +268,9 @@ mod test {
         let id = JobResultId { value: 111 };
         assert!(repository.create(&id, &data.clone().unwrap()).await?);
 
-        let id1 = id.clone();
+        let id1 = id;
         let expect = JobResult {
-            id: Some(id1.clone()),
+            id: Some(id1),
             data,
         };
 
@@ -325,12 +325,13 @@ mod test {
         Ok(())
     }
 
+    #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_sqlite() -> Result<()> {
-        use infra_utils::infra::test::setup_test_sqlite;
+        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
         TEST_RUNTIME.block_on(async {
-            let sqlite_pool = setup_test_sqlite("sql/sqlite").await;
+            let sqlite_pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job_result;")
                 .execute(sqlite_pool)
                 .await?;
@@ -338,12 +339,13 @@ mod test {
         })
     }
 
+    #[cfg(feature = "mysql")]
     #[test]
     fn test_mysql() -> Result<()> {
-        use infra_utils::infra::test::setup_test_mysql;
+        use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
         TEST_RUNTIME.block_on(async {
-            let mysql_pool = setup_test_mysql("sql/mysql").await;
+            let mysql_pool = setup_test_rdb_from("sql/mysql").await;
             sqlx::query("TRUNCATE TABLE job_result;")
                 .execute(mysql_pool)
                 .await?;

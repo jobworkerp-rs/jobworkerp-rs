@@ -71,14 +71,14 @@ impl JobResultApp for RdbJobResultAppImpl {
             if let Some(dat) = fnd.data.as_ref() {
                 self._fill_worker_data_to_data(dat.clone()).await.map(|d| {
                     Some(JobResult {
-                        id: Some(id.clone()),
+                        id: Some(*id),
                         data: Some(d),
                     })
                 })
             } else {
                 // unknown (id only?)
                 Ok(Some(JobResult {
-                    id: Some(id.clone()),
+                    id: Some(*id),
                     data: None,
                 }))
             }

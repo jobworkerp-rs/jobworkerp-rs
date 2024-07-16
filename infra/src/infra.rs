@@ -11,7 +11,7 @@ use command_utils::util::{
     id_generator::{self, IDGenerator, MockIdGenerator},
     result::{FlatMap, ToOption},
 };
-use infra_utils::infra::{rdb::RDBConfig, redis::RedisConfig};
+use infra_utils::infra::{rdb::RdbConfig, redis::RedisConfig};
 use proto::jobworkerp::data::{Job, JobData};
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
@@ -101,7 +101,7 @@ pub trait UseJobQueueConfig {
 
 pub struct InfraConfigModule {
     pub redis_config: Option<RedisConfig>,
-    pub rdb_config: Option<RDBConfig>,
+    pub rdb_config: Option<RdbConfig>,
     pub job_queue_config: Arc<JobQueueConfig>,
 }
 
@@ -124,11 +124,23 @@ pub mod test {
         expire_job_result_seconds: 60,
         fetch_interval: 1000,
     });
-    pub fn new_for_test_config_mysql() -> InfraConfigModule {
+
+    #[cfg(feature = "mysql")]
+    pub fn new_for_test_config_rdb() -> InfraConfigModule {
         use infra_utils::infra::test::{MYSQL_CONFIG, REDIS_CONFIG};
 
         InfraConfigModule {
             rdb_config: Some(MYSQL_CONFIG.clone()),
+            redis_config: Some(REDIS_CONFIG.clone()),
+            job_queue_config: Arc::new(JOB_QUEUE_CONFIG.clone()),
+        }
+    }
+    #[cfg(not(feature = "mysql"))]
+    pub fn new_for_test_config_rdb() -> InfraConfigModule {
+        use infra_utils::infra::test::{REDIS_CONFIG, SQLITE_CONFIG};
+
+        InfraConfigModule {
+            rdb_config: Some(SQLITE_CONFIG.clone()),
             redis_config: Some(REDIS_CONFIG.clone()),
             job_queue_config: Arc::new(JOB_QUEUE_CONFIG.clone()),
         }

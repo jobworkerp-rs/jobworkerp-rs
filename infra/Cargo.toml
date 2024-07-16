@@ -31,9 +31,7 @@ signal-hook = { workspace = true }
 signal-hook-tokio = { workspace = true }
 sqlx = { workspace = true, features = [
     "runtime-tokio-native-tls",
-    "any",
     "sqlite",
-    "mysql",
     "macros",
     "chrono",
 ] }
@@ -43,3 +41,7 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
+
+[features]
+default = []
+mysql = ["sqlx/mysql", "infra-utils/mysql"]

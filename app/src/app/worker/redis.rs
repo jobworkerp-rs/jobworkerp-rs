@@ -44,7 +44,7 @@ impl WorkerApp for RedisWorkerAppImpl {
         let id = self.id_generator().generate_id()?;
         let wid = WorkerId { value: id };
         let w = Worker {
-            id: Some(wid.clone()),
+            id: Some(wid),
             data: Some(worker.clone()),
         };
         self.redis_worker_repository().upsert(&w).await?;
@@ -61,7 +61,7 @@ impl WorkerApp for RedisWorkerAppImpl {
     async fn update(&self, id: &WorkerId, worker: &Option<WorkerData>) -> Result<bool> {
         if let Some(w) = worker {
             let wk = Worker {
-                id: Some(id.clone()),
+                id: Some(*id),
                 data: Some(w.clone()),
             };
             self.redis_worker_repository().upsert(&wk).await?;
