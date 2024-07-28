@@ -71,7 +71,7 @@ pub mod test {
         TEST_RUNTIME.block_on(async {
             let pool = setup_test_rdb_from("../infra/sql/sqlite").await;
             pool.execute("SELECT 1;").await.expect("test connection");
-            truncate_tables(pool).await;
+            truncate_tables(pool, vec!["job", "worker", "job_result"]).await;
             RdbRepositoryModule {
                 worker_repository: RdbWorkerRepositoryImpl::new(pool),
                 job_repository: RdbJobRepositoryImpl::new(pool),
@@ -85,7 +85,7 @@ pub mod test {
         TEST_RUNTIME.block_on(async {
             let pool = setup_test_rdb_from("../infra/sql/mysql").await;
             pool.execute("SELECT 1;").await.expect("test connection");
-            truncate_tables(pool).await;
+            truncate_tables(pool, vec!["job", "worker", "job_result"]).await;
             RdbRepositoryModule {
                 worker_repository: RdbWorkerRepositoryImpl::new(pool),
                 job_repository: RdbJobRepositoryImpl::new(pool),
