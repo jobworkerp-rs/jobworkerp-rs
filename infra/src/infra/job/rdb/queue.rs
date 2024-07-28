@@ -317,9 +317,10 @@ mod test {
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_sqlite() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
+        use infra_utils::infra::test::{setup_test_rdb_from, truncate_tables};
         TEST_RUNTIME.block_on(async {
             let sqlite_pool = setup_test_rdb_from("sql/sqlite").await;
+            truncate_tables(sqlite_pool, vec!["job", "worker", "job_result"]).await;
             sqlx::query("DELETE FROM job;").execute(sqlite_pool).await?;
             _test_job_queue_repository(sqlite_pool).await
         })
@@ -328,26 +329,23 @@ mod test {
     #[cfg(feature = "mysql")]
     #[test]
     fn test_mysql() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb_from;
+        use infra_utils::infra::test::{setup_test_rdb_from, truncate_tables};
         TEST_RUNTIME.block_on(async {
             let mysql_pool = setup_test_rdb_from("sql/mysql").await;
-            println!("1");
-            sqlx::query("TRUNCATE TABLE job;")
-                .execute(mysql_pool)
-                .await?;
-            println!("2");
+            truncate_tables(mysql_pool, vec!["job", "worker", "job_result"]).await;
             _test_job_queue_repository(mysql_pool).await
         })
     }
 
     #[test]
     fn test_fetch_timeouted_backup_jobs() -> Result<()> {
-        use infra_utils::infra::test::setup_test_rdb;
+        use infra_utils::infra::test::{setup_test_rdb, truncate_tables};
         use proto::jobworkerp::data::JobData;
         use proto::jobworkerp::data::WorkerId;
         TEST_RUNTIME.block_on(async {
-            let mysql_pool = setup_test_rdb().await;
-            let repo = RdbJobRepositoryImpl::new(mysql_pool);
+            let rdb_pool = setup_test_rdb().await;
+            truncate_tables(rdb_pool, vec!["job", "worker", "job_result"]).await;
+            let repo = RdbJobRepositoryImpl::new(rdb_pool);
             let worker_id = WorkerId { value: 11 };
             let worker_id2 = WorkerId { value: 21 };
             let jid0 = JobId { value: 1 };
