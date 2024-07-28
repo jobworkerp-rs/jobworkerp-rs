@@ -35,7 +35,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
         .bind(&job_result.uniq_key)
         .bind(job_result.status)
         .bind(
-            &job_result
+            job_result
                 .output
                 .as_ref()
                 .map(JobResultRow::serialize_result_output)
@@ -84,7 +84,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
         .bind(&job_result.uniq_key)
         .bind(job_result.status)
         .bind(
-            &job_result
+            job_result
                 .output
                 .as_ref()
                 .map(JobResultRow::serialize_result_output)
