@@ -17,6 +17,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 authors = ["sutr"]
+name = "jobworkerp-rs"
 description = "Job-Worker system with gRPC front server"
 repository = "https://github.com/jobworkerp-rs/jobworkerp-rs"
 keywords = ["job-worker", "concurrency"]
@@ -95,7 +96,7 @@ tokio = { version = "1.35", features = [
     "parking_lot",
 ] }
 tracing = "0.1"
-tracing-opentelemetry = "0.24"
+tracing-opentelemetry = "0.25"
 tracing-subscriber = { version = "0.3", features = [
     "tracing-log",
     "env-filter",
