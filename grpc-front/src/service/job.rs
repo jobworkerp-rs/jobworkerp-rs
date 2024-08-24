@@ -128,7 +128,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
     ) -> Result<tonic::Response<OptionalJobResponse>, tonic::Status> {
         let _s = Self::trace_request("job", "find", &request);
         let req = request.get_ref();
-        match self.app().find_job(req, Some(DEFAULT_TTL)).await {
+        match self.app().find_job(req, None).await {
             Ok(res) => Ok(Response::new(OptionalJobResponse { data: res })),
             Err(e) => Err(handle_error(&e)),
         }
@@ -143,9 +143,9 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
         let _s = Self::trace_request("job", "find_list", &request);
         let req = request.get_ref();
         let ttl = if req.limit.is_some() {
-            LIST_TTL
+            &LIST_TTL
         } else {
-            DEFAULT_TTL
+            &DEFAULT_TTL
         };
         // TODO streaming?
         match self

@@ -24,6 +24,8 @@ pub enum JobWorkerError {
     NotFound(String),
     #[error("AlreadyExists({0})")]
     AlreadyExists(String),
+    #[error("ChanError({0:?})")]
+    ChanError(anyhow::Error),
     #[error("RedisError({0:?})")]
     RedisError(RedisError),
     #[error("DBError({0:?})")]

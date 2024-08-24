@@ -22,9 +22,9 @@ use command_utils::util::result::TapErr;
 use command_utils::util::shutdown::ShutdownLock;
 use futures::{stream, StreamExt};
 use infra::error::JobWorkerError;
-use infra::infra::job::rdb::queue::RdbJobQueueRepository;
-use infra::infra::job::rdb::RdbJobRepositoryImpl;
-use infra::infra::job::rdb::UseRdbJobRepository;
+use infra::infra::job::queue::rdb::RdbJobQueueRepository;
+use infra::infra::job::rdb::RdbChanJobRepositoryImpl;
+use infra::infra::job::rdb::UseRdbChanJobRepository;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::IdGeneratorWrapper;
 use infra::infra::JobQueueConfig;
@@ -46,7 +46,7 @@ use super::JobDispatcher;
 pub trait RdbJobDispatcher:
     UseJobResultApp
     + UseIdGenerator
-    + UseRdbJobRepository
+    + UseRdbChanJobRepository
     + UseResultProcessor
     + JobRunner
     + UseWorkerConfig
@@ -54,7 +54,7 @@ pub trait RdbJobDispatcher:
     + UseJobQueueConfig
 {
     // mergin time to re-execute if it does not disappear from queue (row) after timeout
-    const GRAB_MERGIN_MILLISEC: i64 = infra::infra::job::rdb::queue::GRAB_MERGIN_MILLISEC;
+    const GRAB_MERGIN_MILLISEC: i64 = infra::infra::job::queue::rdb::GRAB_MERGIN_MILLISEC;
 
     fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
     where
@@ -207,7 +207,7 @@ pub trait RdbJobDispatcher:
 pub struct RdbJobDispatcherImpl {
     id_generator: Arc<IdGeneratorWrapper>,
     job_queue_config: Arc<JobQueueConfig>,
-    rdb_job_repository: Arc<RdbJobRepositoryImpl>,
+    rdb_job_repository: Arc<RdbChanJobRepositoryImpl>,
     app_module: Arc<AppModule>,
     plugins: Arc<Plugins>,
     runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
@@ -218,7 +218,7 @@ impl RdbJobDispatcherImpl {
     pub fn new(
         id_generator: Arc<IdGeneratorWrapper>,
         config_module: Arc<AppConfigModule>,
-        rdb_job_repository: Arc<RdbJobRepositoryImpl>,
+        rdb_job_repository: Arc<RdbChanJobRepositoryImpl>,
         app_module: Arc<AppModule>,
         plugins: Arc<Plugins>,
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
@@ -236,8 +236,8 @@ impl RdbJobDispatcherImpl {
     }
 }
 
-impl UseRdbJobRepository for RdbJobDispatcherImpl {
-    fn rdb_job_repository(&self) -> &RdbJobRepositoryImpl {
+impl UseRdbChanJobRepository for RdbJobDispatcherImpl {
+    fn rdb_job_repository(&self) -> &RdbChanJobRepositoryImpl {
         &self.rdb_job_repository
     }
 }

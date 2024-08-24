@@ -6,26 +6,25 @@ use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
 use infra::error::JobWorkerError;
-use infra::infra::job::rdb::{RdbJobRepository, UseRdbJobRepository};
-use infra::infra::module::rdb::{RdbRepositoryModule, UseRdbRepositoryModule};
+use infra::infra::job::rdb::{RdbJobRepository, UseRdbChanJobRepository};
+use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
-use infra_utils::infra::memory::UseMemoryCache;
+use infra_utils::infra::memory::{MemoryCacheImpl, UseMemoryCache};
 use infra_utils::infra::rdb::UseRdbPool;
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobStatus, QueueType, ResponseType,
     RunnerArg, Worker, WorkerId,
 };
 use std::{sync::Arc, time::Duration};
-use stretto::AsyncCache;
 
 pub struct RdbJobAppImpl {
     job_queue_config: Arc<JobQueueConfig>,
     storage_config: Arc<StorageConfig>,
     id_generator: Arc<IdGeneratorWrapper>,
-    repositories: Arc<RdbRepositoryModule>,
+    repositories: Arc<RdbChanRepositoryModule>,
     worker_app: Arc<dyn WorkerApp + 'static>,
     job_result_app: Arc<dyn JobResultApp + 'static>,
-    memory_cache: AsyncCache<Arc<String>, Vec<Job>>,
+    memory_cache: MemoryCacheImpl<Arc<String>, Vec<Job>>,
 }
 
 impl RdbJobAppImpl {
@@ -33,10 +32,10 @@ impl RdbJobAppImpl {
         job_queue_config: Arc<JobQueueConfig>,
         storage_config: Arc<StorageConfig>,
         id_generator: Arc<IdGeneratorWrapper>,
-        repositories: Arc<RdbRepositoryModule>,
+        repositories: Arc<RdbChanRepositoryModule>,
         worker_app: Arc<dyn WorkerApp + 'static>,
         job_result_app: Arc<dyn JobResultApp + 'static>,
-        memory_cache: AsyncCache<Arc<String>, Vec<Job>>,
+        memory_cache: MemoryCacheImpl<Arc<String>, Vec<Job>>,
     ) -> Self {
         Self {
             job_queue_config,
@@ -179,39 +178,41 @@ impl JobApp for RdbJobAppImpl {
     async fn delete_job(&self, id: &JobId) -> Result<bool> {
         self.rdb_job_repository().delete(id).await
     }
-    async fn find_job(&self, id: &JobId, ttl: Option<Duration>) -> Result<Option<Job>>
+    async fn find_job(&self, id: &JobId, ttl: Option<&Duration>) -> Result<Option<Job>>
     where
         Self: Send + 'static,
     {
         let k = Arc::new(Self::find_cache_key(id));
-        self.with_cache(&k, ttl, || async {
-            let v = self.rdb_job_repository().find(id).await;
-            match v {
-                Ok(opt) => Ok(match opt {
-                    Some(v) => vec![v],
-                    None => Vec::new(),
-                }),
-                Err(e) => Err(e),
-            }
-        })
-        .await
-        .map(|r| r.first().map(|o| (*o).clone()))
+        self.memory_cache
+            .with_cache(&k, ttl, || async {
+                let v = self.rdb_job_repository().find(id).await;
+                match v {
+                    Ok(opt) => Ok(match opt {
+                        Some(v) => vec![v],
+                        None => Vec::new(),
+                    }),
+                    Err(e) => Err(e),
+                }
+            })
+            .await
+            .map(|r| r.first().map(|o| (*o).clone()))
     }
 
     async fn find_job_list(
         &self,
         limit: Option<&i32>,
         offset: Option<&i64>,
-        ttl: Option<Duration>,
+        ttl: Option<&Duration>,
     ) -> Result<Vec<Job>>
     where
         Self: Send + 'static,
     {
         let k = Arc::new(Self::find_list_cache_key(limit, offset.unwrap_or(&0i64)));
-        self.with_cache(&k, ttl, || async {
-            self.rdb_job_repository().find_list(limit, offset).await
-        })
-        .await
+        self.memory_cache
+            .with_cache(&k, ttl, || async {
+                self.rdb_job_repository().find_list(limit, offset).await
+            })
+            .await
     }
 
     async fn find_job_status(&self, id: &JobId) -> Result<Option<JobStatus>>
@@ -266,8 +267,8 @@ impl UseJobQueueConfig for RdbJobAppImpl {
         &self.job_queue_config
     }
 }
-impl UseRdbRepositoryModule for RdbJobAppImpl {
-    fn rdb_repository_module(&self) -> &RdbRepositoryModule {
+impl UseRdbChanRepositoryModule for RdbJobAppImpl {
+    fn rdb_repository_module(&self) -> &RdbChanRepositoryModule {
         &self.repositories
     }
 }
@@ -289,10 +290,3 @@ impl UseStorageConfig for RdbJobAppImpl {
 impl JobCacheKeys for RdbJobAppImpl {}
 
 impl JobBuilder for RdbJobAppImpl {}
-
-impl UseMemoryCache<Arc<String>, Vec<Job>> for RdbJobAppImpl {
-    const CACHE_TTL: Option<Duration> = Some(Duration::from_secs(5));
-    fn cache(&self) -> &AsyncCache<Arc<String>, Vec<Job>> {
-        &self.memory_cache
-    }
-}

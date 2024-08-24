@@ -7,7 +7,7 @@ use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 #[async_trait]
 pub trait UseWorkerPublish: UseJobqueueAndCodec + UseRedisClient + Send + Sync {
     // publish worker changed event using redis<
-    async fn publish_worker_changed(&self, id: &WorkerId, data: &WorkerData) -> Result<()> {
+    async fn publish_worker_changed(&self, id: &WorkerId, data: &WorkerData) -> Result<bool> {
         let worker = Worker {
             id: Some(*id),
             data: Some(data.clone()),
@@ -17,7 +17,7 @@ pub trait UseWorkerPublish: UseJobqueueAndCodec + UseRedisClient + Send + Sync {
             .await
     }
     // publish worker deleted event using redis
-    async fn publish_worker_deleted(&self, worker_id: &WorkerId) -> Result<()> {
+    async fn publish_worker_deleted(&self, worker_id: &WorkerId) -> Result<bool> {
         let worker = Worker {
             id: Some(*worker_id),
             data: None,
@@ -27,7 +27,7 @@ pub trait UseWorkerPublish: UseJobqueueAndCodec + UseRedisClient + Send + Sync {
             .await
     }
     // publish worker deleted event using redis
-    async fn publish_worker_all_deleted(&self) -> Result<()> {
+    async fn publish_worker_all_deleted(&self) -> Result<bool> {
         let worker = Worker {
             id: None,
             data: None,

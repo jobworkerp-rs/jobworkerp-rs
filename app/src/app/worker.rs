@@ -8,26 +8,27 @@ use async_trait::async_trait;
 use command_utils::util::option::{Exists, FlatMap};
 use infra::error::JobWorkerError;
 use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
-use infra_utils::infra::memory::UseMemoryCache;
+use infra_utils::infra::memory::{MemoryCacheImpl, UseMemoryCache};
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use std::sync::Arc;
 
 #[async_trait]
-pub trait WorkerAppCacheHelper: UseMemoryCache<Arc<String>, Vec<Worker>> + Send + Sync {
+pub trait WorkerAppCacheHelper: Send + Sync {
+    fn memory_cache(&self) -> &MemoryCacheImpl<Arc<String>, Vec<Worker>>;
     //cache control
     async fn clear_cache(&self, id: &WorkerId) {
         let k = Arc::new(Self::find_cache_key(id));
-        self.delete_cache(&k).await;
+        let _ = self.memory_cache().delete_cache(&k).await; // ignore error
         self.clear_all_cache().await;
     }
     async fn clear_cache_by_name(&self, name: &str) {
         let k = Arc::new(Self::find_name_cache_key(name));
-        self.delete_cache(&k).await;
+        let _ = self.memory_cache().delete_cache(&k).await; // ignore error
         self.clear_all_cache().await;
     }
     async fn clear_all_cache(&self) {
         let kl = Arc::new(Self::find_all_list_cache_key());
-        self.delete_cache(&kl).await;
+        let _ = self.memory_cache().delete_cache(&kl).await; // ignore error
     }
 
     fn find_list_cache_key(limit: Option<i32>, offset: Option<i64>) -> String {
