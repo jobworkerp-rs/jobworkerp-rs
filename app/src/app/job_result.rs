@@ -1,5 +1,4 @@
 pub mod hybrid;
-pub mod pubsub;
 pub mod rdb;
 pub mod redis;
 

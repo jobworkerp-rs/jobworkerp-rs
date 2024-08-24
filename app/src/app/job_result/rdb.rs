@@ -4,7 +4,7 @@ use command_utils::util::datetime;
 use command_utils::util::option::Exists;
 use infra::error::JobWorkerError;
 use infra::infra::job_result::rdb::{RdbJobResultRepository, UseRdbJobResultRepository};
-use infra::infra::module::rdb::{RdbRepositoryModule, UseRdbRepositoryModule};
+use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use infra_utils::infra::rdb::UseRdbPool;
 use proto::jobworkerp::data::{
@@ -20,7 +20,7 @@ use super::{JobResultApp, JobResultAppHelper};
 pub struct RdbJobResultAppImpl {
     storage_config: Arc<StorageConfig>,
     id_generator: Arc<IdGeneratorWrapper>,
-    rdb_repositories: Arc<RdbRepositoryModule>,
+    rdb_repositories: Arc<RdbChanRepositoryModule>,
     worker_app: Arc<dyn WorkerApp + 'static>,
 }
 
@@ -28,7 +28,7 @@ impl RdbJobResultAppImpl {
     pub fn new(
         storage_config: Arc<StorageConfig>,
         id_generator: Arc<IdGeneratorWrapper>,
-        rdb_repositories: Arc<RdbRepositoryModule>,
+        rdb_repositories: Arc<RdbChanRepositoryModule>,
         worker_app: Arc<dyn WorkerApp + 'static>,
     ) -> Self {
         Self {
@@ -247,8 +247,8 @@ impl UseIdGenerator for RdbJobResultAppImpl {
     }
 }
 
-impl UseRdbRepositoryModule for RdbJobResultAppImpl {
-    fn rdb_repository_module(&self) -> &RdbRepositoryModule {
+impl UseRdbChanRepositoryModule for RdbJobResultAppImpl {
+    fn rdb_repository_module(&self) -> &RdbChanRepositoryModule {
         &self.rdb_repositories
     }
 }

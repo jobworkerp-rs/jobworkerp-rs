@@ -1,19 +1,20 @@
 use super::super::worker::{UseWorkerApp, WorkerApp};
 use super::super::{StorageConfig, UseStorageConfig};
-use super::pubsub::JobResultSubscribeApp;
 use super::{JobResultApp, JobResultAppHelper};
 use anyhow::Result;
 use async_trait::async_trait;
 use infra::error::JobWorkerError;
-use infra::infra::job::rows::UseJobqueueAndCodec;
+use infra::infra::job_result::pubsub::redis::{
+    RedisJobResultPubSubRepositoryImpl, UseRedisJobResultPubSubRepository,
+};
+use infra::infra::job_result::pubsub::JobResultSubscriber;
 use infra::infra::job_result::rdb::{RdbJobResultRepository, UseRdbJobResultRepository};
 use infra::infra::job_result::redis::{RedisJobResultRepository, UseRedisJobResultRepository};
-use infra::infra::module::rdb::{RdbRepositoryModule, UseRdbRepositoryModule};
+use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::module::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
 use infra::infra::module::HybridRepositoryModule;
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use infra_utils::infra::rdb::UseRdbPool;
-use infra_utils::infra::redis::{RedisClient, UseRedisClient};
 use proto::jobworkerp::data::{
     JobId, JobResult, JobResultData, JobResultId, ResponseType, ResultStatus, WorkerData, WorkerId,
 };
@@ -82,7 +83,9 @@ impl HybridJobResultAppImpl {
             .into())
         } else {
             // wait for result data (long polling with grpc (keep connection)))
-            self.subscribe_result(job_id, timeout).await
+            self.job_result_pubsub_repository()
+                .subscribe_result(job_id, timeout.copied())
+                .await
         }
     }
 }
@@ -228,13 +231,6 @@ impl UseRedisRepositoryModule for HybridJobResultAppImpl {
         &self.repositories.redis_module
     }
 }
-impl UseRedisClient for HybridJobResultAppImpl {
-    fn redis_client(&self) -> &RedisClient {
-        &self.redis_repository_module().redis_client
-    }
-}
-impl UseJobqueueAndCodec for HybridJobResultAppImpl {}
-impl JobResultSubscribeApp for HybridJobResultAppImpl {}
 
 impl UseStorageConfig for HybridJobResultAppImpl {
     fn storage_config(&self) -> &StorageConfig {
@@ -246,9 +242,9 @@ impl UseIdGenerator for HybridJobResultAppImpl {
         &self.id_generator
     }
 }
-impl UseRdbRepositoryModule for HybridJobResultAppImpl {
-    fn rdb_repository_module(&self) -> &RdbRepositoryModule {
-        &self.repositories.rdb_module
+impl UseRdbChanRepositoryModule for HybridJobResultAppImpl {
+    fn rdb_repository_module(&self) -> &RdbChanRepositoryModule {
+        &self.repositories.rdb_chan_module
     }
 }
 impl UseWorkerApp for HybridJobResultAppImpl {
@@ -257,6 +253,14 @@ impl UseWorkerApp for HybridJobResultAppImpl {
     }
 }
 impl JobResultAppHelper for HybridJobResultAppImpl {}
+impl UseRedisJobResultPubSubRepository for HybridJobResultAppImpl {
+    fn job_result_pubsub_repository(&self) -> &RedisJobResultPubSubRepositoryImpl {
+        &self
+            .repositories
+            .redis_module
+            .redis_job_result_pubsub_repository
+    }
+}
 
 //TODO
 // create test
@@ -284,6 +288,7 @@ mod tests {
         JobId, JobResult, ResponseType, ResultStatus, RunnerType, Worker, WorkerData,
     };
     use std::sync::Arc;
+    use std::time::Duration;
 
     #[test]
     fn test_should_store() {
@@ -343,7 +348,7 @@ mod tests {
             let redis_module = setup_test_redis_module().await;
             let repositories = Arc::new(HybridRepositoryModule {
                 redis_module,
-                rdb_module,
+                rdb_chan_module: rdb_module,
             });
             let id_generator = Arc::new(IdGeneratorWrapper::new());
             let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
@@ -351,21 +356,15 @@ mod tests {
                 max_cost: 10000,
                 use_metrics: false,
             };
-            let worker_memory_cache = infra_utils::infra::memory::new_memory_cache::<
-                Arc<String>,
-                Vec<Worker>,
-            >(&mc_config);
-            // let job_memory_cache =
-            //     common::infra::memory::new_memory_cache::<Arc<String>, Vec<Job>>(&mc_config);
+            let worker_memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
+                &mc_config,
+                Some(Duration::from_secs(5 * 60)),
+            );
 
             let storage_config = Arc::new(StorageConfig {
                 r#type: StorageType::Hybrid,
                 restore_at_startup: Some(false),
             });
-            // let job_queue_config = Arc::new(JobQueueConfig {
-            //     expire_job_result_seconds: 60,
-            //     fetch_interval: 1000,
-            // });
 
             let worker_app = Arc::new(HybridWorkerAppImpl::new(
                 storage_config.clone(),

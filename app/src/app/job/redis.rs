@@ -1,6 +1,5 @@
 use super::super::job_result::UseJobResultApp;
 use super::{JobApp, JobBuilder, RedisJobAppHelper};
-use crate::app::job_result::pubsub::JobResultPublishApp;
 use crate::app::job_result::JobResultApp;
 use crate::app::worker::{UseWorkerApp, WorkerApp};
 use anyhow::Result;
@@ -8,21 +7,21 @@ use async_trait::async_trait;
 use command_utils::util::datetime;
 use command_utils::util::option::Exists;
 use infra::error::JobWorkerError;
-use infra::infra::job::redis::job_status::JobStatusRepository;
-use infra::infra::job::redis::queue::RedisJobQueueRepository;
+use infra::infra::job::queue::redis::RedisJobQueueRepository;
 use infra::infra::job::redis::schedule::RedisJobScheduleRepository;
 use infra::infra::job::redis::{RedisJobRepository, UseRedisJobRepository};
-use infra::infra::job::rows::UseJobqueueAndCodec;
+use infra::infra::job::status::{JobStatusRepository, UseJobStatusRepository};
+use infra::infra::job_result::pubsub::redis::{
+    RedisJobResultPubSubRepositoryImpl, UseRedisJobResultPubSubRepository,
+};
+use infra::infra::job_result::pubsub::JobResultPublisher;
 use infra::infra::module::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
-use infra_utils::infra::memory::UseMemoryCache;
-use infra_utils::infra::redis::{RedisClient, UseRedisClient};
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobStatus, QueueType, ResponseType,
     RunnerArg, WorkerId,
 };
 use std::{sync::Arc, time::Duration};
-use stretto::AsyncCache;
 
 pub struct RedisJobAppImpl {
     job_queue_config: Arc<JobQueueConfig>,
@@ -30,7 +29,6 @@ pub struct RedisJobAppImpl {
     repositories: Arc<RedisRepositoryModule>,
     worker_app: Arc<dyn WorkerApp + 'static>,
     job_result_app: Arc<dyn JobResultApp + 'static>,
-    memory_cache: AsyncCache<Arc<String>, Vec<Job>>,
 }
 
 impl RedisJobAppImpl {
@@ -40,7 +38,6 @@ impl RedisJobAppImpl {
         repositories: Arc<RedisRepositoryModule>,
         worker_app: Arc<dyn WorkerApp + 'static>,
         job_result_app: Arc<dyn JobResultApp + 'static>,
-        memory_cache: AsyncCache<Arc<String>, Vec<Job>>,
     ) -> Self {
         Self {
             job_queue_config,
@@ -48,7 +45,6 @@ impl RedisJobAppImpl {
             repositories,
             worker_app,
             job_result_app,
-            memory_cache,
         }
     }
 }
@@ -154,7 +150,7 @@ impl JobApp for RedisJobAppImpl {
                     data: Some(data),
                 } = job
                 {
-                    self.redis_job_repository()
+                    self.job_status_repository()
                         .upsert_status(
                             id,
                             if data.grabbed_until_time.as_ref().exists(|g| *g > 0) {
@@ -178,7 +174,7 @@ impl JobApp for RedisJobAppImpl {
 
     async fn complete_job(&self, id: &JobResultId, data: &JobResultData) -> Result<bool> {
         if let Some(jid) = data.job_id.as_ref() {
-            self.redis_job_repository().delete_status(jid).await?;
+            self.job_status_repository().delete_status(jid).await?;
             match ResponseType::try_from(data.response_type) {
                 Ok(ResponseType::Direct) => {
                     // send result for direct or listen after response
@@ -188,7 +184,9 @@ impl JobApp for RedisJobAppImpl {
                 }
                 Ok(ResponseType::ListenAfter) => {
                     // publish for listening result client
-                    self.publish_result(id, data).await?;
+                    self.job_result_pubsub_repository()
+                        .publish_result(id, data)
+                        .await?;
                     self.delete_job(jid).await?;
                     Ok(true)
                 }
@@ -208,7 +206,7 @@ impl JobApp for RedisJobAppImpl {
         self.redis_job_repository().delete(id).await
     }
 
-    async fn find_job(&self, id: &JobId, _ttl: Option<Duration>) -> Result<Option<Job>>
+    async fn find_job(&self, id: &JobId, _ttl: Option<&Duration>) -> Result<Option<Job>>
     where
         Self: Send + 'static,
     {
@@ -219,7 +217,7 @@ impl JobApp for RedisJobAppImpl {
         &self,
         limit: Option<&i32>,
         offset: Option<&i64>,
-        _ttl: Option<Duration>,
+        _ttl: Option<&Duration>,
     ) -> Result<Vec<Job>>
     where
         Self: Send + 'static,
@@ -253,14 +251,20 @@ impl JobApp for RedisJobAppImpl {
     where
         Self: Send + 'static,
     {
-        self.redis_job_repository().find_status(id).await
+        self.redis_job_repository()
+            .job_status_repository()
+            .find_status(id)
+            .await
     }
 
     async fn find_all_job_status(&self) -> Result<Vec<(JobId, JobStatus)>>
     where
         Self: Send + 'static,
     {
-        self.redis_job_repository().find_status_all().await
+        self.redis_job_repository()
+            .job_status_repository()
+            .find_status_all()
+            .await
     }
 
     // delegate
@@ -300,6 +304,12 @@ impl UseRedisRepositoryModule for RedisJobAppImpl {
         &self.repositories
     }
 }
+// delegate
+impl UseJobStatusRepository for RedisJobAppImpl {
+    fn job_status_repository(&self) -> Arc<dyn JobStatusRepository> {
+        self.redis_job_repository().job_status_repository().clone()
+    }
+}
 impl UseIdGenerator for RedisJobAppImpl {
     fn id_generator(&self) -> &IdGeneratorWrapper {
         &self.id_generator
@@ -316,19 +326,15 @@ impl UseJobResultApp for RedisJobAppImpl {
     }
 }
 impl JobBuilder for RedisJobAppImpl {}
-
-impl UseMemoryCache<Arc<String>, Vec<Job>> for RedisJobAppImpl {
-    const CACHE_TTL: Option<Duration> = Some(Duration::from_secs(60)); // 1 min
-    fn cache(&self) -> &AsyncCache<Arc<String>, Vec<Job>> {
-        &self.memory_cache
+impl UseRedisJobResultPubSubRepository for RedisJobAppImpl {
+    fn job_result_pubsub_repository(&self) -> &RedisJobResultPubSubRepositoryImpl {
+        &self.repositories.redis_job_result_pubsub_repository
     }
 }
 
-impl UseJobqueueAndCodec for RedisJobAppImpl {}
-impl UseRedisClient for RedisJobAppImpl {
-    fn redis_client(&self) -> &RedisClient {
-        &self.repositories.redis_client
-    }
-}
-
-impl JobResultPublishApp for RedisJobAppImpl {}
+// impl UseJobqueueAndCodec for RedisJobAppImpl {}
+// impl UseRedisClient for RedisJobAppImpl {
+//     fn redis_client(&self) -> &RedisClient {
+//         &self.repositories.redis_client
+//     }
+// }

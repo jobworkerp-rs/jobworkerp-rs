@@ -12,12 +12,12 @@ use crate::app::worker::redis::RedisWorkerAppImpl;
 use crate::app::worker::WorkerApp;
 use crate::app::{StorageConfig, StorageType, WorkerConfig};
 use anyhow::Result;
-use infra::infra::module::rdb::RdbRepositoryModule;
+use infra::infra::module::rdb::RdbChanRepositoryModule;
 use infra::infra::module::redis::RedisRepositoryModule;
 use infra::infra::module::{HybridRepositoryModule, RedisRdbOptionalRepositoryModule};
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig};
-use proto::jobworkerp::data::{Job, Worker};
 use std::sync::Arc;
+use std::time::Duration;
 
 pub fn load_storage_config() -> StorageConfig {
     envy::prefixed("STORAGE_")
@@ -86,12 +86,14 @@ impl AppModule {
         let id_generator = Arc::new(IdGeneratorWrapper::new());
         match config_module.storage_type() {
             StorageType::RDB => {
-                let repositories = Arc::new(RdbRepositoryModule::new_by_env().await);
+                let repositories =
+                    Arc::new(RdbChanRepositoryModule::new_by_env(job_queue_config.clone()).await);
                 let worker_app = Arc::new(RdbWorkerAppImpl::new(
                     config_module.storage_config.clone(),
                     id_generator.clone(),
-                    infra_utils::infra::memory::new_memory_cache::<Arc<String>, Vec<Worker>>(
+                    infra_utils::infra::memory::MemoryCacheImpl::new(
                         &mc_config,
+                        Some(Duration::from_secs(5 * 60)),
                     ),
                     repositories.clone(),
                 ));
@@ -108,8 +110,9 @@ impl AppModule {
                     repositories.clone(),
                     worker_app.clone(),
                     job_result_app.clone(),
-                    infra_utils::infra::memory::new_memory_cache::<Arc<String>, Vec<Job>>(
+                    infra_utils::infra::memory::MemoryCacheImpl::new(
                         &mc_config,
+                        Some(Duration::from_secs(5)),
                     ),
                 ));
                 Ok(AppModule {
@@ -125,8 +128,9 @@ impl AppModule {
                 let worker_app = Arc::new(RedisWorkerAppImpl::new(
                     config_module.storage_config.clone(),
                     id_generator.clone(),
-                    infra_utils::infra::memory::new_memory_cache::<Arc<String>, Vec<Worker>>(
+                    infra_utils::infra::memory::MemoryCacheImpl::new(
                         &mc_config,
+                        Some(Duration::from_secs(60 * 60)),
                     ),
                     repositories.clone(),
                 ));
@@ -141,9 +145,6 @@ impl AppModule {
                     repositories.clone(),
                     worker_app.clone(),
                     job_result_app.clone(),
-                    infra_utils::infra::memory::new_memory_cache::<Arc<String>, Vec<Job>>(
-                        &mc_config,
-                    ),
                 ));
                 Ok(AppModule {
                     config_module,
@@ -154,12 +155,14 @@ impl AppModule {
                 })
             }
             StorageType::Hybrid => {
-                let repositories = Arc::new(HybridRepositoryModule::new_by_env().await);
+                let repositories =
+                    Arc::new(HybridRepositoryModule::new_by_env(job_queue_config).await);
                 let worker_app = Arc::new(HybridWorkerAppImpl::new(
                     config_module.storage_config.clone(),
                     id_generator.clone(),
-                    infra_utils::infra::memory::new_memory_cache::<Arc<String>, Vec<Worker>>(
+                    infra_utils::infra::memory::MemoryCacheImpl::new(
                         &mc_config,
+                        Some(Duration::from_secs(5 * 60)),
                     ),
                     repositories.clone(),
                 ));
@@ -168,8 +171,9 @@ impl AppModule {
                     id_generator.clone(),
                     repositories.clone(),
                     worker_app.clone(),
-                    infra_utils::infra::memory::new_memory_cache::<Arc<String>, Vec<Job>>(
+                    infra_utils::infra::memory::MemoryCacheImpl::new(
                         &mc_config,
+                        Some(Duration::from_secs(60)),
                     ),
                 ));
                 let job_result_app = Arc::new(HybridJobResultAppImpl::new(

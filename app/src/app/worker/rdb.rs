@@ -2,14 +2,13 @@ use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::option::FlatMap;
 use infra::error::JobWorkerError;
-use infra::infra::module::rdb::{RdbRepositoryModule, UseRdbRepositoryModule};
+use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::worker::rdb::{RdbWorkerRepository, UseRdbWorkerRepository};
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
-use infra_utils::infra::memory::UseMemoryCache;
+use infra_utils::infra::memory::{MemoryCacheImpl, UseMemoryCache};
 use infra_utils::infra::rdb::UseRdbPool;
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
-use std::{sync::Arc, time::Duration};
-use stretto::AsyncCache;
+use std::sync::Arc;
 
 use super::super::{StorageConfig, UseStorageConfig};
 use super::builtin::{BuiltinWorker, BuiltinWorkerTrait};
@@ -18,16 +17,16 @@ use super::{WorkerApp, WorkerAppCacheHelper};
 pub struct RdbWorkerAppImpl {
     storage_config: Arc<StorageConfig>,
     id_generator: Arc<IdGeneratorWrapper>,
-    memory_cache: AsyncCache<Arc<String>, Vec<Worker>>,
-    repositories: Arc<RdbRepositoryModule>,
+    memory_cache: MemoryCacheImpl<Arc<String>, Vec<Worker>>,
+    repositories: Arc<RdbChanRepositoryModule>,
 }
 
 impl RdbWorkerAppImpl {
     pub fn new(
         storage_config: Arc<StorageConfig>,
         id_generator: Arc<IdGeneratorWrapper>,
-        memory_cache: AsyncCache<Arc<String>, Vec<Worker>>,
-        repositories: Arc<RdbRepositoryModule>,
+        memory_cache: MemoryCacheImpl<Arc<String>, Vec<Worker>>,
+        repositories: Arc<RdbChanRepositoryModule>,
     ) -> Self {
         Self {
             storage_config,
@@ -50,7 +49,7 @@ impl WorkerApp for RdbWorkerAppImpl {
         tx.commit().await.map_err(JobWorkerError::DBError)?;
         // clear list cache
         let kl = Arc::new(Self::find_all_list_cache_key());
-        self.delete_cache(&kl).await;
+        let _ = self.memory_cache.delete_cache(&kl).await; // ignore error
         Ok(wid)
     }
 
@@ -106,14 +105,15 @@ impl WorkerApp for RdbWorkerAppImpl {
         Self: Send + 'static,
     {
         let k = Arc::new(Self::find_name_cache_key(name));
-        self.with_cache(&k, Self::CACHE_TTL, || async {
-            self.rdb_worker_repository()
-                .find_by_name(name)
-                .await
-                .map(|r| r.map(|o| vec![o]).unwrap_or_default()) // XXX cache type: vector
-        })
-        .await
-        .map(|r| r.first().map(|o| (*o).clone()))
+        self.memory_cache
+            .with_cache(&k, None, || async {
+                self.rdb_worker_repository()
+                    .find_by_name(name)
+                    .await
+                    .map(|r| r.map(|o| vec![o]).unwrap_or_default()) // XXX cache type: vector
+            })
+            .await
+            .map(|r| r.first().map(|o| (*o).clone()))
     }
 
     async fn find(&self, id: &WorkerId) -> Result<Option<Worker>>
@@ -125,14 +125,15 @@ impl WorkerApp for RdbWorkerAppImpl {
             return Ok(Some(w));
         }
         let k = Arc::new(Self::find_cache_key(id));
-        self.with_cache(&k, Self::CACHE_TTL, || async {
-            self.rdb_worker_repository()
-                .find(id)
-                .await
-                .map(|r| r.map(|o| vec![o]).unwrap_or_default()) // XXX cache type: vector
-        })
-        .await
-        .map(|r| r.first().map(|o| (*o).clone()))
+        self.memory_cache
+            .with_cache(&k, None, || async {
+                self.rdb_worker_repository()
+                    .find(id)
+                    .await
+                    .map(|r| r.map(|o| vec![o]).unwrap_or_default()) // XXX cache type: vector
+            })
+            .await
+            .map(|r| r.first().map(|o| (*o).clone()))
     }
 
     async fn find_list(&self, limit: Option<i32>, offset: Option<i64>) -> Result<Vec<Worker>>
@@ -140,11 +141,12 @@ impl WorkerApp for RdbWorkerAppImpl {
         Self: Send + 'static,
     {
         let k = Arc::new(Self::find_list_cache_key(limit, offset));
-        self.with_cache(&k, Self::CACHE_TTL, || async {
-            // not use rdb in normal case
-            self.rdb_worker_repository().find_list(limit, offset).await
-        })
-        .await
+        self.memory_cache
+            .with_cache(&k, None, || async {
+                // not use rdb in normal case
+                self.rdb_worker_repository().find_list(limit, offset).await
+            })
+            .await
     }
 
     async fn find_all_worker_list(&self) -> Result<Vec<Worker>>
@@ -152,15 +154,16 @@ impl WorkerApp for RdbWorkerAppImpl {
         Self: Send + 'static,
     {
         let k = Arc::new(Self::find_all_list_cache_key());
-        self.with_cache(&k, Self::CACHE_TTL, || async {
-            self.rdb_worker_repository().find_list(None, None).await
-        })
-        .await
-        .map(|v| {
-            let mut v = v;
-            v.extend(BuiltinWorker::workers_list());
-            v
-        })
+        self.memory_cache
+            .with_cache(&k, None, || async {
+                self.rdb_worker_repository().find_list(None, None).await
+            })
+            .await
+            .map(|v| {
+                let mut v = v;
+                v.extend(BuiltinWorker::workers_list());
+                v
+            })
     }
     async fn count(&self) -> Result<i64>
     where
@@ -169,8 +172,8 @@ impl WorkerApp for RdbWorkerAppImpl {
         self.rdb_worker_repository().count().await
     }
 }
-impl UseRdbRepositoryModule for RdbWorkerAppImpl {
-    fn rdb_repository_module(&self) -> &RdbRepositoryModule {
+impl UseRdbChanRepositoryModule for RdbWorkerAppImpl {
+    fn rdb_repository_module(&self) -> &RdbChanRepositoryModule {
         &self.repositories
     }
 }
@@ -186,11 +189,8 @@ impl UseIdGenerator for RdbWorkerAppImpl {
     }
 }
 
-impl UseMemoryCache<Arc<String>, Vec<Worker>> for RdbWorkerAppImpl {
-    const CACHE_TTL: Option<Duration> = Some(Duration::from_secs(30)); // 30 sec (not clear cache immediately without redis pubsub)
-    fn cache(&self) -> &AsyncCache<Arc<String>, Vec<Worker>> {
+impl WorkerAppCacheHelper for RdbWorkerAppImpl {
+    fn memory_cache(&self) -> &MemoryCacheImpl<Arc<String>, Vec<Worker>> {
         &self.memory_cache
     }
 }
-
-impl WorkerAppCacheHelper for RdbWorkerAppImpl {}
