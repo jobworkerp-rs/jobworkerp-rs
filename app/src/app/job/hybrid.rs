@@ -597,23 +597,6 @@ mod tests {
     };
     use std::sync::Arc;
 
-    // struct JobResultSubscribeAppImpl {
-    //     redis_client: RedisClient,
-    // }
-
-    //    impl JobResultSubscribeAppImpl {
-    //        pub fn new(redis_client: RedisClient) -> Self {
-    //            JobResultSubscribeAppImpl { redis_client }
-    //        }
-    //    }
-    //    impl UseRedisClient for JobResultSubscribeAppImpl {
-    //        fn redis_client(&self) -> &RedisClient {
-    //            &self.redis_client
-    //        }
-    //    }
-    //    impl UseJobqueueAndCodec for JobResultSubscribeAppImpl {}
-    //    impl RedisJobResultSubscribeApp for JobResultSubscribeAppImpl {}
-
     fn create_test_app(
         use_mock_id: bool,
     ) -> Result<(HybridJobAppImpl, RedisJobResultPubSubRepositoryImpl)> {

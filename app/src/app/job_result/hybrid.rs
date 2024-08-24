@@ -231,12 +231,6 @@ impl UseRedisRepositoryModule for HybridJobResultAppImpl {
         &self.repositories.redis_module
     }
 }
-// impl UseRedisClient for HybridJobResultAppImpl {
-//     fn redis_client(&self) -> &RedisClient {
-//         &self.redis_repository_module().redis_client
-//     }
-// }
-// impl UseJobqueueAndCodec for HybridJobResultAppImpl {}
 
 impl UseStorageConfig for HybridJobResultAppImpl {
     fn storage_config(&self) -> &StorageConfig {
@@ -366,17 +360,11 @@ mod tests {
                 &mc_config,
                 Some(Duration::from_secs(5 * 60)),
             );
-            // let job_memory_cache =
-            //     common::infra::memory::new_memory_cache::<Arc<String>, Vec<Job>>(&mc_config);
 
             let storage_config = Arc::new(StorageConfig {
                 r#type: StorageType::Hybrid,
                 restore_at_startup: Some(false),
             });
-            // let job_queue_config = Arc::new(JobQueueConfig {
-            //     expire_job_result_seconds: 60,
-            //     fetch_interval: 1000,
-            // });
 
             let worker_app = Arc::new(HybridWorkerAppImpl::new(
                 storage_config.clone(),
