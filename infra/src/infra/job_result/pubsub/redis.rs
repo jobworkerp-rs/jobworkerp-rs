@@ -1,16 +1,21 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
+use super::{JobResultPublisher, JobResultSubscriber};
+use crate::{
+    error::JobWorkerError,
+    infra::{job::rows::UseJobqueueAndCodec, JobQueueConfig, UseJobQueueConfig},
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::result::TapErr;
-use infra::{error::JobWorkerError, infra::job::rows::UseJobqueueAndCodec};
-use infra_utils::infra::redis::UseRedisClient;
+use debug_stub_derive::DebugStub;
+use infra_utils::infra::redis::{RedisClient, UseRedisClient};
 use proto::jobworkerp::data::{JobId, JobResult, JobResultData, JobResultId};
 use tokio_stream::StreamExt;
 
 #[async_trait]
-pub trait JobResultPublishApp: UseRedisClient + UseJobqueueAndCodec {
-    async fn publish_result(&self, id: &JobResultId, data: &JobResultData) -> Result<()> {
+impl JobResultPublisher for RedisJobResultPubSubRepositoryImpl {
+    async fn publish_result(&self, id: &JobResultId, data: &JobResultData) -> Result<bool> {
         let jid = data.job_id.as_ref().unwrap();
         tracing::debug!(
             "publish_result: job_id={}, result_id={}",
@@ -27,9 +32,9 @@ pub trait JobResultPublishApp: UseRedisClient + UseJobqueueAndCodec {
 }
 
 #[async_trait]
-pub trait JobResultSubscribeApp: UseRedisClient + UseJobqueueAndCodec {
+impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
     // subscribe job result of listen after using redis and return got result immediately
-    async fn subscribe_result(&self, job_id: &JobId, timeout: Option<&u64>) -> Result<JobResult> {
+    async fn subscribe_result(&self, job_id: &JobId, timeout: Option<u64>) -> Result<JobResult> {
         let cn = Self::job_result_pubsub_channel_name(job_id);
         tracing::debug!("subscribe_result: job_id={}, ch={}", &job_id.value, &cn);
 
@@ -39,10 +44,12 @@ pub trait JobResultSubscribeApp: UseRedisClient + UseJobqueueAndCodec {
             .tap_err(|e| tracing::error!("redis_err:{:?}", e))?;
         // for timeout delay
         let delay = if let Some(to) = timeout {
-            tokio::time::sleep(Duration::from_millis(*to))
+            tokio::time::sleep(Duration::from_millis(to))
         } else {
             // wait until far future
-            tokio::time::sleep(Duration::from_secs(u64::MAX))
+            tokio::time::sleep(Duration::from_secs(
+                self.job_queue_config().expire_job_result_seconds as u64,
+            ))
         };
         let res = {
             let mut message = sub.on_message();
@@ -59,7 +66,7 @@ pub trait JobResultSubscribeApp: UseRedisClient + UseJobqueueAndCodec {
                             .tap_err(|e| tracing::error!("get_payload:{:?}", e))?;
                         let result = Self::deserialize_job_result(&payload)
                             .tap_err(|e| tracing::error!("deserialize_result:{:?}", e))?;
-                        tracing::debug!("subscribe_result_changed: result changed: {:?}", &result);
+                        tracing::debug!("subscribe_result_received: result={:?}", &result);
                         Ok(result)
                     } else {
                         tracing::debug!("message.next() is None");
@@ -81,13 +88,43 @@ pub trait JobResultSubscribeApp: UseRedisClient + UseJobqueueAndCodec {
     }
 }
 
-// pub trait JobResultPubsubApp: JobResultPublishApp + JobResultSubscribeApp {}
+#[derive(Clone, DebugStub)]
+pub struct RedisJobResultPubSubRepositoryImpl {
+    #[debug_stub = "&'static RedisClient"]
+    pub redis_client: RedisClient,
+    job_queue_config: Arc<JobQueueConfig>,
+}
+impl RedisJobResultPubSubRepositoryImpl {
+    pub fn new(redis_client: RedisClient, job_queue_config: Arc<JobQueueConfig>) -> Self {
+        Self {
+            redis_client,
+            job_queue_config,
+        }
+    }
+}
+impl UseRedisClient for RedisJobResultPubSubRepositoryImpl {
+    fn redis_client(&self) -> &RedisClient {
+        &self.redis_client
+    }
+}
+
+impl UseJobqueueAndCodec for RedisJobResultPubSubRepositoryImpl {}
+impl UseJobQueueConfig for RedisJobResultPubSubRepositoryImpl {
+    fn job_queue_config(&self) -> &JobQueueConfig {
+        &self.job_queue_config
+    }
+}
+pub trait UseRedisJobResultPubSubRepository {
+    fn job_result_pubsub_repository(&self) -> &RedisJobResultPubSubRepositoryImpl;
+}
 
 #[cfg(test)]
 mod test {
+    use crate::infra::JobQueueConfig;
+
     use super::*;
     use anyhow::Result;
-    use infra_utils::infra::{redis::RedisClient, test::setup_test_redis_client};
+    use infra_utils::infra::test::setup_test_redis_client;
     use proto::jobworkerp::data::{JobResult, JobResultData, JobResultId, ResultOutput};
     use tokio::time::Duration;
 
@@ -95,7 +132,10 @@ mod test {
     #[tokio::test]
     async fn test_subscribe_result() -> Result<()> {
         let redis_client = setup_test_redis_client()?;
-        let app = TestApp { redis_client };
+        let app = RedisJobResultPubSubRepositoryImpl {
+            redis_client,
+            job_queue_config: Arc::new(JobQueueConfig::default()),
+        };
         let job_id = JobId { value: 1 };
         let job_result_id = JobResultId { value: 1212 };
         let data = JobResultData {
@@ -123,7 +163,7 @@ mod test {
         let job_id2 = job_id;
         let jr2 = job_result.clone();
         let jh2 = tokio::spawn(async move {
-            let res = app2.subscribe_result(&job_id2, Some(&1000)).await.unwrap();
+            let res = app2.subscribe_result(&job_id2, Some(1000)).await.unwrap();
             assert_eq!(res.id, jr2.id);
             assert_eq!(res.data, jr2.data);
         });
@@ -134,18 +174,4 @@ mod test {
         jh2.await?;
         Ok(())
     }
-    #[derive(Clone)]
-    struct TestApp {
-        redis_client: RedisClient,
-    }
-    #[async_trait]
-    impl UseRedisClient for TestApp {
-        fn redis_client(&self) -> &RedisClient {
-            &self.redis_client
-        }
-    }
-    #[async_trait]
-    impl UseJobqueueAndCodec for TestApp {}
-    impl JobResultPublishApp for TestApp {}
-    impl JobResultSubscribeApp for TestApp {}
 }

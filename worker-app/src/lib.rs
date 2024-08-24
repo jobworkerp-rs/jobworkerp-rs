@@ -2,7 +2,7 @@ use app::{
     app::StorageType,
     module::{AppConfigModule, AppModule},
 };
-use infra::infra::{job::rdb::UseRdbJobRepository, IdGeneratorWrapper};
+use infra::infra::IdGeneratorWrapper;
 use plugins::Plugins;
 use std::sync::Arc;
 use worker::{
@@ -41,15 +41,7 @@ impl WorkerModules {
                     config_module.clone(),
                     app_module.clone(),
                     None,
-                    Some(Arc::new(
-                        app_module
-                            .repositories
-                            .redis_module
-                            .as_ref()
-                            .unwrap()
-                            .redis_job_repository
-                            .clone(),
-                    )),
+                    app_module.repositories.redis_module.clone(),
                     plugins,
                     runner_pool_map,
                     result_processor,
@@ -61,15 +53,7 @@ impl WorkerModules {
                     id_generator.clone(),
                     config_module.clone(),
                     app_module.clone(),
-                    Some(Arc::new(
-                        app_module
-                            .repositories
-                            .rdb_module
-                            .as_ref()
-                            .unwrap()
-                            .rdb_job_repository()
-                            .clone(),
-                    )),
+                    app_module.repositories.rdb_module.clone(),
                     None,
                     plugins,
                     runner_pool_map,
@@ -82,24 +66,8 @@ impl WorkerModules {
                     id_generator.clone(),
                     config_module.clone(),
                     app_module.clone(),
-                    Some(Arc::new(
-                        app_module
-                            .repositories
-                            .rdb_module
-                            .as_ref()
-                            .unwrap()
-                            .rdb_job_repository()
-                            .clone(),
-                    )),
-                    Some(Arc::new(
-                        app_module
-                            .repositories
-                            .redis_module
-                            .as_ref()
-                            .unwrap()
-                            .redis_job_repository
-                            .clone(),
-                    )),
+                    app_module.repositories.rdb_module.clone(),
+                    app_module.repositories.redis_module.clone(),
                     plugins,
                     runner_pool_map,
                     result_processor,

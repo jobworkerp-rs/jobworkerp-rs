@@ -1,22 +1,19 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use command_utils::util::result::FlatMap;
-use infra_utils::infra::redis::UseRedisPool;
+use infra_utils::infra::redis::{RedisPool, UseRedisPool};
 use itertools::Itertools;
 use proto::jobworkerp::data::{JobId, JobStatus};
 use redis::AsyncCommands;
 
 use crate::error::JobWorkerError;
 
+use super::JobStatusRepository;
+
 // manage job status (except for responseType:Direct worker)
 // TODO use (listen after or create job status api)
 #[async_trait]
-pub trait JobStatusRepository: UseRedisPool + Sync + 'static
-where
-    Self: Send + 'static,
-{
-    const STATUS_HASH_KEY: &'static str = "JOB_STATUS";
-
+impl JobStatusRepository for RedisJobStatusRepository {
     async fn upsert_status(&self, id: &JobId, status: &JobStatus) -> Result<bool> {
         tracing::debug!("upsert_status:{}={:?}", &id.value, status,);
         let res: Result<bool> = self
@@ -83,11 +80,29 @@ where
                 Ok(Some(JobStatus::WaitResult))
             } else {
                 tracing::warn!("unknown status: id: {}, status :{}. delete", &id.value, v);
+                // delete unknown status
                 self.delete_status(id).await?;
                 Ok(None)
             }
         } else {
             Ok(None)
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RedisJobStatusRepository {
+    redis_pool: &'static RedisPool,
+}
+
+impl RedisJobStatusRepository {
+    const STATUS_HASH_KEY: &'static str = "JOB_STATUS";
+    pub fn new(redis_pool: &'static RedisPool) -> Self {
+        Self { redis_pool }
+    }
+}
+impl UseRedisPool for RedisJobStatusRepository {
+    fn redis_pool(&self) -> &'static RedisPool {
+        self.redis_pool
     }
 }

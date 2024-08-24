@@ -2,10 +2,12 @@ use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::option::ToVec;
 use infra::error::JobWorkerError;
-use infra::infra::job::rows::UseJobqueueAndCodec;
+use infra::infra::job_result::pubsub::redis::{
+    RedisJobResultPubSubRepositoryImpl, UseRedisJobResultPubSubRepository,
+};
+use infra::infra::job_result::pubsub::JobResultSubscriber;
 use infra::infra::job_result::redis::{RedisJobResultRepository, UseRedisJobResultRepository};
 use infra::infra::module::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
-use infra_utils::infra::redis::{RedisClient, UseRedisClient};
 use proto::jobworkerp::data::{
     JobId, JobResult, JobResultData, JobResultId, ResponseType, ResultStatus, WorkerData, WorkerId,
 };
@@ -13,7 +15,6 @@ use std::sync::Arc;
 
 use super::super::worker::{UseWorkerApp, WorkerApp};
 use super::super::{StorageConfig, UseStorageConfig};
-use super::pubsub::JobResultSubscribeApp;
 use super::{JobResultApp, JobResultAppHelper};
 
 #[derive(Clone)]
@@ -49,7 +50,9 @@ impl RedisJobResultAppImpl {
             .into())
         } else {
             // wait for result data (long polling with grpc (keep connection)))
-            self.subscribe_result(job_id, timeout).await
+            self.job_result_pubsub_repository()
+                .subscribe_result(job_id, timeout.copied())
+                .await
         }
     }
     async fn find_job_result_by_job_id(&self, job_id: &JobId) -> Result<Option<JobResult>>
@@ -239,13 +242,9 @@ impl UseWorkerApp for RedisJobResultAppImpl {
     }
 }
 
-impl JobResultAppHelper for RedisJobResultAppImpl {}
-
-// for pubsub
-impl UseJobqueueAndCodec for RedisJobResultAppImpl {}
-impl UseRedisClient for RedisJobResultAppImpl {
-    fn redis_client(&self) -> &RedisClient {
-        &self.repositories.redis_client
+impl UseRedisJobResultPubSubRepository for RedisJobResultAppImpl {
+    fn job_result_pubsub_repository(&self) -> &RedisJobResultPubSubRepositoryImpl {
+        &self.repositories.redis_job_result_pubsub_repository
     }
 }
-impl JobResultSubscribeApp for RedisJobResultAppImpl {}
+impl JobResultAppHelper for RedisJobResultAppImpl {}

@@ -1,5 +1,10 @@
 use std::sync::Arc;
 
+use self::{
+    rdb::{RdbJobDispatcher, RdbJobDispatcherImpl},
+    redis::{RedisJobDispatcher, RedisJobDispatcherImpl},
+};
+use super::{result_processor::ResultProcessorImpl, runner::map::RunnerFactoryWithPoolMap};
 use crate::plugins::Plugins;
 use anyhow::Result;
 use app::{
@@ -7,19 +12,15 @@ use app::{
     module::{AppConfigModule, AppModule},
 };
 use async_trait::async_trait;
+use chan::{ChanJobDispatcher, ChanJobDispatcherImpl};
 use command_utils::util::shutdown::ShutdownLock;
 use infra::infra::{
-    job::{rdb::RdbJobRepositoryImpl, redis::RedisJobRepositoryImpl},
+    job::rdb::UseRdbChanJobRepository,
+    module::{rdb::RdbChanRepositoryModule, redis::RedisRepositoryModule},
     IdGeneratorWrapper,
 };
 
-use self::{
-    rdb::{RdbJobDispatcher, RdbJobDispatcherImpl},
-    redis::{RedisJobDispatcher, RedisJobDispatcherImpl},
-};
-
-use super::{result_processor::ResultProcessorImpl, runner::map::RunnerFactoryWithPoolMap};
-
+pub mod chan;
 pub mod rdb;
 pub mod redis;
 pub mod redis_run_after;
@@ -37,28 +38,34 @@ pub struct HybridJobDispatcherImpl {
     pub redis_job_dispatcher: RedisJobDispatcherImpl,
 }
 
+pub struct RdbChanJobDispatcherImpl {
+    pub rdb_job_dispatcher: RdbJobDispatcherImpl,
+    pub chan_job_dispatcher: ChanJobDispatcherImpl,
+}
+
 impl JobDispatcherFactory {
     #[allow(clippy::too_many_arguments)]
     pub fn create(
         id_generator: Arc<IdGeneratorWrapper>,
         config_module: Arc<AppConfigModule>,
         app_module: Arc<AppModule>,
-        rdb_job_repository_opt: Option<Arc<RdbJobRepositoryImpl>>,
-        redis_job_repository_opt: Option<Arc<RedisJobRepositoryImpl>>,
+        rdb_chan_repositories_opt: Option<Arc<RdbChanRepositoryModule>>,
+        redis_repositories_opt: Option<Arc<RedisRepositoryModule>>,
         plugins: Arc<Plugins>,
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
         result_processor: Arc<ResultProcessorImpl>,
     ) -> Box<dyn JobDispatcher + 'static> {
         match (
             app_module.config_module.storage_type(),
-            rdb_job_repository_opt.clone(),
-            redis_job_repository_opt,
+            rdb_chan_repositories_opt.clone(),
+            redis_repositories_opt,
         ) {
-            (StorageType::Redis, _, Some(redis_job_repository)) => {
+            (StorageType::Redis, _, Some(redis_repositories)) => {
                 Box::new(RedisJobDispatcherImpl::new(
                     id_generator,
                     config_module,
-                    redis_job_repository,
+                    redis_repositories.redis_client.clone(),
+                    Arc::new(redis_repositories.redis_job_repository.clone()),
                     None,
                     app_module,
                     plugins,
@@ -66,21 +73,36 @@ impl JobDispatcherFactory {
                     result_processor,
                 ))
             }
-            (StorageType::RDB, Some(rdb_job_repository), _) => Box::new(RdbJobDispatcherImpl::new(
-                id_generator,
-                config_module,
-                rdb_job_repository,
-                app_module,
-                plugins,
-                runner_pool_map,
-                result_processor,
-            )),
-            (StorageType::Hybrid, Some(rdb_job_repository), Some(redis_job_repository)) => {
+            (StorageType::RDB, Some(rdb_chan_repositories), _) => {
+                let rdb_job_repository = Arc::new(rdb_chan_repositories.job_repository.clone());
+                Box::new(RdbChanJobDispatcherImpl {
+                    rdb_job_dispatcher: RdbJobDispatcherImpl::new(
+                        id_generator.clone(),
+                        config_module,
+                        rdb_job_repository.clone(),
+                        app_module.clone(),
+                        plugins.clone(),
+                        runner_pool_map.clone(),
+                        result_processor.clone(),
+                    ),
+                    chan_job_dispatcher: ChanJobDispatcherImpl::new(
+                        id_generator,
+                        Arc::new(rdb_chan_repositories.chan_job_queue_repository.clone()),
+                        rdb_job_repository,
+                        rdb_chan_repositories.memory_job_status_repository.clone(),
+                        app_module,
+                        plugins,
+                        runner_pool_map,
+                        result_processor,
+                    ),
+                })
+            }
+            (StorageType::Hybrid, Some(rdb_chan_repositories), Some(redis_repositories)) => {
                 Box::new(HybridJobDispatcherImpl {
                     rdb_job_dispatcher: RdbJobDispatcherImpl::new(
                         id_generator.clone(),
                         config_module.clone(),
-                        rdb_job_repository.clone(),
+                        Arc::new(rdb_chan_repositories.rdb_job_repository().clone()),
                         app_module.clone(),
                         plugins.clone(),
                         runner_pool_map.clone(),
@@ -89,8 +111,9 @@ impl JobDispatcherFactory {
                     redis_job_dispatcher: RedisJobDispatcherImpl::new(
                         id_generator,
                         config_module,
-                        redis_job_repository,
-                        Some(rdb_job_repository),
+                        redis_repositories.redis_client.clone(),
+                        Arc::new(redis_repositories.redis_job_repository.clone()),
+                        Some(Arc::new(rdb_chan_repositories.rdb_job_repository().clone())),
                         app_module,
                         plugins,
                         runner_pool_map,
@@ -114,5 +137,15 @@ impl JobDispatcher for HybridJobDispatcherImpl {
     {
         RdbJobDispatcher::dispatch_jobs(&self.rdb_job_dispatcher, lock.clone())?;
         RedisJobDispatcher::dispatch_jobs(&self.redis_job_dispatcher, lock)
+    }
+}
+#[async_trait]
+impl JobDispatcher for RdbChanJobDispatcherImpl {
+    fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
+    where
+        Self: Send + Sync + 'static,
+    {
+        RdbJobDispatcher::dispatch_jobs(&self.rdb_job_dispatcher, lock.clone())?;
+        ChanJobDispatcher::dispatch_jobs(&self.chan_job_dispatcher, lock)
     }
 }

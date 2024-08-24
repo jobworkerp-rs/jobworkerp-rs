@@ -87,9 +87,7 @@ mod test {
         test::new_for_test_config_rdb, worker::event::UseWorkerPublish, IdGeneratorWrapper,
     };
     use infra_utils::infra::test::setup_test_redis_client;
-    use proto::jobworkerp::data::{
-        worker_operation::Operation, Worker, WorkerData, WorkerOperation,
-    };
+    use proto::jobworkerp::data::{worker_operation::Operation, WorkerData, WorkerOperation};
     use std::sync::Arc;
     use tokio::time::{sleep, Duration};
 
@@ -130,12 +128,13 @@ mod test {
         let module = new_for_test_config_rdb();
         let repositories =
             Arc::new(infra::infra::module::HybridRepositoryModule::new(&module).await);
-        let memory_cache = infra_utils::infra::memory::new_memory_cache::<Arc<String>, Vec<Worker>>(
+        let memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
             &infra_utils::infra::memory::MemoryCacheConfig {
                 num_counters: 10,
                 max_cost: 1000000,
                 use_metrics: false,
             },
+            Some(Duration::from_secs(60)),
         );
         let mut plugins = Plugins::new();
         plugins.load_plugins_from_env()?;

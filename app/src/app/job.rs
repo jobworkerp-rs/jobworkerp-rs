@@ -1,5 +1,6 @@
 pub mod hybrid;
 pub mod rdb;
+pub mod rdb_chan;
 pub mod redis;
 
 use super::{JobBuilder, StorageConfig, UseStorageConfig};
@@ -8,9 +9,14 @@ use async_trait::async_trait;
 use infra::{
     error::JobWorkerError,
     infra::{
-        job::redis::{
-            job_status::JobStatusRepository, queue::RedisJobQueueRepository,
-            schedule::RedisJobScheduleRepository, UseRedisJobRepository,
+        job::{
+            queue::{
+                chan::{ChanJobQueueRepository, UseChanJobQueueRepository},
+                redis::RedisJobQueueRepository,
+            },
+            rdb::UseRdbChanJobRepository,
+            redis::{schedule::RedisJobScheduleRepository, UseRedisJobRepository},
+            status::UseJobStatusRepository,
         },
         UseJobQueueConfig,
     },
@@ -71,7 +77,7 @@ pub trait JobApp: Send + Sync {
     ///
     async fn complete_job(&self, id: &JobResultId, result: &JobResultData) -> Result<bool>;
     async fn delete_job(&self, id: &JobId) -> Result<bool>;
-    async fn find_job(&self, id: &JobId, ttl: Option<Duration>) -> Result<Option<Job>>
+    async fn find_job(&self, id: &JobId, ttl: Option<&Duration>) -> Result<Option<Job>>
     where
         Self: Send + 'static;
 
@@ -79,7 +85,7 @@ pub trait JobApp: Send + Sync {
         &self,
         limit: Option<&i32>,
         offset: Option<&i64>,
-        ttl: Option<Duration>,
+        ttl: Option<&Duration>,
     ) -> Result<Vec<Job>>
     where
         Self: Send + 'static;
@@ -231,6 +237,7 @@ where
             Ok(_) => {
                 // update status (not use direct response)
                 self.redis_job_repository()
+                    .job_status_repository()
                     .upsert_status(&job_id, &JobStatus::Pending)
                     .await?;
                 // wait for result if direct response type
@@ -259,6 +266,72 @@ where
     ) -> Result<JobResult> {
         // wait for and return result
         self.redis_job_repository()
+            .wait_for_result_queue_for_response(job_id, timeout.as_ref()) // no timeout
+            .await
+    }
+}
+
+// for rdb chan
+#[async_trait]
+pub trait RdbChanJobAppHelper:
+    UseRdbChanJobRepository
+    + UseChanJobQueueRepository
+    + UseJobStatusRepository
+    + JobBuilder
+    + UseJobQueueConfig
+where
+    Self: Sized + 'static,
+{
+    // for chanbuffer
+    async fn enqueue_job_immediately(
+        &self,
+        job: &Job,
+        worker: &WorkerData,
+    ) -> Result<(JobId, Option<JobResult>)> {
+        let job_id = job.id.unwrap();
+        if self.is_run_after_job(job) {
+            return Err(JobWorkerError::InvalidParameter(
+                "run_after_time is not supported in rdb_chan mode".to_string(),
+            )
+            .into());
+        }
+        // use channel to enqueue job immediately
+        let res = match self
+            .chan_job_queue_repository()
+            .enqueue_job(worker.channel.as_ref(), job)
+            .await
+        {
+            Ok(_) => {
+                // update status (not use direct response)
+                self.job_status_repository()
+                    .upsert_status(&job_id, &JobStatus::Pending)
+                    .await?;
+                // wait for result if direct response type
+                if worker.response_type == ResponseType::Direct as i32 {
+                    // XXX keep redis connection until response
+                    self._wait_job_for_direct_response(
+                        &job_id,
+                        job.data.as_ref().map(|d| d.timeout),
+                    )
+                    .await
+                    .map(|r| (job_id, Some(r)))
+                } else {
+                    Ok((job_id, None))
+                }
+            }
+            Err(e) => Err(e),
+        }?;
+        Ok(res)
+    }
+
+    #[inline]
+    async fn _wait_job_for_direct_response(
+        &self,
+        job_id: &JobId,
+        timeout: Option<u64>,
+    ) -> Result<JobResult> {
+        // wait for and return result (with channel)
+        self.chan_job_queue_repository()
             .wait_for_result_queue_for_response(job_id, timeout.as_ref()) // no timeout
             .await
     }

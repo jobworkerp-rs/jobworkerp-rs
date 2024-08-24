@@ -3,15 +3,16 @@ pub mod redis;
 
 use std::sync::Arc;
 
-use self::rdb::{RdbRepositoryModule, UseRdbRepositoryModule};
+use rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
+
 use self::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
-use super::InfraConfigModule;
+use super::{InfraConfigModule, JobQueueConfig};
 
 // redis and rdb module for DI
 #[derive(Clone, Debug)]
 pub struct HybridRepositoryModule {
     pub redis_module: RedisRepositoryModule,
-    pub rdb_module: RdbRepositoryModule,
+    pub rdb_chan_module: RdbChanRepositoryModule,
 }
 
 impl HybridRepositoryModule {
@@ -21,19 +22,19 @@ impl HybridRepositoryModule {
         let redis_module =
             RedisRepositoryModule::new(infra_config_module, Self::DEFAULT_WORKER_REDIS_EXPIRE_SEC)
                 .await;
-        let rdb_module = RdbRepositoryModule::new(infra_config_module).await;
+        let rdb_module = RdbChanRepositoryModule::new(infra_config_module).await;
         HybridRepositoryModule {
             redis_module,
-            rdb_module,
+            rdb_chan_module: rdb_module,
         }
     }
-    pub async fn new_by_env() -> Self {
+    pub async fn new_by_env(job_queue_config: Arc<JobQueueConfig>) -> Self {
         let redis_module =
             RedisRepositoryModule::new_by_env(Self::DEFAULT_WORKER_REDIS_EXPIRE_SEC).await;
-        let rdb_module = RdbRepositoryModule::new_by_env().await;
+        let rdb_module = RdbChanRepositoryModule::new_by_env(job_queue_config).await;
         HybridRepositoryModule {
             redis_module,
-            rdb_module,
+            rdb_chan_module: rdb_module,
         }
     }
 }
@@ -43,9 +44,9 @@ impl UseRedisRepositoryModule for HybridRepositoryModule {
     }
 }
 
-impl UseRdbRepositoryModule for HybridRepositoryModule {
-    fn rdb_repository_module(&self) -> &RdbRepositoryModule {
-        &self.rdb_module
+impl UseRdbChanRepositoryModule for HybridRepositoryModule {
+    fn rdb_repository_module(&self) -> &RdbChanRepositoryModule {
+        &self.rdb_chan_module
     }
 }
 
@@ -53,7 +54,7 @@ impl UseRdbRepositoryModule for HybridRepositoryModule {
 #[derive(Clone, Debug)]
 pub struct RedisRdbOptionalRepositoryModule {
     pub redis_module: Option<Arc<RedisRepositoryModule>>,
-    pub rdb_module: Option<Arc<RdbRepositoryModule>>,
+    pub rdb_module: Option<Arc<RdbChanRepositoryModule>>,
 }
 impl From<Arc<RedisRepositoryModule>> for RedisRdbOptionalRepositoryModule {
     fn from(redis_module: Arc<RedisRepositoryModule>) -> Self {
@@ -63,8 +64,8 @@ impl From<Arc<RedisRepositoryModule>> for RedisRdbOptionalRepositoryModule {
         }
     }
 }
-impl From<Arc<RdbRepositoryModule>> for RedisRdbOptionalRepositoryModule {
-    fn from(rdb_module: Arc<RdbRepositoryModule>) -> Self {
+impl From<Arc<RdbChanRepositoryModule>> for RedisRdbOptionalRepositoryModule {
+    fn from(rdb_module: Arc<RdbChanRepositoryModule>) -> Self {
         RedisRdbOptionalRepositoryModule {
             redis_module: None,
             rdb_module: Some(rdb_module),
@@ -75,7 +76,7 @@ impl From<Arc<HybridRepositoryModule>> for RedisRdbOptionalRepositoryModule {
     fn from(hybrid_module: Arc<HybridRepositoryModule>) -> Self {
         RedisRdbOptionalRepositoryModule {
             redis_module: Some(Arc::new(hybrid_module.redis_module.clone())),
-            rdb_module: Some(Arc::new(hybrid_module.rdb_module.clone())),
+            rdb_module: Some(Arc::new(hybrid_module.rdb_chan_module.clone())),
         }
     }
 }
