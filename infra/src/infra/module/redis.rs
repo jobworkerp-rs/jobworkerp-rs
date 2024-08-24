@@ -122,7 +122,7 @@ pub mod test {
         // flush all
         let mut rcon = redis_pool.get().await.unwrap();
         redis::cmd("FLUSHALL")
-            .query_async::<_, ()>(&mut rcon)
+            .query_async::<()>(&mut rcon)
             .await
             .unwrap();
 
