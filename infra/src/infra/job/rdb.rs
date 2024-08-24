@@ -1,14 +1,23 @@
-pub mod queue;
+use std::{collections::HashSet, sync::Arc};
 
-use std::collections::HashSet;
-
-use self::queue::RdbJobQueueRepository;
-use super::rows::{JobRow, UseJobqueueAndCodec};
-use crate::error::JobWorkerError;
+use super::{
+    queue::rdb::RdbJobQueueRepository,
+    rows::{JobRow, UseJobqueueAndCodec},
+};
+use crate::{
+    error::JobWorkerError,
+    infra::{JobQueueConfig, UseJobQueueConfig},
+};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use command_utils::util::datetime;
-use infra_utils::infra::rdb::{Rdb, RdbPool, UseRdbPool};
+use infra_utils::infra::{
+    chan::{
+        mpmc::{Chan, UseChanBuffer},
+        ChanBuffer, ChanBufferItem,
+    },
+    rdb::{Rdb, RdbPool, UseRdbPool},
+};
 use itertools::Itertools;
 use proto::jobworkerp::data::{Job, JobData, JobId, JobStatus};
 use sqlx::Executor;
@@ -260,39 +269,61 @@ pub trait RdbJobRepository:
 }
 
 #[derive(Clone, Debug)]
-pub struct RdbJobRepositoryImpl {
+pub struct RdbChanJobRepositoryImpl {
+    job_queue_config: Arc<JobQueueConfig>,
     pool: &'static RdbPool,
+    chan_buf: ChanBuffer<Vec<u8>, Chan<ChanBufferItem<Vec<u8>>>>,
 }
 
-pub trait UseRdbJobRepository {
-    fn rdb_job_repository(&self) -> &RdbJobRepositoryImpl;
+pub trait UseRdbChanJobRepository {
+    fn rdb_job_repository(&self) -> &RdbChanJobRepositoryImpl;
 }
 
-pub trait UseRdbJobRepositoryOptional {
-    fn rdb_job_repository_opt(&self) -> Option<&RdbJobRepositoryImpl>;
+pub trait UseRdbChanJobRepositoryOptional {
+    fn rdb_job_repository_opt(&self) -> Option<&RdbChanJobRepositoryImpl>;
 }
 
-impl RdbJobRepositoryImpl {
-    pub fn new(pool: &'static RdbPool) -> Self {
-        Self { pool }
+impl RdbChanJobRepositoryImpl {
+    pub fn new(job_queue_config: Arc<JobQueueConfig>, pool: &'static RdbPool) -> Self {
+        Self {
+            job_queue_config,
+            pool,
+            chan_buf: ChanBuffer::new(None, 1000),
+        }
     }
 }
 
-impl UseRdbPool for RdbJobRepositoryImpl {
+impl UseRdbPool for RdbChanJobRepositoryImpl {
     fn db_pool(&self) -> &RdbPool {
         self.pool
     }
 }
 
-impl RdbJobQueueRepository for RdbJobRepositoryImpl {}
+impl RdbJobQueueRepository for RdbChanJobRepositoryImpl {}
 
-impl RdbJobRepository for RdbJobRepositoryImpl {}
+impl RdbJobRepository for RdbChanJobRepositoryImpl {}
 
-impl UseJobqueueAndCodec for RdbJobRepositoryImpl {}
+impl UseJobqueueAndCodec for RdbChanJobRepositoryImpl {}
+
+impl UseJobQueueConfig for RdbChanJobRepositoryImpl {
+    fn job_queue_config(&self) -> &JobQueueConfig {
+        &self.job_queue_config
+    }
+}
+impl UseChanBuffer for RdbChanJobRepositoryImpl {
+    type Item = Vec<u8>;
+    fn chan_buf(&self) -> &ChanBuffer<Vec<u8>, Chan<ChanBufferItem<Vec<u8>>>> {
+        &self.chan_buf
+    }
+}
 
 mod test {
+    use std::sync::Arc;
+
+    use crate::infra::JobQueueConfig;
+
+    use super::RdbChanJobRepositoryImpl;
     use super::RdbJobRepository;
-    use super::RdbJobRepositoryImpl;
     use anyhow::Result;
     use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::rdb::UseRdbPool;
@@ -305,7 +336,7 @@ mod test {
     use proto::jobworkerp::data::WorkerId;
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
-        let repository = RdbJobRepositoryImpl::new(pool);
+        let repository = RdbChanJobRepositoryImpl::new(Arc::new(JobQueueConfig::default()), pool);
         let id = JobId { value: 1 };
         let arg = RunnerArg {
             data: Some(Data::Command(CommandArg {
@@ -370,7 +401,7 @@ mod test {
         Ok(())
     }
     async fn _test_find_id_set_in_instant(pool: &'static RdbPool) -> Result<()> {
-        let repository = RdbJobRepositoryImpl::new(pool);
+        let repository = RdbChanJobRepositoryImpl::new(Arc::new(JobQueueConfig::default()), pool);
         let arg = RunnerArg {
             data: Some(Data::Command(CommandArg {
                 args: vec!["hoge1".to_string()],

@@ -1,7 +1,10 @@
-pub mod job_status;
-pub mod queue;
 pub mod schedule;
 
+use self::schedule::RedisJobScheduleRepository;
+use super::queue::redis::RedisJobQueueRepository;
+use super::rows::UseJobqueueAndCodec;
+use super::status::redis::RedisJobStatusRepository;
+use super::status::{JobStatusRepository, UseJobStatusRepository};
 use crate::error::JobWorkerError;
 use crate::infra::{JobQueueConfig, UseJobQueueConfig};
 use anyhow::Result;
@@ -9,18 +12,11 @@ use async_trait::async_trait;
 use debug_stub_derive::DebugStub;
 use infra_utils::infra::redis::{RedisPool, UseRedisLock, UseRedisPool};
 use prost::Message;
-
 use proto::jobworkerp::data::{Job, JobData, JobId};
 use redis::AsyncCommands;
 use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::sync::Arc;
-
-use self::job_status::JobStatusRepository;
-use self::schedule::RedisJobScheduleRepository;
-
-use super::redis::queue::RedisJobQueueRepository;
-use super::rows::UseJobqueueAndCodec;
 
 // TODO use if you need (not using in default)
 #[async_trait]
@@ -144,19 +140,15 @@ pub struct RedisJobRepositoryImpl {
     job_queue_config: Arc<JobQueueConfig>,
     #[debug_stub = "RedisPool"]
     pub redis_pool: &'static RedisPool,
-    pub redis_client: redis::Client, // for pubsub
+    pub redis_job_status_repository: Arc<RedisJobStatusRepository>,
 }
 
 impl RedisJobRepositoryImpl {
-    pub fn new(
-        job_queue_config: Arc<JobQueueConfig>,
-        redis_pool: &'static RedisPool,
-        redis_client: redis::Client,
-    ) -> Self {
+    pub fn new(job_queue_config: Arc<JobQueueConfig>, redis_pool: &'static RedisPool) -> Self {
         Self {
             job_queue_config,
             redis_pool,
-            redis_client,
+            redis_job_status_repository: Arc::new(RedisJobStatusRepository::new(redis_pool)),
         }
     }
 }
@@ -178,7 +170,11 @@ impl UseJobQueueConfig for RedisJobRepositoryImpl {
 // for use jobqueue by redis
 impl UseJobqueueAndCodec for RedisJobRepositoryImpl {}
 impl RedisJobQueueRepository for RedisJobRepositoryImpl {}
-impl JobStatusRepository for RedisJobRepositoryImpl {}
+impl UseJobStatusRepository for RedisJobRepositoryImpl {
+    fn job_status_repository(&self) -> Arc<dyn JobStatusRepository> {
+        self.redis_job_status_repository.clone()
+    }
+}
 impl UseRedisLock for RedisJobRepositoryImpl {}
 impl RedisJobScheduleRepository for RedisJobRepositoryImpl {}
 
@@ -200,7 +196,7 @@ async fn redis_test() -> Result<()> {
     let repo = RedisJobRepositoryImpl {
         job_queue_config,
         redis_pool: pool,
-        redis_client: infra_utils::infra::test::setup_test_redis_client()?,
+        redis_job_status_repository: Arc::new(RedisJobStatusRepository::new(pool)),
     };
     let id = JobId { value: 1 };
     let jarg = RunnerArg {

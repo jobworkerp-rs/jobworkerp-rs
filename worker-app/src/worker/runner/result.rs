@@ -107,6 +107,10 @@ pub trait RunnerResultHandler {
                 ResultStatus::OtherError,
                 Some(format!("worker not found: {:?}", e)),
             ),
+            Some(JobWorkerError::ChanError(e)) => (
+                ResultStatus::ErrorAndRetry, // ?
+                Some(format!("chan error: {:?}", e)),
+            ),
             Some(JobWorkerError::RedisError(e)) => (
                 ResultStatus::ErrorAndRetry,
                 Some(format!("redis error: {:?}", e)),

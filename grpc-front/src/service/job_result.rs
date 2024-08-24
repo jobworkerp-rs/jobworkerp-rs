@@ -20,8 +20,8 @@ use tonic::Response;
 pub trait JobResultGrpc {
     fn app(&self) -> &Arc<dyn JobResultApp + 'static>;
 }
-// 1 year
-const DEFAULT_TIMEOUT: u64 = 1000 * 60 * 60 * 24 * 365;
+// 1 day (same as expire_job_result_seconds in JobQueueConfig)
+const DEFAULT_TIMEOUT: u64 = 1000 * 60 * 60 * 24;
 
 #[tonic::async_trait]
 impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultService for T {

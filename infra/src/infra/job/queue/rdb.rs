@@ -185,9 +185,9 @@ pub trait RdbJobQueueRepository: UseRdbPool + Sync + Send {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::infra::job::rdb::RdbChanJobRepositoryImpl;
     use crate::infra::job::rdb::RdbJobRepository;
-    use crate::infra::job::rdb::RdbJobRepositoryImpl;
-
+    use crate::infra::JobQueueConfig;
     use anyhow::Result;
     use command_utils::util::datetime;
     use command_utils::util::option::FlatMap;
@@ -196,9 +196,10 @@ mod test {
     use proto::jobworkerp::data::Job;
     use proto::jobworkerp::data::JobData;
     use proto::jobworkerp::data::WorkerId;
+    use std::sync::Arc;
 
     async fn _test_job_queue_repository(pool: &'static RdbPool) -> Result<()> {
-        let repo = RdbJobRepositoryImpl::new(pool);
+        let repo = RdbChanJobRepositoryImpl::new(Arc::new(JobQueueConfig::default()), pool);
         let worker_id = WorkerId { value: 11 };
         let worker_id2 = WorkerId { value: 21 };
 
@@ -355,7 +356,7 @@ mod test {
         TEST_RUNTIME.block_on(async {
             let rdb_pool = setup_test_rdb().await;
             truncate_tables(rdb_pool, vec!["job", "worker", "job_result"]).await;
-            let repo = RdbJobRepositoryImpl::new(rdb_pool);
+            let repo = RdbChanJobRepositoryImpl::new(Arc::new(JobQueueConfig::default()), rdb_pool);
             let worker_id = WorkerId { value: 11 };
             let worker_id2 = WorkerId { value: 21 };
             let jid0 = JobId { value: 1 };

@@ -29,6 +29,7 @@ anyhow = "1.0"
 async-trait = "0.1"
 clap = "4.0"
 chrono = "0.4"
+dashmap = "6"
 deadpool = { version = "0.12", features = ["rt_tokio_1"] }
 deadpool-redis = { version = "0.15", features = ["rt_tokio_1", "cluster"] }
 debug_stub_derive = "0.3"
