@@ -38,8 +38,6 @@ pub enum JobWorkerError {
     ParseError(String),
     #[error("serde_json error({0:?})")]
     SerdeJsonError(serde_json::error::Error),
-    #[error("serde_yaml error({0:?})")]
-    SerdeYamlError(serde_yaml::Error),
     #[error("docker error({0:?})")]
     DockerError(bollard::errors::Error),
     // #[error("kube error({0:?})")]
@@ -60,11 +58,6 @@ impl From<RedisError> for JobWorkerError {
 impl From<serde_json::Error> for JobWorkerError {
     fn from(e: serde_json::Error) -> Self {
         JobWorkerError::SerdeJsonError(e)
-    }
-}
-impl From<serde_yaml::Error> for JobWorkerError {
-    fn from(e: serde_yaml::Error) -> Self {
-        JobWorkerError::SerdeYamlError(e)
     }
 }
 // impl From<kube_client::error::Error> for JobWorkerError {
