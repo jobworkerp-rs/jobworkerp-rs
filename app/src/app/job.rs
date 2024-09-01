@@ -1,9 +1,8 @@
 pub mod hybrid;
-pub mod rdb;
 pub mod rdb_chan;
 pub mod redis;
 
-use super::{JobBuilder, StorageConfig, UseStorageConfig};
+use super::JobBuilder;
 use anyhow::Result;
 use async_trait::async_trait;
 use infra::{

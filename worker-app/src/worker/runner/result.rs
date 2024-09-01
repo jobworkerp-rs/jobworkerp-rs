@@ -174,13 +174,6 @@ pub trait RunnerResultHandler {
                     Some(format!("parse arg json error: {:?}", e)),
                 )
             }
-            Some(JobWorkerError::SerdeYamlError(e)) => {
-                // parse error by serde (cannot retry)
-                (
-                    ResultStatus::OtherError,
-                    Some(format!("parse arg yaml error: {:?}", e)),
-                )
-            }
             Some(JobWorkerError::ParseError(e)) => {
                 // parse error (cannot retry)
                 (
@@ -532,13 +525,6 @@ mod tests {
             &worker.retry_policy,
             &job.data.clone().unwrap(),
             Err(JobWorkerError::SerdeJsonError(serde_json::Error::custom("test")).into()),
-        );
-        assert_eq!(status, ResultStatus::OtherError);
-        assert!(!mes.items.is_empty());
-        let (status, mes) = runner.job_result_status(
-            &worker.retry_policy,
-            &job.data.clone().unwrap(),
-            Err(JobWorkerError::SerdeYamlError(serde_yaml::Error::custom("test")).into()),
         );
         assert_eq!(status, ResultStatus::OtherError);
         assert!(!mes.items.is_empty());

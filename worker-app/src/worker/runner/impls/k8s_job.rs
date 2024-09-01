@@ -8,7 +8,6 @@ use async_trait::async_trait;
 // use infra::error::JobWorkerError;
 //use k8s_openapi::api::batch::v1::Job;
 use serde::Deserialize;
-// use serde_json::json;
 
 // use kube::{
 //     api::{Api, DeleteParams, PostParams, WatchEvent, WatchParams},
@@ -37,7 +36,8 @@ impl K8SRunner {
         // let parsed =
         //     serde_json::from_str::<K8SOperation>(operation).map_err(JobWorkerError::SerdeJsonError);
         // let parsed = if parsed.is_err() {
-        //     serde_yaml::from_str::<K8SOperation>(operation).map_err(JobWorkerError::SerdeYamlError)
+        //     // TODO serde_yaml is not maintained
+        //     // serde_yaml::from_str::<K8SOperation>(operation).map_err(JobWorkerError::SerdeYamlError)
         // } else {
         //     parsed
         // }?;

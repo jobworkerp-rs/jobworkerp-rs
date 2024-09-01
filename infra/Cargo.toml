@@ -27,7 +27,6 @@ redis = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
 signal-hook = { workspace = true }
 signal-hook-tokio = { workspace = true }
 sqlx = { workspace = true, features = [
