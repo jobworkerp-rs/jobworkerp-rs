@@ -1,5 +1,5 @@
 use crate::app::job::hybrid::HybridJobAppImpl;
-use crate::app::job::rdb::RdbJobAppImpl;
+use crate::app::job::rdb_chan::RdbChanJobAppImpl;
 use crate::app::job::redis::RedisJobAppImpl;
 use crate::app::job::JobApp;
 use crate::app::job_result::hybrid::HybridJobResultAppImpl;
@@ -103,13 +103,11 @@ impl AppModule {
                     repositories.clone(),
                     worker_app.clone(),
                 ));
-                let job_app = Arc::new(RdbJobAppImpl::new(
-                    job_queue_config,
-                    config_module.storage_config.clone(),
+                let job_app = Arc::new(RdbChanJobAppImpl::new(
+                    config_module.clone(),
                     id_generator,
                     repositories.clone(),
                     worker_app.clone(),
-                    job_result_app.clone(),
                     infra_utils::infra::memory::MemoryCacheImpl::new(
                         &mc_config,
                         Some(Duration::from_secs(5)),

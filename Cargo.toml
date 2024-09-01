@@ -14,13 +14,13 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.3.1"
 edition = "2021"
 authors = ["sutr"]
 name = "jobworkerp-rs"
 description = "Job-Worker system with gRPC front server"
 repository = "https://github.com/jobworkerp-rs/jobworkerp-rs"
-keywords = ["job-worker", "concurrency"]
+keywords = ["job-worker", "job-scheduler", "concurrency"]
 categories = ["web-programming"]
 license = "Apache 2.0"
 
@@ -66,7 +66,6 @@ serde = "1.0"
 serde_json = "1.0"
 serde_derive = "1.0"
 serde_with = "3.0"
-serde_yaml = "0.9"
 signal-hook = "0.3"
 signal-hook-tokio = "0.3"
 sqlx = { version = "0.8", features = [
@@ -87,7 +86,7 @@ tonic-reflection = "0.12"
 tonic-web = "0.12"
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["codec"] }
-tokio = { version = "1.35", features = [
+tokio = { version = "1.40", features = [
     "macros",
     "rt-multi-thread",
     "signal",
