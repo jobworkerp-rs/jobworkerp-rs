@@ -70,7 +70,7 @@ pub trait ChanJobDispatcher:
 
         for (ch, conc) in self.worker_config().channel_concurrency_pair() {
             tracing::info!(
-                "create job dispatcher for channel {}, concurrency: {}",
+                "create chan job dispatcher for channel {}, concurrency: {}",
                 &ch,
                 &conc
             );
@@ -79,9 +79,10 @@ pub trait ChanJobDispatcher:
             }
         }
         lock.unlock();
-        tracing::debug!("job dispatcher started");
+        tracing::debug!("channel job dispatcher started");
         Ok(())
     }
+
     fn pop_and_execute(
         &'static self,
         channel_name: impl Into<String> + Send + 'static,
@@ -126,7 +127,7 @@ pub trait ChanJobDispatcher:
                     break 'outer;
                 }
             }
-            tracing::info!("exit job loop for channel {}", cn);
+            tracing::info!("exit chan job loop for channel {}", cn);
             lock.unlock();
             Result::<()>::Ok(())
         })

@@ -11,6 +11,7 @@ services:
     cap_add:
       - SYS_PTRACE
     volumes:
+      - ./.env:/home/jobworkerp/.env
       - ./log:/home/jobworkerp/log
       - ./plugins:/home/jobworkerp/plugins
       - /var/run/docker.sock:/var/run/docker.sock
@@ -18,7 +19,3 @@ services:
     ports:
       - 9000:9000
 
-  redis:
-    hostname: redis
-    image: redis:7
-    command: [ "redis-server" ]

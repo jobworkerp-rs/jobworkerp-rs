@@ -28,7 +28,7 @@ pub async fn start_server(
     // reflection
     let reflection = tonic_reflection::server::Builder::configure()
         .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
-        .build()
+        .build_v1()
         .unwrap();
 
     let (tx, rx) = tokio::sync::oneshot::channel();

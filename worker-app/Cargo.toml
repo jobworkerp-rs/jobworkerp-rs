@@ -46,7 +46,6 @@ reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
-serde_yaml = { workspace = true }
 signal-hook = { workspace = true }
 signal-hook-tokio = { workspace = true }
 stretto = { workspace = true, features = ["async"] }
