@@ -52,7 +52,7 @@ pub trait RdbJobRepository:
             )
             .bind(id.value)
             .bind(data.worker_id.as_ref().unwrap().value) // XXX unwrap
-            .bind(data.arg.as_ref().map(|a| Self::serialize_runner_arg(a)))
+            .bind(&data.arg)
             .bind(&data.uniq_key)
             .bind(data.enqueue_time)
             .bind(data.grabbed_until_time.unwrap_or(0))
@@ -93,7 +93,7 @@ pub trait RdbJobRepository:
             WHERE id = ?;",
         )
         .bind(job.worker_id.as_ref().unwrap().value) // XXX unwrap
-        .bind(job.arg.as_ref().map(|a| Self::serialize_runner_arg(a)))
+        .bind(&job.arg)
         .bind(&job.uniq_key)
         .bind(job.enqueue_time)
         .bind(job.grabbed_until_time.unwrap_or(0))
@@ -320,6 +320,7 @@ impl UseChanBuffer for RdbChanJobRepositoryImpl {
 mod test {
     use std::sync::Arc;
 
+    use crate::infra::job::rows::UseJobqueueAndCodec;
     use crate::infra::JobQueueConfig;
 
     use super::RdbChanJobRepositoryImpl;
@@ -327,25 +328,21 @@ mod test {
     use anyhow::Result;
     use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::rdb::UseRdbPool;
-    use proto::jobworkerp::data::runner_arg::Data;
     use proto::jobworkerp::data::CommandArg;
     use proto::jobworkerp::data::Job;
     use proto::jobworkerp::data::JobData;
     use proto::jobworkerp::data::JobId;
-    use proto::jobworkerp::data::RunnerArg;
     use proto::jobworkerp::data::WorkerId;
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
         let repository = RdbChanJobRepositoryImpl::new(Arc::new(JobQueueConfig::default()), pool);
         let id = JobId { value: 1 };
-        let arg = RunnerArg {
-            data: Some(Data::Command(CommandArg {
-                args: vec!["hoge".to_string()],
-            })),
-        };
+        let arg = RdbChanJobRepositoryImpl::serialize_message(&CommandArg {
+            args: vec!["hoge".to_string()],
+        });
         let data = Some(JobData {
             worker_id: Some(WorkerId { value: 2 }),
-            arg: Some(arg),
+            arg,
             uniq_key: Some("hoge3".to_string()),
             enqueue_time: 5,
             grabbed_until_time: Some(6),
@@ -368,16 +365,14 @@ mod test {
         // find
         let found = repository.find(&id1).await?;
         assert_eq!(Some(&expect), found.as_ref());
-        let arg2 = RunnerArg {
-            data: Some(Data::Command(CommandArg {
-                args: vec!["fuga3".to_string()],
-            })),
-        };
+        let arg2 = RdbChanJobRepositoryImpl::serialize_message(&CommandArg {
+            args: vec!["fuga3".to_string()],
+        });
 
         // update
         let update = JobData {
             worker_id: Some(WorkerId { value: 3 }),
-            arg: Some(arg2),
+            arg: arg2,
             uniq_key: Some("fuga3".to_string()),
             enqueue_time: 6,
             grabbed_until_time: Some(7),
@@ -402,14 +397,12 @@ mod test {
     }
     async fn _test_find_id_set_in_instant(pool: &'static RdbPool) -> Result<()> {
         let repository = RdbChanJobRepositoryImpl::new(Arc::new(JobQueueConfig::default()), pool);
-        let arg = RunnerArg {
-            data: Some(Data::Command(CommandArg {
-                args: vec!["hoge1".to_string()],
-            })),
-        };
+        let arg = RdbChanJobRepositoryImpl::serialize_message(&CommandArg {
+            args: vec!["hoge1".to_string()],
+        });
         let data = Some(JobData {
             worker_id: Some(WorkerId { value: 2 }),
-            arg: Some(arg),
+            arg,
             uniq_key: Some("fuga1".to_string()),
             enqueue_time: 5,
             grabbed_until_time: Some(6),
@@ -424,14 +417,13 @@ mod test {
         };
         repository.create(&job).await?;
         // future job
-        let arg2 = RunnerArg {
-            data: Some(Data::Command(CommandArg {
-                args: vec!["hoge2".to_string()],
-            })),
-        };
+        let arg2 = RdbChanJobRepositoryImpl::serialize_message(&CommandArg {
+            args: vec!["hoge2".to_string()],
+        });
+
         let data = Some(JobData {
             worker_id: Some(WorkerId { value: 2 }),
-            arg: Some(arg2),
+            arg: arg2,
             uniq_key: Some("fuga2".to_string()),
             enqueue_time: 5,
             grabbed_until_time: None,
@@ -446,14 +438,12 @@ mod test {
         };
         repository.create(&job).await?;
         // grabbed job
-        let arg3 = RunnerArg {
-            data: Some(Data::Command(CommandArg {
-                args: vec!["hoge3".to_string()],
-            })),
-        };
+        let arg3 = RdbChanJobRepositoryImpl::serialize_message(&CommandArg {
+            args: vec!["hoge3".to_string()],
+        });
         let data = Some(JobData {
             worker_id: Some(WorkerId { value: 2 }),
-            arg: Some(arg3),
+            arg: arg3,
             uniq_key: Some("fuga3".to_string()),
             enqueue_time: 5,
             grabbed_until_time: Some(command_utils::util::datetime::now_millis() + 10000), // grabbed until 10 sec later

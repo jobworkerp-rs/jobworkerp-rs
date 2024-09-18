@@ -17,7 +17,7 @@ use futures::future::FutureExt;
 use infra::error::JobWorkerError;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use proto::jobworkerp::data::{
-    Job, JobResultData, ResultOutput, ResultStatus, RunnerArg, WorkerData, WorkerId,
+    Job, JobResultData, ResultOutput, ResultStatus, RunnerSchemaData, WorkerData, WorkerId,
 };
 use std::{panic::AssertUnwindSafe, time::Duration};
 use tracing;
@@ -25,7 +25,7 @@ use tracing;
 #[async_trait]
 pub trait Runner: Send + Sync {
     async fn name(&self) -> String;
-    async fn run(&mut self, arg: &RunnerArg) -> Result<Vec<Vec<u8>>>;
+    async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>>;
     async fn cancel(&mut self);
 }
 
@@ -39,6 +39,7 @@ pub trait JobRunner:
     #[inline]
     async fn run_job(
         &'static self,
+        schema: &RunnerSchemaData,
         worker_id: &WorkerId,
         worker: &WorkerData,
         job: Job,
@@ -57,7 +58,7 @@ pub trait JobRunner:
             };
             let p = self
                 .runner_pool_map()
-                .get_or_create_static_runner(worker_id, worker, to)
+                .get_or_create_static_runner(schema, worker_id, worker, to)
                 .await;
             match p {
                 Ok(Some(runner)) => {
@@ -69,7 +70,10 @@ pub trait JobRunner:
                 Err(e) => self.handle_error_option(worker, job, Some(e)),
             }
         } else {
-            let rres = self.runner_pool_map().get_non_static_runner(worker).await;
+            let rres = self
+                .runner_pool_map()
+                .get_non_static_runner(schema, worker)
+                .await;
             match rres {
                 Ok(mut runner) => self.run_job_inner(worker, job, &mut runner).await,
                 Err(e) => self.handle_error_option(worker, job, Some(e)),
@@ -129,7 +133,7 @@ pub trait JobRunner:
         runner: &mut Box<dyn Runner + Send + Sync>,
     ) -> JobResultData {
         let data = job.data.as_ref().unwrap(); // XXX unwrap
-        let arg = data.arg.as_ref().unwrap(); // XXX unwrap, clone
+        let arg = &data.arg; // XXX unwrap, clone
         let run_after_time = data.run_after_time;
 
         let wait = run_after_time - datetime::now_millis();
@@ -231,10 +235,10 @@ mod tests {
     use super::{map::RunnerFactoryWithPoolMap, *};
     use anyhow::Result;
     use app::app::WorkerConfig;
+    use infra::infra::job::rows::JobqueueAndCodec;
     use libloading::Library;
     use proto::jobworkerp::data::{
-        worker_operation::Operation, Job, JobData, JobId, ResponseType, RunnerType, WorkerData,
-        WorkerId, WorkerOperation,
+        Job, JobData, JobId, OperationType, ResponseType, WorkerData, WorkerId,
     };
 
     // create JobRunner for test
@@ -277,18 +281,14 @@ mod tests {
         static JOB_RUNNER: Lazy<Box<MockJobRunner>> = Lazy::new(|| Box::new(MockJobRunner::new()));
 
         let run_after = datetime::now_millis() + 1000;
-        let jarg = RunnerArg {
-            data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
-                proto::jobworkerp::data::CommandArg {
-                    args: vec!["1".to_string()],
-                },
-            )),
-        };
+        let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandArg {
+            args: vec!["1".to_string()],
+        });
         let job = Job {
             id: Some(JobId { value: 1 }),
             data: Some(JobData {
                 worker_id: Some(WorkerId { value: 1 }),
-                arg: Some(jarg),
+                arg: jarg,
                 uniq_key: Some("test".to_string()),
                 retried: 0,
                 priority: 0,
@@ -299,18 +299,14 @@ mod tests {
             }),
         };
         let worker_id = WorkerId { value: 1 };
-        let operation = WorkerOperation {
-            operation: Some(Operation::Command(
-                proto::jobworkerp::data::CommandOperation {
-                    name: "sleep".to_string(),
-                },
-            )),
-        };
+        let operation =
+            JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandOperation {
+                name: "sleep".to_string(),
+            });
 
         let worker = WorkerData {
             name: "test".to_string(),
-            operation: Some(operation),
-            r#type: RunnerType::Command as i32,
+            operation,
             retry_policy: None,
             channel: Some("test".to_string()),
             response_type: ResponseType::NoResult as i32,
@@ -318,7 +314,13 @@ mod tests {
             store_failure: false,
             ..Default::default()
         };
-        let res = JOB_RUNNER.run_job(&worker_id, &worker, job.clone()).await;
+        let schema = RunnerSchemaData {
+            operation_type: OperationType::Command as i32,
+            ..Default::default()
+        };
+        let res = JOB_RUNNER
+            .run_job(&schema, &worker_id, &worker, job.clone())
+            .await;
         assert_eq!(res.status, ResultStatus::Success as i32);
         assert_eq!(res.output.unwrap().items, vec![b""]);
         assert_eq!(res.retried, 0);
@@ -330,24 +332,20 @@ mod tests {
         assert!(res.start_time >= run_after); // wait until run_after (expect short time)
         assert!(res.end_time > res.start_time);
         assert!(res.end_time - res.start_time >= 1000); // sleep
-        let jarg = RunnerArg {
-            data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
-                proto::jobworkerp::data::CommandArg {
-                    args: vec!["2".to_string()],
-                },
-            )),
-        };
+        let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandArg {
+            args: vec!["2".to_string()],
+        });
 
         let timeout_job = Job {
             id: Some(JobId { value: 2 }),
             data: Some(JobData {
-                arg: Some(jarg), // sleep 2sec
-                timeout: 1000,   // timeout 1sec
+                arg: jarg,     // sleep 2sec
+                timeout: 1000, // timeout 1sec
                 ..job.data.as_ref().unwrap().clone()
             }),
         };
         let res = JOB_RUNNER
-            .run_job(&worker_id, &worker, timeout_job.clone())
+            .run_job(&schema, &worker_id, &worker, timeout_job.clone())
             .await;
         assert_eq!(res.status, ResultStatus::MaxRetry as i32); // no retry
         assert_eq!(

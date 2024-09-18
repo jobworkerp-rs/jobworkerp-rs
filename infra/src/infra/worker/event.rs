@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use infra_utils::infra::redis::UseRedisClient;
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 
+// TODO merge super::event::UsePublishChanged ?
 #[async_trait]
 pub trait UseWorkerPublish: UseJobqueueAndCodec + UseRedisClient + Send + Sync {
     // publish worker changed event using redis<

@@ -19,6 +19,8 @@ use crate::app::worker::builtin::{BuiltinWorker, BuiltinWorkerTrait};
 
 use super::super::{StorageConfig, UseStorageConfig};
 use super::{WorkerApp, WorkerAppCacheHelper};
+
+#[derive(Clone, Debug)]
 pub struct HybridWorkerAppImpl {
     storage_config: Arc<StorageConfig>,
     id_generator: Arc<IdGeneratorWrapper>,
@@ -199,61 +201,61 @@ impl WorkerApp for HybridWorkerAppImpl {
     where
         Self: Send + 'static,
     {
-        let k = Arc::new(Self::find_list_cache_key(limit, offset));
-        self.memory_cache
-            .with_cache(&k, None, || async {
-                // not use rdb in normal case
-                match self.redis_worker_repository().find_all().await {
-                    Ok(v) if !v.is_empty() => {
-                        tracing::debug!("worker list from redis: ({:?}, {:?})", limit, offset);
-                        // soft paging
-                        let start = offset.unwrap_or(0);
-                        if let Some(l) = limit {
-                            Ok(v.into_iter()
-                                .skip(start as usize)
-                                .take(l as usize)
-                                .collect())
-                        } else {
-                            Ok(v.into_iter().skip(start as usize).collect())
-                        }
-                    }
-                    // empty
-                    Ok(_v) => {
-                        tracing::debug!("worker list from rdb: ({:?}, {:?})", limit, offset);
-                        // fallback to rdb if rdb is enabled
-                        let list = self
-                            .rdb_worker_repository()
-                            .find_list(limit, offset)
-                            .await?;
-                        if !list.is_empty() {
-                            for w in list.iter() {
-                                let _ = self.redis_worker_repository().upsert(w).await;
-                            }
-                        }
-                        Ok(list)
-                    }
-                    Err(err) => {
-                        tracing::debug!(
-                            "worker list from rdb (redis error): ({:?}, {:?})",
-                            limit,
-                            offset
-                        );
-                        tracing::warn!("workers find error from redis: {:?}", err);
-                        // fallback to rdb if rdb is enabled
-                        let list = self
-                            .rdb_worker_repository()
-                            .find_list(limit, offset)
-                            .await?;
-                        if !list.is_empty() {
-                            for w in list.iter() {
-                                let _ = self.redis_worker_repository().upsert(w).await;
-                            }
-                        }
-                        Ok(list)
+        // let k = Arc::new(Self::find_list_cache_key(limit, offset));
+        // self.memory_cache
+        //     .with_cache(&k, None, || async {
+        // not use rdb in normal case
+        match self.redis_worker_repository().find_all().await {
+            Ok(v) if !v.is_empty() => {
+                tracing::debug!("worker list from redis: ({:?}, {:?})", limit, offset);
+                // soft paging
+                let start = offset.unwrap_or(0);
+                if let Some(l) = limit {
+                    Ok(v.into_iter()
+                        .skip(start as usize)
+                        .take(l as usize)
+                        .collect())
+                } else {
+                    Ok(v.into_iter().skip(start as usize).collect())
+                }
+            }
+            // empty
+            Ok(_v) => {
+                tracing::debug!("worker list from rdb: ({:?}, {:?})", limit, offset);
+                // fallback to rdb if rdb is enabled
+                let list = self
+                    .rdb_worker_repository()
+                    .find_list(limit, offset)
+                    .await?;
+                if !list.is_empty() {
+                    for w in list.iter() {
+                        let _ = self.redis_worker_repository().upsert(w).await;
                     }
                 }
-            })
-            .await
+                Ok(list)
+            }
+            Err(err) => {
+                tracing::debug!(
+                    "worker list from rdb (redis error): ({:?}, {:?})",
+                    limit,
+                    offset
+                );
+                tracing::warn!("workers find error from redis: {:?}", err);
+                // fallback to rdb if rdb is enabled
+                let list = self
+                    .rdb_worker_repository()
+                    .find_list(limit, offset)
+                    .await?;
+                if !list.is_empty() {
+                    for w in list.iter() {
+                        let _ = self.redis_worker_repository().upsert(w).await;
+                    }
+                }
+                Ok(list)
+            }
+        }
+        // })
+        // .await
     }
 
     async fn find_all_worker_list(&self) -> Result<Vec<Worker>>
@@ -340,13 +342,13 @@ mod tests {
     use crate::app::{StorageConfig, StorageType};
     use anyhow::Result;
     use command_utils::util::option::FlatMap;
+    use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
     use infra::infra::module::rdb::test::setup_test_rdb_module;
     use infra::infra::module::redis::test::setup_test_redis_module;
     use infra::infra::module::HybridRepositoryModule;
     use infra::infra::IdGeneratorWrapper;
     use infra_utils::infra::test::TEST_RUNTIME;
-    use proto::jobworkerp::data::worker_operation::Operation;
-    use proto::jobworkerp::data::{WorkerData, WorkerOperation};
+    use proto::jobworkerp::data::{CommandOperation, WorkerData};
 
     fn create_test_app(use_mock_id: bool) -> Result<HybridWorkerAppImpl> {
         let rdb_module = setup_test_rdb_module();
@@ -390,26 +392,22 @@ mod tests {
         // test create 3 workers and find list and update 1 worker and find list and delete 1 worker and find list
         let app = create_test_app(false)?;
         TEST_RUNTIME.block_on(async {
-            let operation = WorkerOperation {
-                operation: Some(Operation::Command(
-                    proto::jobworkerp::data::CommandOperation {
-                        name: "ls".to_string(),
-                    },
-                )),
-            };
+            let operation = JobqueueAndCodec::serialize_message(&CommandOperation {
+                name: "ls".to_string(),
+            });
             let w1 = WorkerData {
                 name: "test1".to_string(),
-                operation: Some(operation.clone()),
+                operation: operation.clone(),
                 ..Default::default()
             };
             let w2 = WorkerData {
                 name: "test2".to_string(),
-                operation: Some(operation.clone()),
+                operation: operation.clone(),
                 ..Default::default()
             };
             let w3 = WorkerData {
                 name: "test3".to_string(),
-                operation: Some(operation.clone()),
+                operation: operation.clone(),
                 ..Default::default()
             };
             let id1 = app.create(&w1).await?;
@@ -426,7 +424,7 @@ mod tests {
             // update
             let w4 = WorkerData {
                 name: "test4".to_string(),
-                operation: Some(operation.clone()),
+                operation: operation.clone(),
                 ..Default::default()
             };
             let res = app.update(&id1, &Some(w4.clone())).await?;

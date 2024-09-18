@@ -1,9 +1,12 @@
-use infra::error::JobWorkerError;
+use infra::{
+    error::JobWorkerError,
+    infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec},
+};
+use proto::jobworkerp::data::CommandArg;
 
 use super::super::Runner;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
-use proto::jobworkerp::data::{runner_arg::Data, RunnerArg};
 use std::{mem, process::Stdio};
 use tokio::process::{Child, Command};
 use tokio_stream::StreamExt;
@@ -65,14 +68,10 @@ impl Runner for CommandRunnerImpl {
         format!("CommandRunner: {}", &self.command)
     }
     // arg: assumed as utf-8 string, specify multiple arguments with \n separated
-    async fn run(&mut self, arg: &RunnerArg) -> Result<Vec<Vec<u8>>> {
-        let args: &Vec<String> = match &arg.data {
-            Some(Data::Command(args)) => Ok(&args.args),
-            _ => Err(JobWorkerError::ParseError(format!(
-                "invalid arg: {:?}",
-                arg
-            ))),
-        }?;
+    async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
+        let data =
+            JobqueueAndCodec::deserialize_message::<CommandArg>(arg).context("on run job")?;
+        let args: &Vec<String> = &data.args;
         let mut messages = Vec::<Vec<u8>>::new();
         tracing::info!("run command: {}, args: {:?}", &self.command, args);
         match self
@@ -134,11 +133,7 @@ mod tests {
         let arg = CommandArg {
             args: vec!["-vvv".to_string(), "https://www.google.com".to_string()],
         };
-        let res = runner
-            .run(&RunnerArg {
-                data: Some(Data::Command(arg)),
-            })
-            .await;
+        let res = runner.run(&JobqueueAndCodec::serialize_message(&arg)).await;
         assert!(res.is_ok());
         let r = res.unwrap().pop().unwrap();
         let mes = String::from_utf8_lossy(r.as_ref()).to_string();
@@ -156,11 +151,7 @@ mod tests {
         let arg = CommandArg {
             args: vec!["10".to_string()],
         };
-        let res = runner
-            .run(&RunnerArg {
-                data: Some(Data::Command(arg)),
-            })
-            .await;
+        let res = runner.run(&JobqueueAndCodec::serialize_message(&arg)).await;
 
         print!("====== run and cancel res: {:?}", res);
         assert!(res.is_ok());

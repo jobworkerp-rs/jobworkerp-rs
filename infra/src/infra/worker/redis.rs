@@ -63,7 +63,8 @@ where
             if res {
                 // on created
                 if let Some(ex) = self.expire_sec() {
-                    p.expire(Self::NAME_CACHE_KEY, ex as i64).await?
+                    p.expire::<&str, ()>(Self::NAME_CACHE_KEY, ex as i64)
+                        .await?
                 };
             }
             Ok(())
@@ -91,7 +92,7 @@ where
             .map_err(|e| JobWorkerError::RedisError(e).into());
         if res.as_ref().exists(|r| *r) {
             if let Some(ex) = self.expire_sec() {
-                p.expire(Self::CACHE_KEY, ex as i64).await?;
+                p.expire::<&str, ()>(Self::CACHE_KEY, ex as i64).await?;
             };
         }
         res
@@ -128,13 +129,13 @@ where
         self.redis_pool()
             .get()
             .await?
-            .del(Self::CACHE_KEY)
+            .del::<&str, ()>(Self::CACHE_KEY)
             .await
             .map_err(JobWorkerError::RedisError)?;
         self.redis_pool()
             .get()
             .await?
-            .del(Self::NAME_CACHE_KEY)
+            .del::<&str, bool>(Self::NAME_CACHE_KEY)
             .await
             .map_err(|e| JobWorkerError::RedisError(e).into())
     }
@@ -246,11 +247,9 @@ pub trait UseRedisWorkerRepository {
 #[tokio::test]
 async fn redis_test() -> Result<()> {
     use command_utils::util::option::FlatMap;
-    use proto::jobworkerp::data::worker_operation::Operation;
     use proto::jobworkerp::data::RetryPolicy;
     use proto::jobworkerp::data::{
-        CommandOperation, QueueType, ResponseType, RunnerType, WorkerData, WorkerId,
-        WorkerOperation,
+        CommandOperation, QueueType, ResponseType, RunnerSchemaId, WorkerData, WorkerId,
     };
 
     let pool = infra_utils::infra::test::setup_test_redis_pool().await;
@@ -264,11 +263,9 @@ async fn redis_test() -> Result<()> {
     let id = WorkerId { value: 1 };
     let worker = &WorkerData {
         name: "hoge1".to_string(),
-        r#type: RunnerType::Command as i32,
-        operation: Some(WorkerOperation {
-            operation: Some(Operation::Command(CommandOperation {
-                name: "echo".to_string(),
-            })),
+        schema_id: Some(RunnerSchemaId { value: 2 }),
+        operation: RedisWorkerRepositoryImpl::serialize_message(&CommandOperation {
+            name: "hoge1".to_string(),
         }),
         retry_policy: Some(RetryPolicy {
             r#type: 5,
@@ -300,11 +297,9 @@ async fn redis_test() -> Result<()> {
 
     let mut worker2 = worker.clone();
     worker2.name = "fuga1".to_string();
-    worker2.r#type = 4;
-    worker2.operation = Some(WorkerOperation {
-        operation: Some(Operation::Command(CommandOperation {
-            name: "ls".to_string(),
-        })),
+    worker2.schema_id = Some(RunnerSchemaId { value: 5 });
+    worker2.operation = RedisWorkerRepositoryImpl::serialize_message(&CommandOperation {
+        name: "fuga2".to_string(),
     });
     worker2.retry_policy = Some(RetryPolicy {
         r#type: 6,

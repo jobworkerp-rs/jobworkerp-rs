@@ -13,8 +13,8 @@ use bollard::Docker;
 use futures_util::stream::StreamExt;
 use futures_util::TryStreamExt;
 use infra::error::JobWorkerError;
-use proto::jobworkerp::data::runner_arg::Data;
-use proto::jobworkerp::data::{DockerArg, RunnerArg};
+use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
+use proto::jobworkerp::data::DockerArg;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -238,11 +238,8 @@ impl Runner for DockerExecRunner {
         format!("DockerExecRunner: {}", &self.instant_id)
     }
 
-    async fn run(&mut self, arg: &RunnerArg) -> Result<Vec<Vec<u8>>> {
-        let req: &DockerArg = match &arg.data {
-            Some(Data::Docker(args)) => Ok(args),
-            _ => Err(anyhow!("argument error: {:?}", arg)),
-        }?;
+    async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
+        let req = JobqueueAndCodec::deserialize_message::<DockerArg>(arg)?;
         let mut c: CreateExecOptions<String> = self.trans_exec_arg(req.clone());
         // for log
         c.attach_stdout = Some(true);
@@ -285,24 +282,20 @@ async fn exec_test() -> Result<()> {
         "busybox:latest".to_string(),
     )))
     .await?;
-    let arg = RunnerArg {
-        data: Some(Data::Docker(DockerArg {
-            cmd: vec!["ls".to_string(), "-alh".to_string(), "/etc".to_string()],
-            ..Default::default()
-        })),
-    };
+    let arg = JobqueueAndCodec::serialize_message(&DockerArg {
+        cmd: vec!["ls".to_string(), "-alh".to_string(), "/etc".to_string()],
+        ..Default::default()
+    });
     let handle1 = tokio::spawn(async move {
         let res = runner1.run(&arg).await;
         tracing::info!("result:{:?}", &res);
         runner1.stop(2, false).await.flat_map(|_| res)
     });
 
-    let arg2 = RunnerArg {
-        data: Some(Data::Docker(DockerArg {
-            cmd: vec!["cat".to_string(), "/etc/resolv.conf".to_string()],
-            ..Default::default()
-        })),
-    };
+    let arg2 = JobqueueAndCodec::serialize_message(&DockerArg {
+        cmd: vec!["cat".to_string(), "/etc/resolv.conf".to_string()],
+        ..Default::default()
+    });
     let handle2 = tokio::spawn(async move {
         let res = runner2.run(&arg2).await;
         tracing::info!("result:{:?}", &res);
@@ -392,12 +385,9 @@ impl Runner for DockerRunner {
     async fn name(&self) -> String {
         "DockerRunner".to_string()
     }
-    async fn run(&mut self, arg: &RunnerArg) -> Result<Vec<Vec<u8>>> {
-        let arg = match &arg.data {
-            Some(Data::Docker(args)) => Ok(args),
-            _ => Err(anyhow!("decode error: {:?}", arg)),
-        }?;
-        let mut config = self.trans_docker_arg_to_config(arg);
+    async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
+        let arg = JobqueueAndCodec::deserialize_message::<DockerArg>(arg)?;
+        let mut config = self.trans_docker_arg_to_config(&arg);
         // to output log
         config.attach_stdout = Some(true);
         config.attach_stderr = Some(true);
@@ -472,26 +462,22 @@ async fn run_test() -> Result<()> {
         "busybox:latest".to_string(),
     )))
     .await?;
-    let arg = RunnerArg {
-        data: Some(Data::Docker(DockerArg {
-            image: Some("busybox:latest".to_string()),
-            cmd: vec!["ls".to_string(), "-alh".to_string(), "/".to_string()],
-            ..Default::default()
-        })),
-    };
+    let arg = JobqueueAndCodec::serialize_message(&DockerArg {
+        image: Some("busybox:latest".to_string()),
+        cmd: vec!["ls".to_string(), "-alh".to_string(), "/".to_string()],
+        ..Default::default()
+    });
     let handle1 = tokio::spawn(async move {
         let res = runner1.run(&arg).await;
         tracing::info!("result:{:?}", &res);
         res
     });
 
-    let arg2 = RunnerArg {
-        data: Some(Data::Docker(DockerArg {
-            image: Some("busybox:latest".to_string()),
-            cmd: vec!["echo".to_string(), "run in docker container".to_string()],
-            ..Default::default()
-        })),
-    };
+    let arg2 = JobqueueAndCodec::serialize_message(&DockerArg {
+        image: Some("busybox:latest".to_string()),
+        cmd: vec!["echo".to_string(), "run in docker container".to_string()],
+        ..Default::default()
+    });
     let handle2 = tokio::spawn(async move {
         let res = runner2.run(&arg2).await;
         tracing::info!("result:{:?}", &res);

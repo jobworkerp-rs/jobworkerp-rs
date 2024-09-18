@@ -20,7 +20,7 @@ use proto::jobworkerp::data::{
 };
 use std::sync::Arc;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct HybridJobResultAppImpl {
     storage_config: Arc<StorageConfig>,
     repositories: Arc<HybridRepositoryModule>,
@@ -273,38 +273,34 @@ mod tests {
     use crate::app::{StorageConfig, StorageType};
     use anyhow::Result;
     use command_utils::util::datetime;
+    use infra::infra::job::rows::JobqueueAndCodec;
+    use infra::infra::job::rows::UseJobqueueAndCodec;
     use infra::infra::module::rdb::test::setup_test_rdb_module;
     use infra::infra::module::redis::test::setup_test_redis_module;
     use infra::infra::module::HybridRepositoryModule;
     use infra::infra::IdGeneratorWrapper;
     use infra_utils::infra::test::TEST_RUNTIME;
-    use proto::jobworkerp::data::worker_operation::Operation;
     use proto::jobworkerp::data::Priority;
     use proto::jobworkerp::data::QueueType;
     use proto::jobworkerp::data::ResultOutput;
-    use proto::jobworkerp::data::RunnerArg;
-    use proto::jobworkerp::data::WorkerOperation;
+    use proto::jobworkerp::data::RunnerSchemaId;
     use proto::jobworkerp::data::{
-        JobId, JobResult, ResponseType, ResultStatus, RunnerType, Worker, WorkerData,
+        JobId, JobResult, ResponseType, ResultStatus, Worker, WorkerData,
     };
     use std::sync::Arc;
     use std::time::Duration;
 
     #[test]
     fn test_should_store() {
-        let arg = RunnerArg {
-            data: Some(proto::jobworkerp::data::runner_arg::Data::Plugin(
-                proto::jobworkerp::data::PluginArg {
-                    arg: b"test".to_vec(),
-                },
-            )),
-        };
+        let arg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::PluginArg {
+            arg: b"test".to_vec(),
+        });
         let mut job_result_data = JobResultData {
             job_id: None,
             worker_id: None,
             status: ResultStatus::Success as i32,
             worker_name: "".to_string(),
-            arg: Some(arg),
+            arg,
             uniq_key: None,
             output: Some(ResultOutput {
                 items: vec![b"data".to_vec()],
@@ -383,17 +379,14 @@ mod tests {
     #[test]
     fn test_create_job_result_if_necessary() -> Result<()> {
         let app = setup()?;
-        let operation = WorkerOperation {
-            operation: Some(Operation::Command(
-                proto::jobworkerp::data::CommandOperation {
-                    name: "ls".to_string(),
-                },
-            )),
-        };
+        let operation =
+            JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandOperation {
+                name: "ls".to_string(),
+            });
         let worker_data = WorkerData {
             name: "test".to_string(),
-            r#type: RunnerType::Command as i32,
-            operation: Some(operation),
+            schema_id: Some(RunnerSchemaId { value: 1 }),
+            operation,
             retry_policy: None,
             periodic_interval: 0,
             channel: Some("hoge".to_string()),
@@ -416,19 +409,15 @@ mod tests {
                 value: app.id_generator().generate_id()?,
             };
             let job_id = JobId { value: 100 };
-            let arg = RunnerArg {
-                data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
-                    proto::jobworkerp::data::CommandArg {
-                        args: vec!["arg1".to_string()],
-                    },
-                )),
-            };
+            let arg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandArg {
+                args: vec!["arg1".to_string()],
+            });
             let mut data = JobResultData {
                 job_id: Some(job_id),
                 worker_id: worker.id,
                 status: ResultStatus::Success as i32,
                 worker_name: worker_data.name.clone(),
-                arg: Some(arg),
+                arg,
                 uniq_key: Some("uniq_key".to_string()),
                 output: Some(ResultOutput {
                     items: vec![b"data".to_vec()],

@@ -14,6 +14,7 @@ use super::super::{StorageConfig, UseStorageConfig};
 use super::builtin::{BuiltinWorker, BuiltinWorkerTrait};
 use super::{WorkerApp, WorkerAppCacheHelper};
 
+#[derive(Clone, Debug)]
 pub struct RedisWorkerAppImpl {
     storage_config: Arc<StorageConfig>,
     id_generator: Arc<IdGeneratorWrapper>,
@@ -161,23 +162,23 @@ impl WorkerApp for RedisWorkerAppImpl {
     where
         Self: Send + 'static,
     {
-        let k = Arc::new(Self::find_list_cache_key(limit, offset));
-        self.memory_cache
-            .with_cache(&k, None, || async {
-                self.redis_worker_repository().find_all().await.map(|v| {
-                    // soft paging
-                    let start = offset.unwrap_or(0);
-                    if let Some(l) = limit {
-                        v.into_iter()
-                            .skip(start as usize)
-                            .take(l as usize)
-                            .collect()
-                    } else {
-                        v.into_iter().skip(start as usize).collect()
-                    }
-                })
-            })
-            .await
+        // let k = Arc::new(Self::find_list_cache_key(limit, offset));
+        // self.memory_cache
+        //     .with_cache(&k, None, || async {
+        self.redis_worker_repository().find_all().await.map(|v| {
+            // soft paging
+            let start = offset.unwrap_or(0);
+            if let Some(l) = limit {
+                v.into_iter()
+                    .skip(start as usize)
+                    .take(l as usize)
+                    .collect()
+            } else {
+                v.into_iter().skip(start as usize).collect()
+            }
+        })
+        // })
+        // .await
     }
 
     async fn find_all_worker_list(&self) -> Result<Vec<Worker>>

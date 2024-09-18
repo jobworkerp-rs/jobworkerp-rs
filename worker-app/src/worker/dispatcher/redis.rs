@@ -7,10 +7,12 @@ use crate::worker::runner::result::RunnerResultHandler;
 use crate::worker::runner::JobRunner;
 use crate::worker::subscribe::UseSubscribeWorker;
 use anyhow::Result;
+use app::app::runner_schema::{RunnerSchemaApp, UseRunnerSchemaApp};
 use app::app::worker::{UseWorkerApp, WorkerApp};
 use app::app::{UseWorkerConfig, WorkerConfig};
 use app::module::{AppConfigModule, AppModule};
 use async_trait::async_trait;
+use command_utils::util::option::ToResult;
 use command_utils::util::result::TapErr;
 use command_utils::util::shutdown::ShutdownLock;
 use futures::TryFutureExt;
@@ -28,7 +30,7 @@ use infra_utils::infra::redis::{RedisClient, UseRedisClient};
 use infra_utils::infra::redis::{RedisPool, UseRedisPool};
 use libloading::Library;
 use proto::jobworkerp::data::{
-    Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, Worker,
+    Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, RunnerSchema, Worker,
 };
 use redis::{AsyncCommands, RedisError};
 use std::sync::Arc;
@@ -54,6 +56,7 @@ pub trait RedisJobDispatcher:
     + UseResultProcessor
     + UseWorkerConfig
     + UseWorkerApp
+    + UseRunnerSchemaApp
     + UseJobQueueConfig
     + UseIdGenerator
 {
@@ -185,88 +188,12 @@ pub trait RedisJobDispatcher:
         Self: Sync + Send + 'static,
     {
         tracing::debug!("process pop-ed job: {:?}", job);
-        if let Job {
+        let (jid, jdat) = if let Job {
             id: Some(jid),
             data: Some(jdat),
         } = job
         {
-            if let Some(Worker {
-                id: Some(wid),
-                data: Some(wdat),
-            }) = self
-                .worker_app()
-                .find_by_opt(jdat.worker_id.as_ref())
-                .await?
-            {
-                if wdat.response_type != ResponseType::Direct as i32
-                    && wdat.queue_type == QueueType::Hybrid as i32
-                {
-                    if let Some(repo) = self.rdb_job_repository_opt() {
-                        // grab job in db (only for record as in progress)
-                        if repo
-                            .grab_job(
-                                &jid,
-                                Some(jdat.timeout),
-                                jdat.grabbed_until_time.unwrap_or(0),
-                            )
-                            .await?
-                        {
-                            // change status to running
-                            self.redis_job_repository()
-                                .job_status_repository()
-                                .upsert_status(&jid, &JobStatus::Running)
-                                .await?;
-                        } else {
-                            // already grabbed (strange! (not reset previous process in retry?), but continue processing job)
-                            tracing::warn!("failed to grab job from db: {:?}, {:?}", &jid, &jdat);
-                            return Err(JobWorkerError::AlreadyExists(format!(
-                                "already grabbed: {:?}, {:?}",
-                                &jid, &jdat
-                            ))
-                            .into());
-                        }
-                    }
-                }
-                // run job
-                let r = self
-                    .run_job(
-                        &wid,
-                        &wdat,
-                        Job {
-                            id: Some(jid),
-                            data: Some(jdat),
-                        },
-                    )
-                    .await;
-                let id = JobResultId {
-                    value: self.id_generator().generate_id()?,
-                };
-                // TODO execute and return result to result channel.
-                tracing::trace!("send result id: {:?}, data: {:?}", id, r);
-                // change status to wait handling result
-                if wdat.response_type != ResponseType::Direct as i32 {
-                    self.redis_job_repository()
-                        .job_status_repository()
-                        .upsert_status(&jid, &JobStatus::WaitResult)
-                        .await?;
-                }
-                self.result_processor().process_result(id, r, wdat).await
-            } else {
-                // TODO cannot return result in this case. send result as error?
-                let mes = format!(
-                    "worker {:?} is not found.",
-                    jdat.worker_id.as_ref().unwrap()
-                );
-                tracing::error!("{}", &mes);
-                self.redis_job_repository()
-                    .job_status_repository()
-                    .delete_status(&jid)
-                    .await?;
-                if let Some(repo) = self.rdb_job_repository_opt() {
-                    repo.delete(&jid).await?;
-                }
-                Err(JobWorkerError::NotFound(mes).into())
-            }
+            (jid, jdat)
         } else {
             // TODO cannot return result in this case. send result as error?
             let mes = format!("job {:?} is incomplete data.", &job);
@@ -280,8 +207,108 @@ pub trait RedisJobDispatcher:
                     repo.delete(id).await?;
                 }
             }
-            Err(JobWorkerError::OtherError(mes).into())
+            return Err(JobWorkerError::OtherError(mes).into());
+        };
+
+        let (wid, wdat) = if let Some(Worker {
+            id: Some(wid),
+            data: Some(wdat),
+        }) = self
+            .worker_app()
+            .find_by_opt(jdat.worker_id.as_ref())
+            .await?
+        {
+            (wid, wdat)
+        } else {
+            // TODO cannot return result in this case. send result as error?
+            let mes = format!(
+                "worker {:?} is not found.",
+                jdat.worker_id.as_ref().unwrap()
+            );
+            tracing::error!("{}", &mes);
+            self.redis_job_repository()
+                .job_status_repository()
+                .delete_status(&jid)
+                .await?;
+            if let Some(repo) = self.rdb_job_repository_opt() {
+                repo.delete(&jid).await?;
+            }
+            return Err(JobWorkerError::NotFound(mes).into());
+        };
+        let sid = wdat.schema_id.to_result(|| {
+            JobWorkerError::InvalidParameter("worker schema_id is not found.".to_string())
+        })?;
+        let schema = if let Some(RunnerSchema {
+            id: _,
+            data: schema,
+        }) = self
+            .runner_schema_app()
+            .find_runner_schema(&sid, None)
+            .await?
+        {
+            schema
+                .to_result(|| JobWorkerError::NotFound(format!("schema {:?} is not found.", &sid)))
+        } else {
+            Err(JobWorkerError::NotFound(format!(
+                "schema {:?} is not found.",
+                &sid
+            )))
+        }?;
+
+        if wdat.response_type != ResponseType::Direct as i32
+            && wdat.queue_type == QueueType::Hybrid as i32
+        {
+            if let Some(repo) = self.rdb_job_repository_opt() {
+                // grab job in db (only for record as in progress)
+                if repo
+                    .grab_job(
+                        &jid,
+                        Some(jdat.timeout),
+                        jdat.grabbed_until_time.unwrap_or(0),
+                    )
+                    .await?
+                {
+                    // change status to running
+                    self.redis_job_repository()
+                        .job_status_repository()
+                        .upsert_status(&jid, &JobStatus::Running)
+                        .await?;
+                } else {
+                    // already grabbed (strange! (not reset previous process in retry?), but continue processing job)
+                    tracing::warn!("failed to grab job from db: {:?}, {:?}", &jid, &jdat);
+                    return Err(JobWorkerError::AlreadyExists(format!(
+                        "already grabbed: {:?}, {:?}",
+                        &jid, &jdat
+                    ))
+                    .into());
+                }
+            }
         }
+        // run job
+        let r = self
+            .run_job(
+                &schema,
+                &wid,
+                &wdat,
+                Job {
+                    id: Some(jid),
+                    data: Some(jdat),
+                },
+            )
+            .await;
+        let id = JobResultId {
+            value: self.id_generator().generate_id()?,
+        };
+        // TODO execute and return result to result channel.
+        tracing::trace!("send result id: {:?}, data: {:?}", id, r);
+        // change status to wait handling result
+        if wdat.response_type != ResponseType::Direct as i32 {
+            self.redis_job_repository()
+                .job_status_repository()
+                .upsert_status(&jid, &JobStatus::WaitResult)
+                .await?;
+        }
+        self.result_processor().process_result(id, r, wdat).await
     }
 }
 
@@ -353,6 +380,11 @@ impl UseJobqueueAndCodec for RedisJobDispatcherImpl {}
 impl UseWorkerApp for RedisJobDispatcherImpl {
     fn worker_app(&self) -> &Arc<dyn WorkerApp + 'static> {
         &self.app_module.worker_app
+    }
+}
+impl UseRunnerSchemaApp for RedisJobDispatcherImpl {
+    fn runner_schema_app(&self) -> &Arc<dyn RunnerSchemaApp + 'static> {
+        &self.app_module.runner_schema_app
     }
 }
 

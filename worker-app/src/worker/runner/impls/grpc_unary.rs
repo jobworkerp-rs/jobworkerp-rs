@@ -1,8 +1,11 @@
 use super::super::Runner;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use async_trait::async_trait;
-use infra::error::JobWorkerError;
-use proto::jobworkerp::data::{runner_arg::Data, GrpcUnaryArg, RunnerArg};
+use infra::{
+    error::JobWorkerError,
+    infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec},
+};
+use proto::jobworkerp::data::GrpcUnaryArg;
 use tonic::{transport::Channel, IntoRequest};
 
 /// grpc unary request runner.
@@ -33,11 +36,8 @@ impl Runner for GrpcUnaryRunner {
     async fn name(&self) -> String {
         format!("GrpcUnaryRunner")
     }
-    async fn run(&mut self, arg: &RunnerArg) -> Result<Vec<Vec<u8>>> {
-        let req: &GrpcUnaryArg = match &arg.data {
-            Some(Data::GrpcUnary(arg)) => Ok(arg),
-            _ => Err(anyhow!("argument error for grpc unary runner: {:?}", arg)),
-        }?;
+    async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
+        let req = JobqueueAndCodec::deserialize_message::<GrpcUnaryArg>(arg)?;
         let codec = tonic::codec::ProstCodec::default();
         // todo
         // let mut client = tonic::client::Grpc::new(self.conn.clone());
@@ -81,9 +81,7 @@ async fn run_request() -> Result<()> {
         // path: "/jobworkerp.service.WorkerService/FindList".to_string(),
         request: b"".to_vec(),
     };
-    let arg = RunnerArg {
-        data: Some(Data::GrpcUnary(arg)),
-    };
+    let arg = JobqueueAndCodec::serialize_message(&arg);
     let res = runner.run(&arg).await;
     println!("arg: {:?}, res: {:?}", arg, res); // XXX missing response error
                                                 // TODO
