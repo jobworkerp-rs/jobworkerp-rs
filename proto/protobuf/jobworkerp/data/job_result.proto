@@ -3,7 +3,6 @@ syntax = "proto3";
 package jobworkerp.data;
 
 import "jobworkerp/data/common.proto";
-import "jobworkerp/data/runner.proto";
 import "jobworkerp/data/job.proto";
 import "jobworkerp/data/worker.proto";
 
@@ -12,7 +11,7 @@ message JobResultData {
     jobworkerp.data.JobId job_id               = 1;
     jobworkerp.data.WorkerId worker_id         = 2;
     string worker_name                         = 3;
-    jobworkerp.data.RunnerArg arg              = 4;
+    bytes arg                                  = 4;
     optional string uniq_key                   = 5;
     jobworkerp.data.ResultStatus status        = 6; // job result status
     jobworkerp.data.ResultOutput output        = 7; // job response data

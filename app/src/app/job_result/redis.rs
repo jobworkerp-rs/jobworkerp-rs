@@ -17,7 +17,7 @@ use super::super::worker::{UseWorkerApp, WorkerApp};
 use super::super::{StorageConfig, UseStorageConfig};
 use super::{JobResultApp, JobResultAppHelper};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct RedisJobResultAppImpl {
     storage_config: Arc<StorageConfig>,
     repositories: Arc<RedisRepositoryModule>,

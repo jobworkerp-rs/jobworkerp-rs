@@ -4,15 +4,16 @@ pub mod jobworkerp {
     pub mod data {
         use proto::jobworkerp::data;
         pub type Priority = data::Priority;
+        pub type RunnerSchemaId = data::RunnerSchemaId;
+        pub type RunnerSchemaData = data::RunnerSchemaData;
+        pub type RunnerSchema = data::RunnerSchema;
         pub type WorkerId = data::WorkerId;
-        pub type WorkerOperation = data::WorkerOperation;
         pub type WorkerData = data::WorkerData;
         pub type Worker = data::Worker;
-        pub type RunnerType = data::RunnerType;
+        pub type OperationType = data::OperationType;
         pub type QueueType = data::QueueType;
         pub type ResponseType = data::ResponseType;
         pub type RetryPolicy = data::RetryPolicy;
-        pub type RunnerArg = data::RunnerArg;
         pub type JobId = data::JobId;
         pub type JobData = data::JobData;
         pub type Job = data::Job;

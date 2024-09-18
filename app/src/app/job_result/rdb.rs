@@ -16,7 +16,7 @@ use super::super::worker::{UseWorkerApp, WorkerApp};
 use super::super::{StorageConfig, UseStorageConfig};
 use super::{JobResultApp, JobResultAppHelper};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct RdbJobResultAppImpl {
     storage_config: Arc<StorageConfig>,
     id_generator: Arc<IdGeneratorWrapper>,

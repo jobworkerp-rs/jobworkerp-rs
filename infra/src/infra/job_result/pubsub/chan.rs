@@ -35,11 +35,10 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
                 )),
             )
             .await
-            .map(|r| {
+            .inspect(|&r| {
                 if !r {
                     tracing::warn!("publish_result: not sent: job_id={}", &jid.value);
                 }
-                r
             })
     }
 }

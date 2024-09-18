@@ -1,10 +1,13 @@
 use std::{str::FromStr, time::Duration};
 
 use super::super::Runner;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use async_trait::async_trait;
-use infra::error::JobWorkerError;
-use proto::jobworkerp::data::{runner_arg::Data, RunnerArg};
+use infra::{
+    error::JobWorkerError,
+    infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec},
+};
+use proto::jobworkerp::data::HttpRequestArg;
 use reqwest::{
     header::{HeaderMap, HeaderName},
     Method, Url,
@@ -42,12 +45,8 @@ impl Runner for RequestRunner {
     async fn name(&self) -> String {
         format!("RequestRunner: url {}", self.url)
     }
-    async fn run(&mut self, arg: &RunnerArg) -> Result<Vec<Vec<u8>>> {
-        let arg = match &arg.data {
-            Some(Data::HttpRequest(d)) => Ok(d),
-            _ => Err(anyhow!("argument error: {:?}", arg)),
-        }?;
-
+    async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
+        let arg = JobqueueAndCodec::deserialize_message::<HttpRequestArg>(arg)?;
         let met = Method::from_str(arg.method.as_str())?;
         let u = self.url.join(arg.path.as_str())?;
         // create request
@@ -102,30 +101,28 @@ impl Runner for RequestRunner {
 
 #[tokio::test]
 async fn run_request() {
-    use proto::jobworkerp::data::{runner_arg::Data, HttpRequestArg, KeyValue, RunnerArg};
+    use proto::jobworkerp::data::{HttpRequestArg, KeyValue};
 
     let mut runner = RequestRunner::new("https://www.google.com/").unwrap();
-    let arg = RunnerArg {
-        data: Some(Data::HttpRequest(HttpRequestArg {
-            headers: vec![KeyValue {
-                key: "Content-Type".to_string(),
-                value: "plain/text".to_string(),
-            }],
-            queries: vec![
-                KeyValue {
-                    key: "q".to_string(),
-                    value: "rust async".to_string(),
-                },
-                KeyValue {
-                    key: "ie".to_string(),
-                    value: "UTF-8".to_string(),
-                },
-            ],
-            method: "GET".to_string(),
-            body: None,
-            path: "search".to_string(),
-        })),
-    };
+    let arg = JobqueueAndCodec::serialize_message(&HttpRequestArg {
+        headers: vec![KeyValue {
+            key: "Content-Type".to_string(),
+            value: "plain/text".to_string(),
+        }],
+        queries: vec![
+            KeyValue {
+                key: "q".to_string(),
+                value: "rust async".to_string(),
+            },
+            KeyValue {
+                key: "ie".to_string(),
+                value: "UTF-8".to_string(),
+            },
+        ],
+        method: "GET".to_string(),
+        body: None,
+        path: "search".to_string(),
+    });
 
     let res = runner.run(&arg).await;
 

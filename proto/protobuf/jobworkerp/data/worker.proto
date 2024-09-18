@@ -3,6 +3,7 @@ syntax = "proto3";
 package jobworkerp.data;
 
 import "jobworkerp/data/common.proto";
+import "jobworkerp/data/runner_schema.proto";
 
 // internal use: notify job result to slack as next_worker
 message SlackJobResultOperation {}
@@ -72,22 +73,10 @@ message HttpRequestOperation {
     string base_url = 1;
 }
 
-
-message WorkerOperation {
-  oneof operation {
-    SlackJobResultOperation slack_internal = 1;
-    CommandOperation command = 2;
-    PluginOperation plugin = 3;
-    HttpRequestOperation http_request = 4;
-    GrpcUnaryOperation grpc_unary = 5;
-    DockerOperation docker = 6;
-  }
-}
-
 message WorkerData {
     string name                                 = 1; // worker name
-    jobworkerp.data.RunnerType type             = 2; // runner type (selected by operation type)
-    WorkerOperation operation                   = 3; // worker operation (command line, docker operation etc)
+    jobworkerp.data.RunnerSchemaId schema_id    = 2; // runner schema id
+    bytes operation                             = 3; // worker operation (docker operation etc)
     jobworkerp.data.RetryPolicy retry_policy    = 4; // retry policy
     uint32 periodic_interval                    = 5; // periodic interval milliseconds (0: non-periodic) (if enabled, cannot use direct_response)
     optional string channel                     = 6; // channel name (if empty, use default channel)

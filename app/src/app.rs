@@ -1,6 +1,8 @@
 pub mod job;
 pub mod job_result;
+pub mod runner_schema;
 pub mod worker;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;

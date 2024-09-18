@@ -4,6 +4,8 @@ package jobworkerp.data;
 
 import "jobworkerp/data/common.proto";
 
+// arg types for runner arguments (resolved by each worker internally)
+
 // CommandArg is a list of arguments for a CommandRunner.
 message CommandArg {
   repeated string args = 1;
@@ -89,16 +91,4 @@ message SlackJobResultArg {
     }
     ResultMessageData message = 1;
     optional string channel = 2;
-}
-
-// defines the arguments for a runner (should define to match the worker operation and runner type)
-message RunnerArg {
-    oneof data {
-        SlackJobResultArg slack_job_result = 1;
-        CommandArg command = 2;
-        PluginArg plugin = 3;
-        HttpRequestArg http_request = 4;
-        GrpcUnaryArg grpc_unary = 5;
-        DockerArg docker = 6;
-    }
 }
