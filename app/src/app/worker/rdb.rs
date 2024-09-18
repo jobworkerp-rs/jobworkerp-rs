@@ -14,6 +14,7 @@ use super::super::{StorageConfig, UseStorageConfig};
 use super::builtin::{BuiltinWorker, BuiltinWorkerTrait};
 use super::{WorkerApp, WorkerAppCacheHelper};
 
+#[derive(Clone, Debug)]
 pub struct RdbWorkerAppImpl {
     storage_config: Arc<StorageConfig>,
     id_generator: Arc<IdGeneratorWrapper>,
@@ -140,13 +141,14 @@ impl WorkerApp for RdbWorkerAppImpl {
     where
         Self: Send + 'static,
     {
-        let k = Arc::new(Self::find_list_cache_key(limit, offset));
-        self.memory_cache
-            .with_cache(&k, None, || async {
-                // not use rdb in normal case
-                self.rdb_worker_repository().find_list(limit, offset).await
-            })
-            .await
+        // not cache with offset limit
+        // let k = Arc::new(Self::find_list_cache_key(limit, offset));
+        // self.memory_cache
+        //     .with_cache(&k, None, || async {
+        // not use rdb in normal case
+        self.rdb_worker_repository().find_list(limit, offset).await
+        // })
+        // .await
     }
 
     async fn find_all_worker_list(&self) -> Result<Vec<Worker>>

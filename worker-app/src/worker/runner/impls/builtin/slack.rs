@@ -7,8 +7,11 @@ use self::repository::SlackRepository;
 use anyhow::{anyhow, Result};
 use app::app::worker::builtin::slack::SLACK_WORKER_NAME;
 use async_trait::async_trait;
-use infra::error::JobWorkerError;
-use proto::jobworkerp::data::{runner_arg::Data, ResultStatus, RunnerArg};
+use infra::{
+    error::JobWorkerError,
+    infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec},
+};
+use proto::jobworkerp::data::{ResultStatus, SlackJobResultArg};
 use serde::Deserialize;
 
 #[derive(Clone, Deserialize, Debug, Default)] // for test only
@@ -46,11 +49,8 @@ impl Runner for SlackResultNotificationRunner {
     async fn name(&self) -> String {
         String::from(SLACK_WORKER_NAME)
     }
-    async fn run(&mut self, arg: &RunnerArg) -> Result<Vec<Vec<u8>>> {
-        let res = match &arg.data {
-            Some(Data::SlackJobResult(arg)) => Ok(arg),
-            _ => Err(anyhow!("invalid arg type: {:?}", arg)),
-        }?;
+    async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
+        let res = JobqueueAndCodec::deserialize_message::<SlackJobResultArg>(arg)?;
         match &res.message {
             // XXX not use channel ()
             Some(data) => {

@@ -11,8 +11,7 @@ enum Priority {
 }
 
 // deprecated: use runner operation type
-enum RunnerType {
-    option deprecated = true;
+enum OperationType {
     COMMAND        = 0;
     SLACK_INTERNAL = -1;
     PLUGIN         = 1;

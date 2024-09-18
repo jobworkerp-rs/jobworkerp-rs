@@ -208,6 +208,7 @@ pub trait UseChanJobQueueRepository {
 // create test (functional test without mock)
 mod test {
     use super::*;
+    use crate::infra::job::rows::JobqueueAndCodec;
     use crate::infra::JobQueueConfig;
     use command_utils::util::datetime;
     use infra_utils::infra::chan::mpmc::Chan;
@@ -216,7 +217,6 @@ mod test {
     use infra_utils::infra::chan::ChanBufferItem;
     use proto::jobworkerp::data::JobResultData;
     use proto::jobworkerp::data::ResultOutput;
-    use proto::jobworkerp::data::RunnerArg;
     use proto::jobworkerp::data::{Job, JobData, JobId, ResultStatus, WorkerId};
     use std::sync::Arc;
 
@@ -249,18 +249,15 @@ mod test {
             job_queue_config,
             chan_buf: chan_buf.clone(),
         };
-        let arg = RunnerArg {
-            data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
-                proto::jobworkerp::data::CommandArg {
-                    args: vec!["test".to_string()],
-                },
-            )),
-        };
+        let arg =
+            ChanJobQueueRepositoryImpl::serialize_message(&proto::jobworkerp::data::CommandArg {
+                args: vec!["test".to_string()],
+            });
         let job = Job {
             id: None,
             data: Some(JobData {
                 worker_id: Some(WorkerId { value: 1 }),
-                arg: Some(arg),
+                arg,
                 uniq_key: Some("test".to_string()),
                 enqueue_time: datetime::now_millis(),
                 grabbed_until_time: None,
@@ -339,18 +336,14 @@ mod test {
             job_queue_config,
             chan_buf,
         };
-        let arg = RunnerArg {
-            data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
-                proto::jobworkerp::data::CommandArg {
-                    args: vec!["test".to_string()],
-                },
-            )),
-        };
+        let arg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandArg {
+            args: vec!["test".to_string()],
+        });
         let job1 = Job {
             id: Some(JobId { value: 1 }),
             data: Some(JobData {
                 worker_id: Some(WorkerId { value: 1 }),
-                arg: Some(arg.clone()),
+                arg: arg.clone(),
                 uniq_key: None,
                 enqueue_time: datetime::now_millis(),
                 grabbed_until_time: None,
@@ -364,7 +357,7 @@ mod test {
             id: Some(JobId { value: 2 }),
             data: Some(JobData {
                 worker_id: Some(WorkerId { value: 1 }),
-                arg: Some(arg.clone()),
+                arg: arg.clone(),
                 uniq_key: None,
                 enqueue_time: datetime::now_millis(),
                 grabbed_until_time: None,

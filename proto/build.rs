@@ -12,6 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &[
                 // TODO proto file path
                 "protobuf/jobworkerp/data/common.proto",
+                "protobuf/jobworkerp/data/runner_schema.proto",
                 "protobuf/jobworkerp/data/runner.proto",
                 "protobuf/jobworkerp/data/worker.proto",
                 "protobuf/jobworkerp/data/job.proto",

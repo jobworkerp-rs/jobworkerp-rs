@@ -50,12 +50,11 @@ pub trait RequestValidator {
             )),
             _ => Ok(()),
         }?;
-        match req.arg.as_ref() {
-            Some(_) => Ok(()), // XXX validation each runner args?
-            _ => Err(tonic::Status::invalid_argument(
+        if req.arg.is_empty() {
+            return Err(tonic::Status::invalid_argument(
                 "worker_id or worker_name is required",
-            )),
-        }?;
+            ));
+        };
         Ok(())
     }
 }
@@ -174,9 +173,8 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
     }
 }
 
-#[derive(DebugStub)]
+#[derive(Debug)]
 pub(crate) struct JobGrpcImpl {
-    #[debug_stub = "AppModule"]
     app_module: Arc<AppModule>,
 }
 
@@ -199,8 +197,10 @@ impl RequestValidator for JobGrpcImpl {}
 // unit test for RequestValidator::validate_create method
 #[cfg(test)]
 mod tests {
+    use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
+
     use super::*;
-    use crate::proto::jobworkerp::data::{Priority, RunnerArg, WorkerId};
+    use crate::proto::jobworkerp::data::{Priority, WorkerId};
     use crate::proto::jobworkerp::service::job_request::Worker;
     use crate::proto::jobworkerp::service::JobRequest;
 
@@ -210,16 +210,12 @@ mod tests {
     #[test]
     fn test_validate_create_ok() {
         let v = Validator {};
-        let jarg = RunnerArg {
-            data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
-                proto::jobworkerp::data::CommandArg {
-                    args: vec!["fuga".to_string()],
-                },
-            )),
-        };
+        let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandArg {
+            args: vec!["fuga".to_string()],
+        });
         let mut req = JobRequest {
             worker: Some(Worker::WorkerId(WorkerId { value: 1 })),
-            arg: Some(jarg),
+            arg: jarg,
             ..Default::default()
         };
         assert!(v.validate_create(&req).is_ok());
@@ -235,16 +231,12 @@ mod tests {
     #[test]
     fn test_validate_create_ng() {
         let v = Validator {};
-        let jarg = RunnerArg {
-            data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
-                proto::jobworkerp::data::CommandArg {
-                    args: vec!["fuga".to_string()],
-                },
-            )),
-        };
+        let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandArg {
+            args: vec!["fuga".to_string()],
+        });
         let reqr = JobRequest {
             worker: Some(Worker::WorkerId(WorkerId { value: 1 })),
-            arg: Some(jarg),
+            arg: jarg,
             ..Default::default()
         };
         assert!(v.validate_create(&reqr).is_ok());
@@ -266,7 +258,7 @@ mod tests {
         let mut req = reqr.clone();
         req.priority = Some(Priority::High as i32);
         assert!(v.validate_create(&req).is_ok());
-        req.arg = None;
+        req.arg = Vec::new();
         assert!(v.validate_create(&req).is_err());
     }
 }

@@ -9,6 +9,8 @@ use crate::worker::runner::JobRunner;
 use anyhow::Result;
 use app::app::job_result::JobResultApp;
 use app::app::job_result::UseJobResultApp;
+use app::app::runner_schema::RunnerSchemaApp;
+use app::app::runner_schema::UseRunnerSchemaApp;
 use app::app::worker::UseWorkerApp;
 use app::app::worker::WorkerApp;
 use app::app::UseWorkerConfig;
@@ -18,6 +20,7 @@ use app::module::AppModule;
 use async_trait::async_trait;
 use command_utils::util::datetime;
 use command_utils::util::option::FlatMap;
+use command_utils::util::option::ToResult;
 use command_utils::util::result::TapErr;
 use command_utils::util::shutdown::ShutdownLock;
 use futures::{stream, StreamExt};
@@ -34,6 +37,7 @@ use libloading::Library;
 use proto::jobworkerp::data::Job;
 use proto::jobworkerp::data::JobResult;
 use proto::jobworkerp::data::JobResultId;
+use proto::jobworkerp::data::RunnerSchema;
 use proto::jobworkerp::data::Worker;
 use proto::jobworkerp::data::WorkerId;
 use std::sync::Arc;
@@ -51,6 +55,7 @@ pub trait RdbJobDispatcher:
     + JobRunner
     + UseWorkerConfig
     + UseWorkerApp
+    + UseRunnerSchemaApp
     + UseJobQueueConfig
 {
     // mergin time to re-execute if it does not disappear from queue (row) after timeout
@@ -150,56 +155,85 @@ pub trait RdbJobDispatcher:
         }
         let wid = job.data.as_ref().flat_map(|d| d.worker_id.as_ref());
         // get worker
-        if let Some(Worker {
+        let (wid, w) = if let Some(Worker {
             id: Some(wid),
             data: Some(w),
         }) = self.worker_app().find_by_opt(wid).await?
         {
-            // time millis to re-execute if the job does not disappear from queue (row) after a while after timeout(GRAB_MERGIN_MILLISEC)
-            match self
-                .rdb_job_repository()
-                .grab_job(
-                    job.id.as_ref().unwrap(), // cheched is_some
-                    job.data.as_ref().map(|d| d.timeout),
-                    job.data
-                        .as_ref()
-                        .flat_map(|d| d.grabbed_until_time)
-                        .unwrap_or(0),
-                )
-                .await
-            {
-                Ok(grabbed) => {
-                    if grabbed {
-                        let res = self.run_job(&wid, &w, job).await;
-                        let id = JobResultId {
-                            value: self.id_generator().generate_id()?,
-                        };
-                        tracing::debug!("job completed. result: {:?}", &res);
-                        // store result
-                        self.result_processor()
-                            .process_result(id, res, w)
-                            .await
-                            .tap_err(|e| {
-                                tracing::error!(
-                                    "failed to process result: worker_id={:?}, err={:?}",
-                                    &wid,
-                                    e
-                                )
-                            })
-                            .map(Some)
-                    } else {
-                        tracing::debug!("failed to grab job: {:?}", job.data);
-                        Ok(None)
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("error in grab job: {:?}", e);
-                    Err(e)
-                }
-            }
+            (wid, w)
         } else {
             tracing::error!("failed to get worker: {:?}", &job);
-            Err(JobWorkerError::NotFound(format!("failed to get worker: {:?}", &job)).into())
+            return Err(
+                JobWorkerError::NotFound(format!("failed to get worker: {:?}", &job)).into(),
+            );
+        };
+        let sid = if let Some(id) = w.schema_id.as_ref() {
+            id
+        } else {
+            tracing::error!("failed to get schema_id: {:?}", &job);
+            return Err(
+                JobWorkerError::NotFound(format!("failed to get schema_id: {:?}", &job)).into(),
+            );
+        };
+        let schema = if let Some(RunnerSchema {
+            id: _,
+            data: schema,
+        }) = self
+            .runner_schema_app()
+            .find_runner_schema(sid, None)
+            .await?
+        {
+            schema
+                .to_result(|| JobWorkerError::NotFound(format!("schema {:?} is not found.", &sid)))
+        } else {
+            tracing::error!("failed to get schema: {:?}", &job);
+            Err(JobWorkerError::NotFound(format!(
+                "failed to get schema: {:?}",
+                &job
+            )))
+        }?;
+
+        // time millis to re-execute if the job does not disappear from queue (row) after a while after timeout(GRAB_MERGIN_MILLISEC)
+        match self
+            .rdb_job_repository()
+            .grab_job(
+                job.id.as_ref().unwrap(), // cheched is_some
+                job.data.as_ref().map(|d| d.timeout),
+                job.data
+                    .as_ref()
+                    .flat_map(|d| d.grabbed_until_time)
+                    .unwrap_or(0),
+            )
+            .await
+        {
+            Ok(grabbed) => {
+                if grabbed {
+                    let res = self.run_job(&schema, &wid, &w, job).await;
+                    let id = JobResultId {
+                        value: self.id_generator().generate_id()?,
+                    };
+                    tracing::debug!("job completed. result: {:?}", &res);
+                    // store result
+                    self.result_processor()
+                        .process_result(id, res, w)
+                        .await
+                        .tap_err(|e| {
+                            tracing::error!(
+                                "failed to process result: worker_id={:?}, err={:?}",
+                                &wid,
+                                e
+                            )
+                        })
+                        .map(Some)
+                } else {
+                    tracing::debug!("failed to grab job: {:?}", job.data);
+                    Ok(None)
+                }
+            }
+            Err(e) => {
+                tracing::error!("error in grab job: {:?}", e);
+                Err(e)
+            }
         }
     }
 }
@@ -249,6 +283,11 @@ impl UseJobResultApp for RdbJobDispatcherImpl {
 impl UseWorkerApp for RdbJobDispatcherImpl {
     fn worker_app(&self) -> &Arc<dyn WorkerApp + 'static> {
         &self.app_module.worker_app
+    }
+}
+impl UseRunnerSchemaApp for RdbJobDispatcherImpl {
+    fn runner_schema_app(&self) -> &Arc<dyn RunnerSchemaApp + 'static> {
+        &self.app_module.runner_schema_app
     }
 }
 

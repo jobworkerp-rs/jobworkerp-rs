@@ -10,6 +10,7 @@ use infra::error::JobWorkerError;
 use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
 use infra_utils::infra::memory::{MemoryCacheImpl, UseMemoryCache};
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
+use std::fmt;
 use std::sync::Arc;
 
 #[async_trait]
@@ -58,7 +59,7 @@ pub trait WorkerAppCacheHelper: Send + Sync {
 }
 
 #[async_trait]
-pub trait WorkerApp: Send + Sync + 'static {
+pub trait WorkerApp: fmt::Debug + Send + Sync + 'static {
     // async fn reflesh_redis_record_from_rdb(&self) -> Result<()> ;
 
     async fn create(&self, worker: &WorkerData) -> Result<WorkerId>;
