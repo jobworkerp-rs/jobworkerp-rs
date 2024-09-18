@@ -6,10 +6,12 @@ use crate::worker::runner::map::{RunnerFactoryWithPoolMap, UseRunnerPoolMap};
 use crate::worker::runner::result::RunnerResultHandler;
 use crate::worker::runner::JobRunner;
 use anyhow::Result;
+use app::app::runner_schema::{RunnerSchemaApp, UseRunnerSchemaApp};
 use app::app::worker::{UseWorkerApp, WorkerApp};
 use app::app::{UseWorkerConfig, WorkerConfig};
 use app::module::AppModule;
 use async_trait::async_trait;
+use command_utils::util::option::ToResult;
 use command_utils::util::result::TapErr;
 use command_utils::util::shutdown::ShutdownLock;
 use infra::error::JobWorkerError;
@@ -24,7 +26,7 @@ use infra::infra::job::status::{JobStatusRepository, UseJobStatusRepository};
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use libloading::Library;
 use proto::jobworkerp::data::{
-    Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, Worker,
+    Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, RunnerSchema, Worker,
 };
 use std::sync::Arc;
 use tokio::task::JoinHandle;
@@ -43,6 +45,7 @@ pub trait ChanJobDispatcher:
     + UseResultProcessor
     + UseWorkerConfig
     + UseWorkerApp
+    + UseRunnerSchemaApp
     + UseJobQueueConfig
     + UseIdGenerator
 {
@@ -152,79 +155,11 @@ pub trait ChanJobDispatcher:
         Self: Sync + Send + 'static,
     {
         tracing::debug!("process pop-ed job: {:?}", job);
-        if let Job {
+        let (jid, jdat) = if let Job {
             id: Some(jid),
             data: Some(jdat),
-        } = job
-        {
-            if let Some(Worker {
-                id: Some(wid),
-                data: Some(wdat),
-            }) = self
-                .worker_app()
-                .find_by_opt(jdat.worker_id.as_ref())
-                .await?
-            {
-                if wdat.response_type != ResponseType::Direct as i32
-                    && wdat.queue_type == QueueType::Hybrid as i32
-                {
-                        // grab job in db (only for record as in progress)
-                        if self.rdb_job_repository()
-                            .grab_job(
-                                &jid,
-                                Some(jdat.timeout),
-                                jdat.grabbed_until_time.unwrap_or(0),
-                            )
-                            .await?
-                        {
-                            // change status to running
-                            self.job_status_repository()
-                                .upsert_status(&jid, &JobStatus::Running)
-                                .await?;
-                        } else {
-                            // already grabbed (strange! (not reset previous process in retry?), but continue processing job)
-                            tracing::warn!("failed to grab job from db: {:?}, {:?}", &jid, &jdat);
-                            return Err(JobWorkerError::AlreadyExists(format!(
-                                "already grabbed: {:?}, {:?}",
-                                &jid, &jdat
-                            ))
-                            .into());
-                        }
-                }
-                // run job
-                let r = self
-                    .run_job(
-                        &wid,
-                        &wdat,
-                        Job {
-                            id: Some(jid),
-                            data: Some(jdat),
-                        },
-                    )
-                    .await;
-                let id = JobResultId {
-                    value: self.id_generator().generate_id()?,
-                };
-                // TODO execute and return result to result channel.
-                tracing::trace!("send result id: {:?}, data: {:?}", id, r);
-                // change status to wait handling result
-                if wdat.response_type != ResponseType::Direct as i32 {
-                    self.job_status_repository()
-                        .upsert_status(&jid, &JobStatus::WaitResult)
-                        .await?;
-                }
-                self.result_processor().process_result(id, r, wdat).await
-            } else {
-                // TODO cannot return result in this case. send result as error?
-                let mes = format!(
-                    "worker {:?} is not found.",
-                    jdat.worker_id.as_ref().unwrap()
-                );
-                tracing::error!("{}", &mes);
-                self.job_status_repository().delete_status(&jid).await?;
-                self.rdb_job_repository().delete(&jid).await?;
-                Err(JobWorkerError::NotFound(mes).into())
-            }
+        } = job {
+           (jid, jdat)
         } else {
             // TODO cannot return result in this case. send result as error?
             let mes = format!("job {:?} is incomplete data.", &job);
@@ -233,8 +168,105 @@ pub trait ChanJobDispatcher:
                 self.job_status_repository().delete_status(id).await?;
                 self.rdb_job_repository().delete(id).await?;
             }
-            Err(JobWorkerError::OtherError(mes).into())
-        }
+            return Err(JobWorkerError::OtherError(mes).into());
+        };
+        let (wid, wdat) = if let Some(Worker {
+                id: Some(wid),
+                data: Some(wdat),
+        }) = self
+            .worker_app()
+            .find_by_opt(jdat.worker_id.as_ref())
+            .await?
+        {
+            (wid, wdat)
+        } else {
+            // TODO cannot return result in this case. send result as error?
+            let mes = format!(
+                "worker {:?} is not found.",
+                jdat.worker_id.as_ref().unwrap()
+            );
+            tracing::error!("{}", &mes);
+            self.job_status_repository().delete_status(&jid).await?;
+            self.rdb_job_repository().delete(&jid).await?;
+            return Err(JobWorkerError::NotFound(mes).into());
+        };
+        let sid = if let Some(id) = wdat.schema_id.as_ref() {
+            id
+        } else {
+            // TODO cannot return result in this case. send result as error?
+            let mes = format!(
+                "worker {:?} schema_id is not found.",
+                jdat.worker_id.as_ref().unwrap()
+            );
+            tracing::error!("{}", &mes);
+            self.job_status_repository().delete_status(&jid).await?;
+            self.rdb_job_repository().delete(&jid).await?;
+            return Err(JobWorkerError::NotFound(mes).into());
+        };
+        let schema =
+            if let Some(RunnerSchema{id:_, data:schema}) = self.runner_schema_app().find_runner_schema(sid, None).await? {
+schema.to_result(||JobWorkerError::NotFound(format!("schema {:?} is not found.", &sid)))
+        } else {
+            // TODO cannot return result in this case. send result as error?
+            let mes = format!(
+                "schema {:?} is not found.",
+                jdat.worker_id.as_ref().unwrap()
+            );
+            tracing::error!("{}", &mes);
+            self.job_status_repository().delete_status(&jid).await?;
+            self.rdb_job_repository().delete(&jid).await?;
+            Err(JobWorkerError::NotFound(mes))
+        }?;
+            if wdat.response_type != ResponseType::Direct as i32
+                && wdat.queue_type == QueueType::Hybrid as i32
+            {
+                    // grab job in db (only for record as in progress)
+                    if self.rdb_job_repository()
+                        .grab_job(
+                            &jid,
+                            Some(jdat.timeout),
+                            jdat.grabbed_until_time.unwrap_or(0),
+                        )
+                        .await?
+                    {
+                        // change status to running
+                        self.job_status_repository()
+                            .upsert_status(&jid, &JobStatus::Running)
+                            .await?;
+                    } else {
+                        // already grabbed (strange! (not reset previous process in retry?), but continue processing job)
+                        tracing::warn!("failed to grab job from db: {:?}, {:?}", &jid, &jdat);
+                        return Err(JobWorkerError::AlreadyExists(format!(
+                            "already grabbed: {:?}, {:?}",
+                            &jid, &jdat
+                        ))
+                        .into());
+                    }
+            }
+            // run job
+            let r = self
+                .run_job(
+                    &schema,
+                    &wid,
+                    &wdat,
+                    Job {
+                        id: Some(jid),
+                        data: Some(jdat),
+                    },
+                )
+                .await;
+            let id = JobResultId {
+                value: self.id_generator().generate_id()?,
+            };
+            // TODO execute and return result to result channel.
+            tracing::trace!("send result id: {:?}, data: {:?}", id, r);
+            // change status to wait handling result
+            if wdat.response_type != ResponseType::Direct as i32 {
+                self.job_status_repository()
+                    .upsert_status(&jid, &JobStatus::WaitResult)
+                    .await?;
+            }
+            self.result_processor().process_result(id, r, wdat).await
     }
 }
 
@@ -323,6 +355,11 @@ impl UseWorkerConfig for ChanJobDispatcherImpl {
 impl UseRdbChanJobRepository for ChanJobDispatcherImpl {
     fn rdb_job_repository(&self) -> &RdbChanJobRepositoryImpl {
         &self.rdb_job_repository
+    }
+}
+impl UseRunnerSchemaApp for ChanJobDispatcherImpl {
+    fn runner_schema_app(&self) -> &Arc<dyn RunnerSchemaApp + 'static> {
+        &self.app_module.runner_schema_app
     }
 }
 impl ChanJobDispatcher for ChanJobDispatcherImpl {}

@@ -15,16 +15,14 @@ use app::app::WorkerConfig;
 use app::module::AppConfigModule;
 use app::module::AppModule;
 use command_utils::util::option::Exists;
-use command_utils::util::result::TapErr;
 use debug_stub_derive::DebugStub;
+use infra::infra::job::rows::JobqueueAndCodec;
 use infra::infra::job::rows::UseJobqueueAndCodec;
-use proto::jobworkerp::data::runner_arg::Data;
 use proto::jobworkerp::data::slack_job_result_arg::ResultMessageData;
 use proto::jobworkerp::data::JobResultData;
 use proto::jobworkerp::data::JobResultId;
 use proto::jobworkerp::data::ResultStatus;
-use proto::jobworkerp::data::RunnerArg;
-use proto::jobworkerp::data::RunnerType;
+use proto::jobworkerp::data::RunnerSchemaId;
 use proto::jobworkerp::data::SlackJobResultArg;
 use proto::jobworkerp::data::{JobResult, WorkerData};
 use std::sync::Arc;
@@ -143,7 +141,8 @@ impl ResultProcessorImpl {
                     // builtin worker (only slack internal now)
                     if w.data
                         .as_ref()
-                        .exists(|wd| wd.r#type == RunnerType::SlackInternal as i32)
+                        // TODO define schema_id for builtin worker
+                        .exists(|wd| wd.schema_id == Some(RunnerSchemaId { value: -1 }))
                     {
                         // no result data, no enqueue
                         if dat.output.is_none()
@@ -165,18 +164,16 @@ impl ResultProcessorImpl {
                                 worker
                             );
                         } else {
-                            let arg = RunnerArg {
-                                data: Some(Data::SlackJobResult(SlackJobResultArg {
-                                    message: Some(Self::job_result_to_message(id, dat)),
-                                    channel: None, // TODO
-                                })),
-                            };
+                            let arg = JobqueueAndCodec::serialize_message(&SlackJobResultArg {
+                                message: Some(Self::job_result_to_message(id, dat)),
+                                channel: None, // TODO
+                            });
                             self.job_app()
                                 .enqueue_job(
                                     w.id.as_ref(),
                                     None,
                                     // specify job result as argument for builtin worker
-                                    Some(arg),
+                                    arg,
                                     dat.uniq_key.clone(),
                                     dat.run_after_time,
                                     dat.priority,
@@ -191,7 +188,7 @@ impl ResultProcessorImpl {
                             .as_ref()
                             .map(|d| d.items.clone())
                             .unwrap_or(vec![vec![]])
-                            .iter()
+                            .into_iter()
                         {
                             // no result, no enqueue
                             if arg.is_empty() {
@@ -203,18 +200,11 @@ impl ResultProcessorImpl {
                                 );
                                 continue;
                             }
-                            // expect argument structure
-                            let arg = Self::deserialize_runner_arg(arg).tap_err(|e| {
-                                tracing::error!(
-                                    "deserialize output for next_worker: next_worker id={:?}, err: {:?}",
-                                    &wid, e
-                                )
-                            })?;
                             self.job_app()
                                 .enqueue_job(
                                     w.id.as_ref(),
                                     None,
-                                    Some(arg),
+                                    arg,
                                     dat.uniq_key.clone(),
                                     dat.run_after_time,
                                     dat.priority,

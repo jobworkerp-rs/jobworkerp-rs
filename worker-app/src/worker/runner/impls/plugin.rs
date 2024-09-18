@@ -5,7 +5,6 @@ use crate::plugins::runner::PluginRunner;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use command_utils::util::result::Flatten;
-use proto::jobworkerp::data::{runner_arg::Data, RunnerArg};
 
 /**
  * PluginRunner wrapper
@@ -36,20 +35,16 @@ impl Runner for PluginRunnerWrapperImpl {
     }
     // arg: assumed as utf-8 string, specify multiple arguments with \n separated
     #[allow(unstable_name_collisions)]
-    async fn run<'a>(&'a mut self, arg: &RunnerArg) -> Result<Vec<Vec<u8>>> {
+    async fn run<'a>(&'a mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
         // XXX clone
-        let req = match arg.data.clone() {
-            Some(Data::Plugin(d)) => Ok(d),
-            _ => Err(anyhow!("decode error: {:?}", arg)),
-        }?;
-
         let plugin_runner = self.plugin_runner.clone();
+        let arg1 = arg.to_vec();
         tokio::task::spawn_blocking(move || {
             match plugin_runner
                 .write()
                 .map_err(|e| anyhow::anyhow!("plugin runner lock error: {:?}", e))
             {
-                Ok(mut runner) => runner.run(req.arg).map_err(|e| {
+                Ok(mut runner) => runner.run(arg1).map_err(|e| {
                     tracing::warn!("in running pluginRunner: {:?}", e);
                     anyhow!("in running pluginRunner: {:?}", e)
                 }),

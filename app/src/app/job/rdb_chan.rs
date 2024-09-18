@@ -3,7 +3,7 @@ use crate::module::AppConfigModule;
 
 use super::super::worker::{UseWorkerApp, WorkerApp};
 use super::super::JobBuilder;
-use super::{JobApp, JobCacheKeys, RdbChanJobAppHelper};
+use super::{JobApp, JobCacheKeys};
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
@@ -24,12 +24,12 @@ use infra_utils::infra::memory::{MemoryCacheImpl, UseMemoryCache};
 use infra_utils::infra::rdb::UseRdbPool;
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobStatus, QueueType, ResponseType,
-    RunnerArg, WorkerId,
+    WorkerData, WorkerId,
 };
 use std::collections::HashSet;
 use std::{sync::Arc, time::Duration};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct RdbChanJobAppImpl {
     app_config_module: Arc<AppConfigModule>,
     id_generator: Arc<IdGeneratorWrapper>,
@@ -78,7 +78,7 @@ impl JobApp for RdbChanJobAppImpl {
         &self,
         worker_id: Option<&WorkerId>,
         worker_name: Option<&String>,
-        arg: Option<RunnerArg>,
+        arg: Vec<u8>,
         uniq_key: Option<String>,
         run_after_time: i64,
         priority: i32,
@@ -107,8 +107,8 @@ impl JobApp for RdbChanJobAppImpl {
                 timeout,
             };
             if let Some(w) = worker.data.as_ref() {
-                // validate argument types
-                self.validate_worker_and_job_arg(w, job_data.arg.as_ref())?;
+                // TODO validate argument types
+                // self.validate_worker_and_job_arg(w, job_data.arg.as_ref())?;
                 // cannot wait for direct response
                 if run_after_time > 0 && w.response_type == ResponseType::Direct as i32 {
                     return Err(JobWorkerError::InvalidParameter(format!(
@@ -225,8 +225,8 @@ impl JobApp for RdbChanJobAppImpl {
                 .find_data_by_opt(data.worker_id.as_ref())
                 .await
             {
-                // validate argument types
-                self.validate_worker_and_job_arg(&w, data.arg.as_ref())?;
+                // TODO validate argument types
+                // self.validate_worker_and_job_arg(&w, data.arg.as_ref())?;
 
                 // use db queue (run after, periodic, queue_type=DB worker)
                 let res_db = if is_run_after_job_data
@@ -486,6 +486,72 @@ impl UseChanJobResultPubSubRepository for RdbChanJobAppImpl {
     }
 }
 
+// for rdb chan
+#[async_trait]
+pub trait RdbChanJobAppHelper:
+    UseRdbChanJobRepository
+    + UseChanJobQueueRepository
+    + UseJobStatusRepository
+    + JobBuilder
+    + UseJobQueueConfig
+where
+    Self: Sized + 'static,
+{
+    // for chanbuffer
+    async fn enqueue_job_immediately(
+        &self,
+        job: &Job,
+        worker: &WorkerData,
+    ) -> Result<(JobId, Option<JobResult>)> {
+        let job_id = job.id.unwrap();
+        if self.is_run_after_job(job) {
+            return Err(JobWorkerError::InvalidParameter(
+                "run_after_time is not supported in rdb_chan mode".to_string(),
+            )
+            .into());
+        }
+        // use channel to enqueue job immediately
+        let res = match self
+            .chan_job_queue_repository()
+            .enqueue_job(worker.channel.as_ref(), job)
+            .await
+        {
+            Ok(_) => {
+                // update status (not use direct response)
+                self.job_status_repository()
+                    .upsert_status(&job_id, &JobStatus::Pending)
+                    .await?;
+                // wait for result if direct response type
+                if worker.response_type == ResponseType::Direct as i32 {
+                    // XXX keep redis connection until response
+                    self._wait_job_for_direct_response(
+                        &job_id,
+                        job.data.as_ref().map(|d| d.timeout),
+                    )
+                    .await
+                    .map(|r| (job_id, Some(r)))
+                } else {
+                    Ok((job_id, None))
+                }
+            }
+            Err(e) => Err(e),
+        }?;
+        Ok(res)
+    }
+
+    #[inline]
+    async fn _wait_job_for_direct_response(
+        &self,
+        job_id: &JobId,
+        timeout: Option<u64>,
+    ) -> Result<JobResult> {
+        // wait for and return result (with channel)
+        self.chan_job_queue_repository()
+            .wait_for_result_queue_for_response(job_id, timeout.as_ref()) // no timeout
+            .await
+    }
+}
+
 //TODO
 // create test
 #[cfg(test)]
@@ -497,16 +563,16 @@ mod tests {
     use anyhow::Result;
     use command_utils::util::datetime;
     use command_utils::util::option::FlatMap;
+    use infra::infra::job::rows::JobqueueAndCodec;
     // use command_utils::util::tracing::tracing_init_test;
     use infra::infra::job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl;
     use infra::infra::job_result::pubsub::JobResultSubscriber;
     use infra::infra::module::rdb::test::setup_test_rdb_module;
     use infra::infra::IdGeneratorWrapper;
     use infra_utils::infra::test::TEST_RUNTIME;
-    use proto::jobworkerp::data::worker_operation::Operation;
     use proto::jobworkerp::data::{
         JobResult, JobResultId, Priority, QueueType, ResponseType, ResultOutput, ResultStatus,
-        RunnerType, WorkerData, WorkerOperation,
+        RunnerSchemaId, WorkerData,
     };
     use std::sync::Arc;
 
@@ -579,17 +645,14 @@ mod tests {
         // enqueue, find, complete, find, delete, find
         let (app, _) = create_test_app(true)?;
         TEST_RUNTIME.block_on(async {
-            let operation = WorkerOperation {
-                operation: Some(Operation::Command(
-                    proto::jobworkerp::data::CommandOperation {
-                        name: "ls".to_string(),
-                    },
-                )),
-            };
+            let operation =
+                JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandOperation {
+                    name: "ls".to_string(),
+                });
             let wd = WorkerData {
                 name: "testworker".to_string(),
-                r#type: RunnerType::Command as i32,
-                operation: Some(operation),
+                schema_id: Some(RunnerSchemaId { value: 123 }),
+                operation,
                 channel: None,
                 response_type: ResponseType::Direct as i32,
                 periodic_interval: 0,
@@ -601,13 +664,9 @@ mod tests {
                 use_static: false,
             };
             let worker_id = app.worker_app().create(&wd).await?;
-            let jarg = RunnerArg {
-                data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
-                    proto::jobworkerp::data::CommandArg {
-                        args: vec!["/".to_string()],
-                    },
-                )),
-            };
+            let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandArg {
+                args: vec!["/".to_string()],
+            });
             // move
             let worker_id1 = worker_id;
             let jarg1 = jarg.clone();
@@ -615,7 +674,7 @@ mod tests {
             // need waiting for direct response
             let jh = tokio::spawn(async move {
                 let res = app1
-                    .enqueue_job(Some(&worker_id1), None, Some(jarg1), None, 0, 0, 0)
+                    .enqueue_job(Some(&worker_id1), None, jarg1, None, 0, 0, 0)
                     .await;
                 tracing::info!("!!!res: {:?}", res);
                 let (jid, job_res) = res.unwrap();
@@ -652,7 +711,7 @@ mod tests {
                     job_id: Some(JobId { value: 1 }), // generated by mock generator
                     worker_id: Some(worker_id),
                     worker_name: wd.name.clone(),
-                    arg: Some(jarg),
+                    arg: jarg,
                     uniq_key: None,
                     status: ResultStatus::Success as i32,
                     output: Some(ResultOutput {
@@ -695,17 +754,14 @@ mod tests {
         // enqueue, find, complete, find, delete, find
         let (app, subscriber) = create_test_app(true)?;
         TEST_RUNTIME.block_on(async {
-            let operation = WorkerOperation {
-                operation: Some(Operation::Command(
-                    proto::jobworkerp::data::CommandOperation {
-                        name: "ls".to_string(),
-                    },
-                )),
-            };
+            let operation =
+                JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandOperation {
+                    name: "ls".to_string(),
+                });
             let wd = WorkerData {
                 name: "testworker".to_string(),
-                r#type: RunnerType::Command as i32,
-                operation: Some(operation),
+                schema_id: Some(RunnerSchemaId { value: 123 }),
+                operation,
                 channel: None,
                 response_type: ResponseType::ListenAfter as i32,
                 periodic_interval: 0,
@@ -717,24 +773,20 @@ mod tests {
                 use_static: false,
             };
             let worker_id = app.worker_app().create(&wd).await?;
-            let jarg = RunnerArg {
-                data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
-                    proto::jobworkerp::data::CommandArg {
-                        args: vec!["/".to_string()],
-                    },
-                )),
-            };
+            let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandArg {
+                args: vec!["/".to_string()],
+            });
 
             // wait for direct response
             let job_id = app
-                .enqueue_job(Some(&worker_id), None, Some(jarg.clone()), None, 0, 0, 0)
+                .enqueue_job(Some(&worker_id), None, jarg.clone(), None, 0, 0, 0)
                 .await?
                 .0;
             let job = Job {
                 id: Some(job_id),
                 data: Some(JobData {
                     worker_id: Some(worker_id),
-                    arg: Some(jarg.clone()),
+                    arg: jarg.clone(),
                     uniq_key: None,
                     enqueue_time: datetime::now_millis(),
                     grabbed_until_time: None,
@@ -758,7 +810,7 @@ mod tests {
                     job_id: Some(job_id),
                     worker_id: Some(worker_id),
                     worker_name: wd.name.clone(),
-                    arg: Some(jarg),
+                    arg: jarg,
                     uniq_key: None,
                     status: ResultStatus::Success as i32,
                     output: Some(ResultOutput {
@@ -813,17 +865,14 @@ mod tests {
     fn test_create_normal_job_complete() -> Result<()> {
         // enqueue, find, complete, find, delete, find
         let (app, _) = create_test_app(true)?;
-        let operation = WorkerOperation {
-            operation: Some(Operation::Command(
-                proto::jobworkerp::data::CommandOperation {
-                    name: "ls".to_string(),
-                },
-            )),
-        };
+        let operation =
+            JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandOperation {
+                name: "ls".to_string(),
+            });
         let wd = WorkerData {
             name: "testworker".to_string(),
-            r#type: RunnerType::Command as i32,
-            operation: Some(operation),
+            schema_id: Some(RunnerSchemaId { value: 123 }),
+            operation,
             channel: None,
             response_type: ResponseType::NoResult as i32,
             periodic_interval: 0,
@@ -836,17 +885,13 @@ mod tests {
         };
         TEST_RUNTIME.block_on(async {
             let worker_id = app.worker_app().create(&wd).await?;
-            let jarg = RunnerArg {
-                data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
-                    proto::jobworkerp::data::CommandArg {
-                        args: vec!["/".to_string()],
-                    },
-                )),
-            };
+            let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandArg {
+                args: vec!["/".to_string()],
+            });
 
             // wait for direct response
             let (job_id, res) = app
-                .enqueue_job(Some(&worker_id), None, Some(jarg.clone()), None, 0, 0, 0)
+                .enqueue_job(Some(&worker_id), None, jarg.clone(), None, 0, 0, 0)
                 .await?;
             assert!(job_id.value > 0);
             assert!(res.is_none());
@@ -876,7 +921,7 @@ mod tests {
                     job_id: Some(job_id),
                     worker_id: Some(worker_id),
                     worker_name: wd.name.clone(),
-                    arg: Some(jarg),
+                    arg: jarg,
                     uniq_key: None,
                     status: ResultStatus::Success as i32,
                     output: Some(ResultOutput {
@@ -922,17 +967,14 @@ mod tests {
         let (app, _) = create_test_app(false)?;
         TEST_RUNTIME.block_on(async {
             // create command worker with hybrid queue
-            let operation = WorkerOperation {
-                operation: Some(Operation::Command(
-                    proto::jobworkerp::data::CommandOperation {
-                        name: "ls".to_string(),
-                    },
-                )),
-            };
+            let operation =
+                JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandOperation {
+                    name: "ls".to_string(),
+                });
             let wd = WorkerData {
                 name: "testworker".to_string(),
-                r#type: RunnerType::Command as i32,
-                operation: Some(operation),
+                schema_id: Some(RunnerSchemaId { value: 123 }),
+                operation,
                 channel: channel.cloned(),
                 response_type: ResponseType::NoResult as i32,
                 periodic_interval: 0,
@@ -946,13 +988,9 @@ mod tests {
             let worker_id = app.worker_app().create(&wd).await?;
 
             // enqueue job
-            let jarg = RunnerArg {
-                data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
-                    proto::jobworkerp::data::CommandArg {
-                        args: vec!["/".to_string()],
-                    },
-                )),
-            };
+            let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandArg {
+                args: vec!["/".to_string()],
+            });
             assert_eq!(
                 app.chan_job_queue_repository()
                     .count_queue(channel, priority)
@@ -963,7 +1001,7 @@ mod tests {
                 .enqueue_job(
                     Some(&worker_id),
                     None,
-                    Some(jarg.clone()),
+                    jarg.clone(),
                     None,
                     0,
                     priority as i32,
@@ -977,7 +1015,7 @@ mod tests {
                 .enqueue_job(
                     Some(&worker_id),
                     None,
-                    Some(jarg.clone()),
+                    jarg.clone(),
                     None,
                     0,
                     priority as i32,

@@ -10,20 +10,26 @@ use deadpool::{
     Runtime,
 };
 use infra::error::JobWorkerError;
-use proto::jobworkerp::data::WorkerData;
+use proto::jobworkerp::data::{RunnerSchemaData, WorkerData};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing;
 
 #[derive(Debug)]
 pub struct RunnerPoolManagerImpl {
+    schema: Arc<RunnerSchemaData>,
     worker: Arc<WorkerData>,
     runner_factory: RunnerFactoryImpl,
 }
 
 impl RunnerPoolManagerImpl {
-    pub async fn new(worker: Arc<WorkerData>, plugins: Arc<Plugins>) -> Self {
+    pub async fn new(
+        schema: Arc<RunnerSchemaData>,
+        worker: Arc<WorkerData>,
+        plugins: Arc<Plugins>,
+    ) -> Self {
         Self {
+            schema,
             worker,
             runner_factory: RunnerFactoryImpl::new(plugins),
         }
@@ -35,7 +41,10 @@ impl Manager for RunnerPoolManagerImpl {
     type Error = anyhow::Error;
 
     async fn create(&self) -> Result<Arc<Mutex<Box<dyn Runner + Send + Sync>>>, anyhow::Error> {
-        let runner = self.runner_factory.create(&self.worker).await?;
+        let runner = self
+            .runner_factory
+            .create(&self.schema, &self.worker)
+            .await?;
         tracing::debug!("runner created in pool: {}", runner.name().await);
         Ok(Arc::new(Mutex::new(runner)))
     }
@@ -73,6 +82,7 @@ pub struct RunnerFactoryWithPool {
 }
 impl RunnerFactoryWithPool {
     pub async fn new(
+        schema: Arc<RunnerSchemaData>,
         worker: Arc<WorkerData>,
         plugins: Arc<Plugins>,
         worker_config: Arc<WorkerConfig>,
@@ -84,7 +94,8 @@ impl RunnerFactoryWithPool {
             ))
             .into());
         }
-        let manager = RunnerPoolManagerImpl::new(worker.clone(), plugins.clone()).await;
+        let manager =
+            RunnerPoolManagerImpl::new(schema.clone(), worker.clone(), plugins.clone()).await;
         let max_size = if let Some(c) = worker_config.get_concurrency(worker.channel.as_ref()) {
             Ok(c)
         } else {
@@ -126,7 +137,8 @@ mod tests {
     use super::*;
     use anyhow::Result;
     use app::app::worker::builtin::slack::{SLACK_RUNNER_OPERATION, SLACK_WORKER_NAME};
-    use proto::jobworkerp::data::{RunnerType, WorkerData};
+    use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
+    use proto::jobworkerp::data::{OperationType, WorkerData};
 
     #[tokio::test]
     async fn test_runner_pool() -> Result<()> {
@@ -135,9 +147,12 @@ mod tests {
         let mut plugins = Plugins::new();
         plugins.load_plugins_from_env()?;
         let factory = RunnerFactoryWithPool::new(
+            Arc::new(RunnerSchemaData {
+                operation_type: -1,
+                ..Default::default()
+            }),
             Arc::new(WorkerData {
-                r#type: RunnerType::SlackInternal as i32,
-                operation: Some(SLACK_RUNNER_OPERATION.clone()),
+                operation: JobqueueAndCodec::serialize_message(&SLACK_RUNNER_OPERATION),
                 channel: None,
                 use_static: true,
                 ..Default::default()
@@ -172,9 +187,12 @@ mod tests {
         let mut plugins = Plugins::new();
         plugins.load_plugins_from_env()?;
         assert!(RunnerFactoryWithPool::new(
+            Arc::new(RunnerSchemaData {
+                operation_type: OperationType::Plugin as i32,
+                ..Default::default()
+            }),
             Arc::new(WorkerData {
-                r#type: RunnerType::SlackInternal as i32,
-                operation: Some(SLACK_RUNNER_OPERATION.clone()),
+                operation: JobqueueAndCodec::serialize_message(&SLACK_RUNNER_OPERATION),
                 channel: None,
                 use_static: false,
                 ..Default::default()

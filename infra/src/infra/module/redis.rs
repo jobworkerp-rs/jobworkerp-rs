@@ -9,11 +9,20 @@ use crate::infra::job_result::pubsub::redis::RedisJobResultPubSubRepositoryImpl;
 use crate::infra::job_result::redis::RedisJobResultRepositoryImpl;
 use crate::infra::job_result::redis::UseRedisJobResultRepository;
 use crate::infra::load_job_queue_config_from_env;
+use crate::infra::runner_schema::redis::RedisRunnerSchemaRepositoryImpl;
+use crate::infra::runner_schema::redis::UseRedisRunnerSchemaRepository;
 use crate::infra::worker::redis::{RedisWorkerRepositoryImpl, UseRedisWorkerRepository};
 use crate::infra::InfraConfigModule;
 
 pub trait UseRedisRepositoryModule {
     fn redis_repository_module(&self) -> &RedisRepositoryModule;
+}
+impl<T: UseRedisRepositoryModule> UseRedisRunnerSchemaRepository for T {
+    fn redis_runner_schema_repository(&self) -> &RedisRunnerSchemaRepositoryImpl {
+        &self
+            .redis_repository_module()
+            .redis_runner_schema_repository
+    }
 }
 impl<T: UseRedisRepositoryModule> UseRedisWorkerRepository for T {
     fn redis_worker_repository(&self) -> &RedisWorkerRepositoryImpl {
@@ -37,6 +46,7 @@ pub struct RedisRepositoryModule {
     #[debug_stub = "&`static deadpool_redis::Pool"]
     pub redis_pool: &'static deadpool_redis::Pool,
     pub redis_client: RedisClient,
+    pub redis_runner_schema_repository: RedisRunnerSchemaRepositoryImpl,
     pub redis_worker_repository: RedisWorkerRepositoryImpl,
     pub redis_job_repository: RedisJobRepositoryImpl,
     pub redis_job_result_repository: RedisJobResultRepositoryImpl,
@@ -51,6 +61,10 @@ impl RedisRepositoryModule {
         RedisRepositoryModule {
             redis_pool,
             redis_client: redis_client.clone(),
+            redis_runner_schema_repository: RedisRunnerSchemaRepositoryImpl::new(
+                redis_pool,
+                redis_client.clone(),
+            ),
             redis_worker_repository: RedisWorkerRepositoryImpl::new(
                 redis_pool,
                 redis_client.clone(),
@@ -74,6 +88,10 @@ impl RedisRepositoryModule {
         RedisRepositoryModule {
             redis_pool,
             redis_client: redis_client.clone(),
+            redis_runner_schema_repository: RedisRunnerSchemaRepositoryImpl::new(
+                redis_pool,
+                redis_client.clone(),
+            ),
             redis_worker_repository: RedisWorkerRepositoryImpl::new(
                 redis_pool,
                 redis_client.clone(),
@@ -106,6 +124,7 @@ pub mod test {
         job_result::{
             pubsub::redis::RedisJobResultPubSubRepositoryImpl, redis::RedisJobResultRepositoryImpl,
         },
+        runner_schema::redis::RedisRunnerSchemaRepositoryImpl,
         worker::redis::RedisWorkerRepositoryImpl,
     };
     use infra_utils::infra::test::{setup_test_redis_client, setup_test_redis_pool};
@@ -129,6 +148,10 @@ pub mod test {
         RedisRepositoryModule {
             redis_pool,
             redis_client: redis_client.clone(),
+            redis_runner_schema_repository: RedisRunnerSchemaRepositoryImpl::new(
+                redis_pool,
+                redis_client.clone(),
+            ),
             redis_worker_repository: RedisWorkerRepositoryImpl::new(
                 redis_pool,
                 redis_client.clone(),

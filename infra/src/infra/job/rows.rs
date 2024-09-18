@@ -2,8 +2,7 @@ use crate::error::JobWorkerError;
 use anyhow::Result;
 use prost::Message;
 use proto::jobworkerp::data::{
-    Job, JobData, JobId, JobResult, JobResultData, JobResultId, RunnerArg, Worker, WorkerId,
-    WorkerOperation,
+    Job, JobData, JobId, JobResult, JobResultData, JobResultId, Worker, WorkerId,
 };
 use std::io::Cursor;
 
@@ -30,17 +29,7 @@ impl JobRow {
                 worker_id: Some(WorkerId {
                     value: self.worker_id,
                 }),
-                arg: Some(
-                    JobqueueAndCodec::deserialize_runner_arg(&self.arg).unwrap_or_else(|_| {
-                        tracing::warn!(
-                            "deserialize arg failed: job_id={}, worker_id={}, arg={:?}",
-                            &self.id,
-                            &self.worker_id,
-                            &self.arg
-                        );
-                        RunnerArg::default()
-                    }),
-                ),
+                arg: self.arg.clone(),
                 uniq_key: self.uniq_key.clone(),
                 enqueue_time: self.enqueue_time,
                 grabbed_until_time: self.grabbed_until_time,
@@ -60,6 +49,8 @@ pub trait UseJobqueueAndCodec {
 
     // worker pubsub channel name (for cache clear)
     const WORKER_PUBSUB_CHANNEL_NAME: &'static str = "__worker_pubsub_channel__";
+    // runner_schema pubsub channel name (for cache clear)
+    const RUNNER_SCHEMA_PUBSUB_CHANNEL_NAME: &'static str = "__runner_schema_pubsub_channel__";
 
     // job queue channel name with channel name
     fn queue_channel_name(channel_name: impl Into<String>, p: Option<&i32>) -> String {
@@ -84,15 +75,15 @@ pub trait UseJobqueueAndCodec {
         format!("job_result_changed:job:{}", job_id.value)
     }
 
-    fn serialize_runner_arg(arg: &RunnerArg) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(arg.encoded_len());
-        arg.encode(&mut buf).unwrap();
-        buf
-    }
+    // fn serialize_runner_arg(arg: &RunnerArg) -> Vec<u8> {
+    //     let mut buf = Vec::with_capacity(arg.encoded_len());
+    //     arg.encode(&mut buf).unwrap();
+    //     buf
+    // }
 
-    fn deserialize_runner_arg(buf: &Vec<u8>) -> Result<RunnerArg> {
-        RunnerArg::decode(&mut Cursor::new(buf)).map_err(|e| JobWorkerError::CodecError(e).into())
-    }
+    // fn deserialize_runner_arg(buf: &Vec<u8>) -> Result<RunnerArg> {
+    //     RunnerArg::decode(&mut Cursor::new(buf)).map_err(|e| JobWorkerError::CodecError(e).into())
+    // }
 
     fn serialize_job(job: &Job) -> Vec<u8> {
         let mut buf = Vec::with_capacity(job.encoded_len());
@@ -128,15 +119,14 @@ pub trait UseJobqueueAndCodec {
         Worker::decode(&mut Cursor::new(buf)).map_err(|e| JobWorkerError::CodecError(e).into())
     }
 
-    fn serialize_worker_operation(arg: &WorkerOperation) -> Vec<u8> {
+    fn serialize_message<T: Message>(arg: &T) -> Vec<u8> {
         let mut buf = Vec::with_capacity(arg.encoded_len());
         arg.encode(&mut buf).unwrap();
         buf
     }
 
-    fn deserialize_worker_operation(buf: &Vec<u8>) -> Result<WorkerOperation> {
-        WorkerOperation::decode(&mut Cursor::new(buf))
-            .map_err(|e| JobWorkerError::CodecError(e).into())
+    fn deserialize_message<T: Message + Default>(buf: &[u8]) -> Result<T> {
+        T::decode(&mut Cursor::new(buf)).map_err(|e| JobWorkerError::CodecError(e).into())
     }
 }
 
@@ -149,20 +139,18 @@ impl UseJobqueueAndCodec for JobqueueAndCodec {}
 mod tests {
     use super::*;
     use chrono::Utc;
-    use proto::jobworkerp::data::{runner_arg::Data, PluginArg, ResponseType, ResultOutput};
+    use proto::jobworkerp::data::{PluginArg, ResponseType, ResultOutput};
 
     #[test]
     fn test_serialize_and_deserialize_job() {
-        let arg = RunnerArg {
-            data: Some(Data::Plugin(PluginArg {
-                arg: b"test".to_vec(),
-            })),
-        };
+        let arg = JobqueueAndCodec::serialize_message(&PluginArg {
+            arg: b"test".to_vec(),
+        });
         let job = Job {
             id: Some(JobId { value: 1 }),
             data: Some(JobData {
                 worker_id: Some(WorkerId { value: 1 }),
-                arg: Some(arg),
+                arg,
                 uniq_key: Some("test".to_string()),
                 enqueue_time: Utc::now().timestamp_millis(),
                 grabbed_until_time: None,
@@ -182,16 +170,14 @@ mod tests {
 
     #[test]
     fn test_serialize_and_deserialize_job_result_data() {
-        let arg = RunnerArg {
-            data: Some(Data::Plugin(PluginArg {
-                arg: b"test2".to_vec(),
-            })),
-        };
+        let arg = JobqueueAndCodec::serialize_message(&PluginArg {
+            arg: b"test2".to_vec(),
+        });
         let job_result_data = JobResultData {
             worker_id: Some(WorkerId { value: 2 }),
             worker_name: "hoge2".to_string(),
             job_id: Some(JobId { value: 3 }),
-            arg: Some(arg),
+            arg,
             uniq_key: Some("hoge4".to_string()),
             status: 6,
             output: Some(ResultOutput {

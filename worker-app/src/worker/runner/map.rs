@@ -2,7 +2,7 @@ use anyhow::Result;
 use app::app::WorkerConfig;
 use command_utils::util::result::TapErr;
 use deadpool::managed::{Object, Timeouts};
-use proto::jobworkerp::data::{WorkerData, WorkerId};
+use proto::jobworkerp::data::{RunnerSchemaData, WorkerData, WorkerId};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,6 +34,7 @@ impl RunnerFactoryWithPoolMap {
 
     pub async fn add_and_get_runner(
         &self,
+        schema: Arc<RunnerSchemaData>,
         worker_id: &WorkerId,
         worker_data: Arc<WorkerData>,
     ) -> Result<Option<Object<RunnerPoolManagerImpl>>> {
@@ -46,6 +47,7 @@ impl RunnerFactoryWithPoolMap {
             );
             // XXX shold clone runner?
             let p = RunnerFactoryWithPool::new(
+                schema,
                 worker_data,
                 self.plugins.clone(),
                 self.worker_config.clone(),
@@ -75,13 +77,15 @@ impl RunnerFactoryWithPoolMap {
     // create by factory every time
     pub async fn get_non_static_runner(
         &self,
+        schema: &RunnerSchemaData,
         worker_data: &WorkerData,
     ) -> Result<Box<dyn Runner + Send + Sync>> {
-        self.factory.create(worker_data).await
+        self.factory.create(schema, worker_data).await
     }
 
     pub async fn get_or_create_static_runner(
         &self,
+        schema: &RunnerSchemaData,
         worker_id: &WorkerId,
         worker_data: &WorkerData,
         timeout: Option<Duration>,
@@ -102,8 +106,12 @@ impl RunnerFactoryWithPoolMap {
                 // release read guard
                 drop(mp);
                 // add created runner pool to map
-                self.add_and_get_runner(worker_id, Arc::new(worker_data.clone()))
-                    .await
+                self.add_and_get_runner(
+                    Arc::new(schema.clone()),
+                    worker_id,
+                    Arc::new(worker_data.clone()),
+                )
+                .await
             }
         } else {
             Ok(None)

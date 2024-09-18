@@ -14,25 +14,23 @@ impl BuiltinWorkerIds {
     }
 }
 pub mod slack {
+    use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
     use once_cell::sync::Lazy;
     use proto::jobworkerp::data::{
-        worker_operation, QueueType, ResponseType, RetryPolicy, RetryType, RunnerType,
-        SlackJobResultOperation, Worker, WorkerData, WorkerOperation,
+        QueueType, ResponseType, RetryPolicy, RetryType, RunnerSchemaId, SlackJobResultOperation,
+        Worker, WorkerData,
     };
     pub const SLACK_WORKER_NAME: &str = "__SLACK_NOTIFICATION_WORKER__"; //XXX
-    pub const SLACK_RUNNER_OPERATION: WorkerOperation = WorkerOperation {
-        operation: Some(worker_operation::Operation::SlackInternal(
-            SlackJobResultOperation {},
-        )),
-    };
+    pub const SLACK_RUNNER_OPERATION: proto::jobworkerp::data::SlackJobResultOperation =
+        SlackJobResultOperation {};
 
     /// treat arg as serialized JobResult
     pub static SLACK_WORKER: Lazy<Worker> = Lazy::new(|| Worker {
         id: Some(super::BuiltinWorkerIds::SlackWorkerId.to_worker_id()),
         data: Some(WorkerData {
             name: SLACK_WORKER_NAME.to_string(),
-            r#type: RunnerType::SlackInternal as i32,
-            operation: Some(SLACK_RUNNER_OPERATION.clone()),
+            schema_id: Some(RunnerSchemaId { value: 0 }),
+            operation: JobqueueAndCodec::serialize_message(&SLACK_RUNNER_OPERATION),
             channel: None,
             response_type: ResponseType::NoResult as i32,
             periodic_interval: 0,
@@ -73,6 +71,8 @@ impl BuiltinWorkerTrait for BuiltinWorker {}
 // create test for BuiltInWorker
 #[cfg(test)]
 mod tests {
+    use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
+
     use super::*;
     use crate::app::worker::builtin::slack::{SLACK_RUNNER_OPERATION, SLACK_WORKER};
 
@@ -83,8 +83,8 @@ mod tests {
         assert!(worker.is_some());
         assert_eq!(worker.clone().unwrap().id.unwrap(), worker_id);
         assert_eq!(
-            worker.unwrap().data.unwrap().operation.unwrap(),
-            SLACK_RUNNER_OPERATION
+            worker.unwrap().data.unwrap().operation,
+            JobqueueAndCodec::serialize_message(&SLACK_RUNNER_OPERATION)
         );
     }
 

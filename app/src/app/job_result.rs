@@ -9,7 +9,7 @@ use infra::error::JobWorkerError;
 use proto::jobworkerp::data::{
     JobId, JobResult, JobResultData, JobResultId, ResultStatus, WorkerId,
 };
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 #[async_trait]
 pub trait JobResultAppHelper: UseWorkerApp {
@@ -95,7 +95,7 @@ pub trait JobResultAppHelper: UseWorkerApp {
 }
 
 #[async_trait]
-pub trait JobResultApp: Send + Sync + 'static {
+pub trait JobResultApp: fmt::Debug + Send + Sync + 'static {
     // from job_app
     async fn create_job_result_if_necessary(
         &self,

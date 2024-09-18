@@ -19,10 +19,11 @@ use infra::infra::module::redis::{RedisRepositoryModule, UseRedisRepositoryModul
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobStatus, QueueType, ResponseType,
-    RunnerArg, WorkerId,
+    WorkerId,
 };
 use std::{sync::Arc, time::Duration};
 
+#[derive(Clone, Debug)]
 pub struct RedisJobAppImpl {
     job_queue_config: Arc<JobQueueConfig>,
     id_generator: Arc<IdGeneratorWrapper>,
@@ -57,7 +58,7 @@ impl JobApp for RedisJobAppImpl {
         &self,
         worker_id: Option<&WorkerId>,
         worker_name: Option<&String>,
-        arg: Option<RunnerArg>,
+        arg: Vec<u8>,
         uniq_key: Option<String>,
         run_after_time: i64,
         priority: i32,
@@ -89,8 +90,8 @@ impl JobApp for RedisJobAppImpl {
             // need to store to db
             //TODO handle properly for periodic or run_after_time job
             if let Some(wd) = &w.data {
-                // validate argument types
-                self.validate_worker_and_job_arg(wd, job_data.arg.as_ref())?;
+                // TODO validate argument types
+                // self.validate_worker_and_job_arg(wd, job_data.arg.as_ref())?;
 
                 let job = Job {
                     id: Some(JobId {
@@ -136,8 +137,8 @@ impl JobApp for RedisJobAppImpl {
                 .find_data_by_opt(data.worker_id.as_ref())
                 .await
             {
-                // validate argument types
-                self.validate_worker_and_job_arg(&d, data.arg.as_ref())?;
+                // TODO validate argument types
+                // self.validate_worker_and_job_arg(&d, data.arg.as_ref())?;
 
                 // need to store to db
                 // use same id

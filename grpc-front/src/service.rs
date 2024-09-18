@@ -4,4 +4,5 @@ pub mod job;
 pub mod job_restore;
 pub mod job_result;
 pub mod job_status;
+pub mod runner_schema;
 pub mod worker;

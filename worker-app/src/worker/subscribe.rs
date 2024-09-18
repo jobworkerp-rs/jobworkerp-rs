@@ -84,10 +84,11 @@ mod test {
         module::load_worker_config,
     };
     use infra::infra::{
-        test::new_for_test_config_rdb, worker::event::UseWorkerPublish, IdGeneratorWrapper,
+        job::rows::JobqueueAndCodec, test::new_for_test_config_rdb,
+        worker::event::UseWorkerPublish, IdGeneratorWrapper,
     };
     use infra_utils::infra::test::setup_test_redis_client;
-    use proto::jobworkerp::data::{worker_operation::Operation, WorkerData, WorkerOperation};
+    use proto::jobworkerp::data::WorkerData;
     use std::sync::Arc;
     use tokio::time::{sleep, Duration};
 
@@ -165,16 +166,13 @@ mod test {
         });
         sleep(Duration::from_millis(100)).await;
 
-        let operation = WorkerOperation {
-            operation: Some(Operation::Command(
-                proto::jobworkerp::data::CommandOperation {
-                    name: "ls".to_string(),
-                },
-            )),
-        };
+        let operation =
+            JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandOperation {
+                name: "ls".to_string(),
+            });
         let worker_data = WorkerData {
             name: "hoge_worker".to_string(),
-            operation: Some(operation),
+            operation,
             channel: Some("test_channel".to_string()),
             ..Default::default()
         };

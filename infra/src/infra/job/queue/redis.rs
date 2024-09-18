@@ -195,6 +195,7 @@ where
 mod test {
     use std::sync::Arc;
 
+    use crate::infra::job::rows::JobqueueAndCodec;
     use crate::infra::JobQueueConfig;
 
     // create test of 'send_job()': store job with send_job() to redis and get job value from redis (by command)
@@ -205,7 +206,6 @@ mod test {
     use infra_utils::infra::test::setup_test_redis_pool;
     use proto::jobworkerp::data::JobResultData;
     use proto::jobworkerp::data::ResultOutput;
-    use proto::jobworkerp::data::RunnerArg;
     use proto::jobworkerp::data::{Job, JobData, JobId, ResultStatus, WorkerId};
     use redis::AsyncCommands;
 
@@ -246,18 +246,14 @@ mod test {
             job_queue_config,
             redis_pool,
         };
-        let arg = RunnerArg {
-            data: Some(proto::jobworkerp::data::runner_arg::Data::Command(
-                proto::jobworkerp::data::CommandArg {
-                    args: vec!["test".to_string()],
-                },
-            )),
-        };
+        let arg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandArg {
+            args: vec!["test".to_string()],
+        });
         let job = Job {
             id: None,
             data: Some(JobData {
                 worker_id: Some(WorkerId { value: 1 }),
-                arg: Some(arg),
+                arg,
                 uniq_key: Some("test".to_string()),
                 enqueue_time: datetime::now_millis(),
                 grabbed_until_time: None,

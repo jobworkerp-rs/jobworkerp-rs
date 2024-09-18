@@ -1,7 +1,9 @@
+pub mod event;
 pub mod job;
 pub mod job_result;
 pub mod module;
 pub mod resource;
+pub mod runner_schema;
 pub mod worker;
 
 use crate::error::JobWorkerError;
@@ -11,6 +13,7 @@ use command_utils::util::{
     id_generator::{self, IDGenerator, MockIdGenerator},
     result::{FlatMap, ToOption},
 };
+use debug_stub_derive::DebugStub;
 use infra_utils::infra::{rdb::RdbConfig, redis::RedisConfig};
 use proto::jobworkerp::data::{Job, JobData};
 use serde::Deserialize;
@@ -18,8 +21,9 @@ use std::sync::{Arc, Mutex};
 
 use self::resource::{load_db_config_from_env, load_redis_config_from_env};
 
-#[derive(Clone)]
+#[derive(Clone, DebugStub)]
 pub struct IdGeneratorWrapper {
+    #[debug_stub = "IDGenerator"]
     id_generator: Arc<Mutex<IDGenerator>>,
 }
 
