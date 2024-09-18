@@ -92,15 +92,3 @@ message SlackJobResultArg {
     ResultMessageData message = 1;
     optional string channel = 2;
 }
-
-// // defines the arguments for a runner (should define to match the worker operation and runner type)
-// message RunnerArg {
-//     oneof data {
-//         SlackJobResultArg slack_job_result = 1;
-//         CommandArg command = 2;
-//         PluginArg plugin = 3;
-//         HttpRequestArg http_request = 4;
-//         GrpcUnaryArg grpc_unary = 5;
-//         DockerArg docker = 6;
-//     }
-// }

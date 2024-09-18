@@ -71,7 +71,7 @@ DROP TABLE IF EXISTS runner_schema;
 CREATE TABLE `runner_schema` (
   `id` BIGINT(10) PRIMARY KEY,
   `name` VARCHAR(128) NOT NULL, -- name for display
-  `operation_type` INT(10) NOT NULL, -- enum: command:1, httpRequest:2, grpcUnary:3, docker:4, plugin:1)
+  `operation_type` INT(10) NOT NULL, -- enum: command:0, httpRequest:2, grpcUnary:3, docker:4, plugin:1)
   `operation_proto` MEDIUMTEXT NOT NULL, -- protobuf definition for the runner operation(main message must be named end with "Operation")
   `job_arg_proto` MEDIUMTEXT NOT NULL, -- protobuf definition for job argument of the runner operation (main message must be named end with "Arg")
   UNIQUE KEY `name` (`name`)

@@ -73,18 +73,6 @@ message HttpRequestOperation {
     string base_url = 1;
 }
 
-
-// message WorkerOperation {
-//   oneof operation {
-//     SlackJobResultOperation slack_internal = 1;
-//     CommandOperation command = 2;
-//     PluginOperation plugin = 3;
-//     HttpRequestOperation http_request = 4;
-//     GrpcUnaryOperation grpc_unary = 5;
-//     DockerOperation docker = 6;
-//   }
-// }
-
 message WorkerData {
     string name                                 = 1; // worker name
     jobworkerp.data.RunnerSchemaId schema_id    = 2; // runner schema id
