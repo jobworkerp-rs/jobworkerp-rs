@@ -141,6 +141,7 @@ impl ResultProcessorImpl {
                     // builtin worker (only slack internal now)
                     if w.data
                         .as_ref()
+                        // TODO define schema_id for builtin worker
                         .exists(|wd| wd.schema_id == Some(RunnerSchemaId { value: -1 }))
                     {
                         // no result data, no enqueue
