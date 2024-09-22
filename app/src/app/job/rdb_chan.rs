@@ -572,7 +572,7 @@ mod tests {
     use infra_utils::infra::test::TEST_RUNTIME;
     use proto::jobworkerp::data::{
         JobResult, JobResultId, Priority, QueueType, ResponseType, ResultOutput, ResultStatus,
-        RunnerSchemaId, WorkerData,
+        WorkerData, WorkerSchemaId,
     };
     use std::sync::Arc;
 
@@ -651,7 +651,7 @@ mod tests {
                 });
             let wd = WorkerData {
                 name: "testworker".to_string(),
-                schema_id: Some(RunnerSchemaId { value: 123 }),
+                schema_id: Some(WorkerSchemaId { value: 123 }),
                 operation,
                 channel: None,
                 response_type: ResponseType::Direct as i32,
@@ -760,7 +760,7 @@ mod tests {
                 });
             let wd = WorkerData {
                 name: "testworker".to_string(),
-                schema_id: Some(RunnerSchemaId { value: 123 }),
+                schema_id: Some(WorkerSchemaId { value: 123 }),
                 operation,
                 channel: None,
                 response_type: ResponseType::ListenAfter as i32,
@@ -871,7 +871,7 @@ mod tests {
             });
         let wd = WorkerData {
             name: "testworker".to_string(),
-            schema_id: Some(RunnerSchemaId { value: 123 }),
+            schema_id: Some(WorkerSchemaId { value: 123 }),
             operation,
             channel: None,
             response_type: ResponseType::NoResult as i32,
@@ -973,7 +973,7 @@ mod tests {
                 });
             let wd = WorkerData {
                 name: "testworker".to_string(),
-                schema_id: Some(RunnerSchemaId { value: 123 }),
+                schema_id: Some(WorkerSchemaId { value: 123 }),
                 operation,
                 channel: channel.cloned(),
                 response_type: ResponseType::NoResult as i32,

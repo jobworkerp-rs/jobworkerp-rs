@@ -17,8 +17,8 @@ pub mod slack {
     use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
     use once_cell::sync::Lazy;
     use proto::jobworkerp::data::{
-        QueueType, ResponseType, RetryPolicy, RetryType, RunnerSchemaId, SlackJobResultOperation,
-        Worker, WorkerData,
+        QueueType, ResponseType, RetryPolicy, RetryType, SlackJobResultOperation, Worker,
+        WorkerData, WorkerSchemaId,
     };
     pub const SLACK_WORKER_NAME: &str = "__SLACK_NOTIFICATION_WORKER__"; //XXX
     pub const SLACK_RUNNER_OPERATION: proto::jobworkerp::data::SlackJobResultOperation =
@@ -29,7 +29,7 @@ pub mod slack {
         id: Some(super::BuiltinWorkerIds::SlackWorkerId.to_worker_id()),
         data: Some(WorkerData {
             name: SLACK_WORKER_NAME.to_string(),
-            schema_id: Some(RunnerSchemaId { value: 0 }),
+            schema_id: Some(WorkerSchemaId { value: 0 }),
             operation: JobqueueAndCodec::serialize_message(&SLACK_RUNNER_OPERATION),
             channel: None,
             response_type: ResponseType::NoResult as i32,

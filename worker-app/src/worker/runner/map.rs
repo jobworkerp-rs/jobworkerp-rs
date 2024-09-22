@@ -2,7 +2,7 @@ use anyhow::Result;
 use app::app::WorkerConfig;
 use command_utils::util::result::TapErr;
 use deadpool::managed::{Object, Timeouts};
-use proto::jobworkerp::data::{RunnerSchemaData, WorkerData, WorkerId};
+use proto::jobworkerp::data::{WorkerData, WorkerId, WorkerSchemaData};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,7 +34,7 @@ impl RunnerFactoryWithPoolMap {
 
     pub async fn add_and_get_runner(
         &self,
-        schema: Arc<RunnerSchemaData>,
+        schema: Arc<WorkerSchemaData>,
         worker_id: &WorkerId,
         worker_data: Arc<WorkerData>,
     ) -> Result<Option<Object<RunnerPoolManagerImpl>>> {
@@ -77,7 +77,7 @@ impl RunnerFactoryWithPoolMap {
     // create by factory every time
     pub async fn get_non_static_runner(
         &self,
-        schema: &RunnerSchemaData,
+        schema: &WorkerSchemaData,
         worker_data: &WorkerData,
     ) -> Result<Box<dyn Runner + Send + Sync>> {
         self.factory.create(schema, worker_data).await
@@ -85,7 +85,7 @@ impl RunnerFactoryWithPoolMap {
 
     pub async fn get_or_create_static_runner(
         &self,
-        schema: &RunnerSchemaData,
+        schema: &WorkerSchemaData,
         worker_id: &WorkerId,
         worker_data: &WorkerData,
         timeout: Option<Duration>,

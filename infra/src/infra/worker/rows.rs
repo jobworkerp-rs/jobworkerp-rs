@@ -1,6 +1,6 @@
 use anyhow::Result;
 use itertools::Itertools;
-use proto::jobworkerp::data::{RetryPolicy, RunnerSchemaId, Worker, WorkerData, WorkerId};
+use proto::jobworkerp::data::{RetryPolicy, Worker, WorkerData, WorkerId, WorkerSchemaId};
 
 // db row definitions
 #[derive(sqlx::FromRow)]
@@ -33,7 +33,7 @@ impl WorkerRow {
             id: Some(WorkerId { value: self.id }),
             data: Some(WorkerData {
                 name: self.name.clone(),
-                schema_id: Some(RunnerSchemaId {
+                schema_id: Some(WorkerSchemaId {
                     value: self.schema_id,
                 }),
                 operation: self.operation.clone(),

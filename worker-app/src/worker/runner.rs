@@ -17,7 +17,7 @@ use futures::future::FutureExt;
 use infra::error::JobWorkerError;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use proto::jobworkerp::data::{
-    Job, JobResultData, ResultOutput, ResultStatus, RunnerSchemaData, WorkerData, WorkerId,
+    Job, JobResultData, ResultOutput, ResultStatus, WorkerData, WorkerId, WorkerSchemaData,
 };
 use std::{panic::AssertUnwindSafe, time::Duration};
 use tracing;
@@ -39,7 +39,7 @@ pub trait JobRunner:
     #[inline]
     async fn run_job(
         &'static self,
-        schema: &RunnerSchemaData,
+        schema: &WorkerSchemaData,
         worker_id: &WorkerId,
         worker: &WorkerData,
         job: Job,
@@ -314,7 +314,7 @@ mod tests {
             store_failure: false,
             ..Default::default()
         };
-        let schema = RunnerSchemaData {
+        let schema = WorkerSchemaData {
             operation_type: OperationType::Command as i32,
             ..Default::default()
         };

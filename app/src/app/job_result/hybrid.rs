@@ -283,7 +283,7 @@ mod tests {
     use proto::jobworkerp::data::Priority;
     use proto::jobworkerp::data::QueueType;
     use proto::jobworkerp::data::ResultOutput;
-    use proto::jobworkerp::data::RunnerSchemaId;
+    use proto::jobworkerp::data::WorkerSchemaId;
     use proto::jobworkerp::data::{
         JobId, JobResult, ResponseType, ResultStatus, Worker, WorkerData,
     };
@@ -385,7 +385,7 @@ mod tests {
             });
         let worker_data = WorkerData {
             name: "test".to_string(),
-            schema_id: Some(RunnerSchemaId { value: 1 }),
+            schema_id: Some(WorkerSchemaId { value: 1 }),
             operation,
             retry_policy: None,
             periodic_interval: 0,

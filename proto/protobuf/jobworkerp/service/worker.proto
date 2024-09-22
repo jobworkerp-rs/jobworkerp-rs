@@ -3,13 +3,13 @@ syntax = "proto3";
 package jobworkerp.service;
 
 import "jobworkerp/data/common.proto";
-import "jobworkerp/data/runner_schema.proto";
+import "jobworkerp/data/worker_schema.proto";
 import "jobworkerp/data/worker.proto";
 import "jobworkerp/service/common.proto";
 
 message CreateWorkerRequest {
     string name                                          = 1; // worker name
-    jobworkerp.data.RunnerSchemaId schema_id             = 2; // runner schema id
+    jobworkerp.data.WorkerSchemaId schema_id             = 2; // runner schema id
     jobworkerp.data.OperationType type                   = 3; // runner operation type
     bytes operation                                      = 4; // worker operation (command line, docker operation etc. see WorkerOperation proto matching with runner type)
     optional jobworkerp.data.RetryPolicy retry_policy    = 5; // retry policy (default: no retry)

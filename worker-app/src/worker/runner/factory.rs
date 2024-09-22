@@ -9,7 +9,7 @@ use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
 use libloading::Library;
 use proto::jobworkerp::data::{
     CommandOperation, DockerOperation, GrpcUnaryOperation, HttpRequestOperation, OperationType,
-    PluginOperation, RunnerSchemaData, WorkerData,
+    PluginOperation, WorkerData, WorkerSchemaData,
 };
 use std::sync::Arc;
 use tracing;
@@ -19,7 +19,7 @@ pub trait RunnerFactory: UsePluginRunner + Send + Sync {
     // only use non static worker
     async fn create(
         &self,
-        schema: &RunnerSchemaData,
+        schema: &WorkerSchemaData,
         worker: &WorkerData,
     ) -> Result<Box<dyn Runner + Send + Sync>> {
         match OperationType::try_from(schema.operation_type).to_option() {

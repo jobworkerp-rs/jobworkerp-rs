@@ -2,15 +2,15 @@ use crate::proto::jobworkerp::service::job_restore_service_server::JobRestoreSer
 use crate::proto::jobworkerp::service::job_result_service_server::JobResultServiceServer;
 use crate::proto::jobworkerp::service::job_service_server::JobServiceServer;
 use crate::proto::jobworkerp::service::job_status_service_server::JobStatusServiceServer;
-use crate::proto::jobworkerp::service::runner_schema_service_server::RunnerSchemaServiceServer;
+use crate::proto::jobworkerp::service::worker_schema_service_server::WorkerSchemaServiceServer;
 use crate::proto::jobworkerp::service::worker_service_server::WorkerServiceServer;
 use crate::proto::FILE_DESCRIPTOR_SET;
 use crate::service::job::JobGrpcImpl;
 use crate::service::job_restore::JobRestoreGrpcImpl;
 use crate::service::job_result::JobResultGrpcImpl;
 use crate::service::job_status::JobStatusGrpcImpl;
-use crate::service::runner_schema::RunnerSchemaGrpcImpl;
 use crate::service::worker::WorkerGrpcImpl;
+use crate::service::worker_schema::WorkerSchemaGrpcImpl;
 use anyhow::anyhow;
 use anyhow::Result;
 use app::module::AppModule;
@@ -50,8 +50,8 @@ pub async fn start_server(
         Server::builder()
             .accept_http1(true) // for gRPC-web
             // .layer(GrpcWebLayer::new()) // for grpc-web // server type is changed if this line is added
-            .add_service(tonic_web::enable(RunnerSchemaServiceServer::new(
-                RunnerSchemaGrpcImpl::new(app_module.clone()),
+            .add_service(tonic_web::enable(WorkerSchemaServiceServer::new(
+                WorkerSchemaGrpcImpl::new(app_module.clone()),
             )))
             .add_service(tonic_web::enable(WorkerServiceServer::new(
                 WorkerGrpcImpl::new(app_module.clone()),
