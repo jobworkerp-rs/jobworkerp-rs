@@ -3,7 +3,7 @@ syntax = "proto3";
 package jobworkerp.data;
 
 import "jobworkerp/data/common.proto";
-import "jobworkerp/data/runner_schema.proto";
+import "jobworkerp/data/worker_schema.proto";
 
 // internal use: notify job result to slack as next_worker
 message SlackJobResultOperation {}
@@ -75,7 +75,7 @@ message HttpRequestOperation {
 
 message WorkerData {
     string name                                 = 1; // worker name
-    jobworkerp.data.RunnerSchemaId schema_id    = 2; // runner schema id
+    jobworkerp.data.WorkerSchemaId schema_id    = 2; // runner schema id
     bytes operation                             = 3; // worker operation (docker operation etc)
     jobworkerp.data.RetryPolicy retry_policy    = 4; // retry policy
     uint32 periodic_interval                    = 5; // periodic interval milliseconds (0: non-periodic) (if enabled, cannot use direct_response)
