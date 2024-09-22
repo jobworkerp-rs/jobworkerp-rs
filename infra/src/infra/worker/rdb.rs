@@ -258,17 +258,17 @@ mod test {
     use proto::jobworkerp::data::QueueType;
     use proto::jobworkerp::data::ResponseType;
     use proto::jobworkerp::data::RetryPolicy;
-    use proto::jobworkerp::data::RunnerSchemaId;
     use proto::jobworkerp::data::Worker;
     use proto::jobworkerp::data::WorkerData;
     use proto::jobworkerp::data::WorkerId;
+    use proto::jobworkerp::data::WorkerSchemaId;
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
         let repository = RdbWorkerRepositoryImpl::new(pool);
         let db = repository.db_pool();
         let data = Some(WorkerData {
             name: "hoge1".to_string(),
-            schema_id: Some(RunnerSchemaId { value: 323 }),
+            schema_id: Some(WorkerSchemaId { value: 323 }),
             operation: JobqueueAndCodec::serialize_message(&CommandOperation {
                 name: "hoge".to_string(),
             }),
@@ -312,7 +312,7 @@ mod test {
         tx = db.begin().await.context("error in test")?;
         let update = WorkerData {
             name: "fuga1".to_string(),
-            schema_id: Some(RunnerSchemaId { value: 324 }),
+            schema_id: Some(WorkerSchemaId { value: 324 }),
             operation: RdbWorkerRepositoryImpl::serialize_message(&CommandOperation {
                 name: "fuga".to_string(),
             }),

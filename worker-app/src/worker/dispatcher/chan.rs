@@ -6,8 +6,8 @@ use crate::worker::runner::map::{RunnerFactoryWithPoolMap, UseRunnerPoolMap};
 use crate::worker::runner::result::RunnerResultHandler;
 use crate::worker::runner::JobRunner;
 use anyhow::Result;
-use app::app::runner_schema::{RunnerSchemaApp, UseRunnerSchemaApp};
 use app::app::worker::{UseWorkerApp, WorkerApp};
+use app::app::worker_schema::{UseWorkerSchemaApp, WorkerSchemaApp};
 use app::app::{UseWorkerConfig, WorkerConfig};
 use app::module::AppModule;
 use async_trait::async_trait;
@@ -26,7 +26,7 @@ use infra::infra::job::status::{JobStatusRepository, UseJobStatusRepository};
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use libloading::Library;
 use proto::jobworkerp::data::{
-    Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, RunnerSchema, Worker,
+    Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, Worker, WorkerSchema,
 };
 use std::sync::Arc;
 use tokio::task::JoinHandle;
@@ -45,7 +45,7 @@ pub trait ChanJobDispatcher:
     + UseResultProcessor
     + UseWorkerConfig
     + UseWorkerApp
-    + UseRunnerSchemaApp
+    + UseWorkerSchemaApp
     + UseJobQueueConfig
     + UseIdGenerator
 {
@@ -204,7 +204,7 @@ pub trait ChanJobDispatcher:
             return Err(JobWorkerError::NotFound(mes).into());
         };
         let schema =
-            if let Some(RunnerSchema{id:_, data:schema}) = self.runner_schema_app().find_runner_schema(sid, None).await? {
+            if let Some(WorkerSchema{id:_, data:schema}) = self.worker_schema_app().find_worker_schema(sid, None).await? {
 schema.to_result(||JobWorkerError::NotFound(format!("schema {:?} is not found.", &sid)))
         } else {
             // TODO cannot return result in this case. send result as error?
@@ -357,9 +357,9 @@ impl UseRdbChanJobRepository for ChanJobDispatcherImpl {
         &self.rdb_job_repository
     }
 }
-impl UseRunnerSchemaApp for ChanJobDispatcherImpl {
-    fn runner_schema_app(&self) -> &Arc<dyn RunnerSchemaApp + 'static> {
-        &self.app_module.runner_schema_app
+impl UseWorkerSchemaApp for ChanJobDispatcherImpl {
+    fn worker_schema_app(&self) -> &Arc<dyn WorkerSchemaApp + 'static> {
+        &self.app_module.worker_schema_app
     }
 }
 impl ChanJobDispatcher for ChanJobDispatcherImpl {}

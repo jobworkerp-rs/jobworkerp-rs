@@ -1,7 +1,7 @@
 pub mod job;
 pub mod job_result;
-pub mod runner_schema;
 pub mod worker;
+pub mod worker_schema;
 
 use anyhow::Result;
 use async_trait::async_trait;

@@ -10,21 +10,21 @@ use deadpool::{
     Runtime,
 };
 use infra::error::JobWorkerError;
-use proto::jobworkerp::data::{RunnerSchemaData, WorkerData};
+use proto::jobworkerp::data::{WorkerData, WorkerSchemaData};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing;
 
 #[derive(Debug)]
 pub struct RunnerPoolManagerImpl {
-    schema: Arc<RunnerSchemaData>,
+    schema: Arc<WorkerSchemaData>,
     worker: Arc<WorkerData>,
     runner_factory: RunnerFactoryImpl,
 }
 
 impl RunnerPoolManagerImpl {
     pub async fn new(
-        schema: Arc<RunnerSchemaData>,
+        schema: Arc<WorkerSchemaData>,
         worker: Arc<WorkerData>,
         plugins: Arc<Plugins>,
     ) -> Self {
@@ -82,7 +82,7 @@ pub struct RunnerFactoryWithPool {
 }
 impl RunnerFactoryWithPool {
     pub async fn new(
-        schema: Arc<RunnerSchemaData>,
+        schema: Arc<WorkerSchemaData>,
         worker: Arc<WorkerData>,
         plugins: Arc<Plugins>,
         worker_config: Arc<WorkerConfig>,
@@ -147,7 +147,7 @@ mod tests {
         let mut plugins = Plugins::new();
         plugins.load_plugins_from_env()?;
         let factory = RunnerFactoryWithPool::new(
-            Arc::new(RunnerSchemaData {
+            Arc::new(WorkerSchemaData {
                 operation_type: -1,
                 ..Default::default()
             }),
@@ -187,7 +187,7 @@ mod tests {
         let mut plugins = Plugins::new();
         plugins.load_plugins_from_env()?;
         assert!(RunnerFactoryWithPool::new(
-            Arc::new(RunnerSchemaData {
+            Arc::new(WorkerSchemaData {
                 operation_type: OperationType::Plugin as i32,
                 ..Default::default()
             }),

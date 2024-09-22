@@ -22,8 +22,8 @@ use proto::jobworkerp::data::slack_job_result_arg::ResultMessageData;
 use proto::jobworkerp::data::JobResultData;
 use proto::jobworkerp::data::JobResultId;
 use proto::jobworkerp::data::ResultStatus;
-use proto::jobworkerp::data::RunnerSchemaId;
 use proto::jobworkerp::data::SlackJobResultArg;
+use proto::jobworkerp::data::WorkerSchemaId;
 use proto::jobworkerp::data::{JobResult, WorkerData};
 use std::sync::Arc;
 use strum::IntoEnumIterator;
@@ -142,7 +142,7 @@ impl ResultProcessorImpl {
                     if w.data
                         .as_ref()
                         // TODO define schema_id for builtin worker
-                        .exists(|wd| wd.schema_id == Some(RunnerSchemaId { value: -1 }))
+                        .exists(|wd| wd.schema_id == Some(WorkerSchemaId { value: -1 }))
                     {
                         // no result data, no enqueue
                         if dat.output.is_none()

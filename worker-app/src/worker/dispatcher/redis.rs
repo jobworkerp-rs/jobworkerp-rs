@@ -7,8 +7,8 @@ use crate::worker::runner::result::RunnerResultHandler;
 use crate::worker::runner::JobRunner;
 use crate::worker::subscribe::UseSubscribeWorker;
 use anyhow::Result;
-use app::app::runner_schema::{RunnerSchemaApp, UseRunnerSchemaApp};
 use app::app::worker::{UseWorkerApp, WorkerApp};
+use app::app::worker_schema::{UseWorkerSchemaApp, WorkerSchemaApp};
 use app::app::{UseWorkerConfig, WorkerConfig};
 use app::module::{AppConfigModule, AppModule};
 use async_trait::async_trait;
@@ -30,7 +30,7 @@ use infra_utils::infra::redis::{RedisClient, UseRedisClient};
 use infra_utils::infra::redis::{RedisPool, UseRedisPool};
 use libloading::Library;
 use proto::jobworkerp::data::{
-    Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, RunnerSchema, Worker,
+    Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, Worker, WorkerSchema,
 };
 use redis::{AsyncCommands, RedisError};
 use std::sync::Arc;
@@ -56,7 +56,7 @@ pub trait RedisJobDispatcher:
     + UseResultProcessor
     + UseWorkerConfig
     + UseWorkerApp
-    + UseRunnerSchemaApp
+    + UseWorkerSchemaApp
     + UseJobQueueConfig
     + UseIdGenerator
 {
@@ -238,12 +238,12 @@ pub trait RedisJobDispatcher:
         let sid = wdat.schema_id.to_result(|| {
             JobWorkerError::InvalidParameter("worker schema_id is not found.".to_string())
         })?;
-        let schema = if let Some(RunnerSchema {
+        let schema = if let Some(WorkerSchema {
             id: _,
             data: schema,
         }) = self
-            .runner_schema_app()
-            .find_runner_schema(&sid, None)
+            .worker_schema_app()
+            .find_worker_schema(&sid, None)
             .await?
         {
             schema
@@ -382,9 +382,9 @@ impl UseWorkerApp for RedisJobDispatcherImpl {
         &self.app_module.worker_app
     }
 }
-impl UseRunnerSchemaApp for RedisJobDispatcherImpl {
-    fn runner_schema_app(&self) -> &Arc<dyn RunnerSchemaApp + 'static> {
-        &self.app_module.runner_schema_app
+impl UseWorkerSchemaApp for RedisJobDispatcherImpl {
+    fn worker_schema_app(&self) -> &Arc<dyn WorkerSchemaApp + 'static> {
+        &self.app_module.worker_schema_app
     }
 }
 

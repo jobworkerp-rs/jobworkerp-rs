@@ -9,10 +9,10 @@ use crate::worker::runner::JobRunner;
 use anyhow::Result;
 use app::app::job_result::JobResultApp;
 use app::app::job_result::UseJobResultApp;
-use app::app::runner_schema::RunnerSchemaApp;
-use app::app::runner_schema::UseRunnerSchemaApp;
 use app::app::worker::UseWorkerApp;
 use app::app::worker::WorkerApp;
+use app::app::worker_schema::UseWorkerSchemaApp;
+use app::app::worker_schema::WorkerSchemaApp;
 use app::app::UseWorkerConfig;
 use app::app::WorkerConfig;
 use app::module::AppConfigModule;
@@ -37,9 +37,9 @@ use libloading::Library;
 use proto::jobworkerp::data::Job;
 use proto::jobworkerp::data::JobResult;
 use proto::jobworkerp::data::JobResultId;
-use proto::jobworkerp::data::RunnerSchema;
 use proto::jobworkerp::data::Worker;
 use proto::jobworkerp::data::WorkerId;
+use proto::jobworkerp::data::WorkerSchema;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -55,7 +55,7 @@ pub trait RdbJobDispatcher:
     + JobRunner
     + UseWorkerConfig
     + UseWorkerApp
-    + UseRunnerSchemaApp
+    + UseWorkerSchemaApp
     + UseJobQueueConfig
 {
     // mergin time to re-execute if it does not disappear from queue (row) after timeout
@@ -175,12 +175,12 @@ pub trait RdbJobDispatcher:
                 JobWorkerError::NotFound(format!("failed to get schema_id: {:?}", &job)).into(),
             );
         };
-        let schema = if let Some(RunnerSchema {
+        let schema = if let Some(WorkerSchema {
             id: _,
             data: schema,
         }) = self
-            .runner_schema_app()
-            .find_runner_schema(sid, None)
+            .worker_schema_app()
+            .find_worker_schema(sid, None)
             .await?
         {
             schema
@@ -285,9 +285,9 @@ impl UseWorkerApp for RdbJobDispatcherImpl {
         &self.app_module.worker_app
     }
 }
-impl UseRunnerSchemaApp for RdbJobDispatcherImpl {
-    fn runner_schema_app(&self) -> &Arc<dyn RunnerSchemaApp + 'static> {
-        &self.app_module.runner_schema_app
+impl UseWorkerSchemaApp for RdbJobDispatcherImpl {
+    fn worker_schema_app(&self) -> &Arc<dyn WorkerSchemaApp + 'static> {
+        &self.app_module.worker_schema_app
     }
 }
 

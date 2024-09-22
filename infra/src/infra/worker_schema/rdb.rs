@@ -1,4 +1,4 @@
-use super::rows::RunnerSchemaRow;
+use super::rows::WorkerSchemaRow;
 use crate::error::JobWorkerError;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -6,31 +6,29 @@ use infra_utils::infra::rdb::Rdb;
 use infra_utils::infra::rdb::RdbPool;
 use infra_utils::infra::rdb::UseRdbPool;
 use itertools::Itertools;
-use proto::jobworkerp::data::{RunnerSchema, RunnerSchemaData, RunnerSchemaId};
+use proto::jobworkerp::data::{WorkerSchema, WorkerSchemaData, WorkerSchemaId};
 use sqlx::{Executor, Pool};
 
 #[async_trait]
-pub trait RunnerSchemaRepository: UseRdbPool + Sync + Send {
+pub trait WorkerSchemaRepository: UseRdbPool + Sync + Send {
     async fn create<'c, E: Executor<'c, Database = Rdb>>(
         &self,
         tx: E,
-        id: RunnerSchemaId,
-        runner_schema: &RunnerSchemaData,
-    ) -> Result<RunnerSchemaId> {
+        id: WorkerSchemaId,
+        worker_schema: &WorkerSchemaData,
+    ) -> Result<WorkerSchemaId> {
         let res = sqlx::query::<Rdb>(
-            "INSERT INTO `runner_schema` (
+            "INSERT INTO `worker_schema` (
             `id`,
             `name`,
             `operation_type`,
-            `operation_proto`,
             `job_arg_proto`
-            ) VALUES (?,?,?,?,?)",
+            ) VALUES (?,?,?,?)",
         )
         .bind(id.value)
-        .bind(&runner_schema.name)
-        .bind(runner_schema.operation_type)
-        .bind(&runner_schema.operation_proto)
-        .bind(&runner_schema.job_arg_proto)
+        .bind(&worker_schema.name)
+        .bind(worker_schema.operation_type)
+        .bind(&worker_schema.job_arg_proto)
         .execute(tx)
         .await
         .map_err(JobWorkerError::DBError)?;
@@ -39,8 +37,8 @@ pub trait RunnerSchemaRepository: UseRdbPool + Sync + Send {
         } else {
             // no record?
             Err(JobWorkerError::RuntimeError(format!(
-                "Cannot insert runner_schema (logic error?): {:?}",
-                runner_schema
+                "Cannot insert worker_schema (logic error?): {:?}",
+                worker_schema
             ))
             .into())
         }
@@ -49,21 +47,19 @@ pub trait RunnerSchemaRepository: UseRdbPool + Sync + Send {
     async fn update<'c, E: Executor<'c, Database = Rdb>>(
         &self,
         tx: E,
-        id: &RunnerSchemaId,
-        runner_schema: &RunnerSchemaData,
+        id: &WorkerSchemaId,
+        worker_schema: &WorkerSchemaData,
     ) -> Result<bool> {
         sqlx::query(
-            "UPDATE `runner_schema` SET
+            "UPDATE `worker_schema` SET
             `name` = ?,
             `operation_type` = ?,
-            `operation_proto` = ?,
             `job_arg_proto` = ?
             WHERE `id` = ?;",
         )
-        .bind(&runner_schema.name)
-        .bind(runner_schema.operation_type)
-        .bind(&runner_schema.operation_proto)
-        .bind(&runner_schema.job_arg_proto)
+        .bind(&worker_schema.name)
+        .bind(worker_schema.operation_type)
+        .bind(&worker_schema.job_arg_proto)
         .bind(id.value)
         .execute(tx)
         .await
@@ -72,16 +68,16 @@ pub trait RunnerSchemaRepository: UseRdbPool + Sync + Send {
         .context(format!("error in update: id = {}", id.value))
     }
 
-    async fn delete(&self, id: &RunnerSchemaId) -> Result<bool> {
+    async fn delete(&self, id: &WorkerSchemaId) -> Result<bool> {
         self.delete_tx(self.db_pool(), id).await
     }
 
     async fn delete_tx<'c, E: Executor<'c, Database = Rdb>>(
         &self,
         tx: E,
-        id: &RunnerSchemaId,
+        id: &WorkerSchemaId,
     ) -> Result<bool> {
-        let del = sqlx::query::<Rdb>("DELETE FROM `runner_schema` WHERE `id` = ?;")
+        let del = sqlx::query::<Rdb>("DELETE FROM `worker_schema` WHERE `id` = ?;")
             .bind(id.value)
             .execute(tx)
             .await
@@ -90,7 +86,7 @@ pub trait RunnerSchemaRepository: UseRdbPool + Sync + Send {
         Ok(del)
     }
 
-    async fn find(&self, id: &RunnerSchemaId) -> Result<Option<RunnerSchema>> {
+    async fn find(&self, id: &WorkerSchemaId) -> Result<Option<WorkerSchema>> {
         self.find_row_tx(self.db_pool(), id)
             .await
             .map(|r| r.map(|r2| r2.to_proto()))
@@ -99,9 +95,9 @@ pub trait RunnerSchemaRepository: UseRdbPool + Sync + Send {
     async fn find_row_tx<'c, E: Executor<'c, Database = Rdb>>(
         &self,
         tx: E,
-        id: &RunnerSchemaId,
-    ) -> Result<Option<RunnerSchemaRow>> {
-        sqlx::query_as::<Rdb, RunnerSchemaRow>("SELECT * FROM `runner_schema` WHERE `id` = ?;")
+        id: &WorkerSchemaId,
+    ) -> Result<Option<WorkerSchemaRow>> {
+        sqlx::query_as::<Rdb, WorkerSchemaRow>("SELECT * FROM `worker_schema` WHERE `id` = ?;")
             .bind(id.value)
             .fetch_optional(tx)
             .await
@@ -113,7 +109,7 @@ pub trait RunnerSchemaRepository: UseRdbPool + Sync + Send {
         &self,
         limit: Option<&i32>,
         offset: Option<&i64>,
-    ) -> Result<Vec<RunnerSchema>> {
+    ) -> Result<Vec<WorkerSchema>> {
         self.find_row_list_tx(self.db_pool(), limit, offset)
             .await
             .map(|r| r.iter().map(|r2| r2.to_proto()).collect_vec())
@@ -124,18 +120,18 @@ pub trait RunnerSchemaRepository: UseRdbPool + Sync + Send {
         tx: E,
         limit: Option<&i32>,
         offset: Option<&i64>,
-    ) -> Result<Vec<RunnerSchemaRow>> {
+    ) -> Result<Vec<WorkerSchemaRow>> {
         if let Some(l) = limit {
-            sqlx::query_as::<_, RunnerSchemaRow>(
-                "SELECT * FROM `runner_schema` ORDER BY `id` DESC LIMIT ? OFFSET ?;",
+            sqlx::query_as::<_, WorkerSchemaRow>(
+                "SELECT * FROM `worker_schema` ORDER BY `id` DESC LIMIT ? OFFSET ?;",
             )
             .bind(l)
             .bind(offset.unwrap_or(&0i64))
             .fetch_all(tx)
         } else {
             // fetch all!
-            sqlx::query_as::<_, RunnerSchemaRow>(
-                "SELECT * FROM `runner_schema` ORDER BY `id` DESC;",
+            sqlx::query_as::<_, WorkerSchemaRow>(
+                "SELECT * FROM `worker_schema` ORDER BY `id` DESC;",
             )
             .fetch_all(tx)
         }
@@ -145,7 +141,7 @@ pub trait RunnerSchemaRepository: UseRdbPool + Sync + Send {
     }
 
     async fn count_list_tx<'c, E: Executor<'c, Database = Rdb>>(&self, tx: E) -> Result<i64> {
-        sqlx::query_scalar("SELECT count(*) as count FROM `runner_schema`;")
+        sqlx::query_scalar("SELECT count(*) as count FROM `worker_schema`;")
             .fetch_one(tx)
             .await
             .map_err(JobWorkerError::DBError)
@@ -154,46 +150,45 @@ pub trait RunnerSchemaRepository: UseRdbPool + Sync + Send {
 }
 
 #[derive(Debug, Clone)]
-pub struct RdbRunnerSchemaRepositoryImpl {
+pub struct RdbWorkerSchemaRepositoryImpl {
     pool: &'static RdbPool,
 }
 
-pub trait UseRunnerSchemaRepository {
-    fn runner_schema_repository(&self) -> &RdbRunnerSchemaRepositoryImpl;
+pub trait UseWorkerSchemaRepository {
+    fn worker_schema_repository(&self) -> &RdbWorkerSchemaRepositoryImpl;
 }
 
-impl RdbRunnerSchemaRepositoryImpl {
+impl RdbWorkerSchemaRepositoryImpl {
     pub fn new(pool: &'static RdbPool) -> Self {
         Self { pool }
     }
 }
 
-impl UseRdbPool for RdbRunnerSchemaRepositoryImpl {
+impl UseRdbPool for RdbWorkerSchemaRepositoryImpl {
     fn db_pool(&self) -> &Pool<Rdb> {
         self.pool
     }
 }
 
-impl RunnerSchemaRepository for RdbRunnerSchemaRepositoryImpl {}
+impl WorkerSchemaRepository for RdbWorkerSchemaRepositoryImpl {}
 
 mod test {
-    use super::RdbRunnerSchemaRepositoryImpl;
-    use super::RunnerSchemaRepository;
+    use super::RdbWorkerSchemaRepositoryImpl;
+    use super::WorkerSchemaRepository;
     use anyhow::Context;
     use anyhow::Result;
     use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::rdb::UseRdbPool;
-    use proto::jobworkerp::data::RunnerSchema;
-    use proto::jobworkerp::data::RunnerSchemaData;
-    use proto::jobworkerp::data::RunnerSchemaId;
+    use proto::jobworkerp::data::WorkerSchema;
+    use proto::jobworkerp::data::WorkerSchemaData;
+    use proto::jobworkerp::data::WorkerSchemaId;
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
-        let repository = RdbRunnerSchemaRepositoryImpl::new(pool);
+        let repository = RdbWorkerSchemaRepositoryImpl::new(pool);
         let db = repository.db_pool();
-        let data = Some(RunnerSchemaData {
+        let data = Some(WorkerSchemaData {
             name: "hoge1".to_string(),
             operation_type: 3,
-            operation_proto: "hoge4".to_string(),
             job_arg_proto: "hoge5".to_string(),
         });
 
@@ -201,7 +196,7 @@ mod test {
         let id = repository
             .create(
                 &mut *tx,
-                RunnerSchemaId { value: 3232 },
+                WorkerSchemaId { value: 3232 },
                 &data.clone().unwrap(),
             )
             .await?;
@@ -209,7 +204,7 @@ mod test {
         tx.commit().await.context("error in test delete commit")?;
 
         let id1 = id;
-        let expect = RunnerSchema {
+        let expect = WorkerSchema {
             id: Some(id1),
             data,
         };
@@ -220,10 +215,9 @@ mod test {
 
         // update
         tx = db.begin().await.context("error in test")?;
-        let update = RunnerSchemaData {
+        let update = WorkerSchemaData {
             name: "fuga1".to_string(),
             operation_type: 4,
-            operation_proto: "fuga4".to_string(),
             job_arg_proto: "fuga5".to_string(),
         };
         let updated = repository
@@ -253,13 +247,13 @@ mod test {
         TEST_RUNTIME.block_on(async {
             let rdb_pool = if cfg!(feature = "mysql") {
                 let pool = setup_test_rdb_from("sql/mysql").await;
-                sqlx::query("TRUNCATE TABLE runner_schema;")
+                sqlx::query("TRUNCATE TABLE worker_schema;")
                     .execute(pool)
                     .await?;
                 pool
             } else {
                 let pool = setup_test_rdb_from("sql/sqlite").await;
-                sqlx::query("DELETE FROM runner_schema;")
+                sqlx::query("DELETE FROM worker_schema;")
                     .execute(pool)
                     .await?;
                 pool

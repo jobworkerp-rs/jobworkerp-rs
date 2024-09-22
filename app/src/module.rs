@@ -6,14 +6,14 @@ use crate::app::job_result::hybrid::HybridJobResultAppImpl;
 use crate::app::job_result::rdb::RdbJobResultAppImpl;
 use crate::app::job_result::redis::RedisJobResultAppImpl;
 use crate::app::job_result::JobResultApp;
-use crate::app::runner_schema::hybrid::HybridRunnerSchemaAppImpl;
-use crate::app::runner_schema::rdb::RdbRunnerSchemaAppImpl;
-use crate::app::runner_schema::redis::RedisRunnerSchemaAppImpl;
-use crate::app::runner_schema::RunnerSchemaApp;
 use crate::app::worker::hybrid::HybridWorkerAppImpl;
 use crate::app::worker::rdb::RdbWorkerAppImpl;
 use crate::app::worker::redis::RedisWorkerAppImpl;
 use crate::app::worker::WorkerApp;
+use crate::app::worker_schema::hybrid::HybridWorkerSchemaAppImpl;
+use crate::app::worker_schema::rdb::RdbWorkerSchemaAppImpl;
+use crate::app::worker_schema::redis::RedisWorkerSchemaAppImpl;
+use crate::app::worker_schema::WorkerSchemaApp;
 use crate::app::{StorageConfig, StorageType, WorkerConfig};
 use anyhow::Result;
 use infra::infra::module::rdb::RdbChanRepositoryModule;
@@ -76,7 +76,7 @@ pub struct AppModule {
     pub worker_app: Arc<dyn WorkerApp + 'static>,
     pub job_app: Arc<dyn JobApp + 'static>,
     pub job_result_app: Arc<dyn JobResultApp + 'static>,
-    pub runner_schema_app: Arc<dyn RunnerSchemaApp + 'static>,
+    pub worker_schema_app: Arc<dyn WorkerSchemaApp + 'static>,
 }
 
 impl AppModule {
@@ -118,7 +118,7 @@ impl AppModule {
                         Some(Duration::from_secs(5)),
                     ),
                 ));
-                let runner_schema_app = Arc::new(RdbRunnerSchemaAppImpl::new(
+                let worker_schema_app = Arc::new(RdbWorkerSchemaAppImpl::new(
                     config_module.storage_config.clone(),
                     id_generator,
                     &mc_config,
@@ -130,7 +130,7 @@ impl AppModule {
                     worker_app,
                     job_app,
                     job_result_app,
-                    runner_schema_app,
+                    worker_schema_app,
                 })
             }
             StorageType::Redis => {
@@ -156,7 +156,7 @@ impl AppModule {
                     worker_app.clone(),
                     job_result_app.clone(),
                 ));
-                let runner_schema_app = Arc::new(RedisRunnerSchemaAppImpl::new(
+                let worker_schema_app = Arc::new(RedisWorkerSchemaAppImpl::new(
                     config_module.storage_config.clone(),
                     id_generator,
                     &mc_config,
@@ -169,7 +169,7 @@ impl AppModule {
                     worker_app,
                     job_app,
                     job_result_app,
-                    runner_schema_app,
+                    worker_schema_app,
                 })
             }
             StorageType::Hybrid => {
@@ -201,7 +201,7 @@ impl AppModule {
                     worker_app.clone(),
                 ));
                 // TODO imprement and use hybrid runner schema app
-                let runner_schema_app = Arc::new(HybridRunnerSchemaAppImpl::new(
+                let worker_schema_app = Arc::new(HybridWorkerSchemaAppImpl::new(
                     config_module.storage_config.clone(),
                     id_generator,
                     &mc_config,
@@ -214,7 +214,7 @@ impl AppModule {
                     worker_app,
                     job_app,
                     job_result_app,
-                    runner_schema_app,
+                    worker_schema_app,
                 })
             }
         }

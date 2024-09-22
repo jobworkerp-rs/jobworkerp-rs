@@ -3,36 +3,36 @@ use async_trait::async_trait;
 use command_utils::util::result::TapErr;
 use debug_stub_derive::DebugStub;
 use infra::infra::module::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
-use infra::infra::runner_schema::redis::{
-    RedisRunnerSchemaRepository, UseRedisRunnerSchemaRepository,
+use infra::infra::worker_schema::redis::{
+    RedisWorkerSchemaRepository, UseRedisWorkerSchemaRepository,
 };
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use infra_utils::infra::lock::RwLockWithKey;
 use infra_utils::infra::memory::{self, MemoryCacheConfig, MemoryCacheImpl, UseMemoryCache};
-use proto::jobworkerp::data::{RunnerSchema, RunnerSchemaData, RunnerSchemaId};
+use proto::jobworkerp::data::{WorkerSchema, WorkerSchemaData, WorkerSchemaId};
 use std::sync::Arc;
 use std::time::Duration;
 use stretto::AsyncCache;
 
 use super::super::{StorageConfig, UseStorageConfig};
 use super::{
-    RunnerSchemaApp, RunnerSchemaCacheHelper, RunnerSchemaWithDescriptor,
-    UseRunnerSchemaParserWithCache,
+    UseWorkerSchemaParserWithCache, WorkerSchemaApp, WorkerSchemaCacheHelper,
+    WorkerSchemaWithDescriptor,
 };
 
 // TODO cache control
 #[derive(DebugStub)]
-pub struct RedisRunnerSchemaAppImpl {
+pub struct RedisWorkerSchemaAppImpl {
     storage_config: Arc<StorageConfig>,
     id_generator: Arc<IdGeneratorWrapper>,
-    #[debug_stub = "AsyncCache<Arc<String>, Vec<RunnerSchema>>"]
-    async_cache: AsyncCache<Arc<String>, Vec<RunnerSchema>>,
-    memory_cache: MemoryCacheImpl<Arc<String>, RunnerSchemaWithDescriptor>,
+    #[debug_stub = "AsyncCache<Arc<String>, Vec<WorkerSchema>>"]
+    async_cache: AsyncCache<Arc<String>, Vec<WorkerSchema>>,
+    memory_cache: MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>,
     repositories: Arc<RedisRepositoryModule>,
     key_lock: RwLockWithKey<Arc<String>>,
 }
 
-impl RedisRunnerSchemaAppImpl {
+impl RedisWorkerSchemaAppImpl {
     pub fn new(
         storage_config: Arc<StorageConfig>,
         id_generator: Arc<IdGeneratorWrapper>,
@@ -51,15 +51,15 @@ impl RedisRunnerSchemaAppImpl {
 }
 // TODO now, hybrid repository (or redis?) version only
 #[async_trait]
-impl RunnerSchemaApp for RedisRunnerSchemaAppImpl {
-    async fn create_runner_schema(
+impl WorkerSchemaApp for RedisWorkerSchemaAppImpl {
+    async fn create_worker_schema(
         &self,
-        runner_schema: RunnerSchemaData,
-    ) -> Result<RunnerSchemaId> {
-        let schema = self.validate_and_get_runner_schema(runner_schema)?;
+        worker_schema: WorkerSchemaData,
+    ) -> Result<WorkerSchemaId> {
+        let schema = self.validate_and_get_worker_schema(worker_schema)?;
         let id = self.id_generator().generate_id()?;
-        let rid = RunnerSchemaId { value: id };
-        self.redis_runner_schema_repository()
+        let rid = WorkerSchemaId { value: id };
+        self.redis_worker_schema_repository()
             .upsert(&rid, &schema.schema)
             .await?;
         // clear list cache
@@ -69,20 +69,20 @@ impl RunnerSchemaApp for RedisRunnerSchemaAppImpl {
             .await; // ignore error
 
         // let _ = self
-        //     .redis_runner_schema_repository()
-        //     .publish_runner_schema_changed(&rid, runner_schema)
+        //     .redis_worker_schema_repository()
+        //     .publish_worker_schema_changed(&rid, worker_schema)
         //     .await;
 
         Ok(rid)
     }
 
-    async fn update_runner_schema(
+    async fn update_worker_schema(
         &self,
-        id: &RunnerSchemaId,
-        runner_schema: &Option<RunnerSchemaData>,
+        id: &WorkerSchemaId,
+        worker_schema: &Option<WorkerSchemaData>,
     ) -> Result<bool> {
-        if let Some(rs) = runner_schema {
-            self.redis_runner_schema_repository().upsert(id, rs).await?;
+        if let Some(rs) = worker_schema {
+            self.redis_worker_schema_repository().upsert(id, rs).await?;
             // clear memory cache (XXX without limit offset cache)
             // XXX ignore error
             let _ = self
@@ -90,8 +90,8 @@ impl RunnerSchemaApp for RedisRunnerSchemaAppImpl {
                 .await;
             // TODO
             // let _ = self
-            //     .redis_runner_schema_repository()
-            //     .publish_runner_schema_changed(id, rs)
+            //     .redis_worker_schema_repository()
+            //     .publish_worker_schema_changed(id, rs)
             //     .await;
             Ok(true)
         } else {
@@ -103,8 +103,8 @@ impl RunnerSchemaApp for RedisRunnerSchemaAppImpl {
         }
     }
 
-    async fn delete_runner_schema(&self, id: &RunnerSchemaId) -> Result<bool> {
-        let res = self.redis_runner_schema_repository().delete(id).await?;
+    async fn delete_worker_schema(&self, id: &WorkerSchemaId) -> Result<bool> {
+        let res = self.redis_worker_schema_repository().delete(id).await?;
         let _ = self
             .delete_cache_locked(&Self::find_cache_key(&id.value))
             .await;
@@ -113,28 +113,28 @@ impl RunnerSchemaApp for RedisRunnerSchemaAppImpl {
             .await;
         // TODO
         // let _ = self
-        //     .redis_runner_schema_repository()
-        //     .publish_runner_schema_deleted(id)
+        //     .redis_worker_schema_repository()
+        //     .publish_worker_schema_deleted(id)
         //     .await;
         Ok(res)
     }
 
-    async fn find_runner_schema(
+    async fn find_worker_schema(
         &self,
-        id: &RunnerSchemaId,
+        id: &WorkerSchemaId,
         ttl: Option<&Duration>,
-    ) -> Result<Option<RunnerSchema>>
+    ) -> Result<Option<WorkerSchema>>
     where
         Self: Send + 'static,
     {
         let k = Self::find_cache_key(&id.value);
         self.with_cache_locked(&k, ttl, || async {
-            self.redis_runner_schema_repository()
+            self.redis_worker_schema_repository()
                 .find(id)
                 .await
                 .tap_err(|err| {
                     tracing::warn!(
-                        "cannot access redis and rdb in finding runner_schema: {}",
+                        "cannot access redis and rdb in finding worker_schema: {}",
                         err
                     )
                 })
@@ -144,19 +144,19 @@ impl RunnerSchemaApp for RedisRunnerSchemaAppImpl {
         .map(|r| r.first().map(|o| (*o).clone()))
     }
 
-    async fn find_runner_schema_list(
+    async fn find_worker_schema_list(
         &self,
         limit: Option<&i32>,
         offset: Option<&i64>,
         _ttl: Option<&Duration>,
-    ) -> Result<Vec<RunnerSchema>>
+    ) -> Result<Vec<WorkerSchema>>
     where
         Self: Send + 'static,
     {
         // let k = Arc::new(Self::find_list_cache_key(limit, offset));
         // self.memory_cache
         //     .with_cache(&k, None, || async {
-        self.redis_runner_schema_repository()
+        self.redis_worker_schema_repository()
             .find_all()
             .await
             .map(|v| {
@@ -175,14 +175,14 @@ impl RunnerSchemaApp for RedisRunnerSchemaAppImpl {
         // .await
     }
 
-    async fn find_runner_schema_all_list(&self, ttl: Option<&Duration>) -> Result<Vec<RunnerSchema>>
+    async fn find_worker_schema_all_list(&self, ttl: Option<&Duration>) -> Result<Vec<WorkerSchema>>
     where
         Self: Send + 'static,
     {
         let k = Arc::new(Self::find_all_list_cache_key());
         self.with_cache(&k, ttl, || async {
             // not use rdb in normal case
-            self.redis_runner_schema_repository().find_all().await
+            self.redis_worker_schema_repository().find_all().await
         })
         .await
     }
@@ -192,29 +192,29 @@ impl RunnerSchemaApp for RedisRunnerSchemaAppImpl {
     {
         // TODO cache
         // find from redis first
-        let cnt = self.redis_runner_schema_repository().count().await?;
+        let cnt = self.redis_worker_schema_repository().count().await?;
         Ok(cnt)
     }
 }
 
-impl UseStorageConfig for RedisRunnerSchemaAppImpl {
+impl UseStorageConfig for RedisWorkerSchemaAppImpl {
     fn storage_config(&self) -> &StorageConfig {
         &self.storage_config
     }
 }
-impl UseIdGenerator for RedisRunnerSchemaAppImpl {
+impl UseIdGenerator for RedisWorkerSchemaAppImpl {
     fn id_generator(&self) -> &IdGeneratorWrapper {
         &self.id_generator
     }
 }
 
-impl UseRedisRepositoryModule for RedisRunnerSchemaAppImpl {
+impl UseRedisRepositoryModule for RedisWorkerSchemaAppImpl {
     fn redis_repository_module(&self) -> &RedisRepositoryModule {
         &self.repositories
     }
 }
-impl UseMemoryCache<Arc<String>, Vec<RunnerSchema>> for RedisRunnerSchemaAppImpl {
-    fn cache(&self) -> &AsyncCache<Arc<String>, Vec<RunnerSchema>> {
+impl UseMemoryCache<Arc<String>, Vec<WorkerSchema>> for RedisWorkerSchemaAppImpl {
+    fn cache(&self) -> &AsyncCache<Arc<String>, Vec<WorkerSchema>> {
         &self.async_cache
     }
 
@@ -227,10 +227,10 @@ impl UseMemoryCache<Arc<String>, Vec<RunnerSchema>> for RedisRunnerSchemaAppImpl
         &self.key_lock
     }
 }
-impl RunnerSchemaCacheHelper for RedisRunnerSchemaAppImpl {}
+impl WorkerSchemaCacheHelper for RedisWorkerSchemaAppImpl {}
 
-impl UseRunnerSchemaParserWithCache for RedisRunnerSchemaAppImpl {
-    fn cache(&self) -> &MemoryCacheImpl<Arc<String>, RunnerSchemaWithDescriptor> {
+impl UseWorkerSchemaParserWithCache for RedisWorkerSchemaAppImpl {
+    fn cache(&self) -> &MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor> {
         &self.memory_cache
     }
 }

@@ -1,50 +1,50 @@
 use std::sync::Arc;
 use std::{fmt::Debug, time::Duration};
 
-use crate::proto::jobworkerp::data::{RunnerSchema, RunnerSchemaData, RunnerSchemaId};
-use crate::proto::jobworkerp::service::runner_schema_service_server::RunnerSchemaService;
+use crate::proto::jobworkerp::data::{WorkerSchema, WorkerSchemaData, WorkerSchemaId};
+use crate::proto::jobworkerp::service::worker_schema_service_server::WorkerSchemaService;
 use crate::proto::jobworkerp::service::{
-    CountCondition, CountResponse, CreateRunnerSchemaResponse, FindListRequest,
-    OptionalRunnerSchemaResponse, SuccessResponse,
+    CountCondition, CountResponse, CreateWorkerSchemaResponse, FindListRequest,
+    OptionalWorkerSchemaResponse, SuccessResponse,
 };
 use crate::service::error_handle::handle_error;
-use app::app::runner_schema::RunnerSchemaApp;
+use app::app::worker_schema::WorkerSchemaApp;
 use app::module::AppModule;
 use async_stream::stream;
 use futures::stream::BoxStream;
 use infra_utils::trace::Tracing;
 use tonic::Response;
 
-pub trait RunnerSchemaGrpc {
-    fn app(&self) -> &Arc<dyn RunnerSchemaApp + 'static>;
+pub trait WorkerSchemaGrpc {
+    fn app(&self) -> &Arc<dyn WorkerSchemaApp + 'static>;
 }
 
 const DEFAULT_TTL: Duration = Duration::from_secs(30);
 const LIST_TTL: Duration = Duration::from_secs(5);
 
 #[tonic::async_trait]
-impl<T: RunnerSchemaGrpc + Tracing + Send + Debug + Sync + 'static> RunnerSchemaService for T {
+impl<T: WorkerSchemaGrpc + Tracing + Send + Debug + Sync + 'static> WorkerSchemaService for T {
     #[tracing::instrument]
     async fn create(
         &self,
-        request: tonic::Request<RunnerSchemaData>,
-    ) -> Result<tonic::Response<CreateRunnerSchemaResponse>, tonic::Status> {
-        let _span = Self::trace_request("runner_schema", "create", &request);
+        request: tonic::Request<WorkerSchemaData>,
+    ) -> Result<tonic::Response<CreateWorkerSchemaResponse>, tonic::Status> {
+        let _span = Self::trace_request("worker_schema", "create", &request);
         let req = request.into_inner();
-        match self.app().create_runner_schema(req).await {
-            Ok(id) => Ok(Response::new(CreateRunnerSchemaResponse { id: Some(id) })),
+        match self.app().create_worker_schema(req).await {
+            Ok(id) => Ok(Response::new(CreateWorkerSchemaResponse { id: Some(id) })),
             Err(e) => Err(handle_error(&e)),
         }
     }
     #[tracing::instrument]
     async fn update(
         &self,
-        request: tonic::Request<RunnerSchema>,
+        request: tonic::Request<WorkerSchema>,
     ) -> Result<tonic::Response<SuccessResponse>, tonic::Status> {
-        let _s = Self::trace_request("runner_schema", "update", &request);
+        let _s = Self::trace_request("worker_schema", "update", &request);
         let req = request.get_ref();
         if let Some(i) = &req.id {
-            match self.app().update_runner_schema(i, &req.data).await {
+            match self.app().update_worker_schema(i, &req.data).await {
                 Ok(res) => Ok(Response::new(SuccessResponse { is_success: res })),
                 Err(e) => Err(handle_error(&e)),
             }
@@ -56,11 +56,11 @@ impl<T: RunnerSchemaGrpc + Tracing + Send + Debug + Sync + 'static> RunnerSchema
     #[tracing::instrument]
     async fn delete(
         &self,
-        request: tonic::Request<RunnerSchemaId>,
+        request: tonic::Request<WorkerSchemaId>,
     ) -> Result<tonic::Response<SuccessResponse>, tonic::Status> {
-        let _s = Self::trace_request("runner_schema", "delete", &request);
+        let _s = Self::trace_request("worker_schema", "delete", &request);
         let req = request.get_ref();
-        match self.app().delete_runner_schema(req).await {
+        match self.app().delete_worker_schema(req).await {
             Ok(r) => Ok(Response::new(SuccessResponse { is_success: r })),
             Err(e) => Err(handle_error(&e)),
         }
@@ -68,23 +68,23 @@ impl<T: RunnerSchemaGrpc + Tracing + Send + Debug + Sync + 'static> RunnerSchema
     #[tracing::instrument]
     async fn find(
         &self,
-        request: tonic::Request<RunnerSchemaId>,
-    ) -> Result<tonic::Response<OptionalRunnerSchemaResponse>, tonic::Status> {
-        let _s = Self::trace_request("runner_schema", "find", &request);
+        request: tonic::Request<WorkerSchemaId>,
+    ) -> Result<tonic::Response<OptionalWorkerSchemaResponse>, tonic::Status> {
+        let _s = Self::trace_request("worker_schema", "find", &request);
         let req = request.get_ref();
-        match self.app().find_runner_schema(req, Some(&DEFAULT_TTL)).await {
-            Ok(res) => Ok(Response::new(OptionalRunnerSchemaResponse { data: res })),
+        match self.app().find_worker_schema(req, Some(&DEFAULT_TTL)).await {
+            Ok(res) => Ok(Response::new(OptionalWorkerSchemaResponse { data: res })),
             Err(e) => Err(handle_error(&e)),
         }
     }
 
-    type FindListStream = BoxStream<'static, Result<RunnerSchema, tonic::Status>>;
+    type FindListStream = BoxStream<'static, Result<WorkerSchema, tonic::Status>>;
     #[tracing::instrument]
     async fn find_list(
         &self,
         request: tonic::Request<FindListRequest>,
     ) -> Result<tonic::Response<Self::FindListStream>, tonic::Status> {
-        let _s = Self::trace_request("runner_schema", "find_list", &request);
+        let _s = Self::trace_request("worker_schema", "find_list", &request);
         let req = request.get_ref();
         let ttl = if req.limit.is_some() {
             LIST_TTL
@@ -93,7 +93,7 @@ impl<T: RunnerSchemaGrpc + Tracing + Send + Debug + Sync + 'static> RunnerSchema
         };
         match self
             .app()
-            .find_runner_schema_list(req.limit.as_ref(), req.offset.as_ref(), Some(&ttl))
+            .find_worker_schema_list(req.limit.as_ref(), req.offset.as_ref(), Some(&ttl))
             .await
         {
             Ok(list) => {
@@ -112,7 +112,7 @@ impl<T: RunnerSchemaGrpc + Tracing + Send + Debug + Sync + 'static> RunnerSchema
         &self,
         request: tonic::Request<CountCondition>,
     ) -> Result<tonic::Response<CountResponse>, tonic::Status> {
-        let _s = Self::trace_request("runner_schema", "count", &request);
+        let _s = Self::trace_request("worker_schema", "count", &request);
         match self.app().count().await {
             Ok(res) => Ok(Response::new(CountResponse { total: res })),
             Err(e) => Err(handle_error(&e)),
@@ -121,21 +121,21 @@ impl<T: RunnerSchemaGrpc + Tracing + Send + Debug + Sync + 'static> RunnerSchema
 }
 
 #[derive(DebugStub)]
-pub(crate) struct RunnerSchemaGrpcImpl {
+pub(crate) struct WorkerSchemaGrpcImpl {
     #[debug_stub = "AppModule"]
     app_module: Arc<AppModule>,
 }
 
-impl RunnerSchemaGrpcImpl {
+impl WorkerSchemaGrpcImpl {
     pub fn new(app_module: Arc<AppModule>) -> Self {
-        RunnerSchemaGrpcImpl { app_module }
+        WorkerSchemaGrpcImpl { app_module }
     }
 }
-impl RunnerSchemaGrpc for RunnerSchemaGrpcImpl {
-    fn app(&self) -> &Arc<dyn RunnerSchemaApp + 'static> {
-        &self.app_module.runner_schema_app
+impl WorkerSchemaGrpc for WorkerSchemaGrpcImpl {
+    fn app(&self) -> &Arc<dyn WorkerSchemaApp + 'static> {
+        &self.app_module.worker_schema_app
     }
 }
 
 // use tracing
-impl Tracing for RunnerSchemaGrpcImpl {}
+impl Tracing for WorkerSchemaGrpcImpl {}
