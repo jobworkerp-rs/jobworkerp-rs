@@ -3,8 +3,8 @@ pub mod job;
 pub mod job_result;
 pub mod module;
 pub mod resource;
-pub mod runner_schema;
 pub mod worker;
+pub mod worker_schema;
 
 use crate::error::JobWorkerError;
 use anyhow::Result;

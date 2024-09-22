@@ -5,8 +5,8 @@ use crate::infra::job::rdb::{RdbChanJobRepositoryImpl, UseRdbChanJobRepository};
 use crate::infra::job::status::memory::MemoryJobStatusRepository;
 use crate::infra::job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl;
 use crate::infra::job_result::rdb::{RdbJobResultRepositoryImpl, UseRdbJobResultRepository};
-use crate::infra::runner_schema::rdb::RdbRunnerSchemaRepositoryImpl;
 use crate::infra::worker::rdb::{RdbWorkerRepositoryImpl, UseRdbWorkerRepository};
+use crate::infra::worker_schema::rdb::RdbWorkerSchemaRepositoryImpl;
 use crate::infra::{InfraConfigModule, JobQueueConfig};
 use infra_utils::infra::chan::ChanBuffer;
 
@@ -31,7 +31,7 @@ impl<T: UseRdbChanRepositoryModule> UseRdbJobResultRepository for T {
 
 #[derive(Clone, Debug)]
 pub struct RdbChanRepositoryModule {
-    pub runner_schema_repository: RdbRunnerSchemaRepositoryImpl,
+    pub worker_schema_repository: RdbWorkerSchemaRepositoryImpl,
     pub worker_repository: RdbWorkerRepositoryImpl,
     pub job_repository: RdbChanJobRepositoryImpl,
     pub job_result_repository: RdbJobResultRepositoryImpl,
@@ -44,7 +44,7 @@ impl RdbChanRepositoryModule {
     pub async fn new_by_env(job_queue_config: Arc<JobQueueConfig>) -> Self {
         let pool = super::super::resource::setup_rdb_by_env().await;
         RdbChanRepositoryModule {
-            runner_schema_repository: RdbRunnerSchemaRepositoryImpl::new(pool),
+            worker_schema_repository: RdbWorkerSchemaRepositoryImpl::new(pool),
             worker_repository: RdbWorkerRepositoryImpl::new(pool),
             job_repository: RdbChanJobRepositoryImpl::new(job_queue_config.clone(), pool),
             job_result_repository: RdbJobResultRepositoryImpl::new(pool),
@@ -63,7 +63,7 @@ impl RdbChanRepositoryModule {
         let pool =
             super::super::resource::setup_rdb(config_module.rdb_config.as_ref().unwrap()).await;
         RdbChanRepositoryModule {
-            runner_schema_repository: RdbRunnerSchemaRepositoryImpl::new(pool),
+            worker_schema_repository: RdbWorkerSchemaRepositoryImpl::new(pool),
             worker_repository: RdbWorkerRepositoryImpl::new(pool),
             job_repository: RdbChanJobRepositoryImpl::new(
                 config_module.job_queue_config.clone(),
@@ -92,7 +92,7 @@ impl UseRdbChanRepositoryModule for RdbChanRepositoryModule {
 pub mod test {
     use super::RdbChanRepositoryModule;
     use crate::infra::job::queue::chan::ChanJobQueueRepositoryImpl;
-    use crate::infra::runner_schema::rdb::RdbRunnerSchemaRepositoryImpl;
+    use crate::infra::worker_schema::rdb::RdbWorkerSchemaRepositoryImpl;
     use crate::infra::{
         job::rdb::RdbChanJobRepositoryImpl, job_result::rdb::RdbJobResultRepositoryImpl,
         worker::rdb::RdbWorkerRepositoryImpl,
@@ -118,7 +118,7 @@ pub mod test {
             pool.execute("SELECT 1;").await.expect("test connection");
             truncate_tables(pool, vec!["job", "worker", "job_result"]).await;
             RdbChanRepositoryModule {
-                runner_schema_repository: RdbRunnerSchemaRepositoryImpl::new(pool),
+                worker_schema_repository: RdbWorkerSchemaRepositoryImpl::new(pool),
                 worker_repository: RdbWorkerRepositoryImpl::new(pool),
                 job_repository: RdbChanJobRepositoryImpl::new(
                     Arc::new(JobQueueConfig::default()),

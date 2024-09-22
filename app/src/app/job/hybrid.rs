@@ -167,7 +167,7 @@ impl JobApp for HybridJobAppImpl {
                 timeout,
             };
             if let Some(w) = worker.data.as_ref() {
-                // TODO validate argument types (using RunnerSchema)
+                // TODO validate argument types (using WorkerSchema)
                 // self.validate_worker_and_job_arg(w, job_data.arg.as_ref())?;
                 // cannot wait for direct response
                 if run_after_time > 0 && w.response_type == ResponseType::Direct as i32 {
@@ -285,7 +285,7 @@ impl JobApp for HybridJobAppImpl {
                 .find_data_by_opt(data.worker_id.as_ref())
                 .await
             {
-                // TODO validate argument types (using RunnerSchema)
+                // TODO validate argument types (using WorkerSchema)
                 // self.validate_worker_and_job_arg(&w, data.arg.as_ref())?;
 
                 // use db queue (run after, periodic, queue_type=DB worker)
@@ -593,7 +593,7 @@ mod tests {
     use infra_utils::infra::test::TEST_RUNTIME;
     use proto::jobworkerp::data::{
         JobResult, JobResultId, Priority, QueueType, ResponseType, ResultOutput, ResultStatus,
-        RunnerSchemaId, WorkerData,
+        WorkerData, WorkerSchemaId,
     };
     use std::sync::Arc;
 
@@ -678,7 +678,7 @@ mod tests {
                 });
             let wd = WorkerData {
                 name: "testworker".to_string(),
-                schema_id: Some(RunnerSchemaId { value: 1 }),
+                schema_id: Some(WorkerSchemaId { value: 1 }),
                 operation,
                 channel: None,
                 response_type: ResponseType::Direct as i32,
@@ -788,7 +788,7 @@ mod tests {
                 });
             let wd = WorkerData {
                 name: "testworker".to_string(),
-                schema_id: Some(RunnerSchemaId { value: 1 }),
+                schema_id: Some(WorkerSchemaId { value: 1 }),
                 operation,
                 channel: None,
                 response_type: ResponseType::ListenAfter as i32,
@@ -898,7 +898,7 @@ mod tests {
             });
         let wd = WorkerData {
             name: "testworker".to_string(),
-            schema_id: Some(RunnerSchemaId { value: 1 }),
+            schema_id: Some(WorkerSchemaId { value: 1 }),
             operation,
             channel: None,
             response_type: ResponseType::NoResult as i32,
@@ -998,7 +998,7 @@ mod tests {
                 });
             let wd = WorkerData {
                 name: "testworker".to_string(),
-                schema_id: Some(RunnerSchemaId { value: 1 }),
+                schema_id: Some(WorkerSchemaId { value: 1 }),
                 operation,
                 channel: channel.cloned(),
                 response_type: ResponseType::NoResult as i32,
