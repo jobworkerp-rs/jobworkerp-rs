@@ -2,15 +2,15 @@ use crate::proto::jobworkerp::data::{QueueType, ResponseType};
 use crate::proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use crate::proto::jobworkerp::service::worker_service_server::WorkerService;
 use crate::proto::jobworkerp::service::{
-    CountCondition, CountResponse, CreateWorkerRequest, CreateWorkerResponse, FindListRequest,
-    OptionalWorkerResponse, SuccessResponse, WorkerNameRequest,
+    CountCondition, CountResponse, CreateWorkerResponse, FindListRequest, OptionalWorkerResponse,
+    SuccessResponse, WorkerNameRequest,
 };
 use crate::service::error_handle::handle_error;
 use app::app::worker::WorkerApp;
 use app::app::{StorageConfig, StorageType, UseStorageConfig};
 use app::module::AppModule;
 use async_stream::stream;
-use command_utils::util::option::{Exists, FlatMap};
+use command_utils::util::option::Exists;
 use command_utils::util::result::ToOption;
 use futures::stream::BoxStream;
 use infra::infra::job::rows::UseJobqueueAndCodec;
@@ -33,26 +33,26 @@ pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig {
             StorageType::Hybrid => QueueType::Redis,
         }
     }
-    fn validate_create(&self, dat: CreateWorkerRequest) -> Result<WorkerData, tonic::Status> {
+    fn validate_create(&self, dat: WorkerData) -> Result<WorkerData, tonic::Status> {
         let data = WorkerData {
             name: dat.name,
             schema_id: dat.schema_id,
             operation: dat.operation,
             retry_policy: dat.retry_policy,
-            periodic_interval: dat.periodic_interval.unwrap_or(0),
+            periodic_interval: dat.periodic_interval,
             channel: dat.channel,
             queue_type: self
                 .validate_queue_type(
-                    dat.queue_type
-                        .flat_map(|qt| QueueType::try_from(qt).to_option())
+                    QueueType::try_from(dat.queue_type)
+                        .to_option()
                         .unwrap_or(self.default_queue_type()),
                 )
                 .map(|r| r as i32)?,
-            response_type: dat.response_type.unwrap_or(ResponseType::NoResult as i32),
-            store_success: dat.store_success.unwrap_or(false),
-            store_failure: dat.store_failure.unwrap_or(false),
+            response_type: dat.response_type,
+            store_success: dat.store_success,
+            store_failure: dat.store_failure,
             next_workers: dat.next_workers,
-            use_static: dat.use_static.unwrap_or(false),
+            use_static: dat.use_static,
         };
         self.validate_worker(&data)?;
         Ok(data)
@@ -181,7 +181,7 @@ impl<
     #[tracing::instrument]
     async fn create(
         &self,
-        request: tonic::Request<CreateWorkerRequest>,
+        request: tonic::Request<WorkerData>,
     ) -> Result<tonic::Response<CreateWorkerResponse>, tonic::Status> {
         let _span = Self::trace_request("worker", "create", &request);
         //validation
