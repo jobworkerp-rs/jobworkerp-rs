@@ -25,6 +25,9 @@ pub struct RdbWorkerSchemaAppImpl {
     async_cache: AsyncCache<Arc<String>, Vec<WorkerSchema>>,
     memory_cache: MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>,
     repositories: Arc<RdbChanRepositoryModule>,
+    cache_ttl: Option<Duration>,
+    #[debug_stub = "Arc<RwLockWithKey<Arc<String>>>"]
+    key_lock: Arc<RwLockWithKey<Arc<String>>>,
 }
 
 impl RdbWorkerSchemaAppImpl {
@@ -40,6 +43,8 @@ impl RdbWorkerSchemaAppImpl {
             async_cache: memory::new_memory_cache(memory_cache_config),
             memory_cache: MemoryCacheImpl::new(memory_cache_config, None),
             repositories,
+            cache_ttl: Some(Duration::from_secs(60)), // TODO from setting
+            key_lock: Arc::new(RwLockWithKey::new(memory_cache_config.num_counters)),
         }
     }
 }
@@ -191,11 +196,12 @@ impl UseMemoryCache<Arc<String>, Vec<WorkerSchema>> for RdbWorkerSchemaAppImpl {
 
     #[doc = " default cache ttl"]
     fn default_ttl(&self) -> Option<&Duration> {
-        todo!()
+        // TODO from setting
+        self.cache_ttl.as_ref()
     }
 
     fn key_lock(&self) -> &RwLockWithKey<Arc<String>> {
-        todo!()
+        &self.key_lock
     }
 }
 impl WorkerSchemaCacheHelper for RdbWorkerSchemaAppImpl {}
