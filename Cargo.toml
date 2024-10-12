@@ -31,11 +31,11 @@ clap = "4.0"
 chrono = "0.4"
 dashmap = "6"
 deadpool = { version = "0.12", features = ["rt_tokio_1"] }
-deadpool-redis = { version = "0.16", features = ["rt_tokio_1", "cluster"] }
+deadpool-redis = { version = "0.18", features = ["rt_tokio_1", "cluster"] }
 debug_stub_derive = "0.3"
-bollard = { version = "0.16", features = ["buildkit", "chrono"] }
+bollard = { version = "0.17", features = ["buildkit", "chrono"] }
 bytes = "1.3"
-console-subscriber = { version = "0.3", features = ["parking_lot"] }
+#console-subscriber = { version = "0.3", features = ["parking_lot"] }
 envy = "0.4"
 dotenvy = "0.15"
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
@@ -55,7 +55,7 @@ prost-types = "0.13"
 prost-reflect = "0.14"
 rand = "0.8"
 regex = "1.7"
-redis = { version = "0.26", features = [
+redis = { version = "0.27", features = [
     "tokio-rustls-comp",
     "r2d2",
     "ahash",
@@ -87,7 +87,7 @@ tonic-reflection = "0.12"
 tonic-web = "0.12"
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["codec"] }
-tokio = { version = "1.40", features = [
+tokio = { version = "1", features = [
     "macros",
     "rt-multi-thread",
     "signal",
@@ -97,7 +97,6 @@ tokio = { version = "1.40", features = [
     "parking_lot",
 ] }
 tracing = "0.1"
-tracing-opentelemetry = "0.25"
 tracing-subscriber = { version = "0.3", features = [
     "tracing-log",
     "env-filter",
