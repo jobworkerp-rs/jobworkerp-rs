@@ -10,6 +10,10 @@ pub trait PluginRunner: Send + Sync {
     fn name(&self) -> String;
     fn run(&mut self, arg: Vec<u8>) -> Result<Vec<Vec<u8>>>;
     fn cancel(&self) -> bool;
+    fn operation_proto(&self) -> String;
+    fn job_args_proto(&self) -> String;
+    // if true, use job result of before job, else use job args from request
+    fn use_job_result(&self) -> bool;
 }
 
 // suppress warn improper_ctypes_definitions
@@ -71,4 +75,15 @@ impl PluginRunner for HelloPlugin {
         tracing::warn!("HelloPlugin cancel: not implemented!");
         false
     }
+    fn operation_proto(&self) -> String {
+        include_str!("../proto/hello_operation.proto").to_string()
+    }
+    fn job_args_proto(&self) -> String {
+        include_str!("../proto/hello_job_args.proto").to_string()
+    }
+    // if true, use job result of before job, else use job args from request
+    fn use_job_result(&self) -> bool {
+        false
+    }
+
 }

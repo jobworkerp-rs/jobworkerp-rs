@@ -1,0 +1,6 @@
+syntax = "proto3";
+
+// http request operation
+message HttpRequestOperation {
+    string base_url = 1;
+}

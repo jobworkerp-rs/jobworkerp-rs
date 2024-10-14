@@ -171,6 +171,7 @@ async fn redis_test() -> Result<()> {
     let worker_schema = &WorkerSchemaData {
         name: "hoge1".to_string(),
         operation_type: 3,
+        operation_proto: "hoge3".to_string(),
         job_arg_proto: "hoge5".to_string(),
     };
     // clear first
