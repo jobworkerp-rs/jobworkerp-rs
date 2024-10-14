@@ -189,6 +189,7 @@ mod test {
         let data = Some(WorkerSchemaData {
             name: "hoge1".to_string(),
             operation_type: 3,
+            operation_proto: "".to_string(), // TODO
             job_arg_proto: "hoge5".to_string(),
         });
 
@@ -218,6 +219,7 @@ mod test {
         let update = WorkerSchemaData {
             name: "fuga1".to_string(),
             operation_type: 4,
+            operation_proto: "".to_string(), // TODO
             job_arg_proto: "fuga5".to_string(),
         };
         let updated = repository

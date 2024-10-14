@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+// command job operation
+message CommandOperation {
+  // command name (e.g. "echo")
+  string name = 1;
+}
+

@@ -16,6 +16,7 @@ impl WorkerSchemaRow {
             data: Some(WorkerSchemaData {
                 name: self.name.clone(),
                 operation_type: self.operation_type,
+                operation_proto: "".to_string(), // TODO
                 job_arg_proto: self.job_arg_proto.clone(),
             }),
         }

@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+message GrpcUnaryArg {
+    string path = 1;
+    bytes request = 2;
+}
+

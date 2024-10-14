@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+// CommandArg is a list of arguments for a CommandRunner.
+message CommandArg {
+  repeated string args = 1;
+}
+

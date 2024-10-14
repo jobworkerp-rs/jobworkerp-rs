@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+// grpc unary request operation
+message GrpcUnaryOperation {
+    string host = 1;
+    uint32 port = 2;
+}
+
