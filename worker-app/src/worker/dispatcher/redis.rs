@@ -1,5 +1,3 @@
-use crate::plugins::runner::UsePluginRunner;
-use crate::plugins::Plugins;
 use crate::worker::dispatcher::redis_run_after::RedisRunAfterJobDispatcher;
 use crate::worker::result_processor::{ResultProcessorImpl, UseResultProcessor};
 use crate::worker::runner::map::{RunnerFactoryWithPoolMap, UseRunnerPoolMap};
@@ -25,10 +23,10 @@ use infra::infra::job::redis::RedisJobRepositoryImpl;
 use infra::infra::job::redis::UseRedisJobRepository;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::job::status::UseJobStatusRepository;
+use infra::infra::plugins::{Plugins, UsePlugins};
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use infra_utils::infra::redis::{RedisClient, UseRedisClient};
 use infra_utils::infra::redis::{RedisPool, UseRedisPool};
-use libloading::Library;
 use proto::jobworkerp::data::{
     Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, Worker, WorkerSchema,
 };
@@ -388,9 +386,9 @@ impl UseWorkerSchemaApp for RedisJobDispatcherImpl {
     }
 }
 
-impl UsePluginRunner for RedisJobDispatcherImpl {
-    fn runner_plugins(&self) -> &Vec<(String, Library)> {
-        self.plugins.runner_plugins()
+impl UsePlugins for RedisJobDispatcherImpl {
+    fn plugins(&self) -> &Plugins {
+        &self.plugins
     }
 }
 impl UseRedisClient for RedisJobDispatcherImpl {

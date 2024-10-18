@@ -9,9 +9,11 @@ use crate::infra::job_result::pubsub::redis::RedisJobResultPubSubRepositoryImpl;
 use crate::infra::job_result::redis::RedisJobResultRepositoryImpl;
 use crate::infra::job_result::redis::UseRedisJobResultRepository;
 use crate::infra::load_job_queue_config_from_env;
+use crate::infra::plugins::Plugins;
 use crate::infra::worker::redis::{RedisWorkerRepositoryImpl, UseRedisWorkerRepository};
 use crate::infra::worker_schema::redis::RedisWorkerSchemaRepositoryImpl;
 use crate::infra::worker_schema::redis::UseRedisWorkerSchemaRepository;
+use crate::infra::IdGeneratorWrapper;
 use crate::infra::InfraConfigModule;
 
 pub trait UseRedisRepositoryModule {
@@ -54,7 +56,11 @@ pub struct RedisRepositoryModule {
 }
 
 impl RedisRepositoryModule {
-    pub async fn new_by_env(worker_expire_sec: Option<usize>) -> Self {
+    pub async fn new_by_env(
+        worker_expire_sec: Option<usize>,
+        id_generator: Arc<IdGeneratorWrapper>,
+        plugins: Arc<Plugins>,
+    ) -> Self {
         let redis_pool = super::super::resource::setup_redis_pool_by_env().await;
         let redis_client = super::super::resource::setup_redis_client_by_env().await;
         let job_queue_config = Arc::new(load_job_queue_config_from_env().unwrap());
@@ -64,6 +70,8 @@ impl RedisRepositoryModule {
             redis_worker_schema_repository: RedisWorkerSchemaRepositoryImpl::new(
                 redis_pool,
                 redis_client.clone(),
+                id_generator,
+                plugins,
             ),
             redis_worker_repository: RedisWorkerRepositoryImpl::new(
                 redis_pool,
@@ -81,7 +89,12 @@ impl RedisRepositoryModule {
             ),
         }
     }
-    pub async fn new(config_module: &InfraConfigModule, worker_expire_sec: Option<usize>) -> Self {
+    pub async fn new(
+        config_module: &InfraConfigModule,
+        id_generator: Arc<IdGeneratorWrapper>,
+        plugins: Arc<Plugins>,
+        worker_expire_sec: Option<usize>,
+    ) -> Self {
         let conf = config_module.redis_config.clone().unwrap();
         let redis_pool = super::super::resource::setup_redis_pool(conf.clone()).await;
         let redis_client = super::super::resource::setup_redis_client(conf).await;
@@ -91,6 +104,8 @@ impl RedisRepositoryModule {
             redis_worker_schema_repository: RedisWorkerSchemaRepositoryImpl::new(
                 redis_pool,
                 redis_client.clone(),
+                id_generator,
+                plugins,
             ),
             redis_worker_repository: RedisWorkerRepositoryImpl::new(
                 redis_pool,
@@ -124,8 +139,10 @@ pub mod test {
         job_result::{
             pubsub::redis::RedisJobResultPubSubRepositoryImpl, redis::RedisJobResultRepositoryImpl,
         },
+        plugins::Plugins,
         worker::redis::RedisWorkerRepositoryImpl,
         worker_schema::redis::RedisWorkerSchemaRepositoryImpl,
+        IdGeneratorWrapper,
     };
     use infra_utils::infra::test::{setup_test_redis_client, setup_test_redis_pool};
     use std::sync::Arc;
@@ -145,12 +162,16 @@ pub mod test {
             .await
             .unwrap();
 
+        let p = Plugins::new();
+        p.load_plugin_files_from_env().await.unwrap();
         RedisRepositoryModule {
             redis_pool,
             redis_client: redis_client.clone(),
             redis_worker_schema_repository: RedisWorkerSchemaRepositoryImpl::new(
                 redis_pool,
                 redis_client.clone(),
+                Arc::new(IdGeneratorWrapper::new()),
+                Arc::new(p),
             ),
             redis_worker_repository: RedisWorkerRepositoryImpl::new(
                 redis_pool,

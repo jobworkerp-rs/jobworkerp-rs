@@ -1,6 +1,4 @@
 use super::JobDispatcher;
-use crate::plugins::runner::UsePluginRunner;
-use crate::plugins::Plugins;
 use crate::worker::result_processor::{ResultProcessorImpl, UseResultProcessor};
 use crate::worker::runner::map::{RunnerFactoryWithPoolMap, UseRunnerPoolMap};
 use crate::worker::runner::result::RunnerResultHandler;
@@ -23,8 +21,8 @@ use infra::infra::job::rdb::{RdbChanJobRepositoryImpl, RdbJobRepository, UseRdbC
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::job::status::memory::MemoryJobStatusRepository;
 use infra::infra::job::status::{JobStatusRepository, UseJobStatusRepository};
+use infra::infra::plugins::{Plugins, UsePlugins};
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
-use libloading::Library;
 use proto::jobworkerp::data::{
     Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, Worker, WorkerSchema,
 };
@@ -326,9 +324,9 @@ impl UseWorkerApp for ChanJobDispatcherImpl {
     }
 }
 
-impl UsePluginRunner for ChanJobDispatcherImpl {
-    fn runner_plugins(&self) -> &Vec<(String, Library)> {
-        self.plugins.runner_plugins()
+impl UsePlugins for ChanJobDispatcherImpl {
+    fn plugins(&self) -> &Plugins {
+        &self.plugins
     }
 }
 // impl UseSubscribeWorker for ChanJobDispatcherImpl {}

@@ -19,6 +19,7 @@ use anyhow::Result;
 use infra::infra::module::rdb::RdbChanRepositoryModule;
 use infra::infra::module::redis::RedisRepositoryModule;
 use infra::infra::module::{HybridRepositoryModule, RedisRdbOptionalRepositoryModule};
+use infra::infra::plugins::Plugins;
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig};
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,9 +40,10 @@ pub struct AppConfigModule {
     pub storage_config: Arc<StorageConfig>,
     pub worker_config: Arc<WorkerConfig>,
     pub job_queue_config: Arc<JobQueueConfig>,
+    pub plugins: Arc<Plugins>,
 }
 impl AppConfigModule {
-    pub fn new_by_env() -> Self {
+    pub fn new_by_env(plugins: Arc<Plugins>) -> Self {
         Self {
             storage_config: Arc::new(load_storage_config()),
             worker_config: Arc::new(load_worker_config()),
@@ -49,6 +51,7 @@ impl AppConfigModule {
             job_queue_config: Arc::new(
                 infra::infra::load_job_queue_config_from_env().unwrap_or_default(),
             ),
+            plugins,
         }
     }
     // shortcut method
@@ -91,8 +94,13 @@ impl AppModule {
         let id_generator = Arc::new(IdGeneratorWrapper::new());
         match config_module.storage_type() {
             StorageType::RDB => {
-                let repositories =
-                    Arc::new(RdbChanRepositoryModule::new_by_env(job_queue_config.clone()).await);
+                let repositories = Arc::new(
+                    RdbChanRepositoryModule::new_by_env(
+                        job_queue_config.clone(),
+                        config_module.plugins.clone(),
+                    )
+                    .await,
+                );
                 let worker_app = Arc::new(RdbWorkerAppImpl::new(
                     config_module.storage_config.clone(),
                     id_generator.clone(),
@@ -120,7 +128,6 @@ impl AppModule {
                 ));
                 let worker_schema_app = Arc::new(RdbWorkerSchemaAppImpl::new(
                     config_module.storage_config.clone(),
-                    id_generator,
                     &mc_config,
                     repositories.clone(),
                 ));
@@ -134,7 +141,14 @@ impl AppModule {
                 })
             }
             StorageType::Redis => {
-                let repositories = Arc::new(RedisRepositoryModule::new_by_env(None).await);
+                let repositories = Arc::new(
+                    RedisRepositoryModule::new_by_env(
+                        None,
+                        id_generator.clone(),
+                        config_module.plugins.clone(),
+                    )
+                    .await,
+                );
                 let worker_app = Arc::new(RedisWorkerAppImpl::new(
                     config_module.storage_config.clone(),
                     id_generator.clone(),
@@ -173,8 +187,14 @@ impl AppModule {
                 })
             }
             StorageType::Hybrid => {
-                let repositories =
-                    Arc::new(HybridRepositoryModule::new_by_env(job_queue_config).await);
+                let repositories = Arc::new(
+                    HybridRepositoryModule::new_by_env(
+                        job_queue_config,
+                        id_generator.clone(),
+                        config_module.plugins.clone(),
+                    )
+                    .await,
+                );
                 let worker_app = Arc::new(HybridWorkerAppImpl::new(
                     config_module.storage_config.clone(),
                     id_generator.clone(),
@@ -203,7 +223,6 @@ impl AppModule {
                 // TODO imprement and use hybrid runner schema app
                 let worker_schema_app = Arc::new(HybridWorkerSchemaAppImpl::new(
                     config_module.storage_config.clone(),
-                    id_generator,
                     &mc_config,
                     repositories.clone(),
                 ));
@@ -219,7 +238,7 @@ impl AppModule {
             }
         }
     }
-    pub async fn reload_jobs_from_rdb_with_config(&self) -> Result<()> {
+    async fn reload_jobs_from_rdb_with_config(&self) -> Result<()> {
         if self
             .config_module
             .storage_config
@@ -228,6 +247,27 @@ impl AppModule {
             // reload jobs from rdb to redis (for recovery)
             self.job_app.restore_jobs_from_rdb(false, None).await?;
         }
+        Ok(())
+    }
+    // call on start all-in-one binary main
+    pub async fn on_start_all_in_one(&self) -> Result<()> {
+        self.load_worker_schema().await?;
+        self.reload_jobs_from_rdb_with_config().await?;
+        Ok(())
+    }
+    // call on start worker binary main
+    pub async fn on_start_worker(&self) -> Result<()> {
+        self.load_worker_schema().await?;
+        self.reload_jobs_from_rdb_with_config().await?;
+        Ok(())
+    }
+    // call on start grpc-front binary main
+    pub async fn on_start_front(&self) -> Result<()> {
+        self.load_worker_schema().await?;
+        Ok(())
+    }
+    async fn load_worker_schema(&self) -> Result<()> {
+        self.worker_schema_app.load_worker_schema().await?;
         Ok(())
     }
 }

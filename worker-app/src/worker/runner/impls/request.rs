@@ -97,6 +97,15 @@ impl Runner for RequestRunner {
     async fn cancel(&mut self) {
         tracing::warn!("cannot cancel request until timeout")
     }
+    fn operation_proto(&self) -> String {
+        include_str!("../../../../protobuf/http_request_operation.proto").to_string()
+    }
+    fn job_args_proto(&self) -> String {
+        include_str!("../../../../protobuf/http_request_args.proto").to_string()
+    }
+    fn use_job_result(&self) -> bool {
+        false
+    }
 }
 
 #[tokio::test]

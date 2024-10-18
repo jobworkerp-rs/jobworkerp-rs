@@ -1,23 +1,23 @@
 use proto::jobworkerp::data::{WorkerSchema, WorkerSchemaData, WorkerSchemaId};
 
+use crate::infra::plugins::runner::PluginRunner;
+
 // db row definitions
-#[derive(sqlx::FromRow)]
+#[derive(sqlx::FromRow, Debug, Clone)]
 pub struct WorkerSchemaRow {
     pub id: i64,
     pub name: String,
-    pub operation_type: i32,
-    pub job_arg_proto: String,
+    pub file_name: String,
 }
 
 impl WorkerSchemaRow {
-    pub fn to_proto(&self) -> WorkerSchema {
+    pub fn to_proto(&self, runner: Box<dyn PluginRunner + Send + Sync>) -> WorkerSchema {
         WorkerSchema {
             id: Some(WorkerSchemaId { value: self.id }),
             data: Some(WorkerSchemaData {
                 name: self.name.clone(),
-                operation_type: self.operation_type,
-                operation_proto: "".to_string(), // TODO
-                job_arg_proto: self.job_arg_proto.clone(),
+                operation_proto: runner.operation_proto(),
+                job_arg_proto: runner.job_args_proto(),
             }),
         }
     }

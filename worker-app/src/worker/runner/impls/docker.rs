@@ -266,6 +266,15 @@ impl Runner for DockerExecRunner {
     async fn cancel(&mut self) {
         todo!("todo")
     }
+    fn operation_proto(&self) -> String {
+        include_str!("../../../../protobuf/docker_operation.proto").to_string()
+    }
+    fn job_args_proto(&self) -> String {
+        include_str!("../../../../protobuf/docker_args.proto").to_string()
+    }
+    fn use_job_result(&self) -> bool {
+        false
+    }
 }
 
 // confirm local docker
@@ -446,6 +455,15 @@ impl Runner for DockerRunner {
     // TODO
     async fn cancel(&mut self) {
         todo!("todo")
+    }
+    fn operation_proto(&self) -> String {
+        include_str!("../../../../protobuf/docker_operation.proto").to_string()
+    }
+    fn job_args_proto(&self) -> String {
+        include_str!("../../../../protobuf/docker_args.proto").to_string()
+    }
+    fn use_job_result(&self) -> bool {
+        false
     }
 }
 

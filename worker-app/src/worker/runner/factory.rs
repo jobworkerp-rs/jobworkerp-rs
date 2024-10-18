@@ -1,28 +1,29 @@
 use super::impls::builtin;
-use super::Runner;
-use crate::plugins::{runner::UsePluginRunner, Plugins};
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use async_trait::async_trait;
-use command_utils::util::result::ToOption;
 use debug_stub_derive::DebugStub;
-use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
-use libloading::Library;
+use infra::infra::{
+    job::rows::{JobqueueAndCodec, UseJobqueueAndCodec},
+    plugins::{Plugins, UsePlugins},
+    runner::Runner,
+};
 use proto::jobworkerp::data::{
     CommandOperation, DockerOperation, GrpcUnaryOperation, HttpRequestOperation, OperationType,
-    PluginOperation, WorkerData, WorkerSchemaData,
+    WorkerData, WorkerSchemaData,
 };
 use std::sync::Arc;
 use tracing;
 
 #[async_trait]
-pub trait RunnerFactory: UsePluginRunner + Send + Sync {
+pub trait RunnerFactory: UsePlugins + Send + Sync {
     // only use non static worker
     async fn create(
         &self,
         schema: &WorkerSchemaData,
         worker: &WorkerData,
     ) -> Result<Box<dyn Runner + Send + Sync>> {
-        match OperationType::try_from(schema.operation_type).to_option() {
+        // TODO treat all runner as plugins
+        match OperationType::from_str_name(schema.name.as_str()) {
             Some(OperationType::SlackInternal) => Ok(Box::new(builtin::SLACK_RUNNER.clone())),
             Some(OperationType::Command) => {
                 let op =
@@ -31,17 +32,6 @@ pub trait RunnerFactory: UsePluginRunner + Send + Sync {
                     process: None,
                     command: Box::new(op.name.clone()),
                 }))
-            }
-            Some(OperationType::Plugin) => {
-                let op =
-                    JobqueueAndCodec::deserialize_message::<PluginOperation>(&worker.operation)?;
-                tracing::debug!("plugin runner: {}", &op.name);
-                // only load plugin
-                self.find_and_init_plugin_runner_by_name(&op.name)
-                    .ok_or_else(|| {
-                        tracing::error!("plugin not found: {:?}", &op);
-                        anyhow!("plugin not found: {:?}", &worker)
-                    })
             }
             // Some(WorkerType::K8s) => Err(anyhow!("k8s not implemented")),
             Some(OperationType::GrpcUnary) => {
@@ -73,7 +63,19 @@ pub trait RunnerFactory: UsePluginRunner + Send + Sync {
                         .map(|r| Box::new(r) as Box<dyn Runner + Send + Sync>)
                 }
             }
-            None => Err(anyhow!("not implemented")),
+            Some(OperationType::Plugin) | None => {
+                // let op =
+                //     JobqueueAndCodec::deserialize_message::<PluginOperation>(&worker.operation)?;
+                tracing::debug!("plugin runner: {}", &schema.name);
+                // only load plugin
+                self.plugins()
+                    .runner_plugins()
+                    .write()
+                    .await
+                    .load_runner_by_name(&schema.name, worker.operation.clone())
+                    .await
+            } //
+              // None => Err(anyhow!("not implemented")),
         }
     }
 }
@@ -84,11 +86,12 @@ pub struct RunnerFactoryImpl {
     plugins: Arc<Plugins>,
 }
 
-impl UsePluginRunner for RunnerFactoryImpl {
-    fn runner_plugins(&self) -> &Vec<(String, Library)> {
-        self.plugins.runner_plugins()
+impl UsePlugins for RunnerFactoryImpl {
+    fn plugins(&self) -> &Plugins {
+        &self.plugins
     }
 }
+
 impl RunnerFactory for RunnerFactoryImpl {}
 
 impl RunnerFactoryImpl {

@@ -2,13 +2,12 @@ use anyhow::Result;
 use async_trait::async_trait;
 use debug_stub_derive::DebugStub;
 use infra::infra::module::HybridRepositoryModule;
+use infra::infra::worker_schema::rdb::WorkerSchemaRepository;
 use infra::infra::worker_schema::rdb::{RdbWorkerSchemaRepositoryImpl, UseWorkerSchemaRepository};
-use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
-use infra::{error::JobWorkerError, infra::worker_schema::rdb::WorkerSchemaRepository};
 use infra_utils::infra::lock::RwLockWithKey;
 use infra_utils::infra::memory::{self, MemoryCacheConfig, MemoryCacheImpl, UseMemoryCache};
 use infra_utils::infra::rdb::UseRdbPool;
-use proto::jobworkerp::data::{WorkerSchema, WorkerSchemaData, WorkerSchemaId};
+use proto::jobworkerp::data::{WorkerSchema, WorkerSchemaId};
 use std::{sync::Arc, time::Duration};
 use stretto::AsyncCache;
 
@@ -23,7 +22,6 @@ use super::{
 #[derive(Clone, DebugStub)]
 pub struct HybridWorkerSchemaAppImpl {
     storage_config: Arc<StorageConfig>,
-    id_generator: Arc<IdGeneratorWrapper>,
     #[debug_stub = "AsyncCache<Arc<String>, Vec<WorkerSchema>>"]
     async_cache: AsyncCache<Arc<String>, Vec<WorkerSchema>>,
     memory_cache: MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>,
@@ -33,13 +31,11 @@ pub struct HybridWorkerSchemaAppImpl {
 impl HybridWorkerSchemaAppImpl {
     pub fn new(
         storage_config: Arc<StorageConfig>,
-        id_generator: Arc<IdGeneratorWrapper>,
         memory_cache_config: &MemoryCacheConfig,
         repositories: Arc<HybridRepositoryModule>,
     ) -> Self {
         Self {
             storage_config,
-            id_generator,
             async_cache: memory::new_memory_cache(memory_cache_config),
             memory_cache: MemoryCacheImpl::new(memory_cache_config, None),
             repositories,
@@ -47,11 +43,6 @@ impl HybridWorkerSchemaAppImpl {
     }
 }
 
-impl UseIdGenerator for HybridWorkerSchemaAppImpl {
-    fn id_generator(&self) -> &IdGeneratorWrapper {
-        &self.id_generator
-    }
-}
 impl UseWorkerSchemaParserWithCache for HybridWorkerSchemaAppImpl {
     fn cache(&self) -> &MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor> {
         &self.memory_cache
@@ -60,54 +51,13 @@ impl UseWorkerSchemaParserWithCache for HybridWorkerSchemaAppImpl {
 
 #[async_trait]
 impl WorkerSchemaApp for HybridWorkerSchemaAppImpl {
-    async fn create_worker_schema(
-        &self,
-        worker_schema: WorkerSchemaData,
-    ) -> Result<WorkerSchemaId> {
-        let id = WorkerSchemaId {
-            value: self.id_generator().generate_id()?,
-        };
-        let db = self.worker_schema_repository().db_pool();
-        let mut tx = db.begin().await.map_err(JobWorkerError::DBError)?;
-        let id = self
-            .worker_schema_repository()
-            .create(&mut *tx, id, &worker_schema)
-            .await?;
-        tx.commit().await.map_err(JobWorkerError::DBError)?;
+    async fn load_worker_schema(&self) -> Result<bool> {
+        self.worker_schema_repository().add_from_plugins().await?;
         let _ = self
             .delete_cache_locked(&Self::find_all_list_cache_key())
             .await;
-
-        Ok(id)
+        Ok(true)
     }
-
-    // offset, limit 付きのリストキャッシュは更新されないので反映に時間かかる (ttl短かめにする)
-    async fn update_worker_schema(
-        &self,
-        id: &WorkerSchemaId,
-        worker_schema: &Option<WorkerSchemaData>,
-    ) -> Result<bool> {
-        if let Some(w) = worker_schema {
-            let pool = self.worker_schema_repository().db_pool();
-            let mut tx = pool.begin().await.map_err(JobWorkerError::DBError)?;
-            self.worker_schema_repository()
-                .update(&mut *tx, id, w)
-                .await?;
-            tx.commit().await.map_err(JobWorkerError::DBError)?;
-            // clear memory cache
-            let _ = self
-                .delete_cache_locked(&Self::find_cache_key(&id.value))
-                .await;
-            let _ = self
-                .delete_cache_locked(&Self::find_all_list_cache_key())
-                .await;
-            Ok(true)
-        } else {
-            // all empty, no update
-            Ok(false)
-        }
-    }
-
     async fn delete_worker_schema(&self, id: &WorkerSchemaId) -> Result<bool> {
         let res = self.worker_schema_repository().delete(id).await?;
         // clear memory cache

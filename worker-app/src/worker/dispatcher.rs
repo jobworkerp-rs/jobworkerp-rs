@@ -5,7 +5,6 @@ use self::{
     redis::{RedisJobDispatcher, RedisJobDispatcherImpl},
 };
 use super::{result_processor::ResultProcessorImpl, runner::map::RunnerFactoryWithPoolMap};
-use crate::plugins::Plugins;
 use anyhow::Result;
 use app::{
     app::StorageType,
@@ -17,6 +16,7 @@ use command_utils::util::shutdown::ShutdownLock;
 use infra::infra::{
     job::rdb::UseRdbChanJobRepository,
     module::{rdb::RdbChanRepositoryModule, redis::RedisRepositoryModule},
+    plugins::Plugins,
     IdGeneratorWrapper,
 };
 

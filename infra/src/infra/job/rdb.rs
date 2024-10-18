@@ -288,7 +288,7 @@ impl RdbChanJobRepositoryImpl {
         Self {
             job_queue_config,
             pool,
-            chan_buf: ChanBuffer::new(None, 1000),
+            chan_buf: ChanBuffer::new(None, 100_000),
         }
     }
 }
