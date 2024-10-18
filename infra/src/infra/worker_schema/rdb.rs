@@ -1,75 +1,80 @@
+use std::sync::Arc;
+
 use super::rows::WorkerSchemaRow;
 use crate::error::JobWorkerError;
+use crate::infra::plugins::PluginLoader;
+use crate::infra::plugins::Plugins;
+use crate::infra::plugins::UsePlugins;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use infra_utils::infra::rdb::Rdb;
 use infra_utils::infra::rdb::RdbPool;
 use infra_utils::infra::rdb::UseRdbPool;
-use itertools::Itertools;
-use proto::jobworkerp::data::{WorkerSchema, WorkerSchemaData, WorkerSchemaId};
+use proto::jobworkerp::data::{WorkerSchema, WorkerSchemaId};
 use sqlx::{Executor, Pool};
 
 #[async_trait]
-pub trait WorkerSchemaRepository: UseRdbPool + Sync + Send {
+pub trait WorkerSchemaRepository: UseRdbPool + UsePlugins + Sync + Send {
+    async fn add_from_plugins(&self) -> Result<()> {
+        let names = self
+            .plugins()
+            .load_plugin_files_from_env()
+            .await
+            .context("error in add_from_plugins")?;
+        for (name, fname) in names.iter() {
+            let schema = WorkerSchemaRow {
+                id: 0,
+                name: name.clone(),
+                file_name: fname.clone(),
+            };
+            let db = self.db_pool();
+            let mut tx = db.begin().await.map_err(JobWorkerError::DBError)?;
+            match self.create(&mut *tx, &schema).await {
+                Ok(_) => {
+                    tx.commit().await.map_err(JobWorkerError::DBError)?;
+                }
+                Err(e) => {
+                    tracing::warn!("error in create_worker_schema: {:?}", e);
+                    tx.rollback().await.map_err(JobWorkerError::DBError)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn create<'c, E: Executor<'c, Database = Rdb>>(
         &self,
         tx: E,
-        id: WorkerSchemaId,
-        worker_schema: &WorkerSchemaData,
+        schema_row: &WorkerSchemaRow,
     ) -> Result<WorkerSchemaId> {
         let res = sqlx::query::<Rdb>(
             "INSERT INTO `worker_schema` (
-            `id`,
             `name`,
-            `operation_type`,
-            `job_arg_proto`
-            ) VALUES (?,?,?,?)",
+            `file_name`
+            ) VALUES (?,?)",
         )
-        .bind(id.value)
-        .bind(&worker_schema.name)
-        .bind(worker_schema.operation_type)
-        .bind(&worker_schema.job_arg_proto)
+        .bind(&schema_row.name)
+        .bind(&schema_row.file_name)
         .execute(tx)
         .await
         .map_err(JobWorkerError::DBError)?;
         if res.rows_affected() > 0 {
-            Ok(id)
+            Ok(WorkerSchemaId {
+                value: schema_row.id,
+            })
         } else {
             // no record?
             Err(JobWorkerError::RuntimeError(format!(
                 "Cannot insert worker_schema (logic error?): {:?}",
-                worker_schema
+                schema_row
             ))
             .into())
         }
     }
 
-    async fn update<'c, E: Executor<'c, Database = Rdb>>(
-        &self,
-        tx: E,
-        id: &WorkerSchemaId,
-        worker_schema: &WorkerSchemaData,
-    ) -> Result<bool> {
-        sqlx::query(
-            "UPDATE `worker_schema` SET
-            `name` = ?,
-            `operation_type` = ?,
-            `job_arg_proto` = ?
-            WHERE `id` = ?;",
-        )
-        .bind(&worker_schema.name)
-        .bind(worker_schema.operation_type)
-        .bind(&worker_schema.job_arg_proto)
-        .bind(id.value)
-        .execute(tx)
-        .await
-        .map(|r| r.rows_affected() > 0)
-        .map_err(JobWorkerError::DBError)
-        .context(format!("error in update: id = {}", id.value))
-    }
-
     async fn delete(&self, id: &WorkerSchemaId) -> Result<bool> {
-        self.delete_tx(self.db_pool(), id).await
+        let db_pool = self.db_pool().clone();
+        self.delete_tx(&db_pool, id).await
     }
 
     async fn delete_tx<'c, E: Executor<'c, Database = Rdb>>(
@@ -77,19 +82,43 @@ pub trait WorkerSchemaRepository: UseRdbPool + Sync + Send {
         tx: E,
         id: &WorkerSchemaId,
     ) -> Result<bool> {
+        // TODO transaction
+        let rem = self.find_row_tx(self.db_pool(), id).await.unwrap_or(None);
         let del = sqlx::query::<Rdb>("DELETE FROM `worker_schema` WHERE `id` = ?;")
             .bind(id.value)
             .execute(tx)
             .await
             .map(|r| r.rows_affected() > 0)
             .map_err(JobWorkerError::DBError)?;
+        if let Err(e) = self
+            .plugins()
+            .runner_plugins()
+            .write()
+            .await
+            .unload(&rem.unwrap().name)
+        {
+            tracing::warn!("Failed to remove runner: {:?}", e);
+        }
         Ok(del)
     }
 
     async fn find(&self, id: &WorkerSchemaId) -> Result<Option<WorkerSchema>> {
-        self.find_row_tx(self.db_pool(), id)
-            .await
-            .map(|r| r.map(|r2| r2.to_proto()))
+        let row = self.find_row_tx(self.db_pool(), id).await?;
+        if let Some(r2) = row {
+            if let Some(r3) = self
+                .plugins()
+                .runner_plugins()
+                .write()
+                .await
+                .find_plugin_runner_by_name(&r2.name)
+            {
+                Ok(Some(r2.to_proto(r3)))
+            } else {
+                Ok(None)
+            }
+        } else {
+            Ok(None)
+        }
     }
 
     async fn find_row_tx<'c, E: Executor<'c, Database = Rdb>>(
@@ -110,9 +139,20 @@ pub trait WorkerSchemaRepository: UseRdbPool + Sync + Send {
         limit: Option<&i32>,
         offset: Option<&i64>,
     ) -> Result<Vec<WorkerSchema>> {
-        self.find_row_list_tx(self.db_pool(), limit, offset)
-            .await
-            .map(|r| r.iter().map(|r2| r2.to_proto()).collect_vec())
+        let rows = self.find_row_list_tx(self.db_pool(), limit, offset).await?;
+        let mut results = Vec::new();
+        for r2 in rows {
+            if let Some(r3) = self
+                .plugins()
+                .runner_plugins()
+                .write()
+                .await
+                .find_plugin_runner_by_name(&r2.name)
+            {
+                results.push(r2.to_proto(r3));
+            }
+        }
+        Ok(results)
     }
 
     async fn find_row_list_tx<'c, E: Executor<'c, Database = Rdb>>(
@@ -152,6 +192,7 @@ pub trait WorkerSchemaRepository: UseRdbPool + Sync + Send {
 #[derive(Debug, Clone)]
 pub struct RdbWorkerSchemaRepositoryImpl {
     pool: &'static RdbPool,
+    pub plugins: Arc<Plugins>,
 }
 
 pub trait UseWorkerSchemaRepository {
@@ -159,8 +200,8 @@ pub trait UseWorkerSchemaRepository {
 }
 
 impl RdbWorkerSchemaRepositoryImpl {
-    pub fn new(pool: &'static RdbPool) -> Self {
-        Self { pool }
+    pub fn new(pool: &'static RdbPool, plugins: Arc<Plugins>) -> Self {
+        Self { pool, plugins }
     }
 }
 
@@ -169,38 +210,45 @@ impl UseRdbPool for RdbWorkerSchemaRepositoryImpl {
         self.pool
     }
 }
+impl UsePlugins for RdbWorkerSchemaRepositoryImpl {
+    fn plugins(&self) -> &Plugins {
+        &self.plugins
+    }
+}
 
 impl WorkerSchemaRepository for RdbWorkerSchemaRepositoryImpl {}
 
 mod test {
     use super::RdbWorkerSchemaRepositoryImpl;
     use super::WorkerSchemaRepository;
+    use crate::infra::plugins::Plugins;
+    use crate::infra::worker_schema::rows::WorkerSchemaRow;
     use anyhow::Context;
     use anyhow::Result;
     use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::rdb::UseRdbPool;
     use proto::jobworkerp::data::WorkerSchema;
     use proto::jobworkerp::data::WorkerSchemaData;
-    use proto::jobworkerp::data::WorkerSchemaId;
+    use std::sync::Arc;
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
-        let repository = RdbWorkerSchemaRepositoryImpl::new(pool);
+        let p = Plugins::new();
+        p.load_plugin_files_from_env().await.context("error in test")?;
+        let repository = RdbWorkerSchemaRepositoryImpl::new(pool, Arc::new(p));
         let db = repository.db_pool();
-        let data = Some(WorkerSchemaData {
+        let row = Some(WorkerSchemaRow {
+            id: 0,
             name: "hoge1".to_string(),
-            operation_type: 3,
+            file_name: "fuga2".to_string(),
+        });
+        let data = Some(WorkerSchemaData {
+            name: row.clone().unwrap().name.clone(),
             operation_proto: "".to_string(), // TODO
             job_arg_proto: "hoge5".to_string(),
         });
 
         let mut tx = db.begin().await.context("error in test")?;
-        let id = repository
-            .create(
-                &mut *tx,
-                WorkerSchemaId { value: 3232 },
-                &data.clone().unwrap(),
-            )
-            .await?;
+        let id = repository.create(&mut *tx, &row.clone().unwrap()).await?;
         assert!(id.value > 0);
         tx.commit().await.context("error in test delete commit")?;
 
@@ -214,23 +262,6 @@ mod test {
         let found = repository.find(&id1).await?;
         assert_eq!(Some(&expect), found.as_ref());
 
-        // update
-        tx = db.begin().await.context("error in test")?;
-        let update = WorkerSchemaData {
-            name: "fuga1".to_string(),
-            operation_type: 4,
-            operation_proto: "".to_string(), // TODO
-            job_arg_proto: "fuga5".to_string(),
-        };
-        let updated = repository
-            .update(&mut *tx, &expect.id.unwrap(), &update)
-            .await?;
-        assert!(updated);
-        tx.commit().await.context("error in test delete commit")?;
-
-        // find
-        let found = repository.find(&expect.id.unwrap()).await?;
-        assert_eq!(&update, &found.unwrap().data.unwrap());
         let count = repository.count_list_tx(repository.db_pool()).await?;
         assert_eq!(1, count);
 

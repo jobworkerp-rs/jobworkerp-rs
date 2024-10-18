@@ -8,7 +8,7 @@ members = [
     "worker-app",
     "grpc-front",
     "worker-main",
-    #    "plugins/hello_runner",
+    "plugins/hello_runner",
 ]
 
 resolver = "2"

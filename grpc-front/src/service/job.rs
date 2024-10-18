@@ -31,9 +31,10 @@ pub trait RequestValidator {
     const DEFAULT_TIMEOUT: u64 = 1000 * 60 * 60 * 24 * 365;
     fn validate_create(&self, req: &JobRequest) -> Result<(), tonic::Status> {
         if req.worker.is_none() {
-            return Err(tonic::Status::invalid_argument(
-                "worker_id or worker_name is required",
-            ));
+            return Err(tonic::Status::invalid_argument(format!(
+                "worker_id or worker_name is required: {:?}",
+                req
+            )));
         }
         // run_after_time should be positive or none
         if req.run_after_time.exists(|t| t < 0) {
@@ -45,14 +46,15 @@ pub trait RequestValidator {
             Some(Worker::WorkerName(n)) if n.is_empty() => Err(tonic::Status::invalid_argument(
                 "worker_name should not be empty",
             )),
-            None => Err(tonic::Status::invalid_argument(
-                "worker_id or worker_name is required",
-            )),
+            None => Err(tonic::Status::invalid_argument(format!(
+                "worker_name or worker_id is required: {:?}",
+                req
+            ))),
             _ => Ok(()),
         }?;
         if req.arg.is_empty() {
             return Err(tonic::Status::invalid_argument(
-                "worker_id or worker_name is required",
+                "worker_arg is required",
             ));
         };
         Ok(())

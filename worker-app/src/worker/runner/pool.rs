@@ -1,6 +1,5 @@
 use super::factory::RunnerFactoryImpl;
 use super::Runner;
-use crate::plugins::Plugins;
 use crate::worker::runner::factory::RunnerFactory;
 use anyhow::{anyhow, Result};
 use app::app::WorkerConfig;
@@ -10,6 +9,7 @@ use deadpool::{
     Runtime,
 };
 use infra::error::JobWorkerError;
+use infra::infra::plugins::Plugins;
 use proto::jobworkerp::data::{WorkerData, WorkerSchemaData};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -145,7 +145,7 @@ mod tests {
         // dotenvy::dotenv()?;
         std::env::set_var("PLUGINS_RUNNER_DIR", "target/debug/");
         let mut plugins = Plugins::new();
-        plugins.load_plugins_from_env()?;
+        plugins.load_plugin_files_from_env().await?;
         let factory = RunnerFactoryWithPool::new(
             Arc::new(WorkerSchemaData {
                 operation_type: -1,
@@ -185,7 +185,7 @@ mod tests {
         std::env::set_var("PLUGINS_RUNNER_DIR", "target/debug/");
         // dotenvy::dotenv()?;
         let mut plugins = Plugins::new();
-        plugins.load_plugins_from_env()?;
+        plugins.load_plugin_files_from_env().await?;
         assert!(RunnerFactoryWithPool::new(
             Arc::new(WorkerSchemaData {
                 operation_type: OperationType::Plugin as i32,

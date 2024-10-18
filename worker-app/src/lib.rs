@@ -2,8 +2,7 @@ use app::{
     app::StorageType,
     module::{AppConfigModule, AppModule},
 };
-use infra::infra::IdGeneratorWrapper;
-use plugins::Plugins;
+use infra::infra::{plugins::Plugins, IdGeneratorWrapper};
 use std::sync::Arc;
 use worker::{
     dispatcher::{JobDispatcher, JobDispatcherFactory},

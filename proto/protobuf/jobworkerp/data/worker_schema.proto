@@ -5,11 +5,11 @@ package jobworkerp.data;
 import "jobworkerp/data/common.proto";
 
 message WorkerSchemaData {
-    // schema name (unique key, proto message prefix: e.g. operation_proto: "CommandOperation", job_arg_proto: "CommandArg")
+    // schema name (unique key, proto message prefix: e.g. name: "command", operation_proto: "CommandOperation", job_arg_proto: "CommandArg")
     string name = 1;
-    // runner type (0: command, 1: docker, 2: plugin...)
-    jobworkerp.data.OperationType operation_type = 2;
-    // proto message definition. must use this.name as message type prefix (e.g. "message CommandArg{ repeated string args = 1; }")
+    // operation definition as proto file
+    string operation_proto = 2;
+    // job arg message definition as proto file. must use this.name as message type prefix (e.g. "message CommandArg{ repeated string args = 1; }")
     string job_arg_proto = 3;
 }
 

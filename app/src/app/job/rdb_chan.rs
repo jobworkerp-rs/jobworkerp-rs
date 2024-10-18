@@ -568,6 +568,7 @@ mod tests {
     use infra::infra::job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl;
     use infra::infra::job_result::pubsub::JobResultSubscriber;
     use infra::infra::module::rdb::test::setup_test_rdb_module;
+    use infra::infra::plugins::Plugins;
     use infra::infra::IdGeneratorWrapper;
     use infra_utils::infra::test::TEST_RUNTIME;
     use proto::jobworkerp::data::{
@@ -620,10 +621,14 @@ mod tests {
                 worker_memory_cache,
                 repositories.clone(),
             );
+
+            let mut plugins = Plugins::new();
+            plugins.load_plugin_files_from_env().await?;
             let config_module = Arc::new(AppConfigModule {
                 storage_config,
                 worker_config,
                 job_queue_config: job_queue_config.clone(),
+                plugins: Arc::new(plugins),
             });
             let subscrber = repositories.chan_job_result_pubsub_repository.clone();
             Ok((

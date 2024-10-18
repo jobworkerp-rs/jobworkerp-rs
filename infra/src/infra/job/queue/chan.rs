@@ -61,7 +61,7 @@ pub trait ChanJobQueueRepository:
                 }
                 Err(e) => {
                     // channel is empty (or other error)
-                    tracing::debug!("try_receive_job_from_channels: {:?}", e);
+                    tracing::trace!("try_receive_job_from_channels: {:?}", e);
                 }
             }
         }
@@ -80,9 +80,9 @@ pub trait ChanJobQueueRepository:
     async fn enqueue_result_direct(&self, id: &JobResultId, res: &JobResultData) -> Result<bool> {
         let v = Self::serialize_job_result(*id, res.clone());
         if let Some(jid) = res.job_id.as_ref() {
-            tracing::debug!("send_result_direct: job_id: {:?}", jid);
-            // job id based queue (onetime, use ttl)
             let cn = Self::result_queue_name(jid);
+            tracing::debug!("send_result_direct: job_id: {:?}, queue: {}", jid, &cn);
+            // job id based queue (onetime, use ttl)
             let _ = self
                 .chan_buf()
                 .send_to_chan(
@@ -112,10 +112,14 @@ pub trait ChanJobQueueRepository:
         timeout: Option<&u64>,
     ) -> Result<JobResult> {
         // TODO retry control
-        tracing::debug!("wait_for_result_data_for_response: job_id: {:?}", job_id);
+        let nm = Self::result_queue_name(job_id);
+        tracing::debug!(
+            "wait_for_result_data_for_response: job_id: {:?}, queue:{}",
+            job_id,
+            &nm
+        );
         let signal: Signals = Signals::new([SIGINT]).expect("cannot get signals");
         let handle = signal.handle();
-        let c = Self::result_queue_name(job_id); //XXX unwrap
         let res = tokio::select! {
             _ = tokio::spawn(async {
                 let mut stream = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).expect("signal error");
@@ -124,7 +128,7 @@ pub trait ChanJobQueueRepository:
                 handle.close();
                 Err(JobWorkerError::OtherError("interrupt direct waiting process".to_string()).into())
             },
-            val = self.chan_buf().receive_from_chan(c, timeout.flat_map(|t| if *t == 0 {None} else {Some(Duration::from_millis(*t))}), None) => {
+            val = self.chan_buf().receive_from_chan(nm, timeout.flat_map(|t| if *t == 0 {None} else {Some(Duration::from_millis(*t))}), None) => {
                 let r: Result<JobResult> = val.map_err(|e|JobWorkerError::ChanError(e).into())
                     .flat_map(|v| Self::deserialize_job_result(&v));
                 r

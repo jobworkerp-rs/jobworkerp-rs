@@ -15,8 +15,6 @@ message OptionalWorkerSchemaResponse {
 }
 
 service WorkerSchemaService {
-  rpc Create(jobworkerp.data.WorkerSchemaData) returns (CreateWorkerSchemaResponse);
-  rpc Update(jobworkerp.data.WorkerSchema) returns (SuccessResponse);
   rpc Delete(jobworkerp.data.WorkerSchemaId) returns (SuccessResponse);
   rpc Find(jobworkerp.data.WorkerSchemaId) returns (OptionalWorkerSchemaResponse);
   rpc FindList(FindListRequest) returns (stream jobworkerp.data.WorkerSchema);

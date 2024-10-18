@@ -114,6 +114,15 @@ impl Runner for CommandRunnerImpl {
             drop(c);
         }
     }
+    fn operation_proto(&self) -> String {
+        include_str!("../../../../protobuf/command_operation.proto").to_string()
+    }
+    fn job_args_proto(&self) -> String {
+        include_str!("../../../../protobuf/command_args.proto").to_string()
+    }
+    fn use_job_result(&self) -> bool {
+        false
+    }
 }
 
 // test CommandRunnerImpl run with command '/usr/bin/sleep' and arg '10'

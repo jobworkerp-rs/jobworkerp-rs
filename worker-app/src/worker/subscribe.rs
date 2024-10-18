@@ -74,7 +74,7 @@ pub trait UseSubscribeWorker:
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{plugins::Plugins, worker::runner::map::RunnerFactoryWithPoolMap};
+    use crate::worker::runner::map::RunnerFactoryWithPoolMap;
     use anyhow::Result;
     use app::{
         app::{
@@ -84,7 +84,7 @@ mod test {
         module::load_worker_config,
     };
     use infra::infra::{
-        job::rows::JobqueueAndCodec, test::new_for_test_config_rdb,
+        job::rows::JobqueueAndCodec, plugins::Plugins, test::new_for_test_config_rdb,
         worker::event::UseWorkerPublish, IdGeneratorWrapper,
     };
     use infra_utils::infra::test::setup_test_redis_client;
@@ -127,8 +127,16 @@ mod test {
         });
         let id_generator = Arc::new(IdGeneratorWrapper::new());
         let module = new_for_test_config_rdb();
-        let repositories =
-            Arc::new(infra::infra::module::HybridRepositoryModule::new(&module).await);
+        let mut plugins = Plugins::new();
+        plugins.load_plugin_files_from_env().await.expect("load plugins");
+        let repositories = Arc::new(
+            infra::infra::module::HybridRepositoryModule::new(
+                &module,
+                id_generator.clone(),
+                Arc::new(plugins),
+            )
+            .await,
+        );
         let memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
             &infra_utils::infra::memory::MemoryCacheConfig {
                 num_counters: 10,
@@ -138,7 +146,7 @@ mod test {
             Some(Duration::from_secs(60)),
         );
         let mut plugins = Plugins::new();
-        plugins.load_plugins_from_env()?;
+        plugins.load_plugin_files_from_env().await?;
 
         let worker_config = Arc::new(load_worker_config());
         // XXX empty runner map (must confirm deletion: use mock?)

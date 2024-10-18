@@ -10,7 +10,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
         .compile_protos(
             &[
-                "protobuf/hello.proto",
+                "protobuf/hello_operation.proto",
+                "protobuf/hello_job_args.proto",
             ],
             &["protobuf"],
         )

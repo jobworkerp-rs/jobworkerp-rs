@@ -6,33 +6,25 @@ pub mod result;
 
 use self::map::UseRunnerPoolMap;
 use self::result::RunnerResultHandler;
-use crate::plugins::runner::UsePluginRunner;
-use anyhow::{anyhow, Result};
+use anyhow::anyhow;
 use async_trait::async_trait;
 use command_utils::util::{
     datetime,
     result::{Flatten, TapErr},
 };
 use futures::future::FutureExt;
-use infra::error::JobWorkerError;
-use infra::infra::job::rows::UseJobqueueAndCodec;
+use infra::infra::{job::rows::UseJobqueueAndCodec, plugins::UsePlugins};
+use infra::{error::JobWorkerError, infra::runner::Runner};
 use proto::jobworkerp::data::{
     Job, JobResultData, ResultOutput, ResultStatus, WorkerData, WorkerId, WorkerSchemaData,
 };
 use std::{panic::AssertUnwindSafe, time::Duration};
 use tracing;
 
-#[async_trait]
-pub trait Runner: Send + Sync {
-    async fn name(&self) -> String;
-    async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>>;
-    async fn cancel(&mut self);
-}
-
 // execute runner
 #[async_trait]
 pub trait JobRunner:
-    RunnerResultHandler + UseJobqueueAndCodec + UsePluginRunner + UseRunnerPoolMap + Send + Sync
+    RunnerResultHandler + UseJobqueueAndCodec + UsePlugins + UseRunnerPoolMap + Send + Sync
 {
     #[allow(unstable_name_collisions)] // for flatten()
     //#[tracing::instrument(name = "JobRunner", skip(self))]
@@ -228,28 +220,28 @@ pub trait JobRunner:
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use crate::plugins::Plugins;
-
     use super::{map::RunnerFactoryWithPoolMap, *};
     use anyhow::Result;
     use app::app::WorkerConfig;
-    use infra::infra::job::rows::JobqueueAndCodec;
+    use infra::infra::{
+        job::rows::JobqueueAndCodec,
+        plugins::{Plugins, UsePlugins},
+    };
     use libloading::Library;
     use proto::jobworkerp::data::{
         Job, JobData, JobId, OperationType, ResponseType, WorkerData, WorkerId,
     };
+    use std::sync::Arc;
 
     // create JobRunner for test
     struct MockJobRunner {
-        plugins: Vec<(String, Library)>,
+        plugins: Arc<Plugins>,
         runner_pool: RunnerFactoryWithPoolMap,
     }
     impl MockJobRunner {
         fn new() -> Self {
             MockJobRunner {
-                plugins: vec![],
+                plugins: Arc::new(Plugins::new()),
                 runner_pool: RunnerFactoryWithPoolMap::new(
                     Arc::new(Plugins::new()),
                     Arc::new(WorkerConfig::default()),
@@ -258,8 +250,8 @@ mod tests {
         }
     }
     impl UseJobqueueAndCodec for MockJobRunner {}
-    impl UsePluginRunner for MockJobRunner {
-        fn runner_plugins(&self) -> &Vec<(String, Library)> {
+    impl UsePlugins for MockJobRunner {
+        fn plugins(&self) -> &Plugins {
             &self.plugins
         }
     }

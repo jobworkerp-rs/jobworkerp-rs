@@ -1,18 +1,16 @@
+use super::factory::{RunnerFactory, RunnerFactoryImpl};
+use super::pool::{RunnerFactoryWithPool, RunnerPoolManagerImpl};
+use super::Runner;
 use anyhow::Result;
 use app::app::WorkerConfig;
 use command_utils::util::result::TapErr;
 use deadpool::managed::{Object, Timeouts};
+use infra::infra::plugins::Plugins;
 use proto::jobworkerp::data::{WorkerData, WorkerId, WorkerSchemaData};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-
-use crate::plugins::Plugins;
-
-use super::factory::{RunnerFactory, RunnerFactoryImpl};
-use super::pool::{RunnerFactoryWithPool, RunnerPoolManagerImpl};
-use super::Runner;
 
 pub struct RunnerFactoryWithPoolMap {
     // TODO not implement as map? or keep as static ?

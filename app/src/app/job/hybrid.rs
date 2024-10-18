@@ -589,6 +589,7 @@ mod tests {
     use infra::infra::module::rdb::test::setup_test_rdb_module;
     use infra::infra::module::redis::test::setup_test_redis_module;
     use infra::infra::module::HybridRepositoryModule;
+    use infra::infra::plugins::Plugins;
     use infra::infra::IdGeneratorWrapper;
     use infra_utils::infra::test::TEST_RUNTIME;
     use proto::jobworkerp::data::{
@@ -649,10 +650,13 @@ mod tests {
                 redis_module.redis_client,
                 job_queue_config.clone(),
             );
+            let mut plugins = Plugins::new();
+            plugins.load_plugin_files_from_env().await?;
             let config_module = Arc::new(AppConfigModule {
                 storage_config,
                 worker_config,
                 job_queue_config,
+                plugins: Arc::new(plugins),
             });
             Ok((
                 HybridJobAppImpl::new(

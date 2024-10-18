@@ -68,6 +68,16 @@ impl Runner for GrpcUnaryRunner {
     async fn cancel(&mut self) {
         tracing::warn!("cannot cancel grpc request until timeout")
     }
+    fn operation_proto(&self) -> String {
+        include_str!("../../../../protobuf/grpc_unary_operation.proto").to_string()
+    }
+    fn job_args_proto(&self) -> String {
+        include_str!("../../../../protobuf/grpc_unary_args.proto").to_string()
+    }
+    fn use_job_result(&self) -> bool {
+        false
+    }
+
 }
 
 #[tokio::test]

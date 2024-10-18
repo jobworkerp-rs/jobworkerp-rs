@@ -9,7 +9,7 @@ use infra::infra::worker_schema::redis::{
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use infra_utils::infra::lock::RwLockWithKey;
 use infra_utils::infra::memory::{self, MemoryCacheConfig, MemoryCacheImpl, UseMemoryCache};
-use proto::jobworkerp::data::{WorkerSchema, WorkerSchemaData, WorkerSchemaId};
+use proto::jobworkerp::data::{WorkerSchema, WorkerSchemaId};
 use std::sync::Arc;
 use std::time::Duration;
 use stretto::AsyncCache;
@@ -48,59 +48,42 @@ impl RedisWorkerSchemaAppImpl {
             key_lock: RwLockWithKey::default(),
         }
     }
+
+    // async fn create_worker_schema(
+    //     &self,
+    //     worker_schema: WorkerSchemaData,
+    // ) -> Result<WorkerSchemaId> {
+    //     let schema = self.validate_and_get_worker_schema(worker_schema)?;
+    //     let id = self.id_generator().generate_id()?;
+    //     let rid = WorkerSchemaId { value: id };
+    //     self.redis_worker_schema_repository()
+    //         .upsert(&rid, &schema.schema)
+    //         .await?;
+    //     // clear list cache
+    //     let _ = self
+    //         .memory_cache
+    //         .delete_cache_locked(&Self::find_all_list_cache_key())
+    //         .await; // ignore error
+
+    //     // let _ = self
+    //     //     .redis_worker_schema_repository()
+    //     //     .publish_worker_schema_changed(&rid, worker_schema)
+    //     //     .await;
+
+    //     Ok(rid)
+    // }
 }
 // TODO now, hybrid repository (or redis?) version only
 #[async_trait]
 impl WorkerSchemaApp for RedisWorkerSchemaAppImpl {
-    async fn create_worker_schema(
-        &self,
-        worker_schema: WorkerSchemaData,
-    ) -> Result<WorkerSchemaId> {
-        let schema = self.validate_and_get_worker_schema(worker_schema)?;
-        let id = self.id_generator().generate_id()?;
-        let rid = WorkerSchemaId { value: id };
+    async fn load_worker_schema(&self) -> Result<bool> {
         self.redis_worker_schema_repository()
-            .upsert(&rid, &schema.schema)
+            .add_from_plugins()
             .await?;
-        // clear list cache
         let _ = self
-            .memory_cache
             .delete_cache_locked(&Self::find_all_list_cache_key())
-            .await; // ignore error
-
-        // let _ = self
-        //     .redis_worker_schema_repository()
-        //     .publish_worker_schema_changed(&rid, worker_schema)
-        //     .await;
-
-        Ok(rid)
-    }
-
-    async fn update_worker_schema(
-        &self,
-        id: &WorkerSchemaId,
-        worker_schema: &Option<WorkerSchemaData>,
-    ) -> Result<bool> {
-        if let Some(rs) = worker_schema {
-            self.redis_worker_schema_repository().upsert(id, rs).await?;
-            // clear memory cache (XXX without limit offset cache)
-            // XXX ignore error
-            let _ = self
-                .delete_cache_locked(&Self::find_cache_key(&id.value))
-                .await;
-            // TODO
-            // let _ = self
-            //     .redis_worker_schema_repository()
-            //     .publish_worker_schema_changed(id, rs)
-            //     .await;
-            Ok(true)
-        } else {
-            // empty data, delete
-            let _ = self
-                .delete_cache_locked(&Self::find_cache_key(&id.value))
-                .await?;
-            Ok(true)
-        }
+            .await;
+        Ok(true)
     }
 
     async fn delete_worker_schema(&self, id: &WorkerSchemaId) -> Result<bool> {

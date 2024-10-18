@@ -1,11 +1,10 @@
 use std::sync::Arc;
 use std::{fmt::Debug, time::Duration};
 
-use crate::proto::jobworkerp::data::{WorkerSchema, WorkerSchemaData, WorkerSchemaId};
+use crate::proto::jobworkerp::data::{WorkerSchema, WorkerSchemaId};
 use crate::proto::jobworkerp::service::worker_schema_service_server::WorkerSchemaService;
 use crate::proto::jobworkerp::service::{
-    CountCondition, CountResponse, CreateWorkerSchemaResponse, FindListRequest,
-    OptionalWorkerSchemaResponse, SuccessResponse,
+    CountCondition, CountResponse, FindListRequest, OptionalWorkerSchemaResponse, SuccessResponse,
 };
 use crate::service::error_handle::handle_error;
 use app::app::worker_schema::WorkerSchemaApp;
@@ -24,35 +23,6 @@ const LIST_TTL: Duration = Duration::from_secs(5);
 
 #[tonic::async_trait]
 impl<T: WorkerSchemaGrpc + Tracing + Send + Debug + Sync + 'static> WorkerSchemaService for T {
-    #[tracing::instrument]
-    async fn create(
-        &self,
-        request: tonic::Request<WorkerSchemaData>,
-    ) -> Result<tonic::Response<CreateWorkerSchemaResponse>, tonic::Status> {
-        let _span = Self::trace_request("worker_schema", "create", &request);
-        let req = request.into_inner();
-        match self.app().create_worker_schema(req).await {
-            Ok(id) => Ok(Response::new(CreateWorkerSchemaResponse { id: Some(id) })),
-            Err(e) => Err(handle_error(&e)),
-        }
-    }
-    #[tracing::instrument]
-    async fn update(
-        &self,
-        request: tonic::Request<WorkerSchema>,
-    ) -> Result<tonic::Response<SuccessResponse>, tonic::Status> {
-        let _s = Self::trace_request("worker_schema", "update", &request);
-        let req = request.get_ref();
-        if let Some(i) = &req.id {
-            match self.app().update_worker_schema(i, &req.data).await {
-                Ok(res) => Ok(Response::new(SuccessResponse { is_success: res })),
-                Err(e) => Err(handle_error(&e)),
-            }
-        } else {
-            tracing::warn!("id not found in updating: {:?}", req);
-            Err(tonic::Status::not_found("id not found".to_string()))
-        }
-    }
     #[tracing::instrument]
     async fn delete(
         &self,

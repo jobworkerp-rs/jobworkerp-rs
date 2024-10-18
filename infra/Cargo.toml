@@ -21,6 +21,7 @@ envy = { workspace = true }
 futures = { workspace = true }
 itertools = { workspace = true }
 #kube-client = "0.86"
+libloading = { workspace = true }
 once_cell = { workspace = true }
 prost = { workspace = true }
 redis = { workspace = true }

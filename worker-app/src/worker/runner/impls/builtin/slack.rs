@@ -102,4 +102,13 @@ impl Runner for SlackResultNotificationRunner {
     async fn cancel(&mut self) {
         // do nothing
     }
+    fn operation_proto(&self) -> String {
+        include_str!("../../../../../protobuf/slack_operation.proto").to_string()
+    }
+    fn job_args_proto(&self) -> String {
+        include_str!("../../../../../protobuf/slack_job_args.proto").to_string()
+    }
+    fn use_job_result(&self) -> bool {
+        true
+    }
 }
