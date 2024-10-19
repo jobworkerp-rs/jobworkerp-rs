@@ -77,7 +77,6 @@ impl Runner for GrpcUnaryRunner {
     fn use_job_result(&self) -> bool {
         false
     }
-
 }
 
 #[tokio::test]

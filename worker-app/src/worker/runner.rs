@@ -227,7 +227,6 @@ mod tests {
         job::rows::JobqueueAndCodec,
         plugins::{Plugins, UsePlugins},
     };
-    use libloading::Library;
     use proto::jobworkerp::data::{
         Job, JobData, JobId, OperationType, ResponseType, WorkerData, WorkerId,
     };
@@ -307,7 +306,7 @@ mod tests {
             ..Default::default()
         };
         let schema = WorkerSchemaData {
-            operation_type: OperationType::Command as i32,
+            name: OperationType::Command.as_str_name().to_string(),
             ..Default::default()
         };
         let res = JOB_RUNNER

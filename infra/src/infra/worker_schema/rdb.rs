@@ -7,6 +7,7 @@ use crate::infra::plugins::Plugins;
 use crate::infra::plugins::UsePlugins;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use infra_utils::infra::rdb::query_result;
 use infra_utils::infra::rdb::Rdb;
 use infra_utils::infra::rdb::RdbPool;
 use infra_utils::infra::rdb::UseRdbPool;
@@ -60,7 +61,7 @@ pub trait WorkerSchemaRepository: UseRdbPool + UsePlugins + Sync + Send {
         .map_err(JobWorkerError::DBError)?;
         if res.rows_affected() > 0 {
             Ok(WorkerSchemaId {
-                value: schema_row.id,
+                value: query_result::last_insert_id(res),
             })
         } else {
             // no record?
@@ -233,18 +234,28 @@ mod test {
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
         let p = Plugins::new();
-        p.load_plugin_files_from_env().await.context("error in test")?;
+        std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug");
+        p.load_plugin_files_from_env()
+            .await
+            .context("error in test")?;
+        println!("plugins: {:?}", p);
         let repository = RdbWorkerSchemaRepositoryImpl::new(pool, Arc::new(p));
         let db = repository.db_pool();
         let row = Some(WorkerSchemaRow {
             id: 0,
-            name: "hoge1".to_string(),
-            file_name: "fuga2".to_string(),
+            name: "HelloPlugin".to_string(),
+            file_name: "libplugin_runner_hello.so".to_string(),
         });
         let data = Some(WorkerSchemaData {
             name: row.clone().unwrap().name.clone(),
-            operation_proto: "".to_string(), // TODO
-            job_arg_proto: "hoge5".to_string(),
+            operation_proto: include_str!(
+                "../../../../plugins/hello_runner/protobuf/hello_operation.proto"
+            )
+            .to_string(),
+            job_arg_proto: include_str!(
+                "../../../../plugins/hello_runner/protobuf/hello_job_args.proto"
+            )
+            .to_string(),
         });
 
         let mut tx = db.begin().await.context("error in test")?;
