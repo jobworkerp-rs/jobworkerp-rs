@@ -120,7 +120,10 @@ pub mod test {
             pool.execute("SELECT 1;").await.expect("test connection");
             truncate_tables(pool, vec!["job", "worker", "job_result"]).await;
             let plugins = Plugins::new();
-            plugins.load_plugin_files_from_env().await.expect("load plugins");
+            plugins
+                .load_plugin_files_from_env()
+                .await
+                .expect("load plugins");
             RdbChanRepositoryModule {
                 worker_schema_repository: RdbWorkerSchemaRepositoryImpl::new(
                     pool,

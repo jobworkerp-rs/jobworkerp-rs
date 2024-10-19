@@ -33,6 +33,7 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
                 Some(&Duration::from_secs(
                     self.job_queue_config().expire_job_result_seconds as u64,
                 )),
+                true,
             )
             .await
             .inspect(|&r| {

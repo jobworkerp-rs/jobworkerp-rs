@@ -650,7 +650,7 @@ mod tests {
                 redis_module.redis_client,
                 job_queue_config.clone(),
             );
-            let mut plugins = Plugins::new();
+            let plugins = Plugins::new();
             plugins.load_plugin_files_from_env().await?;
             let config_module = Arc::new(AppConfigModule {
                 storage_config,

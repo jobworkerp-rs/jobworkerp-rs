@@ -53,9 +53,7 @@ pub trait RequestValidator {
             _ => Ok(()),
         }?;
         if req.arg.is_empty() {
-            return Err(tonic::Status::invalid_argument(
-                "worker_arg is required",
-            ));
+            return Err(tonic::Status::invalid_argument("worker_arg is required"));
         };
         Ok(())
     }

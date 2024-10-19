@@ -143,12 +143,12 @@ mod tests {
     #[tokio::test]
     async fn test_runner_pool() -> Result<()> {
         // dotenvy::dotenv()?;
-        std::env::set_var("PLUGINS_RUNNER_DIR", "target/debug/");
-        let mut plugins = Plugins::new();
+        std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug/");
+        let plugins = Plugins::new();
         plugins.load_plugin_files_from_env().await?;
         let factory = RunnerFactoryWithPool::new(
             Arc::new(WorkerSchemaData {
-                operation_type: -1,
+                name: OperationType::SlackInternal.as_str_name().to_string(),
                 ..Default::default()
             }),
             Arc::new(WorkerData {
@@ -182,13 +182,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_runner_pool_non_static_err() -> Result<()> {
-        std::env::set_var("PLUGINS_RUNNER_DIR", "target/debug/");
+        std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug/");
         // dotenvy::dotenv()?;
-        let mut plugins = Plugins::new();
+        let plugins = Plugins::new();
         plugins.load_plugin_files_from_env().await?;
         assert!(RunnerFactoryWithPool::new(
             Arc::new(WorkerSchemaData {
-                operation_type: OperationType::Plugin as i32,
+                name: OperationType::SlackInternal.as_str_name().to_string(),
                 ..Default::default()
             }),
             Arc::new(WorkerData {

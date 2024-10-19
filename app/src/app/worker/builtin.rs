@@ -22,9 +22,7 @@ pub mod slack {
     };
     pub const SLACK_WORKER_NAME: &str = "__SLACK_NOTIFICATION_WORKER__"; //XXX
     pub const SLACK_RUNNER_OPERATION: proto::jobworkerp::data::SlackJobResultOperation =
-        SlackJobResultOperation {
-
-        };
+        SlackJobResultOperation {};
 
     /// treat arg as serialized JobResult
     pub static SLACK_WORKER: Lazy<Worker> = Lazy::new(|| Worker {

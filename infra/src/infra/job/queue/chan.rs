@@ -38,6 +38,7 @@ pub trait ChanJobQueueRepository:
                 Self::serialize_job(job),
                 job.data.as_ref().flat_map(|d| d.uniq_key.clone()),
                 None,
+                false,
             ) // expect for multiple value
             .await
         {
@@ -93,6 +94,7 @@ pub trait ChanJobQueueRepository:
                     Some(&Duration::from_secs(
                         self.job_queue_config().expire_job_result_seconds as u64,
                     )),
+                    true, // only if exists
                 )
                 .await
                 .map_err(JobWorkerError::ChanError)?;
@@ -224,6 +226,7 @@ mod test {
     use proto::jobworkerp::data::{Job, JobData, JobId, ResultStatus, WorkerId};
     use std::sync::Arc;
 
+    #[derive(Clone)]
     struct ChanJobQueueRepositoryImpl {
         job_queue_config: Arc<JobQueueConfig>,
         chan_buf: ChanBuffer<Vec<u8>, Chan<ChanBufferItem<Vec<u8>>>>,
@@ -295,10 +298,10 @@ mod test {
             expire_job_result_seconds: 10,
             fetch_interval: 1000,
         });
-        let repo = ChanJobQueueRepositoryImpl {
+        let repo = Arc::new(ChanJobQueueRepositoryImpl {
             job_queue_config,
             chan_buf,
-        };
+        });
         let job_result_id = JobResultId { value: 111 };
         let job_id = JobId { value: 1 };
         let job_result_data = JobResultData {
@@ -317,14 +320,22 @@ mod test {
         // let r = repo.send_result_direct(job_result_data.clone()).await?;
         // assert!(r);
         // let res = repo.wait_for_result_data_for_response(&job_id).await?;
+        let repo2 = repo.clone();
+        let jr2 = job_result_data.clone();
+        let jh = tokio::task::spawn(async move {
+            let res = repo2
+                .wait_for_result_queue_for_response(&job_id, None)
+                .await
+                .unwrap();
+            assert_eq!(res.data.unwrap(), jr2);
+        });
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         let r = repo
             .enqueue_result_direct(&job_result_id, &job_result_data)
             .await?;
         assert!(r);
-        let res = repo
-            .wait_for_result_queue_for_response(&job_id, None)
-            .await?;
-        assert_eq!(res.data.unwrap(), job_result_data);
+        jh.await?;
+
         Ok(())
     }
 

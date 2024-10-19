@@ -127,8 +127,12 @@ mod test {
         });
         let id_generator = Arc::new(IdGeneratorWrapper::new());
         let module = new_for_test_config_rdb();
-        let mut plugins = Plugins::new();
-        plugins.load_plugin_files_from_env().await.expect("load plugins");
+        std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug");
+        let plugins = Plugins::new();
+        plugins
+            .load_plugin_files_from_env()
+            .await
+            .expect("load plugins");
         let repositories = Arc::new(
             infra::infra::module::HybridRepositoryModule::new(
                 &module,
@@ -145,7 +149,7 @@ mod test {
             },
             Some(Duration::from_secs(60)),
         );
-        let mut plugins = Plugins::new();
+        let plugins = Plugins::new();
         plugins.load_plugin_files_from_env().await?;
 
         let worker_config = Arc::new(load_worker_config());

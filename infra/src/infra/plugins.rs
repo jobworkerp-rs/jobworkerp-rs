@@ -64,7 +64,12 @@ impl Plugins {
                 tracing::info!("load {:?} plugin file: {}", ptype, file.path().display());
                 match ptype {
                     PluginType::Runner => {
-                        match self.runner_loader.write().await.load_path(file.path().as_path()) {
+                        match self
+                            .runner_loader
+                            .write()
+                            .await
+                            .load_path(file.path().as_path())
+                        {
                             Ok(name) => {
                                 tracing::info!("runner plugin loaded: {}", file.path().display());
                                 loaded.push((name, file.file_name().to_string_lossy().to_string()));

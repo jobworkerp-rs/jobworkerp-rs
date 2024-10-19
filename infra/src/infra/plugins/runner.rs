@@ -150,12 +150,13 @@ pub struct PluginRunnerWrapperImpl {
 }
 
 impl PluginRunnerWrapperImpl {
-    #[allow(clippy::borrowed_box)]
+    // #[allow(clippy::borrowed_box)]
     pub fn new(plugin_runner: Arc<RwLock<Box<dyn PluginRunner + Send + Sync>>>) -> Self {
         Self { plugin_runner }
     }
     pub async fn load(self, operation: Vec<u8>) -> Result<Self> {
         let plugin_runner = Arc::clone(&self.plugin_runner);
+        #[allow(unstable_name_collisions)]
         tokio::task::spawn_blocking(move || {
             plugin_runner
                 .write()
