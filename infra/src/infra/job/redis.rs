@@ -199,12 +199,9 @@ async fn redis_test() -> Result<()> {
         redis_job_status_repository: Arc::new(RedisJobStatusRepository::new(pool)),
     };
     let id = JobId { value: 1 };
-    let jarg =
-        RedisJobRepositoryImpl::serialize_message(&proto::jobworkerp::data::HttpRequestArg {
-            method: "GET".to_string(),
-            path: "/".to_string(),
-            ..Default::default()
-        });
+    let jarg = RedisJobRepositoryImpl::serialize_message(&proto::jobworkerp::data::TestArg {
+        args: vec!["GET".to_string(), "/".to_string()],
+    });
     let job = &JobData {
         worker_id: Some(WorkerId { value: 2 }),
         arg: jarg,
@@ -227,12 +224,9 @@ async fn redis_test() -> Result<()> {
 
     let mut job2 = job.clone();
     job2.worker_id = Some(WorkerId { value: 3 });
-    job2.arg =
-        RedisJobRepositoryImpl::serialize_message(&proto::jobworkerp::data::HttpRequestArg {
-            method: "POST".to_string(),
-            path: "/form".to_string(),
-            ..Default::default()
-        });
+    job2.arg = RedisJobRepositoryImpl::serialize_message(&proto::jobworkerp::data::TestArg {
+        args: vec!["POST".to_string(), "/form".to_string()],
+    });
     job2.uniq_key = Some("fuga3".to_string());
     job2.enqueue_time = 6;
     job2.grabbed_until_time = Some(7);

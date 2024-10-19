@@ -179,7 +179,7 @@ mod test {
         sleep(Duration::from_millis(100)).await;
 
         let operation =
-            JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandOperation {
+            JobqueueAndCodec::serialize_message(&crate::jobworkerp::runner::CommandOperation {
                 name: "ls".to_string(),
             });
         let worker_data = WorkerData {

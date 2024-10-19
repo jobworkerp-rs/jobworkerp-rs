@@ -1,4 +1,7 @@
 use super::impls::builtin;
+use crate::jobworkerp::runner::{
+    CommandOperation, DockerOperation, GrpcUnaryOperation, HttpRequestOperation,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use debug_stub_derive::DebugStub;
@@ -7,10 +10,7 @@ use infra::infra::{
     plugins::{Plugins, UsePlugins},
     runner::Runner,
 };
-use proto::jobworkerp::data::{
-    CommandOperation, DockerOperation, GrpcUnaryOperation, HttpRequestOperation, OperationType,
-    WorkerData, WorkerSchemaData,
-};
+use proto::jobworkerp::data::{OperationType, WorkerData, WorkerSchemaData};
 use std::sync::Arc;
 use tracing;
 

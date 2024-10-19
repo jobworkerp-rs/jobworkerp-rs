@@ -1,11 +1,11 @@
 use super::super::Runner;
+use crate::jobworkerp::runner::GrpcUnaryArg;
 use anyhow::Result;
 use async_trait::async_trait;
 use infra::{
     error::JobWorkerError,
     infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec},
 };
-use proto::jobworkerp::data::GrpcUnaryArg;
 use tonic::{transport::Channel, IntoRequest};
 
 /// grpc unary request runner.
@@ -69,10 +69,11 @@ impl Runner for GrpcUnaryRunner {
         tracing::warn!("cannot cancel grpc request until timeout")
     }
     fn operation_proto(&self) -> String {
-        include_str!("../../../../protobuf/grpc_unary_operation.proto").to_string()
+        include_str!("../../../../protobuf/jobworkerp/runner/grpc_unary_operation.proto")
+            .to_string()
     }
     fn job_args_proto(&self) -> String {
-        include_str!("../../../../protobuf/grpc_unary_args.proto").to_string()
+        include_str!("../../../../protobuf/jobworkerp/runner/grpc_unary_args.proto").to_string()
     }
     fn use_job_result(&self) -> bool {
         false
@@ -83,9 +84,8 @@ impl Runner for GrpcUnaryRunner {
 #[ignore] // need to start front server and fix handling empty stream...
 async fn run_request() -> Result<()> {
     // common::util::tracing::tracing_init_test(tracing::Level::INFO);
-    use proto::jobworkerp;
     let mut runner = GrpcUnaryRunner::new("http://localhost", &9000u32).await?;
-    let arg = jobworkerp::data::GrpcUnaryArg {
+    let arg = crate::jobworkerp::runner::GrpcUnaryArg {
         path: "/jobworkerp.service.JobService/Count".to_string(),
         // path: "/jobworkerp.service.WorkerService/FindList".to_string(),
         request: b"".to_vec(),

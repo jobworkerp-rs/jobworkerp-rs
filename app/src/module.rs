@@ -98,6 +98,7 @@ impl AppModule {
                     RdbChanRepositoryModule::new_by_env(
                         job_queue_config.clone(),
                         config_module.plugins.clone(),
+                        id_generator.clone(),
                     )
                     .await,
                 );

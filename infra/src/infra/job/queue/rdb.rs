@@ -206,10 +206,8 @@ mod test {
         let worker_id2 = WorkerId { value: 21 };
 
         let jid = JobId { value: 1 };
-        let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::HttpRequestArg {
-            method: "GET".to_string(),
-            path: "/".to_string(),
-            ..Default::default()
+        let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestArg {
+            args: vec!["GET".to_string(), "/".to_string()],
         });
         let instant_job_data = JobData {
             worker_id: Some(worker_id),
@@ -358,12 +356,9 @@ mod test {
             let worker_id = WorkerId { value: 11 };
             let worker_id2 = WorkerId { value: 21 };
             let jid0 = JobId { value: 1 };
-            let jarg =
-                JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::HttpRequestArg {
-                    method: "GET".to_string(),
-                    path: "/".to_string(),
-                    ..Default::default()
-                });
+            let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestArg {
+                args: vec!["GET".to_string(), "/".to_string()],
+            });
             let now_millis = datetime::now_millis();
 
             // for redis job: run_after_time:0, not timeouted (grabbed)

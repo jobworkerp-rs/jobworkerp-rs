@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use super::super::Runner;
+use crate::jobworkerp::runner::DockerArg;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use bollard::container::{
@@ -14,7 +15,6 @@ use futures_util::stream::StreamExt;
 use futures_util::TryStreamExt;
 use infra::error::JobWorkerError;
 use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
-use proto::jobworkerp::data::DockerArg;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -100,11 +100,11 @@ where
 }
 
 // implement From for proto.jobworkerp.data.worker_operation.Operation(DockerOperation)
-impl<T> From<proto::jobworkerp::data::DockerOperation> for CreateRunnerOptions<T>
+impl<T> From<crate::jobworkerp::runner::DockerOperation> for CreateRunnerOptions<T>
 where
     T: Into<String> + Serialize + std::fmt::Debug + Clone + From<String> + Default,
 {
-    fn from(op: proto::jobworkerp::data::DockerOperation) -> Self {
+    fn from(op: crate::jobworkerp::runner::DockerOperation) -> Self {
         CreateRunnerOptions {
             from_image: op.from_image.map(|s| s.into()),
             from_src: op.from_src.map(|s| s.into()),
@@ -267,10 +267,10 @@ impl Runner for DockerExecRunner {
         todo!("todo")
     }
     fn operation_proto(&self) -> String {
-        include_str!("../../../../protobuf/docker_operation.proto").to_string()
+        include_str!("../../../../protobuf/jobworkerp/runner/docker_operation.proto").to_string()
     }
     fn job_args_proto(&self) -> String {
-        include_str!("../../../../protobuf/docker_args.proto").to_string()
+        include_str!("../../../../protobuf/jobworkerp/runner/docker_args.proto").to_string()
     }
     fn use_job_result(&self) -> bool {
         false
@@ -457,10 +457,10 @@ impl Runner for DockerRunner {
         todo!("todo")
     }
     fn operation_proto(&self) -> String {
-        include_str!("../../../../protobuf/docker_operation.proto").to_string()
+        include_str!("../../../../protobuf/jobworkerp/runner/docker_operation.proto").to_string()
     }
     fn job_args_proto(&self) -> String {
-        include_str!("../../../../protobuf/docker_args.proto").to_string()
+        include_str!("../../../../protobuf/jobworkerp/runner/docker_args.proto").to_string()
     }
     fn use_job_result(&self) -> bool {
         false

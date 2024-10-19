@@ -651,7 +651,7 @@ mod tests {
         let (app, _) = create_test_app(true)?;
         TEST_RUNTIME.block_on(async {
             let operation =
-                JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandOperation {
+                JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestOperation {
                     name: "ls".to_string(),
                 });
             let wd = WorkerData {
@@ -669,7 +669,7 @@ mod tests {
                 use_static: false,
             };
             let worker_id = app.worker_app().create(&wd).await?;
-            let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandArg {
+            let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestArg {
                 args: vec!["/".to_string()],
             });
             // move
@@ -760,7 +760,7 @@ mod tests {
         let (app, subscriber) = create_test_app(true)?;
         TEST_RUNTIME.block_on(async {
             let operation =
-                JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandOperation {
+                JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestOperation {
                     name: "ls".to_string(),
                 });
             let wd = WorkerData {
@@ -778,7 +778,7 @@ mod tests {
                 use_static: false,
             };
             let worker_id = app.worker_app().create(&wd).await?;
-            let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandArg {
+            let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestArg {
                 args: vec!["/".to_string()],
             });
 
@@ -871,7 +871,7 @@ mod tests {
         // enqueue, find, complete, find, delete, find
         let (app, _) = create_test_app(true)?;
         let operation =
-            JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandOperation {
+            JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestOperation {
                 name: "ls".to_string(),
             });
         let wd = WorkerData {
@@ -890,7 +890,7 @@ mod tests {
         };
         TEST_RUNTIME.block_on(async {
             let worker_id = app.worker_app().create(&wd).await?;
-            let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandArg {
+            let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestArg {
                 args: vec!["/".to_string()],
             });
 
@@ -973,7 +973,7 @@ mod tests {
         TEST_RUNTIME.block_on(async {
             // create command worker with hybrid queue
             let operation =
-                JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandOperation {
+                JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestOperation {
                     name: "ls".to_string(),
                 });
             let wd = WorkerData {
@@ -993,7 +993,7 @@ mod tests {
             let worker_id = app.worker_app().create(&wd).await?;
 
             // enqueue job
-            let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandArg {
+            let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestArg {
                 args: vec!["/".to_string()],
             });
             assert_eq!(

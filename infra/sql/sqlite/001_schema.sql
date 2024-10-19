@@ -53,7 +53,21 @@ CREATE TABLE IF NOT EXISTS `job_result` (
 );
 
 CREATE TABLE IF NOT EXISTS `worker_schema` (
-    `id` INTEGER PRIMARY KEY AUTOINCREMENT,
+    `id` INTEGER PRIMARY KEY,
     `name` TEXT NOT NULL UNIQUE,
     `file_name` VARCHAR(512) NOT NULL UNIQUE -- file name of the runner dynamic library
+);
+
+-- builtin runner definitions (operation_type != 1 cannot edit or delete)
+-- (file_name is not real file name(built-in runner), but just a name for identification)
+INSERT INTO worker_schema (id, name, file_name) VALUES (
+  1, 'SlackJobResult', 'builtin0'
+), (
+  2, 'Command', 'builtin1'
+), (
+  3, 'HttpRequest', 'builtin2'
+), (
+  4, 'GrpcUnary', 'builtin3'
+), (
+  5, 'Docker', 'builtin4'
 );

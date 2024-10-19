@@ -23,12 +23,13 @@ impl HybridRepositoryModule {
     ) -> Self {
         let redis_module = RedisRepositoryModule::new(
             infra_config_module,
-            id_generator,
+            id_generator.clone(),
             plugins.clone(),
             Self::DEFAULT_WORKER_REDIS_EXPIRE_SEC,
         )
         .await;
-        let rdb_module = RdbChanRepositoryModule::new(infra_config_module, plugins).await;
+        let rdb_module =
+            RdbChanRepositoryModule::new(infra_config_module, plugins, id_generator).await;
         HybridRepositoryModule {
             redis_module,
             rdb_chan_module: rdb_module,
@@ -41,11 +42,12 @@ impl HybridRepositoryModule {
     ) -> Self {
         let redis_module = RedisRepositoryModule::new_by_env(
             Self::DEFAULT_WORKER_REDIS_EXPIRE_SEC,
-            id_generator,
+            id_generator.clone(),
             plugins.clone(),
         )
         .await;
-        let rdb_module = RdbChanRepositoryModule::new_by_env(job_queue_config, plugins).await;
+        let rdb_module =
+            RdbChanRepositoryModule::new_by_env(job_queue_config, plugins, id_generator).await;
         HybridRepositoryModule {
             redis_module,
             rdb_chan_module: rdb_module,

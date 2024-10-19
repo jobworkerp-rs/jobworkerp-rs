@@ -320,24 +320,23 @@ impl UseChanBuffer for RdbChanJobRepositoryImpl {
 mod test {
     use std::sync::Arc;
 
-    use crate::infra::job::rows::UseJobqueueAndCodec;
-    use crate::infra::JobQueueConfig;
-
     use super::RdbChanJobRepositoryImpl;
     use super::RdbJobRepository;
+    use crate::infra::job::rows::UseJobqueueAndCodec;
+    use crate::infra::JobQueueConfig;
     use anyhow::Result;
     use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::rdb::UseRdbPool;
-    use proto::jobworkerp::data::CommandArg;
     use proto::jobworkerp::data::Job;
     use proto::jobworkerp::data::JobData;
     use proto::jobworkerp::data::JobId;
+    use proto::jobworkerp::data::TestArg;
     use proto::jobworkerp::data::WorkerId;
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
         let repository = RdbChanJobRepositoryImpl::new(Arc::new(JobQueueConfig::default()), pool);
         let id = JobId { value: 1 };
-        let arg = RdbChanJobRepositoryImpl::serialize_message(&CommandArg {
+        let arg = RdbChanJobRepositoryImpl::serialize_message(&TestArg {
             args: vec!["hoge".to_string()],
         });
         let data = Some(JobData {
@@ -365,7 +364,7 @@ mod test {
         // find
         let found = repository.find(&id1).await?;
         assert_eq!(Some(&expect), found.as_ref());
-        let arg2 = RdbChanJobRepositoryImpl::serialize_message(&CommandArg {
+        let arg2 = RdbChanJobRepositoryImpl::serialize_message(&TestArg {
             args: vec!["fuga3".to_string()],
         });
 
@@ -397,7 +396,7 @@ mod test {
     }
     async fn _test_find_id_set_in_instant(pool: &'static RdbPool) -> Result<()> {
         let repository = RdbChanJobRepositoryImpl::new(Arc::new(JobQueueConfig::default()), pool);
-        let arg = RdbChanJobRepositoryImpl::serialize_message(&CommandArg {
+        let arg = RdbChanJobRepositoryImpl::serialize_message(&TestArg {
             args: vec!["hoge1".to_string()],
         });
         let data = Some(JobData {
@@ -417,7 +416,7 @@ mod test {
         };
         repository.create(&job).await?;
         // future job
-        let arg2 = RdbChanJobRepositoryImpl::serialize_message(&CommandArg {
+        let arg2 = RdbChanJobRepositoryImpl::serialize_message(&TestArg {
             args: vec!["hoge2".to_string()],
         });
 
@@ -438,7 +437,7 @@ mod test {
         };
         repository.create(&job).await?;
         // grabbed job
-        let arg3 = RdbChanJobRepositoryImpl::serialize_message(&CommandArg {
+        let arg3 = RdbChanJobRepositoryImpl::serialize_message(&TestArg {
             args: vec!["hoge3".to_string()],
         });
         let data = Some(JobData {

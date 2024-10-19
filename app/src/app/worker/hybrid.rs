@@ -15,7 +15,7 @@ use infra_utils::infra::rdb::UseRdbPool;
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use std::sync::Arc;
 
-use crate::app::worker::builtin::{BuiltinWorker, BuiltinWorkerTrait};
+// use crate::app::worker::builtin::{BuiltinWorker, BuiltinWorkerTrait};
 
 use super::super::{StorageConfig, UseStorageConfig};
 use super::{WorkerApp, WorkerAppCacheHelper};
@@ -134,10 +134,6 @@ impl WorkerApp for HybridWorkerAppImpl {
     where
         Self: Send + 'static,
     {
-        // find from builtin workers first
-        if let Some(w) = BuiltinWorker::find_worker_by_id(id) {
-            return Ok(Some(w));
-        }
         let k = Arc::new(Self::find_cache_key(id));
         tracing::debug!("find worker: {}, cache key: {}", id.value, k);
         self.memory_cache
@@ -348,7 +344,7 @@ mod tests {
     use infra::infra::module::HybridRepositoryModule;
     use infra::infra::IdGeneratorWrapper;
     use infra_utils::infra::test::TEST_RUNTIME;
-    use proto::jobworkerp::data::{CommandOperation, WorkerData};
+    use proto::jobworkerp::data::{TestOperation, WorkerData};
 
     fn create_test_app(use_mock_id: bool) -> Result<HybridWorkerAppImpl> {
         let rdb_module = setup_test_rdb_module();
@@ -392,7 +388,7 @@ mod tests {
         // test create 3 workers and find list and update 1 worker and find list and delete 1 worker and find list
         let app = create_test_app(false)?;
         TEST_RUNTIME.block_on(async {
-            let operation = JobqueueAndCodec::serialize_message(&CommandOperation {
+            let operation = JobqueueAndCodec::serialize_message(&TestOperation {
                 name: "ls".to_string(),
             });
             let w1 = WorkerData {

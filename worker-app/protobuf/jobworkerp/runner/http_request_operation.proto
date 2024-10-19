@@ -1,4 +1,5 @@
 syntax = "proto3";
+package jobworkerp.runner;
 
 // http request operation
 message HttpRequestOperation {

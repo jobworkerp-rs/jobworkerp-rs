@@ -8,7 +8,7 @@ use crate::infra::job_result::rdb::{RdbJobResultRepositoryImpl, UseRdbJobResultR
 use crate::infra::plugins::Plugins;
 use crate::infra::worker::rdb::{RdbWorkerRepositoryImpl, UseRdbWorkerRepository};
 use crate::infra::worker_schema::rdb::RdbWorkerSchemaRepositoryImpl;
-use crate::infra::{InfraConfigModule, JobQueueConfig};
+use crate::infra::{IdGeneratorWrapper, InfraConfigModule, JobQueueConfig};
 use infra_utils::infra::chan::ChanBuffer;
 
 pub trait UseRdbChanRepositoryModule {
@@ -42,10 +42,18 @@ pub struct RdbChanRepositoryModule {
 }
 
 impl RdbChanRepositoryModule {
-    pub async fn new_by_env(job_queue_config: Arc<JobQueueConfig>, plugins: Arc<Plugins>) -> Self {
+    pub async fn new_by_env(
+        job_queue_config: Arc<JobQueueConfig>,
+        plugins: Arc<Plugins>,
+        id_generator: Arc<IdGeneratorWrapper>,
+    ) -> Self {
         let pool = super::super::resource::setup_rdb_by_env().await;
         RdbChanRepositoryModule {
-            worker_schema_repository: RdbWorkerSchemaRepositoryImpl::new(pool, plugins),
+            worker_schema_repository: RdbWorkerSchemaRepositoryImpl::new(
+                pool,
+                plugins,
+                id_generator,
+            ),
             worker_repository: RdbWorkerRepositoryImpl::new(pool),
             job_repository: RdbChanJobRepositoryImpl::new(job_queue_config.clone(), pool),
             job_result_repository: RdbJobResultRepositoryImpl::new(pool),
@@ -60,11 +68,19 @@ impl RdbChanRepositoryModule {
             ),
         }
     }
-    pub async fn new(config_module: &InfraConfigModule, plugins: Arc<Plugins>) -> Self {
+    pub async fn new(
+        config_module: &InfraConfigModule,
+        plugins: Arc<Plugins>,
+        id_generator: Arc<IdGeneratorWrapper>,
+    ) -> Self {
         let pool =
             super::super::resource::setup_rdb(config_module.rdb_config.as_ref().unwrap()).await;
         RdbChanRepositoryModule {
-            worker_schema_repository: RdbWorkerSchemaRepositoryImpl::new(pool, plugins),
+            worker_schema_repository: RdbWorkerSchemaRepositoryImpl::new(
+                pool,
+                plugins,
+                id_generator,
+            ),
             worker_repository: RdbWorkerRepositoryImpl::new(pool),
             job_repository: RdbChanJobRepositoryImpl::new(
                 config_module.job_queue_config.clone(),
@@ -95,6 +111,7 @@ pub mod test {
     use crate::infra::job::queue::chan::ChanJobQueueRepositoryImpl;
     use crate::infra::plugins::Plugins;
     use crate::infra::worker_schema::rdb::RdbWorkerSchemaRepositoryImpl;
+    use crate::infra::IdGeneratorWrapper;
     use crate::infra::{
         job::rdb::RdbChanJobRepositoryImpl, job_result::rdb::RdbJobResultRepositoryImpl,
         worker::rdb::RdbWorkerRepositoryImpl,
@@ -124,10 +141,12 @@ pub mod test {
                 .load_plugin_files_from_env()
                 .await
                 .expect("load plugins");
+            let id_generator = Arc::new(IdGeneratorWrapper::new());
             RdbChanRepositoryModule {
                 worker_schema_repository: RdbWorkerSchemaRepositoryImpl::new(
                     pool,
                     Arc::new(plugins),
+                    id_generator,
                 ),
                 worker_repository: RdbWorkerRepositoryImpl::new(pool),
                 job_repository: RdbChanJobRepositoryImpl::new(

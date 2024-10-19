@@ -1,10 +1,10 @@
 use std::borrow::Cow;
 
 use super::client::{Attachment, AttachmentField, PostMessageRequest, SlackMessageClientImpl};
+use crate::jobworkerp::runner::slack_job_result_arg::ResultMessageData;
 use anyhow::{anyhow, Result};
 use command_utils::util::datetime;
 use itertools::Itertools;
-use proto::jobworkerp::data::slack_job_result_arg::ResultMessageData;
 
 use super::SlackConfig;
 

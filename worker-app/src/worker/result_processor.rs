@@ -1,10 +1,12 @@
 // TODO remove
+use crate::jobworkerp::runner::slack_job_result_arg::ResultMessageData;
+use crate::jobworkerp::runner::SlackJobResultArg;
+use crate::worker::runner::impls::builtin::BuiltinWorkerIds;
 use anyhow::Result;
 use app::app::job::JobApp;
 use app::app::job::UseJobApp;
 use app::app::job_result::JobResultApp;
 use app::app::job_result::UseJobResultApp;
-use app::app::worker::builtin::BuiltinWorkerIds;
 use app::app::worker::UseWorkerApp;
 use app::app::worker::WorkerApp;
 use app::app::JobBuilder;
@@ -18,11 +20,9 @@ use command_utils::util::option::Exists;
 use debug_stub_derive::DebugStub;
 use infra::infra::job::rows::JobqueueAndCodec;
 use infra::infra::job::rows::UseJobqueueAndCodec;
-use proto::jobworkerp::data::slack_job_result_arg::ResultMessageData;
 use proto::jobworkerp::data::JobResultData;
 use proto::jobworkerp::data::JobResultId;
 use proto::jobworkerp::data::ResultStatus;
-use proto::jobworkerp::data::SlackJobResultArg;
 use proto::jobworkerp::data::WorkerSchemaId;
 use proto::jobworkerp::data::{JobResult, WorkerData};
 use std::sync::Arc;

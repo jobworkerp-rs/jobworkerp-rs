@@ -134,9 +134,10 @@ impl RunnerFactoryWithPool {
 // create test for RunnerFactoryWithPool
 #[cfg(test)]
 mod tests {
+    use crate::worker::runner::impls::builtin::slack::{SLACK_RUNNER_OPERATION, SLACK_WORKER_NAME};
+
     use super::*;
     use anyhow::Result;
-    use app::app::worker::builtin::slack::{SLACK_RUNNER_OPERATION, SLACK_WORKER_NAME};
     use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
     use proto::jobworkerp::data::{OperationType, WorkerData};
 

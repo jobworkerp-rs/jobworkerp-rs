@@ -245,7 +245,7 @@ mod tests {
     async fn test_job_result_status() -> Result<()> {
         let runner = MockResultHandler::new();
         let operation =
-            JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandOperation {
+            JobqueueAndCodec::serialize_message(&crate::jobworkerp::runner::CommandOperation {
                 name: "ls".to_string(),
             });
         let worker = WorkerData {
@@ -273,7 +273,7 @@ mod tests {
             store_failure: false,
             ..Default::default()
         };
-        let arg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandArg {
+        let arg = JobqueueAndCodec::serialize_message(&crate::jobworkerp::runner::CommandArg {
             args: vec!["test".to_string()],
         });
         let job = Job {

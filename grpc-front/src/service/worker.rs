@@ -423,7 +423,7 @@ mod tests {
             storage_type: StorageType::RDB,
         };
         let operation =
-            JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandOperation {
+            JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestOperation {
                 name: "ls".to_string(),
             });
         let mut w = WorkerData {
@@ -478,7 +478,7 @@ mod tests {
             storage_type: StorageType::Hybrid,
         };
         let operation =
-            JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandOperation {
+            JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestOperation {
                 name: "ls".to_string(),
             });
         let mut w = WorkerData {

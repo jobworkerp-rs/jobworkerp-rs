@@ -292,8 +292,8 @@ mod tests {
 
     #[test]
     fn test_should_store() {
-        let arg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::PluginArg {
-            arg: b"test".to_vec(),
+        let arg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestArg {
+            args: vec!["test".to_string()],
         });
         let mut job_result_data = JobResultData {
             job_id: None,
@@ -380,7 +380,7 @@ mod tests {
     fn test_create_job_result_if_necessary() -> Result<()> {
         let app = setup()?;
         let operation =
-            JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandOperation {
+            JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestOperation {
                 name: "ls".to_string(),
             });
         let worker_data = WorkerData {
@@ -409,7 +409,7 @@ mod tests {
                 value: app.id_generator().generate_id()?,
             };
             let job_id = JobId { value: 100 };
-            let arg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandArg {
+            let arg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestArg {
                 args: vec!["arg1".to_string()],
             });
             let mut data = JobResultData {
