@@ -69,9 +69,24 @@ CREATE TABLE `job_result` (
 -- worker schema definition
 DROP TABLE IF EXISTS worker_schema;
 CREATE TABLE `worker_schema` (
-  `id` BIGINT(10) PRIMARY KEY AUTO_INCREMENT,
+  `id` BIGINT(10) PRIMARY KEY,
   `name` VARCHAR(128) NOT NULL, -- name for identification
   `file_name` VARCHAR(512) NOT NULL, -- file name of the runner dynamic library
   UNIQUE KEY `name` (`name`),
   UNIQUE KEY `file_name` (`file_name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- builtin runner definitions (operation_type != 1 cannot edit or delete)
+-- (file_name is not real file name(built-in runner), but just a name for identification)
+INSERT INTO worker_schema (id, name, file_name) VALUES (
+  1, 'SlackJobResult', 'builtin0'
+), (
+  2, 'Command', 'builtin1'
+), (
+  3, 'HttpRequest', 'builtin2'
+), (
+  4, 'GrpcUnary', 'builtin3'
+), (
+  5, 'Docker', 'builtin4'
+);
+

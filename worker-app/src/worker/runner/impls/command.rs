@@ -1,8 +1,8 @@
+use crate::jobworkerp::runner::CommandArg;
 use infra::{
     error::JobWorkerError,
     infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec},
 };
-use proto::jobworkerp::data::CommandArg;
 
 use super::super::Runner;
 use anyhow::{Context, Result};
@@ -115,10 +115,10 @@ impl Runner for CommandRunnerImpl {
         }
     }
     fn operation_proto(&self) -> String {
-        include_str!("../../../../protobuf/command_operation.proto").to_string()
+        include_str!("../../../../protobuf/jobworkerp/runner/command_operation.proto").to_string()
     }
     fn job_args_proto(&self) -> String {
-        include_str!("../../../../protobuf/command_args.proto").to_string()
+        include_str!("../../../../protobuf/jobworkerp/runner/command_args.proto").to_string()
     }
     fn use_job_result(&self) -> bool {
         false
@@ -129,7 +129,7 @@ impl Runner for CommandRunnerImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proto::jobworkerp::data::CommandArg;
+    use crate::jobworkerp::runner::CommandArg;
     use tokio::time::{sleep, Duration};
 
     #[ignore = "outbound network test"]

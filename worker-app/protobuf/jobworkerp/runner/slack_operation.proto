@@ -1,4 +1,5 @@
 syntax = "proto3";
+package jobworkerp.runner;
 
 // internal use: notify job result to slack as next_worker
 message SlackJobResultOperation {

@@ -11,7 +11,6 @@ use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use std::sync::Arc;
 
 use super::super::{StorageConfig, UseStorageConfig};
-use super::builtin::{BuiltinWorker, BuiltinWorkerTrait};
 use super::{WorkerApp, WorkerAppCacheHelper};
 
 #[derive(Clone, Debug)]
@@ -121,10 +120,6 @@ impl WorkerApp for RdbWorkerAppImpl {
     where
         Self: Send + 'static,
     {
-        // find from builtin workers first
-        if let Some(w) = BuiltinWorker::find_worker_by_id(id) {
-            return Ok(Some(w));
-        }
         let k = Arc::new(Self::find_cache_key(id));
         self.memory_cache
             .with_cache(&k, None, || async {
@@ -161,11 +156,6 @@ impl WorkerApp for RdbWorkerAppImpl {
                 self.rdb_worker_repository().find_list(None, None).await
             })
             .await
-            .map(|v| {
-                let mut v = v;
-                v.extend(BuiltinWorker::workers_list());
-                v
-            })
     }
     async fn count(&self) -> Result<i64>
     where

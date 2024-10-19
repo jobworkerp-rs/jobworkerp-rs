@@ -1,4 +1,5 @@
 syntax = "proto3";
+package jobworkerp.runner;
 
 message KeyValue {
   string key = 1;

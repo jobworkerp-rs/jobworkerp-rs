@@ -254,10 +254,10 @@ mod test {
     use anyhow::Result;
     use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::rdb::UseRdbPool;
-    use proto::jobworkerp::data::CommandOperation;
     use proto::jobworkerp::data::QueueType;
     use proto::jobworkerp::data::ResponseType;
     use proto::jobworkerp::data::RetryPolicy;
+    use proto::jobworkerp::data::TestOperation;
     use proto::jobworkerp::data::Worker;
     use proto::jobworkerp::data::WorkerData;
     use proto::jobworkerp::data::WorkerId;
@@ -269,7 +269,7 @@ mod test {
         let data = Some(WorkerData {
             name: "hoge1".to_string(),
             schema_id: Some(WorkerSchemaId { value: 323 }),
-            operation: JobqueueAndCodec::serialize_message(&CommandOperation {
+            operation: JobqueueAndCodec::serialize_message(&TestOperation {
                 name: "hoge".to_string(),
             }),
             retry_policy: Some(RetryPolicy {
@@ -313,7 +313,7 @@ mod test {
         let update = WorkerData {
             name: "fuga1".to_string(),
             schema_id: Some(WorkerSchemaId { value: 324 }),
-            operation: RdbWorkerRepositoryImpl::serialize_message(&CommandOperation {
+            operation: RdbWorkerRepositoryImpl::serialize_message(&TestOperation {
                 name: "fuga".to_string(),
             }),
             retry_policy: Some(RetryPolicy {

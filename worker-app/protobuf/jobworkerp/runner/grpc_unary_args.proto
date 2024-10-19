@@ -1,4 +1,5 @@
 syntax = "proto3";
+package jobworkerp.runner;
 
 message GrpcUnaryArg {
     string path = 1;

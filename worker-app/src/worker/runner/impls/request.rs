@@ -1,13 +1,13 @@
 use std::{str::FromStr, time::Duration};
 
 use super::super::Runner;
+use crate::jobworkerp::runner::HttpRequestArg;
 use anyhow::Result;
 use async_trait::async_trait;
 use infra::{
     error::JobWorkerError,
     infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec},
 };
-use proto::jobworkerp::data::HttpRequestArg;
 use reqwest::{
     header::{HeaderMap, HeaderName},
     Method, Url,
@@ -98,10 +98,11 @@ impl Runner for RequestRunner {
         tracing::warn!("cannot cancel request until timeout")
     }
     fn operation_proto(&self) -> String {
-        include_str!("../../../../protobuf/http_request_operation.proto").to_string()
+        include_str!("../../../../protobuf/jobworkerp/runner/http_request_operation.proto")
+            .to_string()
     }
     fn job_args_proto(&self) -> String {
-        include_str!("../../../../protobuf/http_request_args.proto").to_string()
+        include_str!("../../../../protobuf/jobworkerp/runner/http_request_args.proto").to_string()
     }
     fn use_job_result(&self) -> bool {
         false
@@ -110,7 +111,7 @@ impl Runner for RequestRunner {
 
 #[tokio::test]
 async fn run_request() {
-    use proto::jobworkerp::data::{HttpRequestArg, KeyValue};
+    use crate::jobworkerp::runner::{HttpRequestArg, KeyValue};
 
     let mut runner = RequestRunner::new("https://www.google.com/").unwrap();
     let arg = JobqueueAndCodec::serialize_message(&HttpRequestArg {

@@ -4,15 +4,45 @@ pub mod repository;
 use crate::worker::runner::Runner;
 
 use self::repository::SlackRepository;
+use crate::jobworkerp::runner::{SlackJobResultArg, SlackJobResultOperation};
 use anyhow::{anyhow, Result};
-use app::app::worker::builtin::slack::SLACK_WORKER_NAME;
 use async_trait::async_trait;
-use infra::{
-    error::JobWorkerError,
-    infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec},
+use infra::error::JobWorkerError;
+use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
+use once_cell::sync::Lazy;
+use proto::jobworkerp::data::ResultStatus;
+use proto::jobworkerp::data::{
+    QueueType, ResponseType, RetryPolicy, RetryType, Worker, WorkerData, WorkerSchemaId,
 };
-use proto::jobworkerp::data::{ResultStatus, SlackJobResultArg};
 use serde::Deserialize;
+pub const SLACK_WORKER_NAME: &str = "__SLACK_NOTIFICATION_WORKER__"; //XXX
+pub const SLACK_RUNNER_OPERATION: crate::jobworkerp::runner::SlackJobResultOperation =
+    SlackJobResultOperation {};
+
+/// treat arg as serialized JobResult
+pub static SLACK_WORKER: Lazy<Worker> = Lazy::new(|| Worker {
+    id: Some(super::BuiltinWorkerIds::SlackWorkerId.to_worker_id()),
+    data: Some(WorkerData {
+        name: SLACK_WORKER_NAME.to_string(),
+        schema_id: Some(WorkerSchemaId { value: 0 }),
+        operation: JobqueueAndCodec::serialize_message(&SLACK_RUNNER_OPERATION),
+        channel: None,
+        response_type: ResponseType::NoResult as i32,
+        periodic_interval: 0,
+        retry_policy: Some(RetryPolicy {
+            r#type: RetryType::Exponential as i32,
+            interval: 1000,
+            max_interval: 20000,
+            max_retry: 3,
+            basis: 2.0,
+        }),
+        queue_type: QueueType::Redis as i32,
+        store_failure: false,
+        store_success: false,
+        next_workers: vec![],
+        use_static: false,
+    }),
+});
 
 #[derive(Clone, Deserialize, Debug, Default)] // for test only
 pub struct SlackConfig {
@@ -103,10 +133,10 @@ impl Runner for SlackResultNotificationRunner {
         // do nothing
     }
     fn operation_proto(&self) -> String {
-        include_str!("../../../../../protobuf/slack_operation.proto").to_string()
+        include_str!("../../../../../protobuf/jobworkerp/runner/slack_operation.proto").to_string()
     }
     fn job_args_proto(&self) -> String {
-        include_str!("../../../../../protobuf/slack_job_args.proto").to_string()
+        include_str!("../../../../../protobuf/jobworkerp/runner/slack_args.proto").to_string()
     }
     fn use_job_result(&self) -> bool {
         true

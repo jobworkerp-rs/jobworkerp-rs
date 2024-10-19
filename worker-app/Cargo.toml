@@ -50,6 +50,7 @@ signal-hook = { workspace = true }
 signal-hook-tokio = { workspace = true }
 stretto = { workspace = true, features = ["async"] }
 strum = { workspace = true }
+strum_macros = { workspace = true }
 tokio = { workspace = true, features = [
     "macros",
     "rt-multi-thread",
@@ -68,3 +69,6 @@ tracing-subscriber = { workspace = true, features = [
     "json",
 ] }
 url = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }

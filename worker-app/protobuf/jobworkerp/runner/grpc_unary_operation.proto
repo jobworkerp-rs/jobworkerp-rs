@@ -1,4 +1,5 @@
 syntax = "proto3";
+package jobworkerp.runner;
 
 // grpc unary request operation
 message GrpcUnaryOperation {

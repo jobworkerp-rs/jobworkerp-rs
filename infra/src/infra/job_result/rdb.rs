@@ -217,27 +217,26 @@ impl RdbJobResultRepository for RdbJobResultRepositoryImpl {}
 impl UseJobqueueAndCodec for RdbJobResultRepositoryImpl {}
 
 mod test {
-    use crate::infra::job::rows::UseJobqueueAndCodec;
-
     use super::RdbJobResultRepository;
     use super::RdbJobResultRepositoryImpl;
+    use crate::infra::job::rows::UseJobqueueAndCodec;
     use anyhow::Context;
     use anyhow::Result;
     use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::rdb::UseRdbPool;
-    use proto::jobworkerp::data::CommandArg;
     use proto::jobworkerp::data::JobId;
     use proto::jobworkerp::data::JobResult;
     use proto::jobworkerp::data::JobResultData;
     use proto::jobworkerp::data::JobResultId;
     use proto::jobworkerp::data::ResultOutput;
     use proto::jobworkerp::data::ResultStatus;
+    use proto::jobworkerp::data::TestArg;
     use proto::jobworkerp::data::WorkerId;
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
         let repository = RdbJobResultRepositoryImpl::new(pool);
         let db = repository.db_pool();
-        let arg = CommandArg {
+        let arg = TestArg {
             args: vec!["hoge".to_string()],
         };
         let data = Some(JobResultData {
@@ -278,7 +277,7 @@ mod test {
 
         // update
         let mut tx = db.begin().await.context("error in test")?;
-        let arg = CommandArg {
+        let arg = TestArg {
             args: vec!["fuga".to_string()],
         };
         let update = JobResultData {

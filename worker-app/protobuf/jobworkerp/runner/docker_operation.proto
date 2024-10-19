@@ -1,5 +1,7 @@
 syntax = "proto3";
 
+package jobworkerp.runner;
+
 // docker job operation
 message DockerOperation {
     /// Name of the image to pull. The name may include a tag or digest. This parameter may only be

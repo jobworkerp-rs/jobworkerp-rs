@@ -272,7 +272,7 @@ mod tests {
         static JOB_RUNNER: Lazy<Box<MockJobRunner>> = Lazy::new(|| Box::new(MockJobRunner::new()));
 
         let run_after = datetime::now_millis() + 1000;
-        let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandArg {
+        let jarg = JobqueueAndCodec::serialize_message(&crate::jobworkerp::runner::CommandArg {
             args: vec!["1".to_string()],
         });
         let job = Job {
@@ -291,7 +291,7 @@ mod tests {
         };
         let worker_id = WorkerId { value: 1 };
         let operation =
-            JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandOperation {
+            JobqueueAndCodec::serialize_message(&crate::jobworkerp::runner::CommandOperation {
                 name: "sleep".to_string(),
             });
 
@@ -323,7 +323,7 @@ mod tests {
         assert!(res.start_time >= run_after); // wait until run_after (expect short time)
         assert!(res.end_time > res.start_time);
         assert!(res.end_time - res.start_time >= 1000); // sleep
-        let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandArg {
+        let jarg = JobqueueAndCodec::serialize_message(&crate::jobworkerp::runner::CommandArg {
             args: vec!["2".to_string()],
         });
 

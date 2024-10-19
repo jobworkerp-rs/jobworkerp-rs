@@ -1,5 +1,7 @@
 syntax = "proto3";
 
+package jobworkerp.runner;
+
 // command job operation
 message CommandOperation {
   // command name (e.g. "echo")

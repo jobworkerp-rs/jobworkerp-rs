@@ -5,9 +5,10 @@ use crate::error::JobWorkerError;
 use crate::infra::plugins::PluginLoader;
 use crate::infra::plugins::Plugins;
 use crate::infra::plugins::UsePlugins;
+use crate::infra::IdGeneratorWrapper;
+use crate::infra::UseIdGenerator;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use infra_utils::infra::rdb::query_result;
 use infra_utils::infra::rdb::Rdb;
 use infra_utils::infra::rdb::RdbPool;
 use infra_utils::infra::rdb::UseRdbPool;
@@ -15,7 +16,7 @@ use proto::jobworkerp::data::{WorkerSchema, WorkerSchemaId};
 use sqlx::{Executor, Pool};
 
 #[async_trait]
-pub trait WorkerSchemaRepository: UseRdbPool + UsePlugins + Sync + Send {
+pub trait WorkerSchemaRepository: UseRdbPool + UsePlugins + UseIdGenerator + Sync + Send {
     async fn add_from_plugins(&self) -> Result<()> {
         let names = self
             .plugins()
@@ -24,7 +25,7 @@ pub trait WorkerSchemaRepository: UseRdbPool + UsePlugins + Sync + Send {
             .context("error in add_from_plugins")?;
         for (name, fname) in names.iter() {
             let schema = WorkerSchemaRow {
-                id: 0,
+                id: self.id_generator().generate_id()?,
                 name: name.clone(),
                 file_name: fname.clone(),
             };
@@ -50,10 +51,12 @@ pub trait WorkerSchemaRepository: UseRdbPool + UsePlugins + Sync + Send {
     ) -> Result<WorkerSchemaId> {
         let res = sqlx::query::<Rdb>(
             "INSERT INTO `worker_schema` (
+            `id`,
             `name`,
             `file_name`
-            ) VALUES (?,?)",
+            ) VALUES (?,?,?)",
         )
+        .bind(schema_row.id)
         .bind(&schema_row.name)
         .bind(&schema_row.file_name)
         .execute(tx)
@@ -61,7 +64,7 @@ pub trait WorkerSchemaRepository: UseRdbPool + UsePlugins + Sync + Send {
         .map_err(JobWorkerError::DBError)?;
         if res.rows_affected() > 0 {
             Ok(WorkerSchemaId {
-                value: query_result::last_insert_id(res),
+                value: schema_row.id,
             })
         } else {
             // no record?
@@ -194,6 +197,7 @@ pub trait WorkerSchemaRepository: UseRdbPool + UsePlugins + Sync + Send {
 pub struct RdbWorkerSchemaRepositoryImpl {
     pool: &'static RdbPool,
     pub plugins: Arc<Plugins>,
+    id_generator: Arc<IdGeneratorWrapper>,
 }
 
 pub trait UseWorkerSchemaRepository {
@@ -201,8 +205,16 @@ pub trait UseWorkerSchemaRepository {
 }
 
 impl RdbWorkerSchemaRepositoryImpl {
-    pub fn new(pool: &'static RdbPool, plugins: Arc<Plugins>) -> Self {
-        Self { pool, plugins }
+    pub fn new(
+        pool: &'static RdbPool,
+        plugins: Arc<Plugins>,
+        id_generator: Arc<IdGeneratorWrapper>,
+    ) -> Self {
+        Self {
+            pool,
+            plugins,
+            id_generator,
+        }
     }
 }
 
@@ -216,7 +228,11 @@ impl UsePlugins for RdbWorkerSchemaRepositoryImpl {
         &self.plugins
     }
 }
-
+impl UseIdGenerator for RdbWorkerSchemaRepositoryImpl {
+    fn id_generator(&self) -> &IdGeneratorWrapper {
+        &self.id_generator
+    }
+}
 impl WorkerSchemaRepository for RdbWorkerSchemaRepositoryImpl {}
 
 mod test {
@@ -239,10 +255,11 @@ mod test {
             .await
             .context("error in test")?;
         println!("plugins: {:?}", p);
-        let repository = RdbWorkerSchemaRepositoryImpl::new(pool, Arc::new(p));
+        let id_generator = Arc::new(crate::infra::IdGeneratorWrapper::new());
+        let repository = RdbWorkerSchemaRepositoryImpl::new(pool, Arc::new(p), id_generator);
         let db = repository.db_pool();
         let row = Some(WorkerSchemaRow {
-            id: 0,
+            id: 12345, // XXX generated
             name: "HelloPlugin".to_string(),
             file_name: "libplugin_runner_hello.so".to_string(),
         });
@@ -275,6 +292,9 @@ mod test {
 
         let count = repository.count_list_tx(repository.db_pool()).await?;
         assert_eq!(1, count);
+
+        // add from plugins (no additional record, no error)
+        repository.add_from_plugins().await?;
 
         // delete record
         tx = db.begin().await.context("error in test")?;
