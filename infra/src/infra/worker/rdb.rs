@@ -257,11 +257,11 @@ mod test {
     use proto::jobworkerp::data::QueueType;
     use proto::jobworkerp::data::ResponseType;
     use proto::jobworkerp::data::RetryPolicy;
-    use proto::jobworkerp::data::TestOperation;
     use proto::jobworkerp::data::Worker;
     use proto::jobworkerp::data::WorkerData;
     use proto::jobworkerp::data::WorkerId;
     use proto::jobworkerp::data::WorkerSchemaId;
+    use proto::TestOperation;
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
         let repository = RdbWorkerRepositoryImpl::new(pool);

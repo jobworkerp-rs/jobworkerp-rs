@@ -579,6 +579,8 @@ mod tests {
     use super::HybridJobAppImpl;
     use super::*;
     use crate::app::worker::hybrid::HybridWorkerAppImpl;
+    use crate::app::worker_schema::hybrid::HybridWorkerSchemaAppImpl;
+    use crate::app::worker_schema::WorkerSchemaApp;
     use crate::app::{StorageConfig, StorageType};
     use anyhow::Result;
     use command_utils::util::datetime;
@@ -589,7 +591,7 @@ mod tests {
     use infra::infra::module::rdb::test::setup_test_rdb_module;
     use infra::infra::module::redis::test::setup_test_redis_module;
     use infra::infra::module::HybridRepositoryModule;
-    use infra::infra::plugins::Plugins;
+    use infra::infra::runner::factory::RunnerFactory;
     use infra::infra::IdGeneratorWrapper;
     use infra_utils::infra::test::TEST_RUNTIME;
     use proto::jobworkerp::data::{
@@ -640,23 +642,38 @@ mod tests {
                 channels: vec!["test".to_string()],
                 channel_concurrencies: vec![2],
             });
+            let descriptor_cache = Arc::new(infra_utils::infra::memory::MemoryCacheImpl::new(
+                &mc_config,
+                Some(Duration::from_secs(60 * 60)),
+            ));
+            let worker_schema_app = Arc::new(HybridWorkerSchemaAppImpl::new(
+                storage_config.clone(),
+                &mc_config,
+                repositories.clone(),
+                descriptor_cache.clone(),
+            ));
+            let _ = worker_schema_app
+                .create_test_schema(&WorkerSchemaId { value: 111 }, "Test")
+                .await?;
             let worker_app = HybridWorkerAppImpl::new(
                 storage_config.clone(),
                 id_generator.clone(),
                 worker_memory_cache,
                 repositories.clone(),
+                descriptor_cache,
+                worker_schema_app,
             );
             let subscrber = RedisJobResultPubSubRepositoryImpl::new(
                 redis_module.redis_client,
                 job_queue_config.clone(),
             );
-            let plugins = Plugins::new();
-            plugins.load_plugin_files_from_env().await?;
+            let runner_factory = RunnerFactory::new();
+            runner_factory.load_plugins().await?;
             let config_module = Arc::new(AppConfigModule {
                 storage_config,
                 worker_config,
                 job_queue_config,
-                plugins: Arc::new(plugins),
+                runner_factory: Arc::new(runner_factory),
             });
             Ok((
                 HybridJobAppImpl::new(
@@ -676,13 +693,12 @@ mod tests {
         // enqueue, find, complete, find, delete, find
         let (app, _) = create_test_app(true)?;
         TEST_RUNTIME.block_on(async {
-            let operation =
-                JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestOperation {
-                    name: "ls".to_string(),
-                });
+            let operation = JobqueueAndCodec::serialize_message(&proto::TestOperation {
+                name: "ls".to_string(),
+            });
             let wd = WorkerData {
                 name: "testworker".to_string(),
-                schema_id: Some(WorkerSchemaId { value: 1 }),
+                schema_id: Some(WorkerSchemaId { value: 111 }),
                 operation,
                 channel: None,
                 response_type: ResponseType::Direct as i32,
@@ -695,7 +711,7 @@ mod tests {
                 use_static: false,
             };
             let worker_id = app.worker_app().create(&wd).await?;
-            let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestArg {
+            let jarg = JobqueueAndCodec::serialize_message(&proto::TestArg {
                 args: vec!["/".to_string()],
             });
 
@@ -786,13 +802,12 @@ mod tests {
         // enqueue, find, complete, find, delete, find
         let (app, subscriber) = create_test_app(true)?;
         TEST_RUNTIME.block_on(async {
-            let operation =
-                JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestOperation {
-                    name: "ls".to_string(),
-                });
+            let operation = JobqueueAndCodec::serialize_message(&proto::TestOperation {
+                name: "ls".to_string(),
+            });
             let wd = WorkerData {
                 name: "testworker".to_string(),
-                schema_id: Some(WorkerSchemaId { value: 1 }),
+                schema_id: Some(WorkerSchemaId { value: 111 }),
                 operation,
                 channel: None,
                 response_type: ResponseType::ListenAfter as i32,
@@ -805,7 +820,7 @@ mod tests {
                 use_static: false,
             };
             let worker_id = app.worker_app().create(&wd).await?;
-            let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestArg {
+            let jarg = JobqueueAndCodec::serialize_message(&proto::TestArg {
                 args: vec!["/".to_string()],
             });
 
@@ -896,13 +911,12 @@ mod tests {
     fn test_create_normal_job_complete() -> Result<()> {
         // enqueue, find, complete, find, delete, find
         let (app, _) = create_test_app(true)?;
-        let operation =
-            JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestOperation {
-                name: "ls".to_string(),
-            });
+        let operation = JobqueueAndCodec::serialize_message(&proto::TestOperation {
+            name: "ls".to_string(),
+        });
         let wd = WorkerData {
             name: "testworker".to_string(),
-            schema_id: Some(WorkerSchemaId { value: 1 }),
+            schema_id: Some(WorkerSchemaId { value: 111 }),
             operation,
             channel: None,
             response_type: ResponseType::NoResult as i32,
@@ -916,7 +930,7 @@ mod tests {
         };
         TEST_RUNTIME.block_on(async {
             let worker_id = app.worker_app().create(&wd).await?;
-            let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestArg {
+            let jarg = JobqueueAndCodec::serialize_message(&proto::TestArg {
                 args: vec!["/".to_string()],
             });
 
@@ -996,13 +1010,12 @@ mod tests {
         let (app, _) = create_test_app(false)?;
         TEST_RUNTIME.block_on(async {
             // create command worker with hybrid queue
-            let operation =
-                JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestOperation {
-                    name: "ls".to_string(),
-                });
+            let operation = JobqueueAndCodec::serialize_message(&proto::TestOperation {
+                name: "ls".to_string(),
+            });
             let wd = WorkerData {
                 name: "testworker".to_string(),
-                schema_id: Some(WorkerSchemaId { value: 1 }),
+                schema_id: Some(WorkerSchemaId { value: 111 }),
                 operation,
                 channel: channel.cloned(),
                 response_type: ResponseType::NoResult as i32,
@@ -1017,7 +1030,7 @@ mod tests {
             let worker_id = app.worker_app().create(&wd).await?;
 
             // enqueue job
-            let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestArg {
+            let jarg = JobqueueAndCodec::serialize_message(&proto::TestArg {
                 args: vec!["/".to_string()],
             });
             assert_eq!(

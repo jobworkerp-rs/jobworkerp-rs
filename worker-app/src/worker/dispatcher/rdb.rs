@@ -27,8 +27,8 @@ use infra::infra::job::queue::rdb::RdbJobQueueRepository;
 use infra::infra::job::rdb::RdbChanJobRepositoryImpl;
 use infra::infra::job::rdb::UseRdbChanJobRepository;
 use infra::infra::job::rows::UseJobqueueAndCodec;
-use infra::infra::plugins::Plugins;
-use infra::infra::plugins::UsePlugins;
+use infra::infra::runner::factory::RunnerFactory;
+use infra::infra::runner::factory::UseRunnerFactory;
 use infra::infra::IdGeneratorWrapper;
 use infra::infra::JobQueueConfig;
 use infra::infra::UseIdGenerator;
@@ -242,7 +242,7 @@ pub struct RdbJobDispatcherImpl {
     job_queue_config: Arc<JobQueueConfig>,
     rdb_job_repository: Arc<RdbChanJobRepositoryImpl>,
     app_module: Arc<AppModule>,
-    plugins: Arc<Plugins>,
+    runner_factory: Arc<RunnerFactory>,
     runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
     result_processor: Arc<ResultProcessorImpl>,
 }
@@ -253,7 +253,7 @@ impl RdbJobDispatcherImpl {
         config_module: Arc<AppConfigModule>,
         rdb_job_repository: Arc<RdbChanJobRepositoryImpl>,
         app_module: Arc<AppModule>,
-        plugins: Arc<Plugins>,
+        runner_factory: Arc<RunnerFactory>,
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
         result_processor: Arc<ResultProcessorImpl>,
     ) -> Self {
@@ -262,7 +262,7 @@ impl RdbJobDispatcherImpl {
             job_queue_config: config_module.job_queue_config.clone(),
             rdb_job_repository,
             app_module,
-            plugins,
+            runner_factory,
             runner_pool_map,
             result_processor,
         }
@@ -285,15 +285,15 @@ impl UseWorkerApp for RdbJobDispatcherImpl {
     }
 }
 impl UseWorkerSchemaApp for RdbJobDispatcherImpl {
-    fn worker_schema_app(&self) -> &Arc<dyn WorkerSchemaApp + 'static> {
-        &self.app_module.worker_schema_app
+    fn worker_schema_app(&self) -> Arc<dyn WorkerSchemaApp> {
+        self.app_module.worker_schema_app.clone()
     }
 }
 
 impl UseJobqueueAndCodec for RdbJobDispatcherImpl {}
-impl UsePlugins for RdbJobDispatcherImpl {
-    fn plugins(&self) -> &Plugins {
-        &self.plugins
+impl UseRunnerFactory for RdbJobDispatcherImpl {
+    fn runner_factory(&self) -> &RunnerFactory {
+        &self.runner_factory
     }
 }
 

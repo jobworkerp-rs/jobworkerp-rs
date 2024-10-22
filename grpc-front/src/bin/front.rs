@@ -4,7 +4,7 @@ use anyhow::Result;
 use app::module::{AppConfigModule, AppModule};
 use command_utils::util::shutdown;
 use dotenvy::dotenv;
-use infra::infra::plugins::Plugins;
+use infra::infra::runner::factory::RunnerFactory;
 
 // start front_server
 #[tokio::main]
@@ -13,9 +13,8 @@ async fn main() -> Result<()> {
 
     command_utils::util::tracing::init_from_env_and_filename("jobworkerp-front", "log").await?;
 
-    let plugins = Arc::new(Plugins::new());
-
-    let config_module = Arc::new(AppConfigModule::new_by_env(plugins));
+    let runner_factory = Arc::new(RunnerFactory::new());
+    let config_module = Arc::new(AppConfigModule::new_by_env(runner_factory));
     let app_module = Arc::new(AppModule::new_by_env(config_module).await?);
     // setup worker schema on start front
     app_module.on_start_front().await?;

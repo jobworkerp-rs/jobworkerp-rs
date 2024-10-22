@@ -5,6 +5,7 @@ members = [
     "modules/infra-utils",
     "proto",
     "infra",
+    "plugins/test_runner",
     "worker-app",
     "grpc-front",
     "worker-main",

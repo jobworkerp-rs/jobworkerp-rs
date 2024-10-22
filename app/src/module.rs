@@ -19,8 +19,9 @@ use anyhow::Result;
 use infra::infra::module::rdb::RdbChanRepositoryModule;
 use infra::infra::module::redis::RedisRepositoryModule;
 use infra::infra::module::{HybridRepositoryModule, RedisRdbOptionalRepositoryModule};
-use infra::infra::plugins::Plugins;
+use infra::infra::runner::factory::RunnerFactory;
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig};
+use infra_utils::infra::memory::MemoryCacheImpl;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,10 +41,10 @@ pub struct AppConfigModule {
     pub storage_config: Arc<StorageConfig>,
     pub worker_config: Arc<WorkerConfig>,
     pub job_queue_config: Arc<JobQueueConfig>,
-    pub plugins: Arc<Plugins>,
+    pub runner_factory: Arc<RunnerFactory>,
 }
 impl AppConfigModule {
-    pub fn new_by_env(plugins: Arc<Plugins>) -> Self {
+    pub fn new_by_env(runner_factory: Arc<RunnerFactory>) -> Self {
         Self {
             storage_config: Arc::new(load_storage_config()),
             worker_config: Arc::new(load_worker_config()),
@@ -51,7 +52,7 @@ impl AppConfigModule {
             job_queue_config: Arc::new(
                 infra::infra::load_job_queue_config_from_env().unwrap_or_default(),
             ),
-            plugins,
+            runner_factory,
         }
     }
     // shortcut method
@@ -92,16 +93,23 @@ impl AppModule {
             .unwrap_or_default();
         let job_queue_config = config_module.job_queue_config.clone();
         let id_generator = Arc::new(IdGeneratorWrapper::new());
+        let descriptor_cache = Arc::new(MemoryCacheImpl::new(&mc_config, None));
         match config_module.storage_type() {
             StorageType::RDB => {
                 let repositories = Arc::new(
                     RdbChanRepositoryModule::new_by_env(
                         job_queue_config.clone(),
-                        config_module.plugins.clone(),
+                        config_module.runner_factory.clone(),
                         id_generator.clone(),
                     )
                     .await,
                 );
+                let worker_schema_app = Arc::new(RdbWorkerSchemaAppImpl::new(
+                    config_module.storage_config.clone(),
+                    &mc_config,
+                    repositories.clone(),
+                    descriptor_cache.clone(),
+                ));
                 let worker_app = Arc::new(RdbWorkerAppImpl::new(
                     config_module.storage_config.clone(),
                     id_generator.clone(),
@@ -110,6 +118,8 @@ impl AppModule {
                         Some(Duration::from_secs(5 * 60)),
                     ),
                     repositories.clone(),
+                    descriptor_cache.clone(),
+                    worker_schema_app.clone(),
                 ));
                 let job_result_app = Arc::new(RdbJobResultAppImpl::new(
                     config_module.storage_config.clone(),
@@ -127,11 +137,6 @@ impl AppModule {
                         Some(Duration::from_secs(5)),
                     ),
                 ));
-                let worker_schema_app = Arc::new(RdbWorkerSchemaAppImpl::new(
-                    config_module.storage_config.clone(),
-                    &mc_config,
-                    repositories.clone(),
-                ));
                 Ok(AppModule {
                     config_module,
                     repositories: Arc::new(RedisRdbOptionalRepositoryModule::from(repositories)),
@@ -146,10 +151,17 @@ impl AppModule {
                     RedisRepositoryModule::new_by_env(
                         None,
                         id_generator.clone(),
-                        config_module.plugins.clone(),
+                        config_module.runner_factory.clone(),
                     )
                     .await,
                 );
+                let worker_schema_app = Arc::new(RedisWorkerSchemaAppImpl::new(
+                    config_module.storage_config.clone(),
+                    id_generator.clone(),
+                    &mc_config,
+                    repositories.clone(),
+                    descriptor_cache.clone(),
+                ));
                 let worker_app = Arc::new(RedisWorkerAppImpl::new(
                     config_module.storage_config.clone(),
                     id_generator.clone(),
@@ -158,6 +170,8 @@ impl AppModule {
                         Some(Duration::from_secs(60 * 60)),
                     ),
                     repositories.clone(),
+                    descriptor_cache.clone(),
+                    worker_schema_app.clone(),
                 ));
                 let job_result_app = Arc::new(RedisJobResultAppImpl::new(
                     config_module.storage_config.clone(),
@@ -166,18 +180,11 @@ impl AppModule {
                 ));
                 let job_app = Arc::new(RedisJobAppImpl::new(
                     job_queue_config.clone(),
-                    id_generator.clone(),
+                    id_generator,
                     repositories.clone(),
                     worker_app.clone(),
                     job_result_app.clone(),
                 ));
-                let worker_schema_app = Arc::new(RedisWorkerSchemaAppImpl::new(
-                    config_module.storage_config.clone(),
-                    id_generator,
-                    &mc_config,
-                    repositories.clone(),
-                ));
-
                 Ok(AppModule {
                     config_module,
                     repositories: Arc::new(RedisRdbOptionalRepositoryModule::from(repositories)),
@@ -192,10 +199,17 @@ impl AppModule {
                     HybridRepositoryModule::new_by_env(
                         job_queue_config,
                         id_generator.clone(),
-                        config_module.plugins.clone(),
+                        config_module.runner_factory.clone(),
                     )
                     .await,
                 );
+                // TODO imprement and use hybrid runner schema app
+                let worker_schema_app = Arc::new(HybridWorkerSchemaAppImpl::new(
+                    config_module.storage_config.clone(),
+                    &mc_config,
+                    repositories.clone(),
+                    descriptor_cache.clone(),
+                ));
                 let worker_app = Arc::new(HybridWorkerAppImpl::new(
                     config_module.storage_config.clone(),
                     id_generator.clone(),
@@ -204,6 +218,8 @@ impl AppModule {
                         Some(Duration::from_secs(5 * 60)),
                     ),
                     repositories.clone(),
+                    descriptor_cache,
+                    worker_schema_app.clone(),
                 ));
                 let job_app = Arc::new(HybridJobAppImpl::new(
                     config_module.clone(),
@@ -221,13 +237,6 @@ impl AppModule {
                     repositories.clone(),
                     worker_app.clone(),
                 ));
-                // TODO imprement and use hybrid runner schema app
-                let worker_schema_app = Arc::new(HybridWorkerSchemaAppImpl::new(
-                    config_module.storage_config.clone(),
-                    &mc_config,
-                    repositories.clone(),
-                ));
-
                 Ok(AppModule {
                     config_module,
                     repositories: Arc::new(RedisRdbOptionalRepositoryModule::from(repositories)),

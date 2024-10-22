@@ -230,8 +230,8 @@ mod test {
     use proto::jobworkerp::data::JobResultId;
     use proto::jobworkerp::data::ResultOutput;
     use proto::jobworkerp::data::ResultStatus;
-    use proto::jobworkerp::data::TestArg;
     use proto::jobworkerp::data::WorkerId;
+    use proto::TestArg;
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
         let repository = RdbJobResultRepositoryImpl::new(pool);

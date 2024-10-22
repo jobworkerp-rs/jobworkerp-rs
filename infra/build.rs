@@ -11,6 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .compile_protos(
             &[
                 // TODO proto file path
+                "protobuf/jobworkerp/runner/common.proto",
                 "protobuf/jobworkerp/runner/command_operation.proto",
                 "protobuf/jobworkerp/runner/docker_operation.proto",
                 "protobuf/jobworkerp/runner/grpc_unary_operation.proto",
@@ -20,7 +21,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "protobuf/jobworkerp/runner/docker_args.proto",
                 "protobuf/jobworkerp/runner/grpc_unary_args.proto",
                 "protobuf/jobworkerp/runner/http_request_args.proto",
-                "protobuf/jobworkerp/runner/slack_args.proto",
             ],
             &["../proto/protobuf/", "protobuf"],
         )

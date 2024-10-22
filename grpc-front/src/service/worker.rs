@@ -422,10 +422,9 @@ mod tests {
         let v = Validator {
             storage_type: StorageType::RDB,
         };
-        let operation =
-            JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestOperation {
-                name: "ls".to_string(),
-            });
+        let operation = JobqueueAndCodec::serialize_message(&proto::TestOperation {
+            name: "ls".to_string(),
+        });
         let mut w = WorkerData {
             name: "ListCommand".to_string(),
             operation,
@@ -477,10 +476,9 @@ mod tests {
         let v = Validator {
             storage_type: StorageType::Hybrid,
         };
-        let operation =
-            JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestOperation {
-                name: "ls".to_string(),
-            });
+        let operation = JobqueueAndCodec::serialize_message(&proto::TestOperation {
+            name: "ls".to_string(),
+        });
         let mut w = WorkerData {
             name: "ListCommand".to_string(),
             operation,

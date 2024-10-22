@@ -17,6 +17,11 @@ use std::sync::Arc;
 
 // use crate::app::worker::builtin::{BuiltinWorker, BuiltinWorkerTrait};
 
+use crate::app::worker_schema::{
+    UseWorkerSchemaApp, UseWorkerSchemaAppParserWithCache, UseWorkerSchemaParserWithCache,
+    WorkerSchemaApp, WorkerSchemaWithDescriptor,
+};
+
 use super::super::{StorageConfig, UseStorageConfig};
 use super::{WorkerApp, WorkerAppCacheHelper};
 
@@ -26,6 +31,8 @@ pub struct HybridWorkerAppImpl {
     id_generator: Arc<IdGeneratorWrapper>,
     memory_cache: MemoryCacheImpl<Arc<String>, Vec<Worker>>,
     repositories: Arc<HybridRepositoryModule>,
+    descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>>,
+    worker_schema_app: Arc<dyn WorkerSchemaApp + 'static>,
 }
 
 impl HybridWorkerAppImpl {
@@ -34,12 +41,16 @@ impl HybridWorkerAppImpl {
         id_generator: Arc<IdGeneratorWrapper>,
         memory_cache: MemoryCacheImpl<Arc<String>, Vec<Worker>>,
         repositories: Arc<HybridRepositoryModule>,
+        descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>>,
+        worker_schema_app: Arc<dyn WorkerSchemaApp + 'static>,
     ) -> Self {
         Self {
             storage_config,
             id_generator,
             memory_cache,
             repositories,
+            descriptor_cache,
+            worker_schema_app,
         }
     }
 }
@@ -48,6 +59,12 @@ impl HybridWorkerAppImpl {
 #[async_trait]
 impl WorkerApp for HybridWorkerAppImpl {
     async fn create(&self, worker: &WorkerData) -> Result<WorkerId> {
+        let wsid = worker
+            .schema_id
+            .ok_or_else(|| JobWorkerError::InvalidParameter("schema_id is required".to_string()))?;
+        self.validate_operation_data(&wsid, worker.operation.as_slice())
+            .await?;
+
         let wid = {
             let db = self.rdb_worker_repository().db_pool();
             let mut tx = db.begin().await.map_err(JobWorkerError::DBError)?;
@@ -71,23 +88,37 @@ impl WorkerApp for HybridWorkerAppImpl {
 
     async fn update(&self, id: &WorkerId, worker: &Option<WorkerData>) -> Result<bool> {
         if let Some(w) = worker {
-            // use rdb
-            let pool = self.rdb_worker_repository().db_pool();
-            let mut tx = pool.begin().await.map_err(JobWorkerError::DBError)?;
-            self.rdb_worker_repository().update(&mut *tx, id, w).await?;
-            tx.commit().await.map_err(JobWorkerError::DBError)?;
+            if let Some(Worker {
+                id: _,
+                data: Some(owdat),
+            }) = self.find(id).await?
+            {
+                let wsid = w.schema_id.or(owdat.schema_id).ok_or_else(|| {
+                    JobWorkerError::InvalidParameter("schema_id is required".to_string())
+                })?;
+                self.validate_operation_data(&wsid, w.operation.as_slice())
+                    .await?;
 
-            let _ = self.redis_worker_repository().delete_all().await;
-            // clear memory cache (XXX without limit offset cache)
-            self.clear_cache(id).await;
-            self.clear_cache_by_name(&w.name).await;
+                // use rdb
+                let pool = self.rdb_worker_repository().db_pool();
+                let mut tx = pool.begin().await.map_err(JobWorkerError::DBError)?;
+                self.rdb_worker_repository().update(&mut *tx, id, w).await?;
+                tx.commit().await.map_err(JobWorkerError::DBError)?;
 
-            let _ = self
-                .redis_worker_repository()
-                .publish_worker_changed(id, w)
-                .await;
+                let _ = self.redis_worker_repository().delete_all().await;
+                // clear memory cache (XXX without limit offset cache)
+                self.clear_cache(id).await;
+                self.clear_cache_by_name(&w.name).await;
 
-            Ok(true)
+                let _ = self
+                    .redis_worker_repository()
+                    .publish_worker_changed(id, w)
+                    .await;
+
+                Ok(true)
+            } else {
+                Err(JobWorkerError::NotFound(format!("worker not found: id={}", &id.value)).into())
+            }
         } else {
             // empty data, only clear cache
             self.clear_cache(id).await;
@@ -321,12 +352,25 @@ impl UseRedisRepositoryModule for HybridWorkerAppImpl {
     }
 }
 impl UseJobqueueAndCodec for HybridWorkerAppImpl {}
+
+impl UseWorkerSchemaApp for HybridWorkerAppImpl {
+    fn worker_schema_app(&self) -> Arc<dyn WorkerSchemaApp> {
+        self.worker_schema_app.clone()
+    }
+}
+impl UseWorkerSchemaParserWithCache for HybridWorkerAppImpl {
+    fn descriptor_cache(&self) -> &MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor> {
+        &self.descriptor_cache
+    }
+}
+
+impl UseWorkerSchemaAppParserWithCache for HybridWorkerAppImpl {}
+
 impl WorkerAppCacheHelper for HybridWorkerAppImpl {
     fn memory_cache(&self) -> &MemoryCacheImpl<Arc<String>, Vec<Worker>> {
         &self.memory_cache
     }
 }
-
 // create test
 #[cfg(test)]
 mod tests {
@@ -335,6 +379,8 @@ mod tests {
 
     use crate::app::worker::hybrid::HybridWorkerAppImpl;
     use crate::app::worker::WorkerApp;
+    use crate::app::worker_schema::hybrid::HybridWorkerSchemaAppImpl;
+    use crate::app::worker_schema::WorkerSchemaApp;
     use crate::app::{StorageConfig, StorageType};
     use anyhow::Result;
     use command_utils::util::option::FlatMap;
@@ -343,8 +389,10 @@ mod tests {
     use infra::infra::module::redis::test::setup_test_redis_module;
     use infra::infra::module::HybridRepositoryModule;
     use infra::infra::IdGeneratorWrapper;
+    use infra_utils::infra::memory::MemoryCacheImpl;
     use infra_utils::infra::test::TEST_RUNTIME;
-    use proto::jobworkerp::data::{TestOperation, WorkerData};
+    use proto::jobworkerp::data::{WorkerData, WorkerSchemaId};
+    use proto::TestOperation;
 
     fn create_test_app(use_mock_id: bool) -> Result<HybridWorkerAppImpl> {
         let rdb_module = setup_test_rdb_module();
@@ -365,6 +413,7 @@ mod tests {
                 max_cost: 10000,
                 use_metrics: false,
             };
+            let descriptor_cache = Arc::new(MemoryCacheImpl::new(&mc_config, None));
             let worker_memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
                 &mc_config,
                 Some(Duration::from_secs(5 * 60)),
@@ -373,11 +422,22 @@ mod tests {
                 r#type: StorageType::Hybrid,
                 restore_at_startup: Some(false),
             });
+            let worker_schema_app = HybridWorkerSchemaAppImpl::new(
+                storage_config.clone(),
+                &mc_config,
+                repositories.clone(),
+                descriptor_cache.clone(),
+            );
+            let _ = worker_schema_app
+                .create_test_schema(&WorkerSchemaId { value: 111 }, "Test")
+                .await?;
             let worker_app = HybridWorkerAppImpl::new(
                 storage_config.clone(),
                 id_generator.clone(),
                 worker_memory_cache,
                 repositories.clone(),
+                descriptor_cache,
+                Arc::new(worker_schema_app),
             );
             Ok(worker_app)
         })
@@ -394,16 +454,19 @@ mod tests {
             let w1 = WorkerData {
                 name: "test1".to_string(),
                 operation: operation.clone(),
+                schema_id: Some(WorkerSchemaId { value: 111 }),
                 ..Default::default()
             };
             let w2 = WorkerData {
                 name: "test2".to_string(),
                 operation: operation.clone(),
+                schema_id: Some(WorkerSchemaId { value: 111 }),
                 ..Default::default()
             };
             let w3 = WorkerData {
                 name: "test3".to_string(),
                 operation: operation.clone(),
+                schema_id: Some(WorkerSchemaId { value: 111 }),
                 ..Default::default()
             };
             let id1 = app.create(&w1).await?;
@@ -414,13 +477,13 @@ mod tests {
             assert_eq!(id3.value, 3);
             // find list
             let list = app.find_list(None, None).await?;
-            // println!("==== created: {:#?}", list);
             assert_eq!(list.len(), 3);
             assert_eq!(app.count().await?, 3);
             // update
             let w4 = WorkerData {
                 name: "test4".to_string(),
                 operation: operation.clone(),
+                // schema_id: Some(WorkerSchemaId { value: 111 }),
                 ..Default::default()
             };
             let res = app.update(&id1, &Some(w4.clone())).await?;
@@ -433,7 +496,6 @@ mod tests {
             assert_eq!(fd.unwrap().name, w4.name);
             // find list
             let list = app.find_list(None, None).await?;
-            // println!("==== updated: {:#?}", list);
             assert_eq!(list.len(), 3);
             assert_eq!(app.count().await?, 3);
             // delete

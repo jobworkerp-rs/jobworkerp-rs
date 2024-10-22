@@ -5,7 +5,6 @@ use std::sync::{Arc, RwLock};
 use super::PluginLoader;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use command_utils::util::option::FlatMap as _;
 use command_utils::util::result::{Flatten, TapErr as _, ToOption as _};
 use libloading::{Library, Symbol};
 
@@ -43,39 +42,32 @@ impl RunnerPluginLoader {
     }
 
     // find plugin (not loaded. reference only. cannot run)
-    pub fn find_plugin_runner_by_name<'a>(
-        &'a mut self,
-        name: &'a str,
-    ) -> Option<Box<dyn PluginRunner + Send + Sync>> {
-        self.plugin_loaders
-            .iter()
-            .find(|p| p.0.as_str() == name)
-            .flat_map(|r| {
-                // XXX unsafe
-                unsafe { r.2.get(b"load_plugin") }
-                    .tap_err(|e| {
-                        tracing::error!("error in loading runner plugin:{name}, error: {e:?}")
-                    })
-                    .to_option()
-                    .map(|lp: LoaderFunc<'_>| lp())
-            })
-    }
-
-    // if operation is Some, load plugin with operation
-    // (blocking)
-    pub async fn load_runner_by_name<'a>(
-        &'a mut self,
-        name: &'a str,
-        operation: Vec<u8>,
-    ) -> Result<Box<dyn Runner + Send + Sync>> {
-        if let Some(p) = self.find_plugin_runner_by_name(name) {
-            let p = PluginRunnerWrapperImpl::new(Arc::new(RwLock::new(p)));
-            let p = p.load(operation).await?;
-            Ok(Box::new(p) as Box<dyn Runner + Send + Sync>)
+    pub fn find_plugin_runner_by_name(&self, name: &str) -> Option<PluginRunnerWrapperImpl> {
+        if let Some((name, _, lib)) = self.plugin_loaders.iter().find(|p| p.0.as_str() == name) {
+            // XXX unsafe
+            unsafe { lib.get(b"load_plugin") }
+                .tap_err(|e| tracing::error!("error in loading runner plugin:{name}, error: {e:?}"))
+                .to_option()
+                .map(|lp: LoaderFunc<'_>| PluginRunnerWrapperImpl::new(Arc::new(RwLock::new(lp()))))
         } else {
-            Err(anyhow!("plugin not found: {}", name))
+            None
         }
     }
+
+    // // if operation is Some, load plugin with operation
+    // // (blocking)
+    // pub async fn load_runner_by_name<'a>(
+    //     &self,
+    //     name: &'a str,
+    //     operation: Vec<u8>,
+    // ) -> Result<Box<dyn Runner + Send + Sync>> {
+    //     if let Some(p) = self.find_plugin_runner_by_name(name) {
+    //         let p = p.create(operation).await?;
+    //         Ok(Box::new(p) as Box<dyn Runner + Send + Sync>)
+    //     } else {
+    //         Err(anyhow!("plugin not found: {}", name))
+    //     }
+    // }
 }
 
 impl Default for RunnerPluginLoader {
@@ -154,7 +146,7 @@ impl PluginRunnerWrapperImpl {
     pub fn new(plugin_runner: Arc<RwLock<Box<dyn PluginRunner + Send + Sync>>>) -> Self {
         Self { plugin_runner }
     }
-    pub async fn load(self, operation: Vec<u8>) -> Result<Self> {
+    pub async fn create(&self, operation: Vec<u8>) -> Result<()> {
         let plugin_runner = Arc::clone(&self.plugin_runner);
         #[allow(unstable_name_collisions)]
         tokio::task::spawn_blocking(move || {
@@ -165,24 +157,28 @@ impl PluginRunnerWrapperImpl {
         })
         .await
         .map_err(|e| e.into())
-        .flatten()
-        .map(|_| self)
+        .flatten()?;
+        Ok(())
     }
 }
 
 #[async_trait]
 impl Runner for PluginRunnerWrapperImpl {
-    async fn name(&self) -> String {
+    fn name(&self) -> String {
         let plugin_runner = Arc::clone(&self.plugin_runner);
         let n = plugin_runner
             .read()
             .map(|p| p.name())
             .unwrap_or_else(|e| format!("Error occurred: {:}", e));
-        format!("PluginRunnerWrapper: {}", &n)
+        n
+    }
+    async fn load(&mut self, operation: Vec<u8>) -> Result<()> {
+        self.create(operation).await?;
+        Ok(())
     }
     // arg: assumed as utf-8 string, specify multiple arguments with \n separated
     #[allow(unstable_name_collisions)]
-    async fn run<'a>(&'a mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
+    async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
         // XXX clone
         let plugin_runner = self.plugin_runner.clone();
         let arg1 = arg.to_vec();

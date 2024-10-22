@@ -330,8 +330,8 @@ mod test {
     use proto::jobworkerp::data::Job;
     use proto::jobworkerp::data::JobData;
     use proto::jobworkerp::data::JobId;
-    use proto::jobworkerp::data::TestArg;
     use proto::jobworkerp::data::WorkerId;
+    use proto::TestArg;
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
         let repository = RdbChanJobRepositoryImpl::new(Arc::new(JobQueueConfig::default()), pool);

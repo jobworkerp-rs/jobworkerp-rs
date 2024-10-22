@@ -2,7 +2,6 @@ pub mod event;
 pub mod job;
 pub mod job_result;
 pub mod module;
-pub mod plugins;
 pub mod resource;
 pub mod runner;
 pub mod worker;
