@@ -206,7 +206,7 @@ mod test {
         let worker_id2 = WorkerId { value: 21 };
 
         let jid = JobId { value: 1 };
-        let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestArg {
+        let jarg = JobqueueAndCodec::serialize_message(&proto::TestArg {
             args: vec!["GET".to_string(), "/".to_string()],
         });
         let instant_job_data = JobData {
@@ -356,7 +356,7 @@ mod test {
             let worker_id = WorkerId { value: 11 };
             let worker_id2 = WorkerId { value: 21 };
             let jid0 = JobId { value: 1 };
-            let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestArg {
+            let jarg = JobqueueAndCodec::serialize_message(&proto::TestArg {
                 args: vec!["GET".to_string(), "/".to_string()],
             });
             let now_millis = datetime::now_millis();

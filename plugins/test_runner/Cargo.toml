@@ -1,0 +1,23 @@
+[package]
+name = "plugin_runner_test"
+version.workspace = true
+authors.workspace = true
+edition = "2021"
+description = "jobworkerp runner plugin for test"
+
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+prost = { workspace = true }
+serde = { workspace = true }
+tonic = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }

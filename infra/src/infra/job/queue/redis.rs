@@ -246,7 +246,7 @@ mod test {
             job_queue_config,
             redis_pool,
         };
-        let arg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestArg {
+        let arg = JobqueueAndCodec::serialize_message(&proto::TestArg {
             args: vec!["test".to_string()],
         });
         let job = Job {

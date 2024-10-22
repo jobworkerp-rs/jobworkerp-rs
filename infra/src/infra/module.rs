@@ -2,7 +2,9 @@ pub mod rdb;
 pub mod redis;
 
 use self::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
-use super::{plugins::Plugins, IdGeneratorWrapper, InfraConfigModule, JobQueueConfig};
+use super::{
+    runner::factory::RunnerFactory, IdGeneratorWrapper, InfraConfigModule, JobQueueConfig,
+};
 use rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use std::sync::Arc;
 
@@ -19,17 +21,17 @@ impl HybridRepositoryModule {
     pub async fn new(
         infra_config_module: &InfraConfigModule,
         id_generator: Arc<IdGeneratorWrapper>,
-        plugins: Arc<Plugins>,
+        runner_factory: Arc<RunnerFactory>,
     ) -> Self {
         let redis_module = RedisRepositoryModule::new(
             infra_config_module,
             id_generator.clone(),
-            plugins.clone(),
+            runner_factory.clone(),
             Self::DEFAULT_WORKER_REDIS_EXPIRE_SEC,
         )
         .await;
         let rdb_module =
-            RdbChanRepositoryModule::new(infra_config_module, plugins, id_generator).await;
+            RdbChanRepositoryModule::new(infra_config_module, runner_factory, id_generator).await;
         HybridRepositoryModule {
             redis_module,
             rdb_chan_module: rdb_module,
@@ -38,16 +40,17 @@ impl HybridRepositoryModule {
     pub async fn new_by_env(
         job_queue_config: Arc<JobQueueConfig>,
         id_generator: Arc<IdGeneratorWrapper>,
-        plugins: Arc<Plugins>,
+        runner_factory: Arc<RunnerFactory>,
     ) -> Self {
         let redis_module = RedisRepositoryModule::new_by_env(
             Self::DEFAULT_WORKER_REDIS_EXPIRE_SEC,
             id_generator.clone(),
-            plugins.clone(),
+            runner_factory.clone(),
         )
         .await;
         let rdb_module =
-            RdbChanRepositoryModule::new_by_env(job_queue_config, plugins, id_generator).await;
+            RdbChanRepositoryModule::new_by_env(job_queue_config, runner_factory, id_generator)
+                .await;
         HybridRepositoryModule {
             redis_module,
             rdb_chan_module: rdb_module,

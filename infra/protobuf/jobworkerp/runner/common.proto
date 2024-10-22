@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package jobworkerp.runner;
+
+
+// jobworkerp.comon.ResultOutput
+message ResultOutput {
+    repeated bytes items = 1;
+}
+
+// jobworkerp.data.ResultStatus
+enum ResultStatus {
+    SUCCESS = 0; //  job succeeded
+    ERROR_AND_RETRY = 1; // error and retry job
+    FATAL_ERROR = 2; // fatal worker result error (cannot retry)
+    ABORT = 3;  // abort (cannot retry)
+    MAX_RETRY = 4; // reach max retry count (cannot retry)
+    OTHER_ERROR = 5; // unexpected system status error (cannot retry)
+}
+
+// for slack operation
+message ResultMessageData {
+    int64 result_id                            = 1; // job result id (jobworkerp.data.JobResultId::value)
+    int64 job_id                               = 2; // job id (jobworkerp.data.JobId::value)
+    string worker_name                         = 3;
+    ResultStatus status                        = 4; // job result status
+    ResultOutput output                        = 5; // job response data
+    uint32 retried                             = 6;
+    int64 enqueue_time                         = 7; // job enqueue time
+    int64 run_after_time                       = 8; // job run after this time (specified by client)
+    int64 start_time                           = 9; // job start time
+    int64 end_time                             = 10; // job end time
+}
+

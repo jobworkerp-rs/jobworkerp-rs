@@ -248,9 +248,8 @@ pub trait UseRedisWorkerRepository {
 async fn redis_test() -> Result<()> {
     use command_utils::util::option::FlatMap;
     use proto::jobworkerp::data::RetryPolicy;
-    use proto::jobworkerp::data::{
-        QueueType, ResponseType, TestOperation, WorkerData, WorkerId, WorkerSchemaId,
-    };
+    use proto::jobworkerp::data::{QueueType, ResponseType, WorkerData, WorkerId, WorkerSchemaId};
+    use proto::TestOperation;
 
     let pool = infra_utils::infra::test::setup_test_redis_pool().await;
     let cli = infra_utils::infra::test::setup_test_redis_client()?;

@@ -256,10 +256,9 @@ mod test {
             job_queue_config,
             chan_buf: chan_buf.clone(),
         };
-        let arg =
-            ChanJobQueueRepositoryImpl::serialize_message(&proto::jobworkerp::data::TestArg {
-                args: vec!["test".to_string()],
-            });
+        let arg = ChanJobQueueRepositoryImpl::serialize_message(&proto::TestArg {
+            args: vec!["test".to_string()],
+        });
         let job = Job {
             id: None,
             data: Some(JobData {
@@ -351,7 +350,7 @@ mod test {
             job_queue_config,
             chan_buf,
         };
-        let arg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestArg {
+        let arg = JobqueueAndCodec::serialize_message(&proto::TestArg {
             args: vec!["test".to_string()],
         });
         let job1 = Job {

@@ -72,21 +72,23 @@ CREATE TABLE `worker_schema` (
   `id` BIGINT(10) PRIMARY KEY,
   `name` VARCHAR(128) NOT NULL, -- name for identification
   `file_name` VARCHAR(512) NOT NULL, -- file name of the runner dynamic library
+  `type` INT(10) NOT NULL, -- runner type. enum: command, request, grpc_unary, plugin
   UNIQUE KEY `name` (`name`),
   UNIQUE KEY `file_name` (`file_name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- builtin runner definitions (operation_type != 1 cannot edit or delete)
 -- (file_name is not real file name(built-in runner), but just a name for identification)
-INSERT INTO worker_schema (id, name, file_name) VALUES (
-  1, 'SlackJobResult', 'builtin0'
+INSERT IGNORE INTO worker_schema (id, name, file_name, type) VALUES (
+  1, 'COMMAND', 'builtin1', 1
 ), (
-  2, 'Command', 'builtin1'
+  2, 'HTTP_REQUEST', 'builtin2', 2
 ), (
-  3, 'HttpRequest', 'builtin2'
+  3, 'GRPC_UNARY', 'builtin3', 3
 ), (
-  4, 'GrpcUnary', 'builtin3'
+  4, 'DOCKER', 'builtin4', 4
 ), (
-  5, 'Docker', 'builtin4'
+  5, 'SLACK_NOTIFICATION', 'builtin0', 5
 );
+
 

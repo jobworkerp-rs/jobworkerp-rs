@@ -1,12 +1,12 @@
 use super::rows::WorkerSchemaRow;
 use crate::error::JobWorkerError;
-use crate::infra::plugins::{Plugins, UsePlugins};
+use crate::infra::runner::factory::{RunnerFactory, UseRunnerFactory};
 use crate::infra::{IdGeneratorWrapper, UseIdGenerator};
 use anyhow::Result;
 use async_trait::async_trait;
 use infra_utils::infra::redis::{RedisPool, UseRedisPool};
 use prost::Message;
-use proto::jobworkerp::data::{WorkerSchema, WorkerSchemaData, WorkerSchemaId};
+use proto::jobworkerp::data::{RunnerType, WorkerSchema, WorkerSchemaData, WorkerSchemaId};
 use redis::AsyncCommands;
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -15,26 +15,23 @@ use std::sync::Arc;
 // TODO use if you need (not using in default)
 #[async_trait]
 pub trait RedisWorkerSchemaRepository:
-    UseRedisPool + UsePlugins + UseIdGenerator + Sync + 'static
+    UseRedisPool + UseRunnerFactory + UseIdGenerator + Sync + 'static
 where
     Self: Send + 'static,
 {
     const CACHE_KEY: &'static str = "RUNNER_SCHEMA_DEF";
 
     async fn add_from_plugins(&self) -> Result<()> {
-        let names = self.plugins().load_plugin_files_from_env().await?;
+        let names = self.runner_factory().load_plugins().await?;
         for (name, fname) in names.iter() {
-            let p = self
-                .plugins()
-                .runner_plugins()
-                .write()
-                .await
-                .find_plugin_runner_by_name(name);
-            if let Some(p) = p {
+            if let Some(p) = self.runner_factory().create_by_name(name).await {
                 let schema = WorkerSchemaRow {
                     id: self.id_generator().generate_id()?,
                     name: name.clone(),
                     file_name: fname.clone(),
+                    r#type: RunnerType::from_str_name(name)
+                        .map(|t| t as i32)
+                        .unwrap_or(0), // default: PLUGIN
                 }
                 .to_proto(p);
                 if let WorkerSchema {
@@ -172,7 +169,7 @@ where
     }
 }
 
-impl<T: UseRedisPool + UseIdGenerator + UsePlugins + Send + Sync + 'static>
+impl<T: UseRedisPool + UseIdGenerator + UseRunnerFactory + Send + Sync + 'static>
     RedisWorkerSchemaRepository for T
 {
 }
@@ -182,20 +179,20 @@ pub struct RedisWorkerSchemaRepositoryImpl {
     pub redis_pool: &'static RedisPool,
     pub redis_client: deadpool_redis::redis::Client,
     id_generator: Arc<IdGeneratorWrapper>,
-    plugins: Arc<Plugins>,
+    runner_factory: Arc<RunnerFactory>,
 }
 impl RedisWorkerSchemaRepositoryImpl {
     pub fn new(
         redis_pool: &'static RedisPool,
         client: deadpool_redis::redis::Client,
         id_generator: Arc<IdGeneratorWrapper>,
-        plugins: Arc<Plugins>,
+        runner_factory: Arc<RunnerFactory>,
     ) -> Self {
         Self {
             redis_pool,
             redis_client: client,
             id_generator,
-            plugins,
+            runner_factory,
         }
     }
 }
@@ -211,9 +208,9 @@ impl UseIdGenerator for RedisWorkerSchemaRepositoryImpl {
         &self.id_generator
     }
 }
-impl UsePlugins for RedisWorkerSchemaRepositoryImpl {
-    fn plugins(&self) -> &Plugins {
-        &self.plugins
+impl UseRunnerFactory for RedisWorkerSchemaRepositoryImpl {
+    fn runner_factory(&self) -> &RunnerFactory {
+        &self.runner_factory
     }
 }
 
@@ -227,18 +224,19 @@ async fn redis_test() -> Result<()> {
 
     let pool = infra_utils::infra::test::setup_test_redis_pool().await;
     let cli = infra_utils::infra::test::setup_test_redis_client()?;
-    let plugins = Arc::new(Plugins::new());
-    plugins.load_plugin_files_from_env().await?;
+    let runner_factory = Arc::new(RunnerFactory::new());
+    runner_factory.load_plugins().await?;
 
     let repo = RedisWorkerSchemaRepositoryImpl {
         redis_pool: pool,
         redis_client: cli,
         id_generator: Arc::new(IdGeneratorWrapper::new()),
-        plugins,
+        runner_factory,
     };
     let id = WorkerSchemaId { value: 1 };
     let worker_schema = &WorkerSchemaData {
         name: "hoge1".to_string(),
+        runner_type: 1,
         operation_proto: "hoge3".to_string(),
         job_arg_proto: "hoge5".to_string(),
     };

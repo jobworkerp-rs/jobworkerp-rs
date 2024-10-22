@@ -1,7 +1,7 @@
 use anyhow::Result;
 use app::module::AppModule;
 use command_utils::util::shutdown::ShutdownLock;
-use infra::infra::plugins::Plugins;
+use infra::infra::runner::factory::RunnerFactory;
 use infra::infra::IdGeneratorWrapper;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
@@ -10,7 +10,7 @@ use worker_app::WorkerModules;
 
 pub async fn start_worker(
     app_module: Arc<AppModule>,
-    plugins: Arc<Plugins>,
+    runner_factory: Arc<RunnerFactory>,
     lock: ShutdownLock,
 ) -> Result<()> {
     let config_module = app_module.config_module.clone();
@@ -19,7 +19,7 @@ pub async fn start_worker(
         config_module.clone(),
         Arc::new(IdGeneratorWrapper::new()), // use for job_result.id
         app_module.clone(),
-        plugins.clone(),
+        runner_factory.clone(),
     );
 
     // create and start job dispatcher

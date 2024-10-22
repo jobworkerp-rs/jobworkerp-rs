@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn test_validate_create_ok() {
         let v = Validator {};
-        let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestArg {
+        let jarg = JobqueueAndCodec::serialize_message(&proto::TestArg {
             args: vec!["fuga".to_string()],
         });
         let mut req = JobRequest {
@@ -231,7 +231,7 @@ mod tests {
     #[test]
     fn test_validate_create_ng() {
         let v = Validator {};
-        let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::TestArg {
+        let jarg = JobqueueAndCodec::serialize_message(&proto::TestArg {
             args: vec!["fuga".to_string()],
         });
         let reqr = JobRequest {

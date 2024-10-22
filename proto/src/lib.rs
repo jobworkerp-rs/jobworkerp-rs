@@ -3,3 +3,6 @@ pub mod jobworkerp {
         tonic::include_proto!("jobworkerp.data");
     }
 }
+
+// for test runner
+tonic::include_proto!("_");

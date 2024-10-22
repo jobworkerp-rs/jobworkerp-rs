@@ -12,7 +12,7 @@ use tokio::sync::RwLock;
 
 use self::runner::RunnerPluginLoader;
 
-pub trait PluginLoader: Send + Sync {
+pub(super) trait PluginLoader: Send + Sync {
     fn load_path(&mut self, path: &Path) -> Result<String>;
     fn unload(&mut self, name: &str) -> Result<bool>;
     fn clear(&mut self) -> Result<()>;
@@ -24,7 +24,7 @@ enum PluginType {
 }
 
 #[derive(Debug)]
-pub struct Plugins {
+pub(super) struct Plugins {
     runner_loader: Arc<RwLock<RunnerPluginLoader>>,
 }
 impl Default for Plugins {
@@ -91,8 +91,4 @@ impl Plugins {
     pub fn runner_plugins(&self) -> Arc<RwLock<RunnerPluginLoader>> {
         self.runner_loader.clone()
     }
-}
-
-pub trait UsePlugins {
-    fn plugins(&self) -> &Plugins;
 }

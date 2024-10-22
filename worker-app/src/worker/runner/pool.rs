@@ -1,6 +1,6 @@
-use super::factory::RunnerFactoryImpl;
+// use super::factory::RunnerFactoryImpl;
 use super::Runner;
-use crate::worker::runner::factory::RunnerFactory;
+// use crate::worker::runner::factory::RunnerFactory;
 use anyhow::{anyhow, Result};
 use app::app::WorkerConfig;
 use deadpool::managed::Timeouts;
@@ -9,7 +9,7 @@ use deadpool::{
     Runtime,
 };
 use infra::error::JobWorkerError;
-use infra::infra::plugins::Plugins;
+use infra::infra::runner::factory::RunnerFactory;
 use proto::jobworkerp::data::{WorkerData, WorkerSchemaData};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -19,19 +19,19 @@ use tracing;
 pub struct RunnerPoolManagerImpl {
     schema: Arc<WorkerSchemaData>,
     worker: Arc<WorkerData>,
-    runner_factory: RunnerFactoryImpl,
+    runner_factory: Arc<RunnerFactory>,
 }
 
 impl RunnerPoolManagerImpl {
     pub async fn new(
         schema: Arc<WorkerSchemaData>,
         worker: Arc<WorkerData>,
-        plugins: Arc<Plugins>,
+        runner_factory: Arc<RunnerFactory>,
     ) -> Self {
         Self {
             schema,
             worker,
-            runner_factory: RunnerFactoryImpl::new(plugins),
+            runner_factory,
         }
     }
 }
@@ -41,11 +41,16 @@ impl Manager for RunnerPoolManagerImpl {
     type Error = anyhow::Error;
 
     async fn create(&self) -> Result<Arc<Mutex<Box<dyn Runner + Send + Sync>>>, anyhow::Error> {
-        let runner = self
+        let mut runner = self
             .runner_factory
-            .create(&self.schema, &self.worker)
-            .await?;
-        tracing::debug!("runner created in pool: {}", runner.name().await);
+            .create_by_name(&self.schema.name)
+            .await
+            .ok_or(JobWorkerError::InvalidParameter(format!(
+                "runner not found: {:?}",
+                &self.schema.name
+            )))?;
+        runner.load(self.worker.operation.clone()).await?;
+        tracing::debug!("runner created in pool: {}", runner.name());
         Ok(Arc::new(Mutex::new(runner)))
     }
 
@@ -84,7 +89,7 @@ impl RunnerFactoryWithPool {
     pub async fn new(
         schema: Arc<WorkerSchemaData>,
         worker: Arc<WorkerData>,
-        plugins: Arc<Plugins>,
+        runner_factory: Arc<RunnerFactory>,
         worker_config: Arc<WorkerConfig>,
     ) -> Result<Self> {
         if !worker.use_static {
@@ -95,7 +100,8 @@ impl RunnerFactoryWithPool {
             .into());
         }
         let manager =
-            RunnerPoolManagerImpl::new(schema.clone(), worker.clone(), plugins.clone()).await;
+            RunnerPoolManagerImpl::new(schema.clone(), worker.clone(), runner_factory.clone())
+                .await;
         let max_size = if let Some(c) = worker_config.get_concurrency(worker.channel.as_ref()) {
             Ok(c)
         } else {
@@ -134,31 +140,33 @@ impl RunnerFactoryWithPool {
 // create test for RunnerFactoryWithPool
 #[cfg(test)]
 mod tests {
-    use crate::worker::runner::impls::builtin::slack::{SLACK_RUNNER_OPERATION, SLACK_WORKER_NAME};
-
     use super::*;
     use anyhow::Result;
     use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
-    use proto::jobworkerp::data::{OperationType, WorkerData};
+    use infra::jobworkerp::runner::CommandOperation;
+    use proto::jobworkerp::data::{RunnerType, WorkerData};
 
     #[tokio::test]
     async fn test_runner_pool() -> Result<()> {
         // dotenvy::dotenv()?;
         std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug/");
-        let plugins = Plugins::new();
-        plugins.load_plugin_files_from_env().await?;
+        let runner_factory = RunnerFactory::new();
+        runner_factory.load_plugins().await?;
+        let ope = CommandOperation {
+            name: "ls".to_string(),
+        };
         let factory = RunnerFactoryWithPool::new(
             Arc::new(WorkerSchemaData {
-                name: OperationType::SlackInternal.as_str_name().to_string(),
+                name: RunnerType::Command.as_str_name().to_string(),
                 ..Default::default()
             }),
             Arc::new(WorkerData {
-                operation: JobqueueAndCodec::serialize_message(&SLACK_RUNNER_OPERATION),
+                operation: JobqueueAndCodec::serialize_message(&ope),
                 channel: None,
                 use_static: true,
                 ..Default::default()
             }),
-            Arc::new(plugins),
+            Arc::new(runner_factory),
             // default worker_config concurrency: 1
             Arc::new(WorkerConfig {
                 default_concurrency: 1, // => runner pool size 1
@@ -167,8 +175,8 @@ mod tests {
         )
         .await?;
         let runner = factory.get().await?;
-        let name = runner.lock().await.name().await;
-        assert_eq!(name, SLACK_WORKER_NAME);
+        let name = runner.lock().await.name();
+        assert_eq!(name, RunnerType::Command.as_str_name());
         let res = factory.timeout_get(&Timeouts::wait_millis(1000)).await;
         // timeout
         assert!(res.is_err());
@@ -185,20 +193,23 @@ mod tests {
     async fn test_runner_pool_non_static_err() -> Result<()> {
         std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug/");
         // dotenvy::dotenv()?;
-        let plugins = Plugins::new();
-        plugins.load_plugin_files_from_env().await?;
+        let runner_factory = RunnerFactory::new();
+        runner_factory.load_plugins().await?;
+        let ope = CommandOperation {
+            name: "ls".to_string(),
+        };
         assert!(RunnerFactoryWithPool::new(
             Arc::new(WorkerSchemaData {
-                name: OperationType::SlackInternal.as_str_name().to_string(),
+                name: RunnerType::Command.as_str_name().to_string(),
                 ..Default::default()
             }),
             Arc::new(WorkerData {
-                operation: JobqueueAndCodec::serialize_message(&SLACK_RUNNER_OPERATION),
+                operation: JobqueueAndCodec::serialize_message(&ope),
                 channel: None,
                 use_static: false,
                 ..Default::default()
             }),
-            Arc::new(plugins),
+            Arc::new(runner_factory),
             Arc::new(WorkerConfig {
                 default_concurrency: 1, // => runner pool size 1
                 ..WorkerConfig::default()

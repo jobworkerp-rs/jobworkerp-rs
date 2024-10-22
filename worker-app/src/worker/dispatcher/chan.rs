@@ -21,7 +21,7 @@ use infra::infra::job::rdb::{RdbChanJobRepositoryImpl, RdbJobRepository, UseRdbC
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::job::status::memory::MemoryJobStatusRepository;
 use infra::infra::job::status::{JobStatusRepository, UseJobStatusRepository};
-use infra::infra::plugins::{Plugins, UsePlugins};
+use infra::infra::runner::factory::{RunnerFactory, UseRunnerFactory};
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use proto::jobworkerp::data::{
     Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, Worker, WorkerSchema,
@@ -275,7 +275,7 @@ pub struct ChanJobDispatcherImpl {
     rdb_job_repository: Arc<RdbChanJobRepositoryImpl>,
     job_status_repository: Arc<MemoryJobStatusRepository>,
     app_module: Arc<AppModule>,
-    plugins: Arc<Plugins>,
+    runner_factory: Arc<RunnerFactory>,
     runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
     result_processor: Arc<ResultProcessorImpl>,
 }
@@ -288,7 +288,7 @@ impl ChanJobDispatcherImpl {
         rdb_job_repository: Arc<RdbChanJobRepositoryImpl>,
         job_status_repository: Arc<MemoryJobStatusRepository>,
         app_module: Arc<AppModule>,
-        plugins: Arc<Plugins>,
+        runner_factory: Arc<RunnerFactory>,
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
         result_processor: Arc<ResultProcessorImpl>,
     ) -> Self {
@@ -298,7 +298,7 @@ impl ChanJobDispatcherImpl {
             rdb_job_repository,
             job_status_repository,
             app_module,
-            plugins,
+            runner_factory,
             runner_pool_map,
             result_processor,
         }
@@ -324,9 +324,9 @@ impl UseWorkerApp for ChanJobDispatcherImpl {
     }
 }
 
-impl UsePlugins for ChanJobDispatcherImpl {
-    fn plugins(&self) -> &Plugins {
-        &self.plugins
+impl UseRunnerFactory for ChanJobDispatcherImpl {
+    fn runner_factory(&self) -> &RunnerFactory {
+        &self.runner_factory
     }
 }
 // impl UseSubscribeWorker for ChanJobDispatcherImpl {}
@@ -356,8 +356,8 @@ impl UseRdbChanJobRepository for ChanJobDispatcherImpl {
     }
 }
 impl UseWorkerSchemaApp for ChanJobDispatcherImpl {
-    fn worker_schema_app(&self) -> &Arc<dyn WorkerSchemaApp + 'static> {
-        &self.app_module.worker_schema_app
+    fn worker_schema_app(&self) -> Arc<dyn WorkerSchemaApp> {
+        self.app_module.worker_schema_app.clone()
     }
 }
 impl ChanJobDispatcher for ChanJobDispatcherImpl {}

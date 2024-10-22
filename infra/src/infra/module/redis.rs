@@ -9,7 +9,7 @@ use crate::infra::job_result::pubsub::redis::RedisJobResultPubSubRepositoryImpl;
 use crate::infra::job_result::redis::RedisJobResultRepositoryImpl;
 use crate::infra::job_result::redis::UseRedisJobResultRepository;
 use crate::infra::load_job_queue_config_from_env;
-use crate::infra::plugins::Plugins;
+use crate::infra::runner::factory::RunnerFactory;
 use crate::infra::worker::redis::{RedisWorkerRepositoryImpl, UseRedisWorkerRepository};
 use crate::infra::worker_schema::redis::RedisWorkerSchemaRepositoryImpl;
 use crate::infra::worker_schema::redis::UseRedisWorkerSchemaRepository;
@@ -59,7 +59,7 @@ impl RedisRepositoryModule {
     pub async fn new_by_env(
         worker_expire_sec: Option<usize>,
         id_generator: Arc<IdGeneratorWrapper>,
-        plugins: Arc<Plugins>,
+        runner_factory: Arc<RunnerFactory>,
     ) -> Self {
         let redis_pool = super::super::resource::setup_redis_pool_by_env().await;
         let redis_client = super::super::resource::setup_redis_client_by_env().await;
@@ -71,7 +71,7 @@ impl RedisRepositoryModule {
                 redis_pool,
                 redis_client.clone(),
                 id_generator,
-                plugins,
+                runner_factory,
             ),
             redis_worker_repository: RedisWorkerRepositoryImpl::new(
                 redis_pool,
@@ -92,7 +92,7 @@ impl RedisRepositoryModule {
     pub async fn new(
         config_module: &InfraConfigModule,
         id_generator: Arc<IdGeneratorWrapper>,
-        plugins: Arc<Plugins>,
+        runner_factory: Arc<RunnerFactory>,
         worker_expire_sec: Option<usize>,
     ) -> Self {
         let conf = config_module.redis_config.clone().unwrap();
@@ -105,7 +105,7 @@ impl RedisRepositoryModule {
                 redis_pool,
                 redis_client.clone(),
                 id_generator,
-                plugins,
+                runner_factory,
             ),
             redis_worker_repository: RedisWorkerRepositoryImpl::new(
                 redis_pool,
@@ -139,7 +139,7 @@ pub mod test {
         job_result::{
             pubsub::redis::RedisJobResultPubSubRepositoryImpl, redis::RedisJobResultRepositoryImpl,
         },
-        plugins::Plugins,
+        runner::factory::RunnerFactory,
         worker::redis::RedisWorkerRepositoryImpl,
         worker_schema::redis::RedisWorkerSchemaRepositoryImpl,
         IdGeneratorWrapper,
@@ -162,8 +162,8 @@ pub mod test {
             .await
             .unwrap();
 
-        let p = Plugins::new();
-        p.load_plugin_files_from_env().await.unwrap();
+        let p = RunnerFactory::new();
+        p.load_plugins().await.unwrap();
         RedisRepositoryModule {
             redis_pool,
             redis_client: redis_client.clone(),

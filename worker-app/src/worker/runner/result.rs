@@ -225,7 +225,10 @@ pub trait RunnerResultHandler {
 mod tests {
     use super::*;
     use anyhow::Result;
-    use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
+    use infra::{
+        infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec},
+        jobworkerp::runner::{CommandArg, CommandOperation},
+    };
     use proto::jobworkerp::data::{
         Job, JobData, JobId, ResponseType, RetryType, WorkerData, WorkerId,
     };
@@ -244,10 +247,9 @@ mod tests {
     #[tokio::test]
     async fn test_job_result_status() -> Result<()> {
         let runner = MockResultHandler::new();
-        let operation =
-            JobqueueAndCodec::serialize_message(&crate::jobworkerp::runner::CommandOperation {
-                name: "ls".to_string(),
-            });
+        let operation = JobqueueAndCodec::serialize_message(&CommandOperation {
+            name: "ls".to_string(),
+        });
         let worker = WorkerData {
             name: "test".to_string(),
             operation: operation.clone(),
@@ -273,7 +275,7 @@ mod tests {
             store_failure: false,
             ..Default::default()
         };
-        let arg = JobqueueAndCodec::serialize_message(&crate::jobworkerp::runner::CommandArg {
+        let arg = JobqueueAndCodec::serialize_message(&CommandArg {
             args: vec!["test".to_string()],
         });
         let job = Job {

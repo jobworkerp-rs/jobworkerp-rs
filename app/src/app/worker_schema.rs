@@ -4,19 +4,18 @@ pub mod redis;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use command_utils::{text::TextUtil, util::result::FlatMap};
 use infra::error::JobWorkerError;
 use infra_utils::infra::{
     memory::{MemoryCacheImpl, UseMemoryCache},
     protobuf::ProtobufDescriptor,
 };
-use prost_reflect::MessageDescriptor;
-use proto::jobworkerp::data::{WorkerSchema, WorkerSchemaData, WorkerSchemaId};
-use std::{fmt, sync::Arc, time::Duration};
+use prost_reflect::{DynamicMessage, MessageDescriptor};
+use proto::jobworkerp::data::{RunnerType, WorkerSchema, WorkerSchemaData, WorkerSchemaId};
+use std::{fmt, future::Future, sync::Arc, time::Duration};
 
 #[async_trait]
 pub trait WorkerSchemaApp: fmt::Debug + Send + Sync {
-    // async fn create_worker_schema(&self, worker_schema: WorkerSchemaData)
-    //     -> Result<WorkerSchemaId>;
     // TODO update by reloading plugin files
     // async fn update_worker_schema(
     //     &self,
@@ -56,10 +55,22 @@ pub trait WorkerSchemaApp: fmt::Debug + Send + Sync {
     async fn count(&self) -> Result<i64>
     where
         Self: Send + 'static;
+
+    // for test
+    #[cfg(test)]
+    async fn create_test_schema(
+        &self,
+        schema_id: &WorkerSchemaId,
+        name: &str,
+    ) -> Result<WorkerSchemaWithDescriptor>;
+}
+
+pub trait UseWorkerSchemaApp: Send + Sync {
+    fn worker_schema_app(&self) -> Arc<dyn WorkerSchemaApp>;
 }
 
 pub trait UseWorkerSchemaParserWithCache: Send + Sync {
-    fn cache(&self) -> &MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>;
+    fn descriptor_cache(&self) -> &MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>;
 
     fn default_ttl(&self) -> Option<&Duration> {
         None
@@ -74,56 +85,62 @@ pub trait UseWorkerSchemaParserWithCache: Send + Sync {
     ) -> impl std::future::Future<Output = Result<()>> + Send {
         async {
             let key = Self::_cache_key(schema_id);
-            self.cache().delete_cache_locked(&key).await
+            self.descriptor_cache().delete_cache_locked(&key).await
         }
     }
 
     fn clear_cache_th_descriptor(&self) -> impl std::future::Future<Output = Result<()>> + Send {
-        async { self.cache().clear().await }
+        async { self.descriptor_cache().clear().await }
     }
     // TODO remove if not used
-    fn validate_and_get_worker_schema(
-        &self,
-        schema: WorkerSchemaData,
-    ) -> Result<WorkerSchemaWithDescriptor> {
+    fn parse_worker_schema(&self, schema: WorkerSchemaData) -> Result<WorkerSchemaWithDescriptor> {
         // operation_proto
-        let ope_d = ProtobufDescriptor::new(&schema.operation_proto).map_err(|e| {
-            JobWorkerError::ParseError(format!("runner schema operation_proto error:{:?})", e))
-        })?;
+        let ope_d = if schema.operation_proto.is_empty() {
+            None
+        } else {
+            let ope_d = ProtobufDescriptor::new(&schema.operation_proto).map_err(|e| {
+                JobWorkerError::ParseError(format!("runner schema operation_proto error:{:?}", e))
+            })?;
+            let mname = WorkerSchemaWithDescriptor::operation_message_name(&schema);
+            let _ope_m =
+                ope_d
+                    .get_message_by_name(&mname)
+                    .ok_or(JobWorkerError::InvalidParameter(format!(
+                        "illegal WorkerSchemaData: message name is not found: {} from {}",
+                        &mname, schema.operation_proto
+                    )))?;
+            // if ope_m.package_name().starts_with("jobworkerp.") {
+            //     return Err(JobWorkerError::InvalidParameter(format!(
+            //         "illegal WorkerSchemaData: operation_proto package is invalid: cannot use system package name (jobworkerp): {}",
+            //         schema.operation_proto
+            //     )).into());
+            // }
+            Some(ope_d)
+        };
         // job_arg_proto
-        let arg_d = ProtobufDescriptor::new(&schema.job_arg_proto).map_err(|e| {
-            JobWorkerError::ParseError(format!("runner schema job_arg_proto error:{:?})", e))
-        })?;
-        let ope_m = ope_d
-            .get_message_by_name(&WorkerSchemaWithDescriptor::operation_message_name(
-                &schema.name,
-            ))
-            .ok_or(JobWorkerError::InvalidParameter(format!(
-                "illegal WorkerSchemaData: message name is not found:{} from {}",
-                WorkerSchemaWithDescriptor::operation_message_name(schema.name.as_str()),
-                schema.job_arg_proto
-            )))?;
-        let arg_m = arg_d
-            .get_message_by_name(&WorkerSchemaWithDescriptor::job_args_message_name(
-                &schema.name,
-            ))
-            .ok_or(JobWorkerError::InvalidParameter(format!(
-                "illegal WorkerSchemaData: message name is not found:{} from {}",
-                WorkerSchemaWithDescriptor::job_args_message_name(schema.name.as_str()),
-                schema.job_arg_proto
-            )))?;
-        if ope_m.package_name().starts_with("jobworkerp.") {
-            return Err(JobWorkerError::InvalidParameter(format!(
-                "illegal WorkerSchemaData: operation_proto package is invalid: cannot use system package name (jobworkerp): {}",
-                schema.job_arg_proto
-            )).into());
-        }
-        if arg_m.package_name().starts_with("jobworkerp.") {
-            return Err(JobWorkerError::InvalidParameter(format!(
-                "illegal WorkerSchemaData: job_arg_proto package is invalid: cannot use system package name (jobworkerp): {}",
-                schema.job_arg_proto
-            )).into());
-        }
+        let arg_d = if schema.job_arg_proto.is_empty() {
+            // use JobResult as job_arg_proto
+            None
+        } else {
+            let mname = WorkerSchemaWithDescriptor::job_args_message_name(&schema);
+            let arg_d = ProtobufDescriptor::new(&schema.job_arg_proto).map_err(|e| {
+                JobWorkerError::ParseError(format!("runner schema job_arg_proto error:{:?}", e))
+            })?;
+            let _arg_m =
+                arg_d
+                    .get_message_by_name(&mname)
+                    .ok_or(JobWorkerError::InvalidParameter(format!(
+                        "illegal WorkerSchemaData: message name is not found:{} from {}",
+                        mname, schema.job_arg_proto
+                    )))?;
+            // if arg_m.package_name().starts_with("jobworkerp.") {
+            //     return Err(JobWorkerError::InvalidParameter(format!(
+            //         "illegal WorkerSchemaData: job_arg_proto package is invalid: cannot use system package name (jobworkerp): {}",
+            //         schema.job_arg_proto
+            //     )).into());
+            // }
+            Some(arg_d)
+        };
         Ok(WorkerSchemaWithDescriptor {
             schema,
             operation_descriptor: ope_d,
@@ -138,7 +155,7 @@ pub trait UseWorkerSchemaParserWithCache: Send + Sync {
     ) -> impl std::future::Future<Output = bool> + Send {
         async {
             let key = Self::_cache_key(schema_id);
-            self.cache()
+            self.descriptor_cache()
                 .set_and_wait_cache_locked(key, schema_with_descriptor.clone(), self.default_ttl())
                 .await
         }
@@ -147,30 +164,72 @@ pub trait UseWorkerSchemaParserWithCache: Send + Sync {
         &self,
         schema_id: &WorkerSchemaId,
         schema: &WorkerSchemaData,
-    ) -> impl std::future::Future<Output = Result<WorkerSchemaWithDescriptor>> + Send {
+    ) -> impl Future<Output = Result<WorkerSchemaWithDescriptor>> + Send {
         async {
             let key = Self::_cache_key(schema_id);
-            self.cache()
+            self.descriptor_cache()
                 .with_cache_locked(&key, self.default_ttl(), || async {
-                    let ope_d = ProtobufDescriptor::new(&schema.operation_proto).map_err(|e| {
-                        JobWorkerError::ParseError(format!(
-                            "runner schema operation_proto error:{:?})",
-                            e
-                        ))
-                    })?;
-                    let arg_d = ProtobufDescriptor::new(&schema.job_arg_proto).map_err(|e| {
-                        JobWorkerError::ParseError(format!(
-                            "runner schema job_arg_proto error:{:?})",
-                            e
-                        ))
-                    })?;
-                    Ok(WorkerSchemaWithDescriptor {
-                        schema: schema.clone(),
-                        operation_descriptor: ope_d,
-                        args_descriptor: arg_d,
-                    })
+                    // let ope_d = ProtobufDescriptor::new(&schema.operation_proto).map_err(|e| {
+                    //     JobWorkerError::ParseError(format!(
+                    //         "runner schema operation_proto error:{:?})",
+                    //         e
+                    //     ))
+                    // })?;
+                    // let arg_d = ProtobufDescriptor::new(&schema.job_arg_proto).map_err(|e| {
+                    //     JobWorkerError::ParseError(format!(
+                    //         "runner schema job_arg_proto error:{:?})",
+                    //         e
+                    //     ))
+                    // })?;
+                    // Ok(WorkerSchemaWithDescriptor {
+                    //     schema: schema.clone(),
+                    //     operation_descriptor: ope_d,
+                    //     args_descriptor: arg_d,
+                    // })
+                    self.parse_worker_schema(schema.clone())
                 })
                 .await
+        }
+    }
+    fn validate_operation_data_with_schema(
+        &self,
+        schema_id: &WorkerSchemaId,
+        schema: &WorkerSchemaData,
+        operation: &[u8],
+    ) -> impl Future<Output = Result<Option<DynamicMessage>>> + Send {
+        async move {
+            let schema_with_descriptor = self.parse_proto_with_cache(schema_id, schema).await?;
+            schema_with_descriptor.parse_operation_data(operation)
+        }
+    }
+}
+pub trait UseWorkerSchemaAppParserWithCache:
+    UseWorkerSchemaApp + UseWorkerSchemaParserWithCache + Send + Sync
+{
+    fn validate_operation_data(
+        &self,
+        schema_id: &WorkerSchemaId,
+        operation: &[u8],
+    ) -> impl Future<Output = Result<Option<DynamicMessage>>> + Send {
+        let worker_schema_app = self.worker_schema_app().clone();
+        async move {
+            if let Some(WorkerSchema {
+                id: _,
+                data: Some(schema),
+            }) = {
+                worker_schema_app
+                    .find_worker_schema(schema_id, self.default_ttl())
+                    .await?
+            } {
+                self.validate_operation_data_with_schema(schema_id, &schema, operation)
+                    .await
+            } else {
+                Err(JobWorkerError::InvalidParameter(format!(
+                    "illegal WorkerSchemaData: schema is not found:{}",
+                    schema_id.value
+                ))
+                .into())
+            }
         }
     }
 }
@@ -178,41 +237,89 @@ pub trait UseWorkerSchemaParserWithCache: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct WorkerSchemaWithDescriptor {
     pub schema: WorkerSchemaData,
-    pub operation_descriptor: ProtobufDescriptor,
-    pub args_descriptor: ProtobufDescriptor,
+    pub operation_descriptor: Option<ProtobufDescriptor>,
+    pub args_descriptor: Option<ProtobufDescriptor>,
 }
 impl WorkerSchemaWithDescriptor {
-    fn operation_message_name(name: &str) -> String {
-        format!("{}Operation", name)
+    fn operation_message_name(schema: &WorkerSchemaData) -> String {
+        if schema.runner_type == RunnerType::Plugin as i32 {
+            format!("{}Operation", &schema.name)
+        } else {
+            format!(
+                "jobworkerp.runner.{}Operation",
+                TextUtil::snake_to_camel(&schema.name.to_ascii_lowercase())
+            )
+        }
     }
-    #[allow(dead_code)]
-    fn get_operation_message(&self) -> Result<MessageDescriptor> {
-        self.operation_descriptor
-            .get_message_by_name(&Self::operation_message_name(&self.schema.name))
-            .ok_or(
-                JobWorkerError::InvalidParameter(format!(
+    pub fn get_operation_message(&self) -> Result<Option<MessageDescriptor>> {
+        if let Some(op) = &self.operation_descriptor {
+            op.get_message_by_name(Self::operation_message_name(&self.schema).as_str())
+                .ok_or(
+                    JobWorkerError::InvalidParameter(format!(
                     "illegal WorkerSchemaData: operation message name is not found:{} from:\n {}",
-                    WorkerSchemaWithDescriptor::operation_message_name(self.schema.name.as_str()),
+                    Self::operation_message_name(&self.schema),
                     &self.schema.operation_proto
                 ))
-                .into(),
+                    .into(),
+                )
+                .map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+    pub fn parse_operation_data(&self, operation: &[u8]) -> Result<Option<DynamicMessage>> {
+        if let Some(op) = &self.operation_descriptor {
+            self.get_operation_message()?
+                .ok_or(
+                    JobWorkerError::InvalidParameter(format!(
+                        "illegal WorkerSchemaData: operation message is not found:{} from:\n {}",
+                        Self::operation_message_name(&self.schema),
+                        &self.schema.operation_proto
+                    ))
+                    .into(),
+                )
+                .flat_map(|m| {
+                    op.get_message_from_bytes(m.full_name(), operation)
+                        .map(Some)
+                        .map_err(|e| {
+                            JobWorkerError::InvalidParameter(format!(
+                                "illegal operation data: cannot parse operation data as {}: {:?}",
+                                m.full_name(),
+                                e
+                            ))
+                            .into()
+                        })
+                })
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn job_args_message_name(schema: &WorkerSchemaData) -> String {
+        if schema.runner_type == RunnerType::Plugin as i32 {
+            format!("{}Arg", &schema.name)
+        } else {
+            format!(
+                "jobworkerp.runner.{}Arg",
+                TextUtil::snake_to_camel(&schema.name.to_ascii_lowercase())
             )
+        }
     }
-    fn job_args_message_name(name: &str) -> String {
-        format!("{}Arg", name)
-    }
-    #[allow(dead_code)]
-    fn get_job_arg_message(&self) -> Result<MessageDescriptor> {
-        self.args_descriptor
-            .get_message_by_name(&Self::job_args_message_name(&self.schema.name))
-            .ok_or(
-                JobWorkerError::InvalidParameter(format!(
-                    "illegal WorkerSchemaData: job_args message name is not found:{} from {}",
-                    WorkerSchemaWithDescriptor::job_args_message_name(self.schema.name.as_str()),
+    pub fn get_job_arg_message(&self) -> Result<Option<MessageDescriptor>> {
+        if let Some(op) = &self.args_descriptor {
+            op.get_message_by_name(Self::job_args_message_name(&self.schema).as_str())
+                .ok_or(
+                    JobWorkerError::InvalidParameter(format!(
+                    "illegal WorkerSchemaData: job args message name is not found:{} from:\n {}",
+                    Self::job_args_message_name(&self.schema),
                     &self.schema.job_arg_proto
                 ))
-                .into(),
-            )
+                    .into(),
+                )
+                .map(Some)
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -239,6 +346,33 @@ pub trait WorkerSchemaCacheHelper {
         Arc::new("worker_schema_list:all".to_string())
     }
 }
-pub trait UseWorkerSchemaApp {
-    fn worker_schema_app(&self) -> &Arc<dyn WorkerSchemaApp + 'static>;
+
+#[cfg(test)]
+pub mod test {
+    use super::WorkerSchemaWithDescriptor;
+    use proto::jobworkerp::data::{RunnerType, WorkerSchemaData};
+    pub fn test_worker_schema(name: &str) -> WorkerSchemaData {
+        proto::jobworkerp::data::WorkerSchemaData {
+            name: name.to_string(),
+            operation_proto: include_str!("../../../proto/protobuf/test_operation.proto")
+                .to_string(),
+            job_arg_proto: include_str!("../../../proto/protobuf/test_args.proto").to_string(),
+            runner_type: RunnerType::Plugin as i32,
+        }
+    }
+
+    pub fn test_worker_schema_with_descriptor(name: &str) -> WorkerSchemaWithDescriptor {
+        let schema = test_worker_schema(name);
+        WorkerSchemaWithDescriptor {
+            schema: schema.clone(),
+            operation_descriptor: Some(
+                infra_utils::infra::protobuf::ProtobufDescriptor::new(&schema.operation_proto)
+                    .unwrap(),
+            ),
+            args_descriptor: Some(
+                infra_utils::infra::protobuf::ProtobufDescriptor::new(&schema.job_arg_proto)
+                    .unwrap(),
+            ),
+        }
+    }
 }

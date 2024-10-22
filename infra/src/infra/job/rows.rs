@@ -139,7 +139,8 @@ impl UseJobqueueAndCodec for JobqueueAndCodec {}
 mod tests {
     use super::*;
     use chrono::Utc;
-    use proto::jobworkerp::data::{ResponseType, ResultOutput, TestArg};
+    use proto::jobworkerp::data::{ResponseType, ResultOutput};
+    use proto::TestArg;
 
     #[test]
     fn test_serialize_and_deserialize_job() {

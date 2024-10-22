@@ -55,19 +55,21 @@ CREATE TABLE IF NOT EXISTS `job_result` (
 CREATE TABLE IF NOT EXISTS `worker_schema` (
     `id` INTEGER PRIMARY KEY,
     `name` TEXT NOT NULL UNIQUE,
-    `file_name` VARCHAR(512) NOT NULL UNIQUE -- file name of the runner dynamic library
+    `file_name` VARCHAR(512) NOT NULL UNIQUE, -- file name of the runner dynamic library
+    `type` INT(10) NOT NULL -- runner type. enum: command, request, grpc_unary, plugin
 );
 
 -- builtin runner definitions (operation_type != 1 cannot edit or delete)
 -- (file_name is not real file name(built-in runner), but just a name for identification)
-INSERT INTO worker_schema (id, name, file_name) VALUES (
-  1, 'SlackJobResult', 'builtin0'
+INSERT OR IGNORE INTO worker_schema (`id`, `name`, `file_name`, `type`) VALUES (
+  1, 'COMMAND', 'builtin1', 1
 ), (
-  2, 'Command', 'builtin1'
+  2, 'HTTP_REQUEST', 'builtin2', 2
 ), (
-  3, 'HttpRequest', 'builtin2'
+  3, 'GRPC_UNARY', 'builtin3', 3
 ), (
-  4, 'GrpcUnary', 'builtin3'
+  4, 'DOCKER', 'builtin4', 4
 ), (
-  5, 'Docker', 'builtin4'
+  5, 'SLACK_NOTIFICATION', 'builtin0', 5
 );
+

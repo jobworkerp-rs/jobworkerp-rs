@@ -21,7 +21,7 @@ pub struct RdbWorkerSchemaAppImpl {
     storage_config: Arc<StorageConfig>,
     #[debug_stub = "AsyncCache<Arc<String>, Vec<WorkerSchema>>"]
     async_cache: AsyncCache<Arc<String>, Vec<WorkerSchema>>,
-    memory_cache: MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>,
+    descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>>,
     repositories: Arc<RdbChanRepositoryModule>,
     cache_ttl: Option<Duration>,
     #[debug_stub = "Arc<RwLockWithKey<Arc<String>>>"]
@@ -33,11 +33,12 @@ impl RdbWorkerSchemaAppImpl {
         storage_config: Arc<StorageConfig>,
         memory_cache_config: &MemoryCacheConfig,
         repositories: Arc<RdbChanRepositoryModule>,
+        descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>>,
     ) -> Self {
         Self {
             storage_config,
             async_cache: memory::new_memory_cache(memory_cache_config),
-            memory_cache: MemoryCacheImpl::new(memory_cache_config, None),
+            descriptor_cache,
             repositories,
             cache_ttl: Some(Duration::from_secs(60)), // TODO from setting
             key_lock: Arc::new(RwLockWithKey::new(memory_cache_config.num_counters)),
@@ -79,8 +80,8 @@ impl RdbWorkerSchemaAppImpl {
 }
 
 impl UseWorkerSchemaParserWithCache for RdbWorkerSchemaAppImpl {
-    fn cache(&self) -> &MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor> {
-        &self.memory_cache
+    fn descriptor_cache(&self) -> &MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor> {
+        &self.descriptor_cache
     }
 }
 
@@ -161,6 +162,35 @@ impl WorkerSchemaApp for RdbWorkerSchemaAppImpl {
         self.worker_schema_repository()
             .count_list_tx(self.worker_schema_repository().db_pool())
             .await
+    }
+
+    // for test
+    #[cfg(test)]
+    async fn create_test_schema(
+        &self,
+        schema_id: &WorkerSchemaId,
+        name: &str,
+    ) -> Result<WorkerSchemaWithDescriptor> {
+        use super::test::test_worker_schema_with_descriptor;
+        use infra::infra::worker_schema::rows::WorkerSchemaRow;
+        use proto::jobworkerp::data::RunnerType;
+
+        let schema = test_worker_schema_with_descriptor(name);
+        let _res = self
+            .worker_schema_repository()
+            .create(&WorkerSchemaRow {
+                id: schema_id.value,
+                name: name.to_string(),
+                file_name: format!("lib{}.so", name),
+                r#type: RunnerType::Plugin as i32,
+            })
+            .await?;
+        self.store_proto_cache(schema_id, &schema).await;
+        // clear memory cache
+        let _ = self
+            .delete_cache_locked(&Self::find_all_list_cache_key())
+            .await;
+        Ok(schema)
     }
 }
 
