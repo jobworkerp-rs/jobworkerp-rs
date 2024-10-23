@@ -104,8 +104,16 @@ jobs:
         command: build
         args: --release --all-features
     - name: Run test
-      run: cargo test
+      run: |
+        cargo build
+        cargo test
+      env:
+        PLUGINS_RUNNER_DIR: "../target/debug/"
     - name: Run test with mysql
-      run: cargo test --features "mysql"
+      run: |
+        cargo build --features "mysql"
+        cargo test --features "mysql"
+      env:
+        PLUGINS_RUNNER_DIR: "../target/debug/"
 
 

@@ -652,6 +652,7 @@ mod tests {
                 repositories.clone(),
                 descriptor_cache.clone(),
             ));
+            worker_schema_app.load_worker_schema().await?;
             let _ = worker_schema_app
                 .create_test_schema(&WorkerSchemaId { value: 111 }, "Test")
                 .await?;

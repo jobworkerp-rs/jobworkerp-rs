@@ -15,6 +15,7 @@ use self::runner::RunnerPluginLoader;
 pub(super) trait PluginLoader: Send + Sync {
     fn load_path(&mut self, path: &Path) -> Result<String>;
     fn unload(&mut self, name: &str) -> Result<bool>;
+    #[allow(dead_code)]
     fn clear(&mut self) -> Result<()>;
 }
 

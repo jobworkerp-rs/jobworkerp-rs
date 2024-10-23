@@ -276,6 +276,8 @@ mod test {
             runner_type: 0,
         });
 
+        let org_count = repository.count_list_tx(repository.db_pool()).await?;
+
         let mut tx = db.begin().await.context("error in test")?;
         let updated = repository
             .create_tx(&mut *tx, &row.clone().unwrap(), false)
@@ -296,7 +298,7 @@ mod test {
         assert_eq!(Some(&expect), found.as_ref());
 
         let count = repository.count_list_tx(repository.db_pool()).await?;
-        assert_eq!(1, count);
+        assert_eq!(1, count - org_count);
 
         // add from plugins (no additional record, no error)
         repository.add_from_plugins().await?;
@@ -316,13 +318,15 @@ mod test {
         TEST_RUNTIME.block_on(async {
             let rdb_pool = if cfg!(feature = "mysql") {
                 let pool = setup_test_rdb_from("sql/mysql").await;
-                sqlx::query("TRUNCATE TABLE worker_schema;")
+                // delete only not built-in records
+                sqlx::query("DELETE FROM worker_schema WHERE id > 100;")
                     .execute(pool)
                     .await?;
                 pool
             } else {
                 let pool = setup_test_rdb_from("sql/sqlite").await;
-                sqlx::query("DELETE FROM worker_schema;")
+                // delete only not built-in records
+                sqlx::query("DELETE FROM worker_schema WHERE id > 100;")
                     .execute(pool)
                     .await?;
                 pool

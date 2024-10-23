@@ -53,21 +53,6 @@ impl RunnerPluginLoader {
             None
         }
     }
-
-    // // if operation is Some, load plugin with operation
-    // // (blocking)
-    // pub async fn load_runner_by_name<'a>(
-    //     &self,
-    //     name: &'a str,
-    //     operation: Vec<u8>,
-    // ) -> Result<Box<dyn Runner + Send + Sync>> {
-    //     if let Some(p) = self.find_plugin_runner_by_name(name) {
-    //         let p = p.create(operation).await?;
-    //         Ok(Box::new(p) as Box<dyn Runner + Send + Sync>)
-    //     } else {
-    //         Err(anyhow!("plugin not found: {}", name))
-    //     }
-    // }
 }
 
 impl Default for RunnerPluginLoader {

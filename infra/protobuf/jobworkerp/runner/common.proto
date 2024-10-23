@@ -18,7 +18,7 @@ enum ResultStatus {
     OTHER_ERROR = 5; // unexpected system status error (cannot retry)
 }
 
-// for slack operation
+// for use-job-result operation
 message ResultMessageData {
     int64 result_id                            = 1; // job result id (jobworkerp.data.JobResultId::value)
     int64 job_id                               = 2; // job id (jobworkerp.data.JobId::value)
