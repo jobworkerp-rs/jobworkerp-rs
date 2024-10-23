@@ -79,7 +79,9 @@ mod test {
     use app::{
         app::{
             worker::{hybrid::HybridWorkerAppImpl, WorkerApp},
-            worker_schema::{hybrid::HybridWorkerSchemaAppImpl, WorkerSchemaWithDescriptor},
+            worker_schema::{
+                hybrid::HybridWorkerSchemaAppImpl, WorkerSchemaApp, WorkerSchemaWithDescriptor,
+            },
             StorageConfig, StorageType,
         },
         module::load_worker_config,
@@ -128,17 +130,12 @@ mod test {
         });
         let id_generator = Arc::new(IdGeneratorWrapper::new());
         let module = new_for_test_config_rdb();
-        std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug");
-        let runner_factory = RunnerFactory::new();
-        runner_factory
-            .load_plugins()
-            .await
-            .expect("load runner_factory");
+        let runner_factory = Arc::new(RunnerFactory::new());
         let repositories = Arc::new(
             infra::infra::module::HybridRepositoryModule::new(
                 &module,
                 id_generator.clone(),
-                Arc::new(runner_factory),
+                runner_factory.clone(),
             )
             .await,
         );
@@ -150,12 +147,9 @@ mod test {
             },
             Some(Duration::from_secs(60)),
         );
-        let runner_factory = RunnerFactory::new();
-        runner_factory.load_plugins().await?;
-
         let worker_config = Arc::new(load_worker_config());
         // XXX empty runner map (must confirm deletion: use mock?)
-        let runner_map = RunnerFactoryWithPoolMap::new(Arc::new(runner_factory), worker_config);
+        let runner_map = RunnerFactoryWithPoolMap::new(runner_factory.clone(), worker_config);
         let descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>> =
             Arc::new(MemoryCacheImpl::new(
                 &infra_utils::infra::memory::MemoryCacheConfig {
@@ -176,6 +170,7 @@ mod test {
             repositories.clone(),
             descriptor_cache.clone(),
         ));
+        worker_schema_app.load_worker_schema().await?;
 
         let worker_app = Arc::new(HybridWorkerAppImpl::new(
             storage_config,

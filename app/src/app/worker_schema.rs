@@ -16,13 +16,6 @@ use std::{fmt, future::Future, sync::Arc, time::Duration};
 
 #[async_trait]
 pub trait WorkerSchemaApp: fmt::Debug + Send + Sync {
-    // TODO update by reloading plugin files
-    // async fn update_worker_schema(
-    //     &self,
-    //     id: &WorkerSchemaId,
-    //     worker_schema: &Option<WorkerSchemaData>,
-    // ) -> Result<bool>;
-
     // load new schema from plugin files and store it
     async fn load_worker_schema(&self) -> Result<bool>;
 
@@ -109,12 +102,6 @@ pub trait UseWorkerSchemaParserWithCache: Send + Sync {
                         "illegal WorkerSchemaData: message name is not found: {} from {}",
                         &mname, schema.operation_proto
                     )))?;
-            // if ope_m.package_name().starts_with("jobworkerp.") {
-            //     return Err(JobWorkerError::InvalidParameter(format!(
-            //         "illegal WorkerSchemaData: operation_proto package is invalid: cannot use system package name (jobworkerp): {}",
-            //         schema.operation_proto
-            //     )).into());
-            // }
             Some(ope_d)
         };
         // job_arg_proto
@@ -133,12 +120,6 @@ pub trait UseWorkerSchemaParserWithCache: Send + Sync {
                         "illegal WorkerSchemaData: message name is not found:{} from {}",
                         mname, schema.job_arg_proto
                     )))?;
-            // if arg_m.package_name().starts_with("jobworkerp.") {
-            //     return Err(JobWorkerError::InvalidParameter(format!(
-            //         "illegal WorkerSchemaData: job_arg_proto package is invalid: cannot use system package name (jobworkerp): {}",
-            //         schema.job_arg_proto
-            //     )).into());
-            // }
             Some(arg_d)
         };
         Ok(WorkerSchemaWithDescriptor {
@@ -169,23 +150,6 @@ pub trait UseWorkerSchemaParserWithCache: Send + Sync {
             let key = Self::_cache_key(schema_id);
             self.descriptor_cache()
                 .with_cache_locked(&key, self.default_ttl(), || async {
-                    // let ope_d = ProtobufDescriptor::new(&schema.operation_proto).map_err(|e| {
-                    //     JobWorkerError::ParseError(format!(
-                    //         "runner schema operation_proto error:{:?})",
-                    //         e
-                    //     ))
-                    // })?;
-                    // let arg_d = ProtobufDescriptor::new(&schema.job_arg_proto).map_err(|e| {
-                    //     JobWorkerError::ParseError(format!(
-                    //         "runner schema job_arg_proto error:{:?})",
-                    //         e
-                    //     ))
-                    // })?;
-                    // Ok(WorkerSchemaWithDescriptor {
-                    //     schema: schema.clone(),
-                    //     operation_descriptor: ope_d,
-                    //     args_descriptor: arg_d,
-                    // })
                     self.parse_worker_schema(schema.clone())
                 })
                 .await
@@ -328,7 +292,7 @@ pub trait WorkerSchemaCacheHelper {
         Arc::new(["worker_schema_id:", &id.to_string()].join(""))
     }
 
-    // lifetime issue
+    // XXX lifetime issue
     // fn find_list_cache_key(limit: Option<&i32>, offset: Option<&i64>) -> String {
     //     if let Some(l) = limit {
     //         [

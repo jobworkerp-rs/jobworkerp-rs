@@ -49,30 +49,6 @@ impl RedisWorkerSchemaAppImpl {
             key_lock: RwLockWithKey::default(),
         }
     }
-
-    // async fn create_worker_schema(
-    //     &self,
-    //     worker_schema: WorkerSchemaData,
-    // ) -> Result<WorkerSchemaId> {
-    //     let schema = self.validate_and_get_worker_schema(worker_schema)?;
-    //     let id = self.id_generator().generate_id()?;
-    //     let rid = WorkerSchemaId { value: id };
-    //     self.redis_worker_schema_repository()
-    //         .upsert(&rid, &schema.schema)
-    //         .await?;
-    //     // clear list cache
-    //     let _ = self
-    //         .memory_cache
-    //         .delete_cache_locked(&Self::find_all_list_cache_key())
-    //         .await; // ignore error
-
-    //     // let _ = self
-    //     //     .redis_worker_schema_repository()
-    //     //     .publish_worker_schema_changed(&rid, worker_schema)
-    //     //     .await;
-
-    //     Ok(rid)
-    // }
 }
 // TODO now, hybrid repository (or redis?) version only
 #[async_trait]

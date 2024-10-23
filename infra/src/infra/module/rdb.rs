@@ -137,6 +137,9 @@ pub mod test {
             pool.execute("SELECT 1;").await.expect("test connection");
             // not worker_schema
             truncate_tables(pool, vec!["job", "worker", "job_result"]).await;
+            pool.execute("DELETE FROM worker_schema WHERE id > 100;")
+                .await
+                .expect("test connection");
             let runner_factory = RunnerFactory::new();
             runner_factory
                 .load_plugins()
