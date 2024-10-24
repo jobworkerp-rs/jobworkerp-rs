@@ -108,12 +108,10 @@ pub trait WorkerSchemaRepository:
             .await
             .map(|r| r.rows_affected() > 0)
             .map_err(JobWorkerError::DBError)?;
-        if let Err(e) = self
-            .runner_factory()
-            .unload_plugins(&rem.unwrap().name)
-            .await
-        {
-            tracing::warn!("Failed to remove runner: {:?}", e);
+        if let Some(rem) = rem {
+            if let Err(e) = self.runner_factory().unload_plugins(&rem.name).await {
+                tracing::warn!("Failed to remove runner: {:?}", e);
+            }
         }
         Ok(del)
     }
@@ -121,7 +119,7 @@ pub trait WorkerSchemaRepository:
     async fn find(&self, id: &WorkerSchemaId) -> Result<Option<WorkerSchema>> {
         let row = self.find_row_tx(self.db_pool(), id).await?;
         if let Some(r2) = row {
-            if let Some(r3) = self.runner_factory().create_by_name(&r2.name).await {
+            if let Some(r3) = self.runner_factory().create_by_name(&r2.name, false).await {
                 Ok(Some(r2.to_proto(r3)))
             } else {
                 Ok(None)
@@ -152,7 +150,7 @@ pub trait WorkerSchemaRepository:
         let rows = self.find_row_list_tx(self.db_pool(), limit, offset).await?;
         let mut results = Vec::new();
         for row in rows {
-            if let Some(r) = self.runner_factory().create_by_name(&row.name).await {
+            if let Some(r) = self.runner_factory().create_by_name(&row.name, false).await {
                 results.push(row.to_proto(r));
             }
         }

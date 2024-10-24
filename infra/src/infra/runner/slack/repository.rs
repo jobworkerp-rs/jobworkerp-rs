@@ -30,9 +30,6 @@ impl SlackRepository {
             client: SlackMessageClientImpl::new(),
         }
     }
-    // pub fn new_by_env() -> Self {
-    //     Self::new(load_slack_config_from_env().unwrap_or_default())
-    // }
 
     pub async fn send_result(&self, res: &ResultMessageData, is_error: bool) -> Result<()> {
         if is_error && !self.config.notify_failure || !is_error && !self.config.notify_success {
@@ -146,10 +143,10 @@ impl SlackRepository {
     }
 }
 
-// // send test
+// // temporary send test
 // #[tokio::test]
 // async fn send_test() {
-//     let slack = SlackRepository::new_by_env();
+//     let slack = SlackRepository::new(__TODO__);
 //     let result = JobResultData {
 //         job_id: None,
 //         worker_id: Some(WorkerId { value: 1 }),
