@@ -5,7 +5,6 @@ use self::{
     redis::{RedisJobDispatcher, RedisJobDispatcherImpl},
 };
 use super::{result_processor::ResultProcessorImpl, runner::map::RunnerFactoryWithPoolMap};
-use crate::plugins::Plugins;
 use anyhow::Result;
 use app::{
     app::StorageType,
@@ -17,6 +16,7 @@ use command_utils::util::shutdown::ShutdownLock;
 use infra::infra::{
     job::rdb::UseRdbChanJobRepository,
     module::{rdb::RdbChanRepositoryModule, redis::RedisRepositoryModule},
+    runner::factory::RunnerFactory,
     IdGeneratorWrapper,
 };
 
@@ -51,7 +51,7 @@ impl JobDispatcherFactory {
         app_module: Arc<AppModule>,
         rdb_chan_repositories_opt: Option<Arc<RdbChanRepositoryModule>>,
         redis_repositories_opt: Option<Arc<RedisRepositoryModule>>,
-        plugins: Arc<Plugins>,
+        runner_factory: Arc<RunnerFactory>,
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
         result_processor: Arc<ResultProcessorImpl>,
     ) -> Box<dyn JobDispatcher + 'static> {
@@ -68,7 +68,7 @@ impl JobDispatcherFactory {
                     Arc::new(redis_repositories.redis_job_repository.clone()),
                     None,
                     app_module,
-                    plugins,
+                    runner_factory,
                     runner_pool_map,
                     result_processor,
                 ))
@@ -81,7 +81,7 @@ impl JobDispatcherFactory {
                         config_module,
                         rdb_job_repository.clone(),
                         app_module.clone(),
-                        plugins.clone(),
+                        runner_factory.clone(),
                         runner_pool_map.clone(),
                         result_processor.clone(),
                     ),
@@ -91,7 +91,7 @@ impl JobDispatcherFactory {
                         rdb_job_repository,
                         rdb_chan_repositories.memory_job_status_repository.clone(),
                         app_module,
-                        plugins,
+                        runner_factory,
                         runner_pool_map,
                         result_processor,
                     ),
@@ -104,7 +104,7 @@ impl JobDispatcherFactory {
                         config_module.clone(),
                         Arc::new(rdb_chan_repositories.rdb_job_repository().clone()),
                         app_module.clone(),
-                        plugins.clone(),
+                        runner_factory.clone(),
                         runner_pool_map.clone(),
                         result_processor.clone(),
                     ),
@@ -115,7 +115,7 @@ impl JobDispatcherFactory {
                         Arc::new(redis_repositories.redis_job_repository.clone()),
                         Some(Arc::new(rdb_chan_repositories.rdb_job_repository().clone())),
                         app_module,
-                        plugins,
+                        runner_factory,
                         runner_pool_map,
                         result_processor,
                     ),

@@ -1,12 +1,12 @@
-// TODO remove
 use anyhow::Result;
 use app::app::job::JobApp;
 use app::app::job::UseJobApp;
 use app::app::job_result::JobResultApp;
 use app::app::job_result::UseJobResultApp;
-use app::app::worker::builtin::BuiltinWorkerIds;
 use app::app::worker::UseWorkerApp;
 use app::app::worker::WorkerApp;
+use app::app::worker_schema::UseWorkerSchemaApp;
+use app::app::worker_schema::WorkerSchemaApp;
 use app::app::JobBuilder;
 use app::app::StorageConfig;
 use app::app::UseStorageConfig;
@@ -16,17 +16,16 @@ use app::module::AppConfigModule;
 use app::module::AppModule;
 use command_utils::util::option::Exists;
 use debug_stub_derive::DebugStub;
+use infra::error::JobWorkerError;
 use infra::infra::job::rows::JobqueueAndCodec;
 use infra::infra::job::rows::UseJobqueueAndCodec;
-use proto::jobworkerp::data::slack_job_result_arg::ResultMessageData;
 use proto::jobworkerp::data::JobResultData;
 use proto::jobworkerp::data::JobResultId;
 use proto::jobworkerp::data::ResultStatus;
-use proto::jobworkerp::data::SlackJobResultArg;
-use proto::jobworkerp::data::WorkerSchemaId;
+use proto::jobworkerp::data::Worker;
+use proto::jobworkerp::data::WorkerSchema;
 use proto::jobworkerp::data::{JobResult, WorkerData};
 use std::sync::Arc;
-use strum::IntoEnumIterator;
 use tracing;
 
 #[derive(DebugStub, Clone)]
@@ -137,40 +136,70 @@ impl ResultProcessorImpl {
                 &id
             );
             for wid in worker.next_workers.iter() {
-                if let Ok(Some(w)) = self.worker_app().find(wid).await {
-                    // builtin worker (only slack internal now)
-                    if w.data
-                        .as_ref()
-                        // TODO define schema_id for builtin worker
-                        .exists(|wd| wd.schema_id == Some(WorkerSchemaId { value: -1 }))
-                    {
+                if let Ok(Some(Worker {
+                    id: Some(wid),
+                    data: Some(wdat),
+                })) = self.worker_app().find(wid).await
+                {
+                    // TODO move find-runner logic to method(worker_schema_app?)
+                    let runner = if let Some(wsid) = &wdat.schema_id {
+                        if let Ok(Some(WorkerSchema {
+                            id: _,
+                            data: Some(wsdat),
+                        })) = self
+                            .worker_schema_app()
+                            .find_worker_schema(wsid, None)
+                            .await
+                        {
+                            if let Some(r) = self
+                                .config_module
+                                .runner_factory
+                                .create_by_name(&wsdat.name, false)
+                                .await
+                            {
+                                Ok(r)
+                            } else {
+                                tracing::error!("runner not found: {:?}", &wsdat.name);
+                                Err(JobWorkerError::NotFound(format!(
+                                    "runner not found: {:?}",
+                                    &wsdat.name
+                                )))
+                            }
+                        } else {
+                            tracing::error!("worker schema not found: {:?}", &wsid);
+                            Err(JobWorkerError::NotFound(format!(
+                                "worker schema not found: {:?}",
+                                &wsid
+                            )))
+                        }
+                    } else {
+                        tracing::error!("worker schema id not found: {:?}", &wid);
+                        Err(JobWorkerError::NotFound(format!(
+                            "worker schema id not found: {:?}",
+                            &wid
+                        )))
+                    }?;
+
+                    // use job result as argument for worker
+                    if runner.use_job_result() {
                         // no result data, no enqueue
                         if dat.output.is_none()
                             || dat.output.as_ref().exists(|o| o.items.is_empty())
                         {
                             tracing::warn!(
                                 "(builtin) noop because output is empty: next_worker: {:?}, from worker: {}, job_result: {:?}",
-                                &w.data.as_ref().map(|d|&d.name),
+                                &wdat.name,
                                 &worker.name,
                                 &id
                             );
-                        } else if !BuiltinWorkerIds::iter()
-                            .any(|i| w.id.as_ref().exists(|wid| wid.value == i as i64))
-                        {
-                            // ERROR: builtin type worker not found in BuiltinWorkerIds (matched worker in db)
-                            tracing::error!(
-                                "next builtin-worker is not defined as builtin: id={:?}, worker={:?}",
-                                wid,
-                                worker
-                            );
                         } else {
-                            let arg = JobqueueAndCodec::serialize_message(&SlackJobResultArg {
-                                message: Some(Self::job_result_to_message(id, dat)),
-                                channel: None, // TODO
+                            let arg = JobqueueAndCodec::serialize_message(&JobResult {
+                                id: Some(*id),
+                                data: Some(dat.clone()),
                             });
                             self.job_app()
                                 .enqueue_job(
-                                    w.id.as_ref(),
+                                    Some(&wid),
                                     None,
                                     // specify job result as argument for builtin worker
                                     arg,
@@ -194,7 +223,7 @@ impl ResultProcessorImpl {
                             if arg.is_empty() {
                                 tracing::warn!(
                                     "noop because output is empty: next_worker: {:?}, from worker: {}, job_result: {:?}",
-                                    &w.data.as_ref().map(|d|&d.name),
+                                    &wdat.name,
                                     &worker.name,
                                     &id
                                 );
@@ -202,7 +231,7 @@ impl ResultProcessorImpl {
                             }
                             self.job_app()
                                 .enqueue_job(
-                                    w.id.as_ref(),
+                                    Some(&wid),
                                     None,
                                     arg,
                                     dat.uniq_key.clone(),
@@ -220,20 +249,6 @@ impl ResultProcessorImpl {
         }
         Ok(())
     }
-    fn job_result_to_message(id: &JobResultId, dat: &JobResultData) -> ResultMessageData {
-        ResultMessageData {
-            result_id: id.value,
-            job_id: dat.job_id.as_ref().map(|j| j.value).unwrap_or(0),
-            worker_name: dat.worker_name.clone(),
-            status: dat.status,
-            output: dat.output.clone(),
-            retried: dat.retried,
-            enqueue_time: dat.enqueue_time,
-            run_after_time: dat.run_after_time,
-            start_time: dat.start_time,
-            end_time: dat.end_time,
-        }
-    }
 }
 
 impl UseJobqueueAndCodec for ResultProcessorImpl {}
@@ -250,6 +265,11 @@ impl UseJobApp for ResultProcessorImpl {
 impl UseWorkerApp for ResultProcessorImpl {
     fn worker_app(&self) -> &Arc<dyn WorkerApp + 'static> {
         &self.app_module.worker_app
+    }
+}
+impl UseWorkerSchemaApp for ResultProcessorImpl {
+    fn worker_schema_app(&self) -> Arc<dyn WorkerSchemaApp + 'static> {
+        self.app_module.worker_schema_app.clone()
     }
 }
 impl JobBuilder for ResultProcessorImpl {}

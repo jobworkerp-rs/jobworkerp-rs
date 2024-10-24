@@ -2,8 +2,7 @@ use app::{
     app::StorageType,
     module::{AppConfigModule, AppModule},
 };
-use infra::infra::IdGeneratorWrapper;
-use plugins::Plugins;
+use infra::infra::{runner::factory::RunnerFactory, IdGeneratorWrapper};
 use std::sync::Arc;
 use worker::{
     dispatcher::{JobDispatcher, JobDispatcherFactory},
@@ -11,7 +10,6 @@ use worker::{
     runner::map::RunnerFactoryWithPoolMap,
 };
 
-pub mod plugins;
 pub mod worker;
 
 pub struct WorkerModules {
@@ -23,11 +21,11 @@ impl WorkerModules {
         config_module: Arc<AppConfigModule>,
         id_generator: Arc<IdGeneratorWrapper>,
         app_module: Arc<AppModule>,
-        plugins: Arc<Plugins>,
+        runner_factory: Arc<RunnerFactory>,
     ) -> Self {
         // XXX static?
         let runner_pool_map = Arc::new(RunnerFactoryWithPoolMap::new(
-            plugins.clone(),
+            runner_factory.clone(),
             config_module.worker_config.clone(),
         ));
         let result_processor = Arc::new(ResultProcessorImpl::new(
@@ -42,7 +40,7 @@ impl WorkerModules {
                     app_module.clone(),
                     None,
                     app_module.repositories.redis_module.clone(),
-                    plugins,
+                    runner_factory,
                     runner_pool_map,
                     result_processor,
                 );
@@ -55,7 +53,7 @@ impl WorkerModules {
                     app_module.clone(),
                     app_module.repositories.rdb_module.clone(),
                     None,
-                    plugins,
+                    runner_factory,
                     runner_pool_map,
                     result_processor,
                 );
@@ -68,7 +66,7 @@ impl WorkerModules {
                     app_module.clone(),
                     app_module.repositories.rdb_module.clone(),
                     app_module.repositories.redis_module.clone(),
-                    plugins,
+                    runner_factory,
                     runner_pool_map,
                     result_processor,
                 );

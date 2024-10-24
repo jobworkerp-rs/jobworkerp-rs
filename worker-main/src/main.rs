@@ -7,6 +7,7 @@ use anyhow::Result;
 use app::module::{AppConfigModule, AppModule};
 use command_utils::util::{shutdown, tracing::LoggingConfig};
 use dotenvy::dotenv;
+use infra::infra::runner::factory::RunnerFactory;
 
 // start front_server
 // #[tokio::main]
@@ -23,14 +24,21 @@ async fn main() -> Result<()> {
     };
     command_utils::util::tracing::tracing_init(conf).await?;
 
+    let runner_factory = Arc::new(RunnerFactory::new());
+
     let (lock, mut wait) = shutdown::create_lock_and_wait();
 
-    let app_config_module = Arc::new(AppConfigModule::new_by_env());
+    let app_config_module = Arc::new(AppConfigModule::new_by_env(runner_factory.clone()));
 
     let app_module = Arc::new(AppModule::new_by_env(app_config_module).await?);
+    app_module.on_start_all_in_one().await?;
 
     tracing::info!("start worker");
-    let jh = tokio::spawn(lib::start_worker(app_module.clone(), lock.clone()));
+    let jh = tokio::spawn(lib::start_worker(
+        app_module.clone(),
+        runner_factory,
+        lock.clone(),
+    ));
     tracing::info!("start server");
     let jh2 = tokio::spawn(grpc_front::start_front_server(app_module, lock));
 

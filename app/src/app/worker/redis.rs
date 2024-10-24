@@ -1,7 +1,15 @@
+use super::super::{StorageConfig, UseStorageConfig};
+use super::{WorkerApp, WorkerAppCacheHelper};
+use crate::app::worker_schema::redis::RedisWorkerSchemaAppImpl;
+use crate::app::worker_schema::{
+    UseWorkerSchemaApp, UseWorkerSchemaAppParserWithCache, UseWorkerSchemaParserWithCache,
+    WorkerSchemaApp, WorkerSchemaWithDescriptor,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::option::FlatMap;
 use command_utils::util::result::TapErr;
+use infra::error::JobWorkerError;
 use infra::infra::module::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
 use infra::infra::worker::event::UseWorkerPublish;
 use infra::infra::worker::redis::{RedisWorkerRepository, UseRedisWorkerRepository};
@@ -10,16 +18,14 @@ use infra_utils::infra::memory::{MemoryCacheImpl, UseMemoryCache};
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use std::sync::Arc;
 
-use super::super::{StorageConfig, UseStorageConfig};
-use super::builtin::{BuiltinWorker, BuiltinWorkerTrait};
-use super::{WorkerApp, WorkerAppCacheHelper};
-
 #[derive(Clone, Debug)]
 pub struct RedisWorkerAppImpl {
     storage_config: Arc<StorageConfig>,
     id_generator: Arc<IdGeneratorWrapper>,
     memory_cache: MemoryCacheImpl<Arc<String>, Vec<Worker>>,
     repositories: Arc<RedisRepositoryModule>,
+    descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>>,
+    worker_schema_app: Arc<RedisWorkerSchemaAppImpl>,
 }
 
 impl RedisWorkerAppImpl {
@@ -28,12 +34,16 @@ impl RedisWorkerAppImpl {
         id_generator: Arc<IdGeneratorWrapper>,
         memory_cache: MemoryCacheImpl<Arc<String>, Vec<Worker>>,
         repositories: Arc<RedisRepositoryModule>,
+        descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>>,
+        worker_schema_app: Arc<RedisWorkerSchemaAppImpl>,
     ) -> Self {
         Self {
             storage_config,
             id_generator,
             memory_cache,
             repositories,
+            descriptor_cache,
+            worker_schema_app,
         }
     }
 }
@@ -47,6 +57,11 @@ impl WorkerApp for RedisWorkerAppImpl {
             id: Some(wid),
             data: Some(worker.clone()),
         };
+        let wsid = worker
+            .schema_id
+            .ok_or_else(|| JobWorkerError::InvalidParameter("schema_id is required".to_string()))?;
+        self.validate_operation_data(&wsid, worker.operation.as_slice())
+            .await?;
         self.redis_worker_repository().upsert(&w).await?;
         // clear list cache
         let kl = Arc::new(Self::find_all_list_cache_key());
@@ -60,6 +75,12 @@ impl WorkerApp for RedisWorkerAppImpl {
 
     async fn update(&self, id: &WorkerId, worker: &Option<WorkerData>) -> Result<bool> {
         if let Some(w) = worker {
+            let wsid = w.schema_id.ok_or_else(|| {
+                JobWorkerError::InvalidParameter("schema_id is required".to_string())
+            })?;
+            self.validate_operation_data(&wsid, w.operation.as_slice())
+                .await?;
+
             let wk = Worker {
                 id: Some(*id),
                 data: Some(w.clone()),
@@ -139,10 +160,6 @@ impl WorkerApp for RedisWorkerAppImpl {
     where
         Self: Send + 'static,
     {
-        // find from builtin workers first
-        if let Some(w) = BuiltinWorker::find_worker_by_id(id) {
-            return Ok(Some(w));
-        }
         let k = Arc::new(Self::find_cache_key(id));
         self.memory_cache
             .with_cache(&k, None, || async {
@@ -192,11 +209,6 @@ impl WorkerApp for RedisWorkerAppImpl {
                 self.redis_worker_repository().find_all().await
             })
             .await
-            .map(|v| {
-                let mut v = v;
-                v.extend(BuiltinWorker::workers_list());
-                v
-            })
     }
     async fn count(&self) -> Result<i64>
     where
@@ -231,3 +243,14 @@ impl WorkerAppCacheHelper for RedisWorkerAppImpl {
         &self.memory_cache
     }
 }
+impl UseWorkerSchemaApp for RedisWorkerAppImpl {
+    fn worker_schema_app(&self) -> Arc<dyn WorkerSchemaApp> {
+        self.worker_schema_app.clone()
+    }
+}
+impl UseWorkerSchemaParserWithCache for RedisWorkerAppImpl {
+    fn descriptor_cache(&self) -> &MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor> {
+        &self.descriptor_cache
+    }
+}
+impl UseWorkerSchemaAppParserWithCache for RedisWorkerAppImpl {}

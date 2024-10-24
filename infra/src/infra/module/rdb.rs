@@ -5,9 +5,10 @@ use crate::infra::job::rdb::{RdbChanJobRepositoryImpl, UseRdbChanJobRepository};
 use crate::infra::job::status::memory::MemoryJobStatusRepository;
 use crate::infra::job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl;
 use crate::infra::job_result::rdb::{RdbJobResultRepositoryImpl, UseRdbJobResultRepository};
+use crate::infra::runner::factory::RunnerFactory;
 use crate::infra::worker::rdb::{RdbWorkerRepositoryImpl, UseRdbWorkerRepository};
 use crate::infra::worker_schema::rdb::RdbWorkerSchemaRepositoryImpl;
-use crate::infra::{InfraConfigModule, JobQueueConfig};
+use crate::infra::{IdGeneratorWrapper, InfraConfigModule, JobQueueConfig};
 use infra_utils::infra::chan::ChanBuffer;
 
 pub trait UseRdbChanRepositoryModule {
@@ -41,29 +42,45 @@ pub struct RdbChanRepositoryModule {
 }
 
 impl RdbChanRepositoryModule {
-    pub async fn new_by_env(job_queue_config: Arc<JobQueueConfig>) -> Self {
+    pub async fn new_by_env(
+        job_queue_config: Arc<JobQueueConfig>,
+        runner_factory: Arc<RunnerFactory>,
+        id_generator: Arc<IdGeneratorWrapper>,
+    ) -> Self {
         let pool = super::super::resource::setup_rdb_by_env().await;
         RdbChanRepositoryModule {
-            worker_schema_repository: RdbWorkerSchemaRepositoryImpl::new(pool),
+            worker_schema_repository: RdbWorkerSchemaRepositoryImpl::new(
+                pool,
+                runner_factory,
+                id_generator,
+            ),
             worker_repository: RdbWorkerRepositoryImpl::new(pool),
             job_repository: RdbChanJobRepositoryImpl::new(job_queue_config.clone(), pool),
             job_result_repository: RdbJobResultRepositoryImpl::new(pool),
             memory_job_status_repository: Arc::new(MemoryJobStatusRepository::new()),
             chan_job_result_pubsub_repository: ChanJobResultPubSubRepositoryImpl::new(
-                ChanBuffer::new(None, 1000), // broadcast chan. TODO from config
+                ChanBuffer::new(None, 100_000), // broadcast chan. TODO from config
                 job_queue_config.clone(),
             ),
             chan_job_queue_repository: ChanJobQueueRepositoryImpl::new(
                 job_queue_config,
-                ChanBuffer::new(None, 1000), // mpmc chan. TODO from config
+                ChanBuffer::new(None, 100_000), // mpmc chan. TODO from config
             ),
         }
     }
-    pub async fn new(config_module: &InfraConfigModule) -> Self {
+    pub async fn new(
+        config_module: &InfraConfigModule,
+        runner_factory: Arc<RunnerFactory>,
+        id_generator: Arc<IdGeneratorWrapper>,
+    ) -> Self {
         let pool =
             super::super::resource::setup_rdb(config_module.rdb_config.as_ref().unwrap()).await;
         RdbChanRepositoryModule {
-            worker_schema_repository: RdbWorkerSchemaRepositoryImpl::new(pool),
+            worker_schema_repository: RdbWorkerSchemaRepositoryImpl::new(
+                pool,
+                runner_factory,
+                id_generator,
+            ),
             worker_repository: RdbWorkerRepositoryImpl::new(pool),
             job_repository: RdbChanJobRepositoryImpl::new(
                 config_module.job_queue_config.clone(),
@@ -72,12 +89,12 @@ impl RdbChanRepositoryModule {
             job_result_repository: RdbJobResultRepositoryImpl::new(pool),
             memory_job_status_repository: Arc::new(MemoryJobStatusRepository::new()),
             chan_job_result_pubsub_repository: ChanJobResultPubSubRepositoryImpl::new(
-                ChanBuffer::new(None, 1000), // TODO from config
+                ChanBuffer::new(None, 100_000), // TODO from config
                 config_module.job_queue_config.clone(),
             ),
             chan_job_queue_repository: ChanJobQueueRepositoryImpl::new(
                 config_module.job_queue_config.clone(),
-                ChanBuffer::new(None, 1000), // TODO from config
+                ChanBuffer::new(None, 100_000), // TODO from config
             ),
         }
     }
@@ -92,7 +109,9 @@ impl UseRdbChanRepositoryModule for RdbChanRepositoryModule {
 pub mod test {
     use super::RdbChanRepositoryModule;
     use crate::infra::job::queue::chan::ChanJobQueueRepositoryImpl;
+    use crate::infra::runner::factory::RunnerFactory;
     use crate::infra::worker_schema::rdb::RdbWorkerSchemaRepositoryImpl;
+    use crate::infra::IdGeneratorWrapper;
     use crate::infra::{
         job::rdb::RdbChanJobRepositoryImpl, job_result::rdb::RdbJobResultRepositoryImpl,
         worker::rdb::RdbWorkerRepositoryImpl,
@@ -116,9 +135,23 @@ pub mod test {
             };
             let pool = setup_test_rdb_from(dir).await;
             pool.execute("SELECT 1;").await.expect("test connection");
+            // not worker_schema
             truncate_tables(pool, vec!["job", "worker", "job_result"]).await;
+            pool.execute("DELETE FROM worker_schema WHERE id > 100;")
+                .await
+                .expect("test connection");
+            let runner_factory = RunnerFactory::new();
+            runner_factory
+                .load_plugins()
+                .await
+                .expect("load runner_factory");
+            let id_generator = Arc::new(IdGeneratorWrapper::new());
             RdbChanRepositoryModule {
-                worker_schema_repository: RdbWorkerSchemaRepositoryImpl::new(pool),
+                worker_schema_repository: RdbWorkerSchemaRepositoryImpl::new(
+                    pool,
+                    Arc::new(runner_factory),
+                    id_generator,
+                ),
                 worker_repository: RdbWorkerRepositoryImpl::new(pool),
                 job_repository: RdbChanJobRepositoryImpl::new(
                     Arc::new(JobQueueConfig::default()),
@@ -127,12 +160,12 @@ pub mod test {
                 job_result_repository: RdbJobResultRepositoryImpl::new(pool),
                 memory_job_status_repository: Arc::new(MemoryJobStatusRepository::new()),
                 chan_job_result_pubsub_repository: ChanJobResultPubSubRepositoryImpl::new(
-                    ChanBuffer::new(None, 100),
+                    ChanBuffer::new(None, 10000),
                     Arc::new(JobQueueConfig::default()),
                 ),
                 chan_job_queue_repository: ChanJobQueueRepositoryImpl::new(
                     Arc::new(JobQueueConfig::default()),
-                    ChanBuffer::new(None, 100),
+                    ChanBuffer::new(None, 10000),
                 ),
             }
         })

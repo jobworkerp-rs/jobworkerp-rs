@@ -33,6 +33,7 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
                 Some(&Duration::from_secs(
                     self.job_queue_config().expire_job_result_seconds as u64,
                 )),
+                true,
             )
             .await
             .inspect(|&r| {
@@ -116,7 +117,7 @@ mod test {
     #[tokio::test]
     async fn test_subscribe_result() -> Result<()> {
         let app = ChanJobResultPubSubRepositoryImpl {
-            broadcast_chan_buf: ChanBuffer::new(None, 1000),
+            broadcast_chan_buf: ChanBuffer::new(None, 10000),
             job_queue_config: Arc::new(JobQueueConfig {
                 expire_job_result_seconds: 60,
                 fetch_interval: 1000,

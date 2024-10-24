@@ -1,38 +1,28 @@
-pub mod factory;
-pub mod impls;
 pub mod map;
 pub mod pool;
 pub mod result;
 
 use self::map::UseRunnerPoolMap;
 use self::result::RunnerResultHandler;
-use crate::plugins::runner::UsePluginRunner;
-use anyhow::{anyhow, Result};
+use anyhow::anyhow;
 use async_trait::async_trait;
 use command_utils::util::{
     datetime,
     result::{Flatten, TapErr},
 };
 use futures::future::FutureExt;
-use infra::error::JobWorkerError;
-use infra::infra::job::rows::UseJobqueueAndCodec;
+use infra::infra::{job::rows::UseJobqueueAndCodec, runner::factory::UseRunnerFactory};
+use infra::{error::JobWorkerError, infra::runner::Runner};
 use proto::jobworkerp::data::{
     Job, JobResultData, ResultOutput, ResultStatus, WorkerData, WorkerId, WorkerSchemaData,
 };
 use std::{panic::AssertUnwindSafe, time::Duration};
 use tracing;
 
-#[async_trait]
-pub trait Runner: Send + Sync {
-    async fn name(&self) -> String;
-    async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>>;
-    async fn cancel(&mut self);
-}
-
 // execute runner
 #[async_trait]
 pub trait JobRunner:
-    RunnerResultHandler + UseJobqueueAndCodec + UsePluginRunner + UseRunnerPoolMap + Send + Sync
+    RunnerResultHandler + UseJobqueueAndCodec + UseRunnerFactory + UseRunnerPoolMap + Send + Sync
 {
     #[allow(unstable_name_collisions)] // for flatten()
     //#[tracing::instrument(name = "JobRunner", skip(self))]
@@ -63,7 +53,7 @@ pub trait JobRunner:
             match p {
                 Ok(Some(runner)) => {
                     let mut r = runner.lock().await;
-                    tracing::debug!("static runner found: {:?}", r.name().await);
+                    tracing::debug!("static runner found: {:?}", r.name());
                     self.run_job_inner(worker, job, &mut r).await
                 }
                 Ok(None) => self.handle_error_option(worker, job, None),
@@ -149,7 +139,7 @@ pub trait JobRunner:
         // job time: complete job time include setup runner time.
         let start = datetime::now_millis();
 
-        let name = runner.name().await;
+        let name = runner.name();
         tracing::debug!("start runner: {}", &name);
         // implement timeout
         let res = if data.timeout > 0 {
@@ -228,39 +218,38 @@ pub trait JobRunner:
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use crate::plugins::Plugins;
-
     use super::{map::RunnerFactoryWithPoolMap, *};
     use anyhow::Result;
     use app::app::WorkerConfig;
-    use infra::infra::job::rows::JobqueueAndCodec;
-    use libloading::Library;
-    use proto::jobworkerp::data::{
-        Job, JobData, JobId, OperationType, ResponseType, WorkerData, WorkerId,
+    use infra::infra::{
+        job::rows::JobqueueAndCodec,
+        runner::factory::{RunnerFactory, UseRunnerFactory},
     };
+    use proto::jobworkerp::data::{
+        Job, JobData, JobId, ResponseType, RunnerType, WorkerData, WorkerId,
+    };
+    use std::sync::Arc;
 
     // create JobRunner for test
     struct MockJobRunner {
-        plugins: Vec<(String, Library)>,
+        runner_factory: Arc<RunnerFactory>,
         runner_pool: RunnerFactoryWithPoolMap,
     }
     impl MockJobRunner {
         fn new() -> Self {
             MockJobRunner {
-                plugins: vec![],
+                runner_factory: Arc::new(RunnerFactory::new()),
                 runner_pool: RunnerFactoryWithPoolMap::new(
-                    Arc::new(Plugins::new()),
+                    Arc::new(RunnerFactory::new()),
                     Arc::new(WorkerConfig::default()),
                 ),
             }
         }
     }
     impl UseJobqueueAndCodec for MockJobRunner {}
-    impl UsePluginRunner for MockJobRunner {
-        fn runner_plugins(&self) -> &Vec<(String, Library)> {
-            &self.plugins
+    impl UseRunnerFactory for MockJobRunner {
+        fn runner_factory(&self) -> &RunnerFactory {
+            &self.runner_factory
         }
     }
     impl RunnerResultHandler for MockJobRunner {}
@@ -281,7 +270,7 @@ mod tests {
         static JOB_RUNNER: Lazy<Box<MockJobRunner>> = Lazy::new(|| Box::new(MockJobRunner::new()));
 
         let run_after = datetime::now_millis() + 1000;
-        let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandArg {
+        let jarg = JobqueueAndCodec::serialize_message(&infra::jobworkerp::runner::CommandArg {
             args: vec!["1".to_string()],
         });
         let job = Job {
@@ -300,7 +289,7 @@ mod tests {
         };
         let worker_id = WorkerId { value: 1 };
         let operation =
-            JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandOperation {
+            JobqueueAndCodec::serialize_message(&infra::jobworkerp::runner::CommandOperation {
                 name: "sleep".to_string(),
             });
 
@@ -315,7 +304,7 @@ mod tests {
             ..Default::default()
         };
         let schema = WorkerSchemaData {
-            operation_type: OperationType::Command as i32,
+            name: RunnerType::Command.as_str_name().to_string(),
             ..Default::default()
         };
         let res = JOB_RUNNER
@@ -332,7 +321,7 @@ mod tests {
         assert!(res.start_time >= run_after); // wait until run_after (expect short time)
         assert!(res.end_time > res.start_time);
         assert!(res.end_time - res.start_time >= 1000); // sleep
-        let jarg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandArg {
+        let jarg = JobqueueAndCodec::serialize_message(&infra::jobworkerp::runner::CommandArg {
             args: vec!["2".to_string()],
         });
 

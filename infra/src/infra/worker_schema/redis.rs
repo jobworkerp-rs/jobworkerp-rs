@@ -1,20 +1,59 @@
+use super::rows::WorkerSchemaRow;
 use crate::error::JobWorkerError;
+use crate::infra::runner::factory::{RunnerFactory, UseRunnerFactory};
+use crate::infra::{IdGeneratorWrapper, UseIdGenerator};
 use anyhow::Result;
 use async_trait::async_trait;
 use infra_utils::infra::redis::{RedisPool, UseRedisPool};
 use prost::Message;
-use proto::jobworkerp::data::{WorkerSchema, WorkerSchemaData, WorkerSchemaId};
+use proto::jobworkerp::data::{RunnerType, WorkerSchema, WorkerSchemaData, WorkerSchemaId};
 use redis::AsyncCommands;
 use std::collections::BTreeMap;
 use std::io::Cursor;
+use std::sync::Arc;
 
 // TODO use if you need (not using in default)
 #[async_trait]
-pub trait RedisWorkerSchemaRepository: UseRedisPool + Sync + 'static
+pub trait RedisWorkerSchemaRepository:
+    UseRedisPool + UseRunnerFactory + UseIdGenerator + Sync + 'static
 where
     Self: Send + 'static,
 {
     const CACHE_KEY: &'static str = "RUNNER_SCHEMA_DEF";
+
+    async fn add_from_plugins(&self) -> Result<()> {
+        let names = self.runner_factory().load_plugins().await?;
+        for (name, fname) in names.iter() {
+            if let Some(p) = self.runner_factory().create_by_name(name, false).await {
+                let schema = WorkerSchemaRow {
+                    id: self.id_generator().generate_id()?,
+                    name: name.clone(),
+                    file_name: fname.clone(),
+                    r#type: RunnerType::from_str_name(name)
+                        .map(|t| t as i32)
+                        .unwrap_or(0), // default: PLUGIN
+                }
+                .to_proto(p);
+                if let WorkerSchema {
+                    id: Some(id),
+                    data: Some(data),
+                } = schema
+                {
+                    match self.create(&id, &data).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::warn!("error in add_from_plugins: {:?}", e);
+                        }
+                    }
+                } else {
+                    tracing::error!("worker schema create error: {}, {:?}", name, schema);
+                }
+            } else {
+                tracing::error!("loaded plugin not found: {}", name);
+            }
+        }
+        Ok(())
+    }
 
     async fn create(&self, id: &WorkerSchemaId, worker_schema: &WorkerSchemaData) -> Result<()> {
         let res: Result<bool> = self
@@ -58,12 +97,24 @@ where
     }
 
     async fn delete(&self, id: &WorkerSchemaId) -> Result<bool> {
-        self.redis_pool()
+        let rem = self.find(id).await?;
+        let res = self
+            .redis_pool()
             .get()
             .await?
             .hdel(Self::CACHE_KEY, id.value)
             .await
-            .map_err(|e| JobWorkerError::RedisError(e).into())
+            .map_err(JobWorkerError::RedisError)?;
+        if let Some(WorkerSchema {
+            id: _,
+            data: Some(data),
+        }) = rem
+        {
+            if let Err(e) = self.runner_factory().unload_plugins(&data.name).await {
+                tracing::warn!("Failed to remove runner: {:?}", e);
+            }
+        }
+        Ok(res)
     }
 
     async fn find(&self, id: &WorkerSchemaId) -> Result<Option<WorkerSchema>> {
@@ -130,18 +181,30 @@ where
     }
 }
 
-impl<T: UseRedisPool + Send + Sync + 'static> RedisWorkerSchemaRepository for T {}
+impl<T: UseRedisPool + UseIdGenerator + UseRunnerFactory + Send + Sync + 'static>
+    RedisWorkerSchemaRepository for T
+{
+}
 
 #[derive(Clone, Debug)]
 pub struct RedisWorkerSchemaRepositoryImpl {
     pub redis_pool: &'static RedisPool,
     pub redis_client: deadpool_redis::redis::Client,
+    id_generator: Arc<IdGeneratorWrapper>,
+    runner_factory: Arc<RunnerFactory>,
 }
 impl RedisWorkerSchemaRepositoryImpl {
-    pub fn new(redis_pool: &'static RedisPool, client: deadpool_redis::redis::Client) -> Self {
+    pub fn new(
+        redis_pool: &'static RedisPool,
+        client: deadpool_redis::redis::Client,
+        id_generator: Arc<IdGeneratorWrapper>,
+        runner_factory: Arc<RunnerFactory>,
+    ) -> Self {
         Self {
             redis_pool,
             redis_client: client,
+            id_generator,
+            runner_factory,
         }
     }
 }
@@ -149,6 +212,17 @@ impl RedisWorkerSchemaRepositoryImpl {
 impl UseRedisPool for RedisWorkerSchemaRepositoryImpl {
     fn redis_pool(&self) -> &'static RedisPool {
         self.redis_pool
+    }
+}
+
+impl UseIdGenerator for RedisWorkerSchemaRepositoryImpl {
+    fn id_generator(&self) -> &IdGeneratorWrapper {
+        &self.id_generator
+    }
+}
+impl UseRunnerFactory for RedisWorkerSchemaRepositoryImpl {
+    fn runner_factory(&self) -> &RunnerFactory {
+        &self.runner_factory
     }
 }
 
@@ -162,15 +236,20 @@ async fn redis_test() -> Result<()> {
 
     let pool = infra_utils::infra::test::setup_test_redis_pool().await;
     let cli = infra_utils::infra::test::setup_test_redis_client()?;
+    let runner_factory = Arc::new(RunnerFactory::new());
+    runner_factory.load_plugins().await?;
 
     let repo = RedisWorkerSchemaRepositoryImpl {
         redis_pool: pool,
         redis_client: cli,
+        id_generator: Arc::new(IdGeneratorWrapper::new()),
+        runner_factory,
     };
     let id = WorkerSchemaId { value: 1 };
     let worker_schema = &WorkerSchemaData {
         name: "hoge1".to_string(),
-        operation_type: 3,
+        runner_type: 1,
+        operation_proto: "hoge3".to_string(),
         job_arg_proto: "hoge5".to_string(),
     };
     // clear first
@@ -184,7 +263,6 @@ async fn redis_test() -> Result<()> {
 
     let mut worker_schema2 = worker_schema.clone();
     worker_schema2.name = "fuga1".to_string();
-    worker_schema2.operation_type = 4;
     worker_schema2.job_arg_proto = "fuga5".to_string();
     // update and find
     assert!(!repo.upsert(&id, &worker_schema2).await?);

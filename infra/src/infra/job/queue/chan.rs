@@ -38,6 +38,7 @@ pub trait ChanJobQueueRepository:
                 Self::serialize_job(job),
                 job.data.as_ref().flat_map(|d| d.uniq_key.clone()),
                 None,
+                false,
             ) // expect for multiple value
             .await
         {
@@ -61,7 +62,7 @@ pub trait ChanJobQueueRepository:
                 }
                 Err(e) => {
                     // channel is empty (or other error)
-                    tracing::debug!("try_receive_job_from_channels: {:?}", e);
+                    tracing::trace!("try_receive_job_from_channels: {:?}", e);
                 }
             }
         }
@@ -80,9 +81,9 @@ pub trait ChanJobQueueRepository:
     async fn enqueue_result_direct(&self, id: &JobResultId, res: &JobResultData) -> Result<bool> {
         let v = Self::serialize_job_result(*id, res.clone());
         if let Some(jid) = res.job_id.as_ref() {
-            tracing::debug!("send_result_direct: job_id: {:?}", jid);
-            // job id based queue (onetime, use ttl)
             let cn = Self::result_queue_name(jid);
+            tracing::debug!("send_result_direct: job_id: {:?}, queue: {}", jid, &cn);
+            // job id based queue (onetime, use ttl)
             let _ = self
                 .chan_buf()
                 .send_to_chan(
@@ -93,6 +94,7 @@ pub trait ChanJobQueueRepository:
                     Some(&Duration::from_secs(
                         self.job_queue_config().expire_job_result_seconds as u64,
                     )),
+                    true, // only if exists
                 )
                 .await
                 .map_err(JobWorkerError::ChanError)?;
@@ -112,10 +114,14 @@ pub trait ChanJobQueueRepository:
         timeout: Option<&u64>,
     ) -> Result<JobResult> {
         // TODO retry control
-        tracing::debug!("wait_for_result_data_for_response: job_id: {:?}", job_id);
+        let nm = Self::result_queue_name(job_id);
+        tracing::debug!(
+            "wait_for_result_data_for_response: job_id: {:?}, queue:{}",
+            job_id,
+            &nm
+        );
         let signal: Signals = Signals::new([SIGINT]).expect("cannot get signals");
         let handle = signal.handle();
-        let c = Self::result_queue_name(job_id); //XXX unwrap
         let res = tokio::select! {
             _ = tokio::spawn(async {
                 let mut stream = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).expect("signal error");
@@ -124,7 +130,7 @@ pub trait ChanJobQueueRepository:
                 handle.close();
                 Err(JobWorkerError::OtherError("interrupt direct waiting process".to_string()).into())
             },
-            val = self.chan_buf().receive_from_chan(c, timeout.flat_map(|t| if *t == 0 {None} else {Some(Duration::from_millis(*t))}), None) => {
+            val = self.chan_buf().receive_from_chan(nm, timeout.flat_map(|t| if *t == 0 {None} else {Some(Duration::from_millis(*t))}), None) => {
                 let r: Result<JobResult> = val.map_err(|e|JobWorkerError::ChanError(e).into())
                     .flat_map(|v| Self::deserialize_job_result(&v));
                 r
@@ -220,6 +226,7 @@ mod test {
     use proto::jobworkerp::data::{Job, JobData, JobId, ResultStatus, WorkerId};
     use std::sync::Arc;
 
+    #[derive(Clone)]
     struct ChanJobQueueRepositoryImpl {
         job_queue_config: Arc<JobQueueConfig>,
         chan_buf: ChanBuffer<Vec<u8>, Chan<ChanBufferItem<Vec<u8>>>>,
@@ -249,10 +256,9 @@ mod test {
             job_queue_config,
             chan_buf: chan_buf.clone(),
         };
-        let arg =
-            ChanJobQueueRepositoryImpl::serialize_message(&proto::jobworkerp::data::CommandArg {
-                args: vec!["test".to_string()],
-            });
+        let arg = ChanJobQueueRepositoryImpl::serialize_message(&proto::TestArg {
+            args: vec!["test".to_string()],
+        });
         let job = Job {
             id: None,
             data: Some(JobData {
@@ -291,10 +297,10 @@ mod test {
             expire_job_result_seconds: 10,
             fetch_interval: 1000,
         });
-        let repo = ChanJobQueueRepositoryImpl {
+        let repo = Arc::new(ChanJobQueueRepositoryImpl {
             job_queue_config,
             chan_buf,
-        };
+        });
         let job_result_id = JobResultId { value: 111 };
         let job_id = JobId { value: 1 };
         let job_result_data = JobResultData {
@@ -313,14 +319,22 @@ mod test {
         // let r = repo.send_result_direct(job_result_data.clone()).await?;
         // assert!(r);
         // let res = repo.wait_for_result_data_for_response(&job_id).await?;
+        let repo2 = repo.clone();
+        let jr2 = job_result_data.clone();
+        let jh = tokio::task::spawn(async move {
+            let res = repo2
+                .wait_for_result_queue_for_response(&job_id, None)
+                .await
+                .unwrap();
+            assert_eq!(res.data.unwrap(), jr2);
+        });
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         let r = repo
             .enqueue_result_direct(&job_result_id, &job_result_data)
             .await?;
         assert!(r);
-        let res = repo
-            .wait_for_result_queue_for_response(&job_id, None)
-            .await?;
-        assert_eq!(res.data.unwrap(), job_result_data);
+        jh.await?;
+
         Ok(())
     }
 
@@ -336,7 +350,7 @@ mod test {
             job_queue_config,
             chan_buf,
         };
-        let arg = JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandArg {
+        let arg = JobqueueAndCodec::serialize_message(&proto::TestArg {
             args: vec!["test".to_string()],
         });
         let job1 = Job {

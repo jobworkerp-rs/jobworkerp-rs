@@ -1,5 +1,3 @@
-use crate::plugins::runner::UsePluginRunner;
-use crate::plugins::Plugins;
 use crate::worker::dispatcher::redis_run_after::RedisRunAfterJobDispatcher;
 use crate::worker::result_processor::{ResultProcessorImpl, UseResultProcessor};
 use crate::worker::runner::map::{RunnerFactoryWithPoolMap, UseRunnerPoolMap};
@@ -25,10 +23,10 @@ use infra::infra::job::redis::RedisJobRepositoryImpl;
 use infra::infra::job::redis::UseRedisJobRepository;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::job::status::UseJobStatusRepository;
+use infra::infra::runner::factory::{RunnerFactory, UseRunnerFactory};
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use infra_utils::infra::redis::{RedisClient, UseRedisClient};
 use infra_utils::infra::redis::{RedisPool, UseRedisPool};
-use libloading::Library;
 use proto::jobworkerp::data::{
     Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, Worker, WorkerSchema,
 };
@@ -321,7 +319,7 @@ pub struct RedisJobDispatcherImpl {
     pub rdb_job_repository_opt: Option<Arc<RdbChanJobRepositoryImpl>>,
     pub app_module: Arc<AppModule>,
     pub run_after_dispatcher: Option<RedisRunAfterJobDispatcherImpl>,
-    pub plugins: Arc<Plugins>,
+    pub runner_factory: Arc<RunnerFactory>,
     pub runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
     result_processor: Arc<ResultProcessorImpl>,
 }
@@ -335,7 +333,7 @@ impl RedisJobDispatcherImpl {
         redis_job_repository: Arc<RedisJobRepositoryImpl>,
         rdb_job_repository_opt: Option<Arc<RdbChanJobRepositoryImpl>>,
         app_module: Arc<AppModule>,
-        plugins: Arc<Plugins>,
+        runner_factory: Arc<RunnerFactory>,
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
         result_processor: Arc<ResultProcessorImpl>,
     ) -> Self {
@@ -356,7 +354,7 @@ impl RedisJobDispatcherImpl {
             rdb_job_repository_opt,
             app_module,
             run_after_dispatcher,
-            plugins,
+            runner_factory,
             runner_pool_map,
             result_processor,
         }
@@ -383,14 +381,14 @@ impl UseWorkerApp for RedisJobDispatcherImpl {
     }
 }
 impl UseWorkerSchemaApp for RedisJobDispatcherImpl {
-    fn worker_schema_app(&self) -> &Arc<dyn WorkerSchemaApp + 'static> {
-        &self.app_module.worker_schema_app
+    fn worker_schema_app(&self) -> Arc<dyn WorkerSchemaApp> {
+        self.app_module.worker_schema_app.clone()
     }
 }
 
-impl UsePluginRunner for RedisJobDispatcherImpl {
-    fn runner_plugins(&self) -> &Vec<(String, Library)> {
-        self.plugins.runner_plugins()
+impl UseRunnerFactory for RedisJobDispatcherImpl {
+    fn runner_factory(&self) -> &RunnerFactory {
+        &self.runner_factory
     }
 }
 impl UseRedisClient for RedisJobDispatcherImpl {

@@ -9,7 +9,7 @@ use infra::infra::worker_schema::redis::{
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use infra_utils::infra::lock::RwLockWithKey;
 use infra_utils::infra::memory::{self, MemoryCacheConfig, MemoryCacheImpl, UseMemoryCache};
-use proto::jobworkerp::data::{WorkerSchema, WorkerSchemaData, WorkerSchemaId};
+use proto::jobworkerp::data::{WorkerSchema, WorkerSchemaId};
 use std::sync::Arc;
 use std::time::Duration;
 use stretto::AsyncCache;
@@ -27,7 +27,7 @@ pub struct RedisWorkerSchemaAppImpl {
     id_generator: Arc<IdGeneratorWrapper>,
     #[debug_stub = "AsyncCache<Arc<String>, Vec<WorkerSchema>>"]
     async_cache: AsyncCache<Arc<String>, Vec<WorkerSchema>>,
-    memory_cache: MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>,
+    descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>>,
     repositories: Arc<RedisRepositoryModule>,
     key_lock: RwLockWithKey<Arc<String>>,
 }
@@ -38,12 +38,13 @@ impl RedisWorkerSchemaAppImpl {
         id_generator: Arc<IdGeneratorWrapper>,
         memory_cache_config: &MemoryCacheConfig,
         repositories: Arc<RedisRepositoryModule>,
+        descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>>,
     ) -> Self {
         Self {
             storage_config,
             id_generator,
             async_cache: memory::new_memory_cache(memory_cache_config),
-            memory_cache: MemoryCacheImpl::new(memory_cache_config, None),
+            descriptor_cache,
             repositories,
             key_lock: RwLockWithKey::default(),
         }
@@ -52,55 +53,14 @@ impl RedisWorkerSchemaAppImpl {
 // TODO now, hybrid repository (or redis?) version only
 #[async_trait]
 impl WorkerSchemaApp for RedisWorkerSchemaAppImpl {
-    async fn create_worker_schema(
-        &self,
-        worker_schema: WorkerSchemaData,
-    ) -> Result<WorkerSchemaId> {
-        let schema = self.validate_and_get_worker_schema(worker_schema)?;
-        let id = self.id_generator().generate_id()?;
-        let rid = WorkerSchemaId { value: id };
+    async fn load_worker_schema(&self) -> Result<bool> {
         self.redis_worker_schema_repository()
-            .upsert(&rid, &schema.schema)
+            .add_from_plugins()
             .await?;
-        // clear list cache
         let _ = self
-            .memory_cache
             .delete_cache_locked(&Self::find_all_list_cache_key())
-            .await; // ignore error
-
-        // let _ = self
-        //     .redis_worker_schema_repository()
-        //     .publish_worker_schema_changed(&rid, worker_schema)
-        //     .await;
-
-        Ok(rid)
-    }
-
-    async fn update_worker_schema(
-        &self,
-        id: &WorkerSchemaId,
-        worker_schema: &Option<WorkerSchemaData>,
-    ) -> Result<bool> {
-        if let Some(rs) = worker_schema {
-            self.redis_worker_schema_repository().upsert(id, rs).await?;
-            // clear memory cache (XXX without limit offset cache)
-            // XXX ignore error
-            let _ = self
-                .delete_cache_locked(&Self::find_cache_key(&id.value))
-                .await;
-            // TODO
-            // let _ = self
-            //     .redis_worker_schema_repository()
-            //     .publish_worker_schema_changed(id, rs)
-            //     .await;
-            Ok(true)
-        } else {
-            // empty data, delete
-            let _ = self
-                .delete_cache_locked(&Self::find_cache_key(&id.value))
-                .await?;
-            Ok(true)
-        }
+            .await;
+        Ok(true)
     }
 
     async fn delete_worker_schema(&self, id: &WorkerSchemaId) -> Result<bool> {
@@ -195,6 +155,27 @@ impl WorkerSchemaApp for RedisWorkerSchemaAppImpl {
         let cnt = self.redis_worker_schema_repository().count().await?;
         Ok(cnt)
     }
+    // for test
+    #[cfg(test)]
+    async fn create_test_schema(
+        &self,
+        schema_id: &WorkerSchemaId,
+        name: &str,
+    ) -> Result<WorkerSchemaWithDescriptor> {
+        use super::test::test_worker_schema_with_descriptor;
+
+        let schema = test_worker_schema_with_descriptor(name);
+        let _res = self
+            .redis_worker_schema_repository()
+            .upsert(schema_id, &schema.schema)
+            .await?;
+        self.store_proto_cache(schema_id, &schema).await;
+        // clear memory cache
+        let _ = self
+            .delete_cache_locked(&Self::find_all_list_cache_key())
+            .await;
+        Ok(schema)
+    }
 }
 
 impl UseStorageConfig for RedisWorkerSchemaAppImpl {
@@ -230,7 +211,7 @@ impl UseMemoryCache<Arc<String>, Vec<WorkerSchema>> for RedisWorkerSchemaAppImpl
 impl WorkerSchemaCacheHelper for RedisWorkerSchemaAppImpl {}
 
 impl UseWorkerSchemaParserWithCache for RedisWorkerSchemaAppImpl {
-    fn cache(&self) -> &MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor> {
-        &self.memory_cache
+    fn descriptor_cache(&self) -> &MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor> {
+        &self.descriptor_cache
     }
 }

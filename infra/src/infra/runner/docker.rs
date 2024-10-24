@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use super::super::Runner;
+use super::Runner;
+use crate::error::JobWorkerError;
+use crate::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
+use crate::jobworkerp::runner::{DockerArg, DockerOperation};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use bollard::container::{
@@ -12,9 +15,7 @@ use bollard::image::CreateImageOptions;
 use bollard::Docker;
 use futures_util::stream::StreamExt;
 use futures_util::TryStreamExt;
-use infra::error::JobWorkerError;
-use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
-use proto::jobworkerp::data::DockerArg;
+use proto::jobworkerp::data::RunnerType;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -100,11 +101,11 @@ where
 }
 
 // implement From for proto.jobworkerp.data.worker_operation.Operation(DockerOperation)
-impl<T> From<proto::jobworkerp::data::DockerOperation> for CreateRunnerOptions<T>
+impl<T> From<crate::jobworkerp::runner::DockerOperation> for CreateRunnerOptions<T>
 where
     T: Into<String> + Serialize + std::fmt::Debug + Clone + From<String> + Default,
 {
-    fn from(op: proto::jobworkerp::data::DockerOperation) -> Self {
+    fn from(op: crate::jobworkerp::runner::DockerOperation) -> Self {
         CreateRunnerOptions {
             from_image: op.from_image.map(|s| s.into()),
             from_src: op.from_src.map(|s| s.into()),
@@ -155,13 +156,19 @@ where
 //
 #[derive(Debug, Clone)]
 pub struct DockerExecRunner {
-    docker: Docker,
+    docker: Option<Docker>,
     instant_id: String,
 }
 
 impl DockerExecRunner {
+    pub fn new() -> Self {
+        DockerExecRunner {
+            docker: None,
+            instant_id: "".to_string(),
+        }
+    }
     // create and start container
-    pub async fn new(image_options: &CreateRunnerOptions<String>) -> Result<DockerExecRunner> {
+    pub async fn create(&mut self, image_options: &CreateRunnerOptions<String>) -> Result<()> {
         // use docker default socket file (/var/run/docker.sock)
         let docker = Docker::connect_with_socket_defaults().unwrap();
         match docker
@@ -184,33 +191,36 @@ impl DockerExecRunner {
                     .await
                     .map_err(JobWorkerError::DockerError)?;
 
-                Ok(DockerExecRunner {
-                    docker,
-                    instant_id: id,
-                })
+                self.docker = Some(docker);
+                self.instant_id = id;
+                Ok(())
             }
             Err(e) => Err(JobWorkerError::DockerError(e).into()),
         }
     }
 
     pub async fn stop(&self, wait_secs: i64, force: bool) -> Result<()> {
-        self.docker
-            .stop_container(
-                &self.instant_id,
-                Some(StopContainerOptions { t: wait_secs }),
-            )
-            .await
-            .map_err(JobWorkerError::DockerError)?;
-        self.docker
-            .remove_container(
-                &self.instant_id,
-                Some(RemoveContainerOptions {
-                    force,
-                    ..Default::default()
-                }),
-            )
-            .await
-            .map_err(|e| JobWorkerError::DockerError(e).into())
+        if let Some(docker) = self.docker.as_ref() {
+            docker
+                .stop_container(
+                    &self.instant_id,
+                    Some(StopContainerOptions { t: wait_secs }),
+                )
+                .await
+                .map_err(JobWorkerError::DockerError)?;
+            docker
+                .remove_container(
+                    &self.instant_id,
+                    Some(RemoveContainerOptions {
+                        force,
+                        ..Default::default()
+                    }),
+                )
+                .await
+                .map_err(|e| JobWorkerError::DockerError(e).into())
+        } else {
+            Err(anyhow!("docker instance is not found"))
+        }
     }
     fn trans_exec_arg(&self, arg: DockerArg) -> CreateExecOptions<String> {
         let c: CreateExecOptions<String> = CreateExecOptions {
@@ -232,39 +242,64 @@ impl DockerExecRunner {
         c
     }
 }
+
+impl Default for DockerExecRunner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl Runner for DockerExecRunner {
-    async fn name(&self) -> String {
-        format!("DockerExecRunner: {}", &self.instant_id)
+    fn name(&self) -> String {
+        RunnerType::Docker.as_str_name().to_string()
+    }
+    // create and start container
+    async fn load(&mut self, operation: Vec<u8>) -> Result<()> {
+        let op = JobqueueAndCodec::deserialize_message::<DockerOperation>(&operation)?;
+        self.create(&op.into()).await
     }
 
     async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
-        let req = JobqueueAndCodec::deserialize_message::<DockerArg>(arg)?;
-        let mut c: CreateExecOptions<String> = self.trans_exec_arg(req.clone());
-        // for log
-        c.attach_stdout = Some(true);
-        c.attach_stderr = Some(true);
+        if let Some(docker) = self.docker.as_ref() {
+            let req = JobqueueAndCodec::deserialize_message::<DockerArg>(arg)?;
+            let mut c: CreateExecOptions<String> = self.trans_exec_arg(req.clone());
+            // for log
+            c.attach_stdout = Some(true);
+            c.attach_stderr = Some(true);
 
-        // non interactive
-        let exec = self.docker.create_exec(&self.instant_id, c).await?.id;
+            // non interactive
+            let exec = docker.create_exec(&self.instant_id, c).await?.id;
 
-        let mut out = Vec::<Vec<u8>>::new();
-        if let StartExecResults::Attached { mut output, .. } =
-            self.docker.start_exec(&exec, None).await?
-        {
-            while let Some(Ok(msg)) = output.next().await {
-                out.push(format!("{}\n", msg).into_bytes().to_vec());
+            let mut out = Vec::<Vec<u8>>::new();
+            if let StartExecResults::Attached { mut output, .. } =
+                docker.start_exec(&exec, None).await?
+            {
+                while let Some(Ok(msg)) = output.next().await {
+                    out.push(format!("{}\n", msg).into_bytes().to_vec());
+                }
+                Ok(vec![out.concat()])
+            } else {
+                tracing::error!("unexpected error: cannot attach container (exec)");
+                Err(anyhow!("unexpected error: cannot attach container (exec)"))
             }
-            Ok(vec![out.concat()])
         } else {
-            tracing::error!("unexpected error: cannot attach container (exec)");
-            Err(anyhow!("unexpected error: cannot attach container (exec)"))
+            Err(anyhow!("docker instance is not found"))
         }
     }
 
     // TODO
     async fn cancel(&mut self) {
         todo!("todo")
+    }
+    fn operation_proto(&self) -> String {
+        include_str!("../../../protobuf/jobworkerp/runner/docker_operation.proto").to_string()
+    }
+    fn job_args_proto(&self) -> String {
+        include_str!("../../../protobuf/jobworkerp/runner/docker_args.proto").to_string()
+    }
+    fn use_job_result(&self) -> bool {
+        false
     }
 }
 
@@ -274,14 +309,18 @@ impl Runner for DockerExecRunner {
 async fn exec_test() -> Result<()> {
     use command_utils::util::result::FlatMap;
 
-    let mut runner1 = DockerExecRunner::new(&CreateRunnerOptions::new(Some(
-        "busybox:latest".to_string(),
-    )))
-    .await?;
-    let mut runner2 = DockerExecRunner::new(&CreateRunnerOptions::new(Some(
-        "busybox:latest".to_string(),
-    )))
-    .await?;
+    let mut runner1 = DockerExecRunner::new();
+    runner1
+        .create(&CreateRunnerOptions::new(Some(
+            "busybox:latest".to_string(),
+        )))
+        .await?;
+    let mut runner2 = DockerExecRunner::new();
+    runner2
+        .create(&CreateRunnerOptions::new(Some(
+            "busybox:latest".to_string(),
+        )))
+        .await?;
     let arg = JobqueueAndCodec::serialize_message(&DockerArg {
         cmd: vec!["ls".to_string(), "-alh".to_string(), "/etc".to_string()],
         ..Default::default()
@@ -313,18 +352,22 @@ async fn exec_test() -> Result<()> {
 //
 #[derive(Debug, Clone)]
 pub struct DockerRunner {
-    docker: Docker,
+    docker: Option<Docker>,
 }
 
 impl DockerRunner {
-    pub async fn new(image_options: &CreateRunnerOptions<String>) -> Result<DockerRunner> {
+    pub fn new() -> Self {
+        DockerRunner { docker: None }
+    }
+    pub async fn create(&mut self, image_options: &CreateRunnerOptions<String>) -> Result<()> {
         let docker = Docker::connect_with_socket_defaults().unwrap();
         docker
             .create_image(Some(image_options.to_docker()), None, None)
             .try_collect::<Vec<_>>()
             .await
-            .map_err(|e| JobWorkerError::DockerError(e).into())
-            .map(|_| DockerRunner { docker })
+            .map_err(JobWorkerError::DockerError)?;
+        self.docker = Some(docker);
+        Ok(())
     }
     fn trans_docker_arg_to_config(&self, arg: &DockerArg) -> Config<String> {
         Config {
@@ -380,72 +423,93 @@ impl DockerRunner {
     }
 }
 
+impl Default for DockerRunner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl Runner for DockerRunner {
-    async fn name(&self) -> String {
-        "DockerRunner".to_string()
+    fn name(&self) -> String {
+        RunnerType::Docker.as_str_name().to_string()
+    }
+    // create and start container
+    async fn load(&mut self, operation: Vec<u8>) -> Result<()> {
+        let op = JobqueueAndCodec::deserialize_message::<DockerOperation>(&operation)?;
+        self.create(&op.into()).await
     }
     async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
-        let arg = JobqueueAndCodec::deserialize_message::<DockerArg>(arg)?;
-        let mut config = self.trans_docker_arg_to_config(&arg);
-        // to output log
-        config.attach_stdout = Some(true);
-        config.attach_stderr = Some(true);
+        if let Some(docker) = self.docker.as_ref() {
+            let arg = JobqueueAndCodec::deserialize_message::<DockerArg>(arg)?;
+            let mut config = self.trans_docker_arg_to_config(&arg);
+            // to output log
+            config.attach_stdout = Some(true);
+            config.attach_stderr = Some(true);
 
-        let created = self
-            .docker
-            .create_container::<&str, String>(None, config)
-            .await?;
-        let id = created.id;
-        tracing::info!("container id: {}", &id);
+            let created = docker
+                .create_container::<&str, String>(None, config)
+                .await?;
+            let id = created.id;
+            tracing::info!("container id: {}", &id);
 
-        let AttachContainerResults {
-            mut output,
-            input: _,
-        } = self
-            .docker
-            .attach_container(
-                &id,
-                Some(AttachContainerOptions::<String> {
-                    stdout: Some(true),
-                    stderr: Some(true),
-                    // stdin: Some(true),
-                    stream: Some(true),
-                    ..Default::default()
-                }),
-            )
-            .await?;
+            let AttachContainerResults {
+                mut output,
+                input: _,
+            } = docker
+                .attach_container(
+                    &id,
+                    Some(AttachContainerOptions::<String> {
+                        stdout: Some(true),
+                        stderr: Some(true),
+                        // stdin: Some(true),
+                        stream: Some(true),
+                        ..Default::default()
+                    }),
+                )
+                .await?;
 
-        self.docker.start_container::<String>(&id, None).await?;
+            docker.start_container::<String>(&id, None).await?;
 
-        let mut logs = Vec::<Vec<u8>>::new();
-        // pipe docker attach output into stdout
-        while let Some(Ok(output)) = output.next().await {
-            match String::from_utf8(output.into_bytes().to_vec()) {
-                Ok(o) => {
-                    tracing::info!("{}", &o);
-                    logs.push(format!("{}\n", o).into_bytes().to_vec())
-                    // logs.push(o);
+            let mut logs = Vec::<Vec<u8>>::new();
+            // pipe docker attach output into stdout
+            while let Some(Ok(output)) = output.next().await {
+                match String::from_utf8(output.into_bytes().to_vec()) {
+                    Ok(o) => {
+                        tracing::info!("{}", &o);
+                        logs.push(format!("{}\n", o).into_bytes().to_vec())
+                        // logs.push(o);
+                    }
+                    Err(e) => tracing::error!("error in decoding logs: {:?}", e),
                 }
-                Err(e) => tracing::error!("error in decoding logs: {:?}", e),
             }
+            // remove container if persist to running
+            docker
+                .remove_container(
+                    &id,
+                    Some(RemoveContainerOptions {
+                        force: true,
+                        ..Default::default()
+                    }),
+                )
+                .await?;
+            Ok(vec![logs.concat()])
+        } else {
+            Err(anyhow!("docker instance is not found"))
         }
-        // remove container if persist to running
-        self.docker
-            .remove_container(
-                &id,
-                Some(RemoveContainerOptions {
-                    force: true,
-                    ..Default::default()
-                }),
-            )
-            .await?;
-
-        Ok(vec![logs.concat()])
     }
     // TODO
     async fn cancel(&mut self) {
         todo!("todo")
+    }
+    fn operation_proto(&self) -> String {
+        include_str!("../../../protobuf/jobworkerp/runner/docker_operation.proto").to_string()
+    }
+    fn job_args_proto(&self) -> String {
+        include_str!("../../../protobuf/jobworkerp/runner/docker_args.proto").to_string()
+    }
+    fn use_job_result(&self) -> bool {
+        false
     }
 }
 
@@ -454,14 +518,18 @@ impl Runner for DockerRunner {
 async fn run_test() -> Result<()> {
     // common::util::tracing::tracing_init_test(tracing::Level::INFO);
 
-    let mut runner1 = DockerRunner::new(&CreateRunnerOptions::new(Some(
-        "busybox:latest".to_string(),
-    )))
-    .await?;
-    let mut runner2 = DockerRunner::new(&CreateRunnerOptions::new(Some(
-        "busybox:latest".to_string(),
-    )))
-    .await?;
+    let mut runner1 = DockerRunner::new();
+    runner1
+        .create(&CreateRunnerOptions::new(Some(
+            "busybox:latest".to_string(),
+        )))
+        .await?;
+    let mut runner2 = DockerRunner::new();
+    runner2
+        .create(&CreateRunnerOptions::new(Some(
+            "busybox:latest".to_string(),
+        )))
+        .await?;
     let arg = JobqueueAndCodec::serialize_message(&DockerArg {
         image: Some("busybox:latest".to_string()),
         cmd: vec!["ls".to_string(), "-alh".to_string(), "/".to_string()],

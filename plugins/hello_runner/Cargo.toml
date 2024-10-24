@@ -6,12 +6,18 @@ edition = "2021"
 description = "Example for jobworkerp runner plugin"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["dylib"]
 
 [dependencies]
-common = { path = "../../common" }
-
 anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+prost = { workspace = true }
+serde = { workspace = true }
+tonic = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-async-trait = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }

@@ -1,12 +1,12 @@
 pub mod rdb;
 pub mod redis;
 
-use std::sync::Arc;
-
-use rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
-
 use self::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
-use super::{InfraConfigModule, JobQueueConfig};
+use super::{
+    runner::factory::RunnerFactory, IdGeneratorWrapper, InfraConfigModule, JobQueueConfig,
+};
+use rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
+use std::sync::Arc;
 
 // redis and rdb module for DI
 #[derive(Clone, Debug)]
@@ -18,20 +18,39 @@ pub struct HybridRepositoryModule {
 impl HybridRepositoryModule {
     // TODO to config?
     const DEFAULT_WORKER_REDIS_EXPIRE_SEC: Option<usize> = Some(60 * 60);
-    pub async fn new(infra_config_module: &InfraConfigModule) -> Self {
-        let redis_module =
-            RedisRepositoryModule::new(infra_config_module, Self::DEFAULT_WORKER_REDIS_EXPIRE_SEC)
-                .await;
-        let rdb_module = RdbChanRepositoryModule::new(infra_config_module).await;
+    pub async fn new(
+        infra_config_module: &InfraConfigModule,
+        id_generator: Arc<IdGeneratorWrapper>,
+        runner_factory: Arc<RunnerFactory>,
+    ) -> Self {
+        let redis_module = RedisRepositoryModule::new(
+            infra_config_module,
+            id_generator.clone(),
+            runner_factory.clone(),
+            Self::DEFAULT_WORKER_REDIS_EXPIRE_SEC,
+        )
+        .await;
+        let rdb_module =
+            RdbChanRepositoryModule::new(infra_config_module, runner_factory, id_generator).await;
         HybridRepositoryModule {
             redis_module,
             rdb_chan_module: rdb_module,
         }
     }
-    pub async fn new_by_env(job_queue_config: Arc<JobQueueConfig>) -> Self {
-        let redis_module =
-            RedisRepositoryModule::new_by_env(Self::DEFAULT_WORKER_REDIS_EXPIRE_SEC).await;
-        let rdb_module = RdbChanRepositoryModule::new_by_env(job_queue_config).await;
+    pub async fn new_by_env(
+        job_queue_config: Arc<JobQueueConfig>,
+        id_generator: Arc<IdGeneratorWrapper>,
+        runner_factory: Arc<RunnerFactory>,
+    ) -> Self {
+        let redis_module = RedisRepositoryModule::new_by_env(
+            Self::DEFAULT_WORKER_REDIS_EXPIRE_SEC,
+            id_generator.clone(),
+            runner_factory.clone(),
+        )
+        .await;
+        let rdb_module =
+            RdbChanRepositoryModule::new_by_env(job_queue_config, runner_factory, id_generator)
+                .await;
         HybridRepositoryModule {
             redis_module,
             rdb_chan_module: rdb_module,

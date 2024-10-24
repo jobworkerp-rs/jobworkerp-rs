@@ -139,12 +139,13 @@ impl UseJobqueueAndCodec for JobqueueAndCodec {}
 mod tests {
     use super::*;
     use chrono::Utc;
-    use proto::jobworkerp::data::{PluginArg, ResponseType, ResultOutput};
+    use proto::jobworkerp::data::{ResponseType, ResultOutput};
+    use proto::TestArg;
 
     #[test]
     fn test_serialize_and_deserialize_job() {
-        let arg = JobqueueAndCodec::serialize_message(&PluginArg {
-            arg: b"test".to_vec(),
+        let arg = JobqueueAndCodec::serialize_message(&TestArg {
+            args: ["test".to_string()].to_vec(),
         });
         let job = Job {
             id: Some(JobId { value: 1 }),
@@ -170,8 +171,8 @@ mod tests {
 
     #[test]
     fn test_serialize_and_deserialize_job_result_data() {
-        let arg = JobqueueAndCodec::serialize_message(&PluginArg {
-            arg: b"test2".to_vec(),
+        let arg = JobqueueAndCodec::serialize_message(&TestArg {
+            args: ["test2".to_string()].to_vec(),
         });
         let job_result_data = JobResultData {
             worker_id: Some(WorkerId { value: 2 }),

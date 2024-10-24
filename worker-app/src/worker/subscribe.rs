@@ -74,21 +74,24 @@ pub trait UseSubscribeWorker:
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{plugins::Plugins, worker::runner::map::RunnerFactoryWithPoolMap};
+    use crate::worker::runner::map::RunnerFactoryWithPoolMap;
     use anyhow::Result;
     use app::{
         app::{
             worker::{hybrid::HybridWorkerAppImpl, WorkerApp},
+            worker_schema::{
+                hybrid::HybridWorkerSchemaAppImpl, WorkerSchemaApp, WorkerSchemaWithDescriptor,
+            },
             StorageConfig, StorageType,
         },
         module::load_worker_config,
     };
     use infra::infra::{
-        job::rows::JobqueueAndCodec, test::new_for_test_config_rdb,
+        job::rows::JobqueueAndCodec, runner::factory::RunnerFactory, test::new_for_test_config_rdb,
         worker::event::UseWorkerPublish, IdGeneratorWrapper,
     };
-    use infra_utils::infra::test::setup_test_redis_client;
-    use proto::jobworkerp::data::WorkerData;
+    use infra_utils::infra::{memory::MemoryCacheImpl, test::setup_test_redis_client};
+    use proto::jobworkerp::data::{WorkerData, WorkerSchemaId};
     use std::sync::Arc;
     use tokio::time::{sleep, Duration};
 
@@ -127,8 +130,15 @@ mod test {
         });
         let id_generator = Arc::new(IdGeneratorWrapper::new());
         let module = new_for_test_config_rdb();
-        let repositories =
-            Arc::new(infra::infra::module::HybridRepositoryModule::new(&module).await);
+        let runner_factory = Arc::new(RunnerFactory::new());
+        let repositories = Arc::new(
+            infra::infra::module::HybridRepositoryModule::new(
+                &module,
+                id_generator.clone(),
+                runner_factory.clone(),
+            )
+            .await,
+        );
         let memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
             &infra_utils::infra::memory::MemoryCacheConfig {
                 num_counters: 10,
@@ -137,18 +147,38 @@ mod test {
             },
             Some(Duration::from_secs(60)),
         );
-        let mut plugins = Plugins::new();
-        plugins.load_plugins_from_env()?;
-
         let worker_config = Arc::new(load_worker_config());
         // XXX empty runner map (must confirm deletion: use mock?)
-        let runner_map = RunnerFactoryWithPoolMap::new(Arc::new(plugins), worker_config);
+        let runner_map = RunnerFactoryWithPoolMap::new(runner_factory.clone(), worker_config);
+        let descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>> =
+            Arc::new(MemoryCacheImpl::new(
+                &infra_utils::infra::memory::MemoryCacheConfig {
+                    num_counters: 10,
+                    max_cost: 1000000,
+                    use_metrics: false,
+                },
+                Some(Duration::from_secs(60)),
+            ));
+
+        let worker_schema_app = Arc::new(HybridWorkerSchemaAppImpl::new(
+            storage_config.clone(),
+            &infra_utils::infra::memory::MemoryCacheConfig {
+                num_counters: 10,
+                max_cost: 1000000,
+                use_metrics: false,
+            },
+            repositories.clone(),
+            descriptor_cache.clone(),
+        ));
+        worker_schema_app.load_worker_schema().await?;
 
         let worker_app = Arc::new(HybridWorkerAppImpl::new(
             storage_config,
             id_generator,
             memory_cache,
             repositories,
+            descriptor_cache,
+            worker_schema_app,
         ));
         let worker_app2 = worker_app.clone();
         let repo = UseWorkerMapAndSubscribeImpl {
@@ -167,11 +197,12 @@ mod test {
         sleep(Duration::from_millis(100)).await;
 
         let operation =
-            JobqueueAndCodec::serialize_message(&proto::jobworkerp::data::CommandOperation {
+            JobqueueAndCodec::serialize_message(&infra::jobworkerp::runner::CommandOperation {
                 name: "ls".to_string(),
             });
         let worker_data = WorkerData {
             name: "hoge_worker".to_string(),
+            schema_id: Some(WorkerSchemaId { value: 1 }),
             operation,
             channel: Some("test_channel".to_string()),
             ..Default::default()
