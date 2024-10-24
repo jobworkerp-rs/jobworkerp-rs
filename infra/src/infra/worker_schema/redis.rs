@@ -24,7 +24,7 @@ where
     async fn add_from_plugins(&self) -> Result<()> {
         let names = self.runner_factory().load_plugins().await?;
         for (name, fname) in names.iter() {
-            if let Some(p) = self.runner_factory().create_by_name(name).await {
+            if let Some(p) = self.runner_factory().create_by_name(name, false).await {
                 let schema = WorkerSchemaRow {
                     id: self.id_generator().generate_id()?,
                     name: name.clone(),
@@ -97,12 +97,24 @@ where
     }
 
     async fn delete(&self, id: &WorkerSchemaId) -> Result<bool> {
-        self.redis_pool()
+        let rem = self.find(id).await?;
+        let res = self
+            .redis_pool()
             .get()
             .await?
             .hdel(Self::CACHE_KEY, id.value)
             .await
-            .map_err(|e| JobWorkerError::RedisError(e).into())
+            .map_err(JobWorkerError::RedisError)?;
+        if let Some(WorkerSchema {
+            id: _,
+            data: Some(data),
+        }) = rem
+        {
+            if let Err(e) = self.runner_factory().unload_plugins(&data.name).await {
+                tracing::warn!("Failed to remove runner: {:?}", e);
+            }
+        }
+        Ok(res)
     }
 
     async fn find(&self, id: &WorkerSchemaId) -> Result<Option<WorkerSchema>> {

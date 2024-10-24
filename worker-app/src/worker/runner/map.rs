@@ -78,7 +78,7 @@ impl RunnerFactoryWithPoolMap {
     ) -> Result<Box<dyn Runner + Send + Sync>> {
         let mut r = self
             .runner_factory
-            .create_by_name(&schema.name)
+            .create_by_name(&schema.name, worker_data.use_static)
             .await
             .ok_or(JobWorkerError::NotFound(format!(
                 "runner not found: {}",

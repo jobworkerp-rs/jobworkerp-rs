@@ -1,5 +1,5 @@
 use super::command::CommandRunnerImpl;
-use super::docker::DockerRunner;
+use super::docker::{DockerExecRunner, DockerRunner};
 use super::grpc_unary::GrpcUnaryRunner;
 use super::plugins::{PluginLoader, Plugins};
 use super::request::RequestRunner;
@@ -26,10 +26,18 @@ impl RunnerFactory {
     pub async fn unload_plugins(&self, name: &str) -> Result<bool> {
         self.plugins.runner_plugins().write().await.unload(name)
     }
-    pub async fn create_by_name(&self, name: &str) -> Option<Box<dyn Runner + Send + Sync>> {
+    // use_static: need to specify correctly to create for running
+    pub async fn create_by_name(
+        &self,
+        name: &str,
+        use_static: bool,
+    ) -> Option<Box<dyn Runner + Send + Sync>> {
         match RunnerType::from_str_name(name) {
             Some(RunnerType::Command) => {
                 Some(Box::new(CommandRunnerImpl::new()) as Box<dyn Runner + Send + Sync>)
+            }
+            Some(RunnerType::Docker) if use_static => {
+                Some(Box::new(DockerExecRunner::new()) as Box<dyn Runner + Send + Sync>)
             }
             Some(RunnerType::Docker) => {
                 Some(Box::new(DockerRunner::new()) as Box<dyn Runner + Send + Sync>)
@@ -52,19 +60,6 @@ impl RunnerFactory {
                 .map(|r| Box::new(r) as Box<dyn Runner + Send + Sync>),
         }
     }
-
-    // async fn find_and_load(
-    //     &self,
-    //     schema: &WorkerSchemaData,
-    //     worker: &WorkerData,
-    // ) -> Result<Box<dyn Runner + Send + Sync>> {
-    //     if let Some(mut r) = self.create_runner_by_name(schema.name.as_str()) {
-    //         r.load(worker.operation.clone()).await?;
-    //         Ok(r)
-    //     } else {
-    //         Err(anyhow!("runner not found: {}", schema.name))
-    //     }
-    // }
 }
 
 impl Default for RunnerFactory {
@@ -98,7 +93,7 @@ mod test {
         // from builtins
         assert_eq!(
             runner_factory
-                .create_by_name(RunnerType::GrpcUnary.as_str_name())
+                .create_by_name(RunnerType::GrpcUnary.as_str_name(), false)
                 .await
                 .unwrap()
                 .name(),
@@ -106,7 +101,11 @@ mod test {
         );
         // from plugins
         assert_eq!(
-            runner_factory.create_by_name("Test").await.unwrap().name(),
+            runner_factory
+                .create_by_name("Test", false)
+                .await
+                .unwrap()
+                .name(),
             "Test"
         );
     }
@@ -116,7 +115,7 @@ mod test {
         let runner_factory = RunnerFactory::new();
         runner_factory.load_plugins().await.unwrap();
         let runner = runner_factory
-            .create_by_name(RunnerType::Command.as_str_name())
+            .create_by_name(RunnerType::Command.as_str_name(), false)
             .await
             .unwrap();
         assert_eq!(runner.name(), "COMMAND");

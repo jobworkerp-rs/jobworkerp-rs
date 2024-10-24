@@ -43,7 +43,7 @@ impl Manager for RunnerPoolManagerImpl {
     async fn create(&self) -> Result<Arc<Mutex<Box<dyn Runner + Send + Sync>>>, anyhow::Error> {
         let mut runner = self
             .runner_factory
-            .create_by_name(&self.schema.name)
+            .create_by_name(&self.schema.name, self.worker.use_static)
             .await
             .ok_or(JobWorkerError::InvalidParameter(format!(
                 "runner not found: {:?}",

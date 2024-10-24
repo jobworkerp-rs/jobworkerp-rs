@@ -154,7 +154,7 @@ impl ResultProcessorImpl {
                             if let Some(r) = self
                                 .config_module
                                 .runner_factory
-                                .create_by_name(&wsdat.name)
+                                .create_by_name(&wsdat.name, false)
                                 .await
                             {
                                 Ok(r)
