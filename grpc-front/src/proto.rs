@@ -10,7 +10,6 @@ pub mod jobworkerp {
         pub type WorkerId = data::WorkerId;
         pub type WorkerData = data::WorkerData;
         pub type Worker = data::Worker;
-        pub type OperationType = data::OperationType;
         pub type QueueType = data::QueueType;
         pub type ResponseType = data::ResponseType;
         pub type RetryPolicy = data::RetryPolicy;

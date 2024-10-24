@@ -1,5 +1,3 @@
-use crate::plugins::runner::UsePluginRunner;
-use crate::plugins::Plugins;
 use crate::worker::result_processor::ResultProcessorImpl;
 use crate::worker::result_processor::UseResultProcessor;
 use crate::worker::runner::map::RunnerFactoryWithPoolMap;
@@ -29,11 +27,12 @@ use infra::infra::job::queue::rdb::RdbJobQueueRepository;
 use infra::infra::job::rdb::RdbChanJobRepositoryImpl;
 use infra::infra::job::rdb::UseRdbChanJobRepository;
 use infra::infra::job::rows::UseJobqueueAndCodec;
+use infra::infra::runner::factory::RunnerFactory;
+use infra::infra::runner::factory::UseRunnerFactory;
 use infra::infra::IdGeneratorWrapper;
 use infra::infra::JobQueueConfig;
 use infra::infra::UseIdGenerator;
 use infra::infra::UseJobQueueConfig;
-use libloading::Library;
 use proto::jobworkerp::data::Job;
 use proto::jobworkerp::data::JobResult;
 use proto::jobworkerp::data::JobResultId;
@@ -76,7 +75,7 @@ pub trait RdbJobDispatcher:
                 // using tokio::select and tokio::signal::ctrl_c, break loop by ctrl-c
                 tokio::select! {
                     _ = interval.tick() => {
-                        tracing::debug!("execute pop and enqueue run_after job");
+                        tracing::trace!("execute pop and enqueue run_after job");
                         let _ = self.pop_and_execute(pairs.clone()).await.map_err(|e| {
                             tracing::error!("failed to pop and enqueue: {:?}", e);
                             e
@@ -96,7 +95,7 @@ pub trait RdbJobDispatcher:
 
     // pop jobs using pop_run_after_jobs_to_run(), and enqueue them to redis for execute
     async fn pop_and_execute(&'static self, pairs: Vec<(String, u32)>) -> Result<()> {
-        tracing::debug!("run pop_and_execute: time:{}", datetime::now().to_rfc3339());
+        tracing::trace!("run pop_and_execute: time:{}", datetime::now().to_rfc3339());
         // thread to return to continue fetching
         let pairs_len = pairs.len();
         stream::iter(pairs)
@@ -111,9 +110,9 @@ pub trait RdbJobDispatcher:
                             tracing::error!("failed to find worker_ids_by_channel: {:?}", e)
                         })
                         .unwrap_or(vec![]);
-                    tracing::debug!("pop and execute: worker_ids:{}: {:?}", &ch, &worker_ids);
+                    tracing::trace!("pop and execute: worker_ids:{}: {:?}", &ch, &worker_ids);
                     if worker_ids.is_empty() {
-                        tracing::debug!("pop and execute: no worker_ids: {:?}", &ch);
+                        tracing::trace!("pop and execute: no worker_ids: {:?}", &ch);
                         return;
                     }
                     let jobs = self
@@ -128,7 +127,7 @@ pub trait RdbJobDispatcher:
                         .await
                         .tap_err(|e| tracing::error!("failed to fetch jobs: {:?}", e))
                         .unwrap_or(vec![]); // skip if failed to fetch jobs
-                    tracing::debug!("pop and execute: fetched jobs:{}: {:?}", &ch, jobs);
+                    tracing::trace!("pop and execute: fetched jobs:{}: {:?}", &ch, jobs);
                     // cunc threads for each channel
                     stream::iter(jobs)
                         .map(|job| {
@@ -243,7 +242,7 @@ pub struct RdbJobDispatcherImpl {
     job_queue_config: Arc<JobQueueConfig>,
     rdb_job_repository: Arc<RdbChanJobRepositoryImpl>,
     app_module: Arc<AppModule>,
-    plugins: Arc<Plugins>,
+    runner_factory: Arc<RunnerFactory>,
     runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
     result_processor: Arc<ResultProcessorImpl>,
 }
@@ -254,7 +253,7 @@ impl RdbJobDispatcherImpl {
         config_module: Arc<AppConfigModule>,
         rdb_job_repository: Arc<RdbChanJobRepositoryImpl>,
         app_module: Arc<AppModule>,
-        plugins: Arc<Plugins>,
+        runner_factory: Arc<RunnerFactory>,
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
         result_processor: Arc<ResultProcessorImpl>,
     ) -> Self {
@@ -263,7 +262,7 @@ impl RdbJobDispatcherImpl {
             job_queue_config: config_module.job_queue_config.clone(),
             rdb_job_repository,
             app_module,
-            plugins,
+            runner_factory,
             runner_pool_map,
             result_processor,
         }
@@ -286,15 +285,15 @@ impl UseWorkerApp for RdbJobDispatcherImpl {
     }
 }
 impl UseWorkerSchemaApp for RdbJobDispatcherImpl {
-    fn worker_schema_app(&self) -> &Arc<dyn WorkerSchemaApp + 'static> {
-        &self.app_module.worker_schema_app
+    fn worker_schema_app(&self) -> Arc<dyn WorkerSchemaApp> {
+        self.app_module.worker_schema_app.clone()
     }
 }
 
 impl UseJobqueueAndCodec for RdbJobDispatcherImpl {}
-impl UsePluginRunner for RdbJobDispatcherImpl {
-    fn runner_plugins(&self) -> &Vec<(String, Library)> {
-        self.plugins.runner_plugins()
+impl UseRunnerFactory for RdbJobDispatcherImpl {
+    fn runner_factory(&self) -> &RunnerFactory {
+        &self.runner_factory
     }
 }
 

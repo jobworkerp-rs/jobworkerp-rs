@@ -1,10 +1,10 @@
 use std::borrow::Cow;
 
 use super::client::{Attachment, AttachmentField, PostMessageRequest, SlackMessageClientImpl};
+use crate::jobworkerp::runner::ResultMessageData;
 use anyhow::{anyhow, Result};
 use command_utils::util::datetime;
 use itertools::Itertools;
-use proto::jobworkerp::data::slack_job_result_arg::ResultMessageData;
 
 use super::SlackConfig;
 
@@ -29,9 +29,6 @@ impl SlackRepository {
             config,
             client: SlackMessageClientImpl::new(),
         }
-    }
-    pub fn new_by_env() -> Self {
-        Self::new(load_slack_config_from_env().unwrap_or_default())
     }
 
     pub async fn send_result(&self, res: &ResultMessageData, is_error: bool) -> Result<()> {
@@ -146,10 +143,10 @@ impl SlackRepository {
     }
 }
 
-// // send test
+// // temporary send test
 // #[tokio::test]
 // async fn send_test() {
-//     let slack = SlackRepository::new_by_env();
+//     let slack = SlackRepository::new(__TODO__);
 //     let result = JobResultData {
 //         job_id: None,
 //         worker_id: Some(WorkerId { value: 1 }),

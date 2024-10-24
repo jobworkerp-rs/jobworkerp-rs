@@ -4,20 +4,20 @@ package jobworkerp.data;
 
 message Empty {}
 
+// builtin runner types
+enum RunnerType {
+    PLUGIN             = 0;
+    COMMAND            = 1;
+    HTTP_REQUEST       = 2;
+    GRPC_UNARY         = 3;
+    DOCKER             = 4;
+    SLACK_NOTIFICATION = 5;
+}
+
 enum Priority {
     PRIORITY_MEDIUM = 0;
     PRIORITY_LOW = -1;
     PRIORITY_HIGH = 1;
-}
-
-// deprecated: use runner operation type
-enum OperationType {
-    COMMAND        = 0;
-    SLACK_INTERNAL = -1;
-    PLUGIN         = 1;
-    HTTP_REQUEST   = 2;
-    GRPC_UNARY     = 3;
-    DOCKER         = 4;
 }
 
 enum RetryType {

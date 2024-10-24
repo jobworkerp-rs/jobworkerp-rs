@@ -1,33 +1,29 @@
+use super::pool::{RunnerFactoryWithPool, RunnerPoolManagerImpl};
+use super::Runner;
 use anyhow::Result;
 use app::app::WorkerConfig;
 use command_utils::util::result::TapErr;
 use deadpool::managed::{Object, Timeouts};
+use infra::error::JobWorkerError;
+use infra::infra::runner::factory::RunnerFactory;
 use proto::jobworkerp::data::{WorkerData, WorkerId, WorkerSchemaData};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
-use crate::plugins::Plugins;
-
-use super::factory::{RunnerFactory, RunnerFactoryImpl};
-use super::pool::{RunnerFactoryWithPool, RunnerPoolManagerImpl};
-use super::Runner;
-
 pub struct RunnerFactoryWithPoolMap {
     // TODO not implement as map? or keep as static ?
     pub pools: Arc<RwLock<HashMap<i64, RunnerFactoryWithPool>>>,
-    pub factory: Arc<RunnerFactoryImpl>,
-    plugins: Arc<Plugins>,
+    runner_factory: Arc<RunnerFactory>,
     worker_config: Arc<WorkerConfig>,
 }
 
 impl RunnerFactoryWithPoolMap {
-    pub fn new(plugins: Arc<Plugins>, worker_config: Arc<WorkerConfig>) -> Self {
+    pub fn new(runner_factory: Arc<RunnerFactory>, worker_config: Arc<WorkerConfig>) -> Self {
         Self {
             pools: Arc::new(RwLock::new(HashMap::<i64, RunnerFactoryWithPool>::new())),
-            factory: Arc::new(RunnerFactoryImpl::new(plugins.clone())),
-            plugins,
+            runner_factory,
             worker_config,
         }
     }
@@ -49,7 +45,7 @@ impl RunnerFactoryWithPoolMap {
             let p = RunnerFactoryWithPool::new(
                 schema,
                 worker_data,
-                self.plugins.clone(),
+                self.runner_factory.clone(),
                 self.worker_config.clone(),
             )
             .await?;
@@ -80,7 +76,16 @@ impl RunnerFactoryWithPoolMap {
         schema: &WorkerSchemaData,
         worker_data: &WorkerData,
     ) -> Result<Box<dyn Runner + Send + Sync>> {
-        self.factory.create(schema, worker_data).await
+        let mut r = self
+            .runner_factory
+            .create_by_name(&schema.name, worker_data.use_static)
+            .await
+            .ok_or(JobWorkerError::NotFound(format!(
+                "runner not found: {}",
+                schema.name
+            )))?;
+        r.load(worker_data.operation.clone()).await?;
+        Ok(r)
     }
 
     pub async fn get_or_create_static_runner(

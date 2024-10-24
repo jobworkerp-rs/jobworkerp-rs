@@ -1,4 +1,3 @@
-pub mod builtin;
 pub mod hybrid;
 pub mod rdb;
 pub mod redis;

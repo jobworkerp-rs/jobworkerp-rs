@@ -13,10 +13,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // TODO proto file path
                 "protobuf/jobworkerp/data/common.proto",
                 "protobuf/jobworkerp/data/worker_schema.proto",
-                "protobuf/jobworkerp/data/runner.proto",
                 "protobuf/jobworkerp/data/worker.proto",
                 "protobuf/jobworkerp/data/job.proto",
                 "protobuf/jobworkerp/data/job_result.proto",
+                "protobuf/test_operation.proto",
+                "protobuf/test_args.proto",
             ],
             &["protobuf"],
         )

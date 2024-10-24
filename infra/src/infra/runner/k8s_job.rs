@@ -123,6 +123,10 @@ impl Runner for K8SRunner {
     fn cancel(&mut self) {
         todo!()
     }
+    fn operation_proto(&self) -> String;
+    fn job_args_proto(&self) -> String;
+    fn use_job_result(&self) -> bool;
+
 }
 
 // // 用意できるまでignore

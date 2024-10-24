@@ -3,6 +3,7 @@ pub mod job;
 pub mod job_result;
 pub mod module;
 pub mod resource;
+pub mod runner;
 pub mod worker;
 pub mod worker_schema;
 

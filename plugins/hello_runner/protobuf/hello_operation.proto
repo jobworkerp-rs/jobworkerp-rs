@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package hello;
+
+message HelloOperation{
+    string name = 1;
+}
