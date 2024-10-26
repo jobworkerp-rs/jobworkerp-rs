@@ -18,5 +18,6 @@ pub trait Runner: Send + Sync {
     async fn cancel(&mut self);
     fn operation_proto(&self) -> String;
     fn job_args_proto(&self) -> String;
+    fn result_output_proto(&self) -> Option<String>;
     fn use_job_result(&self) -> bool;
 }

@@ -271,6 +271,7 @@ mod test {
                 "../../../../plugins/hello_runner/protobuf/hello_job_args.proto"
             )
             .to_string(),
+            result_output_proto: None,
             runner_type: 0,
         });
 

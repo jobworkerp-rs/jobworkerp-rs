@@ -15,7 +15,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.4.1"
+version = "0.5.1"
 edition = "2021"
 authors = ["sutr"]
 name = "jobworkerp-rs"
@@ -55,7 +55,7 @@ prost = "0.13"
 prost-types = "0.13"
 prost-reflect = "0.14"
 rand = "0.8"
-regex = "1.7"
+regex = "1.11"
 redis = { version = "0.27", features = [
     "tokio-rustls-comp",
     "r2d2",

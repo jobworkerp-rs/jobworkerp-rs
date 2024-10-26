@@ -20,6 +20,7 @@ impl WorkerSchemaRow {
                 runner_type: self.r#type,
                 operation_proto: runner.operation_proto(),
                 job_arg_proto: runner.job_args_proto(),
+                result_output_proto: runner.result_output_proto(),
             }),
         }
     }

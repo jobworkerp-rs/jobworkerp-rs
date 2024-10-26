@@ -1,0 +1,13 @@
+syntax = "proto3";
+package jobworkerp.runner;
+
+message HttpRequestResult {
+  uint32 status_code = 1;
+  message KeyValue {
+    string key = 1;
+    string value = 2;
+  }
+  repeated KeyValue headers = 2;
+  string content = 3;
+}
+
