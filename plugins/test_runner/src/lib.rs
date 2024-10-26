@@ -19,6 +19,7 @@ pub trait PluginRunner: Send + Sync {
     fn cancel(&self) -> bool;
     fn operation_proto(&self) -> String;
     fn job_args_proto(&self) -> String;
+    fn result_output_proto(&self) -> Option<String>;
     // if true, use job result of before job, else use job args from request
     fn use_job_result(&self) -> bool;
 }
@@ -85,6 +86,9 @@ impl PluginRunner for TestPlugin {
     }
     fn job_args_proto(&self) -> String {
         include_str!("../../../proto/protobuf/test_args.proto").to_string()
+    }
+    fn result_output_proto(&self) -> Option<String> {
+        None
     }
     // if true, use job result of before job, else use job args from request
     fn use_job_result(&self) -> bool {

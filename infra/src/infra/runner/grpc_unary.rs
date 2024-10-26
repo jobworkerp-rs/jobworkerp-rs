@@ -92,6 +92,10 @@ impl Runner for GrpcUnaryRunner {
     fn job_args_proto(&self) -> String {
         include_str!("../../../protobuf/jobworkerp/runner/grpc_unary_args.proto").to_string()
     }
+    // TODO resolve by reflection api if possible
+    fn result_output_proto(&self) -> Option<String> {
+        None
+    }
     fn use_job_result(&self) -> bool {
         false
     }

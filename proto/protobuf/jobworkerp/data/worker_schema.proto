@@ -13,6 +13,9 @@ message WorkerSchemaData {
     string operation_proto = 3;
     // job arg message definition as proto file. must use this.name as message type prefix (e.g. "message CommandArg{ repeated string args = 1; }")
     string job_arg_proto = 4;
+    // result output message definition as proto file. must use this.name as message type prefix (e.g. "message CommandResult{ string result = 1; }")
+    // if empty, use utf8 string as bytes array for result output(or not resolved)
+    optional string result_output_proto = 5;
 }
 
 message WorkerSchemaId {

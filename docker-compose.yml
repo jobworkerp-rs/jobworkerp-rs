@@ -2,7 +2,7 @@ version: '3.9'
 
 services:
   jobworkerp-all:
-    image: ghcr.io/jobworkerp-rs/jobworkerp:0.4.0
+    image: ghcr.io/jobworkerp-rs/jobworkerp:v0.5.1
     env_file:
       # Ensure that the variables in .env match your environment
       - compose.env
