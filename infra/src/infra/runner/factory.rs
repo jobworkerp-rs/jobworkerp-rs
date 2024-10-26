@@ -1,10 +1,10 @@
 use super::command::CommandRunnerImpl;
 use super::docker::{DockerExecRunner, DockerRunner};
 use super::grpc_unary::GrpcUnaryRunner;
-use super::plugins::{PluginLoader, Plugins};
 use super::request::RequestRunner;
 use super::slack::SlackResultNotificationRunner;
 use super::Runner;
+use crate::infra::plugins::{PluginLoader, Plugins};
 use anyhow::Result;
 use proto::jobworkerp::data::RunnerType;
 

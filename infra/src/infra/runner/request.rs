@@ -1,7 +1,9 @@
 use std::{str::FromStr, time::Duration};
 
 use super::Runner;
-use crate::jobworkerp::runner::{HttpRequestArg, HttpRequestOperation};
+use crate::jobworkerp::runner::{
+    http_request_result::KeyValue, HttpRequestArg, HttpRequestOperation, HttpRequestResult,
+};
 use crate::{
     error::JobWorkerError,
     infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec},
@@ -105,13 +107,22 @@ impl Runner for RequestRunner {
                 req.headers(hm)
             };
             // send request and await
-            req.send()
-                .await
-                .map_err(JobWorkerError::ReqwestError)?
-                .bytes()
-                .await
-                .map(|v| vec![v.to_vec()])
-                .map_err(|e| JobWorkerError::ReqwestError(e).into())
+            let res = req.send().await.map_err(JobWorkerError::ReqwestError)?;
+            let h = res.headers().clone();
+            let s = res.status().as_u16();
+            let t = res.text().await.map_err(JobWorkerError::ReqwestError)?;
+            let mes = HttpRequestResult {
+                status_code: s as u32,
+                headers: h
+                    .iter()
+                    .map(|(k, v)| KeyValue {
+                        key: k.as_str().to_string(),
+                        value: v.to_str().unwrap().to_string(),
+                    })
+                    .collect(),
+                content: t,
+            };
+            Ok(vec![JobqueueAndCodec::serialize_message(&mes)])
         } else {
             Err(JobWorkerError::RuntimeError("url is not set".to_string()).into())
         }
@@ -126,6 +137,12 @@ impl Runner for RequestRunner {
     fn job_args_proto(&self) -> String {
         include_str!("../../../protobuf/jobworkerp/runner/http_request_args.proto").to_string()
     }
+    fn result_output_proto(&self) -> Option<String> {
+        Some(
+            include_str!("../../../protobuf/jobworkerp/runner/http_request_result.proto")
+                .to_string(),
+        )
+    }
     fn use_job_result(&self) -> bool {
         false
     }
@@ -133,7 +150,7 @@ impl Runner for RequestRunner {
 
 #[tokio::test]
 async fn run_request() {
-    use crate::jobworkerp::runner::{HttpRequestArg, KeyValue};
+    use crate::jobworkerp::runner::{http_request_arg::KeyValue, HttpRequestArg};
 
     let mut runner = RequestRunner::new();
     runner.create("https://www.google.com/").unwrap();

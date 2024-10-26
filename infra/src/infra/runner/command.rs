@@ -147,6 +147,9 @@ impl Runner for CommandRunnerImpl {
     fn job_args_proto(&self) -> String {
         include_str!("../../../protobuf/jobworkerp/runner/command_args.proto").to_string()
     }
+    fn result_output_proto(&self) -> Option<String> {
+        None
+    }
     fn use_job_result(&self) -> bool {
         false
     }

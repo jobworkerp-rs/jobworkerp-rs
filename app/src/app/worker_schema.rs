@@ -322,6 +322,7 @@ pub mod test {
                 .to_string(),
             job_arg_proto: include_str!("../../../proto/protobuf/test_args.proto").to_string(),
             runner_type: RunnerType::Plugin as i32,
+            result_output_proto: None,
         }
     }
 
