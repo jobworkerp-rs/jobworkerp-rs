@@ -251,6 +251,7 @@ async fn redis_test() -> Result<()> {
         runner_type: 1,
         operation_proto: "hoge3".to_string(),
         job_arg_proto: "hoge5".to_string(),
+        result_output_proto: Some("hoge7".to_string()),
     };
     // clear first
     repo.delete(&id).await?;

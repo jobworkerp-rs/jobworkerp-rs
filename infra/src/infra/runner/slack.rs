@@ -150,6 +150,9 @@ impl Runner for SlackResultNotificationRunner {
     fn job_args_proto(&self) -> String {
         "".to_string()
     }
+    fn result_output_proto(&self) -> Option<String> {
+        None
+    }
     fn use_job_result(&self) -> bool {
         true
     }
