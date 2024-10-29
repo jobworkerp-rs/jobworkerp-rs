@@ -111,7 +111,7 @@ impl Runner for SlackResultNotificationRunner {
                                 "slack notification was sent: result_id={}",
                                 &data.result_id
                             );
-                            Ok(vec!["OK".bytes().collect()])
+                            Ok(vec![])
                         }
                         Err(e) => {
                             tracing::error!(
