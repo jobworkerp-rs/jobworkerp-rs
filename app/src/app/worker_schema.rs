@@ -243,7 +243,7 @@ impl WorkerSchemaWithDescriptor {
                     .into(),
                 )
                 .flat_map(|m| {
-                    op.get_message_from_bytes(m.full_name(), operation)
+                    op.get_message_by_name_from_bytes(m.full_name(), operation)
                         .map(Some)
                         .map_err(|e| {
                             JobWorkerError::InvalidParameter(format!(
