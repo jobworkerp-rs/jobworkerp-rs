@@ -4,14 +4,14 @@ pub mod redis;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use command_utils::{text::TextUtil, util::result::FlatMap};
+use command_utils::util::result::FlatMap;
 use infra::error::JobWorkerError;
 use infra_utils::infra::{
     memory::{MemoryCacheImpl, UseMemoryCache},
     protobuf::ProtobufDescriptor,
 };
 use prost_reflect::{DynamicMessage, MessageDescriptor};
-use proto::jobworkerp::data::{RunnerType, WorkerSchema, WorkerSchemaData, WorkerSchemaId};
+use proto::jobworkerp::data::{WorkerSchema, WorkerSchemaData, WorkerSchemaId};
 use std::{fmt, future::Future, sync::Arc, time::Duration};
 
 #[async_trait]
@@ -94,14 +94,13 @@ pub trait UseWorkerSchemaParserWithCache: Send + Sync {
             let ope_d = ProtobufDescriptor::new(&schema.operation_proto).map_err(|e| {
                 JobWorkerError::ParseError(format!("runner schema operation_proto error:{:?}", e))
             })?;
-            let mname = WorkerSchemaWithDescriptor::operation_message_name(&schema);
-            let _ope_m =
-                ope_d
-                    .get_message_by_name(&mname)
-                    .ok_or(JobWorkerError::InvalidParameter(format!(
-                        "illegal WorkerSchemaData: message name is not found: {} from {}",
-                        &mname, schema.operation_proto
-                    )))?;
+            let _ope_m = ope_d
+                .get_messages()
+                .first()
+                .ok_or(JobWorkerError::InvalidParameter(format!(
+                    "illegal WorkerSchemaData: message name is not found from {}",
+                    schema.operation_proto
+                )))?;
             Some(ope_d)
         };
         // job_arg_proto
@@ -109,17 +108,16 @@ pub trait UseWorkerSchemaParserWithCache: Send + Sync {
             // use JobResult as job_arg_proto
             None
         } else {
-            let mname = WorkerSchemaWithDescriptor::job_args_message_name(&schema);
             let arg_d = ProtobufDescriptor::new(&schema.job_arg_proto).map_err(|e| {
                 JobWorkerError::ParseError(format!("runner schema job_arg_proto error:{:?}", e))
             })?;
-            let _arg_m =
-                arg_d
-                    .get_message_by_name(&mname)
-                    .ok_or(JobWorkerError::InvalidParameter(format!(
-                        "illegal WorkerSchemaData: message name is not found:{} from {}",
-                        mname, schema.job_arg_proto
-                    )))?;
+            let _arg_m = arg_d
+                .get_messages()
+                .first()
+                .ok_or(JobWorkerError::InvalidParameter(format!(
+                    "illegal WorkerSchemaData: message name is not found from {}",
+                    schema.job_arg_proto
+                )))?;
             Some(arg_d)
         };
         Ok(WorkerSchemaWithDescriptor {
@@ -205,25 +203,16 @@ pub struct WorkerSchemaWithDescriptor {
     pub args_descriptor: Option<ProtobufDescriptor>,
 }
 impl WorkerSchemaWithDescriptor {
-    fn operation_message_name(schema: &WorkerSchemaData) -> String {
-        if schema.runner_type == RunnerType::Plugin as i32 {
-            format!("{}Operation", &schema.name)
-        } else {
-            format!(
-                "jobworkerp.runner.{}Operation",
-                TextUtil::snake_to_camel(&schema.name.to_ascii_lowercase())
-            )
-        }
-    }
     pub fn get_operation_message(&self) -> Result<Option<MessageDescriptor>> {
         if let Some(op) = &self.operation_descriptor {
-            op.get_message_by_name(Self::operation_message_name(&self.schema).as_str())
+            op.get_messages()
+                .first()
+                .cloned()
                 .ok_or(
                     JobWorkerError::InvalidParameter(format!(
-                    "illegal WorkerSchemaData: operation message name is not found:{} from:\n {}",
-                    Self::operation_message_name(&self.schema),
-                    &self.schema.operation_proto
-                ))
+                        "illegal WorkerSchemaData: operation message is not found from:\n {}",
+                        &self.schema.operation_proto
+                    ))
                     .into(),
                 )
                 .map(Some)
@@ -236,8 +225,7 @@ impl WorkerSchemaWithDescriptor {
             self.get_operation_message()?
                 .ok_or(
                     JobWorkerError::InvalidParameter(format!(
-                        "illegal WorkerSchemaData: operation message is not found:{} from:\n {}",
-                        Self::operation_message_name(&self.schema),
+                        "illegal WorkerSchemaData: operation message is not found from:\n {}",
                         &self.schema.operation_proto
                     ))
                     .into(),
@@ -258,26 +246,16 @@ impl WorkerSchemaWithDescriptor {
             Ok(None)
         }
     }
-
-    fn job_args_message_name(schema: &WorkerSchemaData) -> String {
-        if schema.runner_type == RunnerType::Plugin as i32 {
-            format!("{}Arg", &schema.name)
-        } else {
-            format!(
-                "jobworkerp.runner.{}Arg",
-                TextUtil::snake_to_camel(&schema.name.to_ascii_lowercase())
-            )
-        }
-    }
     pub fn get_job_arg_message(&self) -> Result<Option<MessageDescriptor>> {
         if let Some(op) = &self.args_descriptor {
-            op.get_message_by_name(Self::job_args_message_name(&self.schema).as_str())
+            op.get_messages()
+                .first()
+                .cloned()
                 .ok_or(
                     JobWorkerError::InvalidParameter(format!(
-                    "illegal WorkerSchemaData: job args message name is not found:{} from:\n {}",
-                    Self::job_args_message_name(&self.schema),
-                    &self.schema.job_arg_proto
-                ))
+                        "illegal WorkerSchemaData: job args message name is not found from:\n {}",
+                        &self.schema.job_arg_proto
+                    ))
                     .into(),
                 )
                 .map(Some)

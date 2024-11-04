@@ -172,26 +172,17 @@ impl JobApp for HybridJobAppImpl {
                 // cannot wait for direct response
                 if run_after_time > 0 && w.response_type == ResponseType::Direct as i32 {
                     return Err(JobWorkerError::InvalidParameter(format!(
-                        "run_after_time must be 0 for worker response_type=Direct, must use ListenAfter: {:?}",
+                        "run_after_time must be 0 for worker response_type=Direct, must use ListenAfter. job: {:?}",
                         &job_data
                     ))
                     .into());
                 }
-                // use rdb queue type for periodic or run after job with hybrid storage type (hybrid queue type is fallback to rdb)
-                if w.queue_type == QueueType::Redis as i32
-                    && (w.periodic_interval > 0 || self.is_run_after_job_data(&job_data))
-                {
-                    return Err(JobWorkerError::InvalidParameter(format!(
-                        "use queue_type=Rdb or Hybrid for periodic or run_after_time job with Hybrid storage type setting: {:?}",
-                        &job_data
-                    ))
-                    .into());
-                };
                 let jid = JobId {
                     value: self.id_generator().generate_id()?,
                 };
-                // job fetched by rdb (periodic job) should be positive run_after_time
-                let data = if (w.periodic_interval > 0 || w.queue_type == QueueType::Rdb as i32)
+                // job fetched by rdb (periodic job) should have positive run_after_time
+                let data = if (w.periodic_interval > 0
+                    || w.queue_type == QueueType::ForcedRdb as i32)
                     && job_data.run_after_time == 0
                 {
                     // make job_data.run_after_time datetime::now_millis() and create job by db
@@ -235,14 +226,14 @@ impl JobApp for HybridJobAppImpl {
                         id: Some(jid),
                         data: Some(data),
                     };
-                    if w.queue_type == QueueType::Hybrid as i32 {
+                    if w.queue_type == QueueType::WithBackup as i32 {
                         // instant job (store rdb for failback, and enqueue to redis)
                         // TODO store async to rdb (not necessary to wait)
                         match self.rdb_job_repository().create(&job).await {
                             Ok(_id) => self.enqueue_job_to_redis_with_wait_if_needed(&job, w).await,
                             Err(e) => Err(e),
                         }
-                    } else if w.queue_type == QueueType::Rdb as i32 {
+                    } else if w.queue_type == QueueType::ForcedRdb as i32 {
                         // use only rdb queue (not recommended for hybrid storage)
                         let created = self.rdb_job_repository().create(&job).await?;
                         if created {
@@ -291,22 +282,22 @@ impl JobApp for HybridJobAppImpl {
                 // use db queue (run after, periodic, queue_type=DB worker)
                 let res_db = if is_run_after_job_data
                     || w.periodic_interval > 0
-                    || w.queue_type == QueueType::Rdb as i32
-                    || w.queue_type == QueueType::Hybrid as i32
+                    || w.queue_type == QueueType::ForcedRdb as i32
+                    || w.queue_type == QueueType::WithBackup as i32
                 {
                     // XXX should compare grabbed_until_time and update if not changed or not (now not compared)
                     self.rdb_job_repository().update(jid, data).await
                 } else {
                     Ok(false)
                 };
-                // update job status of redis in hybrid
+                // update job status of redis(memory)
                 self.job_status_repository()
                     .upsert_status(jid, &JobStatus::Pending)
                     .await?;
                 let res_redis = if !is_run_after_job_data
                     && w.periodic_interval == 0
-                    && (w.queue_type == QueueType::Redis as i32
-                        || w.queue_type == QueueType::Hybrid as i32)
+                    && (w.queue_type == QueueType::Normal as i32
+                        || w.queue_type == QueueType::WithBackup as i32)
                 {
                     // enqueue to redis for instant job
                     self.enqueue_job_to_redis_with_wait_if_needed(job, &w)
@@ -630,7 +621,7 @@ mod tests {
                 Some(Duration::from_secs(60)),
             );
             let storage_config = Arc::new(StorageConfig {
-                r#type: StorageType::Hybrid,
+                r#type: StorageType::Scalable,
                 restore_at_startup: Some(false),
             });
             let job_queue_config = Arc::new(JobQueueConfig {
@@ -705,7 +696,7 @@ mod tests {
                 response_type: ResponseType::Direct as i32,
                 periodic_interval: 0,
                 retry_policy: None,
-                queue_type: QueueType::Redis as i32,
+                queue_type: QueueType::Normal as i32,
                 store_failure: false,
                 store_success: false,
                 next_workers: vec![],
@@ -814,7 +805,7 @@ mod tests {
                 response_type: ResponseType::ListenAfter as i32,
                 periodic_interval: 0,
                 retry_policy: None,
-                queue_type: QueueType::Redis as i32, // store to rdb for failback (can find job from rdb but not from redis)
+                queue_type: QueueType::Normal as i32, // store to rdb for failback (can find job from rdb but not from redis)
                 store_failure: false,
                 store_success: false,
                 next_workers: vec![],
@@ -923,7 +914,7 @@ mod tests {
             response_type: ResponseType::NoResult as i32,
             periodic_interval: 0,
             retry_policy: None,
-            queue_type: QueueType::Hybrid as i32,
+            queue_type: QueueType::WithBackup as i32,
             store_success: true,
             store_failure: false,
             next_workers: vec![],
@@ -1022,7 +1013,7 @@ mod tests {
                 response_type: ResponseType::NoResult as i32,
                 periodic_interval: 0,
                 retry_policy: None,
-                queue_type: QueueType::Hybrid as i32,
+                queue_type: QueueType::WithBackup as i32,
                 store_success: true,
                 store_failure: false,
                 next_workers: vec![],

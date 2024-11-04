@@ -13,7 +13,7 @@ use tracing;
 
 // for redis run_after queue
 // pop job from redis queue by blpop and execute, send result to redis
-// TODO NOW TESTING (not valid)
+// TODO NOW TESTING (not valid, not used)
 #[async_trait]
 pub trait RedisRunAfterJobDispatcher: UseJobApp + UseJobQueueConfig {
     fn execute(&'static self, lock: ShutdownLock) -> Result<()>

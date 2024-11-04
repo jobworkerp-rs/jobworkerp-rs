@@ -12,7 +12,7 @@ message WorkerData {
     jobworkerp.data.RetryPolicy retry_policy    = 4; // retry policy
     uint32 periodic_interval                    = 5; // periodic interval milliseconds (0: non-periodic) (if enabled, cannot use direct_response)
     optional string channel                     = 6; // channel name (if empty, use default channel)
-    jobworkerp.data.QueueType queue_type        = 7; // queue type (only for instant job in hybrid storage type, ignored if not valid by storage type config or run_after, periodic job)
+    jobworkerp.data.QueueType queue_type        = 7; // queue type
     jobworkerp.data.ResponseType response_type  = 8; // response type
     bool store_success                          = 9; // if true, store result to db when process succeeded
     bool store_failure                          = 10; // if true, store result to db when process failed

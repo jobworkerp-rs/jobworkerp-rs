@@ -23,6 +23,7 @@ use proto::jobworkerp::data::{
 };
 use std::{sync::Arc, time::Duration};
 
+// XXX NOT USED NOW
 #[derive(Clone, Debug)]
 pub struct RedisJobAppImpl {
     job_queue_config: Arc<JobQueueConfig>,
@@ -99,7 +100,7 @@ impl JobApp for RedisJobAppImpl {
                     }),
                     data: Some(job_data),
                 };
-                if wd.queue_type == QueueType::Rdb as i32 {
+                if wd.queue_type == QueueType::ForcedRdb as i32 {
                     tracing::warn!("Try to use invalid queue_type{:?}, but Redis is only available by setting, use RDB queue: worker={:?}, job={:?}", &wd.queue_type, &wd.name, &job.data)
                 }
 
