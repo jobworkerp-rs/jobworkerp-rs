@@ -275,7 +275,7 @@ async fn redis_test() -> Result<()> {
         }),
         periodic_interval: 11,
         channel: Some("hoge9".to_string()),
-        queue_type: QueueType::Rdb as i32,
+        queue_type: QueueType::ForcedRdb as i32,
         response_type: ResponseType::ListenAfter as i32,
         store_success: true,
         store_failure: true,
@@ -309,7 +309,7 @@ async fn redis_test() -> Result<()> {
     });
     worker2.periodic_interval = 12;
     worker2.channel = Some("fuga8".to_string());
-    worker2.queue_type = QueueType::Redis as i32;
+    worker2.queue_type = QueueType::Normal as i32;
     worker2.response_type = ResponseType::Direct as i32;
     worker2.store_success = false;
     worker2.store_failure = false;

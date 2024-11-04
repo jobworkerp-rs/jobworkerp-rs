@@ -6,10 +6,7 @@ use self::{
 };
 use super::{result_processor::ResultProcessorImpl, runner::map::RunnerFactoryWithPoolMap};
 use anyhow::Result;
-use app::{
-    app::StorageType,
-    module::{AppConfigModule, AppModule},
-};
+use app::module::{AppConfigModule, AppModule};
 use async_trait::async_trait;
 use chan::{ChanJobDispatcher, ChanJobDispatcherImpl};
 use command_utils::util::shutdown::ShutdownLock;
@@ -19,6 +16,7 @@ use infra::infra::{
     runner::factory::RunnerFactory,
     IdGeneratorWrapper,
 };
+use proto::jobworkerp::data::StorageType;
 
 pub mod chan;
 pub mod rdb;
@@ -60,20 +58,20 @@ impl JobDispatcherFactory {
             rdb_chan_repositories_opt.clone(),
             redis_repositories_opt,
         ) {
-            (StorageType::Redis, _, Some(redis_repositories)) => {
-                Box::new(RedisJobDispatcherImpl::new(
-                    id_generator,
-                    config_module,
-                    redis_repositories.redis_client.clone(),
-                    Arc::new(redis_repositories.redis_job_repository.clone()),
-                    None,
-                    app_module,
-                    runner_factory,
-                    runner_pool_map,
-                    result_processor,
-                ))
-            }
-            (StorageType::RDB, Some(rdb_chan_repositories), _) => {
+            // (StorageType::Redis, _, Some(redis_repositories)) => {
+            //     Box::new(RedisJobDispatcherImpl::new(
+            //         id_generator,
+            //         config_module,
+            //         redis_repositories.redis_client.clone(),
+            //         Arc::new(redis_repositories.redis_job_repository.clone()),
+            //         None,
+            //         app_module,
+            //         runner_factory,
+            //         runner_pool_map,
+            //         result_processor,
+            //     ))
+            // }
+            (StorageType::Standalone, Some(rdb_chan_repositories), _) => {
                 let rdb_job_repository = Arc::new(rdb_chan_repositories.job_repository.clone());
                 Box::new(RdbChanJobDispatcherImpl {
                     rdb_job_dispatcher: RdbJobDispatcherImpl::new(
@@ -97,7 +95,7 @@ impl JobDispatcherFactory {
                     ),
                 })
             }
-            (StorageType::Hybrid, Some(rdb_chan_repositories), Some(redis_repositories)) => {
+            (StorageType::Scalable, Some(rdb_chan_repositories), Some(redis_repositories)) => {
                 Box::new(HybridJobDispatcherImpl {
                     rdb_job_dispatcher: RdbJobDispatcherImpl::new(
                         id_generator.clone(),

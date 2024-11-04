@@ -1,8 +1,6 @@
-use app::{
-    app::StorageType,
-    module::{AppConfigModule, AppModule},
-};
+use app::module::{AppConfigModule, AppModule};
 use infra::infra::{runner::factory::RunnerFactory, IdGeneratorWrapper};
+use proto::jobworkerp::data::StorageType;
 use std::sync::Arc;
 use worker::{
     dispatcher::{JobDispatcher, JobDispatcherFactory},
@@ -33,20 +31,20 @@ impl WorkerModules {
             app_module.clone(),
         ));
         match config_module.storage_type() {
-            StorageType::Redis => {
-                let job_dispatcher = JobDispatcherFactory::create(
-                    id_generator.clone(),
-                    config_module.clone(),
-                    app_module.clone(),
-                    None,
-                    app_module.repositories.redis_module.clone(),
-                    runner_factory,
-                    runner_pool_map,
-                    result_processor,
-                );
-                Self { job_dispatcher }
-            }
-            StorageType::RDB => {
+            // StorageType::RedisOnly => {
+            //     let job_dispatcher = JobDispatcherFactory::create(
+            //         id_generator.clone(),
+            //         config_module.clone(),
+            //         app_module.clone(),
+            //         None,
+            //         app_module.repositories.redis_module.clone(),
+            //         runner_factory,
+            //         runner_pool_map,
+            //         result_processor,
+            //     );
+            //     Self { job_dispatcher }
+            // }
+            StorageType::Standalone => {
                 let job_dispatcher = JobDispatcherFactory::create(
                     id_generator.clone(),
                     config_module.clone(),
@@ -59,7 +57,7 @@ impl WorkerModules {
                 );
                 Self { job_dispatcher }
             }
-            StorageType::Hybrid => {
+            StorageType::Scalable => {
                 let job_dispatcher = JobDispatcherFactory::create(
                     id_generator.clone(),
                     config_module.clone(),

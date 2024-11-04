@@ -4,6 +4,16 @@ package jobworkerp.data;
 
 message Empty {}
 
+// queue storage type
+// (rdb: periodic job, run_after_time job, backup job, recovery job, record job result)
+// (redis: normal job, fast dequeue, pubsub)
+enum StorageType {
+    // use memory channel and sqlite for job queue and result storage
+    STANDALONE = 0;
+    // use redis and mysql for job queue and result storage
+    SCALABLE = 1;
+}
+
 // builtin runner types
 enum RunnerType {
     PLUGIN             = 0;
@@ -56,10 +66,16 @@ enum JobStatus {
     WAIT_RESULT = 2;
 }
 
+// enum QueueType {
+//     REDIS = 0; // enqueue to redis only (for fast dequeueing)
+//     RDB   = 1; // enqueue to db only (for persistent queue, but enqueue and fetch more slowly than redis)
+//     HYBRID = 2; // enqueue to redis and backup to db (record to redis for job queue + db for recovery in redis clush or restart in memory only use. force to rdb in jobs with run_after_time or periodic_interval)
+// }
+
 enum QueueType {
-    REDIS = 0; // enqueue to redis only (for fast dequeueing)
-    RDB   = 1; // enqueue to db only (for persistent queue, but enqueue and fetch more slowly than redis)
-    HYBRID = 2; // enqueue to redis and backup to db (record to redis for job queue + db for recovery in redis clush or restart in memory only use. force to rdb in jobs with run_after_time or periodic_interval)
+    NORMAL = 0; // normal queue type 
+    WITH_BACKUP = 1; // queue  with backup to (for recovery, slow)
+    FORCED_RDB = 2; // force to rdb (slow)
 }
 
 message ResultOutput {

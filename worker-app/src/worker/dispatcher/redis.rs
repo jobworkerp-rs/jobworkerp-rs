@@ -254,7 +254,7 @@ pub trait RedisJobDispatcher:
         }?;
 
         if wdat.response_type != ResponseType::Direct as i32
-            && wdat.queue_type == QueueType::Hybrid as i32
+            && wdat.queue_type == QueueType::WithBackup as i32
         {
             if let Some(repo) = self.rdb_job_repository_opt() {
                 // grab job in db (only for record as in progress)
@@ -328,7 +328,7 @@ impl RedisJobDispatcherImpl {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id_generator: Arc<IdGeneratorWrapper>,
-        config_module: Arc<AppConfigModule>,
+        _config_module: Arc<AppConfigModule>,
         redis_client: redis::Client,
         redis_job_repository: Arc<RedisJobRepositoryImpl>,
         rdb_job_repository_opt: Option<Arc<RdbChanJobRepositoryImpl>>,
@@ -338,14 +338,15 @@ impl RedisJobDispatcherImpl {
         result_processor: Arc<ResultProcessorImpl>,
     ) -> Self {
         // use redis only, use run after dispatcher for run after job
-        let run_after_dispatcher = if app_module.config_module.use_redis_only() {
-            Some(RedisRunAfterJobDispatcherImpl::new(
-                config_module.job_queue_config.clone(),
-                app_module.clone(),
-            ))
-        } else {
-            None
-        };
+        let run_after_dispatcher = // TODO redis only storage
+        //  if app_module.config_module.use_redis_only() {
+        //     Some(RedisRunAfterJobDispatcherImpl::new(
+        //         config_module.job_queue_config.clone(),
+        //         app_module.clone(),
+        //     ))
+        // } else {
+            None;
+        // };
         Self {
             id_generator,
             pool: redis_job_repository.redis_pool,

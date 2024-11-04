@@ -82,7 +82,7 @@ mod test {
             worker_schema::{
                 hybrid::HybridWorkerSchemaAppImpl, WorkerSchemaApp, WorkerSchemaWithDescriptor,
             },
-            StorageConfig, StorageType,
+            StorageConfig,
         },
         module::load_worker_config,
     };
@@ -91,7 +91,7 @@ mod test {
         worker::event::UseWorkerPublish, IdGeneratorWrapper,
     };
     use infra_utils::infra::{memory::MemoryCacheImpl, test::setup_test_redis_client};
-    use proto::jobworkerp::data::{WorkerData, WorkerSchemaId};
+    use proto::jobworkerp::data::{StorageType, WorkerData, WorkerSchemaId};
     use std::sync::Arc;
     use tokio::time::{sleep, Duration};
 
@@ -125,7 +125,7 @@ mod test {
     async fn subscribe_worker_changed_test() -> Result<()> {
         let redis_client = setup_test_redis_client()?;
         let storage_config = Arc::new(StorageConfig {
-            r#type: StorageType::Hybrid,
+            r#type: StorageType::Scalable,
             restore_at_startup: Some(false),
         });
         let id_generator = Arc::new(IdGeneratorWrapper::new());
