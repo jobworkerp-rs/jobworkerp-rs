@@ -117,21 +117,12 @@ impl JobApp for RdbChanJobAppImpl {
                     ))
                     .into());
                 }
-                // use rdb queue type for periodic or run after job with hybrid storage type (hybrid queue type is fallback to rdb)
-                if w.queue_type == QueueType::Redis as i32
-                    && (w.periodic_interval > 0 || self.is_run_after_job_data(&job_data))
-                {
-                    return Err(JobWorkerError::InvalidParameter(format!(
-                        "use queue_type=Rdb or RdbChan for periodic or run_after_time job with RdbChan storage type setting: {:?}",
-                        &job_data
-                    ))
-                    .into());
-                };
                 let jid = JobId {
                     value: self.id_generator().generate_id()?,
                 };
                 // job fetched by rdb (periodic job) should be positive run_after_time
-                let data = if (w.periodic_interval > 0 || w.queue_type == QueueType::Rdb as i32)
+                let data = if (w.periodic_interval > 0
+                    || w.queue_type == QueueType::ForcedRdb as i32)
                     && job_data.run_after_time == 0
                 {
                     // make job_data.run_after_time datetime::now_millis() and create job by db
@@ -175,15 +166,14 @@ impl JobApp for RdbChanJobAppImpl {
                         id: Some(jid),
                         data: Some(data),
                     };
-                    if w.queue_type == QueueType::Hybrid as i32 {
-                        // instant job (store rdb for failback, and enqueue to chan)
-                        // TODO store async to rdb (not necessary to wait)
+                    if w.queue_type == QueueType::WithBackup as i32 {
+                        // instant job (store rdb for backup, and enqueue to chan)
                         match self.rdb_job_repository().create(&job).await {
                             Ok(_id) => self.enqueue_job_immediately(&job, w).await,
                             Err(e) => Err(e),
                         }
-                    } else if w.queue_type == QueueType::Rdb as i32 {
-                        // use only rdb queue (not recommended for hybrid storage)
+                    } else if w.queue_type == QueueType::ForcedRdb as i32 {
+                        // use only rdb queue
                         let created = self.rdb_job_repository().create(&job).await?;
                         if created {
                             Ok((job.id.unwrap(), None))
@@ -231,28 +221,28 @@ impl JobApp for RdbChanJobAppImpl {
                 // use db queue (run after, periodic, queue_type=DB worker)
                 let res_db = if is_run_after_job_data
                     || w.periodic_interval > 0
-                    || w.queue_type == QueueType::Rdb as i32
-                    || w.queue_type == QueueType::Hybrid as i32
+                    || w.queue_type == QueueType::ForcedRdb as i32
+                    || w.queue_type == QueueType::WithBackup as i32
                 {
                     // XXX should compare grabbed_until_time and update if not changed or not (now not compared)
                     self.rdb_job_repository().update(jid, data).await
                 } else {
                     Ok(false)
                 };
-                // update job status of memory in hybrid
-                self.job_status_repository()
-                    .upsert_status(jid, &JobStatus::Pending)
-                    .await?;
                 let res_chan = if !is_run_after_job_data
                     && w.periodic_interval == 0
-                    && (w.queue_type == QueueType::Redis as i32 // TODO rename
-                        || w.queue_type == QueueType::Hybrid as i32)
+                    && (w.queue_type == QueueType::Normal as i32
+                        || w.queue_type == QueueType::WithBackup as i32)
                 {
                     // enqueue to chan for instant job
                     self.enqueue_job_immediately(job, &w).await.map(|_| true)
                 } else {
                     Ok(false)
                 };
+                // update job status of memory
+                self.job_status_repository()
+                    .upsert_status(jid, &JobStatus::Pending)
+                    .await?;
                 let res = res_chan.or(res_db);
                 match res {
                     Ok(_updated) => {
@@ -605,7 +595,7 @@ mod tests {
                 Some(Duration::from_secs(60)),
             );
             let storage_config = Arc::new(StorageConfig {
-                r#type: StorageType::RDB,
+                r#type: StorageType::Standalone,
                 restore_at_startup: Some(false),
             });
             let job_queue_config = Arc::new(JobQueueConfig {
@@ -678,7 +668,7 @@ mod tests {
                 response_type: ResponseType::Direct as i32,
                 periodic_interval: 0,
                 retry_policy: None,
-                queue_type: QueueType::Redis as i32,
+                queue_type: QueueType::Normal as i32,
                 store_failure: false,
                 store_success: false,
                 next_workers: vec![],
@@ -786,7 +776,7 @@ mod tests {
                 response_type: ResponseType::ListenAfter as i32,
                 periodic_interval: 0,
                 retry_policy: None,
-                queue_type: QueueType::Hybrid as i32,
+                queue_type: QueueType::WithBackup as i32,
                 store_failure: true,
                 store_success: true,
                 next_workers: vec![],
@@ -896,7 +886,7 @@ mod tests {
             response_type: ResponseType::NoResult as i32,
             periodic_interval: 0,
             retry_policy: None,
-            queue_type: QueueType::Hybrid as i32,
+            queue_type: QueueType::WithBackup as i32,
             store_success: true,
             store_failure: false,
             next_workers: vec![],
@@ -985,7 +975,7 @@ mod tests {
 
         let (app, _) = create_test_app(false)?;
         TEST_RUNTIME.block_on(async {
-            // create command worker with hybrid queue
+            // create command worker with backup queue
             let operation = JobqueueAndCodec::serialize_message(&proto::TestOperation {
                 name: "ls".to_string(),
             });
@@ -997,7 +987,7 @@ mod tests {
                 response_type: ResponseType::NoResult as i32,
                 periodic_interval: 0,
                 retry_policy: None,
-                queue_type: QueueType::Hybrid as i32, // with chan queue
+                queue_type: QueueType::WithBackup as i32, // with chan queue
                 store_success: true,
                 store_failure: false,
                 next_workers: vec![],

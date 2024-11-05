@@ -7,7 +7,7 @@ use crate::proto::jobworkerp::service::{
 };
 use crate::service::error_handle::handle_error;
 use app::app::worker::WorkerApp;
-use app::app::{StorageConfig, StorageType, UseStorageConfig};
+use app::app::{StorageConfig, UseStorageConfig};
 use app::module::AppModule;
 use async_stream::stream;
 use command_utils::util::option::Exists;
@@ -16,7 +16,7 @@ use futures::stream::BoxStream;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::UseJobQueueConfig;
 use infra_utils::trace::Tracing;
-use proto::jobworkerp::data::RetryPolicy;
+use proto::jobworkerp::data::{RetryPolicy, StorageType};
 use std::fmt::Debug;
 use std::sync::Arc;
 use tonic::Response;
@@ -28,9 +28,9 @@ pub trait WorkerGrpc {
 pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig {
     fn default_queue_type(&self) -> QueueType {
         match self.storage_config().r#type {
-            StorageType::RDB => QueueType::Rdb,
-            StorageType::Redis => QueueType::Redis,
-            StorageType::Hybrid => QueueType::Redis,
+            StorageType::Standalone => QueueType::Normal,
+            StorageType::Scalable => QueueType::Normal,
+            // StorageType::Redis => QueueType::Normal,
         }
     }
     fn validate_create(&self, dat: WorkerData) -> Result<WorkerData, tonic::Status> {
@@ -57,31 +57,9 @@ pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig {
         self.validate_worker(&data)?;
         Ok(data)
     }
+    // XXX not necessary now
     fn validate_queue_type(&self, qt: QueueType) -> Result<QueueType, tonic::Status> {
-        match self.storage_config().r#type {
-            StorageType::RDB => {
-                if qt == QueueType::Redis {
-                    Err(tonic::Status::invalid_argument(
-                        "queue_type Redis can't be used with RDB storage type",
-                    ))
-                } else {
-                    Ok(qt)
-                }
-            }
-            StorageType::Redis => {
-                if qt == QueueType::Rdb {
-                    Err(tonic::Status::invalid_argument(
-                        "queue_type Rdb can't be used with Redis storage type",
-                    ))
-                } else if qt == QueueType::Hybrid {
-                    tracing::warn!("queue_type: hybrid is not available by StorageType::Redis. Failback to QueueType:Redis");
-                    Ok(QueueType::Redis)
-                } else {
-                    Ok(qt)
-                }
-            }
-            StorageType::Hybrid => Ok(qt),
-        }
+        Ok(qt)
     }
     fn validate_update(&self, dat: Option<&WorkerData>) -> Result<(), tonic::Status> {
         if let Some(d) = dat {
@@ -105,7 +83,7 @@ pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig {
             )));
         }
         self.validate_queue_type(req.queue_type())?;
-        if req.queue_type == QueueType::Rdb as i32
+        if req.queue_type == QueueType::ForcedRdb as i32
             && req.response_type == ResponseType::Direct as i32
         {
             return Err(tonic::Status::invalid_argument(
@@ -113,7 +91,7 @@ pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig {
             ));
         }
         // rdb listen_after response type need to store result to rdb
-        if self.storage_config().r#type == StorageType::RDB
+        if self.storage_config().r#type == StorageType::Standalone
             && req.response_type == ResponseType::ListenAfter as i32
             && (!req.store_success || !req.store_failure)
         {
@@ -336,7 +314,7 @@ mod tests {
         expire_job_result_seconds: 1000,
     };
     static mut STORAGE_CONFIG: StorageConfig = StorageConfig {
-        r#type: StorageType::RDB,
+        r#type: StorageType::Standalone,
         restore_at_startup: Some(false),
     };
     struct Validator {
@@ -356,54 +334,54 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_validate_queue_type() {
-        let v = Validator {
-            storage_type: StorageType::RDB,
-        };
-        assert_eq!(
-            v.validate_queue_type(QueueType::Rdb).unwrap(),
-            QueueType::Rdb
-        );
-        assert!(v.validate_queue_type(QueueType::Redis).is_err());
-        assert_eq!(
-            v.validate_queue_type(QueueType::Hybrid).unwrap(),
-            QueueType::Hybrid
-        );
-
-        let v = Validator {
-            storage_type: StorageType::Redis,
-        };
-        assert!(v.validate_queue_type(QueueType::Rdb).is_err());
-        assert_eq!(
-            v.validate_queue_type(QueueType::Redis).unwrap(),
-            QueueType::Redis
-        );
-        assert_eq!(
-            v.validate_queue_type(QueueType::Hybrid).unwrap(),
-            QueueType::Redis
-        );
-        let v = Validator {
-            storage_type: StorageType::Hybrid,
-        };
-        assert_eq!(
-            v.validate_queue_type(QueueType::Rdb).unwrap(),
-            QueueType::Rdb
-        );
-        assert_eq!(
-            v.validate_queue_type(QueueType::Redis).unwrap(),
-            QueueType::Redis
-        );
-        assert_eq!(
-            v.validate_queue_type(QueueType::Hybrid).unwrap(),
-            QueueType::Hybrid
-        );
-    }
+    // #[test]
+    // fn test_validate_queue_type() {
+    //     let v = Validator {
+    //         storage_type: StorageType::Standalone,
+    //     };
+    //     assert_eq!(
+    //         v.validate_queue_type(QueueType::ForcedRdb).unwrap(),
+    //         QueueType::ForcedRdb
+    //     );
+    //     /// not valid
+    //     assert!(v.validate_queue_type(QueueType::Normal).is_ok());
+    //     assert_eq!(
+    //         v.validate_queue_type(QueueType::WithBackup).unwrap(),
+    //         QueueType::WithBackup
+    //     );
+    //     // let v = Validator {
+    //     //     storage_type: StorageType::OnlyRedis,
+    //     // };
+    //     // assert!(v.validate_queue_type(QueueType::ForcedRdb).is_err());
+    //     // assert_eq!(
+    //     //     v.validate_queue_type(QueueType::Normal).unwrap(),
+    //     //     QueueType::Normal
+    //     // );
+    //     // assert_eq!(
+    //     //     v.validate_queue_type(QueueType::WithBackup).unwrap(),
+    //     //     QueueType::Normal
+    //     // );
+    //     let v = Validator {
+    //         storage_type: StorageType::Scalable,
+    //     };
+    //     assert_eq!(
+    //         v.validate_queue_type(QueueType::ForcedRdb).unwrap(),
+    //         QueueType::ForcedRdb
+    //     );
+    //     assert_eq!(
+    //         v.validate_queue_type(QueueType::Normal).unwrap(),
+    //         QueueType::Normal
+    //     );
+    //     assert_eq!(
+    //         v.validate_queue_type(QueueType::WithBackup).unwrap(),
+    //         QueueType::WithBackup
+    //     );
+    // }
 
     #[test]
     fn test_validate_retry_policy() {
         let v = Validator {
-            storage_type: StorageType::RDB,
+            storage_type: StorageType::Standalone,
         };
         let rp = RetryPolicy {
             r#type: RetryType::Exponential as i32,
@@ -420,7 +398,7 @@ mod tests {
     #[test]
     fn test_validate_worker_by_response_type_for_rdb_storage() {
         let v = Validator {
-            storage_type: StorageType::RDB,
+            storage_type: StorageType::Standalone,
         };
         let operation = JobqueueAndCodec::serialize_message(&proto::TestOperation {
             name: "ls".to_string(),
@@ -428,7 +406,7 @@ mod tests {
         let mut w = WorkerData {
             name: "ListCommand".to_string(),
             operation,
-            queue_type: QueueType::Rdb as i32,
+            queue_type: QueueType::ForcedRdb as i32,
             response_type: ResponseType::Direct as i32,
             store_failure: true,
             store_success: true,
@@ -449,32 +427,32 @@ mod tests {
         assert!(v.validate_worker(&w).is_ok());
 
         let v = Validator {
-            storage_type: StorageType::Hybrid,
+            storage_type: StorageType::Scalable,
         };
 
         w.response_type = ResponseType::Direct as i32;
         assert!(v.validate_worker(&w).is_err());
-        w.queue_type = QueueType::Rdb as i32;
+        w.queue_type = QueueType::ForcedRdb as i32;
         assert!(v.validate_worker(&w).is_err());
-        w.queue_type = QueueType::Redis as i32;
+        w.queue_type = QueueType::Normal as i32;
         assert!(v.validate_worker(&w).is_ok());
-        w.queue_type = QueueType::Hybrid as i32;
+        w.queue_type = QueueType::WithBackup as i32;
         assert!(v.validate_worker(&w).is_ok());
 
         w.response_type = ResponseType::NoResult as i32;
         assert!(v.validate_worker(&w).is_ok());
-        w.queue_type = QueueType::Rdb as i32;
+        w.queue_type = QueueType::ForcedRdb as i32;
         assert!(v.validate_worker(&w).is_ok());
-        w.queue_type = QueueType::Hybrid as i32;
+        w.queue_type = QueueType::WithBackup as i32;
         assert!(v.validate_worker(&w).is_ok());
-        w.queue_type = QueueType::Redis as i32;
+        w.queue_type = QueueType::Normal as i32;
         assert!(v.validate_worker(&w).is_ok());
     }
 
     #[test]
     fn test_validate_worker_by_periodic_interval() {
         let v = Validator {
-            storage_type: StorageType::Hybrid,
+            storage_type: StorageType::Scalable,
         };
         let operation = JobqueueAndCodec::serialize_message(&proto::TestOperation {
             name: "ls".to_string(),
@@ -482,7 +460,7 @@ mod tests {
         let mut w = WorkerData {
             name: "ListCommand".to_string(),
             operation,
-            queue_type: QueueType::Rdb as i32,
+            queue_type: QueueType::ForcedRdb as i32,
             response_type: ResponseType::NoResult as i32,
             store_failure: true,
             store_success: true,

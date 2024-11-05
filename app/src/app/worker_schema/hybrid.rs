@@ -212,7 +212,7 @@ mod test {
             };
             let descriptor_cache = Arc::new(MemoryCacheImpl::new(&mc_config, None));
             let storage_config = Arc::new(StorageConfig {
-                r#type: StorageType::Hybrid,
+                r#type: StorageType::Scalable,
                 restore_at_startup: Some(false),
             });
             let worker_schema_app = HybridWorkerSchemaAppImpl::new(

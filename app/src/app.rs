@@ -3,37 +3,21 @@ pub mod job_result;
 pub mod worker;
 pub mod worker_schema;
 
-use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
 use infra::infra::job::rows::UseJobqueueAndCodec;
-use proto::jobworkerp::data::{Job, JobData, JobResultData, ResultStatus, RetryType, WorkerData};
+use proto::jobworkerp::data::{
+    Job, JobData, JobResultData, ResultStatus, RetryType, StorageType, WorkerData,
+};
 use serde::Deserialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StorageType {
-    RDB = 1,
-    Redis = 2,
-    Hybrid = 3,
-}
-
-use serde::de::{self, Deserializer};
-
-impl<'de> Deserialize<'de> for StorageType {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        match s.as_str() {
-            // "redis" => Ok(StorageType::Redis),
-            "rdb" => Ok(StorageType::RDB),
-            "redis" => Ok(StorageType::Redis),
-            "hybrid" => Ok(StorageType::Hybrid),
-            _ => Err(de::Error::unknown_variant(&s, &["rdb", "redis", "hybrid"])),
-        }
-    }
-}
+// #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// pub enum StorageType {
+//     RDB = 1,
+//     Redis = 2,
+//     Hybrid = 3,
+// }
+// use serde::de::{self, Deserializer};
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct StorageConfig {
@@ -42,16 +26,17 @@ pub struct StorageConfig {
 }
 
 impl StorageConfig {
+    // only valid for scalable storage
     pub fn should_restore_at_startup(&self) -> bool {
-        self.r#type == StorageType::Hybrid && self.restore_at_startup.unwrap_or(false)
+        self.r#type == StorageType::Scalable && self.restore_at_startup.unwrap_or(false)
     }
 }
 impl Default for StorageConfig {
-    // use sqlite in default
+    // use standalone (sqlite+memory) in default
     fn default() -> Self {
-        tracing::info!("Use default StorageConfig (RDB).");
+        tracing::info!("Use default StorageConfig (Standalone).");
         Self {
-            r#type: StorageType::RDB,
+            r#type: StorageType::Standalone,
             restore_at_startup: Some(false),
         }
     }

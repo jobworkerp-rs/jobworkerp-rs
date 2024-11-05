@@ -216,7 +216,7 @@ schema.to_result(||JobWorkerError::NotFound(format!("schema {:?} is not found.",
             Err(JobWorkerError::NotFound(mes))
         }?;
             if wdat.response_type != ResponseType::Direct as i32
-                && wdat.queue_type == QueueType::Hybrid as i32
+                && wdat.queue_type == QueueType::WithBackup as i32
             {
                     // grab job in db (only for record as in progress)
                     if self.rdb_job_repository()
