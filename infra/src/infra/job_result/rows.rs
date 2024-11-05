@@ -19,7 +19,7 @@ pub struct JobResultRow {
     pub output: Vec<u8>, // serialized
     pub retried: i64,    // u32
     pub priority: i32,
-    pub timeout: i32,
+    pub timeout: i64,
     pub enqueue_time: i64,
     pub run_after_time: i64,
     pub start_time: i64,

@@ -419,7 +419,7 @@ mod tests {
                 Some(Duration::from_secs(5 * 60)),
             );
             let storage_config = Arc::new(StorageConfig {
-                r#type: StorageType::Hybrid,
+                r#type: StorageType::Scalable,
                 restore_at_startup: Some(false),
             });
             let worker_schema_app = HybridWorkerSchemaAppImpl::new(

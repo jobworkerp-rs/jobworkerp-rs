@@ -362,7 +362,7 @@ mod tests {
             );
 
             let storage_config = Arc::new(StorageConfig {
-                r#type: StorageType::Hybrid,
+                r#type: StorageType::Scalable,
                 restore_at_startup: Some(false),
             });
             let descriptor_cache = Arc::new(infra_utils::infra::memory::MemoryCacheImpl::new(
@@ -405,7 +405,7 @@ mod tests {
             retry_policy: None,
             periodic_interval: 0,
             channel: Some("hoge".to_string()),
-            queue_type: QueueType::Rdb as i32,
+            queue_type: QueueType::ForcedRdb as i32,
             response_type: ResponseType::Direct as i32,
             store_success: true,
             store_failure: true,
