@@ -91,12 +91,11 @@ pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig {
             ));
         }
         // rdb listen_after response type need to store result to rdb
-        if self.storage_config().r#type == StorageType::Standalone
-            && req.response_type == ResponseType::ListenAfter as i32
+        if req.response_type == ResponseType::ListenAfter as i32
             && (!req.store_success || !req.store_failure)
         {
             return Err(tonic::Status::invalid_argument(
-                "must specify store_success and store_failure TRUE when use db queue in ListenAfter response_type.",
+                "must specify store_success and store_failure TRUE for response_type 'ListenAfter'.",
             ));
         }
         //        // operation should not be empty (depends on worker, not checked here)

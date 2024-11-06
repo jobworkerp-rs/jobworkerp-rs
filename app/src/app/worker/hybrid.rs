@@ -381,7 +381,7 @@ mod tests {
     use crate::app::worker::WorkerApp;
     use crate::app::worker_schema::hybrid::HybridWorkerSchemaAppImpl;
     use crate::app::worker_schema::WorkerSchemaApp;
-    use crate::app::{StorageConfig, StorageType};
+    use crate::app::StorageConfig;
     use anyhow::Result;
     use command_utils::util::option::FlatMap;
     use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
@@ -391,7 +391,7 @@ mod tests {
     use infra::infra::IdGeneratorWrapper;
     use infra_utils::infra::memory::MemoryCacheImpl;
     use infra_utils::infra::test::TEST_RUNTIME;
-    use proto::jobworkerp::data::{WorkerData, WorkerSchemaId};
+    use proto::jobworkerp::data::{StorageType, WorkerData, WorkerSchemaId};
     use proto::TestOperation;
 
     fn create_test_app(use_mock_id: bool) -> Result<HybridWorkerAppImpl> {
