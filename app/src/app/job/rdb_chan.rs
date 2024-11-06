@@ -83,6 +83,7 @@ impl JobApp for RdbChanJobAppImpl {
         run_after_time: i64,
         priority: i32,
         timeout: u64,
+        reserved_job_id: Option<JobId>,
     ) -> Result<(JobId, Option<JobResult>)> {
         let worker_res = if let Some(id) = worker_id {
             self.worker_app().find(id).await?
@@ -117,9 +118,9 @@ impl JobApp for RdbChanJobAppImpl {
                     ))
                     .into());
                 }
-                let jid = JobId {
+                let jid = reserved_job_id.unwrap_or(JobId {
                     value: self.id_generator().generate_id()?,
-                };
+                });
                 // job fetched by rdb (periodic job) should be positive run_after_time
                 let data = if (w.periodic_interval > 0
                     || w.queue_type == QueueType::ForcedRdb as i32)
@@ -685,7 +686,7 @@ mod tests {
             // need waiting for direct response
             let jh = tokio::spawn(async move {
                 let res = app1
-                    .enqueue_job(Some(&worker_id1), None, jarg1, None, 0, 0, 0)
+                    .enqueue_job(Some(&worker_id1), None, jarg1, None, 0, 0, 0, None)
                     .await;
                 tracing::info!("!!!res: {:?}", res);
                 let (jid, job_res) = res.unwrap();
@@ -789,7 +790,7 @@ mod tests {
 
             // wait for direct response
             let job_id = app
-                .enqueue_job(Some(&worker_id), None, jarg.clone(), None, 0, 0, 0)
+                .enqueue_job(Some(&worker_id), None, jarg.clone(), None, 0, 0, 0, None)
                 .await?
                 .0;
             let job = Job {
@@ -900,7 +901,7 @@ mod tests {
 
             // wait for direct response
             let (job_id, res) = app
-                .enqueue_job(Some(&worker_id), None, jarg.clone(), None, 0, 0, 0)
+                .enqueue_job(Some(&worker_id), None, jarg.clone(), None, 0, 0, 0, None)
                 .await?;
             assert!(job_id.value > 0);
             assert!(res.is_none());
@@ -1014,6 +1015,7 @@ mod tests {
                     0,
                     priority as i32,
                     0,
+                    None,
                 )
                 .await?;
             assert!(job_id.value > 0);
@@ -1028,6 +1030,7 @@ mod tests {
                     0,
                     priority as i32,
                     0,
+                    None,
                 )
                 .await?;
             assert!(job_id2.value > 0);

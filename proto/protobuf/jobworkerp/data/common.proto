@@ -66,12 +66,6 @@ enum JobStatus {
     WAIT_RESULT = 2;
 }
 
-// enum QueueType {
-//     REDIS = 0; // enqueue to redis only (for fast dequeueing)
-//     RDB   = 1; // enqueue to db only (for persistent queue, but enqueue and fetch more slowly than redis)
-//     HYBRID = 2; // enqueue to redis and backup to db (record to redis for job queue + db for recovery in redis clush or restart in memory only use. force to rdb in jobs with run_after_time or periodic_interval)
-// }
-
 enum QueueType {
     NORMAL = 0; // normal queue type 
     WITH_BACKUP = 1; // queue  with backup to (for recovery, slow)
