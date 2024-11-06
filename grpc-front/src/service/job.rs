@@ -80,6 +80,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         req.run_after_time.unwrap_or(0),
                         req.priority.unwrap_or(Priority::Medium as i32),
                         req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
+                        None,
                     )
                     .await
             }
@@ -93,6 +94,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         req.run_after_time.unwrap_or(0),
                         req.priority.unwrap_or(Priority::Medium as i32),
                         req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
+                        None,
                     )
                     .await
             }

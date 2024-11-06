@@ -51,6 +51,7 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         run_after_time: i64,
         priority: i32,
         timeout: u64,
+        reserved_job_id: Option<JobId>,
     ) -> Result<(JobId, Option<JobResult>)>;
 
     // update job with id (redis: upsert, rdb: update)

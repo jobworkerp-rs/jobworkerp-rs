@@ -64,6 +64,7 @@ impl JobApp for RedisJobAppImpl {
         run_after_time: i64,
         priority: i32,
         timeout: u64,
+        reserved_job_id: Option<JobId>,
     ) -> Result<(JobId, Option<JobResult>)> {
         let worker_res = if let Some(id) = worker_id {
             self.worker_app().find(id).await?
@@ -93,11 +94,11 @@ impl JobApp for RedisJobAppImpl {
             if let Some(wd) = &w.data {
                 // TODO validate argument types
                 // self.validate_worker_and_job_arg(wd, job_data.arg.as_ref())?;
-
+                let jid = reserved_job_id.unwrap_or(JobId {
+                    value: self.id_generator().generate_id()?,
+                });
                 let job = Job {
-                    id: Some(JobId {
-                        value: self.id_generator().generate_id()?,
-                    }),
+                    id: Some(jid),
                     data: Some(job_data),
                 };
                 if wd.queue_type == QueueType::ForcedRdb as i32 {

@@ -11,14 +11,6 @@ use proto::jobworkerp::data::{
 };
 use serde::Deserialize;
 
-// #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// pub enum StorageType {
-//     RDB = 1,
-//     Redis = 2,
-//     Hybrid = 3,
-// }
-// use serde::de::{self, Deserializer};
-
 #[derive(Deserialize, Clone, Debug)]
 pub struct StorageConfig {
     pub r#type: StorageType,
@@ -109,7 +101,7 @@ pub trait UseWorkerConfig {
     fn worker_config(&self) -> &WorkerConfig;
 }
 
-// build job from result status (for retry, periodic job)
+// build job from result status (for retry job)
 #[async_trait]
 pub trait JobBuilder {
     // return Some if it is necessary to retry with result and retry policy

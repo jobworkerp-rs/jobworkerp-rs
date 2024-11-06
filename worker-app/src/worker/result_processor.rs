@@ -110,6 +110,7 @@ impl ResultProcessorImpl {
                         pj.run_after_time,
                         pj.priority,
                         pj.timeout,
+                        dat.job_id, // use same job id for periodic job if possible
                     )
                     .await?;
                 tracing::info!(
@@ -207,6 +208,7 @@ impl ResultProcessorImpl {
                                     dat.run_after_time,
                                     dat.priority,
                                     dat.timeout,
+                                    None,
                                 )
                                 .await?;
                         }
@@ -238,6 +240,7 @@ impl ResultProcessorImpl {
                                     dat.run_after_time,
                                     dat.priority,
                                     dat.timeout,
+                                    None,
                                 )
                                 .await?;
                         }
