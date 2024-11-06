@@ -25,7 +25,7 @@ use infra_utils::infra::memory::{MemoryCacheImpl, UseMemoryCache};
 use infra_utils::infra::rdb::UseRdbPool;
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobStatus, Priority, QueueType,
-    ResponseType, WorkerId,
+    ResponseType, Worker, WorkerId,
 };
 use std::collections::HashSet;
 use std::{sync::Arc, time::Duration};
@@ -143,6 +143,7 @@ impl JobApp for HybridJobAppImpl {
         run_after_time: i64,
         priority: i32,
         timeout: u64,
+        reserved_job_id: Option<JobId>,
     ) -> Result<(JobId, Option<JobResult>)> {
         let worker_res = if let Some(id) = worker_id {
             self.worker_app().find(id).await?
@@ -154,9 +155,13 @@ impl JobApp for HybridJobAppImpl {
             )
             .into());
         };
-        if let Some(worker) = worker_res {
+        if let Some(Worker {
+            id: Some(wid),
+            data: Some(w),
+        }) = worker_res.as_ref()
+        {
             let job_data = JobData {
-                worker_id: worker.id,
+                worker_id: Some(*wid),
                 arg,
                 uniq_key,
                 enqueue_time: datetime::now_millis(),
@@ -166,54 +171,77 @@ impl JobApp for HybridJobAppImpl {
                 priority,
                 timeout,
             };
-            if let Some(w) = worker.data.as_ref() {
-                // TODO validate argument types (using WorkerSchema)
-                // self.validate_worker_and_job_arg(w, job_data.arg.as_ref())?;
-                // cannot wait for direct response
-                if run_after_time > 0 && w.response_type == ResponseType::Direct as i32 {
-                    return Err(JobWorkerError::InvalidParameter(format!(
+            // TODO validate argument types (using WorkerSchema)
+            // self.validate_worker_and_job_arg(w, job_data.arg.as_ref())?;
+            // cannot wait for direct response
+            if run_after_time > 0 && w.response_type == ResponseType::Direct as i32 {
+                return Err(JobWorkerError::InvalidParameter(format!(
                         "run_after_time must be 0 for worker response_type=Direct, must use ListenAfter. job: {:?}",
                         &job_data
                     ))
                     .into());
+            }
+            let jid = reserved_job_id.unwrap_or(JobId {
+                value: self.id_generator().generate_id()?,
+            });
+            // job fetched by rdb (periodic job) should have positive run_after_time
+            let data = if (w.periodic_interval > 0 || w.queue_type == QueueType::ForcedRdb as i32)
+                && job_data.run_after_time == 0
+            {
+                // make job_data.run_after_time datetime::now_millis() and create job by db
+                JobData {
+                    run_after_time: datetime::now_millis(), // set now millis
+                    ..job_data
                 }
-                let jid = JobId {
-                    value: self.id_generator().generate_id()?,
-                };
-                // job fetched by rdb (periodic job) should have positive run_after_time
-                let data = if (w.periodic_interval > 0
-                    || w.queue_type == QueueType::ForcedRdb as i32)
-                    && job_data.run_after_time == 0
-                {
-                    // make job_data.run_after_time datetime::now_millis() and create job by db
-                    JobData {
-                        run_after_time: datetime::now_millis(), // set now millis
-                        ..job_data
-                    }
-                } else {
-                    job_data
-                };
+            } else {
+                job_data
+            };
 
-                if w.response_type == ResponseType::Direct as i32 {
-                    // use redis only for direct response (not restore)
-                    // TODO create backup for queue_type == Hybrid ?
-                    let job = Job {
-                        id: Some(jid),
-                        data: Some(data.to_owned()),
-                    };
-                    self.enqueue_job_to_redis_with_wait_if_needed(&job, w).await
-                } else if w.periodic_interval > 0 || self.is_run_after_job_data(&data) {
-                    let job = Job {
-                        id: Some(jid),
-                        data: Some(data),
-                    };
-                    // enqueue rdb only
-                    if self.rdb_job_repository().create(&job).await? {
-                        self.job_status_repository()
-                            .upsert_status(&jid, &JobStatus::Pending)
-                            .await?;
-                        Ok((jid, None))
+            if w.response_type == ResponseType::Direct as i32 {
+                // use redis only for direct response (not restore)
+                // TODO create backup for queue_type == Hybrid ?
+                let job = Job {
+                    id: Some(jid),
+                    data: Some(data.to_owned()),
+                };
+                self.enqueue_job_to_redis_with_wait_if_needed(&job, w).await
+            } else if w.periodic_interval > 0 || self.is_run_after_job_data(&data) {
+                let job = Job {
+                    id: Some(jid),
+                    data: Some(data),
+                };
+                // enqueue rdb only
+                if self.rdb_job_repository().create(&job).await? {
+                    self.job_status_repository()
+                        .upsert_status(&jid, &JobStatus::Pending)
+                        .await?;
+                    Ok((jid, None))
+                } else {
+                    Err(
+                        JobWorkerError::RuntimeError(format!("cannot create record: {:?}", &job))
+                            .into(),
+                    )
+                }
+            } else {
+                // normal instant job
+                let job = Job {
+                    id: Some(jid),
+                    data: Some(data),
+                };
+                if w.queue_type == QueueType::WithBackup as i32 {
+                    // instant job (store rdb for failback, and enqueue to redis)
+                    // TODO store async to rdb (not necessary to wait)
+                    match self.rdb_job_repository().create(&job).await {
+                        Ok(_id) => self.enqueue_job_to_redis_with_wait_if_needed(&job, w).await,
+                        Err(e) => Err(e),
+                    }
+                } else if w.queue_type == QueueType::ForcedRdb as i32 {
+                    // use only rdb queue (not recommended for hybrid storage)
+                    let created = self.rdb_job_repository().create(&job).await?;
+                    if created {
+                        Ok((job.id.unwrap(), None))
                     } else {
+                        // storage error?
                         Err(JobWorkerError::RuntimeError(format!(
                             "cannot create record: {:?}",
                             &job
@@ -221,42 +249,9 @@ impl JobApp for HybridJobAppImpl {
                         .into())
                     }
                 } else {
-                    // normal instant job
-                    let job = Job {
-                        id: Some(jid),
-                        data: Some(data),
-                    };
-                    if w.queue_type == QueueType::WithBackup as i32 {
-                        // instant job (store rdb for failback, and enqueue to redis)
-                        // TODO store async to rdb (not necessary to wait)
-                        match self.rdb_job_repository().create(&job).await {
-                            Ok(_id) => self.enqueue_job_to_redis_with_wait_if_needed(&job, w).await,
-                            Err(e) => Err(e),
-                        }
-                    } else if w.queue_type == QueueType::ForcedRdb as i32 {
-                        // use only rdb queue (not recommended for hybrid storage)
-                        let created = self.rdb_job_repository().create(&job).await?;
-                        if created {
-                            Ok((job.id.unwrap(), None))
-                        } else {
-                            // storage error?
-                            Err(JobWorkerError::RuntimeError(format!(
-                                "cannot create record: {:?}",
-                                &job
-                            ))
-                            .into())
-                        }
-                    } else {
-                        // instant job (enqueue to redis only)
-                        self.enqueue_job_to_redis_with_wait_if_needed(&job, w).await
-                    }
+                    // instant job (enqueue to redis only)
+                    self.enqueue_job_to_redis_with_wait_if_needed(&job, w).await
                 }
-            } else {
-                Err(JobWorkerError::WorkerNotFound(format!(
-                    "worker data not found: id = {:?}, name = {:?}",
-                    &worker_id, &worker_name
-                ))
-                .into())
             }
         } else {
             Err(JobWorkerError::WorkerNotFound(format!("name: {:?}", &worker_name)).into())
@@ -714,7 +709,7 @@ mod tests {
             // need waiting for direct response
             let jh = tokio::spawn(async move {
                 let res = app1
-                    .enqueue_job(Some(&worker_id1), None, jarg1, None, 0, 0, 0)
+                    .enqueue_job(Some(&worker_id1), None, jarg1, None, 0, 0, 0, None)
                     .await;
                 tracing::info!("!!!res: {:?}", res);
                 let (jid, job_res) = res.unwrap();
@@ -818,7 +813,7 @@ mod tests {
 
             // wait for direct response
             let job_id = app
-                .enqueue_job(Some(&worker_id), None, jarg.clone(), None, 0, 0, 0)
+                .enqueue_job(Some(&worker_id), None, jarg.clone(), None, 0, 0, 0, None)
                 .await?
                 .0;
             let job = Job {
@@ -928,7 +923,7 @@ mod tests {
 
             // wait for direct response
             let (job_id, res) = app
-                .enqueue_job(Some(&worker_id), None, jarg.clone(), None, 0, 0, 0)
+                .enqueue_job(Some(&worker_id), None, jarg.clone(), None, 0, 0, 0, None)
                 .await?;
             assert!(job_id.value > 0);
             assert!(res.is_none());
@@ -1040,6 +1035,7 @@ mod tests {
                     0,
                     priority as i32,
                     0,
+                    None,
                 )
                 .await?;
             assert!(job_id.value > 0);
@@ -1054,6 +1050,7 @@ mod tests {
                     0,
                     priority as i32,
                     0,
+                    None,
                 )
                 .await?;
             assert!(job_id2.value > 0);
