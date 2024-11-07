@@ -28,7 +28,6 @@ The system also supports adding execution capabilities (runners) for workers thr
 
 - [Command Examples](#command-examples)
   - [Example of build, startup](#example-of-build-startup)
-    - [RDB schemas for your setup](#rdb-schemas-for-your-setup)
   - [Example of execution (grpcurl)](#example-of-execution-grpcurl)
     - [Note](#note)
 - [Functions of jobworkerp-worker (worker and runner)](#functions-of-jobworkerp-worker-worker-and-runner)
@@ -38,6 +37,7 @@ The system also supports adding execution capabilities (runners) for workers thr
     - [How to retrieve results (worker.response_type)](#how-to-retrieve-results-workerresponse_type)
 - [Other](#other)
   - [worker function](#worker-function)
+  - [RDB schemas for setup](#rdb-schemas-for-setup)
   - [Other functions](#other-functions)
 - [About the plugin](#about-the-plugin)
 - [Specification details, limitations](#specification-details-limitations)
