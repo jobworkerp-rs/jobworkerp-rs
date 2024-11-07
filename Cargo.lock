@@ -68,7 +68,7 @@ checksum = "4c95c10ba0b00a02636238b814946408b1322d5ac4760326e6fb8ec956d85775"
 
 [[package]]
 name = "app"
-version = "0.5.2"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1126,7 +1126,7 @@ checksum = "d2fabcfbdc87f4758337ca535fb41a6d701b65693ce38287d856d1674551ec9b"
 
 [[package]]
 name = "grpc-front"
-version = "0.5.2"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "app",
@@ -1697,7 +1697,7 @@ dependencies = [
 
 [[package]]
 name = "infra"
-version = "0.5.2"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1813,7 +1813,7 @@ checksum = "49f1f14873335454500d59611f1cf4a4b0f786f9ac11f4312a78e4cf2566695b"
 
 [[package]]
 name = "jobworker"
-version = "0.5.2"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "app",
@@ -2539,7 +2539,7 @@ checksum = "953ec861398dccce10c670dfeaf3ec4911ca479e9c02154b3a215178c5f566f2"
 
 [[package]]
 name = "plugin_runner_hello"
-version = "0.5.2"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2555,7 +2555,7 @@ dependencies = [
 
 [[package]]
 name = "plugin_runner_test"
-version = "0.5.2"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2821,7 +2821,7 @@ dependencies = [
 
 [[package]]
 name = "proto"
-version = "0.5.2"
+version = "0.6.1"
 dependencies = [
  "prost",
  "prost-types",
@@ -4962,7 +4962,7 @@ dependencies = [
 
 [[package]]
 name = "worker-app"
-version = "0.5.2"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "app",
