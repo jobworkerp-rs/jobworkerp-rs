@@ -1,6 +1,6 @@
 FROM debian:bookworm-slim
 
-RUN apt update; apt install -y libssl3
+RUN apt update; apt install -y libssl3 protobuf-compiler
 RUN /sbin/ldconfig
 
 RUN adduser --system jobworkerp

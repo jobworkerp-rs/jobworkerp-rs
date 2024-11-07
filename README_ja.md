@@ -2,51 +2,41 @@
 
 ## 概要
 
-jobworkerp-rs は、Rustで実装されたスケーラブルなジョブワーカーシステムです。
-ジョブワーカーシステムは、CPU負荷やI/O負荷の高いタスクを非同期に処理するために利用されます。
-GRPCをつかってワーカー定義・ジョブの登録、実行結果の取得などを実行できます。
-
-実行タスクを[worker](proto/protobuf/jobworkerp/service/worker.proto)として定義し、workerに対して実行命令となる[job](proto/protobuf/jobworkerp/service/job.proto)を登録（enqueue）することでジョブを実行させることができます。
-また、プラグイン形式でworkerの実行機能（runner）を追加することができます。
+jobworkerp-rs は、Rustで実装されたスケーラブルなジョブワーカーシステム。
+ジョブワーカーシステムは、CPU負荷やI/O負荷の高いタスクを非同期に処理するために利用する。
+GRPCをつかって処理内容となる[Worker](proto/protobuf/jobworkerp/service/worker.proto)の定義・処理実行のための[Job](proto/protobuf/jobworkerp/service/job.proto)の登録、実行結果の取得などを実行できる。
+プラグイン形式で処理を拡張できる。
 
 ### 主な機能
 
-- ジョブキューとして利用できるストレージ種別: Redis、RDB（MySQLまたはSQLite）、Hybrid（Redis + MySQL）
-  - Hybrid構成では、RDBを利用して必要に応じてジョブのバックアップを取りつつジョブを実行することができます
+- ジョブキューとして利用できるストレージ: 状況に応じてRedis、RDB（MySQLまたはSQLite）を使いわける
 - 3種類のジョブ実行結果の取得方法: 直接取得（DIRECT）、後から取得（LISTEN_AFTER）、結果取得しない（NONE）
 - ジョブ実行チャネルの設定とチャネル毎の並列実行数の設定
-  - 例えば、GPUチャネルでは並列度1で実行、通常チャネルでは並列度4で実行などの設定ができます
+  - 例えば、GPUチャネルでは並列度1で実行、通常チャネルでは並列度4で実行などの設定ができる
 - 指定時刻実行、一定間隔での定期実行
-- ジョブ実行失敗時のリトライ機能: リトライ回数や間隔の設定（Exponential backoffなど）
+- ジョブ実行失敗時のリトライ機能: リトライ回数や間隔の設定（Exponential backoff 他）
 - プラグインによる実行ジョブ内容（Runner）の拡張
 
 
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 
-**Table of Contents**
-
-- [概要](#%E6%A6%82%E8%A6%81)
 - [Command Examples](#command-examples)
-  - [ビルド、実行例](#%E3%83%93%E3%83%AB%E3%83%89%E3%80%81%E5%AE%9F%E8%A1%8C%E4%BE%8B)
-    - [RDBの定義](#rdb%E3%81%AE%E5%AE%9A%E7%BE%A9)
-  - [grpcurl による実行例](#grpcurl-%E3%81%AB%E3%82%88%E3%82%8B%E5%AE%9F%E8%A1%8C%E4%BE%8B)
-    - [注意](#%E6%B3%A8%E6%84%8F)
+  - [ビルド、起動](#%E3%83%93%E3%83%AB%E3%83%89%E8%B5%B7%E5%8B%95)
+    - [docker imageでの起動例](#docker-image%E3%81%A7%E3%81%AE%E8%B5%B7%E5%8B%95%E4%BE%8B)
+  - [jobworkerp-client による実行例](#jobworkerp-client-%E3%81%AB%E3%82%88%E3%82%8B%E5%AE%9F%E8%A1%8C%E4%BE%8B)
 - [jobworkerp-workerの機能詳細](#jobworkerp-worker%E3%81%AE%E6%A9%9F%E8%83%BD%E8%A9%B3%E7%B4%B0)
-  - [worker.runner_typeの種別](#workerrunner_type%E3%81%AE%E7%A8%AE%E5%88%A5)
-  - [ジョブキュー種別 (config:storage_type、worker.queue_type):](#%E3%82%B8%E3%83%A7%E3%83%96%E3%82%AD%E3%83%A5%E3%83%BC%E7%A8%AE%E5%88%A5-configstorage_typeworkerqueue_type)
-  - [結果の格納 (worker.store_success、worker.store_failure):](#%E7%B5%90%E6%9E%9C%E3%81%AE%E6%A0%BC%E7%B4%8D-workerstore_successworkerstore_failure)
-  - [結果の取得方法 (worker.response_type):](#%E7%B5%90%E6%9E%9C%E3%81%AE%E5%8F%96%E5%BE%97%E6%96%B9%E6%B3%95-workerresponse_type)
-- [その他](#%E3%81%9D%E3%81%AE%E4%BB%96)
+  - [worker.schema_idの組み込み機能](#workerschema_id%E3%81%AE%E7%B5%84%E3%81%BF%E8%BE%BC%E3%81%BF%E6%A9%9F%E8%83%BD)
+  - [ジョブキュー種別](#%E3%82%B8%E3%83%A7%E3%83%96%E3%82%AD%E3%83%A5%E3%83%BC%E7%A8%AE%E5%88%A5)
+  - [結果の格納 (worker.store_success、worker.store_failure)](#%E7%B5%90%E6%9E%9C%E3%81%AE%E6%A0%BC%E7%B4%8D-workerstore_successworkerstore_failure)
+  - [結果の取得方法 (worker.response_type)](#%E7%B5%90%E6%9E%9C%E3%81%AE%E5%8F%96%E5%BE%97%E6%96%B9%E6%B3%95-workerresponse_type)
+- [その他詳細](#%E3%81%9D%E3%81%AE%E4%BB%96%E8%A9%B3%E7%B4%B0)
   - [worker定義](#worker%E5%AE%9A%E7%BE%A9)
-  - [その他の機能](#%E3%81%9D%E3%81%AE%E4%BB%96%E3%81%AE%E6%A9%9F%E8%83%BD)
+  - [RDBの定義](#rdb%E3%81%AE%E5%AE%9A%E7%BE%A9)
+  - [その他の環境変数](#%E3%81%9D%E3%81%AE%E4%BB%96%E3%81%AE%E7%92%B0%E5%A2%83%E5%A4%89%E6%95%B0)
 - [プラグインについて](#%E3%83%97%E3%83%A9%E3%82%B0%E3%82%A4%E3%83%B3%E3%81%AB%E3%81%A4%E3%81%84%E3%81%A6)
-- [仕様の詳細、制限事項](#%E4%BB%95%E6%A7%98%E3%81%AE%E8%A9%B3%E7%B4%B0%E5%88%B6%E9%99%90%E4%BA%8B%E9%A0%85)
-  - [env.STORAGE_TYPEとworker.queue_typeの組み合わせと利用するqueueについて](#envstorage_type%E3%81%A8workerqueue_type%E3%81%AE%E7%B5%84%E3%81%BF%E5%90%88%E3%82%8F%E3%81%9B%E3%81%A8%E5%88%A9%E7%94%A8%E3%81%99%E3%82%8Bqueue%E3%81%AB%E3%81%A4%E3%81%84%E3%81%A6)
-  - [利用するenv.STORAGE_TYPEとworker.response_typeとの組み合わせおよびJobResultService::Listenの挙動について](#%E5%88%A9%E7%94%A8%E3%81%99%E3%82%8Benvstorage_type%E3%81%A8workerresponse_type%E3%81%A8%E3%81%AE%E7%B5%84%E3%81%BF%E5%90%88%E3%82%8F%E3%81%9B%E3%81%8A%E3%82%88%E3%81%B3jobresultservicelisten%E3%81%AE%E6%8C%99%E5%8B%95%E3%81%AB%E3%81%A4%E3%81%84%E3%81%A6)
-    - [表の表記と内容の詳細について](#%E8%A1%A8%E3%81%AE%E8%A1%A8%E8%A8%98%E3%81%A8%E5%86%85%E5%AE%B9%E3%81%AE%E8%A9%B3%E7%B4%B0%E3%81%AB%E3%81%A4%E3%81%84%E3%81%A6)
   - [各種エラーコードについて](#%E5%90%84%E7%A8%AE%E3%82%A8%E3%83%A9%E3%83%BC%E3%82%B3%E3%83%BC%E3%83%89%E3%81%AB%E3%81%A4%E3%81%84%E3%81%A6)
-  - [その他の状況、今後の予定](#%E3%81%9D%E3%81%AE%E4%BB%96%E3%81%AE%E7%8A%B6%E6%B3%81%E4%BB%8A%E5%BE%8C%E3%81%AE%E4%BA%88%E5%AE%9A)
+- [その他](#%E3%81%9D%E3%81%AE%E4%BB%96)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
@@ -54,13 +44,15 @@ GRPCをつかってワーカー定義・ジョブの登録、実行結果の取�
 
 --------
 
-### ビルド、実行例
+### ビルド、起動
 
 ```shell
 
-# prepare .env file for customizing settings
+# prepare .env file
 $ cp dot.env .env
-# (modify to be appliable to your environment)
+
+# build release binaries (use mysql)
+$ cargo build --release --features mysql
 
 # build release binaries
 $ cargo build --release
@@ -68,216 +60,190 @@ $ cargo build --release
 # Run the all-in-one server by release binary
 $ ./target/release/all-in-one
 
-# Run all-in-one binary from cargo (RDB storage: sqlite3)
-$ cargo run --bin all-in-one
-
 # Run gRPC front server and worker by release binary
 $ ./target/release/worker &
 $ ./target/release/grpc-front &
 
 ```
 
-### grpcurl による実行例
+#### docker imageでの起動例
 
-[protoファイル](proto/protobuf/jobworkerp/service/)
+- docker-commpose.yml, docker-compose-scalable.ymlを参照してください
 
-one shot job (no result)
+### jobworkerp-client による実行例
+
+[jobworkerp-client](https://github.com/jobworkerp-rs/jobworkerp-client-rs)をつかって以下のようにworkerの作成・取得、jobのenqueue、処理結果の取得が可能
+
+(worker.operation, job.job_arg, job_result.outputのencode・decodeが不要であればgrpcurlでも実行可能。参考: [protoファイル](proto/protobuf/jobworkerp/service/))
+
+setup:
 
 ```shell
+# clone
+$ git clone https://github.com/jobworkerp-rs/jobworkerp-client-rs
+$ cd jobworkerp-client-rs
 
-# create worker
+# build
+$ cargo build --release
 
-1. $ grpcurl -d '{"name":"EchoWorker","operation":{"command":{"name":"echo"}},"next_workers":[],"retry_policy":{"type":"EXPONENTIAL","interval":"1000","max_interval":"60000","max_retry":"3","basis":"2"},"store_failure":true}' \
-    -plaintext \
-    localhost:9000 jobworkerp.service.WorkerService/Create
+# run (show help)
+$ ./target/release/jobworkerp-client
 
-# enqueue job (echo 'こんにちわ!')
-# specify worker_id created by WorkerService/Create (command 1. response)
-2. $ grpcurl -d '{"arg":{"command":{"args":"44GT44KT44Gr44Gh44KP77yBCg=="}},"worker_id":{"value":"1"},"timeout":"360000","run_after_time":"3000"}' \
-    -plaintext \
-    localhost:9000 jobworkerp.service.JobService/Enqueue
-
+# list worker-schema (need launching jobworkerp-rs in localhost:9000(default))
+$ ./target/release/jobworkerp-client worker-schema list
 ```
 
-one shot job (listen result)
+one shot job (with result: response-type DIRECT)
+
+```shell
+# create worker (specify schema id from worker-schema list)
+1. $ ./target/release/jobworkerp-client worker create --name "GoogleRequest" --schema-id 2 --operation '{"base_url":"https://www.google.com/search"}' --response-type DIRECT
+
+# enqueue job (ls . ..)
+# specify worker_id value or worker name created by `worker create` (command 1. response)
+2-1. $ ./target/release/jobworkerp-client job enqueue --worker 1 --arg '{"headers":[],"method":"GET","path":"/search","queries":[{"key":"q","value":"test"}]}'
+2-2. $ ./target/release/jobworkerp-client job enqueue --worker "GoogleRequest" --arg '{"headers":[],"method":"GET","path":"/search","queries":[{"key":"q","value":"test"}]}'
+```
+
+one shot job (listen result after request: response-type LISTEN_AFTER)
 
 ```shell
 
-# create sleep worker (need store_success and store_failure to be true in rdb storage)
-1. $ grpcurl -d '{"name":"ListenSleepResultWorker","operation":{"command":{"name":"sleep"}},"next_workers":[],"retry_policy":{"type":"EXPONENTIAL","interval":"1000","max_interval":"60000","max_retry":"3","basis":"2"},"response_type":"LISTEN_AFTER","store_success":true,"store_failure":true}' \
-    -plaintext \
-    localhost:9000 jobworkerp.service.WorkerService/Create
+# create shell command `sleep` worker (must specify store_success and store_failure to be true)
+1. $ ./target/release/jobworkerp-client worker create --name "SleepWorker" --schema-id 1 --operation '{"name":"sleep"}' --response-type LISTEN_AFTER --store-success --store-failure
 
 # enqueue job
-# specify worker_id created by WorkerService/Create (command 1. response)
-# (timeout value(milliseconds) must be greater than sleep time)
-2. $ grpcurl -d '{"arg":{"command":{"args":"MjAK"}},"worker_id":{"value":"2"},"timeout":"22000"}' \
-    -plaintext \
-    localhost:9000 jobworkerp.service.JobService/Enqueue
+# sleep 60 seconds
+2. $ ./target/debug/jobworkerp-client job enqueue --worker 'SleepWorker' --arg '{"args":["60"]}'
 
-# listen job
-# specify job_id created by JobService/Enqueue (command 2. response)
-$ grpcurl -d '{"job_id":{"value":"<got job id above>"},"worker_id":{"value":"<got worker id of ListenSleepResultWorker>"},"timeout":"22000"}' \
-    -plaintext \
-    localhost:9000 jobworkerp.service.JobResultService/Listen
-
-# (The response is returned as soon as the result is available)
-    
+# listen job (long polling with grpc)
+# specify job_id created by `job enqueue` (command 2. response)
+3. $ ./target/release/jobworkerp-client job-result listen --job-id <got job id above> --timeout 70000 --worker 'SleepWorker'
+# (The response is returned as soon as the result is available, to all clients to listen. You can request repeatedly)
 ```
+
 
 periodic job
 
 ```shell
 
 # create periodic worker (repeat per 3 seconds)
-$ grpcurl -d '{"name":"EchoPeriodicWorker","operation":{"command":{"name":"echo"}},"retry_policy":{"type":"EXPONENTIAL","interval":"1000","max_interval":"60000","max_retry":"3","basis":"2"},"periodic_interval":3000,"store_failure":true}' \
-    -plaintext \
-    localhost:9000 jobworkerp.service.WorkerService/Create
+1. $ ./target/release/jobworkerp-client worker create --name "PeriodicEchoWorker" --schema-id 1 --operation '{"name":"echo"}' --periodic 3000 --response-type NO_RESULT --store-success --store-failure
 
-# enqueue job (echo 'こんにちわ!')
-# specify worker_id created by WorkerService/Create (↑)
-# start job at [epoch second] % 3 == 1, per 3 seconds by run_after_time (epoch milliseconds) (see info log of jobworkerp-worker)
+# enqueue job (echo Hello World !)
+# start job at [epoch second] % 3 == 1, per 3 seconds by run_after_time (epoch milliseconds) (see info log of jobworkerp all-in-one execution)
 # (If run_after_time is not specified, the command is executed repeatedly based on enqueue_time)
-$ grpcurl -d '{"arg":{"command":{"args":"44GT44KT44Gr44Gh44KP77yBCg=="}},"worker_id":{"value":"10"},"timeout":"60000","run_after_time":"1000"}' \
-    -plaintext \
-    localhost:9000 jobworkerp.service.JobService/Enqueue
+2. $ ./target/debug/jobworkerp-client job enqueue --worker 'PeriodicEchoWorker' --arg '{"args":["Hello", "World", "!"]}' --run-after-time 1000
+
+# stop periodic job 
+# specify job_id created by `job enqueue` (command 2. response)
+3. $ ./target/debug/jobworkerp-client job delete --id <got job id above>
+
 ```
-
-#### 注意
-
-- RDBとしてSQLiteを利用する場合は並列実行性能が高くないため、並列度の高いヘビーな用途の利用ではredisとの併用やMySQLの利用を推奨します。
-- periodic_intervalの指定として.env のJOB_QUEUE_FETCH_INTERVALより短かい指定はできません。
 
 ## jobworkerp-workerの機能詳細
 
-workerは実行する仕事を定義します。runnerはworkerの定義に則してジョブを実行し、結果を得ます。
-実行する機能としては worker.runner_type で現在5種類から選択できます。
+### worker.schema_idの組み込み機能
+worker_schemaに組み込み定義されている機能を以下に記載する。
+各機能のworker.operation、job.argにはprotobufでそれぞれの機能に必要な値を設定する。protobuf定義はworker_schema.operation_proto, worker_schema.job_arg_protoから取得可能。
 
-### worker.runner_typeの種別
+- COMMAND: command実行 ([ComamndRunner](infra/src/infra/runner/command.rs)): worker.operationに対象のコマンドを指定、job.argに引数を指定する
+- HTTP_REQUEST: reqwestによるhttpリクエスト ([RequestRunner](infra/src/infra/runner/request.rs)): worker.operationにbase url、job.argにheaders、queries、method、body、pathを指定する。レスポンス本文を結果として受け取る
+- GRPC_UNARY: gRPC unaryリクエスト ([GrpcUnaryRunner](infra/src/infra/runner/grpc_unary.rs)): worker.operationにjson形式でurlとpathを指定する (例: `{"url":"http://localhost:9000","path":"jobworkerp.service.WorkerService/FindList"}`)。job.argはrpc引数をprotobufエンコード(bytes)で指定する。レスポンスはprotobuf バイナリを受けとる。
+- DOCKER: docker run実行 ([DockerRunner](infra/src/infra/runner/docker.rs)): worker.operationにFromImage (pullするイメージ)、Repo (レポジトリ)、Tag、Platform(`os[/arch[/variant]]`)などを指定、job.argsにImage(実行するイメージ名)とCmd(実行コマンドラインの配列)を指定する 
+  - 環境変数 `DOCKER_GID`：/var/run/docker.sock に接続する権限をもったGIDを指定する。jobworkerpの実行プロセスはこのGIDを利用可能な権限が必要。
+  - k8s pod上での起動は現在未テスト。(上記の制限からおそらくDockerOutsideOfDockerあるいはDockerInDockerが可能なdocker imageの設定が必要になる想定)。
 
-- COMMAND: command実行 ([ComamndRunner](worker-app/src/worker/runner/impls/command.rs)): worker.operationに対象のコマンドを指定、job.argに引数を指定する
-- REQUEST: reqwestによるhttpリクエスト ([RequestRunner](worker-app/src/worker/runner/impls/request.rs)): worker.operationにbase url、job.argにjson形式でheaders、queries、method、body、pathを指定する (例: `{"headers":{"Content-Type":["plain/text"]},"queries":[["q","rust"],["ie","UTF-8"]],"path":"search","method":"GET"}`) 。レスポンス本文を結果として受け取る
-- GRPC_UNARY: gRPC unaryリクエスト ([GrpcUnaryRunner](worker-app/src/worker/runner/impls/grpc_unary.rs)): worker.operationにjson形式でurlとpathを指定する (例: `{"url":"http://localhost:9000","path":"jobworkerp.service.WorkerService/FindList"}`)。job.argはrpc引数をprotobufエンコード(bytes)で指定する。レスポンスはprotobuf バイナリを受けとる。
-- DOCKER: docker run実行 ([DockerRunner](worker-app/src/worker/runner/impls/docker.rs)): worker.operationにjson形式でFromImage (pullするイメージ)、Repo (レポジトリ)、Tag、Platform(`os[/arch[/variant]]`)を指定します(全てoptional。実行の事前準備のために指定します)。例:`{"FromImage":"busybox:latest"}`。job.argsにImage(実行するイメージ名)とCmd(実行コマンドラインの配列)をJson形式で指定します (例: `{"Image":"busybox:latest","Cmd": ["ls", "-alh", "/"]}`)
-  - .envに DOCKER_GIDを指定する必要があります。
-    - /var/run/docker.sock に接続する権限をもったGIDを指定します。実行プロセスとしてこのGIDを利用可能な権限が必要です。
-  - k8s pod上での起動は現在未テストです。(上記の制限からおそらくDockerOutsideOfDockerあるいはDockerInDockerが可能なdocker imageの設定が必要になります)。
-- PLUGIN:  pluginの実行 ([PluginRunner](worker-app/src/plugins/runner.rs)): worker.operationに実装したpluginのrunner.nameを指定、job.argにplugin runnerに渡すargを指定してください。
-  - [サンプル](plugins/hello_runner/Cargo.toml)
 
-### ジョブキュー種別 (config:storage_type、worker.queue_type)
+### ジョブキュー種別
 
-- RDB (MySQL or SQLite: ヘビーな並列実行が必要な場合はMySQLをお勧めします)
-- Redis (ナイーブな実装があるのであまりお勧めしません: run_after_time、periodic_interval指定時の処理やworker定義、job_resultの管理部分)
-- Redis + RDB (Hybridモード: 遅延実行や定期実行、RedisのバックアップをRDB、即時実行をRedisで実行する)
+環境変数`STORAGE_TYPE`
+- Standalone: 即時ジョブは memory(spmc channel) 、時刻指定ジョブなどはrdb(sqlite, mysql)に格納するためシングルインスタンスでの実行のみサポート
+- Scalable: 即時ジョブは redis 、時刻指定ジョブなどはrdb(sqlite, mysql)に格納するためgrpc-front、workerをそれぞれ複数台で構成することができる
+    - cargoでのビルド時に `--features mysql` を付けてビルドする必要がある
+
+worker.queue_type
+- NORMAL: 即時実行ジョブ(時刻指定のない通常のジョブ)はchannel (redis) に、定期実行や時刻指定ジョブはdbに格納
+- WITH_BACKUP: 即時実行ジョブをchannelとrdbの両方に格納する(障害時にrdb内のジョブをリストアできる)
+- FORCED_RDB: 即時実行ジョブもrdbのみに格納する (実行が遅くなることがある)
 
 ### 結果の格納 (worker.store_success、worker.store_failure)
 
-- worker.store_success、worker.store_failureの指定により実行成功、失敗時にstorage(Redisの場合はRedisのみ、その他はRDBテーブルjob_result) に保存されます
-- [JobResultService](proto/protobuf/jobworkerp/service/job_result.proto)で取得できます
+- worker.store_success、worker.store_failureの指定により実行成功、失敗時にrdb(job_resultテーブル) に保存
+- [JobResultService](proto/protobuf/jobworkerp/service/job_result.proto)で実行後に参照できる
 
 ### 結果の取得方法 (worker.response_type)
 
-- 結果取得なし (NO_RESULT): (デフォルト値) Job IDがレスポンスで返される。結果を格納している場合はjobの終了後に [JobResultService/FindListByJobId](proto/protobuf/jobworkerp/service/job_result.proto) をつかって取得できます。
-- 後で取得(LISTEN_AFTER): enqueue時にはNO_RESULTと同様のレスポンス後、[job_result](proto/protobuf/jobworkerp/service/job_result.proto)サービスのListenをつかってロングポーリングする形で結果がでた際に取得できます。
-  - Redis pubsubで結果を伝達するため複数のクライアントがListenして結果を得ることができます
-- 直接取得(DIRECT): enqueueで結果がでるまで待ち、レスポンスとして直接結果が返されます。(結果を格納していない場合はリクエストしたクライアントのみ結果を取得できます)
+- 結果取得なし (NO_RESULT): (デフォルト値) Job IDがレスポンスで返される。結果を格納している場合はjobの終了後に [JobResultService/FindListByJobId](proto/protobuf/jobworkerp/service/job_result.proto) をつかって取得できる。
+- 後で取得(LISTEN_AFTER): enqueue後、[job_result](proto/protobuf/jobworkerp/service/job_result.proto)サービスのListenを使って実行終了後すぐに結果を取得できる。(ロングポーリング)
+  - 複数のクライアントがListenして全クライアントが同じ結果を得ることができます (Redis pubsubでの伝達)
+- 直接取得(DIRECT): enqueueリクエストで実行完了まで待ち、そのレスポンスとして直接結果が得られる。(結果を格納していない場合はリクエストしたクライアントのみ結果を取得可能)
 
-## その他
+## その他詳細
+
+- 特に単位を明記していない時間の項目の単位はミリ秒
 
 ### worker定義
 
-- run_after_time (ミリ秒のエポックタイム) を指定することによりジョブの実行時刻を指定できます。
-- timeout 時間を指定することができます。
-- worker.periodic_intervalを指定することでその時間間隔で繰り返しのジョブを実行することができます
-- 実行チャネル名および並列実行数を指定して、同名のチャネルを利用している特定のworkerで指定の並列度で処理を実行させることが可能です
-- worker.retry_policyの指定でjob実行失敗時のリトライの方式(CONSTANT、LINEAR、EXPONENTIAL)や最大回数、最大時間間隔などを指定することができます
-- 実行成功あるいは失敗の場合に結果をRDBに保存するように指定することができます
-- worker.next_workersを定義することでジョブの実行結果を引数として更に別のworkerに処理引数として渡してジョブを連鎖させることができます (worker.idを数値でカンマ区切りで指定)
-  - 例: 結果としてSlackResultNotificationRunner(worker_id=-1)を指定して結果をslack通知: worker.next_workers="-1"
-- ビルトインworker (特定機能を実行するworkerを特定のworkerId指定で直接利用可能)が下記1つ利用可能です
-  - slackによる結果通知 (SlackResultNotificationRunner: worker_id=-1): 各種時刻情報とともにjob.argに指定したものが本文として通知されます。
-    - 環境変数にSLACK_で始まる設定が必要になります ([例](dot.env))
-- (テスト中) runnerプロセスを並列度の分だけstaticに確保することが可能 (worker.use_static)
-  - worker.use_static=trueに指定することでrunerをpoolingして初期化を都度行わないで使いまわします。
+- run_after_time: ジョブの実行時刻 (epoch time)
+- timeout：タイムアウト時間
+- worker.periodic_interval: 繰り返しジョブ実行 (1以上の指定)
+- worker.retry_policy: job実行失敗時のリトライ方式(RetryType: CONSTANT、LINEAR、EXPONENTIAL)、最大回数(max_retry)、最大時間間隔(max_interval)などを指定
+- worker.next_workers: ジョブの実行完了後にその結果を引数として別のworkerを実行 (worker.idをカンマ区切りで指定)
+  - 結果の値をそのままjob_argとして指定して処理可能なworkerを指定する必要がある
+- worker.use_static (テスト中): runnerプロセスを並列度の分だけstaticに確保することが可能 (実行runerをpoolingして初期化を都度行わない)
 
 ### RDBの定義
 
 - [MySQL schema](infra/sql/mysql/002_worker.sql)
 - [SQLite schema](infra/sql/sqlite/001_schema.sql)
 
-### その他の機能
+(worker_schemaには組み込み機能としての固定レコードが存在する)
 
-- workerはSIGINT (Ctrl + c) シグナルにより実行中のjobの実行終了を待って終了します。
-- jaeger、zipkinによるリクエストメトリクスの取得 (otlpは現在テスト中)
-- worker情報についてメモリキャッシュを持っています。rpcによる変更に応じてキャッシュを揮発しています (Redisが利用できる場合にはpubsubをつかって各instanceのメモリキャッシュを揮発させています)
-- ログの出力に関して.envファイルで設定が可能です。ログのファイル出力時はファイル名に各ホストのIPv4アドレスに応じたサフィックスが付きます。(共有ストレージへの出力時に同一ファイルへ書き込みをしないようにしてファイルが壊れないようにしています)
-- jobworkerp-frontは設定によってgRPC webを利用可能です。
+### その他の環境変数
+
+  - 実行runner設定
+    - `PLUGINS_RUNNER_DIR`: プラグイン格納ディレクトリ
+    - `DOCKER_GID`: DockerグループID (DockerRunner用)
+  - ジョブキューチャンネルと並列度
+    - `WORKER_DEFAULT_CONCURRENCY`: デフォルトチャンネルの並列度
+    - `WORKER_CHANNELS`: 追加ジョブキューチャンネルの名称(カンマ区切り)
+    - `WORKER_CHANNEL_CONCURRENCIES`: 追加ジョブキューチャンネルの並列度(カンマ区切り、WORKER_CHANNELSに対応した値)
+  - ログ設定 
+    - `LOG_LEVEL`: ログレベル(trace, debug, info, warn, error)
+    - `LOG_FILE_DIR`: ログ出力ディレクトリ
+    - `LOG_USE_JSON`: ログ出力をJSON形式で実施するか(boolean)
+    - `LOG_USE_STDOUT`: ログ出力を標準出力するか(boolean)
+    - `OTLP_ADDR`(テスト中): otlpによるリクエストメトリクスの取得 (ZIPKIN_ADDR)
+  - ジョブキュー設定
+    - `STRAGE_TYPE`
+      - `Standalone` RDBとメモリ(mpmcチャンネル)を利用する。単一インスタンスでの実行を想定した動作をする。(ビルド時にmysql指定をせずにSQLiteを利用すること)
+      - `Scable`: RDBとRedisを利用する。複数インスタンスでの実行を想定した動作をする。(ビルド時に`--features mysql`を指定してrdbとしてmysqlを利用すること)
+    - `JOB_QUEUE_EXPIRE_JOB_RESULT_SECONDS`: response_typeがLISTEN_AFTERの場合に結果を待つ最大時刻
+    - `JOB_QUEUE_FETCH_INTERVAL`: rdbに格納されたjobの定期fetchの時間間隔
+    - `STORAGE_REFLESH_FROM_RDB`: クラッシュ等で処理されなかったジョブが queue_type=WITH_BACKUP でrdbに残っているときにtrue指定することでredisに再度登録しなおして処理再開できる
+  - GRPC設定
+    - `GRPC_ADDR`: grpcサーバアドレス:ポート
+    - `USE_GRPC_WEB`: grpcサーバでgRPC webを利用するか(boolean)
 
 ## プラグインについて
 
-Runner traitを実装したdylibを.envのPLUGINS_RUNNER_DIRに指定したディレクトリ内に配置してください。
-workerの起動時にロードされます。
-
-実装例: [HelloPluginRunner](plugins/hello_runner/src/lib.rs)
-
-## 仕様の詳細、制限事項
-
-### env.STORAGE_TYPEとworker.queue_typeの組み合わせと利用するqueueについて
-
-worer.periodic_interval あるいは job.run_after_time の値を指定した場合(*) はRDBが利用可能な場合はRDBをqueueとして利用します。
-
-(*) より詳細には worer.periodic_interval あるいは (job.run_after_time - 現在時刻のミリ秒) が .envのJOB_QUEUE_FETCH_INTERVALより大きいとき
-
-|      | STORAGE_TYPE.rdb | STORAGE_TYPE.redis | STORAGE_TYPE.hybrid |
-|----|----|----|----|
-| QueueType::RDB    | RDBを利用 | エラー        | RDBを利用           |
-| QueueType::REDIS  | エラー    | Redisを利用   | Redisを利用         |
-| QueueType::HYBRID | RDBを利用 | Redisを利用   | Redisを利用 + RDBへバックアップ |
-
-- Redisを利用: RedisのRPUSH、BLPOPを使ってjobのキュー操作をします (ジョブのタイムアウト時のリカバリなし)
-- RDBを利用: RDBを一定間隔(env.JOB_QUEUE_FETCH_INTERVAL)でfetch、grabbled_until_timeの更新によるジョブの確保をすることでjobのキュー操作をします。(ジョブのタイムアウト時のリカバリあり)
-- Redisを利用 + RDBへバックアップ: RedisのRPUSH、BLPOPを使ってjobのキュー操作をします。ジョブがタイムアウトした場合や強制再起動した場合などRedisからjobをpopしたままタイムアウト時刻をすぎても実行完了しなかった場合にはRDBから自動リカバリして再実行されます。env.JOB_QUEUE_WITHOUT_RECOVERY_HYBRID=trueを指定すると自動リカバリ機能をOFFにすることもできます。
-
-なおJobRestoreService.Restore は実行時、env.STORAGE_REFLESH_FROM_RDB=true はworker起動時1回のみ同様に保存されているタイムアウトジョブ全てをRDBからRedisへリストアします (大量にqueueにジョブがある場合には重い処理になります)。
-
-### 利用するenv.STORAGE_TYPEとworker.response_typeとの組み合わせおよびJobResultService::Listenの挙動について
-
-基本的には(worker.store_success、worker.store_failure設定により)storeしたものをJobResultService::Find\*メソッドで取得できますがworker.response_typeの設定によってはJobResultService::Listenにより以下のように結果を取得できます。
-(基本的にRedisを利用可能かどうかによって挙動が異なります。RDBのみの利用の場合はRDBに保存しない設定の場合は結果を返せないためエラーになります。)
-
-|      | STORAGE_TYPE.rdb | STORAGE_TYPE.redis | STORAGE_TYPE.hybrid |
-|----|----|----|----|
-| response_type::NO_RESULT | store_\*=trueではないworkerを指定するとエラー | エラー | エラー |
-| response_type::LISTEN_AFTER | store_\*=trueではないworkerを指定するとエラー | 所定の時間だけListenで取得可能 | 所定の時間だけListenで取得可能 |
-| response_type::DIRECT | store_\*=trueではないworkerを指定するとエラー | エラー | エラー |
-
-#### 表の表記と内容の詳細について
-
-- エラー : Jobの終了を検知しないためListenはできない組み合わせになっています (InvalidParameterエラーとなります)。
-- store_\*=trueではないworkerを指定するとエラー : worker.store_success、worker.store_failure の両方がtrueのworkerを指定しない場合はエラーになります。JobResultService::Listen を使うと結果がでたタイミングでレスポンスを返します (RDBの場合は定期fetchのため結果がでて最大JOB_QUEUE_FETCH_INTERVALだけ時間かかります)
-- 所定の時間だけListenで取得可能: 結果がでてからJOB_QUEUE_EXPIRE_JOB_RESULT_SECONDSの間はJobResultService::Listenによる結果取得が可能です (結果がでる前にリクエストしていた場合は結果がでたタイミングでレスポンスが返ってきます)。それ以降は"find*と同様" と同じ動作になります。(Listen用にRedisにexpire付きでjobResultが保存されます)
-- reponse_type::LISTEN_AFTERはRedisを利用できる場合はpubsubを用いてlistenしているクライアントが結果をsubscribeすることで実現しています。response_type::LISTEN_AFTER 以外ではpubsubを実行しないためListenできません。RDBでは単にstoreされる結果をループしてfetchして待機しているだけのため結果的にどのresponse_typeでもListenが可能です。(敢えてエラーにすることもしていません)
+- [Runner trait](infra/src/infra/runner/plugins.rs) をdylibとして実装する
+  - 環境変数 `PLUGINS_RUNNER_DIR` に指定したディレクトリ内に配置することでworker_Schemaとして登録される
+  - 実装例：[HelloPlugin](plugins/hello_runner/src/lib.rs)
 
 ### 各種エラーコードについて
 
 TBD
 
-## その他の状況
-
-- env.STORAGE_TYPE=redis は情報取得などで一部よくない実装があります。ジョブキューが大量に詰まっているなどの特殊なケースでは問題になる可能性があります。
-- job idの払いだしにはsnowflakeを利用しています。マシンidとして10bit各ホストのIPv4アドレスのホスト部を利用しているため、10bitを越えるホスト部を持つサブネットでの運用あるいは異なるサブネットで同一ホスト部を持つようなインスタンスを利用するような運用をしてしまうと重複したjob idを払いだす可能性がありますので避けてください (あるいはjob idの重複によるAlreadyExistsエラーがでなくなるまでJobService.Enqueueをリトライしてください)。
+## その他
+- cargoでのビルド時に`--feature mysql` を指定するとrdbとしてmysqlを利用する。指定しないとrdbとしてSQLite3を利用する。
+- 定期実行ジョブのperiodic(繰り返しの時間(ミリ秒))の指定として.env のJOB_QUEUE_FETCH_INTERVAL(rdbへの定期ジョブ取得クエリ間隔)より短かい指定はできない
+  - 時刻指定ジョブについてはrdbからプリフェッチをするためfetchと実行時間にずれがある場合にでも時間通りの実行が可能
+- workerはSIGINT (Ctrl + c) シグナルにより実行中のjobの実行終了を待って終了する
+- job idにはsnowflakeを利用。マシンidとして10bit各ホストのIPv4アドレスのホスト部を利用しているため、10bitを越えるホスト部を持つサブネットでの運用あるいは異なるサブネットで同一ホスト部を持つようなインスタンスを利用するような運用は避けてください。(重複したjob idを払いだす可能性があります)
 - worker.type = DOCKER をk8s環境上のworkerで実行する場合にはDocker Outside Of Dockerの設定あるいはDocker in Dockerの設定が必要になります (未テストです)
-
-## 今後の予定
-
-(自分以外の利用者がいるようならやるかもしれません)
-
-- 追加で必要そうなrpcの追加 (例：JobService/FindListByWorkerId)
-- Redis clusterへの対応: redis-rs が [pubsub対応したら](https://github.com/redis-rs/redis-rs/issues/492) 対応する予定です
-  - redis pubsubの利用箇所: worker定義を変更したときにはredisのpubsubにより各サーバへ更新が通知されキャッシュが揮発します。またresponse_type=LISTEN_AFTERの時の結果はpubsubによって各frontへ結果が通知されます。
-- OpenTelemetry Collectorへの対応: 現在実装のみで未テストです。
 - runnerでpanicを起こすとおそらくworkerプロセス自体が落ちる状態になっています。そのためworkerはsupervisordやkubernetes deploymentなどの耐障害性のある運用をすることが推奨されます。(C-unwind の適用検討は今後の課題です)
-- ドキュメントの充実
+
 
 *Table of Contents: generated with [DocToc](https://github.com/thlorenz/doctoc)*

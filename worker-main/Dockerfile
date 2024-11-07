@@ -1,6 +1,6 @@
-FROM nvcr.io/nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04
+FROM nvcr.io/nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
 
-RUN apt update && apt install -y libssl3 libcurl4  \
+RUN apt update && apt install -y libssl3 libcurl4 protobuf-compiler \
     && apt-get clean -y && rm -rf /var/lib/apt/lists/*
 
 RUN /sbin/ldconfig
