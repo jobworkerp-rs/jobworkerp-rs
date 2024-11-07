@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use super::client::{Attachment, AttachmentField, PostMessageRequest, SlackMessageClientImpl};
 use crate::jobworkerp::runner::ResultMessageData;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use command_utils::util::datetime;
 use itertools::Itertools;
 
@@ -12,13 +12,6 @@ use super::SlackConfig;
 pub struct SlackRepository {
     pub config: SlackConfig,
     pub client: SlackMessageClientImpl,
-}
-
-pub fn load_slack_config_from_env() -> Result<SlackConfig> {
-    dotenvy::dotenv().ok();
-    envy::prefixed("SLACK_")
-        .from_env::<SlackConfig>()
-        .map_err(|e| anyhow!(format!("cannot read slack config from env: {:?}", e)))
 }
 
 impl SlackRepository {

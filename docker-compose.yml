@@ -2,7 +2,7 @@ version: '3.9'
 
 services:
   jobworkerp-all:
-    image: ghcr.io/jobworkerp-rs/jobworkerp:v0.5.1
+    image: ghcr.io/jobworkerp-rs/jobworkerp:latest
     env_file:
       # Ensure that the variables in .env match your environment
       - compose.env
@@ -11,7 +11,7 @@ services:
     cap_add:
       - SYS_PTRACE
     volumes:
-      - ./.env:/home/jobworkerp/.env
+      - ./dot.env:/home/jobworkerp/.env
       - ./log:/home/jobworkerp/log
       - ./plugins:/home/jobworkerp/plugins
       - /var/run/docker.sock:/var/run/docker.sock
