@@ -5,297 +5,240 @@
 ## Overview
 
 jobworkerp-rs is a scalable job worker system implemented in Rust.
-The job worker system is designed to handle CPU-intensive and I/O-intensive tasks asynchronously.
-Worker definitions, job registrations, and execution results can be executed using GRPC.
+The job worker system is used to process CPU-intensive and I/O-intensive tasks asynchronously.
+Using gRPC, you can define [Workers](proto/protobuf/jobworkerp/service/worker.proto), register [Jobs](proto/protobuf/jobworkerp/service/job.proto) for task execution, and retrieve execution results.
+Processing capabilities can be extended through plugins.
 
-Tasks are defined as [workers](proto/protobuf/jobworkerp/service/worker.proto), and [jobs](proto/protobuf/jobworkerp/service/job.proto), which are execution commands for these workers, are registered (enqueued) via job.
-The system also supports adding execution capabilities (runners) for workers through a plugin architecture.
+### Main Features
 
-### Key Features
-
-- Storage types available for use as job queues: Redis, RDB (MySQL or SQLite), Hybrid (Redis + MySQL)
-  - In a hybrid setup, jobs can be executed while also backing them up using RDB as needed.
-- Three methods for obtaining job execution results: Direct (DIRECT), Retrieve Later (LISTEN_AFTER), No Result Retrieval (NONE)
-- Configuration of job execution channels and the number of concurrent executions per channel
-  - For example, setting the GPU channel to execute with a concurrency of 1, and the normal channel to execute with a concurrency of 4.
-- Scheduled execution at a specified time or periodic execution at regular intervals
-- Retry: Configuration of retry attempts and intervals (such as Exponential backoff)
-- Extension of job execution content (Runner) through plugins
-
+- Storage options for job queues: Choose between Redis and RDB (MySQL or SQLite) based on requirements
+- Three methods for retrieving job execution results: Direct retrieval (DIRECT), Later retrieval (LISTEN_AFTER), No result retrieval (NONE)
+- Job execution channel configuration with parallel execution settings per channel
+  - For example, you can set GPU channel to execute with parallelism of 1, while normal channel executes with parallelism of 4
+- Scheduled execution at specific times and periodic execution at fixed intervals
+- Retry functionality for failed jobs: Configure retry count and intervals (Exponential backoff and others)
+- Extensible job execution content (Runner) through plugins
 
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 
 - [Command Examples](#command-examples)
-  - [Example of build, startup](#example-of-build-startup)
-  - [Example of execution (grpcurl)](#example-of-execution-grpcurl)
-    - [Note](#note)
-- [Functions of jobworkerp-worker (worker and runner)](#functions-of-jobworkerp-worker-worker-and-runner)
-  - [Type of worker.runner_type](#type-of-workerrunner_type)
-  - [Job queue type (config:storage_type, worker.queue_type)](#job-queue-type-configstorage_type-workerqueue_type)
-    - [Store results (worker.store_success, worker.store_failure)](#store-results-workerstore_success-workerstore_failure)
-    - [How to retrieve results (worker.response_type)](#how-to-retrieve-results-workerresponse_type)
+  - [Build and Launch](#build-and-launch)
+    - [Launch Example Using Docker Image](#launch-example-using-docker-image)
+  - [Execution Examples Using jobworkerp-client](#execution-examples-using-jobworkerp-client)
+- [Detailed Features of jobworkerp-worker](#detailed-features-of-jobworkerp-worker)
+  - [Built-in Functions of worker.schema_id](#built-in-functions-of-workerschema_id)
+  - [Job Queue Types](#job-queue-types)
+  - [Result Storage (worker.store_success, worker.store_failure)](#result-storage-workerstore_success-workerstore_failure)
+  - [Result Retrieval Methods (worker.response_type)](#result-retrieval-methods-workerresponse_type)
+- [Other Details](#other-details)
+  - [Worker Definition](#worker-definition)
+  - [RDB Definition](#rdb-definition)
+  - [Other Environment Variables](#other-environment-variables)
+- [About Plugins](#about-plugins)
+  - [About Error Codes](#about-error-codes)
 - [Other](#other)
-  - [worker function](#worker-function)
-  - [RDB schemas for setup](#rdb-schemas-for-setup)
-  - [Other functions](#other-functions)
-- [About the plugin](#about-the-plugin)
-- [Specification details, limitations](#specification-details-limitations)
-  - [About the combination of env.STORAGE_TYPE and worker.queue_type and the queue to use](#about-the-combination-of-envstorage_type-and-workerqueue_type-and-the-queue-to-use)
-  - [The combination of env.STORAGE_TYPE and worker.response_type to be used and the behavior of JobResultService::Listen](#the-combination-of-envstorage_type-and-workerresponse_type-to-be-used-and-the-behavior-of-jobresultservicelisten)
-    - [Details of the notation and contents of the table](#details-of-the-notation-and-contents-of-the-table)
-  - [Error codes](#error-codes)
-- [Other status](#other-status)
-- [future works](#future-works)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
 ## Command Examples
 
---------
-
-### Example of build, startup
+### Build and Launch
 
 ```shell
-# Run all-in-one binary from cargo (RDB storage: sqlite3)
-$ cargo run --bin all-in-one
+# prepare .env file
+$ cp dot.env .env
+
+# build release binaries (use mysql)
+$ cargo build --release --features mysql
 
 # build release binaries
 $ cargo build --release
-
-# prepare .env file for customizing settings
-$ cp dot.env .env
-# (modify to be appliable to your environment)
 
 # Run the all-in-one server by release binary
 $ ./target/release/all-in-one
 
 # Run gRPC front server and worker by release binary
-$ ./target/release/grpc-front &
 $ ./target/release/worker &
-
+$ ./target/release/grpc-front &
 ```
 
-- run with docker (minimum configuration: not recommended)
-  ```
-   $ mkdir log
-   $ chmod 777 log
-   $ docker run -p 9000:9000 -v ./plugins:/home/jobworkerp/plugins -v ./dot.env:/home/jobworkerp/.env -v ./log:/home/jobworkerp/log ghcr.io/jobworkerp-rs/jobworkerp:latest
-  ```
+#### Launch Example Using Docker Image
 
-- run with docker compose example (hybrid storage configuration)
-  ```
-   $ mkdir log
-   $ chmod 777 log
-   $ mkdir plugins
-   (copy plugin files to ./plugins and edit compose.env for plugin settings)
-   $ docker-compose up
-  ```
+- Please refer to docker-compose.yml and docker-compose-scalable.yml
 
-### Example of execution (grpcurl)
+### Execution Examples Using jobworkerp-client
 
-[protobuf definitions](proto/protobuf/jobworkerp/)
+Using [jobworkerp-client](https://github.com/jobworkerp-rs/jobworkerp-client-rs), you can create/retrieve workers, enqueue jobs, and get processing results as follows:
 
-one shot job (no result)
+(If you don't need to encode/decode worker.operation, job.job_arg, and job_result.output, you can also execute using grpcurl. Reference: [proto files](proto/protobuf/jobworkerp/service/))
+
+setup:
 
 ```shell
+# clone
+$ git clone https://github.com/jobworkerp-rs/jobworkerp-client-rs
+$ cd jobworkerp-client-rs
 
-# create worker
+# build
+$ cargo build --release
 
-1. $ grpcurl -d '{"name":"EchoWorker","operation":{"command":{"name":"echo"}},"next_workers":[],"retry_policy":{"type":"EXPONENTIAL","interval":"1000","max_interval":"60000","max_retry":"3","basis":"2"},"store_failure":true}' \
-    -plaintext \
-    localhost:9000 jobworkerp.service.WorkerService/Create
+# run (show help)
+$ ./target/release/jobworkerp-client
 
-# enqueue job (echo 'こんにちわ!')
-# specify worker_id created by WorkerService/Create (command 1. response)
-2. $ grpcurl -d '{"arg":{"command":{"args":"44GT44KT44Gr44Gh44KP77yBCg=="}},"worker_id":{"value":"1"},"timeout":"360000","run_after_time":"3000"}' \
-    -plaintext \
-    localhost:9000 jobworkerp.service.JobService/Enqueue
-
+# list worker-schema (need launching jobworkerp-rs in localhost:9000(default))
+$ ./target/release/jobworkerp-client worker-schema list
 ```
 
-one shot job (listen result)
+one shot job (with result: response-type DIRECT)
 
 ```shell
+# create worker (specify schema id from worker-schema list)
+1. $ ./target/release/jobworkerp-client worker create --name "GoogleRequest" --schema-id 2 --operation '{"base_url":"https://www.google.com/search"}' --response-type DIRECT
 
-# create sleep worker (need store_success and store_failure to be true in rdb storage)
-1. $ grpcurl -d '{"name":"ListenSleepResultWorker","operation":{"command":{"name":"sleep"}},"next_workers":[],"retry_policy":{"type":"EXPONENTIAL","interval":"1000","max_interval":"60000","max_retry":"3","basis":"2"},"response_type":"LISTEN_AFTER","store_success":true,"store_failure":true}' \
-    -plaintext \
-    localhost:9000 jobworkerp.service.WorkerService/Create
+# enqueue job (ls . ..)
+# specify worker_id value or worker name created by `worker create` (command 1. response)
+2-1. $ ./target/release/jobworkerp-client job enqueue --worker 1 --arg '{"headers":[],"method":"GET","path":"/search","queries":[{"key":"q","value":"test"}]}'
+2-2. $ ./target/release/jobworkerp-client job enqueue --worker "GoogleRequest" --arg '{"headers":[],"method":"GET","path":"/search","queries":[{"key":"q","value":"test"}]}'
+```
+
+one shot job (listen result after request: response-type LISTEN_AFTER)
+
+```shell
+# create shell command `sleep` worker (must specify store_success and store_failure to be true)
+1. $ ./target/release/jobworkerp-client worker create --name "SleepWorker" --schema-id 1 --operation '{"name":"sleep"}' --response-type LISTEN_AFTER --store-success --store-failure
 
 # enqueue job
-# specify worker_id created by WorkerService/Create (command 1. response)
-# (timeout value(milliseconds) must be greater than sleep time)
-2. $ grpcurl -d '{"arg":{"command":{"args":"MjAK"}},"worker_id":{"value":"2"},"timeout":"22000"}' \
-    -plaintext \
-    localhost:9000 jobworkerp.service.JobService/Enqueue
+# sleep 60 seconds
+2. $ ./target/debug/jobworkerp-client job enqueue --worker 'SleepWorker' --arg '{"args":["60"]}'
 
-# listen job
-# specify job_id created by JobService/Enqueue (command 2. response)
-$ grpcurl -d '{"job_id":{"value":"<got job id above>"},"worker_id":{"value":"<got worker id of ListenSleepResultWorker>"},"timeout":"22000"}' \
-    -plaintext \
-    localhost:9000 jobworkerp.service.JobResultService/Listen
-
-# (The response is returned as soon as the result is available)
-    
+# listen job (long polling with grpc)
+# specify job_id created by `job enqueue` (command 2. response)
+3. $ ./target/release/jobworkerp-client job-result listen --job-id <got job id above> --timeout 70000 --worker 'SleepWorker'
+# (The response is returned as soon as the result is available, to all clients to listen. You can request repeatedly)
 ```
 
 periodic job
 
 ```shell
-
 # create periodic worker (repeat per 3 seconds)
-$ grpcurl -d '{"name":"EchoPeriodicWorker","operation":{"command":{"name":"echo"}},"retry_policy":{"type":"EXPONENTIAL","interval":"1000","max_interval":"60000","max_retry":"3","basis":"2"},"periodic_interval":3000,"store_failure":true}' \
-    -plaintext \
-    localhost:9000 jobworkerp.service.WorkerService/Create
+1. $ ./target/release/jobworkerp-client worker create --name "PeriodicEchoWorker" --schema-id 1 --operation '{"name":"echo"}' --periodic 3000 --response-type NO_RESULT --store-success --store-failure
 
-# enqueue job (echo 'こんにちわ!')
-# specify worker_id created by WorkerService/Create (↑)
-# start job at [epoch second] % 3 == 1, per 3 seconds by run_after_time (epoch milliseconds) (see info log of jobworkerp-worker)
+# enqueue job (echo Hello World !)
+# start job at [epoch second] % 3 == 1, per 3 seconds by run_after_time (epoch milliseconds)
 # (If run_after_time is not specified, the command is executed repeatedly based on enqueue_time)
-$ grpcurl -d '{"arg":{"command":{"args":"44GT44KT44Gr44Gh44KP77yBCg=="}},"worker_id":{"value":"10"},"timeout":"60000","run_after_time":"1000"}' \
-    -plaintext \
-    localhost:9000 jobworkerp.service.JobService/Enqueue
+2. $ ./target/debug/jobworkerp-client job enqueue --worker 'PeriodicEchoWorker' --arg '{"args":["Hello", "World", "!"]}' --run-after-time 1000
+
+# stop periodic job 
+# specify job_id created by `job enqueue` (command 2. response)
+3. $ ./target/debug/jobworkerp-client job delete --id <got job id above>
 ```
 
-#### Note
+## Detailed Features of jobworkerp-worker
 
-- When using SQLite as RDB, it does not have high parallel execution performance, so I recommend using it in MySQL for heavy parallel use.
-- The periodic_interval cannot be shorter than JOB_QUEUE_FETCH_INTERVAL in .env.
+### Built-in Functions of worker.schema_id
 
-## Functions of jobworkerp-worker (worker and runner)
+The following features are built into the worker_schema definition.
+Each feature requires setting necessary values in protobuf format for worker.operation and job.arg. The protobuf definitions can be obtained from worker_schema.operation_proto and worker_schema.job_arg_proto.
 
-A worker defines a job to be executed, and a runner executes the job according to the worker's definition and obtains the results. There are currently five types of functions to execute in worker.runner_type.
+- COMMAND: Command execution ([CommandRunner](infra/src/infra/runner/command.rs)): Specify the target command in worker.operation and arguments in job.arg
+- HTTP_REQUEST: HTTP request using reqwest ([RequestRunner](infra/src/infra/runner/request.rs)): Specify base url in worker.operation, and headers, queries, method, body, path in job.arg. Receives response body as result
+- GRPC_UNARY: gRPC unary request ([GrpcUnaryRunner](infra/src/infra/runner/grpc_unary.rs)): Specify url and path in JSON format in worker.operation (example: `{"url":"http://localhost:9000","path":"jobworkerp.service.WorkerService/FindList"}`). job.arg should be protobuf-encoded (bytes) RPC arguments. Response is received as protobuf binary.
+- DOCKER: Docker run execution ([DockerRunner](infra/src/infra/runner/docker.rs)): Specify FromImage (image to pull), Repo (repository), Tag, Platform(`os[/arch[/variant]]`) in worker.operation, and Image (execution image name) and Cmd (command line array) in job.args
+  - Environment variable `DOCKER_GID`: Specify GID with permission to connect to /var/run/docker.sock. The jobworkerp execution process needs to have permission to use this GID.
+  - Running on k8s pod is currently untested. (Due to the above restriction, it's expected to require Docker Outside of Docker or Docker in Docker configuration in the docker image)
 
-### Type of worker.runner_type
+### Job Queue Types
 
-- COMMAND: command execution ([CommandRunner](worker-app/src/worker/runner/impls/command.rs)): specify target command in worker.operation and arguments in job.arg
-- REQUEST: http request by reqwest ([RequestRunner](worker-app/src/worker/runner/impls/request.rs)): base url in worker.operation, json in job.arg Specify headers, queries, method, body, and path in the form (e.g., `{"headers":{"Content-Type":["plain/text"]}, "queries":[["q", "rust"],["ie", "UTF-8"]]," path": "search", "method": "GET"}`). Receive response body as result
-- GRPC_UNARY: gRPC unary request ([GrpcUnaryRunner](worker-app/src/worker/runner/impls/grpc_unary.rs)): Specify url and path in json format in worker.operation Specify the rpc argument in protobuf encoding (bytes) in job.arg. The response is a protobuf byte. The response will be a protobuf binary.
-- DOCKER: docker run execution ([DockerRunner](worker-app/src/worker/runner/impls/docker.rs)): FromImage (image to pull) in json format in worker.operation, Repo (repository), Tag, and Platform (`os[/arch[/variant]]`) in json format in worker.operation (all optional, specified in advance of execution). Example:`{"FromImage": "busybox:latest"}`, specifying the Image (name of the image to execute) and Cmd (an array of execution command lines) in Json format in job.args (example: `{"Image": "busybox:latest","Cmd": [" ls","-alh","/"]}`)
-  - Using bollard library for docker API call.
-  - DOCKER_GID must be specified in .env.
-    - Specify a GID with permission to connect to /var/run/docker.sock. You must have permission to use this GID as an execution process.
-  - Running on k8s pod is currently untested. (Due to the above limitations, you will probably need to configure docker image to allow DockerOutsideOfDocker or DockerInDocker).
-- PLUGIN: Run plugin ([PluginRunner](worker-app/src/plugins/runner.rs)): Specify the runner.name of the implemented plugin in worker.operation and the arg to be passed to plugin arg to be passed to the plugin runner.
-  - [Sample imprementation](plugins/hello_runner/Cargo.toml)
-- You can imprement Custom Runner: implement Runner trait, add RunnerType, create Runner in factory.
+Environment variable `STORAGE_TYPE`
 
-### Job queue type (config:storage_type, worker.queue_type)
+- Standalone: Immediate jobs use memory (mpsc, mpmc channel), while scheduled jobs are stored in RDB (sqlite, mysql). Only supports single instance execution
+- Scalable: Immediate jobs use Redis, while scheduled jobs are stored in RDB (sqlite, mysql). This allows multiple grpc-front and worker instances to be configured
+  - Must be built with `--features mysql` when building with cargo
 
-- RDB (MySQL or SQLite: recommend MySQL for heavy use)
-- Redis (redis only queue is not recommended: naive implementation exists in current version for periodic, run_after_time jobs, worker definition and job result management)
-- Redis + RDB (Hybrid mode: execute delayed or periodic execution, backup of Redis job by RDB, immediate execution by Redis)
+worker.queue_type
 
-#### Store results (worker.store_success, worker.store_failure)
+- NORMAL: Immediate execution jobs (regular jobs without time specification) are stored in channel (redis), while periodic and scheduled jobs are stored in db
+- WITH_BACKUP: Immediate execution jobs are stored in both channel and RDB (can restore jobs from RDB during failures)
+- FORCED_RDB: Immediate execution jobs are also stored only in RDB (may result in slower execution)
 
-- If worker.store_success or worker.store_failure is specified, the results are stored in storage (Redis only in case of Redis, other results are stored in RDB table job_result) when execution succeeds or fails.
-- The results can be obtained from [JobResultService](proto/protobuf/jobworkerp/service/job_result.proto).
+### Result Storage (worker.store_success, worker.store_failure)
 
-#### How to retrieve results (worker.response_type)
+- Execution results are saved to RDB (job_result table) on success/failure based on worker.store_success and worker.store_failure settings
+- Results can be referenced after execution using [JobResultService](proto/protobuf/jobworkerp/service/job_result.proto)
 
-- No result retrieval (NO_RESULT): (default value) Job ID is returned in response. If the result is stored, it can be retrieved using [JobResultService/FindListByJobId](proto/protobuf/jobworkerp/service/job_result.proto) after the job is finished.
-- Get it later (LISTEN_AFTER): When enqueueing, after the same response as NO_RESULT, the result can be obtained using Listen of the [job_result](proto/protobuf/jobworkerp/service/job_result.proto) service. The result can be obtained by long polling.
-  - Multiple clients can listen and get the result by using Redis pubsub to transmit the result.
-- DIRECT: Wait until the result is enqueued, and the result is returned directly as a response (if the result is not stored, it is a request). (If the result is not stored, only the requesting client can get the result.)
+### Result Retrieval Methods (worker.response_type)
 
-## Other
+- No result retrieval (NO_RESULT): (Default value) Returns Job ID in response. If results are stored, they can be retrieved after job completion using [JobResultService/FindListByJobId](proto/protobuf/jobworkerp/service/job_result.proto)
+- Later retrieval (LISTEN_AFTER): After enqueue, results can be retrieved immediately after execution completion using the Listen feature of [job_result](proto/protobuf/jobworkerp/service/job_result.proto) service (Long polling)
+  - Multiple clients can Listen and receive the same results (delivered via Redis pubsub)
+- Direct retrieval (DIRECT): Waits for execution completion in the enqueue request and returns results directly in the response (If results are not stored, only the requesting client can obtain results)
 
-### worker function
+## Other Details
 
-- the job execution time by specifying run_after_time (epoch time in milliseconds).
-- Timeout time can be specified in milliseconds.
-- Periodic execution can be specified by specifying worker.periodic_interval.
-- Specify the execution channel name and the number of parallel executions to have specific workers using the channel with the same name execute at a specified level of parallelism.
-- The retry method (CONSTANT, LINEAR, EXPONENTIAL), maximum number of retries, maximum time interval, etc. can be specified when a job fails by specifying worker.retry_policy.
-- It is possible to specify that the results are stored in RDB in case of successful or unsuccessful execution.
-- By defining worker.next_workers, the result of job execution can be passed as an argument to another worker as a processing argument to chain jobs (specify worker.id as a number, separated by commas)
-  - Example: Slack notification of results with SlackResultNotificationRunner(worker_id=-1) as result: worker.next_workers="-1"
-- The following one built-in worker (a worker that executes a specific function can be used directly by specifying a specific workerId) is available
-  - Result notification by slack (SlackResultNotificationRunner: worker_id=-1 (reserved)): The specified job.arg is notified as the body of the job, along with various time information.
-    - The environment variable must start with SLACK_ ([example](dot.env))
-- By specifying worker.use_static=true, you can pool runners and use them without initializing them each time.
-- When using SQLite, it does not have high parallel execution performance. (Recommend using MySQL or combination with Redis)
+- Time units are in milliseconds unless otherwise specified
 
-### RDB schemas for setup
+### Worker Definition
+
+- run_after_time: Job execution time (epoch time)
+- timeout: Timeout duration
+- worker.periodic_interval: Repeated job execution (specify 1 or greater)
+- worker.retry_policy: Specify retry method for job execution failures (RetryType: CONSTANT, LINEAR, EXPONENTIAL), maximum attempts (max_retry), maximum time interval (max_interval), etc.
+- worker.next_workers: Execute different workers using the result as arguments after job completion (specify worker.ids with comma separation)
+  - Must specify workers that can process the result value directly as job_arg
+- worker.use_static (in testing): Ability to statically allocate runner processes according to parallelism degree (avoid initialization each time by pooling execution runners)
+
+### RDB Definition
 
 - [MySQL schema](infra/sql/mysql/002_worker.sql)
 - [SQLite schema](infra/sql/sqlite/001_schema.sql)
 
-### Other functions
+(worker_schema contains fixed records as built-in functions)
 
-- The worker waits for the end of the execution of the running job by SIGINT (Ctrl + c) signal and exits.
-- Obtaining request metrics using jaeger and zipkin (otlp is currently being tested)
-- It has a memory cache for worker information, and the cache is volatilized according to changes made by rpc (if Redis is available, the memory cache for each instance is volatilized by using pubsub).
-- Log output can be configured in the .env file. When outputting logs to a file, the file name is suffixed with the IPv4 address of each host. (When outputting to shared storage, the file is not written to the same file to prevent file corruption.)
-- jobworkerp-front can use gRPC-Web by configuration.
+### Other Environment Variables
 
-## About the plugin
+- Execution runner settings
+  - `PLUGINS_RUNNER_DIR`: Plugin storage directory
+  - `DOCKER_GID`: Docker group ID (for DockerRunner)
+- Job queue channel and parallelism
+  - `WORKER_DEFAULT_CONCURRENCY`: Default channel parallelism
+  - `WORKER_CHANNELS`: Additional job queue channel names (comma-separated)
+  - `WORKER_CHANNEL_CONCURRENCIES`: Additional job queue channel parallelism (comma-separated, corresponding to WORKER_CHANNELS)
+- Log settings
+  - `LOG_LEVEL`: Log level (trace, debug, info, warn, error)
+  - `LOG_FILE_DIR`: Log output directory
+  - `LOG_USE_JSON`: Whether to output logs in JSON format (boolean)
+  - `LOG_USE_STDOUT`: Whether to output logs to standard output (boolean)
+  - `OTLP_ADDR` (in testing): Request metrics collection via otlp (ZIPKIN_ADDR)
+- Job queue settings
+  - `STRAGE_TYPE`
+    - `Standalone`: Uses RDB and memory (mpmc channel). Operates assuming single instance execution. (Build without mysql specification and use SQLite)
+    - `Scalable`: Uses RDB and Redis. Operates assuming multiple instance execution. (Build with `--features mysql` and use mysql as RDB)
+  - `JOB_QUEUE_EXPIRE_JOB_RESULT_SECONDS`: Maximum wait time for results when response_type is LISTEN_AFTER
+  - `JOB_QUEUE_FETCH_INTERVAL`: Time interval for periodic fetching of jobs stored in RDB
+  - `STORAGE_REFLESH_FROM_RDB`: When jobs remain in RDB with queue_type=WITH_BACKUP due to crashes etc., setting this to true allows re-registration to Redis for processing resumption
+- GRPC settings
+  - `GRPC_ADDR`: gRPC server address:port
+  - `USE_GRPC_WEB`: Whether to use gRPC web in gRPC server (boolean)
 
-Place the dylib implementing the Runner trait in the directory specified in env.PLUGINS_RUNNER_DIR (in .env).
-It will be loaded when worker is started.
+## About Plugins
 
-Implementation example: [HelloPluginRunner](plugins/hello_runner/src/lib.rs)
+- Implement [Runner trait](infra/src/infra/runner/plugins.rs) as dylib
+  - Registered as worker_Schema when placed in directory specified by environment variable `PLUGINS_RUNNER_DIR`
+  - Implementation example: [HelloPlugin](plugins/hello_runner/src/lib.rs)
 
-## Specification details, limitations
-
-### About the combination of env.STORAGE_TYPE and worker.queue_type and the queue to use
-
-If worer.periodic_interval or job.run_after_time is specified (*), RDB is used as queue if available.
-
-(*) For more details, if worer.periodic_interval or (job.run_after_time - milliseconds of the current time) is greater than JOB_QUEUE_FETCH_INTERVAL in .
-
-|     | STORAGE_TYPE.rdb | STORAGE_TYPE.redis | STORAGE_TYPE.hybrid |
-| ----|----|----|----|
-| QueueType::RDB | Use RDB | Error | Use RDB |
-| QueueType::REDIS | Error | Use Redis | Use Redis |
-| QueueType::HYBRID | Use RDB | Use Redis | Use Redis + Backup to RDB|
-
-- Using Redis: Queue operation of jobs using RPUSH and BLPOP of Redis (no recovery in case of job timeout)
-- Using RDB: Job queue operation is performed by fetching RDB at regular intervals (env.JOB_QUEUE_FETCH_INTERVAL) and allocating jobs by updating grabbed_until_time. (with recovery in case of job timeout)
-- Use Redis + Backup to RDB: Operate job queue by using RPUSH and BLPOP of Redis. If a job times out or is forced to restart, the job is automatically recovered from RDB and re-executed if the timeout time has passed while the job is popped from Redis. env.JOB_QUEUE_WITHOUT_RECOVERY_HYBRID= true to turn off the automatic recovery function.
-
-Restore will restore all stored timeout jobs from RDB to Redis at runtime, and env.STORAGE_REFLESH_FROM_RDB=true will restore all stored timeout jobs from RDB to Redis only once at worker startup (heavy processing if a large number of jobs are queued). (This can be a heavy process if you have a large number of jobs in queue).
-
-### The combination of env.STORAGE_TYPE and worker.response_type to be used and the behavior of JobResultService::Listen
-
-Basically, stored items can be retrieved by JobResultService::Find\* method (depending on worker.store_success and worker.store_failure settings), but depending on worker.response_type setting, it may not be possible to retrieve stored items by JobResultService::Find* method. JobResultService::Listen to get the result as follows.
-(Basically, the behavior differs depending on whether Redis is available or not; if only RDB is used, an error will occur because results cannot be returned if the setting does not store them in RDB.)
-
-|    | STORAGE_TYPE.rdb | STORAGE_TYPE.redis | STORAGE_TYPE.hybrid |
-|----|----|----|----|
-| response_type::NO_RESULT | Error when specifying a worker for which store_\*=true | error | error |
-| response_type::LISTEN_AFTER | Error when specifying a worker for which store_\*=true | Listen for a given amount of time | Listen for a given amount of time |
-|response_type::DIRECT | Error when specifying a worker for which store_\*=true | Error | Error |
-
-#### Details of the notation and contents of the table
-
-- Error : Listen is not possible combination because it does not detect the end of the Job (InvalidParameter error).
-- Error when specifying a worker for which store_\*=true: Error occurs when a worker is not specified for which both worker.store_success and worker.store_failure are true JobResultService::: Listen Listen will return a response when a result is obtained (in the case of RDB, it will take up to JOB_QUEUE_FETCH_INTERVAL after the result is obtained due to periodic fetch).
-- Listen is available for a certain period of time: after the result is returned, JobResultService::Listen is available for JOB_QUEUE_EXPIRE_JOB_RESULT_SECONDS (if the request was made before the result is returned, the response will be returned when the result is returned). (If the request was made before the results are returned, the response will be returned when the results are returned). After that, it works the same as "find* and so on". (The jobResult is stored in Redis with "expire" for Listen)
-- reponse_type::LISTEN_AFTER is realized by the client listening using pubsub to subscribe to the results if Redis is available. In RDB, it simply loops through the stored results, fetches them, and waits for them, so as a result, any response_type can listen. As a result, you can listen to any response_type. (We don't even dare to make an error.)
-
-### Error codes
+### About Error Codes
 
 TBD
 
-## Other status
+## Other
 
-- env.STORAGE_TYPE=redis has some bad implementations such as information acquisition. This may be a problem in special cases such as job queues that are jammed with a large number of jobs.
-- Snowflake is used for paying out job id. Since the host part of the IPv4 address of each 10-bit host is used as the machine id, if you use a subnet with a host part exceeding 10 bits or use instances with the same host part on different subnets, there is a possibility that duplicate job ids will be issued. (Or retry JobService.Enqueue until the AlreadyExists error due to duplicate job id disappears.)
-- If you want to run worker.type = DOCKER on a worker in a k8s environment, you need to configure Docker Outside Of Docker or Docker in Docker (not tested yet).
-
-## future works
-
-(If there are users other than myself...)
-
-- Add additional rpc's that may be needed (e.g. JobService/FindListByWorkerId)
-- Redis cluster support: redis-rs will support [when pubsub is supported](https://github.com/redis-rs/redis-rs/issues/492)
-  - Where redis pubsub is used: When a worker definition is changed, redis pubsub notifies each server of the update and the cache is volatilized. Also, when response_type=LISTEN_AFTER, the results are notified to each front by pubsub.
-- Support for OpenTelemetry Collector: Currently only implemented and not tested.
-- When a panic occurs in the runner, the worker process itself probably crashes. Therefore, it is recommended to use fault-tolerant operations such as supervisord or kubernetes deployment for the worker. (The application of C-unwind will be discussed in the future.)
-- Enhanced documentation
+- Specifying `--feature mysql` during cargo build uses mysql as RDB. Without specification, SQLite3 is used as RDB.
+- For periodic execution jobs, periodic interval (milliseconds) cannot be shorter than JOB_QUEUE_FETCH_INTERVAL (periodic job fetch query interval from RDB) in .env
+  - For scheduled jobs, execution at exact times is possible even with fetch and execution time differences due to prefetching from RDB
+- Workers wait for completion of executing jobs before terminating upon receiving SIGINT (Ctrl + c) signal
+- Job IDs use snowflake. Since 10 bits of host part of each host's IPv4 address is used as machine ID, avoid operating in subnets with host parts exceeding 10 bits or operating instances with same host parts in different subnets. (May issue duplicate job IDs)
+- Running worker.type = DOCKER on k8s environment requires Docker Outside Of Docker or Docker in Docker configuration (untested)
+- If a runner causes panic, the worker process itself will likely crash. Therefore, it's recommended to operate workers with fault-tolerant systems like supervisord or kubernetes deployment. (C-unwind implementation is under consideration for future improvements)
 
 *Table of Contents: generated with [DocToc](https://github.com/thlorenz/doctoc)*
-
-*Generated by machine translation from Japanese*

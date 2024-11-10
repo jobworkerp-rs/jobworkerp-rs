@@ -17,7 +17,6 @@ GRPCをつかって処理内容となる[Worker](proto/protobuf/jobworkerp/servi
 - ジョブ実行失敗時のリトライ機能: リトライ回数や間隔の設定（Exponential backoff 他）
 - プラグインによる実行ジョブ内容（Runner）の拡張
 
-
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 
@@ -68,7 +67,7 @@ $ ./target/release/grpc-front &
 
 #### docker imageでの起動例
 
-- docker-commpose.yml, docker-compose-scalable.ymlを参照してください
+- docker-commpose.yml, docker-compose-scalable.yml に記載
 
 ### jobworkerp-client による実行例
 
@@ -122,7 +121,6 @@ one shot job (listen result after request: response-type LISTEN_AFTER)
 # (The response is returned as soon as the result is available, to all clients to listen. You can request repeatedly)
 ```
 
-
 periodic job
 
 ```shell
@@ -144,25 +142,27 @@ periodic job
 ## jobworkerp-workerの機能詳細
 
 ### worker.schema_idの組み込み機能
+
 worker_schemaに組み込み定義されている機能を以下に記載する。
 各機能のworker.operation、job.argにはprotobufでそれぞれの機能に必要な値を設定する。protobuf定義はworker_schema.operation_proto, worker_schema.job_arg_protoから取得可能。
 
 - COMMAND: command実行 ([ComamndRunner](infra/src/infra/runner/command.rs)): worker.operationに対象のコマンドを指定、job.argに引数を指定する
 - HTTP_REQUEST: reqwestによるhttpリクエスト ([RequestRunner](infra/src/infra/runner/request.rs)): worker.operationにbase url、job.argにheaders、queries、method、body、pathを指定する。レスポンス本文を結果として受け取る
 - GRPC_UNARY: gRPC unaryリクエスト ([GrpcUnaryRunner](infra/src/infra/runner/grpc_unary.rs)): worker.operationにjson形式でurlとpathを指定する (例: `{"url":"http://localhost:9000","path":"jobworkerp.service.WorkerService/FindList"}`)。job.argはrpc引数をprotobufエンコード(bytes)で指定する。レスポンスはprotobuf バイナリを受けとる。
-- DOCKER: docker run実行 ([DockerRunner](infra/src/infra/runner/docker.rs)): worker.operationにFromImage (pullするイメージ)、Repo (レポジトリ)、Tag、Platform(`os[/arch[/variant]]`)などを指定、job.argsにImage(実行するイメージ名)とCmd(実行コマンドラインの配列)を指定する 
+- DOCKER: docker run実行 ([DockerRunner](infra/src/infra/runner/docker.rs)): worker.operationにFromImage (pullするイメージ)、Repo (レポジトリ)、Tag、Platform(`os[/arch[/variant]]`)などを指定、job.argsにImage(実行するイメージ名)とCmd(実行コマンドラインの配列)を指定する
   - 環境変数 `DOCKER_GID`：/var/run/docker.sock に接続する権限をもったGIDを指定する。jobworkerpの実行プロセスはこのGIDを利用可能な権限が必要。
   - k8s pod上での起動は現在未テスト。(上記の制限からおそらくDockerOutsideOfDockerあるいはDockerInDockerが可能なdocker imageの設定が必要になる想定)。
-
 
 ### ジョブキュー種別
 
 環境変数`STORAGE_TYPE`
-- Standalone: 即時ジョブは memory(spmc channel) 、時刻指定ジョブなどはrdb(sqlite, mysql)に格納するためシングルインスタンスでの実行のみサポート
+
+- Standalone: 即時ジョブは memory(mpsc, mpmc channel) 、時刻指定ジョブなどはrdb(sqlite, mysql)に格納するためシングルインスタンスでの実行のみサポート
 - Scalable: 即時ジョブは redis 、時刻指定ジョブなどはrdb(sqlite, mysql)に格納するためgrpc-front、workerをそれぞれ複数台で構成することができる
-    - cargoでのビルド時に `--features mysql` を付けてビルドする必要がある
+  - cargoでのビルド時に `--features mysql` を付けてビルドする必要がある
 
 worker.queue_type
+
 - NORMAL: 即時実行ジョブ(時刻指定のない通常のジョブ)はchannel (redis) に、定期実行や時刻指定ジョブはdbに格納
 - WITH_BACKUP: 即時実行ジョブをchannelとrdbの両方に格納する(障害時にrdb内のジョブをリストアできる)
 - FORCED_RDB: 即時実行ジョブもrdbのみに格納する (実行が遅くなることがある)
@@ -202,29 +202,29 @@ worker.queue_type
 
 ### その他の環境変数
 
-  - 実行runner設定
-    - `PLUGINS_RUNNER_DIR`: プラグイン格納ディレクトリ
-    - `DOCKER_GID`: DockerグループID (DockerRunner用)
-  - ジョブキューチャンネルと並列度
-    - `WORKER_DEFAULT_CONCURRENCY`: デフォルトチャンネルの並列度
-    - `WORKER_CHANNELS`: 追加ジョブキューチャンネルの名称(カンマ区切り)
-    - `WORKER_CHANNEL_CONCURRENCIES`: 追加ジョブキューチャンネルの並列度(カンマ区切り、WORKER_CHANNELSに対応した値)
-  - ログ設定 
-    - `LOG_LEVEL`: ログレベル(trace, debug, info, warn, error)
-    - `LOG_FILE_DIR`: ログ出力ディレクトリ
-    - `LOG_USE_JSON`: ログ出力をJSON形式で実施するか(boolean)
-    - `LOG_USE_STDOUT`: ログ出力を標準出力するか(boolean)
-    - `OTLP_ADDR`(テスト中): otlpによるリクエストメトリクスの取得 (ZIPKIN_ADDR)
-  - ジョブキュー設定
-    - `STRAGE_TYPE`
-      - `Standalone` RDBとメモリ(mpmcチャンネル)を利用する。単一インスタンスでの実行を想定した動作をする。(ビルド時にmysql指定をせずにSQLiteを利用すること)
-      - `Scable`: RDBとRedisを利用する。複数インスタンスでの実行を想定した動作をする。(ビルド時に`--features mysql`を指定してrdbとしてmysqlを利用すること)
-    - `JOB_QUEUE_EXPIRE_JOB_RESULT_SECONDS`: response_typeがLISTEN_AFTERの場合に結果を待つ最大時刻
-    - `JOB_QUEUE_FETCH_INTERVAL`: rdbに格納されたjobの定期fetchの時間間隔
-    - `STORAGE_REFLESH_FROM_RDB`: クラッシュ等で処理されなかったジョブが queue_type=WITH_BACKUP でrdbに残っているときにtrue指定することでredisに再度登録しなおして処理再開できる
-  - GRPC設定
-    - `GRPC_ADDR`: grpcサーバアドレス:ポート
-    - `USE_GRPC_WEB`: grpcサーバでgRPC webを利用するか(boolean)
+- 実行runner設定
+  - `PLUGINS_RUNNER_DIR`: プラグイン格納ディレクトリ
+  - `DOCKER_GID`: DockerグループID (DockerRunner用)
+- ジョブキューチャンネルと並列度
+  - `WORKER_DEFAULT_CONCURRENCY`: デフォルトチャンネルの並列度
+  - `WORKER_CHANNELS`: 追加ジョブキューチャンネルの名称(カンマ区切り)
+  - `WORKER_CHANNEL_CONCURRENCIES`: 追加ジョブキューチャンネルの並列度(カンマ区切り、WORKER_CHANNELSに対応した値)
+- ログ設定
+  - `LOG_LEVEL`: ログレベル(trace, debug, info, warn, error)
+  - `LOG_FILE_DIR`: ログ出力ディレクトリ
+  - `LOG_USE_JSON`: ログ出力をJSON形式で実施するか(boolean)
+  - `LOG_USE_STDOUT`: ログ出力を標準出力するか(boolean)
+  - `OTLP_ADDR`(テスト中): otlpによるリクエストメトリクスの取得 (ZIPKIN_ADDR)
+- ジョブキュー設定
+  - `STRAGE_TYPE`
+    - `Standalone` RDBとメモリ(mpmcチャンネル)を利用する。単一インスタンスでの実行を想定した動作をする。(ビルド時にmysql指定をせずにSQLiteを利用すること)
+    - `Scable`: RDBとRedisを利用する。複数インスタンスでの実行を想定した動作をする。(ビルド時に`--features mysql`を指定してrdbとしてmysqlを利用すること)
+  - `JOB_QUEUE_EXPIRE_JOB_RESULT_SECONDS`: response_typeがLISTEN_AFTERの場合に結果を待つ最大時刻
+  - `JOB_QUEUE_FETCH_INTERVAL`: rdbに格納されたjobの定期fetchの時間間隔
+  - `STORAGE_REFLESH_FROM_RDB`: クラッシュ等で処理されなかったジョブが queue_type=WITH_BACKUP でrdbに残っているときにtrue指定することでredisに再度登録しなおして処理再開できる
+- GRPC設定
+  - `GRPC_ADDR`: grpcサーバアドレス:ポート
+  - `USE_GRPC_WEB`: grpcサーバでgRPC webを利用するか(boolean)
 
 ## プラグインについて
 
@@ -237,6 +237,7 @@ worker.queue_type
 TBD
 
 ## その他
+
 - cargoでのビルド時に`--feature mysql` を指定するとrdbとしてmysqlを利用する。指定しないとrdbとしてSQLite3を利用する。
 - 定期実行ジョブのperiodic(繰り返しの時間(ミリ秒))の指定として.env のJOB_QUEUE_FETCH_INTERVAL(rdbへの定期ジョブ取得クエリ間隔)より短かい指定はできない
   - 時刻指定ジョブについてはrdbからプリフェッチをするためfetchと実行時間にずれがある場合にでも時間通りの実行が可能
@@ -244,6 +245,5 @@ TBD
 - job idにはsnowflakeを利用。マシンidとして10bit各ホストのIPv4アドレスのホスト部を利用しているため、10bitを越えるホスト部を持つサブネットでの運用あるいは異なるサブネットで同一ホスト部を持つようなインスタンスを利用するような運用は避けてください。(重複したjob idを払いだす可能性があります)
 - worker.type = DOCKER をk8s環境上のworkerで実行する場合にはDocker Outside Of Dockerの設定あるいはDocker in Dockerの設定が必要になります (未テストです)
 - runnerでpanicを起こすとおそらくworkerプロセス自体が落ちる状態になっています。そのためworkerはsupervisordやkubernetes deploymentなどの耐障害性のある運用をすることが推奨されます。(C-unwind の適用検討は今後の課題です)
-
 
 *Table of Contents: generated with [DocToc](https://github.com/thlorenz/doctoc)*
