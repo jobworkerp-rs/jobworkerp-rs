@@ -50,6 +50,23 @@ impl Plugins {
         }
     }
 
+    fn get_library_extension() -> &'static str {
+        if cfg!(target_os = "windows") {
+            ".dll"
+        } else if cfg!(target_os = "macos") {
+            ".dylib"
+        } else if cfg!(target_os = "linux")
+            || cfg!(target_os = "freebsd")
+            || cfg!(target_os = "openbsd")
+            || cfg!(target_os = "netbsd")
+        {
+            ".so"
+        } else {
+            tracing::error!("Unsupported operating system");
+            ".so"
+        }
+    }
+
     // return: (name, file_name)
     async fn load_plugin_files_from(
         &self,
@@ -58,7 +75,12 @@ impl Plugins {
     ) -> Vec<(String, String)> {
         let mut loaded = Vec::new();
         for file in dir.flatten() {
-            if file.path().is_file() && file.file_name().to_str().exists(|n| n.ends_with(".so")) {
+            if file.path().is_file()
+                && file
+                    .file_name()
+                    .to_str()
+                    .exists(|n| n.ends_with(Self::get_library_extension()))
+            {
                 tracing::info!("load {:?} plugin file: {}", ptype, file.path().display());
                 match ptype {
                     PluginType::Runner => {

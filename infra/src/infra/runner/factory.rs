@@ -78,6 +78,7 @@ mod test {
 
     #[tokio::test]
     async fn test_new() {
+        std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug");
         let runner_factory = RunnerFactory::new();
         runner_factory.load_plugins().await.unwrap();
         assert_eq!(
