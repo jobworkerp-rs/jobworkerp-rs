@@ -71,7 +71,8 @@ DROP TABLE IF EXISTS worker_schema;
 CREATE TABLE `worker_schema` (
   `id` BIGINT(10) PRIMARY KEY,
   `name` VARCHAR(128) NOT NULL, -- name for identification
-  `file_name` VARCHAR(512) NOT NULL, -- file name of the runner dynamic library
+  `description` TEXT NOT NULL, -- runner description
+  `definition` TEXT NOT NULL DEFAULT '', -- runner definition (mcp definition or plugin file name)
   `type` INT(10) NOT NULL, -- runner type. enum: command, request, grpc_unary, plugin
   UNIQUE KEY `name` (`name`),
   UNIQUE KEY `file_name` (`file_name`)

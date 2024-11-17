@@ -1,5 +1,3 @@
-version: '3.9'
-
 services:
   jobworkerp-grpc:
     image: ghcr.io/jobworkerp-rs/grpc-front:latest
