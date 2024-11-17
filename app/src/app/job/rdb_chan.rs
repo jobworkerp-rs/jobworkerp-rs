@@ -573,6 +573,7 @@ mod tests {
     fn create_test_app(
         use_mock_id: bool,
     ) -> Result<(RdbChanJobAppImpl, ChanJobResultPubSubRepositoryImpl)> {
+        std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug");
         let rdb_module = setup_test_rdb_module();
         TEST_RUNTIME.block_on(async {
             let repositories = Arc::new(rdb_module);
