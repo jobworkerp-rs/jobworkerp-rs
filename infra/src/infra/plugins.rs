@@ -1,6 +1,7 @@
 use super::runner::plugins::loader::RunnerPluginLoader;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use command_utils::util::option::Exists;
+use itertools::Itertools;
 use std::{
     env,
     fs::{self, ReadDir},
@@ -37,17 +38,22 @@ impl Plugins {
         }
     }
 
-    pub async fn load_plugin_files_from_env(&self) -> Result<Vec<(String, String)>> {
+    pub async fn load_plugin_files_from_env(&self) -> Vec<(String, String)> {
         // default: current dir
-        let runner_dir = env::var("PLUGINS_RUNNER_DIR").unwrap_or("./".to_string());
-        if let Ok(runner_path) = fs::read_dir(runner_dir.clone()) {
-            Ok(self
-                .load_plugin_files_from(runner_path, PluginType::Runner)
-                .await)
-        } else {
-            tracing::warn!("runner plugin dir not found: {}", &runner_dir);
-            Err(anyhow!("runner plugin dir not found: {}", &runner_dir))
+        let runner_dir_str = env::var("PLUGINS_RUNNER_DIR").unwrap_or("./".to_string());
+        let runner_dirs: Vec<&str> = runner_dir_str.split(',').collect_vec();
+        let mut loaded = Vec::new();
+        for runner_dir in runner_dirs {
+            if let Ok(runner_path) = fs::read_dir(runner_dir) {
+                loaded.extend(
+                    self.load_plugin_files_from(runner_path, PluginType::Runner)
+                        .await,
+                );
+            } else {
+                tracing::warn!("runner plugin dir not found: {}", runner_dir);
+            }
         }
+        loaded
     }
 
     fn get_library_extension() -> &'static str {
@@ -95,7 +101,7 @@ impl Plugins {
                                 loaded.push((name, file.file_name().to_string_lossy().to_string()));
                             }
                             Err(e) => {
-                                tracing::info!(
+                                tracing::warn!(
                                     "cannot load runner plugin: {}: {:?}",
                                     file.path().display(),
                                     e

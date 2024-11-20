@@ -22,7 +22,7 @@ where
     const CACHE_KEY: &'static str = "RUNNER_SCHEMA_DEF";
 
     async fn add_from_plugins(&self) -> Result<()> {
-        let names = self.runner_factory().load_plugins().await?;
+        let names = self.runner_factory().load_plugins().await;
         for (name, fname) in names.iter() {
             if let Some(p) = self.runner_factory().create_by_name(name, false).await {
                 let schema = WorkerSchemaRow {
@@ -237,7 +237,7 @@ async fn redis_test() -> Result<()> {
     let pool = infra_utils::infra::test::setup_test_redis_pool().await;
     let cli = infra_utils::infra::test::setup_test_redis_client()?;
     let runner_factory = Arc::new(RunnerFactory::new());
-    runner_factory.load_plugins().await?;
+    runner_factory.load_plugins().await;
 
     let repo = RedisWorkerSchemaRepositoryImpl {
         redis_pool: pool,

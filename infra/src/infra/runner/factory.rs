@@ -20,7 +20,7 @@ impl RunnerFactory {
             plugins: Plugins::new(),
         }
     }
-    pub async fn load_plugins(&self) -> Result<Vec<(String, String)>> {
+    pub async fn load_plugins(&self) -> Vec<(String, String)> {
         self.plugins.load_plugin_files_from_env().await
     }
     pub async fn unload_plugins(&self, name: &str) -> Result<bool> {
@@ -80,7 +80,7 @@ mod test {
     async fn test_new() {
         std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug");
         let runner_factory = RunnerFactory::new();
-        runner_factory.load_plugins().await.unwrap();
+        runner_factory.load_plugins().await;
         assert_eq!(
             runner_factory
                 .plugins
@@ -114,7 +114,7 @@ mod test {
     #[tokio::test]
     async fn test_create_by_name() {
         let runner_factory = RunnerFactory::new();
-        runner_factory.load_plugins().await.unwrap();
+        runner_factory.load_plugins().await;
         let runner = runner_factory
             .create_by_name(RunnerType::Command.as_str_name(), false)
             .await
