@@ -20,11 +20,7 @@ pub trait WorkerSchemaRepository:
     UseRdbPool + UseRunnerFactory + UseIdGenerator + Sync + Send
 {
     async fn add_from_plugins(&self) -> Result<()> {
-        let names = self
-            .runner_factory()
-            .load_plugins()
-            .await
-            .context("error in add_from_plugins")?;
+        let names = self.runner_factory().load_plugins().await;
         for (name, fname) in names.iter() {
             let schema = WorkerSchemaRow {
                 id: self.id_generator().generate_id()?,
@@ -251,7 +247,7 @@ mod test {
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
         let p = RunnerFactory::new();
         std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug");
-        p.load_plugins().await.context("error in test")?;
+        p.load_plugins().await;
         let id_generator = Arc::new(crate::infra::IdGeneratorWrapper::new());
         let repository = RdbWorkerSchemaRepositoryImpl::new(pool, Arc::new(p), id_generator);
         let db = repository.db_pool();

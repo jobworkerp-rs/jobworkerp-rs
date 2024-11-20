@@ -151,7 +151,7 @@ mod tests {
         // dotenvy::dotenv()?;
         std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug/");
         let runner_factory = RunnerFactory::new();
-        runner_factory.load_plugins().await?;
+        runner_factory.load_plugins().await;
         let ope = CommandOperation {
             name: "ls".to_string(),
         };
@@ -194,7 +194,7 @@ mod tests {
         std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug/");
         // dotenvy::dotenv()?;
         let runner_factory = RunnerFactory::new();
-        runner_factory.load_plugins().await?;
+        runner_factory.load_plugins().await;
         let ope = CommandOperation {
             name: "ls".to_string(),
         };
