@@ -656,7 +656,7 @@ mod tests {
                 job_queue_config.clone(),
             );
             let runner_factory = RunnerFactory::new();
-            runner_factory.load_plugins().await?;
+            runner_factory.load_plugins().await;
             let config_module = Arc::new(AppConfigModule {
                 storage_config,
                 worker_config,

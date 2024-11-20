@@ -141,10 +141,7 @@ pub mod test {
                 .await
                 .expect("test connection");
             let runner_factory = RunnerFactory::new();
-            runner_factory
-                .load_plugins()
-                .await
-                .expect("load runner_factory");
+            runner_factory.load_plugins().await;
             let id_generator = Arc::new(IdGeneratorWrapper::new());
             RdbChanRepositoryModule {
                 worker_schema_repository: RdbWorkerSchemaRepositoryImpl::new(
