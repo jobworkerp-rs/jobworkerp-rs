@@ -163,7 +163,7 @@ pub mod test {
             .unwrap();
 
         let p = RunnerFactory::new();
-        p.load_plugins().await.unwrap();
+        p.load_plugins().await;
         RedisRepositoryModule {
             redis_pool,
             redis_client: redis_client.clone(),
