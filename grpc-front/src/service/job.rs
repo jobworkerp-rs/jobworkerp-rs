@@ -52,9 +52,6 @@ pub trait RequestValidator {
             ))),
             _ => Ok(()),
         }?;
-        if req.arg.is_empty() {
-            return Err(tonic::Status::invalid_argument("worker_arg is required"));
-        };
         Ok(())
     }
 }
@@ -261,6 +258,6 @@ mod tests {
         req.priority = Some(Priority::High as i32);
         assert!(v.validate_create(&req).is_ok());
         req.arg = Vec::new();
-        assert!(v.validate_create(&req).is_err());
+        assert!(v.validate_create(&req).is_ok());
     }
 }
