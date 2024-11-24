@@ -1,4 +1,4 @@
-FROM nvcr.io/nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04
+FROM nvcr.io/nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 RUN apt update && apt install -y libssl3 libcurl4  \
     && apt-get clean -y && rm -rf /var/lib/apt/lists/*
