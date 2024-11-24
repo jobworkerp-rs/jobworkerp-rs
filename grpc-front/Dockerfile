@@ -1,4 +1,4 @@
-FROM debian:bookworm-slim
+FROM nvcr.io/nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 RUN apt update; apt install -y libssl3 protobuf-compiler
 RUN /sbin/ldconfig

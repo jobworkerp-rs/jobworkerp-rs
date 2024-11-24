@@ -1,4 +1,4 @@
-FROM nvcr.io/nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
+FROM nvcr.io/nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 RUN apt update && apt install -y libssl3 libcurl4 protobuf-compiler \
     && apt-get clean -y && rm -rf /var/lib/apt/lists/*
