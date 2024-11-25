@@ -6,6 +6,8 @@ RUN /sbin/ldconfig
 RUN adduser --system jobworkerp
 
 RUN mkdir -p /home/jobworkerp && chown jobworkerp:daemon /home/jobworkerp
+RUN mkdir -p /home/jobworkerp/plugins && chown jobworkerp:daemon /home/jobworkerp/plugins
+ENV LD_LIBRARY_PATH /home/jobworkerp/plugins:$LD_LIBRARY_PATH
 
 WORKDIR /home/jobworkerp
 
