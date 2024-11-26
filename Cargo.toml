@@ -70,7 +70,7 @@ serde_derive = "1.0"
 serde_with = "3.0"
 signal-hook = "0.3"
 signal-hook-tokio = "0.3"
-sqlx = { version = "0.8", features = [
+sqlx = { version = "0.7", features = [
     "runtime-tokio",
     "tls-rustls",
     "sqlite",

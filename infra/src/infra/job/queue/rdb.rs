@@ -52,23 +52,23 @@ pub trait RdbJobQueueRepository: UseRdbPool + Sync + Send {
             )
         };
         let mut args = RdbArguments::default();
-        args.add(now + mergin_msec as i64).map_err(|e| {
-            JobWorkerError::OtherError(format!("sql arg err:{:?}, error:{:?}", now, e))
-        })?;
-        args.add(now).map_err(|e| {
-            JobWorkerError::OtherError(format!("sql arg err:{:?}, error:{:?}", now, e))
-        })?;
+        args.add(now + mergin_msec as i64); //.map_err(|e| {
+                                            //JobWorkerError::OtherError(format!("sql arg err:{:?}, error:{:?}", now, e))
+                                            //})?;
+        args.add(now); //.map_err(|e| {
+                       //JobWorkerError::OtherError(format!("sql arg err:{:?}, error:{:?}", now, e))
+                       //})?;
         for id in &worker_ids {
-            args.add(id.value).map_err(|e| {
-                JobWorkerError::OtherError(format!("sql arg err:{:?}, error:{:?}", now, e))
-            })?;
+            args.add(id.value); //.map_err(|e| {
+                                //JobWorkerError::OtherError(format!("sql arg err:{:?}, error:{:?}", now, e))
+                                //})?;
         }
-        args.add(limit as i64).map_err(|e| {
-            JobWorkerError::OtherError(format!("sql arg err:{:?}, error:{:?}", now, e))
-        })?;
-        args.add(offset).map_err(|e| {
-            JobWorkerError::OtherError(format!("sql arg err:{:?}, error:{:?}", now, e))
-        })?;
+        args.add(limit as i64); //.map_err(|e| {
+                                //JobWorkerError::OtherError(format!("sql arg err:{:?}, error:{:?}", now, e))
+                                //})?;
+        args.add(offset); //.map_err(|e| {
+                          //JobWorkerError::OtherError(format!("sql arg err:{:?}, error:{:?}", now, e))
+                          //})?;
         let mut rows = sqlx::query_with::<Rdb, _>(&query, args)
             .fetch_all(self.db_pool())
             .await
