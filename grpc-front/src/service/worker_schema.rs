@@ -11,6 +11,7 @@ use app::app::worker_schema::WorkerSchemaApp;
 use app::module::AppModule;
 use async_stream::stream;
 use futures::stream::BoxStream;
+use infra::error::JobWorkerError;
 use infra_utils::trace::Tracing;
 use tonic::Response;
 
@@ -20,6 +21,7 @@ pub trait WorkerSchemaGrpc {
 
 const DEFAULT_TTL: Duration = Duration::from_secs(30);
 const LIST_TTL: Duration = Duration::from_secs(5);
+const MAX_RESERVED_WORKER_SCHEMA_ID: i64 = 1024;
 
 #[tonic::async_trait]
 impl<T: WorkerSchemaGrpc + Tracing + Send + Debug + Sync + 'static> WorkerSchemaService for T {
@@ -30,6 +32,16 @@ impl<T: WorkerSchemaGrpc + Tracing + Send + Debug + Sync + 'static> WorkerSchema
     ) -> Result<tonic::Response<SuccessResponse>, tonic::Status> {
         let _s = Self::trace_request("worker_schema", "delete", &request);
         let req = request.get_ref();
+        // cannot delete reserved worker schema
+        if req.value <= MAX_RESERVED_WORKER_SCHEMA_ID {
+            return Err(handle_error(
+                &JobWorkerError::InvalidParameter(format!(
+                    "cannot delete reserved worker schema: {}",
+                    req.value
+                ))
+                .into(),
+            ));
+        }
         match self.app().delete_worker_schema(req).await {
             Ok(r) => Ok(Response::new(SuccessResponse { is_success: r })),
             Err(e) => Err(handle_error(&e)),
