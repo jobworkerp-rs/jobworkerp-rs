@@ -274,17 +274,20 @@ impl JobApp for RdbChanJobAppImpl {
                         .enqueue_result_direct(id, data)
                         .await
                 }
-                Ok(ResponseType::ListenAfter) => {
+                Ok(res) => {
                     // publish for listening result client
-                    self.job_result_pubsub_repository()
-                        .publish_result(id, data)
-                        .await?;
+                    let r = self
+                        .job_result_pubsub_repository()
+                        .publish_result(id, data, res == ResponseType::ListenAfter)
+                        .await;
                     self.delete_job(jid).await?;
-                    Ok(true)
+                    r
                 }
                 _ => {
+                    tracing::warn!("complete_job: invalid response_type: {:?}", &data);
+                    // abnormal response type, no publish
                     self.delete_job(jid).await?;
-                    Ok(true)
+                    Ok(false)
                 }
             }
         } else {
@@ -952,7 +955,7 @@ mod tests {
                 }),
             };
             assert!(
-                app.complete_job(result.id.as_ref().unwrap(), result.data.as_ref().unwrap())
+                !app.complete_job(result.id.as_ref().unwrap(), result.data.as_ref().unwrap())
                     .await?
             );
             // not fetched job (because of not use job_dispatcher)
