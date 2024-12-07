@@ -173,14 +173,11 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
         };
         let req = req.clone();
         if let Ok(mut stream) = res {
-            // spawn and channel are required if you want handle "disconnect" functionality
-            // the `out_stream` will not be polled after client disconnect
             let (tx, rx) = mpsc::channel(128);
             tokio::spawn(async move {
                 loop {
                     tokio::select! {
                         _ = tokio::signal::ctrl_c() => {
-                            // Ctrl-C が押されたらループを抜ける
                             break;
                         }
                         item = stream.next() => {
@@ -203,26 +200,6 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
                 }
                 tracing::info!("\tclient disconnected");
             });
-            // tokio::spawn(async move {
-            //     while let Some(item) = stream.next().await {
-            //         tracing::debug!("\treceive result item: worker = {:?}, item = {:?}", &req, &item);
-            //         let res = match item {
-            //             Ok(item) => Ok(item),
-            //             Err(e) => Err(handle_error(&e)),
-            //         };
-            //         match tx.send(res).await {
-            //             Ok(_) => {
-            //                 // item (server response) was queued to be send to client
-            //             }
-            //             Err(_item) => {
-            //                 // output_stream was build from rx and both are dropped
-            //                 break;
-            //             }
-            //         }
-            //     }
-            //     tracing::info!("\tclient disconnected");
-            // });
-
             let output_stream = ReceiverStream::new(rx);
             Ok(Response::new(
                 Box::pin(output_stream) as Self::ListenStreamByWorkerStream

@@ -61,11 +61,6 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
                     true,
                 )
                 .await
-                .inspect(|&r| {
-                    if !r {
-                        tracing::warn!("publish_result: not sent: job_id={}", &jid.value);
-                    }
-                })
         } else {
             Ok(false)
         };
@@ -79,11 +74,6 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
                 true,
             )
             .await
-            .inspect(|&r| {
-                if !r {
-                    tracing::warn!("publish_result: not sent for stream: job_id={}", &jid.value);
-                }
-            })
             .inspect_err(|e| tracing::warn!("send_to_chan_err:{:?}", e))?;
         res.map(|r| r || res2)
     }
