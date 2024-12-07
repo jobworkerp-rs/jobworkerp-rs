@@ -1,6 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::option::ToVec;
+use futures::Stream;
 use infra::error::JobWorkerError;
 use infra::infra::job_result::pubsub::redis::{
     RedisJobResultPubSubRepositoryImpl, UseRedisJobResultPubSubRepository,
@@ -9,8 +10,10 @@ use infra::infra::job_result::pubsub::JobResultSubscriber;
 use infra::infra::job_result::redis::{RedisJobResultRepository, UseRedisJobResultRepository};
 use infra::infra::module::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
 use proto::jobworkerp::data::{
-    JobId, JobResult, JobResultData, JobResultId, ResponseType, ResultStatus, WorkerData, WorkerId,
+    JobId, JobResult, JobResultData, JobResultId, ResponseType, ResultStatus, Worker, WorkerData,
+    WorkerId,
 };
+use std::pin::Pin;
 use std::sync::Arc;
 
 use super::super::worker::{UseWorkerApp, WorkerApp};
@@ -184,11 +187,13 @@ impl JobResultApp for RedisJobResultAppImpl {
         Self: Send + 'static,
     {
         // get worker data
-        let wd = self
+        let Worker { id: _, data: wd } = self
             .worker_app
-            .find_data_by_id_or_name(worker_id, worker_name)
+            .find_by_id_or_name(worker_id, worker_name)
             .await?;
-
+        let wd = wd.ok_or(JobWorkerError::NotFound(
+            "worker data not found".to_string(),
+        ))?;
         if wd.response_type != ResponseType::ListenAfter as i32 {
             return Err(JobWorkerError::InvalidParameter(format!(
                 "Cannot listen result not stored worker: {:?}",
@@ -215,6 +220,39 @@ impl JobResultApp for RedisJobResultAppImpl {
                     .await
             }
         }
+    }
+
+    // same as hybrid implement
+    async fn listen_result_stream_by_worker(
+        &self,
+        worker_id: Option<&WorkerId>,
+        worker_name: Option<&String>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<JobResult>> + Send>>>
+    where
+        Self: Send + 'static,
+    {
+        // get worker data
+        let Worker {
+            id: worker_id,
+            data: wd,
+        } = self
+            .worker_app
+            .find_by_id_or_name(worker_id, worker_name)
+            .await?;
+        let wid = worker_id.ok_or(JobWorkerError::NotFound("worker id not found".to_string()))?;
+        let wd = wd.ok_or(JobWorkerError::NotFound(
+            "worker data not found".to_string(),
+        ))?;
+        if wd.response_type != ResponseType::ListenAfter as i32 {
+            return Err(JobWorkerError::InvalidParameter(format!(
+                "Cannot listen result not stored worker: {:?}",
+                &wd
+            ))
+            .into());
+        }
+        self.job_result_pubsub_repository()
+            .subscribe_result_stream_by_worker(wid)
+            .await
     }
 
     async fn count(&self) -> Result<i64>

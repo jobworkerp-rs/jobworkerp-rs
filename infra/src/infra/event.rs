@@ -13,7 +13,7 @@ pub trait UsePublishChanged<ID: Message, DATA: Message>:
     fn channel_name(&self) -> &'static str;
 
     // publish worker changed event using redis<
-    async fn publish_worker_changed(&self, id: &ID) -> Result<bool> {
+    async fn publish_worker_changed(&self, id: &ID) -> Result<u32> {
         let id_data = Self::serialize_message(id);
         self.publish(self.channel_name(), &id_data).await
     }

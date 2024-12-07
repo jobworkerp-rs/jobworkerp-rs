@@ -21,6 +21,13 @@ message ListenRequest {
     optional uint64 timeout = 4;
 }
 
+message ListenStreamByWorkerRequest {
+    oneof worker { // worker to execute (specified by id or name)
+        jobworkerp.data.WorkerId worker_id = 2;
+        string worker_name = 3;
+    }
+}
+
 message FindListByJobIdRequest {
     jobworkerp.data.JobId job_id = 1;
 }
@@ -35,5 +42,6 @@ service JobResultService {
   rpc FindListByJobId(FindListByJobIdRequest) returns (stream jobworkerp.data.JobResult);
   // listen job result until timeout or job result is created.
   rpc Listen(ListenRequest) returns (jobworkerp.data.JobResult);
+  rpc ListenStreamByWorker(ListenStreamByWorkerRequest) returns (stream jobworkerp.data.JobResult);
   rpc Count(CountCondition) returns (CountResponse);
 }

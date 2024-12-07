@@ -118,11 +118,11 @@ pub trait WorkerApp: fmt::Debug + Send + Sync + 'static {
     where
         Self: Send + 'static;
 
-    async fn find_data_by_id_or_name(
+    async fn find_by_id_or_name(
         &self,
         id: Option<&WorkerId>,
         name: Option<&String>,
-    ) -> Result<WorkerData>
+    ) -> Result<Worker>
     where
         Self: Send + 'static,
     {
@@ -130,7 +130,7 @@ pub trait WorkerApp: fmt::Debug + Send + Sync + 'static {
         match (id, name) {
             (Some(wid), _) => {
                 // found worker_id: use it
-                self.find(wid).await?.flat_map(|w| w.data).ok_or(
+                self.find(wid).await?.ok_or(
                     JobWorkerError::InvalidParameter(format!(
                         "cannot listen job which worker is None: id={}",
                         wid.value
@@ -140,7 +140,7 @@ pub trait WorkerApp: fmt::Debug + Send + Sync + 'static {
             }
             (_, Some(wname)) => {
                 // found worker_name: use it
-                self.find_by_name(wname).await?.flat_map(|w| w.data).ok_or(
+                self.find_by_name(wname).await?.ok_or(
                     JobWorkerError::InvalidParameter(format!(
                         "cannot listen job which worker is None: id={}",
                         wname

@@ -185,17 +185,20 @@ impl JobApp for RedisJobAppImpl {
                         .enqueue_result_direct(id, data)
                         .await
                 }
-                Ok(ResponseType::ListenAfter) => {
+                Ok(rtype) => {
                     // publish for listening result client
-                    self.job_result_pubsub_repository()
-                        .publish_result(id, data)
-                        .await?;
+                    let r = self
+                        .job_result_pubsub_repository()
+                        .publish_result(id, data, rtype == ResponseType::ListenAfter)
+                        .await;
                     self.delete_job(jid).await?;
-                    Ok(true)
+                    r
                 }
                 _ => {
+                    tracing::warn!("complete_job: invalid response_type: {:?}", &data);
+                    // abnormal response type, no publish
                     self.delete_job(jid).await?;
-                    Ok(true)
+                    Ok(false)
                 }
             }
         } else {
