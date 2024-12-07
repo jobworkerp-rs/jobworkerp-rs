@@ -1,0 +1,45 @@
+services:
+  redis:
+    hostname: redis
+    image: redis:7
+    command: [ "redis-server" ]
+    ports:
+      - '6379:6379'
+
+  db:
+    image: mariadb:10.11
+    hostname: 127.0.0.1
+    ports:
+      - '3306:3306'
+    volumes:
+      - mariadb-volume:/var/lib/mysql
+      - ./infra/sql/mysql/002_worker.sql:/docker-entrypoint-initdb.d/schema.sql
+    environment:
+      - MARIADB_HOST=127.0.0.1
+      - MARIADB_USER=maria
+      - MARIADB_PASSWORD=maria
+      - MARIADB_DATABASE=test
+      - MARIADB_ROOT_PASSWORD=maria
+  redis-cluster:
+    image: grokzen/redis-cluster:7.0.10
+    hostname: 127.0.0.1
+    # health check settings
+    #    options: >
+    #      --health-cmd "redis-cli ping"
+    #      --health-interval 10s
+    #      --health-timeout 5s
+    #      --health-retries 5
+    expose:
+      - 7000
+      - 7001
+      - 7002
+      - 7003
+      - 7004
+      - 7005
+      - 7006
+      - 7007
+    restart: always
+
+volumes:
+  mariadb-volume:
+

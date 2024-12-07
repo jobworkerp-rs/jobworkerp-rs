@@ -1,26 +1,32 @@
+use super::super::worker::{UseWorkerApp, WorkerApp};
+use super::super::{StorageConfig, UseStorageConfig};
+use super::{JobResultApp, JobResultAppHelper};
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
 use command_utils::util::option::Exists;
+use futures::Stream;
 use infra::error::JobWorkerError;
+use infra::infra::job::rows::UseJobqueueAndCodec;
+use infra::infra::job_result::pubsub::chan::{
+    ChanJobResultPubSubRepositoryImpl, UseChanJobResultPubSubRepository,
+};
+use infra::infra::job_result::pubsub::JobResultSubscriber;
 use infra::infra::job_result::rdb::{RdbJobResultRepository, UseRdbJobResultRepository};
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use infra_utils::infra::rdb::UseRdbPool;
 use proto::jobworkerp::data::{
-    JobId, JobResult, JobResultData, JobResultId, ResultStatus, WorkerId,
+    JobId, JobResult, JobResultData, JobResultId, ResultStatus, Worker, WorkerId,
 };
+use std::pin::Pin;
 use std::sync::Arc;
-
-use super::super::worker::{UseWorkerApp, WorkerApp};
-use super::super::{StorageConfig, UseStorageConfig};
-use super::{JobResultApp, JobResultAppHelper};
 
 #[derive(Clone, Debug)]
 pub struct RdbJobResultAppImpl {
     storage_config: Arc<StorageConfig>,
     id_generator: Arc<IdGeneratorWrapper>,
-    rdb_repositories: Arc<RdbChanRepositoryModule>,
+    rdb_chan_repositories: Arc<RdbChanRepositoryModule>,
     worker_app: Arc<dyn WorkerApp + 'static>,
 }
 
@@ -34,7 +40,7 @@ impl RdbJobResultAppImpl {
         Self {
             storage_config,
             id_generator,
-            rdb_repositories,
+            rdb_chan_repositories: rdb_repositories,
             worker_app,
         }
     }
@@ -146,11 +152,15 @@ impl JobResultApp for RdbJobResultAppImpl {
     where
         Self: Send + 'static,
     {
-        // get worker data
-        let wd = self
+        // get worker data,
+        let Worker { id: _, data: wd } = self
             .worker_app
-            .find_data_by_id_or_name(worker_id, worker_name)
+            .find_by_id_or_name(worker_id, worker_name)
             .await?;
+        let wd = wd.ok_or(JobWorkerError::WorkerNotFound(format!(
+            "cannot listen job which worker is None: id={:?}",
+            worker_id
+        )))?;
         if !(wd.store_failure && wd.store_success) {
             return Err(JobWorkerError::InvalidParameter(format!(
                 "Cannot listen result not stored worker: {:?}",
@@ -224,6 +234,44 @@ impl JobResultApp for RdbJobResultAppImpl {
             }
         }
     }
+    async fn listen_result_stream_by_worker(
+        &self,
+        worker_id: Option<&WorkerId>,
+        worker_name: Option<&String>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<JobResult>> + Send>>>
+    where
+        Self: Send + 'static,
+    {
+        // get worker data
+        let Worker { id: wid, data: wd } = self
+            .worker_app
+            .find_by_id_or_name(worker_id, worker_name)
+            .await?;
+        let wid = wid.ok_or(JobWorkerError::WorkerNotFound(format!(
+            "cannot listen job which worker is None: id={:?} or name={:?}",
+            worker_id, worker_name
+        )))?;
+        let _ = wd.ok_or(JobWorkerError::WorkerNotFound(format!(
+            "cannot listen job which worker is None: id={:?} or name={:?}",
+            worker_id, worker_name
+        )))?;
+        // if !wd.store_failure || !wd.store_success {
+        //     return Err(JobWorkerError::InvalidParameter(format!(
+        //         "Cannot listen result not stored worker: {:?}",
+        //         &wd
+        //     ))
+        //     .into());
+        // }
+        let cn = Self::job_result_by_worker_pubsub_channel_name(&wid);
+        tracing::debug!("listen_result_stream: worker_id={}, ch={}", &wid.value, &cn);
+        self.job_result_pubsub_repository()
+            .subscribe_result_stream_by_worker(wid)
+            .await
+            .map_err(|e| {
+                tracing::error!("subscribe chan_err:{:?}", e);
+                e
+            })
+    }
 
     async fn count(&self) -> Result<i64>
     where
@@ -249,7 +297,7 @@ impl UseIdGenerator for RdbJobResultAppImpl {
 
 impl UseRdbChanRepositoryModule for RdbJobResultAppImpl {
     fn rdb_repository_module(&self) -> &RdbChanRepositoryModule {
-        &self.rdb_repositories
+        &self.rdb_chan_repositories
     }
 }
 impl UseWorkerApp for RdbJobResultAppImpl {
@@ -257,4 +305,11 @@ impl UseWorkerApp for RdbJobResultAppImpl {
         &self.worker_app
     }
 }
+impl UseChanJobResultPubSubRepository for RdbJobResultAppImpl {
+    fn job_result_pubsub_repository(&self) -> &ChanJobResultPubSubRepositoryImpl {
+        &self.rdb_chan_repositories.chan_job_result_pubsub_repository
+    }
+}
+
+impl UseJobqueueAndCodec for RdbJobResultAppImpl {}
 impl JobResultAppHelper for RdbJobResultAppImpl {}

@@ -4,8 +4,9 @@ use std::sync::Arc;
 use crate::proto::jobworkerp::service::job_result_service_server::JobResultService;
 use crate::proto::jobworkerp::service::listen_request::Worker;
 use crate::proto::jobworkerp::service::{
-    CountCondition, CountResponse, FindListByJobIdRequest, FindListRequest, ListenRequest,
-    OptionalJobResultResponse, SuccessResponse,
+    listen_stream_by_worker_request, CountCondition, CountResponse, FindListByJobIdRequest,
+    FindListRequest, ListenRequest, ListenStreamByWorkerRequest, OptionalJobResultResponse,
+    SuccessResponse,
 };
 use crate::service::error_handle::handle_error;
 use app::app::job_result::JobResultApp;
@@ -15,6 +16,8 @@ use futures::stream::BoxStream;
 use infra::error::JobWorkerError;
 use infra_utils::trace::Tracing;
 use proto::jobworkerp::data::{JobResult, JobResultId};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::Response;
 
 pub trait JobResultGrpc {
@@ -111,7 +114,7 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
         &self,
         request: tonic::Request<ListenRequest>,
     ) -> Result<tonic::Response<JobResult>, tonic::Status> {
-        let _s = Self::trace_request("job_result", "find_list", &request);
+        let _s = Self::trace_request("job_result", "listen", &request);
         let req = request.get_ref();
         let res = match (req.job_id.as_ref(), req.worker.as_ref()) {
             (Some(job_id), Some(Worker::WorkerId(worker_id))) => {
@@ -142,6 +145,90 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
         match res {
             Ok(res) => Ok(Response::new(res)),
             Err(e) => Err(handle_error(&e)),
+        }
+    }
+
+    type ListenStreamByWorkerStream = BoxStream<'static, Result<JobResult, tonic::Status>>;
+    #[tracing::instrument]
+    async fn listen_stream_by_worker(
+        &self,
+        request: tonic::Request<ListenStreamByWorkerRequest>,
+    ) -> std::result::Result<tonic::Response<Self::ListenStreamByWorkerStream>, tonic::Status> {
+        use tokio_stream::StreamExt;
+
+        let _s = Self::trace_request("job_result", "listen_by_worker", &request);
+        let req = request.into_inner().worker;
+        let res = match req.as_ref() {
+            Some(listen_stream_by_worker_request::Worker::WorkerId(worker_id)) => {
+                self.app()
+                    .listen_result_stream_by_worker(Some(worker_id), None)
+                    .await
+            }
+            Some(listen_stream_by_worker_request::Worker::WorkerName(name)) => {
+                self.app()
+                    .listen_result_stream_by_worker(None, Some(name))
+                    .await
+            }
+            _ => Err(JobWorkerError::InvalidParameter("worker is required".to_string()).into()),
+        };
+        let req = req.clone();
+        if let Ok(mut stream) = res {
+            // spawn and channel are required if you want handle "disconnect" functionality
+            // the `out_stream` will not be polled after client disconnect
+            let (tx, rx) = mpsc::channel(128);
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => {
+                            // Ctrl-C が押されたらループを抜ける
+                            break;
+                        }
+                        item = stream.next() => {
+                    tracing::debug!("\treceive result item: worker = {:?}, item = {:?}", &req, &item);
+                            match item {
+                                Some(Ok(item)) => {
+                                    if tx.send(Ok(item)).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Some(Err(e)) => {
+                                    if tx.send(Err(handle_error(&e))).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                None => break,
+                            }
+                        }
+                    }
+                }
+                tracing::info!("\tclient disconnected");
+            });
+            // tokio::spawn(async move {
+            //     while let Some(item) = stream.next().await {
+            //         tracing::debug!("\treceive result item: worker = {:?}, item = {:?}", &req, &item);
+            //         let res = match item {
+            //             Ok(item) => Ok(item),
+            //             Err(e) => Err(handle_error(&e)),
+            //         };
+            //         match tx.send(res).await {
+            //             Ok(_) => {
+            //                 // item (server response) was queued to be send to client
+            //             }
+            //             Err(_item) => {
+            //                 // output_stream was build from rx and both are dropped
+            //                 break;
+            //             }
+            //         }
+            //     }
+            //     tracing::info!("\tclient disconnected");
+            // });
+
+            let output_stream = ReceiverStream::new(rx);
+            Ok(Response::new(
+                Box::pin(output_stream) as Self::ListenStreamByWorkerStream
+            ))
+        } else {
+            Err(handle_error(&res.err().unwrap()))
         }
     }
 }

@@ -9,7 +9,8 @@ use infra::error::JobWorkerError;
 use proto::jobworkerp::data::{
     JobId, JobResult, JobResultData, JobResultId, ResultStatus, WorkerId,
 };
-use std::{fmt, sync::Arc};
+use std::{fmt, pin::Pin, sync::Arc};
+use tokio_stream::Stream;
 
 #[async_trait]
 pub trait JobResultAppHelper: UseWorkerApp {
@@ -129,6 +130,14 @@ pub trait JobResultApp: fmt::Debug + Send + Sync + 'static {
         worker_name: Option<&String>,
         timeout: u64,
     ) -> Result<JobResult>
+    where
+        Self: Send + 'static;
+
+    async fn listen_result_stream_by_worker(
+        &self,
+        worker_id: Option<&WorkerId>,
+        worker_name: Option<&String>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<JobResult>> + Send>>>
     where
         Self: Send + 'static;
 

@@ -37,6 +37,7 @@ tokio = { workspace = true, features = [
     "process",
     "parking_lot",
 ] }
+tokio-stream = "0.1"
 tonic = { workspace = true }
 tonic-health = { workspace = true }
 tonic-reflection = { workspace = true }
