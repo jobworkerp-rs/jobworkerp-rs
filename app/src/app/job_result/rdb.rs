@@ -17,7 +17,7 @@ use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryMod
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use infra_utils::infra::rdb::UseRdbPool;
 use proto::jobworkerp::data::{
-    JobId, JobResult, JobResultData, JobResultId, ResultStatus, Worker, WorkerId,
+    JobId, JobResult, JobResultData, JobResultId, ResponseType, ResultStatus, Worker, WorkerId,
 };
 use std::pin::Pin;
 use std::sync::Arc;
@@ -251,17 +251,18 @@ impl JobResultApp for RdbJobResultAppImpl {
             "cannot listen job which worker is None: id={:?} or name={:?}",
             worker_id, worker_name
         )))?;
-        let _ = wd.ok_or(JobWorkerError::WorkerNotFound(format!(
+        let wd = wd.ok_or(JobWorkerError::WorkerNotFound(format!(
             "cannot listen job which worker is None: id={:?} or name={:?}",
             worker_id, worker_name
         )))?;
-        // if !wd.store_failure || !wd.store_success {
-        //     return Err(JobWorkerError::InvalidParameter(format!(
-        //         "Cannot listen result not stored worker: {:?}",
-        //         &wd
-        //     ))
-        //     .into());
-        // }
+        if wd.response_type == ResponseType::Direct as i32 {
+            return Err(JobWorkerError::InvalidParameter(format!(
+                "Cannot listen result for direct response: {:?}",
+                &wd
+            ))
+            .into());
+        }
+
         let cn = Self::job_result_by_worker_pubsub_channel_name(&wid);
         tracing::debug!("listen_result_stream: worker_id={}, ch={}", &wid.value, &cn);
         self.job_result_pubsub_repository()
