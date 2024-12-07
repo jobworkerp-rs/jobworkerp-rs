@@ -16,6 +16,7 @@ async-trait = { workspace = true }
 chrono = { workspace = true }
 debug_stub_derive = { workspace = true }
 envy = { workspace = true }
+futures = { workspace = true }
 num_cpus = { workspace = true }
 once_cell = { workspace = true }
 prost-reflect = { workspace = true }

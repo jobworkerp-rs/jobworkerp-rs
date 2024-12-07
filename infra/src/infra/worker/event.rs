@@ -16,6 +16,7 @@ pub trait UseWorkerPublish: UseJobqueueAndCodec + UseRedisClient + Send + Sync {
         let worker_data = Self::serialize_worker(&worker);
         self.publish(Self::WORKER_PUBSUB_CHANNEL_NAME, &worker_data)
             .await
+            .map(|r| r > 0)
     }
     // publish worker deleted event using redis
     async fn publish_worker_deleted(&self, worker_id: &WorkerId) -> Result<bool> {
@@ -26,6 +27,7 @@ pub trait UseWorkerPublish: UseJobqueueAndCodec + UseRedisClient + Send + Sync {
         let worker_data = Self::serialize_worker(&worker);
         self.publish(Self::WORKER_PUBSUB_CHANNEL_NAME, &worker_data)
             .await
+            .map(|r| r > 0)
     }
     // publish worker deleted event using redis
     async fn publish_worker_all_deleted(&self) -> Result<bool> {
@@ -36,5 +38,6 @@ pub trait UseWorkerPublish: UseJobqueueAndCodec + UseRedisClient + Send + Sync {
         let worker_data = Self::serialize_worker(&worker);
         self.publish(Self::WORKER_PUBSUB_CHANNEL_NAME, &worker_data)
             .await
+            .map(|r| r > 0)
     }
 }

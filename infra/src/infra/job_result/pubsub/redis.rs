@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{pin::Pin, sync::Arc, time::Duration};
 
 use super::{JobResultPublisher, JobResultSubscriber};
 use crate::{
@@ -9,25 +9,51 @@ use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::result::TapErr;
 use debug_stub_derive::DebugStub;
+use futures::Stream;
 use infra_utils::infra::redis::{RedisClient, UseRedisClient};
-use proto::jobworkerp::data::{JobId, JobResult, JobResultData, JobResultId};
+use proto::jobworkerp::data::{JobId, JobResult, JobResultData, JobResultId, WorkerId};
 use tokio_stream::StreamExt;
 
 #[async_trait]
 impl JobResultPublisher for RedisJobResultPubSubRepositoryImpl {
-    async fn publish_result(&self, id: &JobResultId, data: &JobResultData) -> Result<bool> {
-        let jid = data.job_id.as_ref().unwrap();
+    async fn publish_result(
+        &self,
+        id: &JobResultId,
+        data: &JobResultData,
+        to_listen: bool,
+    ) -> Result<bool> {
+        // TODO send to worker id channel if listening clients exist
+        // https://redis.io/docs/latest/commands/pubsub-numsub/
+        let jid = data
+            .job_id
+            .as_ref()
+            .ok_or(JobWorkerError::InvalidParameter(format!(
+                "job_id not found: result_id={}",
+                &id.value
+            )))?;
+        let wid = data
+            .worker_id
+            .as_ref()
+            .ok_or(JobWorkerError::InvalidParameter(format!(
+                "worker_id not found: job_id={}",
+                &jid.value
+            )))?;
         tracing::debug!(
             "publish_result: job_id={}, result_id={}",
             &jid.value,
             &id.value
         );
+        let chs = if to_listen {
+            vec![
+                Self::job_result_pubsub_channel_name(jid),
+                Self::job_result_by_worker_pubsub_channel_name(wid),
+            ]
+        } else {
+            vec![Self::job_result_by_worker_pubsub_channel_name(wid)]
+        };
         let result_data = Self::serialize_job_result(*id, data.clone());
-        self.publish(
-            Self::job_result_pubsub_channel_name(jid).as_str(),
-            &result_data,
-        )
-        .await
+        self.publish_multi_if_listen(chs.as_slice(), &result_data)
+            .await
     }
 }
 
@@ -86,6 +112,34 @@ impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
         tracing::info!("subscribe_result_changed end");
         res
     }
+    // subscribe job result of listen after using redis and return got result immediately
+    async fn subscribe_result_stream_by_worker(
+        &self,
+        worker_id: WorkerId,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<JobResult>> + Send>>> {
+        let cn = Self::job_result_by_worker_pubsub_channel_name(&worker_id);
+        tracing::debug!(
+            "subscribe_result: worker_id={}, ch={}",
+            &worker_id.value,
+            &cn
+        );
+
+        let sub = self
+            .subscribe(cn.as_str())
+            .await
+            .tap_err(|e| tracing::error!("redis_err:{:?}", e))?;
+        // for timeout delay
+        let res = Box::pin({
+            sub.into_on_message().map(|msg| {
+                let payload: Vec<u8> = msg
+                    .get_payload()
+                    .inspect_err(|e| tracing::error!("get_payload:{:?}", e))?;
+                Self::deserialize_job_result(&payload)
+                    .tap_err(|e| tracing::error!("deserialize_result:{:?}", e))
+            })
+        });
+        Ok(res)
+    }
 }
 
 #[derive(Clone, DebugStub)]
@@ -137,9 +191,11 @@ mod test {
             job_queue_config: Arc::new(JobQueueConfig::default()),
         };
         let job_id = JobId { value: 1 };
+        let worker_id = WorkerId { value: 11 };
         let job_result_id = JobResultId { value: 1212 };
         let data = JobResultData {
             job_id: Some(job_id),
+            worker_id: Some(worker_id),
             output: Some(ResultOutput {
                 items: vec![b"test".to_vec()],
             }),
@@ -167,11 +223,82 @@ mod test {
             assert_eq!(res.id, jr2.id);
             assert_eq!(res.data, jr2.data);
         });
+        let app3 = app.clone();
+        let jr3 = job_result.clone();
+        let jh3 = tokio::spawn(async move {
+            let res3 = app3
+                .subscribe_result_stream_by_worker(worker_id)
+                .await
+                .unwrap()
+                .next()
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(res3.id, jr3.id);
+            assert_eq!(res3.data, jr3.data);
+        });
         // wait until subscribe
         tokio::time::sleep(Duration::from_millis(200)).await;
-        app.publish_result(&job_result_id, &data).await?;
+        app.publish_result(&job_result_id, &data, true).await?;
         jh.await?;
         jh2.await?;
+        jh3.await?;
+        Ok(())
+    }
+    #[tokio::test]
+    async fn test_subscribe_result_stream_by_worker() -> Result<()> {
+        let redis_client = setup_test_redis_client()?;
+        let app = RedisJobResultPubSubRepositoryImpl {
+            redis_client,
+            job_queue_config: Arc::new(JobQueueConfig::default()),
+        };
+        let worker_id = WorkerId { value: 1 };
+        let job_result_id = JobResultId { value: 1212 };
+        let data = JobResultData {
+            job_id: Some(JobId { value: 11 }),
+            worker_id: Some(worker_id),
+            output: Some(ResultOutput {
+                items: vec![b"test".to_vec()],
+            }),
+            ..JobResultData::default()
+        };
+        let job_result = JobResult {
+            id: Some(job_result_id),
+            data: Some(data.clone()),
+        };
+        let mut jhv = Vec::with_capacity(10);
+        // 10 subscribers
+        for _i in 0..10 {
+            let app1 = app.clone();
+            let worker_id1 = worker_id;
+            let jr1 = job_result.clone();
+            let jh = tokio::spawn(async move {
+                let mut stream = app1
+                    .subscribe_result_stream_by_worker(worker_id1)
+                    .await
+                    .unwrap();
+                // listen stream 10 times
+                for _j in 0..10 {
+                    let res = stream.next().await.unwrap().unwrap();
+                    // println!(
+                    //     "test_subscribe_result_stream_by_worker:{}, res: {:?}",
+                    //     _j, &res.id
+                    // );
+                    assert_eq!(res.id, jr1.id);
+                    assert_eq!(res.data, jr1.data);
+                }
+            });
+            jhv.push(jh);
+        }
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        // publish 10 times
+        for _i in 0..10 {
+            app.publish_result(&job_result_id, &data, true).await?;
+        }
+        let res = futures::future::join_all(jhv.into_iter()).await;
+        assert_eq!(res.len(), 10);
+        assert!(res.iter().all(|r| r.is_ok()));
+
         Ok(())
     }
 }
