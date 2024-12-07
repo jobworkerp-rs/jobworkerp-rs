@@ -239,9 +239,9 @@ impl JobResultApp for HybridJobResultAppImpl {
         let wd = wd.ok_or(JobWorkerError::NotFound(
             "worker data not found".to_string(),
         ))?;
-        if wd.response_type != ResponseType::ListenAfter as i32 {
+        if wd.response_type == ResponseType::Direct as i32 {
             return Err(JobWorkerError::InvalidParameter(format!(
-                "Cannot listen result not stored worker: {:?}",
+                "Cannot listen result for direct response: {:?}",
                 &wd
             ))
             .into());
