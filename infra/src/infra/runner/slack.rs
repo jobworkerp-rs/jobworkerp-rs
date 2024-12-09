@@ -5,14 +5,39 @@ use self::repository::SlackRepository;
 use crate::error::JobWorkerError;
 use crate::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
 use crate::infra::runner::Runner;
-use crate::jobworkerp::runner::{
-    ResultMessageData, ResultOutput as SlackResultOutput, SlackNotificationOperation,
-};
+use crate::jobworkerp::runner::SlackNotificationOperation;
 use anyhow::{anyhow, Result};
 use proto::jobworkerp::data::RunnerType;
 use proto::jobworkerp::data::{JobResult, JobResultData, JobResultId, ResultStatus};
 use serde::Deserialize;
 use tonic::async_trait;
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Debug)]
+pub struct SlackResultOutput {
+    pub items: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Debug)]
+pub struct ResultMessageData {
+    /// job result id (jobworkerp.data.JobResultId::value)
+    pub result_id: i64,
+    /// job id (jobworkerp.data.JobId::value)
+    pub job_id: i64,
+    pub worker_name: ::prost::alloc::string::String,
+    /// job result status
+    pub status: i32,
+    /// job response data
+    pub output: ::core::option::Option<SlackResultOutput>,
+    pub retried: u32,
+    /// job enqueue time
+    pub enqueue_time: i64,
+    /// job run after this time (specified by client)
+    pub run_after_time: i64,
+    /// job start time
+    pub start_time: i64,
+    /// job end time
+    pub end_time: i64,
+}
 
 #[derive(Clone, Deserialize, Debug, Default)] // for test only
 pub struct SlackConfig {
@@ -55,6 +80,7 @@ impl SlackResultNotificationRunner {
             job_id: dat.job_id.as_ref().map(|j| j.value).unwrap_or(0),
             worker_name: dat.worker_name.clone(),
             status: dat.status,
+            // TODO output をschemaつかって文字列にする
             output: dat.output.as_ref().map(|out| SlackResultOutput {
                 items: out.items.clone(),
             }),

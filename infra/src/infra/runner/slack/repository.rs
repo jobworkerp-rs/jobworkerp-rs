@@ -1,13 +1,12 @@
 use std::borrow::Cow;
 
-use super::client::{Attachment, AttachmentField, PostMessageRequest, SlackMessageClientImpl};
-use crate::jobworkerp::runner::ResultMessageData;
+use super::{
+    client::{Attachment, AttachmentField, PostMessageRequest, SlackMessageClientImpl},
+    ResultMessageData, SlackConfig,
+};
 use anyhow::Result;
 use command_utils::util::datetime;
 use itertools::Itertools;
-
-use super::SlackConfig;
-
 #[derive(Clone, Debug)]
 pub struct SlackRepository {
     pub config: SlackConfig,
