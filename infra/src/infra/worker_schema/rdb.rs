@@ -194,7 +194,7 @@ pub struct RdbWorkerSchemaRepositoryImpl {
     id_generator: Arc<IdGeneratorWrapper>,
 }
 
-pub trait UseWorkerSchemaRepository {
+pub trait UseRdbWorkerSchemaRepository {
     fn worker_schema_repository(&self) -> &RdbWorkerSchemaRepositoryImpl;
 }
 

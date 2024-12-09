@@ -8,7 +8,9 @@ use async_trait::async_trait;
 use debug_stub_derive::DebugStub;
 use infra::infra::module::HybridRepositoryModule;
 use infra::infra::worker_schema::rdb::WorkerSchemaRepository;
-use infra::infra::worker_schema::rdb::{RdbWorkerSchemaRepositoryImpl, UseWorkerSchemaRepository};
+use infra::infra::worker_schema::rdb::{
+    RdbWorkerSchemaRepositoryImpl, UseRdbWorkerSchemaRepository,
+};
 use infra_utils::infra::lock::RwLockWithKey;
 use infra_utils::infra::memory::{self, MemoryCacheConfig, MemoryCacheImpl, UseMemoryCache};
 use infra_utils::infra::rdb::UseRdbPool;
@@ -161,7 +163,7 @@ impl WorkerSchemaApp for HybridWorkerSchemaAppImpl {
     }
 }
 
-impl UseWorkerSchemaRepository for HybridWorkerSchemaAppImpl {
+impl UseRdbWorkerSchemaRepository for HybridWorkerSchemaAppImpl {
     fn worker_schema_repository(&self) -> &RdbWorkerSchemaRepositoryImpl {
         &self.repositories.rdb_chan_module.worker_schema_repository
     }
