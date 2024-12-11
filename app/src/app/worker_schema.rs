@@ -4,12 +4,10 @@ pub mod redis;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use command_utils::protobuf::ProtobufDescriptor;
 use command_utils::util::result::FlatMap;
 use infra::error::JobWorkerError;
-use infra_utils::infra::{
-    memory::{MemoryCacheImpl, UseMemoryCache},
-    protobuf::ProtobufDescriptor,
-};
+use infra_utils::infra::memory::{MemoryCacheImpl, UseMemoryCache};
 use prost_reflect::{DynamicMessage, MessageDescriptor};
 use proto::jobworkerp::data::{WorkerSchema, WorkerSchemaData, WorkerSchemaId};
 use std::{fmt, future::Future, sync::Arc, time::Duration};
@@ -309,12 +307,10 @@ pub mod test {
         WorkerSchemaWithDescriptor {
             schema: schema.clone(),
             operation_descriptor: Some(
-                infra_utils::infra::protobuf::ProtobufDescriptor::new(&schema.operation_proto)
-                    .unwrap(),
+                command_utils::protobuf::ProtobufDescriptor::new(&schema.operation_proto).unwrap(),
             ),
             args_descriptor: Some(
-                infra_utils::infra::protobuf::ProtobufDescriptor::new(&schema.job_arg_proto)
-                    .unwrap(),
+                command_utils::protobuf::ProtobufDescriptor::new(&schema.job_arg_proto).unwrap(),
             ),
         }
     }

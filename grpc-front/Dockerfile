@@ -7,7 +7,7 @@ RUN adduser --system jobworkerp
 
 RUN mkdir -p /home/jobworkerp && chown jobworkerp:daemon /home/jobworkerp
 RUN mkdir -p /home/jobworkerp/plugins && chown jobworkerp:daemon /home/jobworkerp/plugins
-ENV LD_LIBRARY_PATH=/home/jobworkerp/plugins:$LD_LIBRARY_PATH
+ENV LD_LIBRARY_PATH=/home/jobworkerp/plugins:/home/jobworkerp/data/plugin/runner:/home/jobworkerp/data/plugin/cuda_runner:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
 WORKDIR /home/jobworkerp
 
