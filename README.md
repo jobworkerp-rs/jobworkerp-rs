@@ -94,12 +94,12 @@ one shot job (with result: response-type DIRECT)
 
 ```shell
 # create worker (specify schema id from worker-schema list)
-1. $ ./target/release/jobworkerp-client worker create --name "GoogleRequest" --schema-id 2 --operation '{"base_url":"https://www.google.com/search"}' --response-type DIRECT
+1. $ ./target/release/jobworkerp-client worker create --name "ExampleRequest" --schema-id 2 --operation '{"base_url":"https://www.example.com/search"}' --response-type DIRECT
 
 # enqueue job (ls . ..)
 # specify worker_id value or worker name created by `worker create` (command 1. response)
 2-1. $ ./target/release/jobworkerp-client job enqueue --worker 1 --arg '{"headers":[],"method":"GET","path":"/search","queries":[{"key":"q","value":"test"}]}'
-2-2. $ ./target/release/jobworkerp-client job enqueue --worker "GoogleRequest" --arg '{"headers":[],"method":"GET","path":"/search","queries":[{"key":"q","value":"test"}]}'
+2-2. $ ./target/release/jobworkerp-client job enqueue --worker "ExampleRequest" --arg '{"headers":[],"method":"GET","path":"/search","queries":[{"key":"q","value":"test"}]}'
 ```
 
 one shot job (listen result after request: response-type LISTEN_AFTER)
