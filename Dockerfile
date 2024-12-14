@@ -1,6 +1,6 @@
 FROM nvcr.io/nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
-RUN apt update && apt install -y libssl3 libcurl4  \
+RUN apt update && apt install -y libssl3 libcurl4 libgomp1 \
     && apt-get clean -y && rm -rf /var/lib/apt/lists/*
 
 RUN /sbin/ldconfig
