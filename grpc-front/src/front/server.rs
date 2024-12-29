@@ -49,7 +49,7 @@ pub async fn start_server(
     if use_web {
         Server::builder()
             .accept_http1(true) // for gRPC-web
-            .max_frame_size(Some(16 * 1024 * 1024)) // 16MB
+            .max_frame_size(Some(16 * 1024 * 1024 - 1)) // 16MB
             // .layer(GrpcWebLayer::new()) // for grpc-web // server type is changed if this line is added
             .add_service(tonic_web::enable(WorkerSchemaServiceServer::new(
                 WorkerSchemaGrpcImpl::new(app_module.clone()),
@@ -71,6 +71,7 @@ pub async fn start_server(
             )))
     } else {
         Server::builder()
+            .max_frame_size(Some(16 * 1024 * 1024 - 1)) // 16MB
             .add_service(WorkerServiceServer::new(WorkerGrpcImpl::new(
                 app_module.clone(),
             )))
