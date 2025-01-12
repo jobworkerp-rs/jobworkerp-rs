@@ -76,43 +76,28 @@ pub trait JobRunner:
         job: Job,
         err: Option<anyhow::Error>,
     ) -> JobResultData {
-        match err {
-            None => {
-                tracing::info!("runner not found for worker:{:?}", worker);
-                let end = datetime::now_millis();
-                Self::job_result_data(
-                    job,
-                    worker,
-                    ResultStatus::FatalError,
-                    ResultOutput {
-                        items: vec![format!("runner not found for worker:{:?}", worker)
-                            .as_bytes()
-                            .to_vec()],
-                    },
-                    end,
-                    end,
-                )
-            }
-            Some(e) => {
-                tracing::warn!("error in finding runner: {:?}", e);
-                let end = datetime::now_millis();
-                Self::job_result_data(
-                    job,
-                    worker,
-                    ResultStatus::FatalError,
-                    ResultOutput {
-                        items: vec![format!(
-                            "error in finding runner for worker:{:?}, error:{:?}",
-                            worker, e
-                        )
-                        .as_bytes()
-                        .to_vec()],
-                    },
-                    end,
-                    end,
-                )
-            }
-        }
+        let end = datetime::now_millis();
+        let error_message = if let Some(e) = err {
+            let mes = format!(
+                "error in loading runner for worker:{:?}, error:{:?}",
+                worker.name, e
+            );
+            tracing::warn!(mes);
+            mes
+        } else {
+            tracing::info!("runner not found for static worker:{:?}", worker.name);
+            format!("runner not found for static worker:{:?}", worker.name)
+        };
+        Self::job_result_data(
+            job,
+            worker,
+            ResultStatus::FatalError,
+            ResultOutput {
+                items: vec![error_message.into_bytes()],
+            },
+            end,
+            end,
+        )
     }
 
     #[allow(unstable_name_collisions)] // for flatten()
