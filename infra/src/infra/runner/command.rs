@@ -1,5 +1,5 @@
-use super::Runner;
-use crate::jobworkerp::runner::{CommandArg, CommandOperation};
+use super::RunnerTrait;
+use crate::jobworkerp::runner::{CommandArgs, CommandRunnerSettings};
 use crate::{
     error::JobWorkerError,
     infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec},
@@ -20,7 +20,7 @@ use tokio_util::codec::{FramedRead, LinesCodec};
  * specify multiple arguments with \n separated     
  */
 #[async_trait]
-trait CommandRunner: Runner {
+trait CommandRunner: RunnerTrait {
     fn command(&self) -> Command;
     fn child(&mut self) -> &mut Option<Box<Child>>;
     fn set_child(&mut self, child: Option<Child>);
@@ -81,23 +81,23 @@ impl CommandRunner for CommandRunnerImpl {
 }
 
 #[async_trait]
-impl Runner for CommandRunnerImpl {
+impl RunnerTrait for CommandRunnerImpl {
     fn name(&self) -> String {
         RunnerType::Command.as_str_name().to_string()
     }
-    async fn load(&mut self, operation: Vec<u8>) -> Result<()> {
-        let data = JobqueueAndCodec::deserialize_message::<CommandOperation>(&operation)
+    async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
+        let data = JobqueueAndCodec::deserialize_message::<CommandRunnerSettings>(&settings)
             .context("on run job")?;
         self.command = Box::new(data.name);
         Ok(())
     }
     // arg: assumed as utf-8 string, specify multiple arguments with \n separated
-    async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
+    async fn run(&mut self, args: &[u8]) -> Result<Vec<Vec<u8>>> {
         if self.is_empty() {
             return Err(JobWorkerError::RuntimeError("command is empty".to_string()).into());
         }
         let data =
-            JobqueueAndCodec::deserialize_message::<CommandArg>(arg).context("on run job")?;
+            JobqueueAndCodec::deserialize_message::<CommandArgs>(args).context("on run job")?;
         let args: &Vec<String> = &data.args;
         let mut messages = Vec::<Vec<u8>>::new();
         tracing::info!("run command: {}, args: {:?}", &self.command, args);
@@ -141,8 +141,8 @@ impl Runner for CommandRunnerImpl {
             drop(c);
         }
     }
-    fn operation_proto(&self) -> String {
-        include_str!("../../../protobuf/jobworkerp/runner/command_operation.proto").to_string()
+    fn runner_settings_proto(&self) -> String {
+        include_str!("../../../protobuf/jobworkerp/runner/command_runner.proto").to_string()
     }
     fn job_args_proto(&self) -> String {
         include_str!("../../../protobuf/jobworkerp/runner/command_args.proto").to_string()
@@ -159,7 +159,7 @@ impl Runner for CommandRunnerImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jobworkerp::runner::CommandArg;
+    use crate::jobworkerp::runner::CommandArgs;
     use tokio::time::{sleep, Duration};
 
     #[ignore = "outbound network test"]
@@ -169,7 +169,7 @@ mod tests {
             process: None,
             command: Box::new("/usr/bin/curl".to_string()),
         };
-        let arg = CommandArg {
+        let arg = CommandArgs {
             args: vec!["-vvv".to_string(), "https://www.google.com".to_string()],
         };
         let res = runner.run(&JobqueueAndCodec::serialize_message(&arg)).await;
@@ -187,7 +187,7 @@ mod tests {
             process: None,
             command: Box::new("/bin/sleep".to_string()),
         };
-        let arg = CommandArg {
+        let arg = CommandArgs {
             args: vec!["10".to_string()],
         };
         let res = runner.run(&JobqueueAndCodec::serialize_message(&arg)).await;

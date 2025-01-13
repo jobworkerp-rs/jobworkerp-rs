@@ -6,7 +6,6 @@ pub mod plugins;
 pub mod resource;
 pub mod runner;
 pub mod worker;
-pub mod worker_schema;
 
 use crate::error::JobWorkerError;
 use anyhow::Result;

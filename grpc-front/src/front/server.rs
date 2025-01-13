@@ -2,15 +2,15 @@ use crate::proto::jobworkerp::service::job_restore_service_server::JobRestoreSer
 use crate::proto::jobworkerp::service::job_result_service_server::JobResultServiceServer;
 use crate::proto::jobworkerp::service::job_service_server::JobServiceServer;
 use crate::proto::jobworkerp::service::job_status_service_server::JobStatusServiceServer;
-use crate::proto::jobworkerp::service::worker_schema_service_server::WorkerSchemaServiceServer;
+use crate::proto::jobworkerp::service::runner_service_server::RunnerServiceServer;
 use crate::proto::jobworkerp::service::worker_service_server::WorkerServiceServer;
 use crate::proto::FILE_DESCRIPTOR_SET;
 use crate::service::job::JobGrpcImpl;
 use crate::service::job_restore::JobRestoreGrpcImpl;
 use crate::service::job_result::JobResultGrpcImpl;
 use crate::service::job_status::JobStatusGrpcImpl;
+use crate::service::runner::RunnerGrpcImpl;
 use crate::service::worker::WorkerGrpcImpl;
-use crate::service::worker_schema::WorkerSchemaGrpcImpl;
 use anyhow::anyhow;
 use anyhow::Result;
 use app::module::AppModule;
@@ -25,6 +25,7 @@ pub async fn start_server(
     lock: ShutdownLock,
     addr: SocketAddr,
     use_web: bool,
+    max_frame_size: Option<u32>,
 ) -> Result<()> {
     let (mut _health_reporter, health_service) = tonic_health::server::health_reporter();
     // reflection
@@ -49,10 +50,10 @@ pub async fn start_server(
     if use_web {
         Server::builder()
             .accept_http1(true) // for gRPC-web
-            .max_frame_size(Some(16 * 1024 * 1024 - 1)) // 16MB
+            .max_frame_size(max_frame_size) // 16MB
             // .layer(GrpcWebLayer::new()) // for grpc-web // server type is changed if this line is added
-            .add_service(tonic_web::enable(WorkerSchemaServiceServer::new(
-                WorkerSchemaGrpcImpl::new(app_module.clone()),
+            .add_service(tonic_web::enable(RunnerServiceServer::new(
+                RunnerGrpcImpl::new(app_module.clone()),
             )))
             .add_service(tonic_web::enable(WorkerServiceServer::new(
                 WorkerGrpcImpl::new(app_module.clone()),
@@ -71,7 +72,7 @@ pub async fn start_server(
             )))
     } else {
         Server::builder()
-            .max_frame_size(Some(16 * 1024 * 1024 - 1)) // 16MB
+            .max_frame_size(max_frame_size) // 16MB
             .add_service(WorkerServiceServer::new(WorkerGrpcImpl::new(
                 app_module.clone(),
             )))

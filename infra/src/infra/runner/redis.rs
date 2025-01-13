@@ -1,4 +1,4 @@
-use super::rows::WorkerSchemaRow;
+use super::rows::RunnerRow;
 use crate::error::JobWorkerError;
 use crate::infra::runner::factory::{RunnerFactory, UseRunnerFactory};
 use crate::infra::{IdGeneratorWrapper, UseIdGenerator};
@@ -6,7 +6,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use infra_utils::infra::redis::{RedisPool, UseRedisPool};
 use prost::Message;
-use proto::jobworkerp::data::{RunnerType, WorkerSchema, WorkerSchemaData, WorkerSchemaId};
+use proto::jobworkerp::data::{Runner, RunnerData, RunnerId, RunnerType};
 use redis::AsyncCommands;
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -14,18 +14,18 @@ use std::sync::Arc;
 
 // TODO use if you need (not using in default)
 #[async_trait]
-pub trait RedisWorkerSchemaRepository:
+pub trait RedisRunnerRepository:
     UseRedisPool + UseRunnerFactory + UseIdGenerator + Sync + 'static
 where
     Self: Send + 'static,
 {
-    const CACHE_KEY: &'static str = "RUNNER_SCHEMA_DEF";
+    const CACHE_KEY: &'static str = "RUNNER_DEF";
 
     async fn add_from_plugins(&self) -> Result<()> {
         let names = self.runner_factory().load_plugins().await;
         for (name, fname) in names.iter() {
             if let Some(p) = self.runner_factory().create_by_name(name, false).await {
-                let schema = WorkerSchemaRow {
+                let runner = RunnerRow {
                     id: self.id_generator().generate_id()?,
                     name: name.clone(),
                     file_name: fname.clone(),
@@ -34,10 +34,10 @@ where
                         .unwrap_or(0), // default: PLUGIN
                 }
                 .to_proto(p);
-                if let WorkerSchema {
+                if let Runner {
                     id: Some(id),
                     data: Some(data),
-                } = schema
+                } = runner
                 {
                     match self.create(&id, &data).await {
                         Ok(_) => {}
@@ -46,7 +46,7 @@ where
                         }
                     }
                 } else {
-                    tracing::error!("worker schema create error: {}, {:?}", name, schema);
+                    tracing::error!("runner create error: {}, {:?}", name, runner);
                 }
             } else {
                 tracing::error!("loaded plugin not found: {}", name);
@@ -55,7 +55,7 @@ where
         Ok(())
     }
 
-    async fn create(&self, id: &WorkerSchemaId, worker_schema: &WorkerSchemaData) -> Result<()> {
+    async fn create(&self, id: &RunnerId, runner_data: &RunnerData) -> Result<()> {
         let res: Result<bool> = self
             .redis_pool()
             .get()
@@ -63,7 +63,7 @@ where
             .hset_nx(
                 Self::CACHE_KEY,
                 id.value,
-                Self::serialize_worker_schema(worker_schema),
+                Self::serialize_runner(runner_data),
             )
             .await
             .map_err(|e| JobWorkerError::RedisError(e).into());
@@ -73,7 +73,7 @@ where
                     Ok(())
                 } else {
                     Err(JobWorkerError::AlreadyExists(format!(
-                        "worker_schema creation error: already exists id={}",
+                        "runner creation error: already exists id={}",
                         id.value
                     ))
                     .into())
@@ -83,8 +83,8 @@ where
         }
     }
 
-    async fn upsert(&self, id: &WorkerSchemaId, worker_schema: &WorkerSchemaData) -> Result<bool> {
-        let m = Self::serialize_worker_schema(worker_schema);
+    async fn upsert(&self, id: &RunnerId, runner_data: &RunnerData) -> Result<bool> {
+        let m = Self::serialize_runner(runner_data);
 
         let res: Result<bool> = self
             .redis_pool()
@@ -96,7 +96,7 @@ where
         res
     }
 
-    async fn delete(&self, id: &WorkerSchemaId) -> Result<bool> {
+    async fn delete(&self, id: &RunnerId) -> Result<bool> {
         let rem = self.find(id).await?;
         let res = self
             .redis_pool()
@@ -105,7 +105,7 @@ where
             .hdel(Self::CACHE_KEY, id.value)
             .await
             .map_err(JobWorkerError::RedisError)?;
-        if let Some(WorkerSchema {
+        if let Some(Runner {
             id: _,
             data: Some(data),
         }) = rem
@@ -117,7 +117,7 @@ where
         Ok(res)
     }
 
-    async fn find(&self, id: &WorkerSchemaId) -> Result<Option<WorkerSchema>> {
+    async fn find(&self, id: &RunnerId) -> Result<Option<Runner>> {
         match self
             .redis_pool()
             .get()
@@ -125,8 +125,8 @@ where
             .hget(Self::CACHE_KEY, id.value)
             .await
         {
-            Ok(Some(v)) => Self::deserialize_to_worker_schema(&v).map(|d| {
-                Some(WorkerSchema {
+            Ok(Some(v)) => Self::deserialize_to_runner(&v).map(|d| {
+                Some(Runner {
                     id: Some(*id),
                     data: Some(d),
                 })
@@ -136,7 +136,7 @@ where
         }
     }
 
-    async fn find_all(&self) -> Result<Vec<WorkerSchema>> {
+    async fn find_all(&self) -> Result<Vec<Runner>> {
         let res: Result<BTreeMap<i64, Vec<u8>>> = self
             .redis_pool()
             .get()
@@ -147,8 +147,8 @@ where
         res.map(|tree| {
             tree.iter()
                 .flat_map(|(id, v)| {
-                    Self::deserialize_to_worker_schema(v).map(|d| WorkerSchema {
-                        id: Some(WorkerSchemaId { value: *id }),
+                    Self::deserialize_to_runner(v).map(|d| Runner {
+                        id: Some(RunnerId { value: *id }),
                         data: Some(d),
                     })
                 })
@@ -165,35 +165,33 @@ where
             .map_err(|e| JobWorkerError::RedisError(e).into())
     }
 
-    fn serialize_worker_schema(w: &WorkerSchemaData) -> Vec<u8> {
+    fn serialize_runner(w: &RunnerData) -> Vec<u8> {
         let mut buf = Vec::with_capacity(w.encoded_len());
         w.encode(&mut buf).unwrap();
         buf
     }
 
-    fn deserialize_to_worker_schema(buf: &Vec<u8>) -> Result<WorkerSchemaData> {
-        WorkerSchemaData::decode(&mut Cursor::new(buf))
-            .map_err(|e| JobWorkerError::CodecError(e).into())
+    fn deserialize_to_runner(buf: &Vec<u8>) -> Result<RunnerData> {
+        RunnerData::decode(&mut Cursor::new(buf)).map_err(|e| JobWorkerError::CodecError(e).into())
     }
-    fn deserialize_bytes_to_worker_schema(buf: &[u8]) -> Result<WorkerSchemaData> {
-        WorkerSchemaData::decode(&mut Cursor::new(buf))
-            .map_err(|e| JobWorkerError::CodecError(e).into())
+    fn deserialize_bytes_to_runner(buf: &[u8]) -> Result<RunnerData> {
+        RunnerData::decode(&mut Cursor::new(buf)).map_err(|e| JobWorkerError::CodecError(e).into())
     }
 }
 
 impl<T: UseRedisPool + UseIdGenerator + UseRunnerFactory + Send + Sync + 'static>
-    RedisWorkerSchemaRepository for T
+    RedisRunnerRepository for T
 {
 }
 
 #[derive(Clone, Debug)]
-pub struct RedisWorkerSchemaRepositoryImpl {
+pub struct RedisRunnerRepositoryImpl {
     pub redis_pool: &'static RedisPool,
     pub redis_client: deadpool_redis::redis::Client,
     id_generator: Arc<IdGeneratorWrapper>,
     runner_factory: Arc<RunnerFactory>,
 }
-impl RedisWorkerSchemaRepositoryImpl {
+impl RedisRunnerRepositoryImpl {
     pub fn new(
         redis_pool: &'static RedisPool,
         client: deadpool_redis::redis::Client,
@@ -209,25 +207,25 @@ impl RedisWorkerSchemaRepositoryImpl {
     }
 }
 
-impl UseRedisPool for RedisWorkerSchemaRepositoryImpl {
+impl UseRedisPool for RedisRunnerRepositoryImpl {
     fn redis_pool(&self) -> &'static RedisPool {
         self.redis_pool
     }
 }
 
-impl UseIdGenerator for RedisWorkerSchemaRepositoryImpl {
+impl UseIdGenerator for RedisRunnerRepositoryImpl {
     fn id_generator(&self) -> &IdGeneratorWrapper {
         &self.id_generator
     }
 }
-impl UseRunnerFactory for RedisWorkerSchemaRepositoryImpl {
+impl UseRunnerFactory for RedisRunnerRepositoryImpl {
     fn runner_factory(&self) -> &RunnerFactory {
         &self.runner_factory
     }
 }
 
-pub trait UseRedisWorkerSchemaRepository {
-    fn redis_worker_schema_repository(&self) -> &RedisWorkerSchemaRepositoryImpl;
+pub trait UseRedisRunnerRepository {
+    fn redis_runner_repository(&self) -> &RedisRunnerRepositoryImpl;
 }
 
 #[tokio::test]
@@ -239,36 +237,36 @@ async fn redis_test() -> Result<()> {
     let runner_factory = Arc::new(RunnerFactory::new());
     runner_factory.load_plugins().await;
 
-    let repo = RedisWorkerSchemaRepositoryImpl {
+    let repo = RedisRunnerRepositoryImpl {
         redis_pool: pool,
         redis_client: cli,
         id_generator: Arc::new(IdGeneratorWrapper::new()),
         runner_factory,
     };
-    let id = WorkerSchemaId { value: 1 };
-    let worker_schema = &WorkerSchemaData {
+    let id = RunnerId { value: 1 };
+    let runner_data = &RunnerData {
         name: "hoge1".to_string(),
         runner_type: 1,
-        operation_proto: "hoge3".to_string(),
-        job_arg_proto: "hoge5".to_string(),
+        runner_settings_proto: "hoge3".to_string(),
+        job_args_proto: "hoge5".to_string(),
         result_output_proto: Some("hoge7".to_string()),
     };
     // clear first
     repo.delete(&id).await?;
 
     // create and find
-    repo.create(&id, worker_schema).await?;
-    assert!(repo.create(&id, worker_schema).await.err().is_some()); // already exists
+    repo.create(&id, runner_data).await?;
+    assert!(repo.create(&id, runner_data).await.err().is_some()); // already exists
     let res = repo.find(&id).await?;
-    assert_eq!(res.flat_map(|r| r.data).as_ref(), Some(worker_schema));
+    assert_eq!(res.flat_map(|r| r.data).as_ref(), Some(runner_data));
 
-    let mut worker_schema2 = worker_schema.clone();
-    worker_schema2.name = "fuga1".to_string();
-    worker_schema2.job_arg_proto = "fuga5".to_string();
+    let mut runner_data2 = runner_data.clone();
+    runner_data2.name = "fuga1".to_string();
+    runner_data2.job_args_proto = "fuga5".to_string();
     // update and find
-    assert!(!repo.upsert(&id, &worker_schema2).await?);
+    assert!(!repo.upsert(&id, &runner_data2).await?);
     let res2 = repo.find(&id).await?;
-    assert_eq!(res2.flat_map(|r| r.data).as_ref(), Some(&worker_schema2));
+    assert_eq!(res2.flat_map(|r| r.data).as_ref(), Some(&runner_data2));
 
     // delete and not found
     assert!(repo.delete(&id).await?);

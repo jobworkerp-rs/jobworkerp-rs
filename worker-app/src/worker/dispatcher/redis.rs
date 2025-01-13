@@ -5,8 +5,8 @@ use crate::worker::runner::result::RunnerResultHandler;
 use crate::worker::runner::JobRunner;
 use crate::worker::subscribe::UseSubscribeWorker;
 use anyhow::Result;
+use app::app::runner::{RunnerApp, UseRunnerApp};
 use app::app::worker::{UseWorkerApp, WorkerApp};
-use app::app::worker_schema::{UseWorkerSchemaApp, WorkerSchemaApp};
 use app::app::{UseWorkerConfig, WorkerConfig};
 use app::module::{AppConfigModule, AppModule};
 use async_trait::async_trait;
@@ -28,7 +28,7 @@ use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQue
 use infra_utils::infra::redis::{RedisClient, UseRedisClient};
 use infra_utils::infra::redis::{RedisPool, UseRedisPool};
 use proto::jobworkerp::data::{
-    Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, Worker, WorkerSchema,
+    Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, Runner, Worker,
 };
 use redis::{AsyncCommands, RedisError};
 use std::sync::Arc;
@@ -54,7 +54,7 @@ pub trait RedisJobDispatcher:
     + UseResultProcessor
     + UseWorkerConfig
     + UseWorkerApp
-    + UseWorkerSchemaApp
+    + UseRunnerApp
     + UseJobQueueConfig
     + UseIdGenerator
 {
@@ -233,22 +233,20 @@ pub trait RedisJobDispatcher:
             }
             return Err(JobWorkerError::NotFound(mes).into());
         };
-        let sid = wdat.schema_id.to_result(|| {
-            JobWorkerError::InvalidParameter("worker schema_id is not found.".to_string())
+        let sid = wdat.runner_id.to_result(|| {
+            JobWorkerError::InvalidParameter("worker runner_id is not found.".to_string())
         })?;
-        let schema = if let Some(WorkerSchema {
+        let runner_data = if let Some(Runner {
             id: _,
-            data: schema,
-        }) = self
-            .worker_schema_app()
-            .find_worker_schema(&sid, None)
-            .await?
+            data: runner_data,
+        }) = self.runner_app().find_runner(&sid, None).await?
         {
-            schema
-                .to_result(|| JobWorkerError::NotFound(format!("schema {:?} is not found.", &sid)))
+            runner_data.to_result(|| {
+                JobWorkerError::NotFound(format!("runner_data {:?} is not found.", &sid))
+            })
         } else {
             Err(JobWorkerError::NotFound(format!(
-                "schema {:?} is not found.",
+                "runner_data {:?} is not found.",
                 &sid
             )))
         }?;
@@ -285,7 +283,7 @@ pub trait RedisJobDispatcher:
         // run job
         let r = self
             .run_job(
-                &schema,
+                &runner_data,
                 &wid,
                 &wdat,
                 Job {
@@ -381,9 +379,9 @@ impl UseWorkerApp for RedisJobDispatcherImpl {
         &self.app_module.worker_app
     }
 }
-impl UseWorkerSchemaApp for RedisJobDispatcherImpl {
-    fn worker_schema_app(&self) -> Arc<dyn WorkerSchemaApp> {
-        self.app_module.worker_schema_app.clone()
+impl UseRunnerApp for RedisJobDispatcherImpl {
+    fn runner_app(&self) -> Arc<dyn RunnerApp> {
+        self.app_module.runner_app.clone()
     }
 }
 

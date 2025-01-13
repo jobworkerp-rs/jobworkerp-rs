@@ -78,10 +78,8 @@ mod test {
     use anyhow::Result;
     use app::{
         app::{
+            runner::{hybrid::HybridRunnerAppImpl, RunnerApp, RunnerDataWithDescriptor},
             worker::{hybrid::HybridWorkerAppImpl, WorkerApp},
-            worker_schema::{
-                hybrid::HybridWorkerSchemaAppImpl, WorkerSchemaApp, WorkerSchemaWithDescriptor,
-            },
             StorageConfig,
         },
         module::load_worker_config,
@@ -91,7 +89,7 @@ mod test {
         worker::event::UseWorkerPublish, IdGeneratorWrapper,
     };
     use infra_utils::infra::{memory::MemoryCacheImpl, test::setup_test_redis_client};
-    use proto::jobworkerp::data::{StorageType, WorkerData, WorkerSchemaId};
+    use proto::jobworkerp::data::{RunnerId, StorageType, WorkerData};
     use std::sync::Arc;
     use tokio::time::{sleep, Duration};
 
@@ -150,7 +148,7 @@ mod test {
         let worker_config = Arc::new(load_worker_config());
         // XXX empty runner map (must confirm deletion: use mock?)
         let runner_map = RunnerFactoryWithPoolMap::new(runner_factory.clone(), worker_config);
-        let descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>> =
+        let descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>> =
             Arc::new(MemoryCacheImpl::new(
                 &infra_utils::infra::memory::MemoryCacheConfig {
                     num_counters: 10,
@@ -160,7 +158,7 @@ mod test {
                 Some(Duration::from_secs(60)),
             ));
 
-        let worker_schema_app = Arc::new(HybridWorkerSchemaAppImpl::new(
+        let runner_app = Arc::new(HybridRunnerAppImpl::new(
             storage_config.clone(),
             &infra_utils::infra::memory::MemoryCacheConfig {
                 num_counters: 10,
@@ -170,7 +168,7 @@ mod test {
             repositories.clone(),
             descriptor_cache.clone(),
         ));
-        worker_schema_app.load_worker_schema().await?;
+        runner_app.load_runner().await?;
 
         let worker_app = Arc::new(HybridWorkerAppImpl::new(
             storage_config,
@@ -178,7 +176,7 @@ mod test {
             memory_cache,
             repositories,
             descriptor_cache,
-            worker_schema_app,
+            runner_app,
         ));
         let worker_app2 = worker_app.clone();
         let repo = UseWorkerMapAndSubscribeImpl {
@@ -196,14 +194,15 @@ mod test {
         });
         sleep(Duration::from_millis(100)).await;
 
-        let operation =
-            JobqueueAndCodec::serialize_message(&infra::jobworkerp::runner::CommandOperation {
+        let runner_settings = JobqueueAndCodec::serialize_message(
+            &infra::jobworkerp::runner::CommandRunnerSettings {
                 name: "ls".to_string(),
-            });
+            },
+        );
         let worker_data = WorkerData {
             name: "hoge_worker".to_string(),
-            schema_id: Some(WorkerSchemaId { value: 1 }),
-            operation,
+            runner_id: Some(RunnerId { value: 1 }),
+            runner_settings,
             channel: Some("test_channel".to_string()),
             ..Default::default()
         };

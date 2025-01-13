@@ -4,8 +4,8 @@ pub mod repository;
 use self::repository::SlackRepository;
 use crate::error::JobWorkerError;
 use crate::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
-use crate::infra::runner::Runner;
-use crate::jobworkerp::runner::SlackNotificationOperation;
+use crate::infra::runner::RunnerTrait;
+use crate::jobworkerp::runner::SlackNotificationRunnerSettings;
 use anyhow::{anyhow, Result};
 use proto::jobworkerp::data::RunnerType;
 use proto::jobworkerp::data::{JobResult, JobResultData, JobResultId, ResultStatus};
@@ -49,8 +49,8 @@ pub struct SlackConfig {
     pub notify_success: bool,
     pub notify_failure: bool,
 }
-impl From<SlackNotificationOperation> for SlackConfig {
-    fn from(op: SlackNotificationOperation) -> Self {
+impl From<SlackNotificationRunnerSettings> for SlackConfig {
+    fn from(op: SlackNotificationRunnerSettings) -> Self {
         Self {
             title: if op.title.is_empty() {
                 None
@@ -80,7 +80,6 @@ impl SlackResultNotificationRunner {
             job_id: dat.job_id.as_ref().map(|j| j.value).unwrap_or(0),
             worker_name: dat.worker_name.clone(),
             status: dat.status,
-            // TODO output をschemaつかって文字列にする
             output: dat.output.as_ref().map(|out| SlackResultOutput {
                 items: out.items.clone(),
             }),
@@ -100,12 +99,13 @@ impl Default for SlackResultNotificationRunner {
 }
 
 #[async_trait]
-impl Runner for SlackResultNotificationRunner {
+impl RunnerTrait for SlackResultNotificationRunner {
     fn name(&self) -> String {
         RunnerType::SlackNotification.as_str_name().to_string()
     }
-    async fn load(&mut self, operation: Vec<u8>) -> Result<()> {
-        let res = JobqueueAndCodec::deserialize_message::<SlackNotificationOperation>(&operation)?;
+    async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
+        let res =
+            JobqueueAndCodec::deserialize_message::<SlackNotificationRunnerSettings>(&settings)?;
         self.slack = Some(SlackRepository::new(res.into()));
         Ok(())
     }
@@ -169,8 +169,8 @@ impl Runner for SlackResultNotificationRunner {
     async fn cancel(&mut self) {
         // do nothing
     }
-    fn operation_proto(&self) -> String {
-        include_str!("../../../protobuf/jobworkerp/runner/slack_operation.proto").to_string()
+    fn runner_settings_proto(&self) -> String {
+        include_str!("../../../protobuf/jobworkerp/runner/slack_runner.proto").to_string()
     }
     // use JobResult as job_args
     fn job_args_proto(&self) -> String {

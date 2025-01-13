@@ -72,7 +72,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                     .enqueue_job(
                         Some(id),
                         None,
-                        req.arg.clone(),
+                        req.args.clone(),
                         req.uniq_key.clone(),
                         req.run_after_time.unwrap_or(0),
                         req.priority.unwrap_or(Priority::Medium as i32),
@@ -86,7 +86,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                     .enqueue_job(
                         None,
                         Some(name),
-                        req.arg.clone(),
+                        req.args.clone(),
                         req.uniq_key.clone(),
                         req.run_after_time.unwrap_or(0),
                         req.priority.unwrap_or(Priority::Medium as i32),
@@ -209,12 +209,12 @@ mod tests {
     #[test]
     fn test_validate_create_ok() {
         let v = Validator {};
-        let jarg = JobqueueAndCodec::serialize_message(&proto::TestArg {
+        let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
             args: vec!["fuga".to_string()],
         });
         let mut req = JobRequest {
             worker: Some(Worker::WorkerId(WorkerId { value: 1 })),
-            arg: jarg,
+            args: jargs,
             ..Default::default()
         };
         assert!(v.validate_create(&req).is_ok());
@@ -230,12 +230,12 @@ mod tests {
     #[test]
     fn test_validate_create_ng() {
         let v = Validator {};
-        let jarg = JobqueueAndCodec::serialize_message(&proto::TestArg {
+        let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
             args: vec!["fuga".to_string()],
         });
         let reqr = JobRequest {
             worker: Some(Worker::WorkerId(WorkerId { value: 1 })),
-            arg: jarg,
+            args: jargs,
             ..Default::default()
         };
         assert!(v.validate_create(&reqr).is_ok());
@@ -257,7 +257,7 @@ mod tests {
         let mut req = reqr.clone();
         req.priority = Some(Priority::High as i32);
         assert!(v.validate_create(&req).is_ok());
-        req.arg = Vec::new();
+        req.args = Vec::new();
         assert!(v.validate_create(&req).is_ok());
     }
 }

@@ -15,9 +15,9 @@ use serde::Deserialize;
 // };
 
 // TODO use if you need (not using in default)
-// parsed operation (for worker)
+// parsed runner_settings (for worker)
 #[derive(Debug, Deserialize, Clone)]
-pub struct K8SOperation {
+pub struct K8SRunnerSettings {
     namespace: Option<String>,
     //    job: Job, // yaml or json
 }
@@ -29,15 +29,15 @@ pub struct K8SRunner {
 }
 
 impl K8SRunner {
-    async fn new(operation: &str) -> Result<K8SRunner> {
+    async fn new(runner_settings: &str) -> Result<K8SRunner> {
         // let client = Client::try_default()
         //     .await
         //     .map_err(JobWorkerError::KubeClientError)?;
         // let parsed =
-        //     serde_json::from_str::<K8SOperation>(operation).map_err(JobWorkerError::SerdeJsonError);
+        //     serde_json::from_str::<K8SRunnerSettings>(runner_settings).map_err(JobWorkerError::SerdeJsonError);
         // let parsed = if parsed.is_err() {
         //     // TODO serde_yaml is not maintained
-        //     // serde_yaml::from_str::<K8SOperation>(operation).map_err(JobWorkerError::SerdeYamlError)
+        //     // serde_yaml::from_str::<K8SRunnerSettings>(runner_settings).map_err(JobWorkerError::SerdeYamlError)
         // } else {
         //     parsed
         // }?;
@@ -67,7 +67,7 @@ impl Runner for K8SRunner {
             // self.job.metadata.name.clone().unwrap_or_default()
         )
     }
-    async fn run(&mut self, _arg: Vec<u8>) -> Result<Vec<Vec<u8>>> {
+    async fn run(&mut self, _args: Vec<u8>) -> Result<Vec<Vec<u8>>> {
         tracing::info!("run k8s worker");
         // let pp = PostParams::default();
         // let jn = &self
@@ -123,7 +123,7 @@ impl Runner for K8SRunner {
     fn cancel(&mut self) {
         todo!()
     }
-    fn operation_proto(&self) -> String;
+    fn runner_settings_proto(&self) -> String;
     fn job_args_proto(&self) -> String;
     fn use_job_result(&self) -> bool;
 
@@ -171,7 +171,7 @@ impl Runner for K8SRunner {
 //     }}"#,
 //         job_json
 //     );
-//     println!("operation: {}", &op);
+//     println!("runner_settings: {}", &op);
 //     let mut runner = K8SRunner::new(op.as_str()).await?;
 //     let res = runner.run("".as_bytes().to_vec()).await;
 //     tracing::info!("result: {:?}", res);

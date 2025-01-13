@@ -26,7 +26,9 @@ pub async fn start_front_server(app_module: Arc<AppModule>, lock: ShutdownLock) 
         .parse()
         .unwrap();
 
-    let res = front::server::start_server(app_module, lock, grpc_addr, use_web)
+    let max_frame_size: Option<u32> = env::var("MAX_FRAME_SIZE").ok().map(|s| s.parse().unwrap());
+
+    let res = front::server::start_server(app_module, lock, grpc_addr, use_web, max_frame_size)
         .await
         .map_err(|err| {
             tracing::error!("failed to create server: {:?}", err);

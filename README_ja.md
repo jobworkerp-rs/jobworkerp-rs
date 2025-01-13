@@ -25,7 +25,7 @@ GRPCをつかって処理内容となる[Worker](proto/protobuf/jobworkerp/servi
     - [docker imageでの起動例](#docker-image%E3%81%A7%E3%81%AE%E8%B5%B7%E5%8B%95%E4%BE%8B)
   - [jobworkerp-client による実行例](#jobworkerp-client-%E3%81%AB%E3%82%88%E3%82%8B%E5%AE%9F%E8%A1%8C%E4%BE%8B)
 - [jobworkerp-workerの機能詳細](#jobworkerp-worker%E3%81%AE%E6%A9%9F%E8%83%BD%E8%A9%B3%E7%B4%B0)
-  - [worker.schema_idの組み込み機能](#workerschema_id%E3%81%AE%E7%B5%84%E3%81%BF%E8%BE%BC%E3%81%BF%E6%A9%9F%E8%83%BD)
+  - [worker.runner_idの組み込み機能](#workerrunner_id%E3%81%AE%E7%B5%84%E3%81%BF%E8%BE%BC%E3%81%BF%E6%A9%9F%E8%83%BD)
   - [ジョブキュー種別](#%E3%82%B8%E3%83%A7%E3%83%96%E3%82%AD%E3%83%A5%E3%83%BC%E7%A8%AE%E5%88%A5)
   - [結果の格納 (worker.store_success、worker.store_failure)](#%E7%B5%90%E6%9E%9C%E3%81%AE%E6%A0%BC%E7%B4%8D-workerstore_successworkerstore_failure)
   - [結果の取得方法 (worker.response_type)](#%E7%B5%90%E6%9E%9C%E3%81%AE%E5%8F%96%E5%BE%97%E6%96%B9%E6%B3%95-workerresponse_type)
@@ -73,7 +73,7 @@ $ ./target/release/grpc-front &
 
 [jobworkerp-client](https://github.com/jobworkerp-rs/jobworkerp-client-rs)をつかって以下のようにworkerの作成・取得、jobのenqueue、処理結果の取得が可能
 
-(worker.operation, job.job_arg, job_result.outputのencode・decodeが不要であればgrpcurlでも実行可能。参考: [protoファイル](proto/protobuf/jobworkerp/service/))
+(worker.runner_settings, job.job_arg, job_result.outputのencode・decodeが不要であればgrpcurlでも実行可能。参考: [protoファイル](proto/protobuf/jobworkerp/service/))
 
 setup:
 
@@ -88,20 +88,20 @@ $ cargo build --release
 # run (show help)
 $ ./target/release/jobworkerp-client
 
-# list worker-schema (need launching jobworkerp-rs in localhost:9000(default))
-$ ./target/release/jobworkerp-client worker-schema list
+# list worker-runner (need launching jobworkerp-rs in localhost:9000(default))
+$ ./target/release/jobworkerp-client worker-runner list
 ```
 
 one shot job (with result: response-type DIRECT)
 
 ```shell
-# create worker (specify schema id from worker-schema list)
-1. $ ./target/release/jobworkerp-client worker create --name "ExampleRequest" --schema-id 2 --operation '{"base_url":"https://www.example.com/search"}' --response-type DIRECT
+# create worker (specify runner id from worker-runner list)
+1. $ ./target/release/jobworkerp-client worker create --name "ExampleRequest" --runner-id 2 --settings '{"base_url":"https://www.example.com/search"}' --response-type DIRECT
 
 # enqueue job (ls . ..)
 # specify worker_id value or worker name created by `worker create` (command 1. response)
-2-1. $ ./target/release/jobworkerp-client job enqueue --worker 1 --arg '{"headers":[],"method":"GET","path":"/search","queries":[{"key":"q","value":"test"}]}'
-2-2. $ ./target/release/jobworkerp-client job enqueue --worker "ExampleRequest" --arg '{"headers":[],"method":"GET","path":"/search","queries":[{"key":"q","value":"test"}]}'
+2-1. $ ./target/release/jobworkerp-client job enqueue --worker 1 --args '{"headers":[],"method":"GET","path":"/search","queries":[{"key":"q","value":"test"}]}'
+2-2. $ ./target/release/jobworkerp-client job enqueue --worker "ExampleRequest" --args '{"headers":[],"method":"GET","path":"/search","queries":[{"key":"q","value":"test"}]}'
 ```
 
 one shot job (listen result after request: response-type LISTEN_AFTER)
@@ -109,11 +109,11 @@ one shot job (listen result after request: response-type LISTEN_AFTER)
 ```shell
 
 # create shell command `sleep` worker (must specify store_success and store_failure to be true)
-1. $ ./target/release/jobworkerp-client worker create --name "SleepWorker" --schema-id 1 --operation '{"name":"sleep"}' --response-type LISTEN_AFTER --store-success --store-failure
+1. $ ./target/release/jobworkerp-client worker create --name "SleepWorker" --runner-id 1 --settings '{"name":"sleep"}' --response-type LISTEN_AFTER --store-success --store-failure
 
 # enqueue job
 # sleep 60 seconds
-2. $ ./target/debug/jobworkerp-client job enqueue --worker 'SleepWorker' --arg '{"args":["60"]}'
+2. $ ./target/debug/jobworkerp-client job enqueue --worker 'SleepWorker' --args '{"args":["60"]}'
 
 # listen job (long polling with grpc)
 # specify job_id created by `job enqueue` (command 2. response)
@@ -126,12 +126,12 @@ periodic job
 ```shell
 
 # create periodic worker (repeat per 3 seconds)
-1. $ ./target/release/jobworkerp-client worker create --name "PeriodicEchoWorker" --schema-id 1 --operation '{"name":"echo"}' --periodic 3000 --response-type NO_RESULT --store-success --store-failure
+1. $ ./target/release/jobworkerp-client worker create --name "PeriodicEchoWorker" --runner-id 1 --settings '{"name":"echo"}' --periodic 3000 --response-type NO_RESULT --store-success --store-failure
 
 # enqueue job (echo Hello World !)
 # start job at [epoch second] % 3 == 1, per 3 seconds by run_after_time (epoch milliseconds) (see info log of jobworkerp all-in-one execution)
 # (If run_after_time is not specified, the command is executed repeatedly based on enqueue_time)
-2. $ ./target/debug/jobworkerp-client job enqueue --worker 'PeriodicEchoWorker' --arg '{"args":["Hello", "World", "!"]}' --run-after-time 1000
+2. $ ./target/debug/jobworkerp-client job enqueue --worker 'PeriodicEchoWorker' --args '{"args":["Hello", "World", "!"]}' --run-after-time 1000
 
 # stop periodic job 
 # specify job_id created by `job enqueue` (command 2. response)
@@ -141,15 +141,15 @@ periodic job
 
 ## jobworkerp-workerの機能詳細
 
-### worker.schema_idの組み込み機能
+### worker.runner_idの組み込み機能
 
-worker_schemaに組み込み定義されている機能を以下に記載する。
-各機能のworker.operation、job.argにはprotobufでそれぞれの機能に必要な値を設定する。protobuf定義はworker_schema.operation_proto, worker_schema.job_arg_protoから取得可能。
+worker_runnerに組み込み定義されている機能を以下に記載する。
+各機能のworker.runner_settings、job.argsにはprotobufでそれぞれの機能に必要な値を設定する。protobuf定義はworker_runner.runner_settings_proto, worker_runner.job_arg_protoから取得可能。
 
-- COMMAND: command実行 ([ComamndRunner](infra/src/infra/runner/command.rs)): worker.operationに対象のコマンドを指定、job.argに引数を指定する
-- HTTP_REQUEST: reqwestによるhttpリクエスト ([RequestRunner](infra/src/infra/runner/request.rs)): worker.operationにbase url、job.argにheaders、queries、method、body、pathを指定する。レスポンス本文を結果として受け取る
-- GRPC_UNARY: gRPC unaryリクエスト ([GrpcUnaryRunner](infra/src/infra/runner/grpc_unary.rs)): worker.operationにjson形式でurlとpathを指定する (例: `{"url":"http://localhost:9000","path":"jobworkerp.service.WorkerService/FindList"}`)。job.argはrpc引数をprotobufエンコード(bytes)で指定する。レスポンスはprotobuf バイナリを受けとる。
-- DOCKER: docker run実行 ([DockerRunner](infra/src/infra/runner/docker.rs)): worker.operationにFromImage (pullするイメージ)、Repo (レポジトリ)、Tag、Platform(`os[/arch[/variant]]`)などを指定、job.argsにImage(実行するイメージ名)とCmd(実行コマンドラインの配列)を指定する
+- COMMAND: command実行 ([ComamndRunner](infra/src/infra/runner/command.rs)): worker.runner_settingsに対象のコマンドを指定、job.argsに引数を指定する
+- HTTP_REQUEST: reqwestによるhttpリクエスト ([RequestRunner](infra/src/infra/runner/request.rs)): worker.runner_settingsにbase url、job.argsにheaders、queries、method、body、pathを指定する。レスポンス本文を結果として受け取る
+- GRPC_UNARY: gRPC unaryリクエスト ([GrpcUnaryRunner](infra/src/infra/runner/grpc_unary.rs)): worker.runner_settingsにjson形式でurlとpathを指定する (例: `{"url":"http://localhost:9000","path":"jobworkerp.service.WorkerService/FindList"}`)。job.argsはrpc引数をprotobufエンコード(bytes)で指定する。レスポンスはprotobuf バイナリを受けとる。
+- DOCKER: docker run実行 ([DockerRunner](infra/src/infra/runner/docker.rs)): worker.runner_settingsにFromImage (pullするイメージ)、Repo (レポジトリ)、Tag、Platform(`os[/arch[/variant]]`)などを指定、job.argsにImage(実行するイメージ名)とCmd(実行コマンドラインの配列)を指定する
   - 環境変数 `DOCKER_GID`：/var/run/docker.sock に接続する権限をもったGIDを指定する。jobworkerpの実行プロセスはこのGIDを利用可能な権限が必要。
   - k8s pod上での起動は現在未テスト。(上記の制限からおそらくDockerOutsideOfDockerあるいはDockerInDockerが可能なdocker imageの設定が必要になる想定)。
 
@@ -198,7 +198,7 @@ worker.queue_type
 - [MySQL schema](infra/sql/mysql/002_worker.sql)
 - [SQLite schema](infra/sql/sqlite/001_schema.sql)
 
-(worker_schemaには組み込み機能としての固定レコードが存在する)
+(runnerテーブルには組み込み機能としての固定レコードが存在する)
 
 ### その他の環境変数
 
@@ -229,7 +229,7 @@ worker.queue_type
 ## プラグインについて
 
 - [Runner trait](infra/src/infra/runner/plugins.rs) をdylibとして実装する
-  - 環境変数 `PLUGINS_RUNNER_DIR` に指定したディレクトリ内に配置することでworker_Schemaとして登録される
+  - 環境変数 `PLUGINS_RUNNER_DIR` に指定したディレクトリ内に配置することでrunnerとして登録される
   - 実装例：[HelloPlugin](plugins/hello_runner/src/lib.rs)
 
 ### 各種エラーコードについて
