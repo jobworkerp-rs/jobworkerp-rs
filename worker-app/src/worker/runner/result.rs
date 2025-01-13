@@ -227,7 +227,7 @@ mod tests {
     use anyhow::Result;
     use infra::{
         infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec},
-        jobworkerp::runner::{CommandArg, CommandOperation},
+        jobworkerp::runner::{CommandArgs, CommandRunnerSettings},
     };
     use proto::jobworkerp::data::{
         Job, JobData, JobId, ResponseType, RetryType, WorkerData, WorkerId,
@@ -247,12 +247,12 @@ mod tests {
     #[tokio::test]
     async fn test_job_result_status() -> Result<()> {
         let runner = MockResultHandler::new();
-        let operation = JobqueueAndCodec::serialize_message(&CommandOperation {
+        let runner_settings = JobqueueAndCodec::serialize_message(&CommandRunnerSettings {
             name: "ls".to_string(),
         });
         let worker = WorkerData {
             name: "test".to_string(),
-            operation: operation.clone(),
+            runner_settings: runner_settings.clone(),
             retry_policy: Some(RetryPolicy {
                 r#type: RetryType::Linear as i32,
                 interval: 1000,
@@ -267,7 +267,7 @@ mod tests {
         };
         let no_retry_worker = WorkerData {
             name: "test".to_string(),
-            operation,
+            runner_settings,
             retry_policy: None,
             channel: None,
             response_type: ResponseType::NoResult as i32,
@@ -275,14 +275,14 @@ mod tests {
             store_failure: false,
             ..Default::default()
         };
-        let arg = JobqueueAndCodec::serialize_message(&CommandArg {
+        let args = JobqueueAndCodec::serialize_message(&CommandArgs {
             args: vec!["test".to_string()],
         });
         let job = Job {
             id: Some(JobId { value: 1 }),
             data: Some(JobData {
                 worker_id: Some(WorkerId { value: 1 }),
-                arg,
+                args,
                 uniq_key: Some("test".to_string()),
                 retried: 0,
                 priority: 0,

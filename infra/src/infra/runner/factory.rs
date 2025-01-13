@@ -3,7 +3,7 @@ use super::docker::{DockerExecRunner, DockerRunner};
 use super::grpc_unary::GrpcUnaryRunner;
 use super::request::RequestRunner;
 use super::slack::SlackResultNotificationRunner;
-use super::Runner;
+use super::RunnerTrait;
 use crate::infra::plugins::{PluginLoader, Plugins};
 use anyhow::Result;
 use proto::jobworkerp::data::RunnerType;
@@ -31,25 +31,26 @@ impl RunnerFactory {
         &self,
         name: &str,
         use_static: bool,
-    ) -> Option<Box<dyn Runner + Send + Sync>> {
+    ) -> Option<Box<dyn RunnerTrait + Send + Sync>> {
         match RunnerType::from_str_name(name) {
             Some(RunnerType::Command) => {
-                Some(Box::new(CommandRunnerImpl::new()) as Box<dyn Runner + Send + Sync>)
+                Some(Box::new(CommandRunnerImpl::new()) as Box<dyn RunnerTrait + Send + Sync>)
             }
             Some(RunnerType::Docker) if use_static => {
-                Some(Box::new(DockerExecRunner::new()) as Box<dyn Runner + Send + Sync>)
+                Some(Box::new(DockerExecRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
             }
             Some(RunnerType::Docker) => {
-                Some(Box::new(DockerRunner::new()) as Box<dyn Runner + Send + Sync>)
+                Some(Box::new(DockerRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
             }
             Some(RunnerType::GrpcUnary) => {
-                Some(Box::new(GrpcUnaryRunner::new()) as Box<dyn Runner + Send + Sync>)
+                Some(Box::new(GrpcUnaryRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
             }
             Some(RunnerType::HttpRequest) => {
-                Some(Box::new(RequestRunner::new()) as Box<dyn Runner + Send + Sync>)
+                Some(Box::new(RequestRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
             }
             Some(RunnerType::SlackNotification) => {
-                Some(Box::new(SlackResultNotificationRunner::new()) as Box<dyn Runner + Send + Sync>)
+                Some(Box::new(SlackResultNotificationRunner::new())
+                    as Box<dyn RunnerTrait + Send + Sync>)
             }
             _ => self
                 .plugins
@@ -57,7 +58,7 @@ impl RunnerFactory {
                 .write()
                 .await
                 .find_plugin_runner_by_name(name)
-                .map(|r| Box::new(r) as Box<dyn Runner + Send + Sync>),
+                .map(|r| Box::new(r) as Box<dyn RunnerTrait + Send + Sync>),
         }
     }
 }

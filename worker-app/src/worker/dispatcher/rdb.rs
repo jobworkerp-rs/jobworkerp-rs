@@ -7,10 +7,10 @@ use crate::worker::runner::JobRunner;
 use anyhow::Result;
 use app::app::job_result::JobResultApp;
 use app::app::job_result::UseJobResultApp;
+use app::app::runner::RunnerApp;
+use app::app::runner::UseRunnerApp;
 use app::app::worker::UseWorkerApp;
 use app::app::worker::WorkerApp;
-use app::app::worker_schema::UseWorkerSchemaApp;
-use app::app::worker_schema::WorkerSchemaApp;
 use app::app::UseWorkerConfig;
 use app::app::WorkerConfig;
 use app::module::AppConfigModule;
@@ -36,9 +36,9 @@ use infra::infra::UseJobQueueConfig;
 use proto::jobworkerp::data::Job;
 use proto::jobworkerp::data::JobResult;
 use proto::jobworkerp::data::JobResultId;
+use proto::jobworkerp::data::Runner;
 use proto::jobworkerp::data::Worker;
 use proto::jobworkerp::data::WorkerId;
-use proto::jobworkerp::data::WorkerSchema;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -54,7 +54,7 @@ pub trait RdbJobDispatcher:
     + JobRunner
     + UseWorkerConfig
     + UseWorkerApp
-    + UseWorkerSchemaApp
+    + UseRunnerApp
     + UseJobQueueConfig
 {
     // mergin time to re-execute if it does not disappear from queue (row) after timeout
@@ -166,28 +166,26 @@ pub trait RdbJobDispatcher:
                 JobWorkerError::NotFound(format!("failed to get worker: {:?}", &job)).into(),
             );
         };
-        let sid = if let Some(id) = w.schema_id.as_ref() {
+        let rid = if let Some(id) = w.runner_id.as_ref() {
             id
         } else {
-            tracing::error!("failed to get schema_id: {:?}", &job);
+            tracing::error!("failed to get runner_id: {:?}", &job);
             return Err(
-                JobWorkerError::NotFound(format!("failed to get schema_id: {:?}", &job)).into(),
+                JobWorkerError::NotFound(format!("failed to get runner_id: {:?}", &job)).into(),
             );
         };
-        let schema = if let Some(WorkerSchema {
+        let runner_data = if let Some(Runner {
             id: _,
-            data: schema,
-        }) = self
-            .worker_schema_app()
-            .find_worker_schema(sid, None)
-            .await?
+            data: runner_data,
+        }) = self.runner_app().find_runner(rid, None).await?
         {
-            schema
-                .to_result(|| JobWorkerError::NotFound(format!("schema {:?} is not found.", &sid)))
+            runner_data.to_result(|| {
+                JobWorkerError::NotFound(format!("runner data {:?} is not found.", &rid))
+            })
         } else {
-            tracing::error!("failed to get schema: {:?}", &job);
+            tracing::error!("failed to get runner data for job: {:?}", &job);
             Err(JobWorkerError::NotFound(format!(
-                "failed to get schema: {:?}",
+                "failed to get runner data for job: {:?}",
                 &job
             )))
         }?;
@@ -196,7 +194,7 @@ pub trait RdbJobDispatcher:
         match self
             .rdb_job_repository()
             .grab_job(
-                job.id.as_ref().unwrap(), // cheched is_some
+                job.id.as_ref().unwrap(), // checked is_some
                 job.data.as_ref().map(|d| d.timeout),
                 job.data
                     .as_ref()
@@ -207,7 +205,7 @@ pub trait RdbJobDispatcher:
         {
             Ok(grabbed) => {
                 if grabbed {
-                    let res = self.run_job(&schema, &wid, &w, job).await;
+                    let res = self.run_job(&runner_data, &wid, &w, job).await;
                     let id = JobResultId {
                         value: self.id_generator().generate_id()?,
                     };
@@ -284,9 +282,9 @@ impl UseWorkerApp for RdbJobDispatcherImpl {
         &self.app_module.worker_app
     }
 }
-impl UseWorkerSchemaApp for RdbJobDispatcherImpl {
-    fn worker_schema_app(&self) -> Arc<dyn WorkerSchemaApp> {
-        self.app_module.worker_schema_app.clone()
+impl UseRunnerApp for RdbJobDispatcherImpl {
+    fn runner_app(&self) -> Arc<dyn RunnerApp> {
+        self.app_module.runner_app.clone()
     }
 }
 

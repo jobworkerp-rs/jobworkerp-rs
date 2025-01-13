@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package jobworkerp.runner;
 
-message DockerArg {
+message DockerArgs {
     /// The name of the image to use when creating the container (valid only for DockerRunner)
     optional string image = 1;
 

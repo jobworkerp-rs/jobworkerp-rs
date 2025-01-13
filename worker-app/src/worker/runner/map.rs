@@ -1,12 +1,12 @@
 use super::pool::{RunnerFactoryWithPool, RunnerPoolManagerImpl};
-use super::Runner;
+use super::RunnerTrait;
 use anyhow::Result;
 use app::app::WorkerConfig;
 use command_utils::util::result::TapErr;
 use deadpool::managed::{Object, Timeouts};
 use infra::error::JobWorkerError;
 use infra::infra::runner::factory::RunnerFactory;
-use proto::jobworkerp::data::{WorkerData, WorkerId, WorkerSchemaData};
+use proto::jobworkerp::data::{RunnerData, WorkerData, WorkerId};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,7 +30,7 @@ impl RunnerFactoryWithPoolMap {
 
     pub async fn add_and_get_runner(
         &self,
-        schema: Arc<WorkerSchemaData>,
+        runner_data: Arc<RunnerData>,
         worker_id: &WorkerId,
         worker_data: Arc<WorkerData>,
     ) -> Result<Option<Object<RunnerPoolManagerImpl>>> {
@@ -43,15 +43,15 @@ impl RunnerFactoryWithPoolMap {
             );
             // XXX shold clone runner?
             let p = RunnerFactoryWithPool::new(
-                schema,
+                runner_data,
                 worker_data,
                 self.runner_factory.clone(),
                 self.worker_config.clone(),
             )
             .await?;
-            let runner = p.get().await?;
+            let runner_impl = p.get().await?;
             self.pools.write().await.insert(worker_id.value, p);
-            Ok(Some(runner))
+            Ok(Some(runner_impl))
         } else {
             tracing::warn!(
                 "add_and_get_runner: worker_id:{} not static",
@@ -73,24 +73,24 @@ impl RunnerFactoryWithPoolMap {
     // create by factory every time
     pub async fn get_non_static_runner(
         &self,
-        schema: &WorkerSchemaData,
+        runner_data: &RunnerData,
         worker_data: &WorkerData,
-    ) -> Result<Box<dyn Runner + Send + Sync>> {
+    ) -> Result<Box<dyn RunnerTrait + Send + Sync>> {
         let mut r = self
             .runner_factory
-            .create_by_name(&schema.name, worker_data.use_static)
+            .create_by_name(&runner_data.name, worker_data.use_static)
             .await
             .ok_or(JobWorkerError::NotFound(format!(
                 "runner not found: {}",
-                schema.name
+                runner_data.name
             )))?;
-        r.load(worker_data.operation.clone()).await?;
+        r.load(worker_data.runner_settings.clone()).await?;
         Ok(r)
     }
 
     pub async fn get_or_create_static_runner(
         &self,
-        schema: &WorkerSchemaData,
+        runner_data: &RunnerData,
         worker_id: &WorkerId,
         worker_data: &WorkerData,
         timeout: Option<Duration>,
@@ -112,7 +112,7 @@ impl RunnerFactoryWithPoolMap {
                 drop(mp);
                 // add created runner pool to map
                 self.add_and_get_runner(
-                    Arc::new(schema.clone()),
+                    Arc::new(runner_data.clone()),
                     worker_id,
                     Arc::new(worker_data.clone()),
                 )

@@ -3,7 +3,7 @@ syntax = "proto3";
 package jobworkerp.service;
 
 import "jobworkerp/data/common.proto";
-import "jobworkerp/data/worker_schema.proto";
+import "jobworkerp/data/runner.proto";
 import "jobworkerp/data/worker.proto";
 import "jobworkerp/service/common.proto";
 

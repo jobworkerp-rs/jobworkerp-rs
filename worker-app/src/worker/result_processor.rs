@@ -3,10 +3,10 @@ use app::app::job::JobApp;
 use app::app::job::UseJobApp;
 use app::app::job_result::JobResultApp;
 use app::app::job_result::UseJobResultApp;
+use app::app::runner::RunnerApp;
+use app::app::runner::UseRunnerApp;
 use app::app::worker::UseWorkerApp;
 use app::app::worker::WorkerApp;
-use app::app::worker_schema::UseWorkerSchemaApp;
-use app::app::worker_schema::WorkerSchemaApp;
 use app::app::JobBuilder;
 use app::app::StorageConfig;
 use app::app::UseStorageConfig;
@@ -22,8 +22,8 @@ use infra::infra::job::rows::UseJobqueueAndCodec;
 use proto::jobworkerp::data::JobResultData;
 use proto::jobworkerp::data::JobResultId;
 use proto::jobworkerp::data::ResultStatus;
+use proto::jobworkerp::data::Runner;
 use proto::jobworkerp::data::Worker;
-use proto::jobworkerp::data::WorkerSchema;
 use proto::jobworkerp::data::{JobResult, WorkerData};
 use std::sync::Arc;
 use tracing;
@@ -105,7 +105,7 @@ impl ResultProcessorImpl {
                     .enqueue_job(
                         pj.worker_id.as_ref(),
                         None,
-                        pj.arg,
+                        pj.args,
                         pj.uniq_key,
                         pj.run_after_time,
                         pj.priority,
@@ -142,15 +142,12 @@ impl ResultProcessorImpl {
                     data: Some(wdat),
                 })) = self.worker_app().find(wid).await
                 {
-                    // TODO move find-runner logic to method(worker_schema_app?)
-                    let runner = if let Some(wsid) = &wdat.schema_id {
-                        if let Ok(Some(WorkerSchema {
+                    // TODO move find-runner logic to method(runner_app?)
+                    let runner = if let Some(rid) = &wdat.runner_id {
+                        if let Ok(Some(Runner {
                             id: _,
                             data: Some(wsdat),
-                        })) = self
-                            .worker_schema_app()
-                            .find_worker_schema(wsid, None)
-                            .await
+                        })) = self.runner_app().find_runner(rid, None).await
                         {
                             if let Some(r) = self
                                 .config_module
@@ -167,16 +164,16 @@ impl ResultProcessorImpl {
                                 )))
                             }
                         } else {
-                            tracing::error!("worker schema not found: {:?}", &wsid);
+                            tracing::error!("runner not found: {:?}", &rid);
                             Err(JobWorkerError::NotFound(format!(
-                                "worker schema not found: {:?}",
-                                &wsid
+                                "runner not found: {:?}",
+                                &rid
                             )))
                         }
                     } else {
-                        tracing::error!("worker schema id not found: {:?}", &wid);
+                        tracing::error!("runner id not found: {:?}", &wid);
                         Err(JobWorkerError::NotFound(format!(
-                            "worker schema id not found: {:?}",
+                            "runner id not found: {:?}",
                             &wid
                         )))
                     }?;
@@ -194,7 +191,7 @@ impl ResultProcessorImpl {
                                 &id
                             );
                         } else {
-                            let arg = JobqueueAndCodec::serialize_message(&JobResult {
+                            let args = JobqueueAndCodec::serialize_message(&JobResult {
                                 id: Some(*id),
                                 data: Some(dat.clone()),
                             });
@@ -203,7 +200,7 @@ impl ResultProcessorImpl {
                                     Some(&wid),
                                     None,
                                     // specify job result as argument for builtin worker
-                                    arg,
+                                    args,
                                     dat.uniq_key.clone(),
                                     dat.run_after_time,
                                     dat.priority,
@@ -214,7 +211,7 @@ impl ResultProcessorImpl {
                         }
                     } else {
                         // normal worker
-                        for arg in dat
+                        for args in dat
                             .output
                             .as_ref()
                             .map(|d| d.items.clone())
@@ -222,7 +219,7 @@ impl ResultProcessorImpl {
                             .into_iter()
                         {
                             // no result, no enqueue
-                            if arg.is_empty() {
+                            if args.is_empty() {
                                 tracing::warn!(
                                     "noop because output is empty: next_worker: {:?}, from worker: {}, job_result: {:?}",
                                     &wdat.name,
@@ -235,7 +232,7 @@ impl ResultProcessorImpl {
                                 .enqueue_job(
                                     Some(&wid),
                                     None,
-                                    arg,
+                                    args,
                                     dat.uniq_key.clone(),
                                     dat.run_after_time,
                                     dat.priority,
@@ -270,9 +267,9 @@ impl UseWorkerApp for ResultProcessorImpl {
         &self.app_module.worker_app
     }
 }
-impl UseWorkerSchemaApp for ResultProcessorImpl {
-    fn worker_schema_app(&self) -> Arc<dyn WorkerSchemaApp + 'static> {
-        self.app_module.worker_schema_app.clone()
+impl UseRunnerApp for ResultProcessorImpl {
+    fn runner_app(&self) -> Arc<dyn RunnerApp + 'static> {
+        self.app_module.runner_app.clone()
     }
 }
 impl JobBuilder for ResultProcessorImpl {}

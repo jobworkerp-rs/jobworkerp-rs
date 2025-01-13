@@ -3,12 +3,12 @@ syntax = "proto3";
 package jobworkerp.data;
 
 import "jobworkerp/data/common.proto";
-import "jobworkerp/data/worker_schema.proto";
+import "jobworkerp/data/runner.proto";
 
 message WorkerData {
     string name                                 = 1; // worker name
-    jobworkerp.data.WorkerSchemaId schema_id    = 2; // runner schema id
-    bytes operation                             = 3; // worker operation (docker operation etc)
+    jobworkerp.data.RunnerId runner_id          = 2; // runner id
+    bytes runner_settings                       = 3; // runner settings (docker runner settings etc)
     jobworkerp.data.RetryPolicy retry_policy    = 4; // retry policy
     uint32 periodic_interval                    = 5; // periodic interval milliseconds (0: non-periodic) (if enabled, cannot use direct_response)
     optional string channel                     = 6; // channel name (if empty, use default channel)

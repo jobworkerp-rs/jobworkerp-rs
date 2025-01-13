@@ -248,8 +248,8 @@ pub trait UseRedisWorkerRepository {
 async fn redis_test() -> Result<()> {
     use command_utils::util::option::FlatMap;
     use proto::jobworkerp::data::RetryPolicy;
-    use proto::jobworkerp::data::{QueueType, ResponseType, WorkerData, WorkerId, WorkerSchemaId};
-    use proto::TestOperation;
+    use proto::jobworkerp::data::{QueueType, ResponseType, RunnerId, WorkerData, WorkerId};
+    use proto::TestRunnerSettings;
 
     let pool = infra_utils::infra::test::setup_test_redis_pool().await;
     let cli = infra_utils::infra::test::setup_test_redis_client()?;
@@ -262,8 +262,8 @@ async fn redis_test() -> Result<()> {
     let id = WorkerId { value: 1 };
     let worker = &WorkerData {
         name: "hoge1".to_string(),
-        schema_id: Some(WorkerSchemaId { value: 2 }),
-        operation: RedisWorkerRepositoryImpl::serialize_message(&TestOperation {
+        runner_id: Some(RunnerId { value: 2 }),
+        runner_settings: RedisWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
             name: "hoge1".to_string(),
         }),
         retry_policy: Some(RetryPolicy {
@@ -296,8 +296,8 @@ async fn redis_test() -> Result<()> {
 
     let mut worker2 = worker.clone();
     worker2.name = "fuga1".to_string();
-    worker2.schema_id = Some(WorkerSchemaId { value: 5 });
-    worker2.operation = RedisWorkerRepositoryImpl::serialize_message(&TestOperation {
+    worker2.runner_id = Some(RunnerId { value: 5 });
+    worker2.runner_settings = RedisWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
         name: "fuga2".to_string(),
     });
     worker2.retry_policy = Some(RetryPolicy {

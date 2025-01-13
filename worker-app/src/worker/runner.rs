@@ -12,9 +12,9 @@ use command_utils::util::{
 };
 use futures::future::FutureExt;
 use infra::infra::{job::rows::UseJobqueueAndCodec, runner::factory::UseRunnerFactory};
-use infra::{error::JobWorkerError, infra::runner::Runner};
+use infra::{error::JobWorkerError, infra::runner::RunnerTrait};
 use proto::jobworkerp::data::{
-    Job, JobResultData, ResultOutput, ResultStatus, WorkerData, WorkerId, WorkerSchemaData,
+    Job, JobResultData, ResultOutput, ResultStatus, RunnerData, WorkerData, WorkerId,
 };
 use std::{panic::AssertUnwindSafe, time::Duration};
 use tracing;
@@ -29,14 +29,14 @@ pub trait JobRunner:
     #[inline]
     async fn run_job(
         &'static self,
-        schema: &WorkerSchemaData,
+        runner_data: &RunnerData,
         worker_id: &WorkerId,
-        worker: &WorkerData,
+        worker_data: &WorkerData,
         job: Job,
     ) -> JobResultData {
         tracing::debug!("run_job: {:?}", job);
         // XXX for keeping pool object
-        if worker.use_static {
+        if worker_data.use_static {
             let to = if let Some(data) = job.data.as_ref() {
                 if data.timeout == 0 {
                     None
@@ -48,82 +48,67 @@ pub trait JobRunner:
             };
             let p = self
                 .runner_pool_map()
-                .get_or_create_static_runner(schema, worker_id, worker, to)
+                .get_or_create_static_runner(runner_data, worker_id, worker_data, to)
                 .await;
             match p {
                 Ok(Some(runner)) => {
                     let mut r = runner.lock().await;
                     tracing::debug!("static runner found: {:?}", r.name());
-                    self.run_job_inner(worker, job, &mut r).await
+                    self.run_job_inner(worker_data, job, &mut r).await
                 }
-                Ok(None) => self.handle_error_option(worker, job, None),
-                Err(e) => self.handle_error_option(worker, job, Some(e)),
+                Ok(None) => self.handle_error_option(worker_data, job, None),
+                Err(e) => self.handle_error_option(worker_data, job, Some(e)),
             }
         } else {
             let rres = self
                 .runner_pool_map()
-                .get_non_static_runner(schema, worker)
+                .get_non_static_runner(runner_data, worker_data)
                 .await;
             match rres {
-                Ok(mut runner) => self.run_job_inner(worker, job, &mut runner).await,
-                Err(e) => self.handle_error_option(worker, job, Some(e)),
+                Ok(mut runner) => self.run_job_inner(worker_data, job, &mut runner).await,
+                Err(e) => self.handle_error_option(worker_data, job, Some(e)),
             }
         }
     }
     fn handle_error_option(
         &self,
-        worker: &WorkerData,
+        worker_data: &WorkerData,
         job: Job,
         err: Option<anyhow::Error>,
     ) -> JobResultData {
-        match err {
-            None => {
-                tracing::info!("runner not found for worker:{:?}", worker);
-                let end = datetime::now_millis();
-                Self::job_result_data(
-                    job,
-                    worker,
-                    ResultStatus::FatalError,
-                    ResultOutput {
-                        items: vec![format!("runner not found for worker:{:?}", worker)
-                            .as_bytes()
-                            .to_vec()],
-                    },
-                    end,
-                    end,
-                )
-            }
-            Some(e) => {
-                tracing::warn!("error in finding runner: {:?}", e);
-                let end = datetime::now_millis();
-                Self::job_result_data(
-                    job,
-                    worker,
-                    ResultStatus::FatalError,
-                    ResultOutput {
-                        items: vec![format!(
-                            "error in finding runner for worker:{:?}, error:{:?}",
-                            worker, e
-                        )
-                        .as_bytes()
-                        .to_vec()],
-                    },
-                    end,
-                    end,
-                )
-            }
-        }
+        let end = datetime::now_millis();
+        let error_message = if let Some(e) = err {
+            let mes = format!(
+                "error in loading runner for worker:{:?}, error:{:?}",
+                worker_data.name, e
+            );
+            tracing::warn!(mes);
+            mes
+        } else {
+            tracing::info!("runner not found for static worker:{:?}", worker_data.name);
+            format!("runner not found for static worker:{:?}", worker_data.name)
+        };
+        Self::job_result_data(
+            job,
+            worker_data,
+            ResultStatus::FatalError,
+            ResultOutput {
+                items: vec![error_message.into_bytes()],
+            },
+            end,
+            end,
+        )
     }
 
     #[allow(unstable_name_collisions)] // for flatten()
     async fn run_job_inner(
         &'static self,
-        worker: &WorkerData,
+        worker_data: &WorkerData,
         job: Job,
-        runner: &mut Box<dyn Runner + Send + Sync>,
+        runner_impl: &mut Box<dyn RunnerTrait + Send + Sync>,
     ) -> JobResultData {
         let data = job.data.as_ref().unwrap(); // XXX unwrap
-        let arg = &data.arg; // XXX unwrap, clone
+        let args = &data.args; // XXX unwrap, clone
         let run_after_time = data.run_after_time;
 
         let wait = run_after_time - datetime::now_millis();
@@ -139,12 +124,12 @@ pub trait JobRunner:
         // job time: complete job time include setup runner time.
         let start = datetime::now_millis();
 
-        let name = runner.name();
+        let name = runner_impl.name();
         tracing::debug!("start runner: {}", &name);
         // implement timeout
         let res = if data.timeout > 0 {
             tokio::select! {
-                r = AssertUnwindSafe(runner.run(arg)).catch_unwind() => {
+                r = AssertUnwindSafe(runner_impl.run(args)).catch_unwind() => {
                     r.map_err(|e| {
                         let msg = format!("Caught panic from runner {}: {:?}", &name, e);
                         tracing::error!(msg);
@@ -154,13 +139,13 @@ pub trait JobRunner:
                     .flatten()
                 },
                 _ = tokio::time::sleep(Duration::from_millis(data.timeout)) => {
-                    runner.cancel().await;
+                    runner_impl.cancel().await;
                     tracing::warn!("timeout: {}ms, the job will be dropped: {:?}", data.timeout, &job);
                     Err(JobWorkerError::TimeoutError(format!("timeout: {}ms", data.timeout)).into())
                 }
             }
         } else {
-            AssertUnwindSafe(runner.run(arg))
+            AssertUnwindSafe(runner_impl.run(args))
                 .catch_unwind()
                 .await
                 .map_err(|e| {
@@ -174,8 +159,8 @@ pub trait JobRunner:
         let end = datetime::now_millis();
         tracing::debug!("end runner: {}, duration:{}(ms)", &name, end - start);
         // TODO
-        let (st, mes) = self.job_result_status(&worker.retry_policy, data, res);
-        Self::job_result_data(job, worker, st, mes, start, end)
+        let (st, mes) = self.job_result_status(&worker_data.retry_policy, data, res);
+        Self::job_result_data(job, worker_data, st, mes, start, end)
     }
 
     // calculate job status and create JobResult (not increment retry count now)
@@ -193,7 +178,7 @@ pub trait JobRunner:
             job_id: job.id,
             worker_id: dat.worker_id,
             worker_name: worker.name.clone(),
-            arg: dat.arg,
+            args: dat.args,
             uniq_key: dat.uniq_key,
             status: st as i32,
             output: Some(res), // should be None if empty ?
@@ -270,14 +255,14 @@ mod tests {
         static JOB_RUNNER: Lazy<Box<MockJobRunner>> = Lazy::new(|| Box::new(MockJobRunner::new()));
 
         let run_after = datetime::now_millis() + 1000;
-        let jarg = JobqueueAndCodec::serialize_message(&infra::jobworkerp::runner::CommandArg {
+        let jargs = JobqueueAndCodec::serialize_message(&infra::jobworkerp::runner::CommandArgs {
             args: vec!["1".to_string()],
         });
         let job = Job {
             id: Some(JobId { value: 1 }),
             data: Some(JobData {
                 worker_id: Some(WorkerId { value: 1 }),
-                arg: jarg,
+                args: jargs,
                 uniq_key: Some("test".to_string()),
                 retried: 0,
                 priority: 0,
@@ -288,14 +273,15 @@ mod tests {
             }),
         };
         let worker_id = WorkerId { value: 1 };
-        let operation =
-            JobqueueAndCodec::serialize_message(&infra::jobworkerp::runner::CommandOperation {
+        let runner_settings = JobqueueAndCodec::serialize_message(
+            &infra::jobworkerp::runner::CommandRunnerSettings {
                 name: "sleep".to_string(),
-            });
+            },
+        );
 
         let worker = WorkerData {
             name: "test".to_string(),
-            operation,
+            runner_settings,
             retry_policy: None,
             channel: Some("test".to_string()),
             response_type: ResponseType::NoResult as i32,
@@ -303,12 +289,12 @@ mod tests {
             store_failure: false,
             ..Default::default()
         };
-        let schema = WorkerSchemaData {
+        let runner_data = RunnerData {
             name: RunnerType::Command.as_str_name().to_string(),
             ..Default::default()
         };
         let res = JOB_RUNNER
-            .run_job(&schema, &worker_id, &worker, job.clone())
+            .run_job(&runner_data, &worker_id, &worker, job.clone())
             .await;
         assert_eq!(res.status, ResultStatus::Success as i32);
         assert_eq!(res.output.unwrap().items, vec![b""]);
@@ -321,20 +307,20 @@ mod tests {
         assert!(res.start_time >= run_after); // wait until run_after (expect short time)
         assert!(res.end_time > res.start_time);
         assert!(res.end_time - res.start_time >= 1000); // sleep
-        let jarg = JobqueueAndCodec::serialize_message(&infra::jobworkerp::runner::CommandArg {
+        let jargs = JobqueueAndCodec::serialize_message(&infra::jobworkerp::runner::CommandArgs {
             args: vec!["2".to_string()],
         });
 
         let timeout_job = Job {
             id: Some(JobId { value: 2 }),
             data: Some(JobData {
-                arg: jarg,     // sleep 2sec
+                args: jargs,   // sleep 2sec
                 timeout: 1000, // timeout 1sec
                 ..job.data.as_ref().unwrap().clone()
             }),
         };
         let res = JOB_RUNNER
-            .run_job(&schema, &worker_id, &worker, timeout_job.clone())
+            .run_job(&runner_data, &worker_id, &worker, timeout_job.clone())
             .await;
         assert_eq!(res.status, ResultStatus::MaxRetry as i32); // no retry
         assert_eq!(

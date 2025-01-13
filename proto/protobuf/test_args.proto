@@ -2,6 +2,6 @@ syntax = "proto3";
 
 // only for test
 // job args
-message TestArg {
+message TestArgs {
   repeated string args = 1;
 }

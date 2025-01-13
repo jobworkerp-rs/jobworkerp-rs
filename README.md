@@ -27,7 +27,7 @@ Processing capabilities can be extended through plugins.
     - [Launch Example Using Docker Image](#launch-example-using-docker-image)
   - [Execution Examples Using jobworkerp-client](#execution-examples-using-jobworkerp-client)
 - [Detailed Features of jobworkerp-worker](#detailed-features-of-jobworkerp-worker)
-  - [Built-in Functions of worker.schema_id](#built-in-functions-of-workerschema_id)
+  - [Built-in Functions of worker.runner_id](#built-in-functions-of-workerrunner_id)
   - [Job Queue Types](#job-queue-types)
   - [Result Storage (worker.store_success, worker.store_failure)](#result-storage-workerstore_success-workerstore_failure)
   - [Result Retrieval Methods (worker.response_type)](#result-retrieval-methods-workerresponse_type)
@@ -71,7 +71,7 @@ $ ./target/release/grpc-front &
 
 Using [jobworkerp-client](https://github.com/jobworkerp-rs/jobworkerp-client-rs), you can create/retrieve workers, enqueue jobs, and get processing results as follows:
 
-(If you don't need to encode/decode worker.operation, job.job_arg, and job_result.output, you can also execute using grpcurl. Reference: [proto files](proto/protobuf/jobworkerp/service/))
+(If you don't need to encode/decode worker.runner_settings, job.job_arg, and job_result.output, you can also execute using grpcurl. Reference: [proto files](proto/protobuf/jobworkerp/service/))
 
 setup:
 
@@ -86,31 +86,31 @@ $ cargo build --release
 # run (show help)
 $ ./target/release/jobworkerp-client
 
-# list worker-schema (need launching jobworkerp-rs in localhost:9000(default))
-$ ./target/release/jobworkerp-client worker-schema list
+# list runner (need launching jobworkerp-rs in localhost:9000(default))
+$ ./target/release/jobworkerp-client runner list
 ```
 
 one shot job (with result: response-type DIRECT)
 
 ```shell
-# create worker (specify schema id from worker-schema list)
-1. $ ./target/release/jobworkerp-client worker create --name "ExampleRequest" --schema-id 2 --operation '{"base_url":"https://www.example.com/search"}' --response-type DIRECT
+# create worker (specify runner id from runner list)
+1. $ ./target/release/jobworkerp-client worker create --name "ExampleRequest" --runner-id 2 --settings '{"base_url":"https://www.example.com/search"}' --response-type DIRECT
 
 # enqueue job (ls . ..)
 # specify worker_id value or worker name created by `worker create` (command 1. response)
-2-1. $ ./target/release/jobworkerp-client job enqueue --worker 1 --arg '{"headers":[],"method":"GET","path":"/search","queries":[{"key":"q","value":"test"}]}'
-2-2. $ ./target/release/jobworkerp-client job enqueue --worker "ExampleRequest" --arg '{"headers":[],"method":"GET","path":"/search","queries":[{"key":"q","value":"test"}]}'
+2-1. $ ./target/release/jobworkerp-client job enqueue --worker 1 --args '{"headers":[],"method":"GET","path":"/search","queries":[{"key":"q","value":"test"}]}'
+2-2. $ ./target/release/jobworkerp-client job enqueue --worker "ExampleRequest" --args '{"headers":[],"method":"GET","path":"/search","queries":[{"key":"q","value":"test"}]}'
 ```
 
 one shot job (listen result after request: response-type LISTEN_AFTER)
 
 ```shell
 # create shell command `sleep` worker (must specify store_success and store_failure to be true)
-1. $ ./target/release/jobworkerp-client worker create --name "SleepWorker" --schema-id 1 --operation '{"name":"sleep"}' --response-type LISTEN_AFTER --store-success --store-failure
+1. $ ./target/release/jobworkerp-client worker create --name "SleepWorker" --runner-id 1 --settings '{"name":"sleep"}' --response-type LISTEN_AFTER --store-success --store-failure
 
 # enqueue job
 # sleep 60 seconds
-2. $ ./target/debug/jobworkerp-client job enqueue --worker 'SleepWorker' --arg '{"args":["60"]}'
+2. $ ./target/debug/jobworkerp-client job enqueue --worker 'SleepWorker' --args '{"args":["60"]}'
 
 # listen job (long polling with grpc)
 # specify job_id created by `job enqueue` (command 2. response)
@@ -122,12 +122,12 @@ periodic job
 
 ```shell
 # create periodic worker (repeat per 3 seconds)
-1. $ ./target/release/jobworkerp-client worker create --name "PeriodicEchoWorker" --schema-id 1 --operation '{"name":"echo"}' --periodic 3000 --response-type NO_RESULT --store-success --store-failure
+1. $ ./target/release/jobworkerp-client worker create --name "PeriodicEchoWorker" --runner-id 1 --settings '{"name":"echo"}' --periodic 3000 --response-type NO_RESULT --store-success --store-failure
 
 # enqueue job (echo Hello World !)
 # start job at [epoch second] % 3 == 1, per 3 seconds by run_after_time (epoch milliseconds)
 # (If run_after_time is not specified, the command is executed repeatedly based on enqueue_time)
-2. $ ./target/debug/jobworkerp-client job enqueue --worker 'PeriodicEchoWorker' --arg '{"args":["Hello", "World", "!"]}' --run-after-time 1000
+2. $ ./target/debug/jobworkerp-client job enqueue --worker 'PeriodicEchoWorker' --args '{"args":["Hello", "World", "!"]}' --run-after-time 1000
 
 # stop periodic job 
 # specify job_id created by `job enqueue` (command 2. response)
@@ -136,15 +136,15 @@ periodic job
 
 ## Detailed Features of jobworkerp-worker
 
-### Built-in Functions of worker.schema_id
+### Built-in Functions of worker.runner_id
 
-The following features are built into the worker_schema definition.
-Each feature requires setting necessary values in protobuf format for worker.operation and job.arg. The protobuf definitions can be obtained from worker_schema.operation_proto and worker_schema.job_arg_proto.
+The following features are built into the runner definition.
+Each feature requires setting necessary values in protobuf format for worker.runner_settings and job.args. The protobuf definitions can be obtained from runner.runner_settings_proto and runner.job_arg_proto.
 
-- COMMAND: Command execution ([CommandRunner](infra/src/infra/runner/command.rs)): Specify the target command in worker.operation and arguments in job.arg
-- HTTP_REQUEST: HTTP request using reqwest ([RequestRunner](infra/src/infra/runner/request.rs)): Specify base url in worker.operation, and headers, queries, method, body, path in job.arg. Receives response body as result
-- GRPC_UNARY: gRPC unary request ([GrpcUnaryRunner](infra/src/infra/runner/grpc_unary.rs)): Specify url and path in JSON format in worker.operation (example: `{"url":"http://localhost:9000","path":"jobworkerp.service.WorkerService/FindList"}`). job.arg should be protobuf-encoded (bytes) RPC arguments. Response is received as protobuf binary.
-- DOCKER: Docker run execution ([DockerRunner](infra/src/infra/runner/docker.rs)): Specify FromImage (image to pull), Repo (repository), Tag, Platform(`os[/arch[/variant]]`) in worker.operation, and Image (execution image name) and Cmd (command line array) in job.args
+- COMMAND: Command execution ([CommandRunner](infra/src/infra/runner/command.rs)): Specify the target command in worker.runner_settings and arguments in job.args
+- HTTP_REQUEST: HTTP request using reqwest ([RequestRunner](infra/src/infra/runner/request.rs)): Specify base url in worker.runner_settings, and headers, queries, method, body, path in job.args. Receives response body as result
+- GRPC_UNARY: gRPC unary request ([GrpcUnaryRunner](infra/src/infra/runner/grpc_unary.rs)): Specify url and path in JSON format in worker.runner_settings (example: `{"url":"http://localhost:9000","path":"jobworkerp.service.WorkerService/FindList"}`). job.args should be protobuf-encoded (bytes) RPC arguments. Response is received as protobuf binary.
+- DOCKER: Docker run execution ([DockerRunner](infra/src/infra/runner/docker.rs)): Specify FromImage (image to pull), Repo (repository), Tag, Platform(`os[/arch[/variant]]`) in worker.runner_settings, and Image (execution image name) and Cmd (command line array) in job.args
   - Environment variable `DOCKER_GID`: Specify GID with permission to connect to /var/run/docker.sock. The jobworkerp execution process needs to have permission to use this GID.
   - Running on k8s pod is currently untested. (Due to the above restriction, it's expected to require Docker Outside of Docker or Docker in Docker configuration in the docker image)
 
@@ -193,7 +193,7 @@ worker.queue_type
 - [MySQL schema](infra/sql/mysql/002_worker.sql)
 - [SQLite schema](infra/sql/sqlite/001_schema.sql)
 
-(worker_schema contains fixed records as built-in functions)
+(runner contains fixed records as built-in functions)
 
 ### Other Environment Variables
 
@@ -224,7 +224,7 @@ worker.queue_type
 ## About Plugins
 
 - Implement [Runner trait](infra/src/infra/runner/plugins.rs) as dylib
-  - Registered as worker_Schema when placed in directory specified by environment variable `PLUGINS_RUNNER_DIR`
+  - Registered as runner when placed in directory specified by environment variable `PLUGINS_RUNNER_DIR`
   - Implementation example: [HelloPlugin](plugins/hello_runner/src/lib.rs)
 
 ### About Error Codes

@@ -305,9 +305,9 @@ mod tests {
     use super::HybridJobResultAppImpl;
     use super::JobResultApp;
     use super::*;
+    use crate::app::runner::hybrid::HybridRunnerAppImpl;
+    use crate::app::runner::RunnerApp;
     use crate::app::worker::hybrid::HybridWorkerAppImpl;
-    use crate::app::worker_schema::hybrid::HybridWorkerSchemaAppImpl;
-    use crate::app::worker_schema::WorkerSchemaApp;
     use crate::app::{StorageConfig, StorageType};
     use anyhow::Result;
     use command_utils::util::datetime;
@@ -317,13 +317,13 @@ mod tests {
     use infra::infra::module::redis::test::setup_test_redis_module;
     use infra::infra::module::HybridRepositoryModule;
     use infra::infra::IdGeneratorWrapper;
-    use infra::jobworkerp::runner::CommandArg;
-    use infra::jobworkerp::runner::CommandOperation;
+    use infra::jobworkerp::runner::CommandArgs;
+    use infra::jobworkerp::runner::CommandRunnerSettings;
     use infra_utils::infra::test::TEST_RUNTIME;
     use proto::jobworkerp::data::Priority;
     use proto::jobworkerp::data::QueueType;
     use proto::jobworkerp::data::ResultOutput;
-    use proto::jobworkerp::data::WorkerSchemaId;
+    use proto::jobworkerp::data::RunnerId;
     use proto::jobworkerp::data::{
         JobId, JobResult, ResponseType, ResultStatus, Worker, WorkerData,
     };
@@ -332,7 +332,7 @@ mod tests {
 
     #[test]
     fn test_should_store() {
-        let arg = JobqueueAndCodec::serialize_message(&proto::TestArg {
+        let args = JobqueueAndCodec::serialize_message(&proto::TestArgs {
             args: vec!["test".to_string()],
         });
         let mut job_result_data = JobResultData {
@@ -340,7 +340,7 @@ mod tests {
             worker_id: None,
             status: ResultStatus::Success as i32,
             worker_name: "".to_string(),
-            arg,
+            args,
             uniq_key: None,
             output: Some(ResultOutput {
                 items: vec![b"data".to_vec()],
@@ -405,20 +405,20 @@ mod tests {
                 &mc_config,
                 Some(Duration::from_secs(5 * 60)),
             ));
-            let worker_schema_app = Arc::new(HybridWorkerSchemaAppImpl::new(
+            let runner_app = Arc::new(HybridRunnerAppImpl::new(
                 storage_config.clone(),
                 &mc_config,
                 repositories.clone(),
                 descriptor_cache.clone(),
             ));
-            worker_schema_app.load_worker_schema().await.unwrap();
+            runner_app.load_runner().await.unwrap();
             let worker_app = Arc::new(HybridWorkerAppImpl::new(
                 storage_config.clone(),
                 id_generator.clone(),
                 worker_memory_cache,
                 repositories.clone(),
                 descriptor_cache.clone(),
-                worker_schema_app,
+                runner_app,
             ));
             Ok(HybridJobResultAppImpl::new(
                 storage_config,
@@ -431,13 +431,13 @@ mod tests {
     #[test]
     fn test_create_job_result_if_necessary() -> Result<()> {
         let app = setup()?;
-        let operation = JobqueueAndCodec::serialize_message(&CommandOperation {
+        let runner_settings = JobqueueAndCodec::serialize_message(&CommandRunnerSettings {
             name: "ls".to_string(),
         });
         let worker_data = WorkerData {
             name: "test".to_string(),
-            schema_id: Some(WorkerSchemaId { value: 1 }),
-            operation,
+            runner_id: Some(RunnerId { value: 1 }),
+            runner_settings,
             retry_policy: None,
             periodic_interval: 0,
             channel: Some("hoge".to_string()),
@@ -460,7 +460,7 @@ mod tests {
                 value: app.id_generator().generate_id()?,
             };
             let job_id = JobId { value: 100 };
-            let arg = JobqueueAndCodec::serialize_message(&CommandArg {
+            let args = JobqueueAndCodec::serialize_message(&CommandArgs {
                 args: vec!["arg1".to_string()],
             });
             let mut data = JobResultData {
@@ -468,7 +468,7 @@ mod tests {
                 worker_id: worker.id,
                 status: ResultStatus::Success as i32,
                 worker_name: worker_data.name.clone(),
-                arg,
+                args,
                 uniq_key: Some("uniq_key".to_string()),
                 output: Some(ResultOutput {
                     items: vec![b"data".to_vec()],

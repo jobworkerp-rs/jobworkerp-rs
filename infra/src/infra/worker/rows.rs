@@ -1,14 +1,14 @@
 use anyhow::Result;
 use itertools::Itertools;
-use proto::jobworkerp::data::{RetryPolicy, Worker, WorkerData, WorkerId, WorkerSchemaId};
+use proto::jobworkerp::data::{RetryPolicy, RunnerId, Worker, WorkerData, WorkerId};
 
 // db row definitions
 #[derive(sqlx::FromRow)]
 pub struct WorkerRow {
     pub id: i64,
     pub name: String,
-    pub schema_id: i64,
-    pub operation: Vec<u8>,
+    pub runner_id: i64,
+    pub runner_settings: Vec<u8>,
     pub retry_type: i32,
     pub interval: i64,     // u32 // cannot use u32 in sqlx any db
     pub max_interval: i64, // u32
@@ -33,10 +33,10 @@ impl WorkerRow {
             id: Some(WorkerId { value: self.id }),
             data: Some(WorkerData {
                 name: self.name.clone(),
-                schema_id: Some(WorkerSchemaId {
-                    value: self.schema_id,
+                runner_id: Some(RunnerId {
+                    value: self.runner_id,
                 }),
-                operation: self.operation.clone(),
+                runner_settings: self.runner_settings.clone(),
                 retry_policy: Some(RetryPolicy {
                     r#type: self.retry_type,
                     interval: self.interval as u32,

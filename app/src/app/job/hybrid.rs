@@ -69,7 +69,7 @@ impl HybridJobAppImpl {
                 let jids = self
                     .redis_job_repository()
                     .find_multi_from_queue(
-                        // decode all jobs and check id in queue (heavy operation when many jobs in queue)
+                        // decode all jobs and check id in queue (heavy runner_settings when many jobs in queue)
                         // TODO change to resolve only ids for less memory
                         Some(channel),
                         *priority,
@@ -138,7 +138,7 @@ impl JobApp for HybridJobAppImpl {
         &self,
         worker_id: Option<&WorkerId>,
         worker_name: Option<&String>,
-        arg: Vec<u8>,
+        args: Vec<u8>,
         uniq_key: Option<String>,
         run_after_time: i64,
         priority: i32,
@@ -162,7 +162,7 @@ impl JobApp for HybridJobAppImpl {
         {
             let job_data = JobData {
                 worker_id: Some(*wid),
-                arg,
+                args,
                 uniq_key,
                 enqueue_time: datetime::now_millis(),
                 grabbed_until_time: None,
@@ -171,7 +171,7 @@ impl JobApp for HybridJobAppImpl {
                 priority,
                 timeout,
             };
-            // TODO validate argument types (using WorkerSchema)
+            // TODO validate argument types (using Runner)
             // self.validate_worker_and_job_arg(w, job_data.arg.as_ref())?;
             // cannot wait for direct response
             if run_after_time > 0 && w.response_type == ResponseType::Direct as i32 {
@@ -271,7 +271,7 @@ impl JobApp for HybridJobAppImpl {
                 .find_data_by_opt(data.worker_id.as_ref())
                 .await
             {
-                // TODO validate argument types (using WorkerSchema)
+                // TODO validate argument types (using Runner)
                 // self.validate_worker_and_job_arg(&w, data.arg.as_ref())?;
 
                 // use db queue (run after, periodic, queue_type=DB worker)
@@ -567,9 +567,9 @@ impl RedisJobAppHelper for HybridJobAppImpl {}
 mod tests {
     use super::HybridJobAppImpl;
     use super::*;
+    use crate::app::runner::hybrid::HybridRunnerAppImpl;
+    use crate::app::runner::RunnerApp;
     use crate::app::worker::hybrid::HybridWorkerAppImpl;
-    use crate::app::worker_schema::hybrid::HybridWorkerSchemaAppImpl;
-    use crate::app::worker_schema::WorkerSchemaApp;
     use crate::app::{StorageConfig, StorageType};
     use anyhow::Result;
     use command_utils::util::datetime;
@@ -585,7 +585,7 @@ mod tests {
     use infra_utils::infra::test::TEST_RUNTIME;
     use proto::jobworkerp::data::{
         JobResult, JobResultId, Priority, QueueType, ResponseType, ResultOutput, ResultStatus,
-        WorkerData, WorkerSchemaId,
+        RunnerId, WorkerData,
     };
     use std::sync::Arc;
 
@@ -636,15 +636,15 @@ mod tests {
                 &mc_config,
                 Some(Duration::from_secs(60 * 60)),
             ));
-            let worker_schema_app = Arc::new(HybridWorkerSchemaAppImpl::new(
+            let runner_app = Arc::new(HybridRunnerAppImpl::new(
                 storage_config.clone(),
                 &mc_config,
                 repositories.clone(),
                 descriptor_cache.clone(),
             ));
-            worker_schema_app.load_worker_schema().await?;
-            let _ = worker_schema_app
-                .create_test_schema(&WorkerSchemaId { value: 111 }, "Test")
+            runner_app.load_runner().await?;
+            let _ = runner_app
+                .create_test_runner(&RunnerId { value: 111 }, "Test")
                 .await?;
             let worker_app = HybridWorkerAppImpl::new(
                 storage_config.clone(),
@@ -652,7 +652,7 @@ mod tests {
                 worker_memory_cache,
                 repositories.clone(),
                 descriptor_cache,
-                worker_schema_app,
+                runner_app,
             );
             let subscrber = RedisJobResultPubSubRepositoryImpl::new(
                 redis_module.redis_client,
@@ -684,13 +684,13 @@ mod tests {
         // enqueue, find, complete, find, delete, find
         let (app, _) = create_test_app(true)?;
         TEST_RUNTIME.block_on(async {
-            let operation = JobqueueAndCodec::serialize_message(&proto::TestOperation {
+            let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
                 name: "ls".to_string(),
             });
             let wd = WorkerData {
                 name: "testworker".to_string(),
-                schema_id: Some(WorkerSchemaId { value: 111 }),
-                operation,
+                runner_id: Some(RunnerId { value: 111 }),
+                runner_settings,
                 channel: None,
                 response_type: ResponseType::Direct as i32,
                 periodic_interval: 0,
@@ -702,7 +702,7 @@ mod tests {
                 use_static: false,
             };
             let worker_id = app.worker_app().create(&wd).await?;
-            let jarg = JobqueueAndCodec::serialize_message(&proto::TestArg {
+            let jarg = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["/".to_string()],
             });
 
@@ -751,7 +751,7 @@ mod tests {
                     job_id: Some(JobId { value: 1 }), // generated by mock generator
                     worker_id: Some(worker_id),
                     worker_name: wd.name.clone(),
-                    arg: jarg,
+                    args: jarg,
                     uniq_key: None,
                     status: ResultStatus::Success as i32,
                     output: Some(ResultOutput {
@@ -793,13 +793,13 @@ mod tests {
         // enqueue, find, complete, find, delete, find
         let (app, subscriber) = create_test_app(true)?;
         TEST_RUNTIME.block_on(async {
-            let operation = JobqueueAndCodec::serialize_message(&proto::TestOperation {
+            let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
                 name: "ls".to_string(),
             });
             let wd = WorkerData {
                 name: "testworker".to_string(),
-                schema_id: Some(WorkerSchemaId { value: 111 }),
-                operation,
+                runner_id: Some(RunnerId { value: 111 }),
+                runner_settings,
                 channel: None,
                 response_type: ResponseType::ListenAfter as i32,
                 periodic_interval: 0,
@@ -811,7 +811,7 @@ mod tests {
                 use_static: false,
             };
             let worker_id = app.worker_app().create(&wd).await?;
-            let jarg = JobqueueAndCodec::serialize_message(&proto::TestArg {
+            let jarg = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["/".to_string()],
             });
 
@@ -824,7 +824,7 @@ mod tests {
                 id: Some(job_id),
                 data: Some(JobData {
                     worker_id: Some(worker_id),
-                    arg: jarg.clone(),
+                    args: jarg.clone(),
                     uniq_key: None,
                     enqueue_time: datetime::now_millis(),
                     grabbed_until_time: None,
@@ -848,7 +848,7 @@ mod tests {
                     job_id: Some(job_id),
                     worker_id: Some(worker_id),
                     worker_name: wd.name.clone(),
-                    arg: jarg,
+                    args: jarg,
                     uniq_key: None,
                     status: ResultStatus::Success as i32,
                     output: Some(ResultOutput {
@@ -902,13 +902,13 @@ mod tests {
     fn test_create_normal_job_complete() -> Result<()> {
         // enqueue, find, complete, find, delete, find
         let (app, _) = create_test_app(true)?;
-        let operation = JobqueueAndCodec::serialize_message(&proto::TestOperation {
+        let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
             name: "ls".to_string(),
         });
         let wd = WorkerData {
             name: "testworker".to_string(),
-            schema_id: Some(WorkerSchemaId { value: 111 }),
-            operation,
+            runner_id: Some(RunnerId { value: 111 }),
+            runner_settings,
             channel: None,
             response_type: ResponseType::NoResult as i32,
             periodic_interval: 0,
@@ -921,7 +921,7 @@ mod tests {
         };
         TEST_RUNTIME.block_on(async {
             let worker_id = app.worker_app().create(&wd).await?;
-            let jarg = JobqueueAndCodec::serialize_message(&proto::TestArg {
+            let jarg = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["/".to_string()],
             });
 
@@ -957,7 +957,7 @@ mod tests {
                     job_id: Some(job_id),
                     worker_id: Some(worker_id),
                     worker_name: wd.name.clone(),
-                    arg: jarg,
+                    args: jarg,
                     uniq_key: None,
                     status: ResultStatus::Success as i32,
                     output: Some(ResultOutput {
@@ -1001,13 +1001,13 @@ mod tests {
         let (app, _) = create_test_app(false)?;
         TEST_RUNTIME.block_on(async {
             // create command worker with hybrid queue
-            let operation = JobqueueAndCodec::serialize_message(&proto::TestOperation {
+            let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
                 name: "ls".to_string(),
             });
             let wd = WorkerData {
                 name: "testworker".to_string(),
-                schema_id: Some(WorkerSchemaId { value: 111 }),
-                operation,
+                runner_id: Some(RunnerId { value: 111 }),
+                runner_settings,
                 channel: channel.cloned(),
                 response_type: ResponseType::NoResult as i32,
                 periodic_interval: 0,
@@ -1021,7 +1021,7 @@ mod tests {
             let worker_id = app.worker_app().create(&wd).await?;
 
             // enqueue job
-            let jarg = JobqueueAndCodec::serialize_message(&proto::TestArg {
+            let jarg = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["/".to_string()],
             });
             assert_eq!(

@@ -10,20 +10,18 @@ use crate::infra::job_result::redis::RedisJobResultRepositoryImpl;
 use crate::infra::job_result::redis::UseRedisJobResultRepository;
 use crate::infra::load_job_queue_config_from_env;
 use crate::infra::runner::factory::RunnerFactory;
+use crate::infra::runner::redis::RedisRunnerRepositoryImpl;
+use crate::infra::runner::redis::UseRedisRunnerRepository;
 use crate::infra::worker::redis::{RedisWorkerRepositoryImpl, UseRedisWorkerRepository};
-use crate::infra::worker_schema::redis::RedisWorkerSchemaRepositoryImpl;
-use crate::infra::worker_schema::redis::UseRedisWorkerSchemaRepository;
 use crate::infra::IdGeneratorWrapper;
 use crate::infra::InfraConfigModule;
 
 pub trait UseRedisRepositoryModule {
     fn redis_repository_module(&self) -> &RedisRepositoryModule;
 }
-impl<T: UseRedisRepositoryModule> UseRedisWorkerSchemaRepository for T {
-    fn redis_worker_schema_repository(&self) -> &RedisWorkerSchemaRepositoryImpl {
-        &self
-            .redis_repository_module()
-            .redis_worker_schema_repository
+impl<T: UseRedisRepositoryModule> UseRedisRunnerRepository for T {
+    fn redis_runner_repository(&self) -> &RedisRunnerRepositoryImpl {
+        &self.redis_repository_module().redis_runner_repository
     }
 }
 impl<T: UseRedisRepositoryModule> UseRedisWorkerRepository for T {
@@ -48,7 +46,7 @@ pub struct RedisRepositoryModule {
     #[debug_stub = "&`static deadpool_redis::Pool"]
     pub redis_pool: &'static deadpool_redis::Pool,
     pub redis_client: RedisClient,
-    pub redis_worker_schema_repository: RedisWorkerSchemaRepositoryImpl,
+    pub redis_runner_repository: RedisRunnerRepositoryImpl,
     pub redis_worker_repository: RedisWorkerRepositoryImpl,
     pub redis_job_repository: RedisJobRepositoryImpl,
     pub redis_job_result_repository: RedisJobResultRepositoryImpl,
@@ -67,7 +65,7 @@ impl RedisRepositoryModule {
         RedisRepositoryModule {
             redis_pool,
             redis_client: redis_client.clone(),
-            redis_worker_schema_repository: RedisWorkerSchemaRepositoryImpl::new(
+            redis_runner_repository: RedisRunnerRepositoryImpl::new(
                 redis_pool,
                 redis_client.clone(),
                 id_generator,
@@ -101,7 +99,7 @@ impl RedisRepositoryModule {
         RedisRepositoryModule {
             redis_pool,
             redis_client: redis_client.clone(),
-            redis_worker_schema_repository: RedisWorkerSchemaRepositoryImpl::new(
+            redis_runner_repository: RedisRunnerRepositoryImpl::new(
                 redis_pool,
                 redis_client.clone(),
                 id_generator,
@@ -140,10 +138,11 @@ pub mod test {
             pubsub::redis::RedisJobResultPubSubRepositoryImpl, redis::RedisJobResultRepositoryImpl,
         },
         runner::factory::RunnerFactory,
+        runner::redis::RedisRunnerRepositoryImpl,
         worker::redis::RedisWorkerRepositoryImpl,
-        worker_schema::redis::RedisWorkerSchemaRepositoryImpl,
         IdGeneratorWrapper,
     };
+    use anyhow::Context;
     use infra_utils::infra::test::{setup_test_redis_client, setup_test_redis_pool};
     use std::sync::Arc;
 
@@ -156,7 +155,14 @@ pub mod test {
         let redis_client = setup_test_redis_client().unwrap();
 
         // flush all
-        let mut rcon = redis_pool.get().await.unwrap();
+        let mut rcon = redis_pool
+            .get()
+            .await
+            .context(format!(
+                "failed to get redis connection: {:?}",
+                redis_pool.clone()
+            ))
+            .unwrap();
         redis::cmd("FLUSHALL")
             .query_async::<()>(&mut rcon)
             .await
@@ -167,7 +173,7 @@ pub mod test {
         RedisRepositoryModule {
             redis_pool,
             redis_client: redis_client.clone(),
-            redis_worker_schema_repository: RedisWorkerSchemaRepositoryImpl::new(
+            redis_runner_repository: RedisRunnerRepositoryImpl::new(
                 redis_pool,
                 redis_client.clone(),
                 Arc::new(IdGeneratorWrapper::new()),

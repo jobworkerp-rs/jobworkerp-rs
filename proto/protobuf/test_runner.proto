@@ -1,7 +1,7 @@
 syntax = "proto3";
 
 // only for test
-// job operation
-message TestOperation {
+// job runner settings
+message TestRunnerSettings {
   string name = 1;
 }

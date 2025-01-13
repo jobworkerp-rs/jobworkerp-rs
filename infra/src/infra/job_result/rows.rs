@@ -13,7 +13,7 @@ pub struct JobResultRow {
     pub id: i64,
     pub job_id: i64,
     pub worker_id: i64,
-    pub arg: Vec<u8>,
+    pub args: Vec<u8>,
     pub uniq_key: Option<String>,
     pub status: i32,
     pub output: Vec<u8>, // serialized
@@ -37,7 +37,7 @@ impl JobResultRow {
                     value: self.worker_id,
                 }),
                 worker_name: String::from(""),
-                arg: self.arg.clone(),
+                args: self.args.clone(),
                 uniq_key: self.uniq_key.clone(),
                 status: self.status,
                 output: Self::deserialize_result_output(&self.output)

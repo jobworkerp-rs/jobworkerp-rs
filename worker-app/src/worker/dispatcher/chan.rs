@@ -4,8 +4,8 @@ use crate::worker::runner::map::{RunnerFactoryWithPoolMap, UseRunnerPoolMap};
 use crate::worker::runner::result::RunnerResultHandler;
 use crate::worker::runner::JobRunner;
 use anyhow::Result;
+use app::app::runner::{RunnerApp, UseRunnerApp};
 use app::app::worker::{UseWorkerApp, WorkerApp};
-use app::app::worker_schema::{UseWorkerSchemaApp, WorkerSchemaApp};
 use app::app::{UseWorkerConfig, WorkerConfig};
 use app::module::AppModule;
 use async_trait::async_trait;
@@ -24,7 +24,7 @@ use infra::infra::job::status::{JobStatusRepository, UseJobStatusRepository};
 use infra::infra::runner::factory::{RunnerFactory, UseRunnerFactory};
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use proto::jobworkerp::data::{
-    Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, Worker, WorkerSchema,
+    Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, Runner, Worker,
 };
 use std::sync::Arc;
 use tokio::task::JoinHandle;
@@ -43,7 +43,7 @@ pub trait ChanJobDispatcher:
     + UseResultProcessor
     + UseWorkerConfig
     + UseWorkerApp
-    + UseWorkerSchemaApp
+    + UseRunnerApp
     + UseJobQueueConfig
     + UseIdGenerator
 {
@@ -188,12 +188,12 @@ pub trait ChanJobDispatcher:
             self.rdb_job_repository().delete(&jid).await?;
             return Err(JobWorkerError::NotFound(mes).into());
         };
-        let sid = if let Some(id) = wdat.schema_id.as_ref() {
+        let sid = if let Some(id) = wdat.runner_id.as_ref() {
             id
         } else {
             // TODO cannot return result in this case. send result as error?
             let mes = format!(
-                "worker {:?} schema_id is not found.",
+                "worker {:?} runner_id is not found.",
                 jdat.worker_id.as_ref().unwrap()
             );
             tracing::error!("{}", &mes);
@@ -201,13 +201,14 @@ pub trait ChanJobDispatcher:
             self.rdb_job_repository().delete(&jid).await?;
             return Err(JobWorkerError::NotFound(mes).into());
         };
-        let schema =
-            if let Some(WorkerSchema{id:_, data:schema}) = self.worker_schema_app().find_worker_schema(sid, None).await? {
-schema.to_result(||JobWorkerError::NotFound(format!("schema {:?} is not found.", &sid)))
+        let runner_data = if let Some(Runner{id:_, data: runner_data}) =
+             self.runner_app().find_runner(sid, None).await?
+        {
+                runner_data.to_result(||JobWorkerError::NotFound(format!("runner data {:?} is not found.", &sid)))
         } else {
             // TODO cannot return result in this case. send result as error?
             let mes = format!(
-                "schema {:?} is not found.",
+                "runner data {:?} is not found.",
                 jdat.worker_id.as_ref().unwrap()
             );
             tracing::error!("{}", &mes);
@@ -244,7 +245,7 @@ schema.to_result(||JobWorkerError::NotFound(format!("schema {:?} is not found.",
             // run job
             let r = self
                 .run_job(
-                    &schema,
+                    &runner_data,
                     &wid,
                     &wdat,
                     Job {
@@ -355,9 +356,9 @@ impl UseRdbChanJobRepository for ChanJobDispatcherImpl {
         &self.rdb_job_repository
     }
 }
-impl UseWorkerSchemaApp for ChanJobDispatcherImpl {
-    fn worker_schema_app(&self) -> Arc<dyn WorkerSchemaApp> {
-        self.app_module.worker_schema_app.clone()
+impl UseRunnerApp for ChanJobDispatcherImpl {
+    fn runner_app(&self) -> Arc<dyn RunnerApp> {
+        self.app_module.runner_app.clone()
     }
 }
 impl ChanJobDispatcher for ChanJobDispatcherImpl {}

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use hello::{HelloArg, HelloOperation};
+use hello::{HelloArgs, HelloRunnerSettings};
 use prost::Message;
 use std::{alloc::System, time::Duration};
 use tracing::Level; // Add this line to import the Message trait
@@ -14,10 +14,10 @@ static ALLOCATOR: System = System;
 
 pub trait PluginRunner: Send + Sync {
     fn name(&self) -> String;
-    fn load(&mut self, operation: Vec<u8>) -> Result<()>;
+    fn load(&mut self, settings: Vec<u8>) -> Result<()>;
     fn run(&mut self, arg: Vec<u8>) -> Result<Vec<Vec<u8>>>;
     fn cancel(&self) -> bool;
-    fn operation_proto(&self) -> String;
+    fn runner_settings_proto(&self) -> String;
     fn job_args_proto(&self) -> String;
     fn result_output_proto(&self) -> Option<String>;
     // if true, use job result of before job, else use job args from request
@@ -59,7 +59,7 @@ impl HelloPlugin {
     }
     pub async fn hello(&self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
         // XXX to test easy
-        let arg = HelloArg::decode(arg).unwrap_or(HelloArg {
+        let arg = HelloArgs::decode(arg).unwrap_or(HelloArgs {
             arg: String::from_utf8_lossy(arg).to_string(),
         });
         let start = chrono::Utc::now().to_rfc3339();
@@ -81,12 +81,12 @@ impl HelloPlugin {
 #[async_trait]
 impl PluginRunner for HelloPlugin {
     fn name(&self) -> String {
-        // specify as same string as worker.operation
+        // specify as same string as worker.runner_settings
         String::from("HelloPlugin")
     }
-    fn load(&mut self, operation: Vec<u8>) -> Result<()> {
+    fn load(&mut self, settings: Vec<u8>) -> Result<()> {
         tracing::info!("HelloPlugin load!");
-        HelloOperation::decode(operation.as_slice())?;
+        HelloRunnerSettings::decode(settings.as_slice())?;
         Ok(())
     }
     fn run(&mut self, arg: Vec<u8>) -> Result<Vec<Vec<u8>>> {
@@ -99,8 +99,8 @@ impl PluginRunner for HelloPlugin {
         tracing::warn!("HelloPlugin cancel: not implemented!");
         false
     }
-    fn operation_proto(&self) -> String {
-        include_str!("../protobuf/hello_operation.proto").to_string()
+    fn runner_settings_proto(&self) -> String {
+        include_str!("../protobuf/hello_runner.proto").to_string()
     }
     fn job_args_proto(&self) -> String {
         include_str!("../protobuf/hello_job_args.proto").to_string()

@@ -5,8 +5,8 @@ PRAGMA encoding = 'UTF-8';
 CREATE TABLE IF NOT EXISTS `worker` (
     `id` INTEGER PRIMARY KEY AUTOINCREMENT,
     `name` TEXT NOT NULL UNIQUE,
-    `schema_id` BIGINT NOT NULL,
-    `operation` BLOB NOT NULL,
+    `runner_id` BIGINT NOT NULL,
+    `runner_settings` BLOB NOT NULL,
     `retry_type` INT NOT NULL,
     `interval` INT NOT NULL,
     `max_interval` INT NOT NULL,
@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS `worker` (
 CREATE TABLE IF NOT EXISTS `job` (
     `id` INTEGER PRIMARY KEY,
     `worker_id` BIGINT NOT NULL,
-    `arg` BLOB NOT NULL,
+    `args` BLOB NOT NULL,
     `uniq_key` TEXT UNIQUE,
     `enqueue_time` BIGINT NOT NULL,
     `grabbed_until_time` BIGINT,
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS `job_result` (
     `id` INTEGER PRIMARY KEY,
     `job_id` BIGINT NOT NULL,
     `worker_id` BIGINT NOT NULL,
-    `arg` BLOB NOT NULL,
+    `args` BLOB NOT NULL,
     `uniq_key` TEXT,
     `status` INT NOT NULL,
     `output` BLOB NOT NULL,
@@ -52,16 +52,16 @@ CREATE TABLE IF NOT EXISTS `job_result` (
     `timeout` BIGINT NOT NULL DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS `worker_schema` (
+CREATE TABLE IF NOT EXISTS `runner` (
     `id` INTEGER PRIMARY KEY,
     `name` TEXT NOT NULL UNIQUE,
     `file_name` VARCHAR(512) NOT NULL UNIQUE, -- file name of the runner dynamic library
     `type` INT(10) NOT NULL -- runner type. enum: command, request, grpc_unary, plugin
 );
 
--- builtin runner definitions (operation_type != 1 cannot edit or delete)
+-- builtin runner definitions (runner.type != 0 cannot edit or delete)
 -- (file_name is not real file name(built-in runner), but just a name for identification)
-INSERT OR IGNORE INTO worker_schema (`id`, `name`, `file_name`, `type`) VALUES (
+INSERT OR IGNORE INTO runner (`id`, `name`, `file_name`, `type`) VALUES (
   1, 'COMMAND', 'builtin1', 1
 ), (
   2, 'HTTP_REQUEST', 'builtin2', 2
