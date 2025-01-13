@@ -15,7 +15,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.6.1"
+version = "0.7.0"
 edition = "2021"
 authors = ["sutr"]
 name = "jobworkerp-rs"
@@ -42,7 +42,7 @@ dotenvy = "0.15"
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 futures-util = "0.3"
 http = "1.2"
-itertools = "0.13"
+itertools = "0.14"
 lazy_static = "1.4"
 libloading = "0.8"
 log = "0.4"

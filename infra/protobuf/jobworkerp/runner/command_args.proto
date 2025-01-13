@@ -2,8 +2,8 @@ syntax = "proto3";
 
 package jobworkerp.runner;
 
-// CommandArg is a list of arguments for a CommandRunner.
-message CommandArg {
+// CommandArgs is a list of arguments for a CommandRunner.
+message CommandArgs {
   repeated string args = 1;
 }
 

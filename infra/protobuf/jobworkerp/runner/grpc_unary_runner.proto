@@ -1,8 +1,8 @@
 syntax = "proto3";
 package jobworkerp.runner;
 
-// grpc unary request operation
-message GrpcUnaryOperation {
+// grpc unary request runner settings
+message GrpcUnaryRunnerSettings {
     string host = 1;
     uint32 port = 2;
 }

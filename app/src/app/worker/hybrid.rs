@@ -17,9 +17,9 @@ use std::sync::Arc;
 
 // use crate::app::worker::builtin::{BuiltinWorker, BuiltinWorkerTrait};
 
-use crate::app::worker_schema::{
-    UseWorkerSchemaApp, UseWorkerSchemaAppParserWithCache, UseWorkerSchemaParserWithCache,
-    WorkerSchemaApp, WorkerSchemaWithDescriptor,
+use crate::app::runner::{
+    RunnerApp, RunnerDataWithDescriptor, UseRunnerApp, UseRunnerAppParserWithCache,
+    UseRunnerParserWithCache,
 };
 
 use super::super::{StorageConfig, UseStorageConfig};
@@ -31,8 +31,8 @@ pub struct HybridWorkerAppImpl {
     id_generator: Arc<IdGeneratorWrapper>,
     memory_cache: MemoryCacheImpl<Arc<String>, Vec<Worker>>,
     repositories: Arc<HybridRepositoryModule>,
-    descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>>,
-    worker_schema_app: Arc<dyn WorkerSchemaApp + 'static>,
+    descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
+    runner_app: Arc<dyn RunnerApp + 'static>,
 }
 
 impl HybridWorkerAppImpl {
@@ -41,8 +41,8 @@ impl HybridWorkerAppImpl {
         id_generator: Arc<IdGeneratorWrapper>,
         memory_cache: MemoryCacheImpl<Arc<String>, Vec<Worker>>,
         repositories: Arc<HybridRepositoryModule>,
-        descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>>,
-        worker_schema_app: Arc<dyn WorkerSchemaApp + 'static>,
+        descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
+        runner_app: Arc<dyn RunnerApp + 'static>,
     ) -> Self {
         Self {
             storage_config,
@@ -50,7 +50,7 @@ impl HybridWorkerAppImpl {
             memory_cache,
             repositories,
             descriptor_cache,
-            worker_schema_app,
+            runner_app,
         }
     }
 }
@@ -60,9 +60,9 @@ impl HybridWorkerAppImpl {
 impl WorkerApp for HybridWorkerAppImpl {
     async fn create(&self, worker: &WorkerData) -> Result<WorkerId> {
         let wsid = worker
-            .schema_id
-            .ok_or_else(|| JobWorkerError::InvalidParameter("schema_id is required".to_string()))?;
-        self.validate_operation_data(&wsid, worker.operation.as_slice())
+            .runner_id
+            .ok_or_else(|| JobWorkerError::InvalidParameter("runner_id is required".to_string()))?;
+        self.validate_runner_settings_data(&wsid, worker.runner_settings.as_slice())
             .await?;
 
         let wid = {
@@ -93,10 +93,10 @@ impl WorkerApp for HybridWorkerAppImpl {
                 data: Some(owdat),
             }) = self.find(id).await?
             {
-                let wsid = w.schema_id.or(owdat.schema_id).ok_or_else(|| {
-                    JobWorkerError::InvalidParameter("schema_id is required".to_string())
+                let wsid = w.runner_id.or(owdat.runner_id).ok_or_else(|| {
+                    JobWorkerError::InvalidParameter("runner_id is required".to_string())
                 })?;
-                self.validate_operation_data(&wsid, w.operation.as_slice())
+                self.validate_runner_settings_data(&wsid, w.runner_settings.as_slice())
                     .await?;
 
                 // use rdb
@@ -353,18 +353,18 @@ impl UseRedisRepositoryModule for HybridWorkerAppImpl {
 }
 impl UseJobqueueAndCodec for HybridWorkerAppImpl {}
 
-impl UseWorkerSchemaApp for HybridWorkerAppImpl {
-    fn worker_schema_app(&self) -> Arc<dyn WorkerSchemaApp> {
-        self.worker_schema_app.clone()
+impl UseRunnerApp for HybridWorkerAppImpl {
+    fn runner_app(&self) -> Arc<dyn RunnerApp> {
+        self.runner_app.clone()
     }
 }
-impl UseWorkerSchemaParserWithCache for HybridWorkerAppImpl {
-    fn descriptor_cache(&self) -> &MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor> {
+impl UseRunnerParserWithCache for HybridWorkerAppImpl {
+    fn descriptor_cache(&self) -> &MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor> {
         &self.descriptor_cache
     }
 }
 
-impl UseWorkerSchemaAppParserWithCache for HybridWorkerAppImpl {}
+impl UseRunnerAppParserWithCache for HybridWorkerAppImpl {}
 
 impl WorkerAppCacheHelper for HybridWorkerAppImpl {
     fn memory_cache(&self) -> &MemoryCacheImpl<Arc<String>, Vec<Worker>> {
@@ -377,10 +377,10 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use crate::app::runner::hybrid::HybridRunnerAppImpl;
+    use crate::app::runner::RunnerApp;
     use crate::app::worker::hybrid::HybridWorkerAppImpl;
     use crate::app::worker::WorkerApp;
-    use crate::app::worker_schema::hybrid::HybridWorkerSchemaAppImpl;
-    use crate::app::worker_schema::WorkerSchemaApp;
     use crate::app::StorageConfig;
     use anyhow::Result;
     use command_utils::util::option::FlatMap;
@@ -391,8 +391,8 @@ mod tests {
     use infra::infra::IdGeneratorWrapper;
     use infra_utils::infra::memory::MemoryCacheImpl;
     use infra_utils::infra::test::TEST_RUNTIME;
-    use proto::jobworkerp::data::{StorageType, WorkerData, WorkerSchemaId};
-    use proto::TestOperation;
+    use proto::jobworkerp::data::{RunnerId, StorageType, WorkerData};
+    use proto::TestRunnerSettings;
 
     fn create_test_app(use_mock_id: bool) -> Result<HybridWorkerAppImpl> {
         std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug");
@@ -423,14 +423,14 @@ mod tests {
                 r#type: StorageType::Scalable,
                 restore_at_startup: Some(false),
             });
-            let worker_schema_app = HybridWorkerSchemaAppImpl::new(
+            let runner_app = HybridRunnerAppImpl::new(
                 storage_config.clone(),
                 &mc_config,
                 repositories.clone(),
                 descriptor_cache.clone(),
             );
-            let _ = worker_schema_app
-                .create_test_schema(&WorkerSchemaId { value: 111 }, "Test")
+            let _ = runner_app
+                .create_test_runner(&RunnerId { value: 111 }, "Test")
                 .await?;
             let worker_app = HybridWorkerAppImpl::new(
                 storage_config.clone(),
@@ -438,7 +438,7 @@ mod tests {
                 worker_memory_cache,
                 repositories.clone(),
                 descriptor_cache,
-                Arc::new(worker_schema_app),
+                Arc::new(runner_app),
             );
             Ok(worker_app)
         })
@@ -449,25 +449,25 @@ mod tests {
         // test create 3 workers and find list and update 1 worker and find list and delete 1 worker and find list
         let app = create_test_app(false)?;
         TEST_RUNTIME.block_on(async {
-            let operation = JobqueueAndCodec::serialize_message(&TestOperation {
+            let runner_settings = JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                 name: "ls".to_string(),
             });
             let w1 = WorkerData {
                 name: "test1".to_string(),
-                operation: operation.clone(),
-                schema_id: Some(WorkerSchemaId { value: 111 }),
+                runner_settings: runner_settings.clone(),
+                runner_id: Some(RunnerId { value: 111 }),
                 ..Default::default()
             };
             let w2 = WorkerData {
                 name: "test2".to_string(),
-                operation: operation.clone(),
-                schema_id: Some(WorkerSchemaId { value: 111 }),
+                runner_settings: runner_settings.clone(),
+                runner_id: Some(RunnerId { value: 111 }),
                 ..Default::default()
             };
             let w3 = WorkerData {
                 name: "test3".to_string(),
-                operation: operation.clone(),
-                schema_id: Some(WorkerSchemaId { value: 111 }),
+                runner_settings: runner_settings.clone(),
+                runner_id: Some(RunnerId { value: 111 }),
                 ..Default::default()
             };
             let id1 = app.create(&w1).await?;
@@ -483,8 +483,8 @@ mod tests {
             // update
             let w4 = WorkerData {
                 name: "test4".to_string(),
-                operation: operation.clone(),
-                // schema_id: Some(WorkerSchemaId { value: 111 }),
+                runner_settings: runner_settings.clone(),
+                // runner_id: Some(RunnerId { value: 111 }),
                 ..Default::default()
             };
             let res = app.update(&id1, &Some(w4.clone())).await?;

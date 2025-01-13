@@ -256,14 +256,14 @@ mod test {
             job_queue_config,
             chan_buf: chan_buf.clone(),
         };
-        let arg = ChanJobQueueRepositoryImpl::serialize_message(&proto::TestArg {
+        let args = ChanJobQueueRepositoryImpl::serialize_message(&proto::TestArgs {
             args: vec!["test".to_string()],
         });
         let job = Job {
             id: None,
             data: Some(JobData {
                 worker_id: Some(WorkerId { value: 1 }),
-                arg,
+                args,
                 uniq_key: Some("test".to_string()),
                 enqueue_time: datetime::now_millis(),
                 grabbed_until_time: None,
@@ -350,14 +350,14 @@ mod test {
             job_queue_config,
             chan_buf,
         };
-        let arg = JobqueueAndCodec::serialize_message(&proto::TestArg {
+        let args = JobqueueAndCodec::serialize_message(&proto::TestArgs {
             args: vec!["test".to_string()],
         });
         let job1 = Job {
             id: Some(JobId { value: 1 }),
             data: Some(JobData {
                 worker_id: Some(WorkerId { value: 1 }),
-                arg: arg.clone(),
+                args: args.clone(),
                 uniq_key: None,
                 enqueue_time: datetime::now_millis(),
                 grabbed_until_time: None,
@@ -371,7 +371,7 @@ mod test {
             id: Some(JobId { value: 2 }),
             data: Some(JobData {
                 worker_id: Some(WorkerId { value: 1 }),
-                arg: arg.clone(),
+                args: args.clone(),
                 uniq_key: None,
                 enqueue_time: datetime::now_millis(),
                 grabbed_until_time: None,

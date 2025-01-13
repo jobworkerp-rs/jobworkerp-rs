@@ -1,5 +1,5 @@
 // use super::factory::RunnerFactoryImpl;
-use super::Runner;
+use super::RunnerTrait;
 // use crate::worker::runner::factory::RunnerFactory;
 use anyhow::{anyhow, Result};
 use app::app::WorkerConfig;
@@ -10,26 +10,26 @@ use deadpool::{
 };
 use infra::error::JobWorkerError;
 use infra::infra::runner::factory::RunnerFactory;
-use proto::jobworkerp::data::{WorkerData, WorkerSchemaData};
+use proto::jobworkerp::data::{RunnerData, WorkerData};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing;
 
 #[derive(Debug)]
 pub struct RunnerPoolManagerImpl {
-    schema: Arc<WorkerSchemaData>,
+    runner_data: Arc<RunnerData>,
     worker: Arc<WorkerData>,
     runner_factory: Arc<RunnerFactory>,
 }
 
 impl RunnerPoolManagerImpl {
     pub async fn new(
-        schema: Arc<WorkerSchemaData>,
+        runner_data: Arc<RunnerData>,
         worker: Arc<WorkerData>,
         runner_factory: Arc<RunnerFactory>,
     ) -> Self {
         Self {
-            schema,
+            runner_data,
             worker,
             runner_factory,
         }
@@ -37,24 +37,26 @@ impl RunnerPoolManagerImpl {
 }
 
 impl Manager for RunnerPoolManagerImpl {
-    type Type = Arc<Mutex<Box<dyn Runner + Send + Sync>>>;
+    type Type = Arc<Mutex<Box<dyn RunnerTrait + Send + Sync>>>;
     type Error = anyhow::Error;
 
-    async fn create(&self) -> Result<Arc<Mutex<Box<dyn Runner + Send + Sync>>>, anyhow::Error> {
+    async fn create(
+        &self,
+    ) -> Result<Arc<Mutex<Box<dyn RunnerTrait + Send + Sync>>>, anyhow::Error> {
         let mut runner = self
             .runner_factory
-            .create_by_name(&self.schema.name, self.worker.use_static)
+            .create_by_name(&self.runner_data.name, self.worker.use_static)
             .await
             .ok_or(JobWorkerError::InvalidParameter(format!(
                 "runner not found: {:?}",
-                &self.schema.name
+                &self.runner_data.name
             )))?;
-        runner.load(self.worker.operation.clone()).await?;
+        runner.load(self.worker.runner_settings.clone()).await?;
         tracing::debug!("runner created in pool: {}", runner.name());
         Ok(Arc::new(Mutex::new(runner)))
     }
 
-    fn detach(&self, _runner: &mut Arc<Mutex<Box<dyn Runner + Send + Sync>>>) {
+    fn detach(&self, _runner: &mut Arc<Mutex<Box<dyn RunnerTrait + Send + Sync>>>) {
         tracing::warn!(
             "Static Runner detached from pool: maybe re-init: {:?}",
             &self
@@ -71,7 +73,7 @@ impl Manager for RunnerPoolManagerImpl {
 
     async fn recycle(
         &self,
-        runner: &mut Arc<Mutex<Box<dyn Runner + Send + Sync>>>,
+        runner: &mut Arc<Mutex<Box<dyn RunnerTrait + Send + Sync>>>,
         _metrics: &Metrics,
     ) -> RecycleResult<Self::Error> {
         tracing::debug!("runner recycled");
@@ -87,7 +89,7 @@ pub struct RunnerFactoryWithPool {
 }
 impl RunnerFactoryWithPool {
     pub async fn new(
-        schema: Arc<WorkerSchemaData>,
+        runner_data: Arc<RunnerData>,
         worker: Arc<WorkerData>,
         runner_factory: Arc<RunnerFactory>,
         worker_config: Arc<WorkerConfig>,
@@ -100,7 +102,7 @@ impl RunnerFactoryWithPool {
             .into());
         }
         let manager =
-            RunnerPoolManagerImpl::new(schema.clone(), worker.clone(), runner_factory.clone())
+            RunnerPoolManagerImpl::new(runner_data.clone(), worker.clone(), runner_factory.clone())
                 .await;
         let max_size = if let Some(c) = worker_config.get_concurrency(worker.channel.as_ref()) {
             Ok(c)
@@ -143,7 +145,7 @@ mod tests {
     use super::*;
     use anyhow::Result;
     use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
-    use infra::jobworkerp::runner::CommandOperation;
+    use infra::jobworkerp::runner::CommandRunnerSettings;
     use proto::jobworkerp::data::{RunnerType, WorkerData};
 
     #[tokio::test]
@@ -152,16 +154,16 @@ mod tests {
         std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug/");
         let runner_factory = RunnerFactory::new();
         runner_factory.load_plugins().await;
-        let ope = CommandOperation {
+        let ope = CommandRunnerSettings {
             name: "ls".to_string(),
         };
         let factory = RunnerFactoryWithPool::new(
-            Arc::new(WorkerSchemaData {
+            Arc::new(RunnerData {
                 name: RunnerType::Command.as_str_name().to_string(),
                 ..Default::default()
             }),
             Arc::new(WorkerData {
-                operation: JobqueueAndCodec::serialize_message(&ope),
+                runner_settings: JobqueueAndCodec::serialize_message(&ope),
                 channel: None,
                 use_static: true,
                 ..Default::default()
@@ -195,16 +197,16 @@ mod tests {
         // dotenvy::dotenv()?;
         let runner_factory = RunnerFactory::new();
         runner_factory.load_plugins().await;
-        let ope = CommandOperation {
+        let ope = CommandRunnerSettings {
             name: "ls".to_string(),
         };
         assert!(RunnerFactoryWithPool::new(
-            Arc::new(WorkerSchemaData {
+            Arc::new(RunnerData {
                 name: RunnerType::Command.as_str_name().to_string(),
                 ..Default::default()
             }),
             Arc::new(WorkerData {
-                operation: JobqueueAndCodec::serialize_message(&ope),
+                runner_settings: JobqueueAndCodec::serialize_message(&ope),
                 channel: None,
                 use_static: false,
                 ..Default::default()

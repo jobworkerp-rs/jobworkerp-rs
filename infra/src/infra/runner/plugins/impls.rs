@@ -1,4 +1,4 @@
-use crate::infra::runner::Runner;
+use crate::infra::runner::RunnerTrait;
 use std::sync::{Arc, RwLock};
 
 use super::PluginRunner;
@@ -21,14 +21,14 @@ impl PluginRunnerWrapperImpl {
     pub(super) fn new(plugin_runner: Arc<RwLock<Box<dyn PluginRunner + Send + Sync>>>) -> Self {
         Self { plugin_runner }
     }
-    async fn create(&self, operation: Vec<u8>) -> Result<()> {
+    async fn create(&self, settings: Vec<u8>) -> Result<()> {
         let plugin_runner = Arc::clone(&self.plugin_runner);
         #[allow(unstable_name_collisions)]
         tokio::task::spawn_blocking(move || {
             plugin_runner
                 .write()
                 .map_err(|e| anyhow!("plugin runner lock error: {:?}", e))
-                .and_then(|mut r| r.load(operation))
+                .and_then(|mut r| r.load(settings))
         })
         .await
         .map_err(|e| e.into())
@@ -38,7 +38,7 @@ impl PluginRunnerWrapperImpl {
 }
 
 #[async_trait]
-impl Runner for PluginRunnerWrapperImpl {
+impl RunnerTrait for PluginRunnerWrapperImpl {
     fn name(&self) -> String {
         let plugin_runner = Arc::clone(&self.plugin_runner);
         let n = plugin_runner
@@ -47,8 +47,8 @@ impl Runner for PluginRunnerWrapperImpl {
             .unwrap_or_else(|e| format!("Error occurred: {:}", e));
         n
     }
-    async fn load(&mut self, operation: Vec<u8>) -> Result<()> {
-        self.create(operation).await?;
+    async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
+        self.create(settings).await?;
         Ok(())
     }
     // arg: assumed as utf-8 string, specify multiple arguments with \n separated
@@ -77,11 +77,11 @@ impl Runner for PluginRunnerWrapperImpl {
     async fn cancel(&mut self) {
         let _ = self.plugin_runner.write().map(|mut r| r.cancel());
     }
-    fn operation_proto(&self) -> String {
+    fn runner_settings_proto(&self) -> String {
         let plugin_runner = Arc::clone(&self.plugin_runner);
         plugin_runner
             .read()
-            .map(|p| p.operation_proto())
+            .map(|p| p.runner_settings_proto())
             .unwrap_or_else(|e| format!("Error occurred: {:}", e))
     }
     fn job_args_proto(&self) -> String {

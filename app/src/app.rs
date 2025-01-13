@@ -1,7 +1,7 @@
 pub mod job;
 pub mod job_result;
+pub mod runner;
 pub mod worker;
-pub mod worker_schema;
 
 use async_trait::async_trait;
 use command_utils::util::datetime;
@@ -134,7 +134,7 @@ pub trait JobBuilder {
                 id: dat.job_id,
                 data: Some(JobData {
                     worker_id: dat.worker_id,
-                    arg: dat.arg.clone(),
+                    args: dat.args.clone(),
                     uniq_key: dat.uniq_key.clone(),
                     retried: previous_retry_count + 1, // increment retried
                     grabbed_until_time: None,
@@ -161,7 +161,7 @@ pub trait JobBuilder {
             );
             Some(JobData {
                 worker_id: dat.worker_id,
-                arg: dat.arg.clone(),
+                args: dat.args.clone(),
                 uniq_key: dat.uniq_key.clone(),
                 enqueue_time: dat.enqueue_time,
                 grabbed_until_time: None,

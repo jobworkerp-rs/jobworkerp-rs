@@ -2,8 +2,8 @@ DROP TABLE IF EXISTS worker;
 CREATE TABLE `worker` (
   `id` BIGINT(10) PRIMARY KEY AUTO_INCREMENT,
   `name` VARCHAR(128) NOT NULL,
-  `schema_id` BIGINT(10) NOT NULL,
-  `operation` MEDIUMBLOB NOT NULL,
+  `runner_id` BIGINT(10) NOT NULL,
+  `runner_settings` MEDIUMBLOB NOT NULL,
   -- retry and timeout setting
   `retry_type` INT(10) NOT NULL,             -- using as enum: exponential, constant or exponential (backoff) or none
   `interval` INT(10) NOT NULL DEFAULT 0,     -- millisecond for retry interval
@@ -31,7 +31,7 @@ DROP TABLE IF EXISTS job;
 CREATE TABLE `job` (
   `id` BIGINT(20) PRIMARY KEY, -- the type of snowflake id is i64.
   `worker_id` BIGINT(20) NOT NULL,
-  `arg` MEDIUMBLOB,
+  `args` MEDIUMBLOB,
   `uniq_key` VARCHAR(128) DEFAULT NULL,
   `enqueue_time` BIGINT(20) NOT NULL,
   `grabbed_until_time` BIGINT(20) NOT NULL DEFAULT '0',
@@ -50,7 +50,7 @@ CREATE TABLE `job_result` (
   `id` BIGINT(20) PRIMARY KEY, -- the type of snowflake id is i64.
   `job_id` BIGINT(20) NOT NULL,
   `worker_id` BIGINT(20) NOT NULL,
-  `arg` MEDIUMBLOB NOT NULL,
+  `args` MEDIUMBLOB NOT NULL,
   `uniq_key` VARCHAR(128) DEFAULT NULL,
   `status` INT(10) DEFAULT NULL,
   `output` MEDIUMBLOB NOT NULL,
@@ -66,9 +66,9 @@ CREATE TABLE `job_result` (
   KEY `uniq_key_idx` (`uniq_key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- worker schema definition
-DROP TABLE IF EXISTS worker_schema;
-CREATE TABLE `worker_schema` (
+-- runner definition
+DROP TABLE IF EXISTS runner;
+CREATE TABLE `runner` (
   `id` BIGINT(10) PRIMARY KEY,
   `name` VARCHAR(128) NOT NULL, -- name for identification
   `file_name` VARCHAR(512) NOT NULL, -- file name of the runner dynamic library
@@ -77,9 +77,9 @@ CREATE TABLE `worker_schema` (
   UNIQUE KEY `file_name` (`file_name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- builtin runner definitions (operation_type != 1 cannot edit or delete)
+-- builtin runner definitions (runner.type != 0 cannot edit or delete)
 -- (file_name is not real file name(built-in runner), but just a name for identification)
-INSERT IGNORE INTO worker_schema (id, name, file_name, type) VALUES (
+INSERT IGNORE INTO runner (id, name, file_name, type) VALUES (
   1, 'COMMAND', 'builtin1', 1
 ), (
   2, 'HTTP_REQUEST', 'builtin2', 2
@@ -90,5 +90,3 @@ INSERT IGNORE INTO worker_schema (id, name, file_name, type) VALUES (
 ), (
   5, 'SLACK_NOTIFICATION', 'builtin0', 5
 );
-
-

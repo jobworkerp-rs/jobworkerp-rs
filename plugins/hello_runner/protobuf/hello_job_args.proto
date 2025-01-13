@@ -2,6 +2,6 @@ syntax = "proto3";
 
 package hello;
 
-message HelloArg{
+message HelloArgs{
     string arg = 1;
 }
