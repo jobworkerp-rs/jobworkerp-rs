@@ -19,9 +19,9 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         let res = sqlx::query::<Rdb>(
             "INSERT INTO worker (
             `name`,
-            `schema_id`,
+            `runner_id`,
             `use_static`,
-            `operation`,
+            `runner_settings`,
             `retry_type`,
             `interval`,
             `max_interval`,
@@ -37,9 +37,9 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(&worker.name)
-        .bind(worker.schema_id.as_ref().map(|s| s.value).unwrap_or(0))
+        .bind(worker.runner_id.as_ref().map(|s| s.value).unwrap_or(0))
         .bind(worker.use_static)
-        .bind(&worker.operation)
+        .bind(&worker.runner_settings)
         .bind(rp.map(|p| p.r#type).unwrap_or(0))
         .bind(rp.map(|p| p.interval as i64).unwrap_or(0))
         .bind(rp.map(|p| p.max_interval as i64).unwrap_or(0))
@@ -75,9 +75,9 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         sqlx::query(
             "UPDATE `worker` SET
             `name` = ?,
-            `schema_id` = ?,
+            `runner_id` = ?,
             `use_static` = ?,
-            `operation` = ?,
+            `runner_settings` = ?,
             `retry_type` = ?,
             `interval` = ?,
             `max_interval` = ?,
@@ -93,9 +93,9 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
             WHERE `id` = ?;",
         )
         .bind(&worker.name)
-        .bind(worker.schema_id.map(|s| s.value).unwrap_or(0))
+        .bind(worker.runner_id.map(|s| s.value).unwrap_or(0))
         .bind(worker.use_static)
-        .bind(&worker.operation)
+        .bind(&worker.runner_settings)
         .bind(rp.map(|p| p.r#type).unwrap_or(0))
         .bind(rp.map(|p| p.interval as i64).unwrap_or(0))
         .bind(rp.map(|p| p.max_interval as i64).unwrap_or(0))
@@ -257,19 +257,19 @@ mod test {
     use proto::jobworkerp::data::QueueType;
     use proto::jobworkerp::data::ResponseType;
     use proto::jobworkerp::data::RetryPolicy;
+    use proto::jobworkerp::data::RunnerId;
     use proto::jobworkerp::data::Worker;
     use proto::jobworkerp::data::WorkerData;
     use proto::jobworkerp::data::WorkerId;
-    use proto::jobworkerp::data::WorkerSchemaId;
-    use proto::TestOperation;
+    use proto::TestRunnerSettings;
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
         let repository = RdbWorkerRepositoryImpl::new(pool);
         let db = repository.db_pool();
         let data = Some(WorkerData {
             name: "hoge1".to_string(),
-            schema_id: Some(WorkerSchemaId { value: 323 }),
-            operation: JobqueueAndCodec::serialize_message(&TestOperation {
+            runner_id: Some(RunnerId { value: 323 }),
+            runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                 name: "hoge".to_string(),
             }),
             retry_policy: Some(RetryPolicy {
@@ -312,8 +312,8 @@ mod test {
         tx = db.begin().await.context("error in test")?;
         let update = WorkerData {
             name: "fuga1".to_string(),
-            schema_id: Some(WorkerSchemaId { value: 324 }),
-            operation: RdbWorkerRepositoryImpl::serialize_message(&TestOperation {
+            runner_id: Some(RunnerId { value: 324 }),
+            runner_settings: RdbWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
                 name: "fuga".to_string(),
             }),
             retry_policy: Some(RetryPolicy {

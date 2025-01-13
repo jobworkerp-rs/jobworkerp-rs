@@ -1,18 +1,20 @@
 [env]
 RUST_TEST_THREADS = "1"
+#TEST_REDIS_URL = "redis://127.0.0.1:6379"
+#TEST_MYSQL_URL = "mysql://maria:maria@127.0.0.1:3306/test"
 #PKG_CONFIG_ALLOW_CROSS = "1"
 
 #[build]
 #rustflags = ["--cfg", "tokio_unstable"]
 
-#[target.x86_64]
-#linker = "clang"
-#rustflags = ["-C", "link-arg=-fuse-ld=mold"]
-#
-#[target.x86_64-unknown-linux-gnu]
-#linker = "clang"
-#rustflags = ["-C", "link-arg=-fuse-ld=/usr/bin/mold"]
-#
+# [target.x86_64]
+# linker = "clang"
+# rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+ 
+# [target.x86_64-unknown-linux-gnu]
+# linker = "clang"
+# rustflags = ["-C", "link-arg=-fuse-ld=/usr/bin/mold"]
+
 #[target.x86_64-unknown-linux-musl]
 #linker = "clang"
 #rustflags = [

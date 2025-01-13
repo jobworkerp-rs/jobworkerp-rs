@@ -66,7 +66,7 @@ pub trait JobApp: fmt::Debug + Send + Sync {
     ///
     /// # Returns
     ///
-    /// * `Result<bool>` - Result of operation (true if changed data)
+    /// * `Result<bool>` - Result of runner_settings (true if changed data)
     ///
     async fn complete_job(&self, id: &JobResultId, result: &JobResultData) -> Result<bool>;
     async fn delete_job(&self, id: &JobId) -> Result<bool>;
@@ -106,14 +106,14 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         limit: Option<&i32>,
     ) -> Result<Vec<Job>>;
 
-    // TODO check valid type of worker operation and job arg
+    // TODO check valid type of worker runner_settings and job arg
     // fn validate_worker_and_job_arg(
     //     &self,
     //     worker: &WorkerData,
     //     job_arg: Option<&DynamicMessage>,
     // ) -> Result<()> {
-    //     match worker.operation {
-    //         Some(Operation::Command(_)) => match job_arg {
+    //     match worker.runner_settings {
+    //         Some(RunnerSettings::Command(_)) => match job_arg {
     //             Some(RunnerArg {
     //                 data: Some(Data::Command(_)),
     //             }) => Ok(()),
@@ -123,8 +123,8 @@ pub trait JobApp: fmt::Debug + Send + Sync {
     //             ))
     //             .into()),
     //         },
-    //         Some(WorkerOperation {
-    //             operation: Some(Operation::Plugin(_)),
+    //         Some(WorkerRunnerSettings {
+    //             runner_settings: Some(RunnerSettings::Plugin(_)),
     //         }) => match job_arg {
     //             Some(RunnerArg {
     //                 data: Some(Data::Plugin(_)),
@@ -135,8 +135,8 @@ pub trait JobApp: fmt::Debug + Send + Sync {
     //             ))
     //             .into()),
     //         },
-    //         Some(WorkerOperation {
-    //             operation: Some(Operation::GrpcUnary(_)),
+    //         Some(WorkerRunnerSettings {
+    //             runner_settings: Some(RunnerSettings::GrpcUnary(_)),
     //         }) => match job_arg {
     //             Some(RunnerArg {
     //                 data: Some(Data::GrpcUnary(_)),
@@ -147,8 +147,8 @@ pub trait JobApp: fmt::Debug + Send + Sync {
     //             ))
     //             .into()),
     //         },
-    //         Some(WorkerOperation {
-    //             operation: Some(Operation::HttpRequest(_)),
+    //         Some(WorkerRunnerSettings {
+    //             runner_settings: Some(RunnerSettings::HttpRequest(_)),
     //         }) => match job_arg {
     //             Some(RunnerArg {
     //                 data: Some(Data::HttpRequest(_)),
@@ -159,8 +159,8 @@ pub trait JobApp: fmt::Debug + Send + Sync {
     //             ))
     //             .into()),
     //         },
-    //         Some(WorkerOperation {
-    //             operation: Some(Operation::Docker(_)),
+    //         Some(WorkerRunnerSettings {
+    //             runner_settings: Some(RunnerSettings::Docker(_)),
     //         }) => match job_arg {
     //             Some(RunnerArg {
     //                 data: Some(Data::Docker(_)),
@@ -171,8 +171,8 @@ pub trait JobApp: fmt::Debug + Send + Sync {
     //             ))
     //             .into()),
     //         },
-    //         Some(WorkerOperation {
-    //             operation: Some(Operation::SlackInternal(_)),
+    //         Some(WorkerRunnerSettings {
+    //             runner_settings: Some(RunnerSettings::SlackInternal(_)),
     //         }) => match job_arg {
     //             Some(RunnerArg {
     //                 data: Some(Data::SlackJobResult(_)),
@@ -183,12 +183,12 @@ pub trait JobApp: fmt::Debug + Send + Sync {
     //             ))
     //             .into()),
     //         },
-    //         Some(WorkerOperation { operation: None }) => Err(JobWorkerError::WorkerNotFound(
-    //             "invalid worker operation: operation=None".to_string(),
+    //         Some(WorkerRunnerSettings { runner_settings: None }) => Err(JobWorkerError::WorkerNotFound(
+    //             "invalid runner_settings: runner_settings=None".to_string(),
     //         )
     //         .into()),
     //         None => Err(JobWorkerError::WorkerNotFound(
-    //             "invalid worker operation: None".to_string(),
+    //             "invalid runner_settings: None".to_string(),
     //         )
     //         .into()),
     //     }

@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use prost::Message;
 use std::alloc::System;
-use test::{TestArg, TestOperation};
+use test::{TestArgs, TestRunnerSettings};
 use tracing::Level; // Add this line to import the Message trait
 
 pub mod test {
@@ -14,10 +14,10 @@ static ALLOCATOR: System = System;
 
 pub trait PluginRunner: Send + Sync {
     fn name(&self) -> String;
-    fn load(&mut self, operation: Vec<u8>) -> Result<()>;
+    fn load(&mut self, runner_settings: Vec<u8>) -> Result<()>;
     fn run(&mut self, arg: Vec<u8>) -> Result<Vec<Vec<u8>>>;
     fn cancel(&self) -> bool;
-    fn operation_proto(&self) -> String;
+    fn runner_settings_proto(&self) -> String;
     fn job_args_proto(&self) -> String;
     fn result_output_proto(&self) -> Option<String>;
     // if true, use job result of before job, else use job args from request
@@ -52,7 +52,7 @@ impl TestPlugin {
         TestPlugin {}
     }
     pub async fn test(&self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
-        let arg = TestArg::decode(arg).unwrap_or(TestArg {
+        let arg = TestArgs::decode(arg).unwrap_or(TestArgs {
             args: vec![String::from_utf8_lossy(arg).to_string()],
         });
         let data = arg.args;
@@ -63,12 +63,12 @@ impl TestPlugin {
 #[async_trait]
 impl PluginRunner for TestPlugin {
     fn name(&self) -> String {
-        // specify as same string as worker.operation
+        // specify as same string as worker.runner
         String::from("Test")
     }
-    fn load(&mut self, operation: Vec<u8>) -> Result<()> {
+    fn load(&mut self, runner_settings: Vec<u8>) -> Result<()> {
         tracing::info!("Test plugin load!");
-        TestOperation::decode(operation.as_slice())?;
+        TestRunnerSettings::decode(runner_settings.as_slice())?;
         Ok(())
     }
     fn run(&mut self, arg: Vec<u8>) -> Result<Vec<Vec<u8>>> {
@@ -81,8 +81,8 @@ impl PluginRunner for TestPlugin {
         tracing::warn!("Test plugin cancel: not implemented!");
         false
     }
-    fn operation_proto(&self) -> String {
-        include_str!("../../../proto/protobuf/test_operation.proto").to_string()
+    fn runner_settings_proto(&self) -> String {
+        include_str!("../../../proto/protobuf/test_runner.proto").to_string()
     }
     fn job_args_proto(&self) -> String {
         include_str!("../../../proto/protobuf/test_args.proto").to_string()

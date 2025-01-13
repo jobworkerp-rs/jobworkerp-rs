@@ -1,41 +1,36 @@
-use super::{
-    UseWorkerSchemaParserWithCache, WorkerSchemaApp, WorkerSchemaCacheHelper,
-    WorkerSchemaWithDescriptor,
-};
+use super::{RunnerApp, RunnerCacheHelper, RunnerDataWithDescriptor, UseRunnerParserWithCache};
 use crate::app::StorageConfig;
 use anyhow::Result;
 use async_trait::async_trait;
 use debug_stub_derive::DebugStub;
 use infra::infra::module::rdb::RdbChanRepositoryModule;
-use infra::infra::worker_schema::rdb::WorkerSchemaRepository;
-use infra::infra::worker_schema::rdb::{
-    RdbWorkerSchemaRepositoryImpl, UseRdbWorkerSchemaRepository,
-};
+use infra::infra::runner::rdb::RunnerRepository;
+use infra::infra::runner::rdb::{RdbRunnerRepositoryImpl, UseRdbRunnerRepository};
 use infra_utils::infra::lock::RwLockWithKey;
 use infra_utils::infra::memory::{self, MemoryCacheConfig, MemoryCacheImpl, UseMemoryCache};
 use infra_utils::infra::rdb::UseRdbPool;
-use proto::jobworkerp::data::{WorkerSchema, WorkerSchemaId};
+use proto::jobworkerp::data::{Runner, RunnerId};
 use std::{sync::Arc, time::Duration};
 use stretto::AsyncCache;
 
 #[derive(Clone, DebugStub)]
-pub struct RdbWorkerSchemaAppImpl {
+pub struct RdbRunnerAppImpl {
     storage_config: Arc<StorageConfig>,
-    #[debug_stub = "AsyncCache<Arc<String>, Vec<WorkerSchema>>"]
-    async_cache: AsyncCache<Arc<String>, Vec<WorkerSchema>>,
-    descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>>,
+    #[debug_stub = "AsyncCache<Arc<String>, Vec<Runner>>"]
+    async_cache: AsyncCache<Arc<String>, Vec<Runner>>,
+    descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     repositories: Arc<RdbChanRepositoryModule>,
     cache_ttl: Option<Duration>,
     #[debug_stub = "Arc<RwLockWithKey<Arc<String>>>"]
     key_lock: Arc<RwLockWithKey<Arc<String>>>,
 }
 
-impl RdbWorkerSchemaAppImpl {
+impl RdbRunnerAppImpl {
     pub fn new(
         storage_config: Arc<StorageConfig>,
         memory_cache_config: &MemoryCacheConfig,
         repositories: Arc<RdbChanRepositoryModule>,
-        descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>>,
+        descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     ) -> Self {
         Self {
             storage_config,
@@ -46,23 +41,23 @@ impl RdbWorkerSchemaAppImpl {
             key_lock: Arc::new(RwLockWithKey::new(memory_cache_config.num_counters)),
         }
     }
-    async fn add_worker_schema(&self) -> Result<()> {
-        self.worker_schema_repository().add_from_plugins().await?;
+    async fn add_runner(&self) -> Result<()> {
+        self.runner_repository().add_from_plugins().await?;
         let _ = self
             .delete_cache_locked(&Self::find_all_list_cache_key())
             .await;
         Ok(())
     }
     // TODO update by reloading plugin files
-    // async fn update_worker_schema(
+    // async fn update_runner(
     //     &self,
-    //     id: &WorkerSchemaId,
-    //     worker_schema: &Option<WorkerSchemaData>,
+    //     id: &RunnerId,
+    //     runner: &Option<RunnerData>,
     // ) -> Result<bool> {
-    //     if let Some(w) = worker_schema {
-    //         let pool = self.worker_schema_repository().db_pool();
+    //     if let Some(w) = runner {
+    //         let pool = self.runner_repository().db_pool();
     //         let mut tx = pool.begin().await.map_err(JobWorkerError::DBError)?;
-    //         self.worker_schema_repository()
+    //         self.runner_repository()
     //             .update(&mut *tx, id, w)
     //             .await?;
     //         tx.commit().await.map_err(JobWorkerError::DBError)?;
@@ -81,21 +76,21 @@ impl RdbWorkerSchemaAppImpl {
     // }
 }
 
-impl UseWorkerSchemaParserWithCache for RdbWorkerSchemaAppImpl {
-    fn descriptor_cache(&self) -> &MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor> {
+impl UseRunnerParserWithCache for RdbRunnerAppImpl {
+    fn descriptor_cache(&self) -> &MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor> {
         &self.descriptor_cache
     }
 }
 
 #[async_trait]
-impl WorkerSchemaApp for RdbWorkerSchemaAppImpl {
-    async fn load_worker_schema(&self) -> Result<bool> {
-        self.add_worker_schema().await?;
+impl RunnerApp for RdbRunnerAppImpl {
+    async fn load_runner(&self) -> Result<bool> {
+        self.add_runner().await?;
         Ok(true)
     }
 
-    async fn delete_worker_schema(&self, id: &WorkerSchemaId) -> Result<bool> {
-        let res = self.worker_schema_repository().delete(id).await?;
+    async fn delete_runner(&self, id: &RunnerId) -> Result<bool> {
+        let res = self.runner_repository().delete(id).await?;
         // clear memory cache
         let _ = self
             .delete_cache_locked(&Self::find_cache_key(&id.value))
@@ -106,17 +101,13 @@ impl WorkerSchemaApp for RdbWorkerSchemaAppImpl {
         Ok(res)
     }
 
-    async fn find_worker_schema(
-        &self,
-        id: &WorkerSchemaId,
-        ttl: Option<&Duration>,
-    ) -> Result<Option<WorkerSchema>>
+    async fn find_runner(&self, id: &RunnerId, ttl: Option<&Duration>) -> Result<Option<Runner>>
     where
         Self: Send + 'static,
     {
         let k = Self::find_cache_key(&id.value);
         self.with_cache_locked(&k, ttl, || async {
-            let v = self.worker_schema_repository().find(id).await;
+            let v = self.runner_repository().find(id).await;
             match v {
                 Ok(opt) => Ok(match opt {
                     Some(v) => vec![v],
@@ -130,28 +121,26 @@ impl WorkerSchemaApp for RdbWorkerSchemaAppImpl {
     }
 
     // XXX no cache
-    async fn find_worker_schema_list(
+    async fn find_runner_list(
         &self,
         limit: Option<&i32>,
         offset: Option<&i64>,
         _ttl: Option<&Duration>,
-    ) -> Result<Vec<WorkerSchema>>
+    ) -> Result<Vec<Runner>>
     where
         Self: Send + 'static,
     {
         // TODO cache
-        self.worker_schema_repository()
-            .find_list(limit, offset)
-            .await
+        self.runner_repository().find_list(limit, offset).await
     }
 
-    async fn find_worker_schema_all_list(&self, ttl: Option<&Duration>) -> Result<Vec<WorkerSchema>>
+    async fn find_runner_all_list(&self, ttl: Option<&Duration>) -> Result<Vec<Runner>>
     where
         Self: Send + 'static,
     {
         let k = Arc::new(Self::find_all_list_cache_key());
         self.with_cache_locked(&k, ttl, || async {
-            self.worker_schema_repository().find_list(None, None).await
+            self.runner_repository().find_list(None, None).await
         })
         .await
     }
@@ -161,49 +150,49 @@ impl WorkerSchemaApp for RdbWorkerSchemaAppImpl {
         Self: Send + 'static,
     {
         // TODO cache
-        self.worker_schema_repository()
-            .count_list_tx(self.worker_schema_repository().db_pool())
+        self.runner_repository()
+            .count_list_tx(self.runner_repository().db_pool())
             .await
     }
 
     // for test
     #[cfg(test)]
-    async fn create_test_schema(
+    async fn create_test_runner(
         &self,
-        schema_id: &WorkerSchemaId,
+        runner_id: &RunnerId,
         name: &str,
-    ) -> Result<WorkerSchemaWithDescriptor> {
-        use super::test::test_worker_schema_with_descriptor;
-        use infra::infra::worker_schema::rows::WorkerSchemaRow;
+    ) -> Result<RunnerDataWithDescriptor> {
+        use crate::app::runner::test::test_runner_with_descriptor;
+        use infra::infra::runner::rows::RunnerRow;
         use proto::jobworkerp::data::RunnerType;
 
-        let schema = test_worker_schema_with_descriptor(name);
+        let runner_data = test_runner_with_descriptor(name);
         let _res = self
-            .worker_schema_repository()
-            .create(&WorkerSchemaRow {
-                id: schema_id.value,
+            .runner_repository()
+            .create(&RunnerRow {
+                id: runner_id.value,
                 name: name.to_string(),
                 file_name: format!("lib{}.so", name),
                 r#type: RunnerType::Plugin as i32,
             })
             .await?;
-        self.store_proto_cache(schema_id, &schema).await;
+        self.store_proto_cache(runner_id, &runner_data).await;
         // clear memory cache
         let _ = self
             .delete_cache_locked(&Self::find_all_list_cache_key())
             .await;
-        Ok(schema)
+        Ok(runner_data)
     }
 }
 
-impl UseRdbWorkerSchemaRepository for RdbWorkerSchemaAppImpl {
-    fn worker_schema_repository(&self) -> &RdbWorkerSchemaRepositoryImpl {
-        &self.repositories.worker_schema_repository
+impl UseRdbRunnerRepository for RdbRunnerAppImpl {
+    fn runner_repository(&self) -> &RdbRunnerRepositoryImpl {
+        &self.repositories.runner_repository
     }
 }
 
-impl UseMemoryCache<Arc<String>, Vec<WorkerSchema>> for RdbWorkerSchemaAppImpl {
-    fn cache(&self) -> &AsyncCache<Arc<String>, Vec<WorkerSchema>> {
+impl UseMemoryCache<Arc<String>, Vec<Runner>> for RdbRunnerAppImpl {
+    fn cache(&self) -> &AsyncCache<Arc<String>, Vec<Runner>> {
         &self.async_cache
     }
 
@@ -217,4 +206,4 @@ impl UseMemoryCache<Arc<String>, Vec<WorkerSchema>> for RdbWorkerSchemaAppImpl {
         &self.key_lock
     }
 }
-impl WorkerSchemaCacheHelper for RdbWorkerSchemaAppImpl {}
+impl RunnerCacheHelper for RdbRunnerAppImpl {}

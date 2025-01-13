@@ -1,8 +1,8 @@
 use std::{str::FromStr, time::Duration};
 
-use super::Runner;
+use super::RunnerTrait;
 use crate::jobworkerp::runner::{
-    http_request_result::KeyValue, HttpRequestArg, HttpRequestOperation, HttpRequestResult,
+    http_request_result::KeyValue, HttpRequestArgs, HttpRequestResult, HttpRequestRunnerSettings,
 };
 use crate::{
     error::JobWorkerError,
@@ -30,11 +30,11 @@ impl RequestRunner {
         }
     }
     // TODO Error type
-    // operation: base url (+ arg.path)
+    // settings: base url (+ arg.path)
     pub fn create(&mut self, base_url: &str) -> Result<()> {
         let u = Url::from_str(base_url).map_err(|e| {
             JobWorkerError::ParseError(format!(
-                "cannot parse url from operation: {}, error= {:?}",
+                "cannot parse url from: {}, error= {:?}",
                 base_url, e
             ))
         })?;
@@ -58,44 +58,45 @@ impl Default for RequestRunner {
 // arg: {headers:{<headers map>}, queries:[<query string array>], body: <body string or struct>}
 // res: vec![result_bytes]  (fixed size 1)
 #[async_trait]
-impl Runner for RequestRunner {
+impl RunnerTrait for RequestRunner {
     fn name(&self) -> String {
         RunnerType::HttpRequest.as_str_name().to_string()
     }
-    async fn load(&mut self, operation: Vec<u8>) -> Result<()> {
-        let op = JobqueueAndCodec::deserialize_message::<HttpRequestOperation>(&operation)?;
+    async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
+        let op = JobqueueAndCodec::deserialize_message::<HttpRequestRunnerSettings>(&settings)?;
         self.create(op.base_url.as_str())
     }
-    async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
+    async fn run(&mut self, args: &[u8]) -> Result<Vec<Vec<u8>>> {
         if let Some(url) = self.url.as_ref() {
-            let arg = JobqueueAndCodec::deserialize_message::<HttpRequestArg>(arg)?;
-            let met = Method::from_str(arg.method.as_str())?;
-            let u = url.join(arg.path.as_str())?;
+            let args = JobqueueAndCodec::deserialize_message::<HttpRequestArgs>(args)?;
+            let met = Method::from_str(args.method.as_str())?;
+            let u = url.join(args.path.as_str())?;
             // create request
             let req = self.client.request(met, u);
             // set body
-            let req = if let Some(b) = &arg.body {
+            let req = if let Some(b) = &args.body {
                 req.body(b.to_owned())
             } else {
                 req
             };
             // set queries
-            let req = if arg.queries.is_empty() {
+            let req = if args.queries.is_empty() {
                 req
             } else {
                 req.query(
-                    &arg.queries
+                    &args
+                        .queries
                         .iter()
                         .map(|kv| (kv.key.as_str(), kv.value.as_str()))
                         .collect::<Vec<_>>(),
                 )
             };
             // set headers
-            let req = if arg.headers.is_empty() {
+            let req = if args.headers.is_empty() {
                 req
             } else {
                 let mut hm = HeaderMap::new();
-                for kv in arg.headers.iter() {
+                for kv in args.headers.iter() {
                     let k1: HeaderName = kv.key.parse().map_err(|e| {
                         JobWorkerError::ParseError(format!("header value error: {:?}", e))
                     })?;
@@ -131,8 +132,8 @@ impl Runner for RequestRunner {
     async fn cancel(&mut self) {
         tracing::warn!("cannot cancel request until timeout")
     }
-    fn operation_proto(&self) -> String {
-        include_str!("../../../protobuf/jobworkerp/runner/http_request_operation.proto").to_string()
+    fn runner_settings_proto(&self) -> String {
+        include_str!("../../../protobuf/jobworkerp/runner/http_request_runner.proto").to_string()
     }
     fn job_args_proto(&self) -> String {
         include_str!("../../../protobuf/jobworkerp/runner/http_request_args.proto").to_string()
@@ -150,11 +151,11 @@ impl Runner for RequestRunner {
 
 #[tokio::test]
 async fn run_request() {
-    use crate::jobworkerp::runner::{http_request_arg::KeyValue, HttpRequestArg};
+    use crate::jobworkerp::runner::{http_request_args::KeyValue, HttpRequestArgs};
 
     let mut runner = RequestRunner::new();
     runner.create("https://www.google.com/").unwrap();
-    let arg = JobqueueAndCodec::serialize_message(&HttpRequestArg {
+    let arg = JobqueueAndCodec::serialize_message(&HttpRequestArgs {
         headers: vec![KeyValue {
             key: "Content-Type".to_string(),
             value: "plain/text".to_string(),

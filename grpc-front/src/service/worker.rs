@@ -36,8 +36,8 @@ pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig {
     fn validate_create(&self, dat: WorkerData) -> Result<WorkerData, tonic::Status> {
         let data = WorkerData {
             name: dat.name,
-            schema_id: dat.schema_id,
-            operation: dat.operation,
+            runner_id: dat.runner_id,
+            runner_settings: dat.runner_settings,
             retry_policy: dat.retry_policy,
             periodic_interval: dat.periodic_interval,
             channel: dat.channel,
@@ -98,9 +98,9 @@ pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig {
                 "must specify store_success and store_failure TRUE for response_type 'ListenAfter'.",
             ));
         }
-        //        // operation should not be empty (depends on worker, not checked here)
-        //        if req.operation.is_empty() {
-        //            return Err(tonic::Status::invalid_argument("operation should not be empty"));
+        //        // runner_settings should not be empty (depends on worker, not checked here)
+        //        if req.runner_settings.is_empty() {
+        //            return Err(tonic::Status::invalid_argument("runner_settings should not be empty"));
         //        }
         // name should not be empty
         if req.name.is_empty() {
@@ -399,12 +399,12 @@ mod tests {
         let v = Validator {
             storage_type: StorageType::Standalone,
         };
-        let operation = JobqueueAndCodec::serialize_message(&proto::TestOperation {
+        let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
             name: "ls".to_string(),
         });
         let mut w = WorkerData {
             name: "ListCommand".to_string(),
-            operation,
+            runner_settings,
             queue_type: QueueType::ForcedRdb as i32,
             response_type: ResponseType::Direct as i32,
             store_failure: true,
@@ -453,12 +453,12 @@ mod tests {
         let v = Validator {
             storage_type: StorageType::Scalable,
         };
-        let operation = JobqueueAndCodec::serialize_message(&proto::TestOperation {
+        let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
             name: "ls".to_string(),
         });
         let mut w = WorkerData {
             name: "ListCommand".to_string(),
-            operation,
+            runner_settings,
             queue_type: QueueType::ForcedRdb as i32,
             response_type: ResponseType::NoResult as i32,
             store_failure: true,

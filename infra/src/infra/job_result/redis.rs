@@ -236,14 +236,14 @@ async fn redis_test() -> Result<()> {
         redis_pool: pool,
     };
     let id = JobResultId { value: 1 };
-    let jarg = proto::TestArg {
+    let jarg = proto::TestArgs {
         args: vec!["test".to_string(), "test".to_string()],
     };
     let job_result = &JobResultData {
         job_id: Some(JobId { value: 1 }),
         worker_id: Some(WorkerId { value: 2 }),
         worker_name: "hoge2".to_string(),
-        arg: RedisJobResultRepositoryImpl::serialize_message(&jarg),
+        args: RedisJobResultRepositoryImpl::serialize_message(&jarg),
         uniq_key: Some("hoge4".to_string()),
         status: 6,
         output: Some(ResultOutput {
@@ -273,7 +273,7 @@ async fn redis_test() -> Result<()> {
     let mut job_result2 = job_result.clone();
     job_result2.worker_id = Some(WorkerId { value: 3 });
     job_result2.worker_name = "fuga2".to_string();
-    job_result2.arg = RedisJobResultRepositoryImpl::serialize_message(&proto::TestArg {
+    job_result2.args = RedisJobResultRepositoryImpl::serialize_message(&proto::TestArgs {
         args: vec!["test2".to_string(), "test2".to_string()],
     });
     job_result2.uniq_key = Some("fuga4".to_string());

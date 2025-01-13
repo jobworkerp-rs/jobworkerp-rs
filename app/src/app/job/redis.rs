@@ -59,7 +59,7 @@ impl JobApp for RedisJobAppImpl {
         &self,
         worker_id: Option<&WorkerId>,
         worker_name: Option<&String>,
-        arg: Vec<u8>,
+        args: Vec<u8>,
         uniq_key: Option<String>,
         run_after_time: i64,
         priority: i32,
@@ -79,7 +79,7 @@ impl JobApp for RedisJobAppImpl {
         if let Some(w) = worker_res {
             let job_data = JobData {
                 worker_id: w.id,
-                arg,
+                args,
                 uniq_key,
                 enqueue_time: datetime::now_millis(),
                 grabbed_until_time: None,

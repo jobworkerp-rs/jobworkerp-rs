@@ -1,13 +1,13 @@
 use std::sync::Arc;
 use std::{fmt::Debug, time::Duration};
 
-use crate::proto::jobworkerp::data::{WorkerSchema, WorkerSchemaId};
-use crate::proto::jobworkerp::service::worker_schema_service_server::WorkerSchemaService;
+use crate::proto::jobworkerp::data::{Runner, RunnerId};
+use crate::proto::jobworkerp::service::runner_service_server::RunnerService;
 use crate::proto::jobworkerp::service::{
-    CountCondition, CountResponse, FindListRequest, OptionalWorkerSchemaResponse, SuccessResponse,
+    CountCondition, CountResponse, FindListRequest, OptionalRunnerResponse, SuccessResponse,
 };
 use crate::service::error_handle::handle_error;
-use app::app::worker_schema::WorkerSchemaApp;
+use app::app::runner::RunnerApp;
 use app::module::AppModule;
 use async_stream::stream;
 use futures::stream::BoxStream;
@@ -15,34 +15,34 @@ use infra::error::JobWorkerError;
 use infra_utils::trace::Tracing;
 use tonic::Response;
 
-pub trait WorkerSchemaGrpc {
-    fn app(&self) -> &Arc<dyn WorkerSchemaApp + 'static>;
+pub trait RunnerGrpc {
+    fn app(&self) -> &Arc<dyn RunnerApp + 'static>;
 }
 
 const DEFAULT_TTL: Duration = Duration::from_secs(30);
 const LIST_TTL: Duration = Duration::from_secs(5);
-const MAX_RESERVED_WORKER_SCHEMA_ID: i64 = 1024;
+const MAX_RESERVED_RUNNER_ID: i64 = 1024;
 
 #[tonic::async_trait]
-impl<T: WorkerSchemaGrpc + Tracing + Send + Debug + Sync + 'static> WorkerSchemaService for T {
+impl<T: RunnerGrpc + Tracing + Send + Debug + Sync + 'static> RunnerService for T {
     #[tracing::instrument]
     async fn delete(
         &self,
-        request: tonic::Request<WorkerSchemaId>,
+        request: tonic::Request<RunnerId>,
     ) -> Result<tonic::Response<SuccessResponse>, tonic::Status> {
-        let _s = Self::trace_request("worker_schema", "delete", &request);
+        let _s = Self::trace_request("runner", "delete", &request);
         let req = request.get_ref();
-        // cannot delete reserved worker schema
-        if req.value <= MAX_RESERVED_WORKER_SCHEMA_ID {
+        // cannot delete reserved runner
+        if req.value <= MAX_RESERVED_RUNNER_ID {
             return Err(handle_error(
                 &JobWorkerError::InvalidParameter(format!(
-                    "cannot delete reserved worker schema: {}",
+                    "cannot delete reserved runner: {}",
                     req.value
                 ))
                 .into(),
             ));
         }
-        match self.app().delete_worker_schema(req).await {
+        match self.app().delete_runner(req).await {
             Ok(r) => Ok(Response::new(SuccessResponse { is_success: r })),
             Err(e) => Err(handle_error(&e)),
         }
@@ -50,23 +50,23 @@ impl<T: WorkerSchemaGrpc + Tracing + Send + Debug + Sync + 'static> WorkerSchema
     #[tracing::instrument]
     async fn find(
         &self,
-        request: tonic::Request<WorkerSchemaId>,
-    ) -> Result<tonic::Response<OptionalWorkerSchemaResponse>, tonic::Status> {
-        let _s = Self::trace_request("worker_schema", "find", &request);
+        request: tonic::Request<RunnerId>,
+    ) -> Result<tonic::Response<OptionalRunnerResponse>, tonic::Status> {
+        let _s = Self::trace_request("runner", "find", &request);
         let req = request.get_ref();
-        match self.app().find_worker_schema(req, Some(&DEFAULT_TTL)).await {
-            Ok(res) => Ok(Response::new(OptionalWorkerSchemaResponse { data: res })),
+        match self.app().find_runner(req, Some(&DEFAULT_TTL)).await {
+            Ok(res) => Ok(Response::new(OptionalRunnerResponse { data: res })),
             Err(e) => Err(handle_error(&e)),
         }
     }
 
-    type FindListStream = BoxStream<'static, Result<WorkerSchema, tonic::Status>>;
+    type FindListStream = BoxStream<'static, Result<Runner, tonic::Status>>;
     #[tracing::instrument]
     async fn find_list(
         &self,
         request: tonic::Request<FindListRequest>,
     ) -> Result<tonic::Response<Self::FindListStream>, tonic::Status> {
-        let _s = Self::trace_request("worker_schema", "find_list", &request);
+        let _s = Self::trace_request("runner", "find_list", &request);
         let req = request.get_ref();
         let ttl = if req.limit.is_some() {
             LIST_TTL
@@ -75,7 +75,7 @@ impl<T: WorkerSchemaGrpc + Tracing + Send + Debug + Sync + 'static> WorkerSchema
         };
         match self
             .app()
-            .find_worker_schema_list(req.limit.as_ref(), req.offset.as_ref(), Some(&ttl))
+            .find_runner_list(req.limit.as_ref(), req.offset.as_ref(), Some(&ttl))
             .await
         {
             Ok(list) => {
@@ -94,7 +94,7 @@ impl<T: WorkerSchemaGrpc + Tracing + Send + Debug + Sync + 'static> WorkerSchema
         &self,
         request: tonic::Request<CountCondition>,
     ) -> Result<tonic::Response<CountResponse>, tonic::Status> {
-        let _s = Self::trace_request("worker_schema", "count", &request);
+        let _s = Self::trace_request("runner", "count", &request);
         match self.app().count().await {
             Ok(res) => Ok(Response::new(CountResponse { total: res })),
             Err(e) => Err(handle_error(&e)),
@@ -103,21 +103,21 @@ impl<T: WorkerSchemaGrpc + Tracing + Send + Debug + Sync + 'static> WorkerSchema
 }
 
 #[derive(DebugStub)]
-pub(crate) struct WorkerSchemaGrpcImpl {
+pub(crate) struct RunnerGrpcImpl {
     #[debug_stub = "AppModule"]
     app_module: Arc<AppModule>,
 }
 
-impl WorkerSchemaGrpcImpl {
+impl RunnerGrpcImpl {
     pub fn new(app_module: Arc<AppModule>) -> Self {
-        WorkerSchemaGrpcImpl { app_module }
+        RunnerGrpcImpl { app_module }
     }
 }
-impl WorkerSchemaGrpc for WorkerSchemaGrpcImpl {
-    fn app(&self) -> &Arc<dyn WorkerSchemaApp + 'static> {
-        &self.app_module.worker_schema_app
+impl RunnerGrpc for RunnerGrpcImpl {
+    fn app(&self) -> &Arc<dyn RunnerApp + 'static> {
+        &self.app_module.runner_app
     }
 }
 
 // use tracing
-impl Tracing for WorkerSchemaGrpcImpl {}
+impl Tracing for RunnerGrpcImpl {}

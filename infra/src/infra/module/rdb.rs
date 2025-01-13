@@ -6,8 +6,8 @@ use crate::infra::job::status::memory::MemoryJobStatusRepository;
 use crate::infra::job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl;
 use crate::infra::job_result::rdb::{RdbJobResultRepositoryImpl, UseRdbJobResultRepository};
 use crate::infra::runner::factory::RunnerFactory;
+use crate::infra::runner::rdb::RdbRunnerRepositoryImpl;
 use crate::infra::worker::rdb::{RdbWorkerRepositoryImpl, UseRdbWorkerRepository};
-use crate::infra::worker_schema::rdb::RdbWorkerSchemaRepositoryImpl;
 use crate::infra::{IdGeneratorWrapper, InfraConfigModule, JobQueueConfig};
 use infra_utils::infra::chan::ChanBuffer;
 
@@ -32,7 +32,7 @@ impl<T: UseRdbChanRepositoryModule> UseRdbJobResultRepository for T {
 
 #[derive(Clone, Debug)]
 pub struct RdbChanRepositoryModule {
-    pub worker_schema_repository: RdbWorkerSchemaRepositoryImpl,
+    pub runner_repository: RdbRunnerRepositoryImpl,
     pub worker_repository: RdbWorkerRepositoryImpl,
     pub job_repository: RdbChanJobRepositoryImpl,
     pub job_result_repository: RdbJobResultRepositoryImpl,
@@ -49,11 +49,7 @@ impl RdbChanRepositoryModule {
     ) -> Self {
         let pool = super::super::resource::setup_rdb_by_env().await;
         RdbChanRepositoryModule {
-            worker_schema_repository: RdbWorkerSchemaRepositoryImpl::new(
-                pool,
-                runner_factory,
-                id_generator,
-            ),
+            runner_repository: RdbRunnerRepositoryImpl::new(pool, runner_factory, id_generator),
             worker_repository: RdbWorkerRepositoryImpl::new(pool),
             job_repository: RdbChanJobRepositoryImpl::new(job_queue_config.clone(), pool),
             job_result_repository: RdbJobResultRepositoryImpl::new(pool),
@@ -76,11 +72,7 @@ impl RdbChanRepositoryModule {
         let pool =
             super::super::resource::setup_rdb(config_module.rdb_config.as_ref().unwrap()).await;
         RdbChanRepositoryModule {
-            worker_schema_repository: RdbWorkerSchemaRepositoryImpl::new(
-                pool,
-                runner_factory,
-                id_generator,
-            ),
+            runner_repository: RdbRunnerRepositoryImpl::new(pool, runner_factory, id_generator),
             worker_repository: RdbWorkerRepositoryImpl::new(pool),
             job_repository: RdbChanJobRepositoryImpl::new(
                 config_module.job_queue_config.clone(),
@@ -110,7 +102,7 @@ pub mod test {
     use super::RdbChanRepositoryModule;
     use crate::infra::job::queue::chan::ChanJobQueueRepositoryImpl;
     use crate::infra::runner::factory::RunnerFactory;
-    use crate::infra::worker_schema::rdb::RdbWorkerSchemaRepositoryImpl;
+    use crate::infra::runner::rdb::RdbRunnerRepositoryImpl;
     use crate::infra::IdGeneratorWrapper;
     use crate::infra::{
         job::rdb::RdbChanJobRepositoryImpl, job_result::rdb::RdbJobResultRepositoryImpl,
@@ -135,16 +127,16 @@ pub mod test {
             };
             let pool = setup_test_rdb_from(dir).await;
             pool.execute("SELECT 1;").await.expect("test connection");
-            // not worker_schema
+            // not runner
             truncate_tables(pool, vec!["job", "worker", "job_result"]).await;
-            pool.execute("DELETE FROM worker_schema WHERE id > 100;")
+            pool.execute("DELETE FROM runner WHERE id > 100;")
                 .await
                 .expect("test connection");
             let runner_factory = RunnerFactory::new();
             runner_factory.load_plugins().await;
             let id_generator = Arc::new(IdGeneratorWrapper::new());
             RdbChanRepositoryModule {
-                worker_schema_repository: RdbWorkerSchemaRepositoryImpl::new(
+                runner_repository: RdbRunnerRepositoryImpl::new(
                     pool,
                     Arc::new(runner_factory),
                     id_generator,

@@ -53,21 +53,21 @@ pub trait RdbJobQueueRepository: UseRdbPool + Sync + Send {
         };
         let mut args = RdbArguments::default();
         args.add(now + mergin_msec as i64).map_err(|e| {
-            JobWorkerError::OtherError(format!("sql arg err:{:?}, error:{:?}", now, e))
+            JobWorkerError::OtherError(format!("sql args err:{:?}, error:{:?}", now, e))
         })?;
         args.add(now).map_err(|e| {
-            JobWorkerError::OtherError(format!("sql arg err:{:?}, error:{:?}", now, e))
+            JobWorkerError::OtherError(format!("sql args err:{:?}, error:{:?}", now, e))
         })?;
         for id in &worker_ids {
             args.add(id.value).map_err(|e| {
-                JobWorkerError::OtherError(format!("sql arg err:{:?}, error:{:?}", now, e))
+                JobWorkerError::OtherError(format!("sql args err:{:?}, error:{:?}", now, e))
             })?;
         }
         args.add(limit as i64).map_err(|e| {
-            JobWorkerError::OtherError(format!("sql arg err:{:?}, error:{:?}", now, e))
+            JobWorkerError::OtherError(format!("sql args err:{:?}, error:{:?}", now, e))
         })?;
         args.add(offset).map_err(|e| {
-            JobWorkerError::OtherError(format!("sql arg err:{:?}, error:{:?}", now, e))
+            JobWorkerError::OtherError(format!("sql args err:{:?}, error:{:?}", now, e))
         })?;
         let mut rows = sqlx::query_with::<Rdb, _>(&query, args)
             .fetch_all(self.db_pool())
@@ -206,12 +206,12 @@ mod test {
         let worker_id2 = WorkerId { value: 21 };
 
         let jid = JobId { value: 1 };
-        let jarg = JobqueueAndCodec::serialize_message(&proto::TestArg {
+        let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
             args: vec!["GET".to_string(), "/".to_string()],
         });
         let instant_job_data = JobData {
             worker_id: Some(worker_id),
-            arg: jarg.clone(),
+            args: jargs.clone(),
             grabbed_until_time: Some(0),
             run_after_time: 0,
             ..Default::default()
@@ -223,7 +223,7 @@ mod test {
         assert!(repo.create(&job0).await?);
         let current_job_data = JobData {
             worker_id: Some(worker_id2),
-            arg: jarg.clone(),
+            args: jargs.clone(),
             grabbed_until_time: Some(0),
             run_after_time: datetime::now_millis(),
             ..Default::default()
@@ -237,7 +237,7 @@ mod test {
 
         let future_job_data = JobData {
             worker_id: Some(worker_id),
-            arg: jarg.clone(),
+            args: jargs.clone(),
             grabbed_until_time: Some(0),
             run_after_time: datetime::now_millis() + 10000,
             ..Default::default()
@@ -356,7 +356,7 @@ mod test {
             let worker_id = WorkerId { value: 11 };
             let worker_id2 = WorkerId { value: 21 };
             let jid0 = JobId { value: 1 };
-            let jarg = JobqueueAndCodec::serialize_message(&proto::TestArg {
+            let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["GET".to_string(), "/".to_string()],
             });
             let now_millis = datetime::now_millis();
@@ -364,7 +364,7 @@ mod test {
             // for redis job: run_after_time:0, not timeouted (grabbed)
             let instant_job_data_for_redis = JobData {
                 worker_id: Some(worker_id),
-                arg: jarg.clone(),
+                args: jargs.clone(),
                 grabbed_until_time: Some(now_millis + 10000),
                 run_after_time: 0,
                 ..Default::default()
@@ -378,7 +378,7 @@ mod test {
             // for redis job: run_after_time:0, timeouted
             let timeouted_job_data_for_redis = JobData {
                 worker_id: Some(worker_id),
-                arg: jarg.clone(),
+                args: jargs.clone(),
                 grabbed_until_time: Some(now_millis - 1000),
                 run_after_time: 0,
                 ..Default::default()
@@ -393,7 +393,7 @@ mod test {
             // for rdb job, timeouted
             let current_job_data_for_rdb = JobData {
                 worker_id: Some(worker_id2),
-                arg: jarg.clone(),
+                args: jargs.clone(),
                 grabbed_until_time: Some(now_millis - 1000),
                 run_after_time: datetime::now_millis(),
                 ..Default::default()
@@ -408,7 +408,7 @@ mod test {
             // for rdb future job
             let future_job_data = JobData {
                 worker_id: Some(worker_id),
-                arg: jarg.clone(),
+                args: jargs.clone(),
                 grabbed_until_time: Some(0),
                 run_after_time: datetime::now_millis() + 10000,
                 ..Default::default()

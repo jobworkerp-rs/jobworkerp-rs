@@ -16,7 +16,7 @@ async fn main() -> Result<()> {
     let runner_factory = Arc::new(RunnerFactory::new());
     let config_module = Arc::new(AppConfigModule::new_by_env(runner_factory));
     let app_module = Arc::new(AppModule::new_by_env(config_module).await?);
-    // setup worker schema on start front
+    // setup runner on start front
     app_module.on_start_front().await?;
 
     let (lock, mut wait) = shutdown::create_lock_and_wait();

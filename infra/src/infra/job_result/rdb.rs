@@ -15,7 +15,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
                 id,
                 job_id,
                 worker_id,
-                arg,
+                args,
                 uniq_key,
                 status,
                 output,
@@ -31,7 +31,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
         .bind(id.value)
         .bind(job_result.job_id.as_ref().unwrap().value) //XXX unwrap
         .bind(job_result.worker_id.as_ref().unwrap().value) //XXX unwrap
-        .bind(&job_result.arg)
+        .bind(&job_result.args)
         .bind(&job_result.uniq_key)
         .bind(job_result.status)
         .bind(
@@ -65,7 +65,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
             "UPDATE job_result SET
             job_id = ?,
             worker_id = ?,
-            arg = ?,
+            args = ?,
             uniq_key = ?,
             status = ?,
             output = ?,
@@ -80,7 +80,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
         )
         .bind(job_result.job_id.as_ref().unwrap().value) //XXX unwrap
         .bind(job_result.worker_id.as_ref().unwrap().value) //XXX unwrap
-        .bind(&job_result.arg)
+        .bind(&job_result.args)
         .bind(&job_result.uniq_key)
         .bind(job_result.status)
         .bind(
@@ -231,19 +231,19 @@ mod test {
     use proto::jobworkerp::data::ResultOutput;
     use proto::jobworkerp::data::ResultStatus;
     use proto::jobworkerp::data::WorkerId;
-    use proto::TestArg;
+    use proto::TestArgs;
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
         let repository = RdbJobResultRepositoryImpl::new(pool);
         let db = repository.db_pool();
-        let arg = TestArg {
+        let args = TestArgs {
             args: vec!["hoge".to_string()],
         };
         let data = Some(JobResultData {
             job_id: Some(JobId { value: 1 }),
             worker_id: Some(WorkerId { value: 2 }),
             worker_name: "".to_string(),
-            arg: RdbJobResultRepositoryImpl::serialize_message(&arg),
+            args: RdbJobResultRepositoryImpl::serialize_message(&args),
             uniq_key: Some("hoge4".to_string()),
             status: ResultStatus::ErrorAndRetry as i32,
             output: Some(ResultOutput {
@@ -277,14 +277,14 @@ mod test {
 
         // update
         let mut tx = db.begin().await.context("error in test")?;
-        let arg = TestArg {
+        let args = TestArgs {
             args: vec!["fuga".to_string()],
         };
         let update = JobResultData {
             job_id: Some(JobId { value: 2 }),
             worker_id: Some(WorkerId { value: 3 }),
             worker_name: "".to_string(), // fixed
-            arg: RdbJobResultRepositoryImpl::serialize_message(&arg),
+            args: RdbJobResultRepositoryImpl::serialize_message(&args),
             uniq_key: Some("fuga4".to_string()),
             status: ResultStatus::FatalError as i32,
             output: Some(ResultOutput {

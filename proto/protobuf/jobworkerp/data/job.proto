@@ -8,7 +8,7 @@ import "jobworkerp/data/worker.proto";
 message JobData {
     jobworkerp.data.WorkerId worker_id = 1;
     // job argument
-    bytes arg = 2;
+    bytes args = 2;
     // unique key: cannot register jobs with same uniq_key at once
     optional string uniq_key = 3;
     // job enqueue-ed(registered) time

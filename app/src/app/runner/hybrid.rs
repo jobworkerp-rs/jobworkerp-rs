@@ -1,40 +1,35 @@
-use super::{
-    UseWorkerSchemaParserWithCache, WorkerSchemaApp, WorkerSchemaCacheHelper,
-    WorkerSchemaWithDescriptor,
-};
+use super::{RunnerApp, RunnerCacheHelper, RunnerDataWithDescriptor, UseRunnerParserWithCache};
 use crate::app::StorageConfig;
 use anyhow::Result;
 use async_trait::async_trait;
 use debug_stub_derive::DebugStub;
 use infra::infra::module::HybridRepositoryModule;
-use infra::infra::worker_schema::rdb::WorkerSchemaRepository;
-use infra::infra::worker_schema::rdb::{
-    RdbWorkerSchemaRepositoryImpl, UseRdbWorkerSchemaRepository,
-};
+use infra::infra::runner::rdb::RunnerRepository;
+use infra::infra::runner::rdb::{RdbRunnerRepositoryImpl, UseRdbRunnerRepository};
 use infra_utils::infra::lock::RwLockWithKey;
 use infra_utils::infra::memory::{self, MemoryCacheConfig, MemoryCacheImpl, UseMemoryCache};
 use infra_utils::infra::rdb::UseRdbPool;
-use proto::jobworkerp::data::{WorkerSchema, WorkerSchemaId};
+use proto::jobworkerp::data::{Runner, RunnerId};
 use std::{sync::Arc, time::Duration};
 use stretto::AsyncCache;
 
 // TODO use redis as cache ? (same implementation as rdb now)
 #[derive(Clone, DebugStub)]
-pub struct HybridWorkerSchemaAppImpl {
+pub struct HybridRunnerAppImpl {
     storage_config: Arc<StorageConfig>,
-    #[debug_stub = "AsyncCache<Arc<String>, Vec<WorkerSchema>>"]
-    async_cache: AsyncCache<Arc<String>, Vec<WorkerSchema>>,
-    descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>>,
+    #[debug_stub = "AsyncCache<Arc<String>, Vec<Runner>>"]
+    async_cache: AsyncCache<Arc<String>, Vec<Runner>>,
+    descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     repositories: Arc<HybridRepositoryModule>,
     key_lock: Arc<RwLockWithKey<Arc<String>>>,
 }
 
-impl HybridWorkerSchemaAppImpl {
+impl HybridRunnerAppImpl {
     pub fn new(
         storage_config: Arc<StorageConfig>,
         memory_cache_config: &MemoryCacheConfig,
         repositories: Arc<HybridRepositoryModule>,
-        descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor>>,
+        descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     ) -> Self {
         Self {
             storage_config,
@@ -46,23 +41,23 @@ impl HybridWorkerSchemaAppImpl {
     }
 }
 
-impl UseWorkerSchemaParserWithCache for HybridWorkerSchemaAppImpl {
-    fn descriptor_cache(&self) -> &MemoryCacheImpl<Arc<String>, WorkerSchemaWithDescriptor> {
+impl UseRunnerParserWithCache for HybridRunnerAppImpl {
+    fn descriptor_cache(&self) -> &MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor> {
         &self.descriptor_cache
     }
 }
 
 #[async_trait]
-impl WorkerSchemaApp for HybridWorkerSchemaAppImpl {
-    async fn load_worker_schema(&self) -> Result<bool> {
-        self.worker_schema_repository().add_from_plugins().await?;
+impl RunnerApp for HybridRunnerAppImpl {
+    async fn load_runner(&self) -> Result<bool> {
+        self.runner_repository().add_from_plugins().await?;
         let _ = self
             .delete_cache_locked(&Self::find_all_list_cache_key())
             .await;
         Ok(true)
     }
-    async fn delete_worker_schema(&self, id: &WorkerSchemaId) -> Result<bool> {
-        let res = self.worker_schema_repository().delete(id).await?;
+    async fn delete_runner(&self, id: &RunnerId) -> Result<bool> {
+        let res = self.runner_repository().delete(id).await?;
         // clear memory cache
         let _ = self
             .delete_cache_locked(&Self::find_cache_key(&id.value))
@@ -73,17 +68,13 @@ impl WorkerSchemaApp for HybridWorkerSchemaAppImpl {
         Ok(res)
     }
 
-    async fn find_worker_schema(
-        &self,
-        id: &WorkerSchemaId,
-        ttl: Option<&Duration>,
-    ) -> Result<Option<WorkerSchema>>
+    async fn find_runner(&self, id: &RunnerId, ttl: Option<&Duration>) -> Result<Option<Runner>>
     where
         Self: Send + 'static,
     {
         let k = Self::find_cache_key(&id.value);
         self.with_cache_locked(&k, ttl, || async {
-            let v = self.worker_schema_repository().find(id).await;
+            let v = self.runner_repository().find(id).await;
             match v {
                 Ok(opt) => Ok(match opt {
                     Some(v) => vec![v],
@@ -97,28 +88,26 @@ impl WorkerSchemaApp for HybridWorkerSchemaAppImpl {
     }
 
     // XXX no cache
-    async fn find_worker_schema_list(
+    async fn find_runner_list(
         &self,
         limit: Option<&i32>,
         offset: Option<&i64>,
         _ttl: Option<&Duration>,
-    ) -> Result<Vec<WorkerSchema>>
+    ) -> Result<Vec<Runner>>
     where
         Self: Send + 'static,
     {
         // TODO cache
-        self.worker_schema_repository()
-            .find_list(limit, offset)
-            .await
+        self.runner_repository().find_list(limit, offset).await
     }
 
-    async fn find_worker_schema_all_list(&self, ttl: Option<&Duration>) -> Result<Vec<WorkerSchema>>
+    async fn find_runner_all_list(&self, ttl: Option<&Duration>) -> Result<Vec<Runner>>
     where
         Self: Send + 'static,
     {
         let k = Arc::new(Self::find_all_list_cache_key());
         self.with_cache_locked(&k, ttl, || async {
-            self.worker_schema_repository().find_list(None, None).await
+            self.runner_repository().find_list(None, None).await
         })
         .await
     }
@@ -128,49 +117,49 @@ impl WorkerSchemaApp for HybridWorkerSchemaAppImpl {
         Self: Send + 'static,
     {
         // TODO cache
-        self.worker_schema_repository()
-            .count_list_tx(self.worker_schema_repository().db_pool())
+        self.runner_repository()
+            .count_list_tx(self.runner_repository().db_pool())
             .await
     }
 
     // for test
     #[cfg(test)]
-    async fn create_test_schema(
+    async fn create_test_runner(
         &self,
-        schema_id: &WorkerSchemaId,
+        runner_id: &RunnerId,
         name: &str,
-    ) -> Result<WorkerSchemaWithDescriptor> {
-        use super::test::test_worker_schema_with_descriptor;
-        use infra::infra::worker_schema::rows::WorkerSchemaRow;
+    ) -> Result<RunnerDataWithDescriptor> {
+        use crate::app::runner::test::test_runner_with_descriptor;
+        use infra::infra::runner::rows::RunnerRow;
         use proto::jobworkerp::data::RunnerType;
 
-        let schema = test_worker_schema_with_descriptor(name);
+        let runner_data = test_runner_with_descriptor(name);
         let _res = self
-            .worker_schema_repository()
-            .create(&WorkerSchemaRow {
-                id: schema_id.value,
+            .runner_repository()
+            .create(&RunnerRow {
+                id: runner_id.value,
                 name: name.to_string(),
                 file_name: format!("lib{}.so", name),
                 r#type: RunnerType::Plugin as i32,
             })
             .await?;
-        self.store_proto_cache(schema_id, &schema).await;
+        self.store_proto_cache(runner_id, &runner_data).await;
         // clear memory cache
         let _ = self
             .delete_cache_locked(&Self::find_all_list_cache_key())
             .await;
-        Ok(schema)
+        Ok(runner_data)
     }
 }
 
-impl UseRdbWorkerSchemaRepository for HybridWorkerSchemaAppImpl {
-    fn worker_schema_repository(&self) -> &RdbWorkerSchemaRepositoryImpl {
-        &self.repositories.rdb_chan_module.worker_schema_repository
+impl UseRdbRunnerRepository for HybridRunnerAppImpl {
+    fn runner_repository(&self) -> &RdbRunnerRepositoryImpl {
+        &self.repositories.rdb_chan_module.runner_repository
     }
 }
 
-impl UseMemoryCache<Arc<String>, Vec<WorkerSchema>> for HybridWorkerSchemaAppImpl {
-    fn cache(&self) -> &AsyncCache<Arc<String>, Vec<WorkerSchema>> {
+impl UseMemoryCache<Arc<String>, Vec<Runner>> for HybridRunnerAppImpl {
+    fn cache(&self) -> &AsyncCache<Arc<String>, Vec<Runner>> {
         &self.async_cache
     }
 
@@ -183,12 +172,12 @@ impl UseMemoryCache<Arc<String>, Vec<WorkerSchema>> for HybridWorkerSchemaAppImp
         &self.key_lock
     }
 }
-impl WorkerSchemaCacheHelper for HybridWorkerSchemaAppImpl {}
+impl RunnerCacheHelper for HybridRunnerAppImpl {}
 
 #[cfg(test)]
 mod test {
-    use crate::app::worker_schema::hybrid::HybridWorkerSchemaAppImpl;
-    use crate::app::worker_schema::WorkerSchemaApp;
+    use crate::app::runner::hybrid::HybridRunnerAppImpl;
+    use crate::app::runner::RunnerApp;
     use crate::app::{StorageConfig, StorageType};
     use anyhow::Result;
     use infra::infra::module::rdb::test::setup_test_rdb_module;
@@ -196,10 +185,10 @@ mod test {
     use infra::infra::module::HybridRepositoryModule;
     use infra_utils::infra::memory::MemoryCacheImpl;
     use infra_utils::infra::test::TEST_RUNTIME;
-    use proto::jobworkerp::data::WorkerSchemaId;
+    use proto::jobworkerp::data::RunnerId;
     use std::sync::Arc;
 
-    fn create_test_app() -> Result<HybridWorkerSchemaAppImpl> {
+    fn create_test_app() -> Result<HybridRunnerAppImpl> {
         let rdb_module = setup_test_rdb_module();
         TEST_RUNTIME.block_on(async {
             let redis_module = setup_test_redis_module().await;
@@ -217,38 +206,35 @@ mod test {
                 r#type: StorageType::Scalable,
                 restore_at_startup: Some(false),
             });
-            let worker_schema_app = HybridWorkerSchemaAppImpl::new(
+            let runner_app = HybridRunnerAppImpl::new(
                 storage_config.clone(),
                 &mc_config,
                 repositories.clone(),
                 descriptor_cache.clone(),
             );
-            worker_schema_app.load_worker_schema().await?;
-            // let _ = worker_schema_app
-            //     .create_test_schema(&WorkerSchemaId { value: 1 }, "Test")
+            runner_app.load_runner().await?;
+            // let _ = runner_app
+            //     .create_test_runner(&RunnerId { value: 1 }, "Test")
             //     .await?;
-            Ok(worker_schema_app)
+            Ok(runner_app)
         })
     }
 
     // create test (create and find)
     #[test]
-    fn test_hybrid_worker_schema() {
+    fn test_hybrid_runner() {
         let app = create_test_app().unwrap();
         TEST_RUNTIME.block_on(async {
-            let res = app
-                .find_worker_schema(&WorkerSchemaId { value: 1 }, None)
-                .await
-                .unwrap();
+            let res = app.find_runner(&RunnerId { value: 1 }, None).await.unwrap();
             assert!(res.is_some());
-            let res = app.find_worker_schema_list(None, None, None).await.unwrap();
+            let res = app.find_runner_list(None, None, None).await.unwrap();
             assert!(!res.is_empty());
         });
     }
 
     // create test (create and find)
     #[test]
-    fn test_hybrid_worker_schema_count() {
+    fn test_hybrid_runner_count() {
         let app = create_test_app().unwrap();
         TEST_RUNTIME.block_on(async {
             let res = app.count().await;

@@ -2,8 +2,8 @@ syntax = "proto3";
 
 package jobworkerp.runner;
 
-// command job operation
-message CommandOperation {
+// command runner settings
+message CommandRunnerSettings {
   // command name (e.g. "echo")
   string name = 1;
 }

@@ -4,12 +4,12 @@ use crate::app::job::JobApp;
 use crate::app::job_result::hybrid::HybridJobResultAppImpl;
 use crate::app::job_result::rdb::RdbJobResultAppImpl;
 use crate::app::job_result::JobResultApp;
+use crate::app::runner::hybrid::HybridRunnerAppImpl;
+use crate::app::runner::rdb::RdbRunnerAppImpl;
+use crate::app::runner::RunnerApp;
 use crate::app::worker::hybrid::HybridWorkerAppImpl;
 use crate::app::worker::rdb::RdbWorkerAppImpl;
 use crate::app::worker::WorkerApp;
-use crate::app::worker_schema::hybrid::HybridWorkerSchemaAppImpl;
-use crate::app::worker_schema::rdb::RdbWorkerSchemaAppImpl;
-use crate::app::worker_schema::WorkerSchemaApp;
 use crate::app::{StorageConfig, WorkerConfig};
 use anyhow::Result;
 use infra::infra::module::rdb::RdbChanRepositoryModule;
@@ -68,7 +68,7 @@ pub struct AppModule {
     pub worker_app: Arc<dyn WorkerApp + 'static>,
     pub job_app: Arc<dyn JobApp + 'static>,
     pub job_result_app: Arc<dyn JobResultApp + 'static>,
-    pub worker_schema_app: Arc<dyn WorkerSchemaApp + 'static>,
+    pub runner_app: Arc<dyn RunnerApp + 'static>,
 }
 
 impl AppModule {
@@ -92,7 +92,7 @@ impl AppModule {
                     )
                     .await,
                 );
-                let worker_schema_app = Arc::new(RdbWorkerSchemaAppImpl::new(
+                let runner_app = Arc::new(RdbRunnerAppImpl::new(
                     config_module.storage_config.clone(),
                     &mc_config,
                     repositories.clone(),
@@ -107,7 +107,7 @@ impl AppModule {
                     ),
                     repositories.clone(),
                     descriptor_cache.clone(),
-                    worker_schema_app.clone(),
+                    runner_app.clone(),
                 ));
                 let job_result_app = Arc::new(RdbJobResultAppImpl::new(
                     config_module.storage_config.clone(),
@@ -131,7 +131,7 @@ impl AppModule {
                     worker_app,
                     job_app,
                     job_result_app,
-                    worker_schema_app,
+                    runner_app,
                 })
             }
             // TODO not used now (remove or implement later)
@@ -144,7 +144,7 @@ impl AppModule {
             //         )
             //         .await,
             //     );
-            //     let worker_schema_app = Arc::new(RedisWorkerSchemaAppImpl::new(
+            //     let runner_app = Arc::new(RedisRunnerAppImpl::new(
             //         config_module.storage_config.clone(),
             //         id_generator.clone(),
             //         &mc_config,
@@ -160,7 +160,7 @@ impl AppModule {
             //         ),
             //         repositories.clone(),
             //         descriptor_cache.clone(),
-            //         worker_schema_app.clone(),
+            //         runner_app.clone(),
             //     ));
             //     let job_result_app = Arc::new(RedisJobResultAppImpl::new(
             //         config_module.storage_config.clone(),
@@ -180,7 +180,7 @@ impl AppModule {
             //         worker_app,
             //         job_app,
             //         job_result_app,
-            //         worker_schema_app,
+            //         runner_app,
             //     })
             // }
             StorageType::Scalable => {
@@ -192,8 +192,8 @@ impl AppModule {
                     )
                     .await,
                 );
-                // TODO imprement and use hybrid runner schema app
-                let worker_schema_app = Arc::new(HybridWorkerSchemaAppImpl::new(
+                // TODO imprement and use hybrid runner app
+                let runner_app = Arc::new(HybridRunnerAppImpl::new(
                     config_module.storage_config.clone(),
                     &mc_config,
                     repositories.clone(),
@@ -208,7 +208,7 @@ impl AppModule {
                     ),
                     repositories.clone(),
                     descriptor_cache,
-                    worker_schema_app.clone(),
+                    runner_app.clone(),
                 ));
                 let job_app = Arc::new(HybridJobAppImpl::new(
                     config_module.clone(),
@@ -232,7 +232,7 @@ impl AppModule {
                     worker_app,
                     job_app,
                     job_result_app,
-                    worker_schema_app,
+                    runner_app,
                 })
             }
         }
@@ -250,23 +250,23 @@ impl AppModule {
     }
     // call on start all-in-one binary main
     pub async fn on_start_all_in_one(&self) -> Result<()> {
-        self.load_worker_schema().await?;
+        self.load_runner().await?;
         self.reload_jobs_from_rdb_with_config().await?;
         Ok(())
     }
     // call on start worker binary main
     pub async fn on_start_worker(&self) -> Result<()> {
-        self.load_worker_schema().await?;
+        self.load_runner().await?;
         self.reload_jobs_from_rdb_with_config().await?;
         Ok(())
     }
     // call on start grpc-front binary main
     pub async fn on_start_front(&self) -> Result<()> {
-        self.load_worker_schema().await?;
+        self.load_runner().await?;
         Ok(())
     }
-    async fn load_worker_schema(&self) -> Result<()> {
-        self.worker_schema_app.load_worker_schema().await?;
+    async fn load_runner(&self) -> Result<()> {
+        self.runner_app.load_runner().await?;
         Ok(())
     }
 }

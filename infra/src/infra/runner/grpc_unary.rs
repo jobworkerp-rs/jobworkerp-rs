@@ -1,4 +1,4 @@
-use crate::jobworkerp::runner::{GrpcUnaryArg, GrpcUnaryOperation};
+use crate::jobworkerp::runner::{GrpcUnaryArgs, GrpcUnaryRunnerSettings};
 use crate::{
     error::JobWorkerError,
     infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec},
@@ -8,10 +8,9 @@ use async_trait::async_trait;
 use proto::jobworkerp::data::RunnerType;
 use tonic::{transport::Channel, IntoRequest};
 
-use super::Runner;
+use super::RunnerTrait;
 
 /// grpc unary request runner.
-/// specify url(http or https) and path (grpc rpc method) as json as 'operation' value in creation of worker.
 /// specify protobuf payload as arg in enqueue.
 /// return response as single byte vector payload (not interpret, not extract vector etc).
 #[derive(Debug, Clone)]
@@ -21,7 +20,6 @@ pub struct GrpcUnaryRunner {
 
 impl GrpcUnaryRunner {
     // TODO Error type
-    // operation: parse as json string: url
     pub fn new() -> Self {
         Self { client: None }
     }
@@ -40,19 +38,19 @@ impl Default for GrpcUnaryRunner {
     }
 }
 
-// arg: {headers:{<headers map>}, queries:[<query string array>], body: <body string or struct>}
 #[async_trait]
-impl Runner for GrpcUnaryRunner {
+impl RunnerTrait for GrpcUnaryRunner {
     fn name(&self) -> String {
         RunnerType::GrpcUnary.as_str_name().to_string()
     }
-    async fn load(&mut self, operation: Vec<u8>) -> Result<()> {
-        let req = JobqueueAndCodec::deserialize_message::<GrpcUnaryOperation>(&operation)?;
+    async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
+        let req = JobqueueAndCodec::deserialize_message::<GrpcUnaryRunnerSettings>(&settings)?;
         self.create(&req.host, &req.port).await
     }
-    async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
+    // args: {headers:{<headers map>}, queries:[<query string array>], body: <body string or struct>}
+    async fn run(&mut self, args: &[u8]) -> Result<Vec<Vec<u8>>> {
         if let Some(client) = self.client.as_mut() {
-            let req = JobqueueAndCodec::deserialize_message::<GrpcUnaryArg>(arg)?;
+            let req = JobqueueAndCodec::deserialize_message::<GrpcUnaryArgs>(args)?;
             let codec = tonic::codec::ProstCodec::default();
             // todo
             // let mut client = tonic::client::Grpc::new(self.conn.clone());
@@ -86,8 +84,8 @@ impl Runner for GrpcUnaryRunner {
     async fn cancel(&mut self) {
         tracing::warn!("cannot cancel grpc request until timeout")
     }
-    fn operation_proto(&self) -> String {
-        include_str!("../../../protobuf/jobworkerp/runner/grpc_unary_operation.proto").to_string()
+    fn runner_settings_proto(&self) -> String {
+        include_str!("../../../protobuf/jobworkerp/runner/grpc_unary_runner.proto").to_string()
     }
     fn job_args_proto(&self) -> String {
         include_str!("../../../protobuf/jobworkerp/runner/grpc_unary_args.proto").to_string()
@@ -107,7 +105,7 @@ async fn run_request() -> Result<()> {
     // common::util::tracing::tracing_init_test(tracing::Level::INFO);
     let mut runner = GrpcUnaryRunner::new();
     runner.create("http://localhost", &9000u32).await?;
-    let arg = crate::jobworkerp::runner::GrpcUnaryArg {
+    let arg = crate::jobworkerp::runner::GrpcUnaryArgs {
         path: "/jobworkerp.service.JobService/Count".to_string(),
         // path: "/jobworkerp.service.WorkerService/FindList".to_string(),
         request: b"".to_vec(),
