@@ -591,10 +591,6 @@ mod tests {
                 max_cost: 10000,
                 use_metrics: false,
             };
-            let worker_memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
-                &mc_config,
-                Some(Duration::from_secs(5 * 60)),
-            );
             let job_memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
                 &mc_config,
                 Some(Duration::from_secs(60)),
@@ -625,7 +621,7 @@ mod tests {
             let worker_app = RdbWorkerAppImpl::new(
                 storage_config.clone(),
                 id_generator.clone(),
-                worker_memory_cache,
+                &mc_config,
                 repositories.clone(),
                 descriptor_cache,
                 runner_app.clone(),

@@ -101,10 +101,7 @@ impl AppModule {
                 let worker_app = Arc::new(RdbWorkerAppImpl::new(
                     config_module.storage_config.clone(),
                     id_generator.clone(),
-                    infra_utils::infra::memory::MemoryCacheImpl::new(
-                        &mc_config,
-                        Some(Duration::from_secs(5 * 60)),
-                    ),
+                    &mc_config,
                     repositories.clone(),
                     descriptor_cache.clone(),
                     runner_app.clone(),
@@ -202,10 +199,7 @@ impl AppModule {
                 let worker_app = Arc::new(HybridWorkerAppImpl::new(
                     config_module.storage_config.clone(),
                     id_generator.clone(),
-                    infra_utils::infra::memory::MemoryCacheImpl::new(
-                        &mc_config,
-                        Some(Duration::from_secs(5 * 60)),
-                    ),
+                    &mc_config,
                     repositories.clone(),
                     descriptor_cache,
                     runner_app.clone(),

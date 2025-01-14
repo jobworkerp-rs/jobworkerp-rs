@@ -376,6 +376,7 @@ impl JobApp for HybridJobAppImpl {
         Self: Send + 'static,
     {
         let k = Arc::new(Self::find_cache_key(id));
+        // XXX negative memory cache exists
         self.memory_cache
             .with_cache(&k, ttl, || async {
                 // find from redis as cache
@@ -611,10 +612,6 @@ mod tests {
                 max_cost: 10000,
                 use_metrics: false,
             };
-            let worker_memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
-                &mc_config,
-                Some(Duration::from_secs(60 * 60)),
-            );
             let job_memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
                 &mc_config,
                 Some(Duration::from_secs(60)),
@@ -649,7 +646,7 @@ mod tests {
             let worker_app = HybridWorkerAppImpl::new(
                 storage_config.clone(),
                 id_generator.clone(),
-                worker_memory_cache,
+                &mc_config,
                 repositories.clone(),
                 descriptor_cache,
                 runner_app,
