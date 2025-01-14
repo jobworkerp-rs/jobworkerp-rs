@@ -22,7 +22,8 @@ use std::sync::Arc;
 pub struct RedisWorkerAppImpl {
     storage_config: Arc<StorageConfig>,
     id_generator: Arc<IdGeneratorWrapper>,
-    memory_cache: MemoryCacheImpl<Arc<String>, Vec<Worker>>,
+    memory_cache: MemoryCacheImpl<Arc<String>, Worker>,
+    list_memory_cache: MemoryCacheImpl<Arc<String>, Vec<Worker>>,
     repositories: Arc<RedisRepositoryModule>,
     descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     runner_app: Arc<RedisRunnerAppImpl>,
@@ -32,7 +33,8 @@ impl RedisWorkerAppImpl {
     pub fn new(
         storage_config: Arc<StorageConfig>,
         id_generator: Arc<IdGeneratorWrapper>,
-        memory_cache: MemoryCacheImpl<Arc<String>, Vec<Worker>>,
+        memory_cache: MemoryCacheImpl<Arc<String>, Worker>,
+        list_memory_cache: MemoryCacheImpl<Arc<String>, Vec<Worker>>,
         repositories: Arc<RedisRepositoryModule>,
         descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
         runner_app: Arc<RedisRunnerAppImpl>,
@@ -41,6 +43,7 @@ impl RedisWorkerAppImpl {
             storage_config,
             id_generator,
             memory_cache,
+            list_memory_cache,
             repositories,
             descriptor_cache,
             runner_app,
@@ -63,9 +66,8 @@ impl WorkerApp for RedisWorkerAppImpl {
         self.validate_runner_settings_data(&wsid, worker.runner_settings.as_slice())
             .await?;
         self.redis_worker_repository().upsert(&w).await?;
-        // clear list cache
-        let kl = Arc::new(Self::find_all_list_cache_key());
-        let _ = self.memory_cache.delete_cache(&kl).await; // ignore error
+        // clear cache
+        let _ = self.clear_cache_by_name(&worker.name).await; // ignore error
         let _ = self
             .redis_worker_repository()
             .publish_worker_changed(&wid, worker)
@@ -101,6 +103,13 @@ impl WorkerApp for RedisWorkerAppImpl {
 
     async fn delete(&self, id: &WorkerId) -> Result<bool> {
         let res = self.redis_worker_repository().delete(id).await?;
+        if let Some(Worker {
+            id: _,
+            data: Some(wd),
+        }) = self.find(id).await?
+        {
+            self.clear_cache_by_name(&wd.name).await;
+        };
         self.clear_cache(id).await;
         let _ = self
             .redis_worker_repository()
@@ -111,23 +120,12 @@ impl WorkerApp for RedisWorkerAppImpl {
 
     async fn delete_all(&self) -> Result<bool> {
         let res = self.redis_worker_repository().delete_all().await?;
-        self.clear_all_cache().await;
+        self.clear_cache_all().await;
         self.redis_worker_repository()
             .publish_worker_all_deleted()
             .await?;
         Ok(res)
     }
-
-    async fn clear_cache_by(&self, id: Option<&WorkerId>, name: Option<&String>) -> Result<()> {
-        if let Some(i) = id {
-            self.clear_cache(i).await;
-        }
-        if let Some(n) = name {
-            self.clear_cache_by_name(n).await;
-        }
-        Ok(())
-    }
-
     async fn find_data_by_name(&self, name: &str) -> Result<Option<WorkerData>>
     where
         Self: Send + 'static,
@@ -143,17 +141,15 @@ impl WorkerApp for RedisWorkerAppImpl {
     {
         let k = Arc::new(Self::find_name_cache_key(name));
         self.memory_cache
-            .with_cache(&k, None, || async {
+            .with_cache_if_some(&k, None, || async {
                 self.redis_worker_repository()
                     .find_by_name(name)
                     .await
                     .tap_err(|err| {
                         tracing::warn!("cannot access redis and rdb in finding worker: {}", err)
                     })
-                    .map(|r| r.map(|o| vec![o]).unwrap_or_default()) // XXX cache type: vector
             })
             .await
-            .map(|r| r.first().map(|o| (*o).clone()))
     }
 
     async fn find(&self, id: &WorkerId) -> Result<Option<Worker>>
@@ -162,17 +158,15 @@ impl WorkerApp for RedisWorkerAppImpl {
     {
         let k = Arc::new(Self::find_cache_key(id));
         self.memory_cache
-            .with_cache(&k, None, || async {
+            .with_cache_if_some(&k, None, || async {
                 self.redis_worker_repository()
                     .find(id)
                     .await
                     .tap_err(|err| {
                         tracing::warn!("cannot access redis and rdb in finding worker: {}", err)
                     })
-                    .map(|r| r.map(|o| vec![o]).unwrap_or_default()) // XXX cache type: vector
             })
             .await
-            .map(|r| r.first().map(|o| (*o).clone()))
     }
 
     async fn find_list(&self, limit: Option<i32>, offset: Option<i64>) -> Result<Vec<Worker>>
@@ -180,7 +174,7 @@ impl WorkerApp for RedisWorkerAppImpl {
         Self: Send + 'static,
     {
         // let k = Arc::new(Self::find_list_cache_key(limit, offset));
-        // self.memory_cache
+        // self.list_memory_cache
         //     .with_cache(&k, None, || async {
         self.redis_worker_repository().find_all().await.map(|v| {
             // soft paging
@@ -203,7 +197,7 @@ impl WorkerApp for RedisWorkerAppImpl {
         Self: Send + 'static,
     {
         let k = Arc::new(Self::find_all_list_cache_key());
-        self.memory_cache
+        self.list_memory_cache
             .with_cache(&k, None, || async {
                 // not use rdb in normal case
                 self.redis_worker_repository().find_all().await
@@ -218,6 +212,19 @@ impl WorkerApp for RedisWorkerAppImpl {
         // find from redis first
         let cnt = self.redis_worker_repository().count().await?;
         Ok(cnt)
+    }
+    // for pubsub (XXX common logic...)
+    async fn clear_cache_by(&self, id: Option<&WorkerId>, name: Option<&String>) -> Result<()> {
+        if let Some(i) = id {
+            self.clear_cache(i).await;
+        }
+        if let Some(n) = name {
+            self.clear_cache_by_name(n).await;
+        }
+        if id.is_none() && name.is_none() {
+            self.clear_cache_all().await;
+        }
+        Ok(())
     }
 }
 
@@ -239,8 +246,11 @@ impl UseRedisRepositoryModule for RedisWorkerAppImpl {
 }
 
 impl WorkerAppCacheHelper for RedisWorkerAppImpl {
-    fn memory_cache(&self) -> &MemoryCacheImpl<Arc<String>, Vec<Worker>> {
+    fn memory_cache(&self) -> &MemoryCacheImpl<Arc<String>, Worker> {
         &self.memory_cache
+    }
+    fn list_memory_cache(&self) -> &MemoryCacheImpl<Arc<String>, Vec<Worker>> {
+        &self.list_memory_cache
     }
 }
 impl UseRunnerApp for RedisWorkerAppImpl {

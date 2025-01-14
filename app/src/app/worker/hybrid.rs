@@ -10,10 +10,11 @@ use infra::infra::worker::event::UseWorkerPublish;
 use infra::infra::worker::rdb::{RdbWorkerRepository, UseRdbWorkerRepository};
 use infra::infra::worker::redis::{RedisWorkerRepository, UseRedisWorkerRepository};
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
-use infra_utils::infra::memory::{MemoryCacheImpl, UseMemoryCache};
+use infra_utils::infra::memory::{MemoryCacheConfig, MemoryCacheImpl, UseMemoryCache};
 use infra_utils::infra::rdb::UseRdbPool;
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use std::sync::Arc;
+use std::time::Duration;
 
 // use crate::app::worker::builtin::{BuiltinWorker, BuiltinWorkerTrait};
 
@@ -29,7 +30,8 @@ use super::{WorkerApp, WorkerAppCacheHelper};
 pub struct HybridWorkerAppImpl {
     storage_config: Arc<StorageConfig>,
     id_generator: Arc<IdGeneratorWrapper>,
-    memory_cache: MemoryCacheImpl<Arc<String>, Vec<Worker>>,
+    memory_cache: MemoryCacheImpl<Arc<String>, Worker>,
+    list_memory_cache: MemoryCacheImpl<Arc<String>, Vec<Worker>>,
     repositories: Arc<HybridRepositoryModule>,
     descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     runner_app: Arc<dyn RunnerApp + 'static>,
@@ -39,15 +41,25 @@ impl HybridWorkerAppImpl {
     pub fn new(
         storage_config: Arc<StorageConfig>,
         id_generator: Arc<IdGeneratorWrapper>,
-        memory_cache: MemoryCacheImpl<Arc<String>, Vec<Worker>>,
+        mc_config: &MemoryCacheConfig,
         repositories: Arc<HybridRepositoryModule>,
         descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
         runner_app: Arc<dyn RunnerApp + 'static>,
     ) -> Self {
+        let list_memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
+            mc_config,
+            Some(Duration::from_secs(5 * 60)),
+        );
+
+        let memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
+            mc_config,
+            Some(Duration::from_secs(5 * 60)),
+        );
         Self {
             storage_config,
             id_generator,
             memory_cache,
+            list_memory_cache,
             repositories,
             descriptor_cache,
             runner_app,
@@ -76,9 +88,8 @@ impl WorkerApp for HybridWorkerAppImpl {
             id
         };
         let _ = self.redis_worker_repository().delete_all().await;
-        // clear list cache
-        let kl = Arc::new(Self::find_all_list_cache_key());
-        let _ = self.memory_cache.delete_cache(&kl).await; // ignore error
+        // clear caches (name and list)
+        self.clear_cache_by_name(&worker.name).await;
         let _ = self
             .redis_worker_repository()
             .publish_worker_changed(&wid, worker)
@@ -128,20 +139,30 @@ impl WorkerApp for HybridWorkerAppImpl {
 
     // TODO clear cache by name
     async fn delete(&self, id: &WorkerId) -> Result<bool> {
-        let _ = self.redis_worker_repository().delete(id).await?;
-        let res = self.rdb_worker_repository().delete(id).await?;
-        self.clear_cache(id).await;
+        let res = if let Some(Worker {
+            id: _,
+            data: Some(wd),
+        }) = self.find(id).await?
+        {
+            let _ = self.rdb_worker_repository().delete(id).await?;
+            let _ = self.redis_worker_repository().delete(id).await?;
+            self.clear_cache(id).await;
+            self.clear_cache_by_name(&wd.name).await;
+            Ok(true)
+        } else {
+            Ok(false)
+        };
         let _ = self
             .redis_worker_repository()
             .publish_worker_deleted(id)
             .await;
-        Ok(res)
+        res
     }
 
     async fn delete_all(&self) -> Result<bool> {
         let res = self.rdb_worker_repository().delete_all().await?;
         let _ = self.redis_worker_repository().delete_all().await?;
-        self.clear_all_cache().await;
+        self.clear_all_list_cache().await;
         let _ = self
             .redis_worker_repository()
             .publish_worker_all_deleted()
@@ -149,18 +170,6 @@ impl WorkerApp for HybridWorkerAppImpl {
         Ok(res)
     }
 
-    async fn clear_cache_by(&self, id: Option<&WorkerId>, name: Option<&String>) -> Result<()> {
-        if let Some(i) = id {
-            self.clear_cache(i).await;
-        }
-        if let Some(n) = name {
-            self.clear_cache_by_name(n).await;
-        }
-        if id.is_none() && name.is_none() {
-            self.clear_all_cache().await;
-        }
-        Ok(())
-    }
     async fn find(&self, id: &WorkerId) -> Result<Option<Worker>>
     where
         Self: Send + 'static,
@@ -168,7 +177,7 @@ impl WorkerApp for HybridWorkerAppImpl {
         let k = Arc::new(Self::find_cache_key(id));
         tracing::debug!("find worker: {}, cache key: {}", id.value, k);
         self.memory_cache
-            .with_cache(&k, None, || async {
+            .with_cache_if_some(&k, None, || async {
                 tracing::trace!("not find from memory");
                 match self.redis_worker_repository().find(id).await {
                     Ok(Some(v)) => Ok(Some(v)),
@@ -182,10 +191,8 @@ impl WorkerApp for HybridWorkerAppImpl {
                         self.rdb_worker_repository().find(id).await
                     }
                 }
-                .map(|r| r.map(|o| vec![o]).unwrap_or_default()) // XXX cache type: vector
             })
             .await
-            .map(|r| r.first().map(|o| (*o).clone()))
     }
 
     async fn find_data_by_name(&self, name: &str) -> Result<Option<WorkerData>>
@@ -204,7 +211,7 @@ impl WorkerApp for HybridWorkerAppImpl {
         let k = Arc::new(Self::find_name_cache_key(name));
         tracing::debug!("find worker: {}, cache key: {}", name, k);
         self.memory_cache
-            .with_cache(&k, None, || async {
+            .with_cache_if_some(&k, None, || async {
                 tracing::debug!("not find from memory");
                 match self.redis_worker_repository().find_by_name(name).await {
                     Ok(Some(v)) => Ok(Some(v)),
@@ -218,10 +225,8 @@ impl WorkerApp for HybridWorkerAppImpl {
                         self.rdb_worker_repository().find_by_name(name).await
                     }
                 }
-                .map(|r| r.map(|o| vec![o]).unwrap_or_default()) // XXX cache type: vector
             })
             .await
-            .map(|r| r.first().map(|o| (*o).clone()))
     }
 
     async fn find_list(&self, limit: Option<i32>, offset: Option<i64>) -> Result<Vec<Worker>>
@@ -290,7 +295,7 @@ impl WorkerApp for HybridWorkerAppImpl {
         Self: Send + 'static,
     {
         let k = Arc::new(Self::find_all_list_cache_key());
-        self.memory_cache
+        self.list_memory_cache
             .with_cache(&k, None, || async {
                 match self.redis_worker_repository().find_all().await {
                     Ok(v) if !v.is_empty() => Ok(v),
@@ -327,6 +332,20 @@ impl WorkerApp for HybridWorkerAppImpl {
         }
         // fallback to rdb if rdb is enabled
         self.rdb_worker_repository().count().await
+    }
+
+    // for pubsub (XXX common logic...)
+    async fn clear_cache_by(&self, id: Option<&WorkerId>, name: Option<&String>) -> Result<()> {
+        if let Some(i) = id {
+            self.clear_cache(i).await;
+        }
+        if let Some(n) = name {
+            self.clear_cache_by_name(n).await;
+        }
+        if id.is_none() && name.is_none() {
+            self.clear_cache_all().await;
+        }
+        Ok(())
     }
 }
 impl UseRdbChanRepositoryModule for HybridWorkerAppImpl {
@@ -367,16 +386,16 @@ impl UseRunnerParserWithCache for HybridWorkerAppImpl {
 impl UseRunnerAppParserWithCache for HybridWorkerAppImpl {}
 
 impl WorkerAppCacheHelper for HybridWorkerAppImpl {
-    fn memory_cache(&self) -> &MemoryCacheImpl<Arc<String>, Vec<Worker>> {
+    fn memory_cache(&self) -> &MemoryCacheImpl<Arc<String>, Worker> {
         &self.memory_cache
+    }
+    fn list_memory_cache(&self) -> &MemoryCacheImpl<Arc<String>, Vec<Worker>> {
+        &self.list_memory_cache
     }
 }
 // create test
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::time::Duration;
-
     use crate::app::runner::hybrid::HybridRunnerAppImpl;
     use crate::app::runner::RunnerApp;
     use crate::app::worker::hybrid::HybridWorkerAppImpl;
@@ -393,6 +412,7 @@ mod tests {
     use infra_utils::infra::test::TEST_RUNTIME;
     use proto::jobworkerp::data::{RunnerId, StorageType, WorkerData};
     use proto::TestRunnerSettings;
+    use std::sync::Arc;
 
     fn create_test_app(use_mock_id: bool) -> Result<HybridWorkerAppImpl> {
         std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug");
@@ -415,10 +435,6 @@ mod tests {
                 use_metrics: false,
             };
             let descriptor_cache = Arc::new(MemoryCacheImpl::new(&mc_config, None));
-            let worker_memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
-                &mc_config,
-                Some(Duration::from_secs(5 * 60)),
-            );
             let storage_config = Arc::new(StorageConfig {
                 r#type: StorageType::Scalable,
                 restore_at_startup: Some(false),
@@ -435,7 +451,7 @@ mod tests {
             let worker_app = HybridWorkerAppImpl::new(
                 storage_config.clone(),
                 id_generator.clone(),
-                worker_memory_cache,
+                &mc_config,
                 repositories.clone(),
                 descriptor_cache,
                 Arc::new(runner_app),
