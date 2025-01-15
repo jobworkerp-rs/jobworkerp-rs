@@ -392,11 +392,6 @@ mod tests {
                 max_cost: 10000,
                 use_metrics: false,
             };
-            let worker_memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
-                &mc_config,
-                Some(Duration::from_secs(5 * 60)),
-            );
-
             let storage_config = Arc::new(StorageConfig {
                 r#type: StorageType::Scalable,
                 restore_at_startup: Some(false),
@@ -415,7 +410,7 @@ mod tests {
             let worker_app = Arc::new(HybridWorkerAppImpl::new(
                 storage_config.clone(),
                 id_generator.clone(),
-                worker_memory_cache,
+                &mc_config,
                 repositories.clone(),
                 descriptor_cache.clone(),
                 runner_app,
