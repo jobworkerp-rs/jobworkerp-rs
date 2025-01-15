@@ -14,21 +14,27 @@ use std::sync::Arc;
 
 #[async_trait]
 pub trait WorkerAppCacheHelper: Send + Sync {
-    fn memory_cache(&self) -> &MemoryCacheImpl<Arc<String>, Vec<Worker>>;
+    fn memory_cache(&self) -> &MemoryCacheImpl<Arc<String>, Worker>;
+    fn list_memory_cache(&self) -> &MemoryCacheImpl<Arc<String>, Vec<Worker>>;
     //cache control
     async fn clear_cache(&self, id: &WorkerId) {
         let k = Arc::new(Self::find_cache_key(id));
         let _ = self.memory_cache().delete_cache(&k).await; // ignore error
-        self.clear_all_cache().await;
+        self.clear_all_list_cache().await;
     }
     async fn clear_cache_by_name(&self, name: &str) {
         let k = Arc::new(Self::find_name_cache_key(name));
         let _ = self.memory_cache().delete_cache(&k).await; // ignore error
-        self.clear_all_cache().await;
+        self.clear_all_list_cache().await;
     }
-    async fn clear_all_cache(&self) {
+    async fn clear_all_list_cache(&self) {
         let kl = Arc::new(Self::find_all_list_cache_key());
-        let _ = self.memory_cache().delete_cache(&kl).await; // ignore error
+        let _ = self.list_memory_cache().delete_cache(&kl).await; // ignore error
+    }
+    // all clear
+    async fn clear_cache_all(&self) {
+        let _ = self.memory_cache().clear().await; // ignore error
+        let _ = self.list_memory_cache().clear().await; // ignore error
     }
 
     fn find_list_cache_key(limit: Option<i32>, offset: Option<i64>) -> String {
@@ -66,7 +72,6 @@ pub trait WorkerApp: fmt::Debug + Send + Sync + 'static {
     async fn update(&self, id: &WorkerId, worker: &Option<WorkerData>) -> Result<bool>;
     async fn delete(&self, id: &WorkerId) -> Result<bool>;
     async fn delete_all(&self) -> Result<bool>;
-    async fn clear_cache_by(&self, id: Option<&WorkerId>, name: Option<&String>) -> Result<()>;
 
     async fn find_data_by_name(&self, name: &str) -> Result<Option<WorkerData>>
     where
@@ -177,6 +182,8 @@ pub trait WorkerApp: fmt::Debug + Send + Sync + 'static {
                 .collect()
         })
     }
+    // for pubsub
+    async fn clear_cache_by(&self, id: Option<&WorkerId>, name: Option<&String>) -> Result<()>;
 }
 
 pub trait UseWorkerApp {

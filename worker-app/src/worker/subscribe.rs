@@ -137,14 +137,11 @@ mod test {
             )
             .await,
         );
-        let memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
-            &infra_utils::infra::memory::MemoryCacheConfig {
-                num_counters: 10,
-                max_cost: 1000000,
-                use_metrics: false,
-            },
-            Some(Duration::from_secs(60)),
-        );
+        let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
+            num_counters: 10,
+            max_cost: 1000000,
+            use_metrics: false,
+        };
         let worker_config = Arc::new(load_worker_config());
         // XXX empty runner map (must confirm deletion: use mock?)
         let runner_map = RunnerFactoryWithPoolMap::new(runner_factory.clone(), worker_config);
@@ -173,7 +170,7 @@ mod test {
         let worker_app = Arc::new(HybridWorkerAppImpl::new(
             storage_config,
             id_generator,
-            memory_cache,
+            &mc_config,
             repositories,
             descriptor_cache,
             runner_app,
