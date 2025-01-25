@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,10 +15,16 @@ use infra_utils::infra::chan::{ChanBuffer, ChanBufferItem};
 use proto::jobworkerp::data::{Job, JobId, JobResult, JobResultData, JobResultId, Priority};
 use signal_hook::consts::SIGINT;
 use signal_hook_tokio::Signals;
+use tokio::sync::Mutex;
 
 #[async_trait]
 pub trait ChanJobQueueRepository:
-    UseChanBuffer<Item = Vec<u8>> + UseJobqueueAndCodec + UseJobQueueConfig + Sync + 'static
+    UseChanBuffer<Item = Vec<u8>>
+    + UseChanQueueBuffer
+    + UseJobqueueAndCodec
+    + UseJobQueueConfig
+    + Sync
+    + 'static
 {
     // for front (send job to worker)
     // return: jobqueue size
@@ -30,7 +36,7 @@ pub trait ChanJobQueueRepository:
         let cn = channel_name
             .unwrap_or(&Self::DEFAULT_CHANNEL_NAME.to_string())
             .to_owned();
-        let qn = Self::queue_channel_name(cn, job.data.as_ref().map(|d| &d.priority));
+        let qn = Self::queue_channel_name(cn.clone(), job.data.as_ref().map(|d| &d.priority));
         match self
             .chan_buf()
             .send_to_chan(
@@ -42,23 +48,37 @@ pub trait ChanJobQueueRepository:
             ) // expect for multiple value
             .await
         {
-            Ok(_) => Ok(self.chan_buf().count_chan_opt(qn).await.unwrap_or(0) as i64),
+            Ok(b) => {
+                if b {
+                    let mut shared_buffer = self.queue_list_buffer().lock().await;
+                    shared_buffer
+                        .entry(qn.clone())
+                        .or_insert_with(Vec::new)
+                        .push(job.clone());
+                };
+                Ok(self.chan_buf().count_chan_opt(qn).await.unwrap_or(0) as i64)
+            }
             Err(e) => Err(JobWorkerError::ChanError(e).into()),
         }
     }
 
     // channel names are ordered by priority (first is highest)
     #[inline]
-    async fn receive_job_from_channels(&self, channel_names: Vec<String>) -> Result<Job>
+    async fn receive_job_from_channels(&self, queue_channel_names: Vec<String>) -> Result<Job>
     where
         Self: Send + Sync,
     {
         // receive from multiple channels immediately (if queue is empty, select each channel for waiting)
-        for cn in &channel_names {
-            tracing::debug!("receive_job_from_channels: channel: {:?}", cn);
-            match self.chan_buf().try_receive_from_chan(cn, None).await {
+        for qn in &queue_channel_names {
+            tracing::debug!("receive_job_from_channels: channel: {:?}", qn);
+            match self.chan_buf().try_receive_from_chan(qn, None).await {
                 Ok(v) => {
-                    return Self::deserialize_job(&v);
+                    let r = Self::deserialize_job(&v)?;
+                    if let Some(v) = self.queue_list_buffer().lock().await.get_mut(qn) {
+                        // remove job from shared buffer
+                        v.retain(|x| x.id != r.id)
+                    }
+                    return Ok(r);
                 }
                 Err(e) => {
                     // channel is empty (or other error)
@@ -66,14 +86,28 @@ pub trait ChanJobQueueRepository:
                 }
             }
         }
-        let (res, _idx, _l) = futures::future::select_all(
-            channel_names
+        // wait for multiple channels
+        let (res, idx, _l) = futures::future::select_all(
+            queue_channel_names
                 .iter()
                 .map(|cn| self.chan_buf().receive_from_chan(cn, None, None).boxed()),
         )
         .await;
-        res.map_err(|e| JobWorkerError::ChanError(e).into())
-            .and_then(|v| Self::deserialize_job(&v))
+        match res.map_err(|e| JobWorkerError::ChanError(e).into()) {
+            Ok(v) => {
+                let r = Self::deserialize_job(&v)?;
+                if let Some(j) = self
+                    .queue_list_buffer()
+                    .lock()
+                    .await
+                    .get_mut(&queue_channel_names[idx])
+                {
+                    j.retain(|x| x.id.as_ref() != r.id.as_ref())
+                }
+                Ok(r)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     // send job result from worker to front directly
@@ -139,24 +173,61 @@ pub trait ChanJobQueueRepository:
         tracing::debug!("wait_for_result_queue_for_response: got res: {:?}", res);
         res
     }
-    // TODO?
-    // cannot iterate channel buffer
-    async fn find_from_queue(
-        &self,
-        _channel: Option<&String>,
-        _priority: Priority,
-        _id: &JobId,
-    ) -> Result<Option<Job>> {
+    // from shared buffer
+    async fn find_from_queue(&self, channel: Option<&String>, id: &JobId) -> Result<Option<Job>> {
+        let default_name = Self::DEFAULT_CHANNEL_NAME.to_string();
+        let cnl = channel.unwrap_or(&default_name);
+        let cl = Self::queue_channel_name(cnl, Some(Priority::Low as i32).as_ref());
+        let cm = Self::queue_channel_name(cnl, Some(Priority::Medium as i32).as_ref());
+        let ch = Self::queue_channel_name(cnl, Some(Priority::High as i32).as_ref());
+
+        let c = vec![ch, cm, cl]; // priority
+        for cn in c {
+            if let Some(v) = self.queue_list_buffer().lock().await.get(&cn) {
+                if let Some(j) = v.iter().find(|x| x.id.as_ref() == Some(id)) {
+                    return Ok(Some(j.clone()));
+                }
+            }
+        }
         Ok(None)
     }
     // cannot iterate channel buffer
     async fn find_multi_from_queue(
         &self,
-        _channel: Option<&String>,
-        _priority: Priority,
-        _ids: &HashSet<i64>,
+        channel: Option<&str>,
+        ids: Option<&HashSet<i64>>,
     ) -> Result<Vec<Job>> {
-        Ok(vec![])
+        // Ok(self
+        //     .shared_buffer()
+        //     .lock()
+        //     .await
+        //     .get(channel.unwrap_or(&Self::DEFAULT_CHANNEL_NAME.to_string()))
+        //     .map(|v| {
+        //         v.iter()
+        //             .filter(|x| ids.is_none_or(|ids| ids.contains(&x.id.unwrap().value)))
+        //             .map(|j| j.clone())
+        //             .collect()
+        //     })
+        //     .unwrap_or_default())
+        // for each channel
+        let default_name = Self::DEFAULT_CHANNEL_NAME.to_string();
+        let cnl = channel.unwrap_or(&default_name);
+        let cl = Self::queue_channel_name(cnl, Some(Priority::Low as i32).as_ref());
+        let cm = Self::queue_channel_name(cnl, Some(Priority::Medium as i32).as_ref());
+        let ch = Self::queue_channel_name(cnl, Some(Priority::High as i32).as_ref());
+
+        let c = vec![ch, cm, cl]; // priority
+        let mut res = vec![];
+        for cn in c {
+            if let Some(v) = self.queue_list_buffer().lock().await.get(&cn) {
+                res.extend(
+                    v.iter()
+                        .filter(|x| ids.is_none() || ids.unwrap().contains(&x.id.unwrap().value))
+                        .cloned(),
+                );
+            }
+        }
+        Ok(res)
     }
 
     async fn delete_from_queue(
@@ -165,7 +236,8 @@ pub trait ChanJobQueueRepository:
         _priority: Priority,
         _job: &Job,
     ) -> Result<i32> {
-        Ok(0)
+        // TODO implement
+        todo!()
     }
     async fn count_queue(&self, channel: Option<&String>, priority: Priority) -> Result<i64> {
         let c = Self::queue_channel_name(
@@ -176,15 +248,25 @@ pub trait ChanJobQueueRepository:
     }
 }
 
+pub trait UseChanQueueBuffer {
+    fn queue_list_buffer(&self) -> &Mutex<HashMap<String, Vec<Job>>>;
+}
+
 #[derive(Clone, Debug)]
 pub struct ChanJobQueueRepositoryImpl {
     pub chan_pool: ChanBuffer<Vec<u8>, Chan<ChanBufferItem<Vec<u8>>>>,
+    pub shared_buffer: Arc<Mutex<HashMap<String, Vec<proto::jobworkerp::data::Job>>>>,
     pub job_queue_config: Arc<JobQueueConfig>,
 }
 impl UseChanBuffer for ChanJobQueueRepositoryImpl {
     type Item = Vec<u8>;
     fn chan_buf(&self) -> &ChanBuffer<Vec<u8>, Chan<ChanBufferItem<Vec<u8>>>> {
         &self.chan_pool
+    }
+}
+impl UseChanQueueBuffer for ChanJobQueueRepositoryImpl {
+    fn queue_list_buffer(&self) -> &Mutex<HashMap<String, Vec<Job>>> {
+        &self.shared_buffer
     }
 }
 impl UseJobQueueConfig for ChanJobQueueRepositoryImpl {
@@ -203,6 +285,7 @@ impl ChanJobQueueRepositoryImpl {
         ChanJobQueueRepositoryImpl {
             chan_pool,
             job_queue_config,
+            shared_buffer: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -230,6 +313,7 @@ mod test {
     struct ChanJobQueueRepositoryImpl {
         job_queue_config: Arc<JobQueueConfig>,
         chan_buf: ChanBuffer<Vec<u8>, Chan<ChanBufferItem<Vec<u8>>>>,
+        shared_buffer: Arc<Mutex<HashMap<String, Vec<Job>>>>,
     }
     impl UseJobQueueConfig for ChanJobQueueRepositoryImpl {
         fn job_queue_config(&self) -> &JobQueueConfig {
@@ -240,6 +324,11 @@ mod test {
         type Item = Vec<u8>;
         fn chan_buf(&self) -> &ChanBuffer<Vec<u8>, Chan<ChanBufferItem<Vec<u8>>>> {
             &self.chan_buf
+        }
+    }
+    impl UseChanQueueBuffer for ChanJobQueueRepositoryImpl {
+        fn queue_list_buffer(&self) -> &Mutex<HashMap<String, Vec<Job>>> {
+            &self.shared_buffer
         }
     }
     impl UseJobqueueAndCodec for ChanJobQueueRepositoryImpl {}
@@ -255,12 +344,15 @@ mod test {
         let repo = ChanJobQueueRepositoryImpl {
             job_queue_config,
             chan_buf: chan_buf.clone(),
+            shared_buffer: Arc::new(Mutex::new(HashMap::new())),
         };
         let args = ChanJobQueueRepositoryImpl::serialize_message(&proto::TestArgs {
             args: vec!["test".to_string()],
         });
+        let job_id = JobId { value: 123 };
+        let job_id2 = JobId { value: 321 };
         let job = Job {
-            id: None,
+            id: job_id.into(),
             data: Some(JobData {
                 worker_id: Some(WorkerId { value: 1 }),
                 args,
@@ -269,12 +361,34 @@ mod test {
                 grabbed_until_time: None,
                 run_after_time: 0i64,
                 retried: 0,
-                priority: 1,
+                priority: Priority::High as i32,
                 timeout: 1000,
             }),
         };
         let r = repo.enqueue_job(None, &job).await?;
         assert_eq!(r, 1);
+        assert_eq!(repo.queue_list_buffer().lock().await.len(), 1);
+        assert_eq!(
+            repo.find_from_queue(None, &job_id).await?,
+            Some(job.clone())
+        );
+        assert_eq!(repo.find_from_queue(None, &job_id2).await?, None);
+        assert_eq!(
+            repo.find_multi_from_queue(None, None).await?,
+            vec![job.clone()]
+        );
+
+        assert_eq!(repo.find_from_queue(None, &job_id2).await?, None);
+        let mut hash_set: HashSet<i64> = [job_id2.value].iter().cloned().collect();
+        assert_eq!(
+            repo.find_multi_from_queue(None, Some(&hash_set)).await?,
+            vec![]
+        );
+        hash_set.insert(job_id.value);
+        assert_eq!(
+            repo.find_multi_from_queue(None, Some(&hash_set)).await?,
+            vec![job.clone()]
+        );
 
         assert_eq!(
             chan_buf
@@ -300,6 +414,7 @@ mod test {
         let repo = Arc::new(ChanJobQueueRepositoryImpl {
             job_queue_config,
             chan_buf,
+            shared_buffer: Arc::new(Mutex::new(HashMap::new())),
         });
         let job_result_id = JobResultId { value: 111 };
         let job_id = JobId { value: 1 };
@@ -349,6 +464,7 @@ mod test {
         let repo = ChanJobQueueRepositoryImpl {
             job_queue_config,
             chan_buf,
+            shared_buffer: Arc::new(Mutex::new(HashMap::new())),
         };
         let args = JobqueueAndCodec::serialize_message(&proto::TestArgs {
             args: vec!["test".to_string()],
@@ -363,7 +479,7 @@ mod test {
                 grabbed_until_time: None,
                 run_after_time: 0i64,
                 retried: 0,
-                priority: 1,
+                priority: Priority::Low as i32,
                 timeout: 1000,
             }),
         };
@@ -377,7 +493,7 @@ mod test {
                 grabbed_until_time: None,
                 run_after_time: 0i64,
                 retried: 0,
-                priority: 2,
+                priority: Priority::High as i32,
                 timeout: 1000,
             }),
         };
@@ -385,20 +501,30 @@ mod test {
         assert_eq!(r, 1);
         let r = repo.enqueue_job(None, &job2).await?;
         assert_eq!(r, 1);
-        let cn1 = ChanJobQueueRepositoryImpl::queue_channel_name(
-            ChanJobQueueRepositoryImpl::DEFAULT_CHANNEL_NAME,
-            Some(&1),
+        assert_eq!(
+            repo.find_multi_from_queue(None, None).await?,
+            vec![job2.clone(), job1.clone(),]
         );
-        let cn2 = ChanJobQueueRepositoryImpl::queue_channel_name(
+
+        let qn1 = ChanJobQueueRepositoryImpl::queue_channel_name(
             ChanJobQueueRepositoryImpl::DEFAULT_CHANNEL_NAME,
-            Some(&2),
+            Some(Priority::Low as i32).as_ref(),
         );
-        let c = vec![cn2, cn1];
+        let qn2 = ChanJobQueueRepositoryImpl::queue_channel_name(
+            ChanJobQueueRepositoryImpl::DEFAULT_CHANNEL_NAME,
+            Some(Priority::High as i32).as_ref(),
+        );
+        let qcn = vec![qn2, qn1];
         // receive job from multiple channels
-        let res = repo.receive_job_from_channels(c.clone()).await?;
+        let res = repo.receive_job_from_channels(qcn.clone()).await?;
         assert_eq!(res.id.unwrap(), job2.id.unwrap());
-        let res = repo.receive_job_from_channels(c).await?;
+        assert_eq!(
+            repo.find_multi_from_queue(None, None).await?,
+            vec![job1.clone()]
+        );
+        let res = repo.receive_job_from_channels(qcn).await?;
         assert_eq!(res.id.unwrap(), job1.id.unwrap());
+        assert_eq!(repo.find_multi_from_queue(None, None).await?, vec![]);
         Ok(())
     }
 }
