@@ -5,8 +5,8 @@ use crate::proto::jobworkerp::data::Priority;
 use crate::proto::jobworkerp::service::job_request::Worker;
 use crate::proto::jobworkerp::service::job_service_server::JobService;
 use crate::proto::jobworkerp::service::{
-    CountCondition, CountResponse, CreateJobResponse, FindListRequest, JobRequest,
-    OptionalJobResponse, SuccessResponse,
+    CountCondition, CountResponse, CreateJobResponse, FindListRequest, FindQueueListRequest,
+    JobAndStatus, JobRequest, OptionalJobResponse, SuccessResponse,
 };
 use crate::service::error_handle::handle_error;
 use app::app::job::JobApp;
@@ -154,6 +154,33 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
             Ok(list) => Ok(Response::new(Box::pin(stream! {
                 for s in list {
                     yield Ok(s)
+                }
+            }))),
+            Err(e) => Err(handle_error(&e)),
+        }
+    }
+    type FindQueueListStream = BoxStream<'static, Result<JobAndStatus, tonic::Status>>;
+    #[tracing::instrument]
+    async fn find_queue_list(
+        &self,
+        request: tonic::Request<FindQueueListRequest>,
+    ) -> Result<tonic::Response<Self::FindQueueListStream>, tonic::Status> {
+        let _s = Self::trace_request("job", "find_queue_list", &request);
+        let req = request.get_ref();
+        let ttl = if req.limit.is_some() {
+            &LIST_TTL
+        } else {
+            &DEFAULT_TTL
+        };
+        // TODO streaming?
+        match self
+            .app()
+            .find_job_queue_list(req.limit.as_ref(), req.channel.as_deref(), Some(ttl))
+            .await
+        {
+            Ok(list) => Ok(Response::new(Box::pin(stream! {
+                for (j,s) in list {
+                    yield Ok(JobAndStatus { job: Some(j), status: s.map(|s| s as i32) })
                 }
             }))),
             Err(e) => Err(handle_error(&e)),
