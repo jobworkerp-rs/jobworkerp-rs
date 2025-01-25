@@ -1,7 +1,7 @@
 use std::{collections::HashSet, sync::Arc};
 
 use super::{
-    queue::rdb::RdbJobQueueRepository,
+    queue::{chan::UseChanQueueBuffer, rdb::RdbJobQueueRepository},
     rows::{JobRow, UseJobqueueAndCodec},
 };
 use crate::{
@@ -317,13 +317,12 @@ impl UseJobQueueConfig for RdbChanJobRepositoryImpl {
 }
 impl UseChanBuffer for RdbChanJobRepositoryImpl {
     type Item = Vec<u8>;
-    type BufItem = Job;
     fn chan_buf(&self) -> &ChanBuffer<Vec<u8>, Chan<ChanBufferItem<Vec<u8>>>> {
         &self.chan_buf
     }
-    fn shared_buffer(
-        &self,
-    ) -> &tokio::sync::Mutex<std::collections::HashMap<String, Vec<Self::BufItem>>> {
+}
+impl UseChanQueueBuffer for RdbChanJobRepositoryImpl {
+    fn queue_list_buffer(&self) -> &tokio::sync::Mutex<std::collections::HashMap<String, Vec<Job>>> {
         &self.shared_buffer
     }
 }

@@ -19,7 +19,8 @@ use tokio::sync::Mutex;
 
 #[async_trait]
 pub trait ChanJobQueueRepository:
-    UseChanBuffer<Item = Vec<u8>, BufItem = Job>
+    UseChanBuffer<Item = Vec<u8>>
+    + UseChanQueueBuffer
     + UseJobqueueAndCodec
     + UseJobQueueConfig
     + Sync
@@ -49,7 +50,7 @@ pub trait ChanJobQueueRepository:
         {
             Ok(b) => {
                 if b {
-                    let mut shared_buffer = self.shared_buffer().lock().await;
+                    let mut shared_buffer = self.queue_list_buffer().lock().await;
                     shared_buffer
                         .entry(qn.clone())
                         .or_insert_with(Vec::new)
@@ -73,7 +74,7 @@ pub trait ChanJobQueueRepository:
             match self.chan_buf().try_receive_from_chan(qn, None).await {
                 Ok(v) => {
                     let r = Self::deserialize_job(&v)?;
-                    if let Some(v) = self.shared_buffer().lock().await.get_mut(qn) {
+                    if let Some(v) = self.queue_list_buffer().lock().await.get_mut(qn) {
                         // remove job from shared buffer
                         v.retain(|x| x.id != r.id)
                     }
@@ -96,7 +97,7 @@ pub trait ChanJobQueueRepository:
             Ok(v) => {
                 let r = Self::deserialize_job(&v)?;
                 if let Some(j) = self
-                    .shared_buffer()
+                    .queue_list_buffer()
                     .lock()
                     .await
                     .get_mut(&queue_channel_names[idx])
@@ -182,7 +183,7 @@ pub trait ChanJobQueueRepository:
 
         let c = vec![ch, cm, cl]; // priority
         for cn in c {
-            if let Some(v) = self.shared_buffer().lock().await.get(&cn) {
+            if let Some(v) = self.queue_list_buffer().lock().await.get(&cn) {
                 if let Some(j) = v.iter().find(|x| x.id.as_ref() == Some(id)) {
                     return Ok(Some(j.clone()));
                 }
@@ -218,7 +219,7 @@ pub trait ChanJobQueueRepository:
         let c = vec![ch, cm, cl]; // priority
         let mut res = vec![];
         for cn in c {
-            if let Some(v) = self.shared_buffer().lock().await.get(&cn) {
+            if let Some(v) = self.queue_list_buffer().lock().await.get(&cn) {
                 res.extend(
                     v.iter()
                         .filter(|x| ids.is_none() || ids.unwrap().contains(&x.id.unwrap().value))
@@ -247,6 +248,10 @@ pub trait ChanJobQueueRepository:
     }
 }
 
+pub trait UseChanQueueBuffer {
+    fn queue_list_buffer(&self) -> &Mutex<HashMap<String, Vec<Job>>>;
+}
+
 #[derive(Clone, Debug)]
 pub struct ChanJobQueueRepositoryImpl {
     pub chan_pool: ChanBuffer<Vec<u8>, Chan<ChanBufferItem<Vec<u8>>>>,
@@ -255,11 +260,12 @@ pub struct ChanJobQueueRepositoryImpl {
 }
 impl UseChanBuffer for ChanJobQueueRepositoryImpl {
     type Item = Vec<u8>;
-    type BufItem = proto::jobworkerp::data::Job;
     fn chan_buf(&self) -> &ChanBuffer<Vec<u8>, Chan<ChanBufferItem<Vec<u8>>>> {
         &self.chan_pool
     }
-    fn shared_buffer(&self) -> &Mutex<HashMap<String, Vec<Job>>> {
+}
+impl UseChanQueueBuffer for ChanJobQueueRepositoryImpl {
+    fn queue_list_buffer(&self) -> &Mutex<HashMap<String, Vec<Job>>> {
         &self.shared_buffer
     }
 }
@@ -316,11 +322,12 @@ mod test {
     }
     impl UseChanBuffer for ChanJobQueueRepositoryImpl {
         type Item = Vec<u8>;
-        type BufItem = Job;
         fn chan_buf(&self) -> &ChanBuffer<Vec<u8>, Chan<ChanBufferItem<Vec<u8>>>> {
             &self.chan_buf
         }
-        fn shared_buffer(&self) -> &Mutex<HashMap<String, Vec<Self::BufItem>>> {
+    }
+    impl UseChanQueueBuffer for ChanJobQueueRepositoryImpl {
+        fn queue_list_buffer(&self) -> &Mutex<HashMap<String, Vec<Job>>> {
             &self.shared_buffer
         }
     }
@@ -360,7 +367,7 @@ mod test {
         };
         let r = repo.enqueue_job(None, &job).await?;
         assert_eq!(r, 1);
-        assert_eq!(repo.shared_buffer().lock().await.len(), 1);
+        assert_eq!(repo.queue_list_buffer().lock().await.len(), 1);
         assert_eq!(
             repo.find_from_queue(None, &job_id).await?,
             Some(job.clone())
