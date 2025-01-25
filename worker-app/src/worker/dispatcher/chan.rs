@@ -241,6 +241,11 @@ pub trait ChanJobDispatcher:
                         ))
                         .into());
                     }
+            } else {
+                // change status to running
+                self.job_status_repository()
+                    .upsert_status(&jid, &JobStatus::Running)
+                    .await?;
             }
             // run job
             let r = self
