@@ -71,9 +71,9 @@ impl HybridJobAppImpl {
                     .find_multi_from_queue(
                         // decode all jobs and check id in queue (heavy runner_settings when many jobs in queue)
                         // TODO change to resolve only ids for less memory
-                        Some(channel),
+                        Some(channel.as_str()),
                         *priority,
-                        job_ids,
+                        Some(job_ids),
                     )
                     .await?
                     .iter()
@@ -425,6 +425,45 @@ impl JobApp for HybridJobAppImpl {
                 Ok(v)
             })
             .await
+    }
+    async fn find_job_queue_list(
+        &self,
+        limit: Option<&i32>,
+        channel: Option<&str>,
+        ttl: Option<&Duration>,
+    ) -> Result<Vec<(Job, Option<JobStatus>)>>
+    where
+        Self: Send + 'static,
+    {
+        // let k = Arc::new(Self::find_queue_cache_key(channel, limit));
+        // self.memory_cache
+        //     .with_cache(&k, ttl, || async {
+        // from redis queue with limit channel
+        let priorities = [Priority::High, Priority::Medium, Priority::Low];
+        let mut ret = vec![];
+        for priority in priorities.iter() {
+            let v = self
+                .redis_job_repository()
+                .find_multi_from_queue(channel, *priority, None)
+                .await?;
+            ret.extend(v);
+            if ret.len() >= *limit.unwrap_or(&100) as usize {
+                ret.truncate(*limit.unwrap_or(&100) as usize);
+                break;
+            }
+        }
+        let mut job_and_status = vec![];
+        for j in ret.iter() {
+            if let Some(jid) = j.id.as_ref() {
+                if let Some(j) = self.find_job(jid, ttl).await? {
+                    let s = self.job_status_repository().find_status(jid).await?;
+                    job_and_status.push((j, s));
+                }
+            }
+        }
+        Ok(job_and_status)
+        // })
+        // .await
     }
 
     async fn find_job_status(&self, id: &JobId) -> Result<Option<JobStatus>>

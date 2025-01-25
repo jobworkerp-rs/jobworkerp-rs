@@ -244,6 +244,18 @@ impl JobApp for RedisJobAppImpl {
         };
         Ok(v)
     }
+    async fn find_job_queue_list(
+        &self,
+        _limit: Option<&i32>,
+        _channel: Option<&str>,
+        _ttl: Option<&Duration>, // not used
+    ) -> Result<Vec<(Job, Option<JobStatus>)>>
+    where
+        Self: Send + 'static,
+    {
+        // not used now
+        todo!()
+    }
 
     async fn count(&self) -> Result<i64>
     where
