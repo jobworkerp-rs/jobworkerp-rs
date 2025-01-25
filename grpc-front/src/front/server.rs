@@ -14,7 +14,6 @@ use crate::service::worker::WorkerGrpcImpl;
 use anyhow::anyhow;
 use anyhow::Result;
 use app::module::AppModule;
-use command_utils::util::result::TapErr;
 use command_utils::util::shutdown::ShutdownLock;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -39,7 +38,7 @@ pub async fn start_server(
         match tokio::signal::ctrl_c().await {
             Ok(()) => {
                 tracing::info!("received ctrl_c");
-                let _ = tx.send(()).tap_err(|e| {
+                let _ = tx.send(()).inspect_err(|e| {
                     tracing::error!("failed to send shutdown signal: {:?}", e);
                 });
             }

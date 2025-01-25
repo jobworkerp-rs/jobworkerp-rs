@@ -35,7 +35,7 @@ pub struct RdbChanJobAppImpl {
     id_generator: Arc<IdGeneratorWrapper>,
     repositories: Arc<RdbChanRepositoryModule>,
     worker_app: Arc<dyn WorkerApp + 'static>,
-    memory_cache: MemoryCacheImpl<Arc<String>, Vec<Job>>,
+    memory_cache: MemoryCacheImpl<Arc<String>, Job>,
 }
 
 impl RdbChanJobAppImpl {
@@ -44,7 +44,7 @@ impl RdbChanJobAppImpl {
         id_generator: Arc<IdGeneratorWrapper>,
         repositories: Arc<RdbChanRepositoryModule>,
         worker_app: Arc<dyn WorkerApp + 'static>,
-        memory_cache: MemoryCacheImpl<Arc<String>, Vec<Job>>,
+        memory_cache: MemoryCacheImpl<Arc<String>, Job>,
     ) -> Self {
         Self {
             app_config_module,
@@ -142,7 +142,7 @@ impl JobApp for RdbChanJobAppImpl {
                         id: Some(jid),
                         data: Some(data.to_owned()),
                     };
-                    self.enqueue_job_immediately(&job, w).await
+                    self.enqueue_job_sync(&job, w).await
                 } else if w.periodic_interval > 0 || self.is_run_after_job_data(&data) {
                     let job = Job {
                         id: Some(jid),
@@ -170,7 +170,7 @@ impl JobApp for RdbChanJobAppImpl {
                     if w.queue_type == QueueType::WithBackup as i32 {
                         // instant job (store rdb for backup, and enqueue to chan)
                         match self.rdb_job_repository().create(&job).await {
-                            Ok(_id) => self.enqueue_job_immediately(&job, w).await,
+                            Ok(_id) => self.enqueue_job_sync(&job, w).await,
                             Err(e) => Err(e),
                         }
                     } else if w.queue_type == QueueType::ForcedRdb as i32 {
@@ -188,7 +188,7 @@ impl JobApp for RdbChanJobAppImpl {
                         }
                     } else {
                         // instant job (enqueue to chan only)
-                        self.enqueue_job_immediately(&job, w).await
+                        self.enqueue_job_sync(&job, w).await
                     }
                 }
             } else {
@@ -236,7 +236,7 @@ impl JobApp for RdbChanJobAppImpl {
                         || w.queue_type == QueueType::WithBackup as i32)
                 {
                     // enqueue to chan for instant job
-                    self.enqueue_job_immediately(job, &w).await.map(|_| true)
+                    self.enqueue_job_sync(job, &w).await.map(|_| true)
                 } else {
                     Ok(false)
                 };
@@ -319,36 +319,55 @@ impl JobApp for RdbChanJobAppImpl {
     {
         let k = Arc::new(Self::find_cache_key(id));
         self.memory_cache
-            .with_cache(&k, ttl, || async {
-                let rv = self
-                    .rdb_job_repository()
-                    .find(id)
-                    .await
-                    .map(|r| r.map(|o| vec![o]).unwrap_or_default())?;
-                Ok(rv)
+            .with_cache_if_some(&k, ttl, || async {
+                self.rdb_job_repository().find(id).await
             })
             .await
-            .map(|r| r.first().map(|o| (*o).clone()))
     }
 
     async fn find_job_list(
         &self,
         limit: Option<&i32>,
         offset: Option<&i64>,
-        ttl: Option<&Duration>,
+        _ttl: Option<&Duration>,
     ) -> Result<Vec<Job>>
     where
         Self: Send + 'static,
     {
-        let k = Arc::new(Self::find_list_cache_key(limit, offset.unwrap_or(&0i64)));
-        self.memory_cache
-            .with_cache(&k, ttl, || async {
-                // from rdb with limit offset
-                // XXX use redis as cache ?
-                let v = self.rdb_job_repository().find_list(limit, offset).await?;
-                Ok(v)
-            })
-            .await
+        // let k = Arc::new(Self::find_list_cache_key(limit, offset.unwrap_or(&0i64)));
+        // self.memory_cache
+        //     .with_cache(&k, ttl, || async {
+        // from rdb with limit offset
+        let v = self.rdb_job_repository().find_list(limit, offset).await?;
+        Ok(v)
+        // })
+        // .await
+    }
+    async fn find_job_queue_list(
+        &self,
+        limit: Option<&i32>,
+        channel: Option<&str>,
+        _ttl: Option<&Duration>, // not used
+    ) -> Result<Vec<(Job, Option<JobStatus>)>>
+    where
+        Self: Send + 'static,
+    {
+        let v = self
+            .chan_job_queue_repository()
+            .find_multi_from_queue(channel, None)
+            .await?;
+        let mut res = vec![];
+        for j in v {
+            if let Some(jid) = j.id.as_ref() {
+                if let Ok(status) = self.job_status_repository().find_status(jid).await {
+                    res.push((j, status));
+                    if limit.is_some() && res.len() >= *limit.unwrap() as usize {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(res)
     }
 
     async fn find_job_status(&self, id: &JobId) -> Result<Option<JobStatus>>
@@ -492,7 +511,7 @@ where
     Self: Sized + 'static,
 {
     // for chanbuffer
-    async fn enqueue_job_immediately(
+    async fn enqueue_job_sync(
         &self,
         job: &Job,
         worker: &WorkerData,

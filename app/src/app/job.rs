@@ -83,6 +83,15 @@ pub trait JobApp: fmt::Debug + Send + Sync {
     where
         Self: Send + 'static;
 
+    async fn find_job_queue_list(
+        &self,
+        limit: Option<&i32>,
+        channel: Option<&str>,
+        ttl: Option<&Duration>,
+    ) -> Result<Vec<(Job, Option<JobStatus>)>>
+    where
+        Self: Send + 'static;
+
     async fn count(&self) -> Result<i64>
     where
         Self: Send + 'static;

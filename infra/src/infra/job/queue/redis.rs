@@ -131,13 +131,13 @@ where
     // iterate queue and find job with id (heavy operation when queue is long)
     async fn find_multi_from_queue(
         &self,
-        channel: Option<&String>,
+        channel: Option<&str>,
         priority: Priority,
-        ids: &HashSet<i64>,
+        ids: Option<&HashSet<i64>>,
     ) -> Result<Vec<Job>> {
         let limit = 1000;
         let c = Self::queue_channel_name(
-            channel.unwrap_or(&Self::DEFAULT_CHANNEL_NAME.to_string()),
+            channel.unwrap_or(Self::DEFAULT_CHANNEL_NAME),
             Some(priority as i32).as_ref(),
         );
         let mut redis = self.redis_pool().get().await?;
@@ -153,7 +153,7 @@ where
             i += limit;
             while let Some(j) = r.pop() {
                 let j = Self::deserialize_job(&j)?;
-                if ids.contains(&j.id.as_ref().unwrap().value) {
+                if ids.is_none_or(|ids| ids.contains(&j.id.as_ref().unwrap().value)) {
                     jobs.push(j);
                 }
             }

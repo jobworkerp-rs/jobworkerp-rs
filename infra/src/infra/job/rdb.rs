@@ -273,6 +273,7 @@ pub struct RdbChanJobRepositoryImpl {
     job_queue_config: Arc<JobQueueConfig>,
     pool: &'static RdbPool,
     chan_buf: ChanBuffer<Vec<u8>, Chan<ChanBufferItem<Vec<u8>>>>,
+    shared_buffer: Arc<tokio::sync::Mutex<std::collections::HashMap<String, Vec<Job>>>>,
 }
 
 pub trait UseRdbChanJobRepository {
@@ -284,11 +285,15 @@ pub trait UseRdbChanJobRepositoryOptional {
 }
 
 impl RdbChanJobRepositoryImpl {
+    const DEFAULT_CAPACITY: usize = 100_000;
     pub fn new(job_queue_config: Arc<JobQueueConfig>, pool: &'static RdbPool) -> Self {
         Self {
             job_queue_config,
             pool,
-            chan_buf: ChanBuffer::new(None, 100_000),
+            chan_buf: ChanBuffer::new(None, Self::DEFAULT_CAPACITY),
+            shared_buffer: Arc::new(tokio::sync::Mutex::new(
+                std::collections::HashMap::with_capacity(Self::DEFAULT_CAPACITY),
+            )),
         }
     }
 }
@@ -312,8 +317,14 @@ impl UseJobQueueConfig for RdbChanJobRepositoryImpl {
 }
 impl UseChanBuffer for RdbChanJobRepositoryImpl {
     type Item = Vec<u8>;
+    type BufItem = Job;
     fn chan_buf(&self) -> &ChanBuffer<Vec<u8>, Chan<ChanBufferItem<Vec<u8>>>> {
         &self.chan_buf
+    }
+    fn shared_buffer(
+        &self,
+    ) -> &tokio::sync::Mutex<std::collections::HashMap<String, Vec<Self::BufItem>>> {
+        &self.shared_buffer
     }
 }
 
