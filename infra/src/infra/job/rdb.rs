@@ -322,7 +322,9 @@ impl UseChanBuffer for RdbChanJobRepositoryImpl {
     }
 }
 impl UseChanQueueBuffer for RdbChanJobRepositoryImpl {
-    fn queue_list_buffer(&self) -> &tokio::sync::Mutex<std::collections::HashMap<String, Vec<Job>>> {
+    fn queue_list_buffer(
+        &self,
+    ) -> &tokio::sync::Mutex<std::collections::HashMap<String, Vec<Job>>> {
         &self.shared_buffer
     }
 }
