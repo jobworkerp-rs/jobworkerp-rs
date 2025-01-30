@@ -5,6 +5,7 @@ pub mod command;
 pub mod docker;
 pub mod factory;
 pub mod grpc_unary;
+pub mod job_result_slack;
 pub mod k8s_job;
 pub mod plugins;
 pub mod request;
