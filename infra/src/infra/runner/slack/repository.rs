@@ -1,12 +1,39 @@
 use std::borrow::Cow;
 
-use super::{
-    client::{Attachment, AttachmentField, PostMessageRequest, SlackMessageClientImpl},
-    ResultMessageData, SlackConfig,
+use crate::{
+    infra::runner::job_result_slack::ResultMessageData,
+    jobworkerp::runner::SlackNotificationRunnerSettings,
 };
+
+use super::client::{Attachment, AttachmentField, PostMessageRequest, SlackMessageClientImpl};
 use anyhow::Result;
 use command_utils::util::datetime;
 use itertools::Itertools;
+use serde::Deserialize;
+
+#[derive(Clone, Deserialize, Debug, Default)] // for test only
+pub struct SlackConfig {
+    pub title: Option<String>, // only use in send_result() method(not used for runner)
+    pub channel: String,       // only use in send_result() method(not used for runner)
+    pub bot_token: String,     // required
+                               // ↓ comment in if needed
+                               // pub app_token: String,
+                               // pub user_token: String,
+}
+impl From<SlackNotificationRunnerSettings> for SlackConfig {
+    fn from(op: SlackNotificationRunnerSettings) -> Self {
+        Self {
+            title: if op.title.is_empty() {
+                None
+            } else {
+                Some(op.title)
+            },
+            channel: op.channel,
+            bot_token: op.bot_token,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SlackRepository {
     pub config: SlackConfig,
@@ -22,9 +49,20 @@ impl SlackRepository {
             client: SlackMessageClientImpl::new(),
         }
     }
+    pub async fn send_json(&self, req: &serde_json::Value) -> Result<String> {
+        let response = self.client.post_json(&self.config.bot_token, req).await;
+        tracing::debug!("slack response: {:?}", &response);
+        response
+    }
 
-    pub async fn send_result(&self, res: &ResultMessageData, is_error: bool) -> Result<()> {
-        if is_error && !self.config.notify_failure || !is_error && !self.config.notify_success {
+    pub async fn send_result(
+        &self,
+        res: &ResultMessageData,
+        is_error: bool,
+        notify_success: bool,
+        notify_failure: bool,
+    ) -> Result<()> {
+        if is_error && !notify_failure || !is_error && !notify_success {
             // not notify by setting and status
             tracing::debug!(
                 "not notify by setting and status. job_id: {:?}, worker: {}",
