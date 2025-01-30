@@ -23,24 +23,34 @@ impl SlackMessageClientImpl {
         }
     }
     pub async fn post_message(&self, token: &str, param: &PostMessageRequest) -> Result<String> {
-        let json = serde_json::to_string(param)?;
-        self.post_json(&Self::get_post_message_url(), token, json)
-            .await
+        let json = serde_json::json!(param);
+        self.post_json(token, &json).await
     }
-    pub async fn post_json(&self, url: &str, token: &str, json: String) -> Result<String> {
-        let check_url = url::Url::parse(url)?;
+    pub async fn post_json(&self, token: &str, json: &serde_json::Value) -> Result<String> {
+        let parsed_url = url::Url::parse(&Self::get_post_message_url())?;
 
-        let res = self
+        match self
             .client
-            .post(check_url)
+            .post(parsed_url)
             .header("Authorization", format!("Bearer {}", token))
             .header("Content-type", "application/json; charset=utf-8")
-            .body(json)
+            .body(json.to_string())
             .send()
-            .await?
-            .bytes()
-            .await?;
-        Ok(String::from_utf8_lossy(res.as_ref()).to_string())
+            .await
+        {
+            Ok(res) => {
+                if res.status() != reqwest::StatusCode::OK {
+                    return Err(anyhow::anyhow!("slack error: {:?}", res));
+                }
+                let res = res
+                    .error_for_status()
+                    .map_err(|e| anyhow::anyhow!("slack error: {:?}", e))?
+                    .bytes()
+                    .await?;
+                Ok(String::from_utf8_lossy(res.as_ref()).to_string())
+            }
+            Err(e) => Err(anyhow::anyhow!("slack error: {:?}", e)),
+        }
     }
 }
 
