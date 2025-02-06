@@ -17,27 +17,14 @@ infra = { path = "../infra" }
 app = { path = "../app" }
 
 anyhow = { workspace = true }
-async-stream = "0.3"
-debug_stub_derive = "0.3"
+async-stream = { workspace = true }
+debug_stub_derive = { workspace = true }
 dotenvy = { workspace = true }
 futures = { workspace = true }
 prost = { workspace = true }
-sqlx = { workspace = true, features = [
-    "runtime-tokio-native-tls",
-    "sqlite",
-    "mysql",
-    "macros",
-    "chrono",
-] }
-tokio = { workspace = true, features = [
-    "macros",
-    "rt-multi-thread",
-    "sync",
-    "time",
-    "process",
-    "parking_lot",
-] }
-tokio-stream = "0.1"
+sqlx = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
 tonic = { workspace = true }
 tonic-health = { workspace = true }
 tonic-reflection = { workspace = true }

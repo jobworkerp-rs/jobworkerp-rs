@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS `worker` (
     `store_success` BOOLEAN NOT NULL,
     `store_failure` BOOLEAN NOT NULL,
     `next_workers` TEXT NOT NULL,
-    `use_static` BOOLEAN NOT NULL
+    `use_static` BOOLEAN NOT NULL,
+    `output_as_stream` BOOLEAN NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS `job` (

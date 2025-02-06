@@ -1,10 +1,16 @@
 use crate::infra::runner::RunnerTrait;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use super::PluginRunner;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use command_utils::util::result::{Flatten, TapErr};
+use futures::executor::block_on;
+use futures::stream::BoxStream;
+use futures::stream::StreamExt;
+use proto::jobworkerp::data::result_output_item;
+use proto::jobworkerp::data::Empty;
+use proto::jobworkerp::data::ResultOutputItem;
+use tokio::sync::RwLock;
 
 /**
  * PluginRunner wrapper
@@ -24,15 +30,14 @@ impl PluginRunnerWrapperImpl {
     async fn create(&self, settings: Vec<u8>) -> Result<()> {
         let plugin_runner = Arc::clone(&self.plugin_runner);
         #[allow(unstable_name_collisions)]
-        tokio::task::spawn_blocking(move || {
-            plugin_runner
-                .write()
-                .map_err(|e| anyhow!("plugin runner lock error: {:?}", e))
-                .and_then(|mut r| r.load(settings))
+        tokio::task::spawn_blocking(|| async move {
+            plugin_runner.write().await.load(settings)
+            // .map_err(|e| anyhow!("plugin runner lock error: {:?}", e))
+            // .and_then(|mut r| r.load(settings))
         })
         .await
-        .map_err(|e| e.into())
-        .flatten()?;
+        .map_err(|e| anyhow!("plugin runner lock error: {:?}", e))?
+        .await?;
         Ok(())
     }
 }
@@ -41,10 +46,9 @@ impl PluginRunnerWrapperImpl {
 impl RunnerTrait for PluginRunnerWrapperImpl {
     fn name(&self) -> String {
         let plugin_runner = Arc::clone(&self.plugin_runner);
-        let n = plugin_runner
-            .read()
-            .map(|p| p.name())
-            .unwrap_or_else(|e| format!("Error occurred: {:}", e));
+        let n = block_on(plugin_runner.read()).name();
+        // .map(|p| p.name())
+        // .unwrap_or_else(|e| format!("Error occurred: {:}", e));
         n
     }
     async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
@@ -57,56 +61,113 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         // XXX clone
         let plugin_runner = self.plugin_runner.clone();
         let arg1 = arg.to_vec();
-        tokio::task::spawn_blocking(move || {
-            match plugin_runner
-                .write()
-                .map_err(|e| anyhow::anyhow!("plugin runner lock error: {:?}", e))
-            {
-                Ok(mut runner) => runner.run(arg1).map_err(|e| {
-                    tracing::warn!("in running pluginRunner: {:?}", e);
-                    anyhow!("in running pluginRunner: {:?}", e)
-                }),
-                Err(e) => Err(e),
-            }
+        // tokio::task::spawn_blocking(|| async move {
+        let mut runner = plugin_runner.write().await;
+        // .map_err(|e| anyhow::anyhow!("plugin runner lock error: {:?}", e))
+        // {
+        //     Ok(mut runner) =>
+        runner.run(arg1).map_err(|e| {
+            tracing::warn!("in running pluginRunner: {:?}", e);
+            // anyhow!("in running pluginRunner: {:?}", e)
+            e
         })
-        .await
-        .map_err(|e| e.into())
-        .flatten()
+        // Err(e) => Err(e),
+        // }
+        // })
+        // .await
+        // .map_err(|e| e.into())
+        // .flatten()
+    }
+
+    async fn run_stream(&mut self, arg: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>> {
+        // XXX clone
+        let plugin_runner = self.plugin_runner.clone();
+        let arg1 = arg.to_vec();
+        let mut runner = plugin_runner.write().await;
+        // .map_err(|e| anyhow!("plugin runner lock error: {:?}", e))?;
+        let r1 = runner.as_mut();
+        // begin stream (set argument and setup stream)
+        r1.begin_stream(arg1).map_err(|e| {
+            tracing::warn!("in running pluginRunner: {:?}", e);
+            anyhow!("in running pluginRunner: {:?}", e)
+        })?;
+        let plugin_runner = self.plugin_runner.clone();
+        let st = async_stream::stream! {
+            let mut runner = plugin_runner.write().await;
+            loop {
+                let maybe_v = {
+                    // run and receive from stream iteratively
+                    runner.receive_stream()
+                };
+                match maybe_v {
+                    Ok(Some(v)) => {
+                        yield ResultOutputItem { item: Some(result_output_item::Item::Data(v)) }
+                    },
+                    Ok(None) => {
+                        yield ResultOutputItem { item: Some(result_output_item::Item::End(Empty{})) };
+                        break
+                    },
+                    Err(e) => {
+                        tracing::warn!("Error occurred: {:}", e);
+                        yield ResultOutputItem { item: Some(result_output_item::Item::End(Empty{})) };
+                        break
+                    },
+                }
+                if runner.is_canceled() {
+                    break;
+                }
+            }
+        }
+        .boxed();
+        Ok(st)
     }
 
     async fn cancel(&mut self) {
-        let _ = self.plugin_runner.write().map(|mut r| r.cancel());
+        let _ = self.plugin_runner.write().await.cancel(); //.map(|mut r| r.cancel());
     }
     fn runner_settings_proto(&self) -> String {
-        let plugin_runner = Arc::clone(&self.plugin_runner);
-        plugin_runner
-            .read()
-            .map(|p| p.runner_settings_proto())
-            .unwrap_or_else(|e| format!("Error occurred: {:}", e))
+        // let plugin_runner = Arc::clone(&self.plugin_runner);
+        block_on(self.plugin_runner.read()).runner_settings_proto()
+        // .map(|p| p.runner_settings_proto())
+        // .unwrap_or_else(|e| format!("Error occurred: {:}", e))
     }
     fn job_args_proto(&self) -> String {
-        let plugin_runner = Arc::clone(&self.plugin_runner);
-        plugin_runner
-            .read()
-            .map(|p| p.job_args_proto())
-            .unwrap_or_else(|e| format!("Error occurred: {:}", e))
+        block_on(self.plugin_runner.read()).job_args_proto()
+        // let plugin_runner = Arc::clone(&self.plugin_runner);
+        // plugin_runner
+        //     .read()
+        //     .map(|p| p.job_args_proto())
+        //     .unwrap_or_else(|e| format!("Error occurred: {:}", e))
     }
     fn result_output_proto(&self) -> Option<String> {
-        let plugin_runner = Arc::clone(&self.plugin_runner);
-        plugin_runner
-            .read()
-            .map(|p| p.result_output_proto())
-            .tap_err(|e| tracing::warn!("Error occurred: {:}", e))
-            .unwrap_or_default()
+        block_on(self.plugin_runner.read()).result_output_proto()
+        // let plugin_runner = Arc::clone(&self.plugin_runner);
+        // plugin_runner
+        //     .read()
+        //     .map(|p| p.result_output_proto())
+        //     .tap_err(|e| tracing::warn!("Error occurred: {:}", e))
+        // .unwrap_or_default()
     }
     fn use_job_result(&self) -> bool {
-        let plugin_runner = Arc::clone(&self.plugin_runner);
-        plugin_runner
-            .read()
-            .map(|p| p.use_job_result())
-            .unwrap_or_else(|e| {
-                tracing::warn!("Error occurred: {:}", e);
-                false
-            })
+        block_on(self.plugin_runner.read()).use_job_result()
+        // let plugin_runner = Arc::clone(&self.plugin_runner);
+        // plugin_runner
+        //     .read()
+        //     .map(|p| p.use_job_result())
+        //     .unwrap_or_else(|e| {
+        //         tracing::warn!("Error occurred: {:}", e);
+        //         false
+        //     })
+    }
+    fn output_as_stream(&self) -> bool {
+        block_on(self.plugin_runner.read()).output_as_stream()
+        // let plugin_runner = Arc::clone(&self.plugin_runner);
+        // plugin_runner
+        //     .read()
+        //     .map(|p| p.output_as_stream())
+        //     .unwrap_or_else(|e| {
+        //         tracing::warn!("Error occurred: {:}", e);
+        //         false
+        // })
     }
 }

@@ -1,5 +1,3 @@
-use std::{pin::Pin, sync::Arc, time::Duration};
-
 use super::{JobResultPublisher, JobResultSubscriber};
 use crate::{
     error::JobWorkerError,
@@ -7,12 +5,14 @@ use crate::{
 };
 use anyhow::Result;
 use async_trait::async_trait;
-use command_utils::util::result::TapErr;
+use command_utils::util::result::{TapErr, ToOption};
 use debug_stub_derive::DebugStub;
-use futures::Stream;
+use futures::{stream::BoxStream, Stream, StreamExt};
 use infra_utils::infra::redis::{RedisClient, UseRedisClient};
-use proto::jobworkerp::data::{JobId, JobResult, JobResultData, JobResultId, WorkerId};
-use tokio_stream::StreamExt;
+use proto::jobworkerp::data::{
+    result_output_item, JobId, JobResult, JobResultData, JobResultId, ResultOutputItem, WorkerId,
+};
+use std::{pin::Pin, sync::Arc, time::Duration};
 
 #[async_trait]
 impl JobResultPublisher for RedisJobResultPubSubRepositoryImpl {
@@ -55,6 +55,19 @@ impl JobResultPublisher for RedisJobResultPubSubRepositoryImpl {
         self.publish_multi_if_listen(chs.as_slice(), &result_data)
             .await
     }
+
+    async fn publish_result_stream_data(
+        &self,
+        job_id: JobId,
+        stream: BoxStream<'static, ResultOutputItem>,
+    ) -> Result<bool> {
+        let ch = Self::job_result_stream_pubsub_channel_name(&job_id);
+        let res_stream = stream.map(|item| Self::serialize_message(&item)).boxed();
+
+        self.publish_stream(ch.as_str(), res_stream)
+            .await
+            .map(|_| true)
+    }
 }
 
 #[async_trait]
@@ -84,7 +97,7 @@ impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
                     tracing::debug!("got sigint signal....");
                     Err(JobWorkerError::RuntimeError("interrupted".to_string()).into())
                 },
-                val = message.next() => {
+                val = tokio_stream::StreamExt::next(&mut message) => {
                     if let Some(msg) = val {
                         // skip if error in processing message
                         let payload: Vec<u8> = msg
@@ -113,10 +126,153 @@ impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
         res
     }
     // subscribe job result of listen after using redis and return got result immediately
+    async fn subscribe_result_stream(
+        &self,
+        job_id: &JobId,
+        timeout: Option<u64>,
+    ) -> Result<BoxStream<'static, ResultOutputItem>> {
+        use futures::stream::StreamExt;
+        let cn = Self::job_result_stream_pubsub_channel_name(job_id);
+        tracing::debug!(
+            "subscribe_result stream: job_id={}, ch={}",
+            &job_id.value,
+            &cn
+        );
+
+        // pubsub timeout
+        let sub = if let Some(timeout) = timeout {
+            let res =
+                tokio::time::timeout(Duration::from_millis(timeout), self.subscribe(cn.as_str()))
+                    .await;
+            match res {
+                Ok(Ok(s)) => Ok(s),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err(JobWorkerError::RuntimeError(format!(
+                    "subscribe timeout: job_id:{}",
+                    &job_id.value
+                ))
+                .into()),
+            }
+        } else {
+            self.subscribe(cn.as_str())
+                .await
+                .tap_err(|e| tracing::error!("redis_err:{:?}", e))
+        }?;
+
+        let repo = Arc::new(self.clone());
+        let cn2 = Arc::new(cn);
+
+        let msg_stream = sub
+            .into_on_message()
+            .filter_map(move |msg| {
+                let repo = repo.clone();
+                let cn2 = cn2.clone();
+                async move {
+                    match msg.get_payload::<Vec<u8>>() {
+                        Ok(payload) => {
+                            tracing::debug!(
+                                "subscribe_result_stream_received: payload len={:?}",
+                                &payload.len()
+                            );
+                            let result = Self::deserialize_message::<ResultOutputItem>(&payload)
+                                .inspect_err(|e| tracing::error!("deserialize_result:{:?}", e))
+                                .to_option()?;
+                            match result.item {
+                                Some(result_output_item::Item::End(_)) => {
+                                    tracing::debug!(
+                                        "subscribe_result_stream_received: end of stream"
+                                    );
+                                    let _ = repo.unsubscribe(cn2.as_str()).await.inspect_err(|e| {
+                                        tracing::error!("unsubscribe:{:?}", e);
+                                    });
+                                    tracing::debug!(
+                                        "subscribe_result_stream_received: unsubscribed: {}",
+                                        cn2.as_str()
+                                    );
+                                    Some(ResultOutputItem { item: None }) // maek item none
+                                }
+                                Some(res) => {
+                                    tracing::debug!(
+                                        "subscribe_result_stream_received: result={:?}",
+                                        &res
+                                    );
+                                    Some(ResultOutputItem { item: Some(res) })
+                                }
+                                // skip if error in processing message
+                                None => {
+                                    tracing::info!(
+                                        "subscribe_result_stream_received: item is None"
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("get_payload:{:?}", e);
+                            None
+                        }
+                    }
+                }
+            })
+            .take_while(|item| futures::future::ready(item.item.is_some()));
+        // if let Some(to) = timeout {
+        //     let delay = tokio::time::sleep(Duration::from_millis(to));
+        //     // End the stream when the timeout delay is fired.
+        //     Ok(msg_stream.take_until(delay).boxed())
+        // } else {
+        Ok(msg_stream.boxed())
+        // }
+
+        // let mut sub = self
+        //     .subscribe(cn.as_str())
+        //     .await
+        //     .tap_err(|e| tracing::error!("redis_err:{:?}", e))?;
+        // let stream: BoxStream<Vec<u8>> = {
+        //     // for timeout delay
+        //     let delay = if let Some(to) = timeout {
+        //         tokio::time::sleep(Duration::from_millis(to))
+        //     } else {
+        //         // wait until far future
+        //         tokio::time::sleep(Duration::from_secs(
+        //             self.job_queue_config().expire_job_result_seconds as u64,
+        //         ))
+        //     };
+        //     let res = tokio::select! {
+        //         _ = tokio::signal::ctrl_c() => {
+        //             tracing::debug!("got sigint signal....");
+        //             sub.unsubscribe(&cn.clone()).await?;
+        //             Err(JobWorkerError::RuntimeError("interrupted".to_string()))
+        //         },
+        //         val = sub.on_message().into_future() => {
+        //             // to stream
+        //             let stream = val.1.map(|msg| {
+        //                 let payload: Vec<u8> = msg
+        //                     .get_payload()
+        //                     .tap_err(|e| tracing::error!("get_payload:{:?}", e))?;
+        //                 Ok(ResultOutputItem { item: payload })
+        //             });
+        //             Ok(stream)
+        //         }
+        //         _ = delay => {
+        //             sub.unsubscribe(&cn.clone()).await?;
+        //             Err(JobWorkerError::TimeoutError(format!(
+        //                 "subscribe timeout: job_id:{}",
+        //                 &job_id.value
+        //             ))
+        //             .into())
+        //         }
+        //     };
+        //     res
+        // }?;
+        // tracing::info!("subscribe_result_changed end");
+        // Ok(stream as BoxStream<'static, ResultOutputItem>)
+    }
+    // subscribe job result of listen after using redis and return got result immediately
     async fn subscribe_result_stream_by_worker(
         &self,
         worker_id: WorkerId,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<JobResult>> + Send>>> {
+        use futures::stream::StreamExt;
         let cn = Self::job_result_by_worker_pubsub_channel_name(&worker_id);
         tracing::debug!(
             "subscribe_result: worker_id={}, ch={}",

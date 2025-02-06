@@ -7,6 +7,7 @@ use super::{JobApp, JobCacheKeys};
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
+use futures::stream::BoxStream;
 use infra::error::JobWorkerError;
 use infra::infra::job::queue::chan::{
     ChanJobQueueRepository, ChanJobQueueRepositoryImpl, UseChanJobQueueRepository,
@@ -17,14 +18,14 @@ use infra::infra::job::status::{JobStatusRepository, UseJobStatusRepository};
 use infra::infra::job_result::pubsub::chan::{
     ChanJobResultPubSubRepositoryImpl, UseChanJobResultPubSubRepository,
 };
-use infra::infra::job_result::pubsub::JobResultPublisher;
+use infra::infra::job_result::pubsub::{JobResultPublisher, JobResultSubscriber};
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use infra_utils::infra::memory::{MemoryCacheImpl, UseMemoryCache};
 use infra_utils::infra::rdb::UseRdbPool;
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobStatus, QueueType, ResponseType,
-    WorkerData, WorkerId,
+    ResultOutputItem, Worker, WorkerData, WorkerId,
 };
 use std::collections::HashSet;
 use std::{sync::Arc, time::Duration};
@@ -84,7 +85,11 @@ impl JobApp for RdbChanJobAppImpl {
         priority: i32,
         timeout: u64,
         reserved_job_id: Option<JobId>,
-    ) -> Result<(JobId, Option<JobResult>)> {
+    ) -> Result<(
+        JobId,
+        Option<JobResult>,
+        Option<BoxStream<'static, ResultOutputItem>>,
+    )> {
         let worker_res = if let Some(id) = worker_id {
             self.worker_app().find(id).await?
         } else if let Some(name) = worker_name {
@@ -95,9 +100,13 @@ impl JobApp for RdbChanJobAppImpl {
             )
             .into());
         };
-        if let Some(worker) = worker_res {
+        if let Some(Worker {
+            id: Some(wid),
+            data: Some(w),
+        }) = worker_res.as_ref()
+        {
             let job_data = JobData {
-                worker_id: worker.id,
+                worker_id: Some(*wid),
                 args,
                 uniq_key,
                 enqueue_time: datetime::now_millis(),
@@ -107,54 +116,76 @@ impl JobApp for RdbChanJobAppImpl {
                 priority,
                 timeout,
             };
-            if let Some(w) = worker.data.as_ref() {
-                // TODO validate argument types
-                // self.validate_worker_and_job_args(w, job_data.args.as_ref())?;
-                // cannot wait for direct response
-                if run_after_time > 0 && w.response_type == ResponseType::Direct as i32 {
-                    return Err(JobWorkerError::InvalidParameter(format!(
+            // TODO validate argument types
+            // self.validate_worker_and_job_args(w, job_data.args.as_ref())?;
+            // cannot wait for direct response
+            if run_after_time > 0 && w.response_type == ResponseType::Direct as i32 {
+                return Err(JobWorkerError::InvalidParameter(format!(
                         "run_after_time must be 0 for worker response_type=Direct, must use ListenAfter: {:?}",
                         &job_data
                     ))
                     .into());
+            }
+            let jid = reserved_job_id.unwrap_or(JobId {
+                value: self.id_generator().generate_id()?,
+            });
+            // job fetched by rdb (periodic job) should be positive run_after_time
+            let data = if (w.periodic_interval > 0 || w.queue_type == QueueType::ForcedRdb as i32)
+                && job_data.run_after_time == 0
+            {
+                // make job_data.run_after_time datetime::now_millis() and create job by db
+                JobData {
+                    run_after_time: datetime::now_millis(), // set now millis
+                    ..job_data
                 }
-                let jid = reserved_job_id.unwrap_or(JobId {
-                    value: self.id_generator().generate_id()?,
-                });
-                // job fetched by rdb (periodic job) should be positive run_after_time
-                let data = if (w.periodic_interval > 0
-                    || w.queue_type == QueueType::ForcedRdb as i32)
-                    && job_data.run_after_time == 0
-                {
-                    // make job_data.run_after_time datetime::now_millis() and create job by db
-                    JobData {
-                        run_after_time: datetime::now_millis(), // set now millis
-                        ..job_data
-                    }
-                } else {
-                    job_data
-                };
+            } else {
+                job_data
+            };
 
-                if w.response_type == ResponseType::Direct as i32 {
-                    // use chan only for direct response (not restore)
-                    // TODO create backup for queue_type == RdbChan ?
-                    let job = Job {
-                        id: Some(jid),
-                        data: Some(data.to_owned()),
-                    };
-                    self.enqueue_job_sync(&job, w).await
-                } else if w.periodic_interval > 0 || self.is_run_after_job_data(&data) {
-                    let job = Job {
-                        id: Some(jid),
-                        data: Some(data),
-                    };
-                    // enqueue rdb only
-                    if self.rdb_job_repository().create(&job).await? {
-                        self.job_status_repository()
-                            .upsert_status(&jid, &JobStatus::Pending)
-                            .await?;
-                        Ok((jid, None))
+            if w.response_type == ResponseType::Direct as i32 {
+                // use chan only for direct response (not restore)
+                // TODO create backup for queue_type == RdbChan ?
+                let job = Job {
+                    id: Some(jid),
+                    data: Some(data.to_owned()),
+                };
+                self.enqueue_job_sync(&job, w).await
+            } else if w.periodic_interval > 0 || self.is_run_after_job_data(&data) {
+                let job = Job {
+                    id: Some(jid),
+                    data: Some(data),
+                };
+                // enqueue rdb only
+                if self.rdb_job_repository().create(&job).await? {
+                    self.job_status_repository()
+                        .upsert_status(&jid, &JobStatus::Pending)
+                        .await?;
+                    Ok((jid, None, None))
+                } else {
+                    Err(
+                        JobWorkerError::RuntimeError(format!("cannot create record: {:?}", &job))
+                            .into(),
+                    )
+                }
+            } else {
+                // normal job
+                let job = Job {
+                    id: Some(jid),
+                    data: Some(data),
+                };
+                if w.queue_type == QueueType::WithBackup as i32 {
+                    // instant job (store rdb for backup, and enqueue to chan)
+                    match self.rdb_job_repository().create(&job).await {
+                        Ok(_id) => self.enqueue_job_sync(&job, w).await,
+                        Err(e) => Err(e),
+                    }
+                } else if w.queue_type == QueueType::ForcedRdb as i32 {
+                    // use only rdb queue
+                    let created = self.rdb_job_repository().create(&job).await?;
+                    if created {
+                        Ok((job.id.unwrap(), None, None))
                     } else {
+                        // storage error?
                         Err(JobWorkerError::RuntimeError(format!(
                             "cannot create record: {:?}",
                             &job
@@ -162,41 +193,9 @@ impl JobApp for RdbChanJobAppImpl {
                         .into())
                     }
                 } else {
-                    // normal instant job
-                    let job = Job {
-                        id: Some(jid),
-                        data: Some(data),
-                    };
-                    if w.queue_type == QueueType::WithBackup as i32 {
-                        // instant job (store rdb for backup, and enqueue to chan)
-                        match self.rdb_job_repository().create(&job).await {
-                            Ok(_id) => self.enqueue_job_sync(&job, w).await,
-                            Err(e) => Err(e),
-                        }
-                    } else if w.queue_type == QueueType::ForcedRdb as i32 {
-                        // use only rdb queue
-                        let created = self.rdb_job_repository().create(&job).await?;
-                        if created {
-                            Ok((job.id.unwrap(), None))
-                        } else {
-                            // storage error?
-                            Err(JobWorkerError::RuntimeError(format!(
-                                "cannot create record: {:?}",
-                                &job
-                            ))
-                            .into())
-                        }
-                    } else {
-                        // instant job (enqueue to chan only)
-                        self.enqueue_job_sync(&job, w).await
-                    }
+                    // instant job (enqueue to chan only)
+                    self.enqueue_job_sync(&job, w).await
                 }
-            } else {
-                Err(JobWorkerError::WorkerNotFound(format!(
-                    "worker data not found: id = {:?}, name = {:?}",
-                    &worker_id, &worker_name
-                ))
-                .into())
             }
         } else {
             Err(JobWorkerError::WorkerNotFound(format!("name: {:?}", &worker_name)).into())
@@ -230,6 +229,10 @@ impl JobApp for RdbChanJobAppImpl {
                 } else {
                     Ok(false)
                 };
+                // update job status of redis(memory)
+                self.job_status_repository()
+                    .upsert_status(jid, &JobStatus::Pending)
+                    .await?;
                 let res_chan = if !is_run_after_job_data
                     && w.periodic_interval == 0
                     && (w.queue_type == QueueType::Normal as i32
@@ -240,10 +243,6 @@ impl JobApp for RdbChanJobAppImpl {
                 } else {
                     Ok(false)
                 };
-                // update job status of memory
-                self.job_status_repository()
-                    .upsert_status(jid, &JobStatus::Pending)
-                    .await?;
                 let res = res_chan.or(res_db);
                 match res {
                     Ok(_updated) => {
@@ -263,16 +262,43 @@ impl JobApp for RdbChanJobAppImpl {
         }
     }
 
-    async fn complete_job(&self, id: &JobResultId, data: &JobResultData) -> Result<bool> {
+    async fn complete_job(
+        &self,
+        id: &JobResultId,
+        data: &JobResultData,
+        stream: Option<BoxStream<'static, ResultOutputItem>>,
+    ) -> Result<bool> {
         tracing::debug!("complete_job: res_id={}", &id.value);
         if let Some(jid) = data.job_id.as_ref() {
             self.job_status_repository().delete_status(jid).await?;
             match ResponseType::try_from(data.response_type) {
                 Ok(ResponseType::Direct) => {
                     // send result for direct or listen after response
-                    self.chan_job_queue_repository()
-                        .enqueue_result_direct(id, data)
-                        .await
+                    tracing::debug!("==== complete_job(direct): enqueue result direct");
+                    // use direct chan for sending stream
+                    // let res = self
+                    //     .chan_job_queue_repository()
+                    //     .enqueue_result_direct(id, data, stream)
+                    //     .await;
+                    //
+                    let res = self
+                        .job_result_pubsub_repository()
+                        .publish_result(id, data, true)
+                        .await;
+                    // stream data
+                    if let Some(stream) = stream {
+                        let pubsub_repo = self.job_result_pubsub_repository().clone();
+                        tracing::debug!(
+                            "complete_job(direct): publish stream data: {}",
+                            &jid.value
+                        );
+                        pubsub_repo.publish_result_stream_data(*jid, stream).await?;
+                        tracing::debug!(
+                            "complete_job(direct): stream data published: {}",
+                            &jid.value
+                        );
+                    }
+                    res
                 }
                 Ok(res) => {
                     // publish for listening result client
@@ -280,6 +306,12 @@ impl JobApp for RdbChanJobAppImpl {
                         .job_result_pubsub_repository()
                         .publish_result(id, data, res == ResponseType::ListenAfter)
                         .await;
+                    // broadcast stream data if exists
+                    if let Some(stream) = stream {
+                        let pubsub_repo = self.job_result_pubsub_repository().clone();
+                        pubsub_repo.publish_result_stream_data(*jid, stream).await?;
+                        tracing::debug!("complete_job: stream data published: {}", &jid.value);
+                    }
                     self.delete_job(jid).await?;
                     r
                 }
@@ -507,6 +539,7 @@ pub trait RdbChanJobAppHelper:
     + UseJobStatusRepository
     + JobBuilder
     + UseJobQueueConfig
+    + UseChanJobResultPubSubRepository
 where
     Self: Sized + 'static,
 {
@@ -515,7 +548,11 @@ where
         &self,
         job: &Job,
         worker: &WorkerData,
-    ) -> Result<(JobId, Option<JobResult>)> {
+    ) -> Result<(
+        JobId,
+        Option<JobResult>,
+        Option<BoxStream<'static, ResultOutputItem>>,
+    )> {
         let job_id = job.id.unwrap();
         if self.is_run_after_job(job) {
             return Err(JobWorkerError::InvalidParameter(
@@ -536,15 +573,22 @@ where
                     .await?;
                 // wait for result if direct response type
                 if worker.response_type == ResponseType::Direct as i32 {
-                    // XXX keep redis connection until response
+                    // XXX keep chan connection until response
                     self._wait_job_for_direct_response(
                         &job_id,
-                        job.data.as_ref().map(|d| d.timeout),
+                        job.data.as_ref().and_then(|d| {
+                            if d.timeout == 0 {
+                                None
+                            } else {
+                                Some(d.timeout)
+                            }
+                        }),
+                        worker.output_as_stream,
                     )
                     .await
-                    .map(|r| (job_id, Some(r)))
+                    .map(|(r, st)| (job_id, Some(r), st))
                 } else {
-                    Ok((job_id, None))
+                    Ok((job_id, None, None))
                 }
             }
             Err(e) => Err(e),
@@ -557,11 +601,29 @@ where
         &self,
         job_id: &JobId,
         timeout: Option<u64>,
-    ) -> Result<JobResult> {
+        output_as_stream: bool,
+    ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
         // wait for and return result (with channel)
-        self.chan_job_queue_repository()
-            .wait_for_result_queue_for_response(job_id, timeout.as_ref()) // no timeout
-            .await
+        // self.chan_job_queue_repository()
+        //     .wait_for_result_queue_for_response(job_id, timeout, output_as_stream) // no timeout
+        //     .await
+        let fut = self
+            .job_result_pubsub_repository()
+            .subscribe_result(job_id, timeout);
+        if output_as_stream {
+            let fut2 = self
+                .job_result_pubsub_repository()
+                .subscribe_result_stream(job_id, timeout);
+            let (res, stream) = futures::join!(fut, fut2);
+            tracing::debug!("wait_job_for_direct_response: job={:?}", job_id);
+            match (res, stream) {
+                (Ok(r), Ok(st)) => Ok((r, Some(st))),
+                (Err(e), _) => Err(e),
+                (_, Err(e)) => Err(e),
+            }
+        } else {
+            fut.await.map(|r| (r, None))
+        }
     }
 }
 
@@ -646,7 +708,7 @@ mod tests {
                 runner_app.clone(),
             );
             let _ = runner_app
-                .create_test_runner(&RunnerId { value: 111 }, "Test")
+                .create_test_runner(&RunnerId { value: 1 }, "Test")
                 .await?;
 
             let runner_factory = RunnerFactory::new();
@@ -682,7 +744,7 @@ mod tests {
             });
             let wd = WorkerData {
                 name: "testworker".to_string(),
-                runner_id: Some(RunnerId { value: 111 }),
+                runner_id: Some(RunnerId { value: 1 }),
                 runner_settings,
                 channel: None,
                 response_type: ResponseType::Direct as i32,
@@ -693,6 +755,7 @@ mod tests {
                 store_success: false,
                 next_workers: vec![],
                 use_static: false,
+                output_as_stream: false,
             };
             let worker_id = app.worker_app().create(&wd).await?;
             let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
@@ -707,8 +770,7 @@ mod tests {
                 let res = app1
                     .enqueue_job(Some(&worker_id1), None, jargs1, None, 0, 0, 0, None)
                     .await;
-                tracing::info!("!!!res: {:?}", res);
-                let (jid, job_res) = res.unwrap();
+                let (jid, job_res, _) = res.unwrap();
                 assert!(jid.value > 0);
                 assert!(job_res.is_some());
                 // cannot find job in direct response type
@@ -762,7 +824,7 @@ mod tests {
                 }),
             };
             assert!(
-                app.complete_job(&rid, result.data.as_ref().unwrap())
+                app.complete_job(&rid, result.data.as_ref().unwrap(), None)
                     .await?
             );
             let (jid, job_res) = jh.await?;
@@ -790,7 +852,7 @@ mod tests {
             });
             let wd = WorkerData {
                 name: "testworker".to_string(),
-                runner_id: Some(RunnerId { value: 111 }),
+                runner_id: Some(RunnerId { value: 1 }),
                 runner_settings,
                 channel: None,
                 response_type: ResponseType::ListenAfter as i32,
@@ -801,6 +863,7 @@ mod tests {
                 store_success: true,
                 next_workers: vec![],
                 use_static: false,
+                output_as_stream: false,
             };
             let worker_id = app.worker_app().create(&wd).await?;
             let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
@@ -871,8 +934,12 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(200)).await;
             assert!(
                 // send mock result as completed job result
-                app.complete_job(result.id.as_ref().unwrap(), result.data.as_ref().unwrap())
-                    .await?
+                app.complete_job(
+                    result.id.as_ref().unwrap(),
+                    result.data.as_ref().unwrap(),
+                    None
+                )
+                .await?
             );
             jh.await?;
 
@@ -900,7 +967,7 @@ mod tests {
         });
         let wd = WorkerData {
             name: "testworker".to_string(),
-            runner_id: Some(RunnerId { value: 111 }),
+            runner_id: Some(RunnerId { value: 1 }),
             runner_settings,
             channel: None,
             response_type: ResponseType::NoResult as i32,
@@ -911,6 +978,7 @@ mod tests {
             store_failure: false,
             next_workers: vec![],
             use_static: false,
+            output_as_stream: false,
         };
         TEST_RUNTIME.block_on(async {
             let worker_id = app.worker_app().create(&wd).await?;
@@ -919,7 +987,7 @@ mod tests {
             });
 
             // wait for direct response
-            let (job_id, res) = app
+            let (job_id, res, _) = app
                 .enqueue_job(Some(&worker_id), None, jargs.clone(), None, 0, 0, 0, None)
                 .await?;
             assert!(job_id.value > 0);
@@ -970,8 +1038,12 @@ mod tests {
                 }),
             };
             assert!(
-                !app.complete_job(result.id.as_ref().unwrap(), result.data.as_ref().unwrap())
-                    .await?
+                !app.complete_job(
+                    result.id.as_ref().unwrap(),
+                    result.data.as_ref().unwrap(),
+                    None
+                )
+                .await?
             );
             // not fetched job (because of not use job_dispatcher)
             assert!(app.find_job(&job_id, None).await?.is_none());
@@ -1001,7 +1073,7 @@ mod tests {
             });
             let wd = WorkerData {
                 name: "testworker".to_string(),
-                runner_id: Some(RunnerId { value: 111 }),
+                runner_id: Some(RunnerId { value: 1 }),
                 runner_settings,
                 channel: channel.cloned(),
                 response_type: ResponseType::NoResult as i32,
@@ -1012,6 +1084,7 @@ mod tests {
                 store_failure: false,
                 next_workers: vec![],
                 use_static: false,
+                output_as_stream: false,
             };
             let worker_id = app.worker_app().create(&wd).await?;
 
@@ -1025,7 +1098,7 @@ mod tests {
                     .await?,
                 0
             );
-            let (job_id, res) = app
+            let (job_id, res, _) = app
                 .enqueue_job(
                     Some(&worker_id),
                     None,
@@ -1040,7 +1113,7 @@ mod tests {
             assert!(job_id.value > 0);
             assert!(res.is_none());
             // job2
-            let (job_id2, res2) = app
+            let (job_id2, res2, _) = app
                 .enqueue_job(
                     Some(&worker_id),
                     None,
@@ -1071,10 +1144,10 @@ mod tests {
                     .await?,
                 2
             );
-            println!(
-                "==== statuses: {:?}",
-                app.job_status_repository().find_status_all().await.unwrap()
-            );
+            // println!(
+            //     "==== statuses: {:?}",
+            //     app.job_status_repository().find_status_all().await.unwrap()
+            // );
 
             // check job status
             assert_eq!(

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::{fmt::Debug, time::Duration};
 
-use crate::proto::jobworkerp::data::Priority;
+use crate::proto::jobworkerp::data::{Priority, ResultOutput, ResultOutputItem};
 use crate::proto::jobworkerp::service::job_request::Worker;
 use crate::proto::jobworkerp::service::job_service_server::JobService;
 use crate::proto::jobworkerp::service::{
@@ -14,9 +14,14 @@ use app::module::AppModule;
 use async_stream::stream;
 use command_utils::util::option::Exists;
 use futures::stream::BoxStream;
+use futures::StreamExt;
 use infra::error::JobWorkerError;
 use infra_utils::trace::Tracing;
-use proto::jobworkerp::data::{Job, JobId};
+use prost::Message;
+use proto::jobworkerp::data::{result_output_item, Job, JobId};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::metadata::MetadataValue;
 use tonic::Response;
 
 pub trait JobGrpc {
@@ -58,7 +63,7 @@ pub trait RequestValidator {
 
 #[tonic::async_trait]
 impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> JobService for T {
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "enqueue"))]
     async fn enqueue(
         &self,
         request: tonic::Request<JobRequest>,
@@ -100,14 +105,131 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
             }
         };
         match res {
-            Ok((id, res)) => Ok(Response::new(CreateJobResponse {
-                id: Some(id),
-                result: res,
-            })),
+            Ok((id, res, st)) => {
+                // if st is some, collect it and return as result
+                if let Some(mut res) = res {
+                    if res.data.as_ref().exists(|d| d.output.is_none()) {
+                        // if stream is some, collect it and return as result
+                        let data = if let Some(stream) = st {
+                            // XXX try to collect result stream
+                            // (if runner is finished, stream will be closed and return only first few items)
+                            // should use enqueue_for_stream for streaming result
+
+                            let items: Vec<Vec<u8>> = stream
+                                .filter_map(|item| async move {
+                                    match item.item {
+                                        Some(result_output_item::Item::Data(data)) => Some(data),
+                                        _ => None,
+                                    }
+                                })
+                                .collect()
+                                .await;
+                            res.data.map(|mut d| {
+                                d.output = Some(ResultOutput { items });
+                                d
+                            })
+                        } else {
+                            res.data
+                        };
+                        res.data = data;
+                        Ok(Response::new(CreateJobResponse {
+                            id: Some(id),
+                            result: Some(res),
+                        }))
+                    } else {
+                        Ok(Response::new(CreateJobResponse {
+                            id: Some(id),
+                            result: Some(res),
+                        }))
+                    }
+                } else {
+                    Ok(Response::new(CreateJobResponse {
+                        id: Some(id),
+                        result: res,
+                    }))
+                }
+            }
             Err(e) => Err(handle_error(&e)),
         }
     }
-    #[tracing::instrument]
+    type EnqueueForStreamStream = BoxStream<'static, Result<ResultOutputItem, tonic::Status>>;
+    #[tracing::instrument(
+        level = "info",
+        skip(self, request),
+        fields(method = "enqueue_for_stream")
+    )]
+    async fn enqueue_for_stream(
+        &self,
+        request: tonic::Request<JobRequest>,
+    ) -> Result<tonic::Response<Self::EnqueueForStreamStream>, tonic::Status> {
+        let _span = Self::trace_request("job", "create", &request);
+        let req = request.get_ref();
+        self.validate_create(req)?;
+        let res = match req.worker.as_ref() {
+            Some(Worker::WorkerId(id)) => {
+                self.app()
+                    .enqueue_job(
+                        Some(id),
+                        None,
+                        req.args.clone(),
+                        req.uniq_key.clone(),
+                        req.run_after_time.unwrap_or(0),
+                        req.priority.unwrap_or(Priority::Medium as i32),
+                        req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
+                        None,
+                    )
+                    .await
+            }
+            Some(Worker::WorkerName(name)) => {
+                self.app()
+                    .enqueue_job(
+                        None,
+                        Some(name),
+                        req.args.clone(),
+                        req.uniq_key.clone(),
+                        req.run_after_time.unwrap_or(0),
+                        req.priority.unwrap_or(Priority::Medium as i32),
+                        req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
+                        None,
+                    )
+                    .await
+            }
+            None => {
+                Err(JobWorkerError::InvalidParameter("should not reach hear!!".to_string()).into())
+            }
+        };
+        tracing::debug!(
+            "enqueue_for_stream result = {:?}",
+            &res.as_ref().map(|r| r.0)
+        );
+        let worker1 = req.worker.clone();
+        match res {
+            Ok((_id, Some(res), Some(mut st))) => {
+                tracing::debug!(
+                    "enqueue_for_stream request = {:?}, output = {:?}",
+                    &req,
+                    &res.data
+                        .as_ref()
+                        .map(|d| d.output.as_ref().map(|o| o.items.len()))
+                );
+                let res_header = res.encode_to_vec();
+                let stream = st.map(|item| Ok(item));
+                let stream: Self::EnqueueForStreamStream = Box::pin(stream);
+                let mut res = Response::new(stream);
+                res.metadata_mut().insert_bin(
+                    "x-job-result-bin",
+                    MetadataValue::from_bytes(res_header.as_slice()),
+                );
+                Ok(res)
+            }
+            Ok((id, res, _)) => Ok(Response::new(Box::pin(stream! {
+                tracing::warn!("enqueue_for_stream result(ERR?): job_id: {}, res {:?}", id.value, &res);
+                yield Err(tonic::Status::invalid_argument("no stream result"))
+            }))),
+            Err(e) => Err(handle_error(&e)),
+        }
+    }
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "delete"))]
     async fn delete(
         &self,
         request: tonic::Request<JobId>,
@@ -119,7 +241,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
             Err(e) => Err(handle_error(&e)),
         }
     }
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "find"))]
     async fn find(
         &self,
         request: tonic::Request<JobId>,
@@ -133,7 +255,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
     }
 
     type FindListStream = BoxStream<'static, Result<Job, tonic::Status>>;
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "find_list"))]
     async fn find_list(
         &self,
         request: tonic::Request<FindListRequest>,
@@ -160,7 +282,11 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
         }
     }
     type FindQueueListStream = BoxStream<'static, Result<JobAndStatus, tonic::Status>>;
-    #[tracing::instrument]
+    #[tracing::instrument(
+        level = "info",
+        skip(self, request),
+        fields(method = "find_queue_list")
+    )]
     async fn find_queue_list(
         &self,
         request: tonic::Request<FindQueueListRequest>,
@@ -186,7 +312,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
             Err(e) => Err(handle_error(&e)),
         }
     }
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "count"))]
     async fn count(
         &self,
         request: tonic::Request<CountCondition>,

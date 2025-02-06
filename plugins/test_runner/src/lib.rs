@@ -14,14 +14,19 @@ static ALLOCATOR: System = System;
 
 pub trait PluginRunner: Send + Sync {
     fn name(&self) -> String;
-    fn load(&mut self, runner_settings: Vec<u8>) -> Result<()>;
+    fn load(&mut self, settings: Vec<u8>) -> Result<()>;
     fn run(&mut self, arg: Vec<u8>) -> Result<Vec<Vec<u8>>>;
+    // REMOVE
+    fn begin_stream(&mut self, arg: Vec<u8>) -> Result<()>;
+    fn receive_stream(&mut self) -> Result<Option<Vec<u8>>>;
     fn cancel(&self) -> bool;
+    fn is_canceled(&self) -> bool;
     fn runner_settings_proto(&self) -> String;
     fn job_args_proto(&self) -> String;
     fn result_output_proto(&self) -> Option<String>;
     // if true, use job result of before job, else use job args from request
     fn use_job_result(&self) -> bool;
+    fn output_as_stream(&self) -> bool;
 }
 
 // suppress warn improper_ctypes_definitions
@@ -77,8 +82,21 @@ impl PluginRunner for TestPlugin {
             .unwrap()
             .block_on(async move { self.test(arg_clone.as_slice()).await })
     }
+    fn begin_stream(&mut self, arg: Vec<u8>) -> Result<()> {
+        // default implementation (return empty)
+        let _ = arg;
+        Err(anyhow::anyhow!("not implemented"))
+    }
+    fn receive_stream(&mut self) -> Result<Option<Vec<u8>>> {
+        // default implementation (return empty)
+        Err(anyhow::anyhow!("not implemented"))
+    }
     fn cancel(&self) -> bool {
         tracing::warn!("Test plugin cancel: not implemented!");
+        false
+    }
+    fn is_canceled(&self) -> bool {
+        tracing::warn!("Test plugin is_canceled: not implemented!");
         false
     }
     fn runner_settings_proto(&self) -> String {
@@ -92,6 +110,9 @@ impl PluginRunner for TestPlugin {
     }
     // if true, use job result of before job, else use job args from request
     fn use_job_result(&self) -> bool {
+        false
+    }
+    fn output_as_stream(&self) -> bool {
         false
     }
 }

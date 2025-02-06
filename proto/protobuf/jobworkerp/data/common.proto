@@ -5,74 +5,85 @@ package jobworkerp.data;
 message Empty {}
 
 // queue storage type
-// (rdb: periodic job, run_after_time job, backup job, recovery job, record job result)
-// (redis: normal job, fast dequeue, pubsub)
+// (rdb: periodic job, run_after_time job, backup job, recovery job, record job
+// result) (redis: normal job, fast dequeue, pubsub)
 enum StorageType {
-    // use memory channel and sqlite for job queue and result storage
-    STANDALONE = 0;
-    // use redis and mysql for job queue and result storage
-    SCALABLE = 1;
+  // use memory channel and sqlite for job queue and result storage
+  STANDALONE = 0;
+  // use redis and mysql for job queue and result storage
+  SCALABLE = 1;
 }
 
 // builtin runner types
 enum RunnerType {
-    PLUGIN             = 0;
-    COMMAND            = 1;
-    HTTP_REQUEST       = 2;
-    GRPC_UNARY         = 3;
-    DOCKER             = 4;
-    SLACK_NOTIFICATION = 5;
+  PLUGIN = 0;
+  COMMAND = 1;
+  HTTP_REQUEST = 2;
+  GRPC_UNARY = 3;
+  DOCKER = 4;
+  SLACK_NOTIFICATION = 5;
 }
 
 enum Priority {
-    PRIORITY_MEDIUM = 0;
-    PRIORITY_LOW = -1;
-    PRIORITY_HIGH = 1;
+  PRIORITY_MEDIUM = 0;
+  PRIORITY_LOW = -1;
+  PRIORITY_HIGH = 1;
 }
 
 enum RetryType {
-    NONE = 0;
-    EXPONENTIAL = 1; // interval * basis ^ (retry_count - 1)
-    LINEAR = 2; // inteval msec * retry_count
-    CONSTANT = 3; // always interval msec 
+  NONE = 0;
+  EXPONENTIAL = 1; // interval * basis ^ (retry_count - 1)
+  LINEAR = 2;      // inteval msec * retry_count
+  CONSTANT = 3;    // always interval msec
 }
 
 message RetryPolicy {
-    RetryType type = 1;
-    uint32 interval = 2;      // : 1000 // millisecond for retry interval
-    uint32 max_interval = 3; // : 60000 // millisecond for max retry interval
-    uint32 max_retry = 4;    // : 10 // max count for retry until (0: unlimited)
-    float basis = 5;        // : 10 // basis of exponential backoff (wait millisecond = basis ^ (retry_count - 1) * interval)
+  RetryType type = 1;
+  uint32 interval = 2;     // : 1000 // millisecond for retry interval
+  uint32 max_interval = 3; // : 60000 // millisecond for max retry interval
+  uint32 max_retry = 4;    // : 10 // max count for retry until (0: unlimited)
+  float basis = 5; // : 10 // basis of exponential backoff (wait millisecond =
+                   // basis ^ (retry_count - 1) * interval)
 }
 
 enum ResponseType {
-    NO_RESULT = 0; // return job id immediately. return no result. (result available if stored rdb by worker setting)
-    DIRECT = 1; // get result in response (maybe long wait: long polling with grpc unary)
-    LISTEN_AFTER = 2; // return job id immediately. result available by listen api with blocking for a short time (in JobResultService. maybe long wait)
+  NO_RESULT = 0; // return job id immediately. return no result. (result
+                 // available if stored rdb by worker setting)
+  DIRECT = 1; // get result in response (maybe long wait: long polling with grpc
+              // unary)
+  LISTEN_AFTER =
+      2; // return job id immediately. result available by listen api with
+         // blocking for a short time (in JobResultService. maybe long wait)
 }
 
 enum ResultStatus {
-    SUCCESS = 0; //  job succeeded
-    ERROR_AND_RETRY = 1; // error and retry job
-    FATAL_ERROR = 2; // fatal worker result error (cannot retry)
-    ABORT = 3;  // abort (cannot retry)
-    MAX_RETRY = 4; // reach max retry count (cannot retry)
-    OTHER_ERROR = 5; // unexpected system status error (cannot retry)
+  SUCCESS = 0;         //  job succeeded
+  ERROR_AND_RETRY = 1; // error and retry job
+  FATAL_ERROR = 2;     // fatal worker result error (cannot retry)
+  ABORT = 3;           // abort (cannot retry)
+  MAX_RETRY = 4;       // reach max retry count (cannot retry)
+  OTHER_ERROR = 5;     // unexpected system status error (cannot retry)
 }
 
 enum JobStatus {
-    PENDING = 0;
-    RUNNING = 1;
-    WAIT_RESULT = 2;
+  PENDING = 0;
+  RUNNING = 1;
+  WAIT_RESULT = 2;
 }
 
 enum QueueType {
-    NORMAL = 0; // normal queue type 
-    WITH_BACKUP = 1; // queue  with backup to (for recovery, slow)
-    FORCED_RDB = 2; // force to rdb (slow)
+  NORMAL = 0;      // normal queue type
+  WITH_BACKUP = 1; // queue  with backup to (for recovery, slow)
+  FORCED_RDB = 2;  // force to rdb (slow)
 }
 
-message ResultOutput {
-    repeated bytes items = 1;
+// stream item
+message ResultOutputItem {
+  oneof item {
+    bytes data = 1;
+    // end of stream
+    Empty end = 2;
+  }
 }
 
+message ResultOutput { repeated bytes items = 1; }

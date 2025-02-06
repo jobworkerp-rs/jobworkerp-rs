@@ -1,13 +1,14 @@
 pub mod hybrid;
 pub mod rdb;
-pub mod redis;
+// pub mod redis;
 
 use super::worker::UseWorkerApp;
 use anyhow::Result;
 use async_trait::async_trait;
+use futures::stream::BoxStream;
 use infra::error::JobWorkerError;
 use proto::jobworkerp::data::{
-    JobId, JobResult, JobResultData, JobResultId, ResultStatus, WorkerId,
+    JobId, JobResult, JobResultData, JobResultId, ResultOutputItem, ResultStatus, WorkerId,
 };
 use std::{fmt, pin::Pin, sync::Arc};
 use tokio_stream::Stream;
@@ -128,8 +129,8 @@ pub trait JobResultApp: fmt::Debug + Send + Sync + 'static {
         job_id: &JobId,
         worker_id: Option<&WorkerId>,
         worker_name: Option<&String>,
-        timeout: u64,
-    ) -> Result<JobResult>
+        timeout: Option<u64>,
+    ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)>
     where
         Self: Send + 'static;
 

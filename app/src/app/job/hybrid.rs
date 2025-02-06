@@ -8,6 +8,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
 use command_utils::util::option::{Exists, FlatMap};
+use futures::stream::BoxStream;
 use infra::error::JobWorkerError;
 use infra::infra::job::queue::redis::RedisJobQueueRepository;
 use infra::infra::job::rdb::{RdbJobRepository, UseRdbChanJobRepository};
@@ -25,7 +26,7 @@ use infra_utils::infra::memory::{MemoryCacheImpl, UseMemoryCache};
 use infra_utils::infra::rdb::UseRdbPool;
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobStatus, Priority, QueueType,
-    ResponseType, Worker, WorkerId,
+    ResponseType, ResultOutputItem, Worker, WorkerId,
 };
 use std::collections::HashSet;
 use std::{sync::Arc, time::Duration};
@@ -144,7 +145,11 @@ impl JobApp for HybridJobAppImpl {
         priority: i32,
         timeout: u64,
         reserved_job_id: Option<JobId>,
-    ) -> Result<(JobId, Option<JobResult>)> {
+    ) -> Result<(
+        JobId,
+        Option<JobResult>,
+        Option<BoxStream<'static, ResultOutputItem>>,
+    )> {
         let worker_res = if let Some(id) = worker_id {
             self.worker_app().find(id).await?
         } else if let Some(name) = worker_name {
@@ -215,7 +220,7 @@ impl JobApp for HybridJobAppImpl {
                     self.job_status_repository()
                         .upsert_status(&jid, &JobStatus::Pending)
                         .await?;
-                    Ok((jid, None))
+                    Ok((jid, None, None))
                 } else {
                     Err(
                         JobWorkerError::RuntimeError(format!("cannot create record: {:?}", &job))
@@ -239,7 +244,7 @@ impl JobApp for HybridJobAppImpl {
                     // use only rdb queue (not recommended for hybrid storage)
                     let created = self.rdb_job_repository().create(&job).await?;
                     if created {
-                        Ok((job.id.unwrap(), None))
+                        Ok((job.id.unwrap(), None, None))
                     } else {
                         // storage error?
                         Err(JobWorkerError::RuntimeError(format!(
@@ -320,16 +325,37 @@ impl JobApp for HybridJobAppImpl {
         }
     }
 
-    async fn complete_job(&self, id: &JobResultId, data: &JobResultData) -> Result<bool> {
+    async fn complete_job(
+        &self,
+        id: &JobResultId,
+        data: &JobResultData,
+        stream: Option<BoxStream<'static, ResultOutputItem>>,
+    ) -> Result<bool> {
         tracing::debug!("complete_job: res_id={}", &id.value);
         if let Some(jid) = data.job_id.as_ref() {
             self.job_status_repository().delete_status(jid).await?;
             match ResponseType::try_from(data.response_type) {
                 Ok(ResponseType::Direct) => {
                     // send result for direct or listen after response
-                    self.redis_job_repository()
+                    let res = self
+                        .redis_job_repository()
                         .enqueue_result_direct(id, data)
-                        .await
+                        .await;
+                    // stream data
+                    if let Some(stream) = stream {
+                        let pubsub_repo = self.job_result_pubsub_repository().clone();
+                        tracing::debug!(
+                            "complete_job(direct): publish stream data: {}",
+                            &jid.value
+                        );
+                        pubsub_repo.publish_result_stream_data(*jid, stream).await?;
+                        tracing::debug!(
+                            "complete_job(direct): stream data published: {}",
+                            &jid.value
+                        );
+                    }
+                    // tokio::time::sleep(Duration::from_secs(3)).await;
+                    res
                 }
                 Ok(rtype) => {
                     // publish for listening result client
@@ -337,6 +363,12 @@ impl JobApp for HybridJobAppImpl {
                         .job_result_pubsub_repository()
                         .publish_result(id, data, rtype == ResponseType::ListenAfter)
                         .await;
+                    // stream data
+                    if let Some(stream) = stream {
+                        let pubsub_repo = self.job_result_pubsub_repository().clone();
+                        pubsub_repo.publish_result_stream_data(*jid, stream).await?;
+                        tracing::debug!("complete_job: stream data published: {}", &jid.value);
+                    }
                     self.delete_job(jid).await?;
                     r
                 }
@@ -680,7 +712,7 @@ mod tests {
             ));
             runner_app.load_runner().await?;
             let _ = runner_app
-                .create_test_runner(&RunnerId { value: 111 }, "Test")
+                .create_test_runner(&RunnerId { value: 1 }, "Test")
                 .await?;
             let worker_app = HybridWorkerAppImpl::new(
                 storage_config.clone(),
@@ -718,6 +750,12 @@ mod tests {
     #[test]
     fn test_create_direct_job_complete() -> Result<()> {
         // enqueue, find, complete, find, delete, find
+        // tracing_subscriber::fmt()
+        //     .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        //     .with_max_level(tracing::Level::TRACE)
+        //     .compact()
+        //     .init();
+
         let (app, _) = create_test_app(true)?;
         TEST_RUNTIME.block_on(async {
             let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
@@ -725,7 +763,7 @@ mod tests {
             });
             let wd = WorkerData {
                 name: "testworker".to_string(),
-                runner_id: Some(RunnerId { value: 111 }),
+                runner_id: Some(RunnerId { value: 1 }),
                 runner_settings,
                 channel: None,
                 response_type: ResponseType::Direct as i32,
@@ -736,6 +774,7 @@ mod tests {
                 store_success: false,
                 next_workers: vec![],
                 use_static: false,
+                output_as_stream: false,
             };
             let worker_id = app.worker_app().create(&wd).await?;
             let jarg = JobqueueAndCodec::serialize_message(&proto::TestArgs {
@@ -751,8 +790,7 @@ mod tests {
                 let res = app1
                     .enqueue_job(Some(&worker_id1), None, jarg1, None, 0, 0, 0, None)
                     .await;
-                tracing::info!("!!!res: {:?}", res);
-                let (jid, job_res) = res.unwrap();
+                let (jid, job_res, _) = res.unwrap();
                 assert!(jid.value > 0);
                 assert!(job_res.is_some());
                 // cannot find job in direct response type
@@ -807,7 +845,7 @@ mod tests {
                 }),
             };
             assert!(
-                app.complete_job(&rid, result.data.as_ref().unwrap())
+                app.complete_job(&rid, result.data.as_ref().unwrap(), None)
                     .await?
             );
             let (jid, job_res) = jh.await?;
@@ -834,7 +872,7 @@ mod tests {
             });
             let wd = WorkerData {
                 name: "testworker".to_string(),
-                runner_id: Some(RunnerId { value: 111 }),
+                runner_id: Some(RunnerId { value: 1 }),
                 runner_settings,
                 channel: None,
                 response_type: ResponseType::ListenAfter as i32,
@@ -845,6 +883,7 @@ mod tests {
                 store_success: false,
                 next_workers: vec![],
                 use_static: false,
+                output_as_stream: false,
             };
             let worker_id = app.worker_app().create(&wd).await?;
             let jarg = JobqueueAndCodec::serialize_message(&proto::TestArgs {
@@ -914,8 +953,12 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(200)).await;
             assert!(
                 // send mock result as completed job result
-                app.complete_job(result.id.as_ref().unwrap(), result.data.as_ref().unwrap())
-                    .await?
+                app.complete_job(
+                    result.id.as_ref().unwrap(),
+                    result.data.as_ref().unwrap(),
+                    None
+                )
+                .await?
             );
             jh.await?;
 
@@ -943,7 +986,7 @@ mod tests {
         });
         let wd = WorkerData {
             name: "testworker".to_string(),
-            runner_id: Some(RunnerId { value: 111 }),
+            runner_id: Some(RunnerId { value: 1 }),
             runner_settings,
             channel: None,
             response_type: ResponseType::NoResult as i32,
@@ -954,6 +997,7 @@ mod tests {
             store_failure: false,
             next_workers: vec![],
             use_static: false,
+            output_as_stream: false,
         };
         TEST_RUNTIME.block_on(async {
             let worker_id = app.worker_app().create(&wd).await?;
@@ -962,7 +1006,7 @@ mod tests {
             });
 
             // wait for direct response
-            let (job_id, res) = app
+            let (job_id, res, _) = app
                 .enqueue_job(Some(&worker_id), None, jarg.clone(), None, 0, 0, 0, None)
                 .await?;
             assert!(job_id.value > 0);
@@ -1013,8 +1057,12 @@ mod tests {
                 }),
             };
             assert!(
-                !app.complete_job(result.id.as_ref().unwrap(), result.data.as_ref().unwrap())
-                    .await?
+                !app.complete_job(
+                    result.id.as_ref().unwrap(),
+                    result.data.as_ref().unwrap(),
+                    None
+                )
+                .await?
             );
             // not fetched job (because of not use job_dispatcher)
             assert!(app.find_job(&job_id, None).await?.is_none());
@@ -1042,7 +1090,7 @@ mod tests {
             });
             let wd = WorkerData {
                 name: "testworker".to_string(),
-                runner_id: Some(RunnerId { value: 111 }),
+                runner_id: Some(RunnerId { value: 1 }),
                 runner_settings,
                 channel: channel.cloned(),
                 response_type: ResponseType::NoResult as i32,
@@ -1053,6 +1101,7 @@ mod tests {
                 store_failure: false,
                 next_workers: vec![],
                 use_static: false,
+                output_as_stream: false,
             };
             let worker_id = app.worker_app().create(&wd).await?;
 
@@ -1066,7 +1115,7 @@ mod tests {
                     .await?,
                 0
             );
-            let (job_id, res) = app
+            let (job_id, res, _) = app
                 .enqueue_job(
                     Some(&worker_id),
                     None,
@@ -1081,7 +1130,7 @@ mod tests {
             assert!(job_id.value > 0);
             assert!(res.is_none());
             // job2
-            let (job_id2, res2) = app
+            let (job_id2, res2, _) = app
                 .enqueue_job(
                     Some(&worker_id),
                     None,

@@ -1,10 +1,11 @@
 pub mod hybrid;
 pub mod rdb_chan;
-pub mod redis;
+// pub mod redis;
 
 use super::JobBuilder;
 use anyhow::Result;
 use async_trait::async_trait;
+use futures::stream::BoxStream;
 use infra::infra::{
     job::{
         queue::redis::RedisJobQueueRepository,
@@ -14,8 +15,8 @@ use infra::infra::{
     UseJobQueueConfig,
 };
 use proto::jobworkerp::data::{
-    Job, JobId, JobResult, JobResultData, JobResultId, JobStatus, ResponseType, WorkerData,
-    WorkerId,
+    Job, JobId, JobResult, JobResultData, JobResultId, JobStatus, ResponseType, ResultOutputItem,
+    WorkerData, WorkerId,
 };
 use std::{fmt, sync::Arc, time::Duration};
 
@@ -52,7 +53,11 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         priority: i32,
         timeout: u64,
         reserved_job_id: Option<JobId>,
-    ) -> Result<(JobId, Option<JobResult>)>;
+    ) -> Result<(
+        JobId,
+        Option<JobResult>,
+        Option<BoxStream<'static, ResultOutputItem>>,
+    )>;
 
     // update job with id (redis: upsert, rdb: update)
     async fn update_job(&self, job: &Job) -> Result<()>;
@@ -68,7 +73,12 @@ pub trait JobApp: fmt::Debug + Send + Sync {
     ///
     /// * `Result<bool>` - Result of runner_settings (true if changed data)
     ///
-    async fn complete_job(&self, id: &JobResultId, result: &JobResultData) -> Result<bool>;
+    async fn complete_job(
+        &self,
+        id: &JobResultId,
+        result: &JobResultData,
+        stream: Option<BoxStream<'static, ResultOutputItem>>,
+    ) -> Result<bool>;
     async fn delete_job(&self, id: &JobId) -> Result<bool>;
     async fn find_job(&self, id: &JobId, ttl: Option<&Duration>) -> Result<Option<Job>>
     where
@@ -219,7 +229,11 @@ where
         &self,
         job: &Job,
         worker: &WorkerData,
-    ) -> Result<(JobId, Option<JobResult>)> {
+    ) -> Result<(
+        JobId,
+        Option<JobResult>,
+        Option<BoxStream<'static, ResultOutputItem>>,
+    )> {
         let job_id = job.id.unwrap();
         // job in the future(need to wait) (use for redis only mode in future)
         let res = match if self.is_run_after_job(job) {
@@ -246,11 +260,12 @@ where
                     self._wait_job_for_direct_response(
                         &job_id,
                         job.data.as_ref().map(|d| d.timeout),
+                        worker.output_as_stream,
                     )
                     .await
-                    .map(|r| (job_id, Some(r)))
+                    .map(|(r, stream)| (job_id, Some(r), stream))
                 } else {
-                    Ok((job_id, None))
+                    Ok((job_id, None, None))
                 }
             }
             Err(e) => Err(e),
@@ -263,10 +278,11 @@ where
         &self,
         job_id: &JobId,
         timeout: Option<u64>,
-    ) -> Result<JobResult> {
+        output_as_stream: bool,
+    ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
         // wait for and return result
         self.redis_job_repository()
-            .wait_for_result_queue_for_response(job_id, timeout.as_ref()) // no timeout
+            .wait_for_result_queue_for_response(job_id, timeout, output_as_stream)
             .await
     }
 }

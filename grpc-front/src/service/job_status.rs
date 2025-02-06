@@ -18,7 +18,7 @@ pub trait JobStatusGrpc {
 
 #[tonic::async_trait]
 impl<T: JobStatusGrpc + Tracing + Send + Debug + Sync + 'static> JobStatusService for T {
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "find"))]
     async fn find(
         &self,
         request: tonic::Request<JobId>,
@@ -34,7 +34,7 @@ impl<T: JobStatusGrpc + Tracing + Send + Debug + Sync + 'static> JobStatusServic
     }
 
     type FindAllStream = BoxStream<'static, Result<JobStatusResponse, tonic::Status>>;
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "find_all"))]
     async fn find_all(
         &self,
         request: tonic::Request<Empty>,

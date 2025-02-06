@@ -20,7 +20,7 @@ pub trait JobRestoreGrpc {
 
 #[tonic::async_trait]
 impl<T: JobRestoreGrpc + Tracing + Send + Debug + Sync + 'static> JobRestoreService for T {
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "restore"))]
     async fn restore(
         &self,
         request: tonic::Request<JobRestoreRequest>,
@@ -37,13 +37,13 @@ impl<T: JobRestoreGrpc + Tracing + Send + Debug + Sync + 'static> JobRestoreServ
         }
     }
     type FindAllStream = BoxStream<'static, Result<Job, tonic::Status>>;
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "find_all"))]
     async fn find_all(
         &self,
         request: tonic::Request<JobRestoreRequest>,
     ) -> Result<tonic::Response<Self::FindAllStream>, tonic::Status> {
         let _s = Self::trace_request("job", "restore", &request);
-        let req = request.get_ref();
+        let req: &JobRestoreRequest = request.get_ref();
         // TODO streaming
         match self
             .app()

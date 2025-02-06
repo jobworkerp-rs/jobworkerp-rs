@@ -221,6 +221,7 @@ impl UseIdGenerator for RdbRunnerRepositoryImpl {
 }
 impl RunnerRepository for RdbRunnerRepositoryImpl {}
 
+#[cfg(test)]
 mod test {
     use super::RdbRunnerRepositoryImpl;
     use super::RunnerRepository;
@@ -244,9 +245,9 @@ mod test {
         let repository = RdbRunnerRepositoryImpl::new(pool, Arc::new(p), id_generator);
         let db = repository.db_pool();
         let row = Some(RunnerRow {
-            id: 12345, // XXX generated
+            id: 123456, // XXX generated
             name: "HelloPlugin".to_string(),
-            file_name: "libplugin_runner_hello.so".to_string(),
+            file_name: "libplugin_runner_hello.dylib".to_string(),
             r#type: RunnerType::Plugin as i32,
         });
         let data = Some(RunnerData {
@@ -259,8 +260,12 @@ mod test {
                 "../../../../plugins/hello_runner/protobuf/hello_job_args.proto"
             )
             .to_string(),
-            result_output_proto: None,
+            result_output_proto: Some(
+                include_str!("../../../../plugins/hello_runner/protobuf/hello_result.proto")
+                    .to_string(),
+            ),
             runner_type: 0,
+            output_as_stream: true, // hello
         });
 
         let org_count = repository.count_list_tx(repository.db_pool()).await?;

@@ -30,13 +30,5 @@ grpc-front = { path = "../grpc-front" }
 anyhow = { workspace = true }
 dotenvy = { workspace = true }
 envy = { workspace = true }
-tokio = { workspace = true, features = [
-    "macros",
-    "rt-multi-thread",
-    "sync",
-    "time",
-    "process",
-    "parking_lot",
-] }
+tokio = { workspace = true }
 tracing = { workspace = true }
-

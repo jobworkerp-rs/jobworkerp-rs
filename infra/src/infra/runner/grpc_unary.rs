@@ -5,7 +5,8 @@ use crate::{
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use proto::jobworkerp::data::RunnerType;
+use futures::stream::BoxStream;
+use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use tonic::{transport::Channel, IntoRequest};
 
 use super::RunnerTrait;
@@ -80,6 +81,11 @@ impl RunnerTrait for GrpcUnaryRunner {
             Err(anyhow!("grpc client is not initialized"))
         }
     }
+    async fn run_stream(&mut self, arg: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>> {
+        // default implementation (return empty)
+        let _ = arg;
+        Err(anyhow::anyhow!("not implemented"))
+    }
 
     async fn cancel(&mut self) {
         tracing::warn!("cannot cancel grpc request until timeout")
@@ -95,6 +101,9 @@ impl RunnerTrait for GrpcUnaryRunner {
         None
     }
     fn use_job_result(&self) -> bool {
+        false
+    }
+    fn output_as_stream(&self) -> bool {
         false
     }
 }

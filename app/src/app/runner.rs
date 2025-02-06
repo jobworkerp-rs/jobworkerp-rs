@@ -153,11 +153,12 @@ pub trait UseRunnerParserWithCache: Send + Sync {
         runner_id: &RunnerId,
         runner_data: &RunnerData,
         runner_settings: &[u8],
-    ) -> impl Future<Output = Result<Option<DynamicMessage>>> + Send {
+    ) -> impl Future<Output = Result<Option<RunnerDataWithDescriptor>>> + Send {
         async move {
             let runner_with_descriptor =
                 self.parse_proto_with_cache(runner_id, runner_data).await?;
-            runner_with_descriptor.parse_runner_settings_data(runner_settings)
+            runner_with_descriptor.parse_runner_settings_data(runner_settings)?;
+            Ok(Some(runner_with_descriptor))
         }
     }
 }
@@ -168,7 +169,7 @@ pub trait UseRunnerAppParserWithCache:
         &self,
         runner_id: &RunnerId,
         runner_settings: &[u8],
-    ) -> impl Future<Output = Result<Option<DynamicMessage>>> + Send {
+    ) -> impl Future<Output = Result<Option<RunnerDataWithDescriptor>>> + Send {
         let runner_app = self.runner_app().clone();
         async move {
             if let Some(Runner {
@@ -179,6 +180,7 @@ pub trait UseRunnerAppParserWithCache:
                     .find_runner(runner_id, self.default_ttl())
                     .await?
             } {
+                tracing::debug!("runner_data: {:?}", &runner_data);
                 self.validate_runner_settings_data_with_schema(
                     runner_id,
                     &runner_data,
@@ -304,6 +306,7 @@ pub mod test {
             job_args_proto: include_str!("../../../proto/protobuf/test_args.proto").to_string(),
             runner_type: RunnerType::Plugin as i32,
             result_output_proto: None,
+            output_as_stream: false,
         }
     }
 
