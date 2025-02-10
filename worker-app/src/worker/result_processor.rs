@@ -20,8 +20,6 @@ use infra::infra::job::rows::UseJobqueueAndCodec;
 use proto::jobworkerp::data::JobResultData;
 use proto::jobworkerp::data::JobResultId;
 use proto::jobworkerp::data::ResultOutputItem;
-use proto::jobworkerp::data::ResultStatus;
-use proto::jobworkerp::data::Worker;
 use proto::jobworkerp::data::{JobResult, WorkerData};
 use std::sync::Arc;
 use tracing;
@@ -99,8 +97,6 @@ impl ResultProcessorImpl {
                 .await
                 .map(|_| ());
             // the job finished
-            // enqueue next worker jobs
-            self.enqueue_next_worker_jobs(id, dat, worker).await?;
             // if finished periodic job, enqueue next periodic job
             if let Some(pj) = Self::build_next_periodic_job(dat, worker) {
                 let pjres = self
@@ -124,63 +120,6 @@ impl ResultProcessorImpl {
             };
             res
         }
-    }
-    //TODO test
-    async fn enqueue_next_worker_jobs(
-        &self,
-        id: &JobResultId,
-        dat: &JobResultData,
-        worker: &WorkerData,
-    ) -> Result<()> {
-        if dat.status == ResultStatus::Success as i32 && !worker.next_workers.is_empty() {
-            tracing::debug!(
-                "enqueue next worker: {:?}, from worker: {}, job_result: {:?}",
-                &worker.next_workers,
-                &worker.name,
-                &id
-            );
-            for wid in worker.next_workers.iter() {
-                if let Ok(Some(Worker {
-                    id: Some(wid),
-                    data: Some(wdat),
-                })) = self.worker_app().find(wid).await
-                {
-                    for args in dat
-                        .output
-                        .as_ref()
-                        .map(|d| d.items.clone())
-                        .unwrap_or(vec![vec![]])
-                        .into_iter()
-                    {
-                        // no result, no enqueue
-                        if args.is_empty() {
-                            tracing::warn!(
-                                    "noop because output is empty: next_worker: {:?}, from worker: {}, job_result: {:?}",
-                                    &wdat.name,
-                                    &worker.name,
-                                    &id
-                                );
-                            continue;
-                        }
-                        self.job_app()
-                            .enqueue_job(
-                                Some(&wid),
-                                None,
-                                args,
-                                dat.uniq_key.clone(),
-                                dat.run_after_time,
-                                dat.priority,
-                                dat.timeout,
-                                None,
-                            )
-                            .await?;
-                    }
-                } else {
-                    tracing::error!("next worker not found: id={:?}, worker={:?}", wid, worker);
-                }
-            }
-        }
-        Ok(())
     }
 }
 
