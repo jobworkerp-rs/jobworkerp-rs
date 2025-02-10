@@ -74,6 +74,10 @@ pub trait UseJobqueueAndCodec {
     fn job_result_pubsub_channel_name(job_id: &JobId) -> String {
         format!("job_result_changed:job:{}", job_id.value)
     }
+    // pubsub channel(streaming result)
+    fn job_result_stream_pubsub_channel_name(job_id: &JobId) -> String {
+        format!("job_result_streaming:job:{}", job_id.value)
+    }
     // pubsub channel
     fn job_result_by_worker_pubsub_channel_name(worker_id: &WorkerId) -> String {
         format!("job_result_changed:worker:{}", worker_id.value)

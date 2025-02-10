@@ -25,7 +25,7 @@ const MAX_RESERVED_RUNNER_ID: i64 = 1024;
 
 #[tonic::async_trait]
 impl<T: RunnerGrpc + Tracing + Send + Debug + Sync + 'static> RunnerService for T {
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "delete"))]
     async fn delete(
         &self,
         request: tonic::Request<RunnerId>,
@@ -47,7 +47,7 @@ impl<T: RunnerGrpc + Tracing + Send + Debug + Sync + 'static> RunnerService for 
             Err(e) => Err(handle_error(&e)),
         }
     }
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "find"))]
     async fn find(
         &self,
         request: tonic::Request<RunnerId>,
@@ -61,7 +61,7 @@ impl<T: RunnerGrpc + Tracing + Send + Debug + Sync + 'static> RunnerService for 
     }
 
     type FindListStream = BoxStream<'static, Result<Runner, tonic::Status>>;
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "find_list"))]
     async fn find_list(
         &self,
         request: tonic::Request<FindListRequest>,
@@ -89,7 +89,7 @@ impl<T: RunnerGrpc + Tracing + Send + Debug + Sync + 'static> RunnerService for 
             Err(e) => Err(handle_error(&e)),
         }
     }
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "count"))]
     async fn count(
         &self,
         request: tonic::Request<CountCondition>,

@@ -5,6 +5,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
 use command_utils::util::option::Exists;
+use futures::stream::BoxStream;
 use futures::Stream;
 use infra::error::JobWorkerError;
 use infra::infra::job::rows::UseJobqueueAndCodec;
@@ -17,7 +18,8 @@ use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryMod
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use infra_utils::infra::rdb::UseRdbPool;
 use proto::jobworkerp::data::{
-    JobId, JobResult, JobResultData, JobResultId, ResponseType, ResultStatus, Worker, WorkerId,
+    JobId, JobResult, JobResultData, JobResultId, ResponseType, ResultOutputItem, ResultStatus,
+    Worker, WorkerData, WorkerId,
 };
 use std::pin::Pin;
 use std::sync::Arc;
@@ -42,6 +44,87 @@ impl RdbJobResultAppImpl {
             id_generator,
             rdb_chan_repositories: rdb_repositories,
             worker_app,
+        }
+    }
+    async fn listen_result_stream(
+        &self,
+        job_id: &JobId,
+        worker_id: Option<&WorkerId>,
+        worker_name: Option<&String>,
+        timeout: Option<u64>,
+    ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)>
+    where
+        Self: Send + 'static,
+    {
+        // get worker data
+        let Worker { id: _wid, data: wd } = self
+            .worker_app
+            .find_by_id_or_name(worker_id, worker_name)
+            .await?;
+        // let wid = wid.ok_or(JobWorkerError::WorkerNotFound(format!(
+        //     "cannot listen job which worker is None: id={:?} or name={:?}",
+        //     worker_id, worker_name
+        // )))?;
+        let wd = wd.ok_or(JobWorkerError::WorkerNotFound(format!(
+            "cannot listen job which worker is None: id={:?} or name={:?}",
+            worker_id, worker_name
+        )))?;
+        if wd.response_type == ResponseType::Direct as i32 {
+            return Err(JobWorkerError::InvalidParameter(format!(
+                "Cannot listen result for direct response: {:?}",
+                &wd
+            ))
+            .into());
+        }
+        // check job result (already finished or not)
+        let res = self
+            .rdb_job_result_repository()
+            .find_latest_by_job_id(job_id)
+            .await?;
+        match res {
+            // already finished: return resolved result only (no stream)
+            Some(v) if self.is_finished(&v) => Ok((v, None)),
+            // result in rdb (not finished by store_failure option)
+            Some(_v) => {
+                // found not finished result: wait for result data
+                self.subscribe_result_with_check(job_id, &wd, timeout.as_ref())
+                    .await
+            }
+            None => {
+                // not found result: wait for job
+                tracing::debug!("job result not found: find job: {:?}", job_id);
+                self.subscribe_result_with_check(job_id, &wd, timeout.as_ref())
+                    .await
+            }
+        }
+    }
+    // same as hybrid implementation
+    async fn subscribe_result_with_check(
+        &self,
+        job_id: &JobId,
+        wdata: &WorkerData,
+        timeout: Option<&u64>,
+    ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
+        if wdata.response_type != ResponseType::ListenAfter as i32 {
+            Err(JobWorkerError::InvalidParameter(
+                "cannot listen job which response_type isnot ListenAfter".to_string(),
+            )
+            .into())
+        } else {
+            let res = self
+                .job_result_pubsub_repository()
+                .subscribe_result(job_id, timeout.copied())
+                .await?;
+            if wdata.output_as_stream {
+                let stream = self
+                    .job_result_pubsub_repository()
+                    .subscribe_result_stream(job_id, timeout.copied())
+                    .await?;
+                Ok((res, Some(stream)))
+            } else {
+                // wait for result data (long polling with grpc (keep connection)))
+                Ok((res, None))
+            }
         }
     }
 }
@@ -147,8 +230,8 @@ impl JobResultApp for RdbJobResultAppImpl {
         job_id: &JobId,
         worker_id: Option<&WorkerId>,
         worker_name: Option<&String>,
-        timeout: u64,
-    ) -> Result<JobResult>
+        timeout: Option<u64>,
+    ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)>
     where
         Self: Send + 'static,
     {
@@ -161,6 +244,12 @@ impl JobResultApp for RdbJobResultAppImpl {
             "cannot listen job which worker is None: id={:?}",
             worker_id
         )))?;
+        if wd.output_as_stream {
+            // stream
+            return self
+                .listen_result_stream(job_id, worker_id, worker_name, timeout)
+                .await;
+        }
         if !(wd.store_failure && wd.store_success) {
             return Err(JobWorkerError::InvalidParameter(format!(
                 "Cannot listen result not stored worker: {:?}",
@@ -183,11 +272,12 @@ impl JobResultApp for RdbJobResultAppImpl {
                         .exists(|d| d.status == ResultStatus::ErrorAndRetry as i32) =>
                 {
                     // XXX setting?
-                    if datetime::now()
-                        .signed_duration_since(start)
-                        .num_milliseconds() as u64
-                        > timeout
-                    {
+                    if timeout.exists(|t| {
+                        datetime::now()
+                            .signed_duration_since(start)
+                            .num_milliseconds() as u64
+                            > t
+                    }) {
                         tracing::info!("listen_result: timeout");
                         return Err(JobWorkerError::TimeoutError(format!(
                             "listen timeout: job_id:{}",
@@ -202,14 +292,15 @@ impl JobResultApp for RdbJobResultAppImpl {
                 }
                 Ok(Some(v)) => {
                     // fill worker data
-                    return self._fill_worker_data(v).await;
+                    return self._fill_worker_data(v).await.map(|r| (r, None));
                 }
                 Ok(None) => {
-                    if datetime::now()
-                        .signed_duration_since(start)
-                        .num_milliseconds() as u64
-                        > timeout
-                    {
+                    if timeout.exists(|t| {
+                        datetime::now()
+                            .signed_duration_since(start)
+                            .num_milliseconds() as u64
+                            > t
+                    }) {
                         tracing::warn!(
                             "listen_result: timeout: job={}, worker={}, {:?}",
                             &job_id.value,

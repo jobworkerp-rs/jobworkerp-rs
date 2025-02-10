@@ -1,20 +1,14 @@
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use std::time::Duration;
-
 use crate::infra::job::rows::UseJobqueueAndCodec;
 use crate::infra::JobQueueConfig;
 use crate::{error::JobWorkerError, infra::UseJobQueueConfig};
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::option::FlatMap as _;
-use command_utils::util::result::FlatMap as _;
-use futures::FutureExt;
 use infra_utils::infra::chan::mpmc::{Chan, UseChanBuffer};
 use infra_utils::infra::chan::{ChanBuffer, ChanBufferItem};
-use proto::jobworkerp::data::{Job, JobId, JobResult, JobResultData, JobResultId, Priority};
-use signal_hook::consts::SIGINT;
-use signal_hook_tokio::Signals;
+use proto::jobworkerp::data::{Job, JobId, Priority};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[async_trait]
@@ -68,6 +62,7 @@ pub trait ChanJobQueueRepository:
     where
         Self: Send + Sync,
     {
+        use futures::FutureExt;
         // receive from multiple channels immediately (if queue is empty, select each channel for waiting)
         for qn in &queue_channel_names {
             tracing::debug!("receive_job_from_channels: channel: {:?}", qn);
@@ -110,69 +105,130 @@ pub trait ChanJobQueueRepository:
         }
     }
 
-    // send job result from worker to front directly
-    #[inline]
-    async fn enqueue_result_direct(&self, id: &JobResultId, res: &JobResultData) -> Result<bool> {
-        let v = Self::serialize_job_result(*id, res.clone());
-        if let Some(jid) = res.job_id.as_ref() {
-            let cn = Self::result_queue_name(jid);
-            tracing::debug!("send_result_direct: job_id: {:?}, queue: {}", jid, &cn);
-            // job id based queue (onetime, use ttl)
-            let _ = self
-                .chan_buf()
-                .send_to_chan(
-                    &cn,
-                    v,
-                    None,
-                    // set expire for not calling listen_after api
-                    Some(&Duration::from_secs(
-                        self.job_queue_config().expire_job_result_seconds as u64,
-                    )),
-                    true, // only if exists
-                )
-                .await
-                .map_err(JobWorkerError::ChanError)?;
-            Ok(true)
-        } else {
-            tracing::warn!("job_id is not set in job_result: {:?}", res);
-            Ok(false)
-        }
-    }
+    // // send job result from worker to front directly
+    // #[inline]
+    // async fn enqueue_result_direct(
+    //     &self,
+    //     id: &JobResultId,
+    //     res: &JobResultData,
+    //     stream: Option<BoxStream<'static, Vec<u8>>>,
+    // ) -> Result<bool> {
+    //     let v = Self::serialize_job_result(*id, res.clone());
+    //     if let Some(jid) = res.job_id.as_ref() {
+    //         let cn = Self::result_queue_name(jid);
+    //         tracing::debug!("send_result_direct: job_id: {:?}, queue: {}", jid, &cn);
+    //         // job id based queue (onetime, use ttl)
+    //         let _ = self
+    //             .chan_buf()
+    //             .send_to_chan(
+    //                 &cn,
+    //                 v,
+    //                 None,
+    //                 // set expire for not calling listen_after api
+    //                 Some(&Duration::from_secs(
+    //                     self.job_queue_config().expire_job_result_seconds as u64,
+    //                 )),
+    //                 true, // only if exists
+    //             )
+    //             .await
+    //             .map_err(JobWorkerError::ChanError)?;
+    //         if let Some(stream) = stream {
+    //             // send stream to pubsub channel if exists
+    //             // TODO decode item and add end item to stream
+    //             tracing::debug!("==== send_result_direct: send_stream_to_chan: {:?}", jid);
+    //             self.chan_buf()
+    //                 .send_stream_to_chan(
+    //                     &Self::job_result_stream_pubsub_channel_name(jid),
+    //                     stream,
+    //                     None,
+    //                     Some(&Duration::from_secs(
+    //                         self.job_queue_config().expire_job_result_seconds as u64,
+    //                     )),
+    //                     true,
+    //                 )
+    //                 .await?;
+    //         }
+    //         tracing::debug!("===== send_result_direct: : {:?}", jid);
+    //         Ok(true)
+    //     } else {
+    //         tracing::warn!("job_id is not set in job_result: {:?}", res);
+    //         Ok(false)
+    //     }
+    // }
 
-    // wait response from worker for direct response job
-    // TODO shutdown lock until receive result ? (but not recorded...)
-    #[inline]
-    async fn wait_for_result_queue_for_response(
-        &self,
-        job_id: &JobId,
-        timeout: Option<&u64>,
-    ) -> Result<JobResult> {
-        // TODO retry control
-        let nm = Self::result_queue_name(job_id);
-        tracing::debug!(
-            "wait_for_result_data_for_response: job_id: {:?}, queue:{}",
-            job_id,
-            &nm
-        );
-        let signal: Signals = Signals::new([SIGINT]).expect("cannot get signals");
-        let handle = signal.handle();
-        let res = tokio::select! {
-            _ = tokio::spawn(async {
-                let mut stream = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).expect("signal error");
-                stream.recv().await
-            }) => {
-                handle.close();
-                Err(JobWorkerError::OtherError("interrupt direct waiting process".to_string()).into())
-            },
-            val = self.chan_buf().receive_from_chan(nm, timeout.flat_map(|t| if *t == 0 {None} else {Some(Duration::from_millis(*t))}), None) => {
-                let r: Result<JobResult> = val.map_err(|e|JobWorkerError::ChanError(e).into())
-                    .flat_map(|v| Self::deserialize_job_result(&v));
-                r
-            },
-        };
-        tracing::debug!("wait_for_result_queue_for_response: got res: {:?}", res);
-        res
-    }
+    // // wait response from worker for direct response job
+    // // TODO shutdown lock until receive result ? (but not recorded...)
+    // #[inline]
+    // async fn wait_for_result_queue_for_response(
+    //     &self,
+    //     job_id: &JobId,
+    //     timeout: Option<u64>,
+    //     output_as_stream: bool,
+    // ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
+    //     // use futures::FutureExt;
+    //     use tokio_stream::StreamExt;
+    //     // TODO retry control
+    //     let nm = Self::result_queue_name(job_id);
+    //     tracing::debug!(
+    //         "wait_for_result_data_for_response: job_id: {:?}, queue:{}",
+    //         job_id,
+    //         &nm
+    //     );
+    //     let pop_fut = async {
+    //         tokio::select! {
+    //             _ = tokio::spawn(async {
+    //                 let mut stream = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).expect("signal error");
+    //                 stream.recv().await
+    //             }) => {
+    //                 Err(JobWorkerError::OtherError("interrupt direct waiting process".to_string()).into())
+    //             },
+    //             val = self.chan_buf().receive_from_chan(nm, timeout.flat_map(|t| if t == 0 {None} else {Some(Duration::from_millis(t))}), None) => {
+    //                 let r: Result<JobResult> = val.map_err(|e|JobWorkerError::ChanError(e).into())
+    //                     .flat_map(|v| Self::deserialize_job_result(&v));
+    //                 tracing::debug!("====== wait_for_result_queue_for_response(in future): got res: {:?}", &r);
+    //                 r
+    //             },
+    //         }
+    //     };
+    //     let chan_buf_clone = self.chan_buf().clone();
+    //     let nm_stream = Self::job_result_stream_pubsub_channel_name(job_id);
+    //     let stream_fut = async {
+    //         if output_as_stream {
+    //             // Some(tokio::spawn(async move {
+    //             let v = chan_buf_clone
+    //                 .receive_stream_from_chan(nm_stream, timeout.map(Duration::from_millis))
+    //                 .await
+    //                 .inspect_err(|e| {
+    //                     tracing::error!("stream error: {:?}", e);
+    //                 })
+    //                 .ok();
+    //             tracing::debug!("====== wait_for_result_queue_for_response: got stream",);
+    //             v
+    //             // }))
+    //         } else {
+    //             None
+    //         }
+    //     };
+
+    //     let (pop_result, stream_result) = tokio::join!(pop_fut, stream_fut);
+    //     tracing::debug!(
+    //         "wait_for_result_queue_for_response: got res: {:?}",
+    //         &pop_result
+    //     );
+    //     match pop_result {
+    //         Ok(v) => {
+    //             if let Some(s) = stream_result {
+    //                 let s = s.map(|v| ResultOutputItem {
+    //                     item: Some(result_output_item::Item::Data(v)),
+    //                 });
+    //                 Ok((v, Some(Box::pin(s))))
+    //             } else {
+    //                 Ok((v, None))
+    //             }
+    //         }
+    //         Err(e) => Err(e),
+    //     }
+    // }
     // from shared buffer
     async fn find_from_queue(&self, channel: Option<&String>, id: &JobId) -> Result<Option<Job>> {
         let default_name = Self::DEFAULT_CHANNEL_NAME.to_string();
@@ -304,9 +360,7 @@ mod test {
     use infra_utils::infra::chan::mpmc::UseChanBuffer;
     use infra_utils::infra::chan::ChanBuffer;
     use infra_utils::infra::chan::ChanBufferItem;
-    use proto::jobworkerp::data::JobResultData;
-    use proto::jobworkerp::data::ResultOutput;
-    use proto::jobworkerp::data::{Job, JobData, JobId, ResultStatus, WorkerId};
+    use proto::jobworkerp::data::{Job, JobData, JobId, WorkerId};
     use std::sync::Arc;
 
     #[derive(Clone)]
@@ -403,55 +457,55 @@ mod test {
         );
         Ok(())
     }
-    // test of 'send_result()': store job result with send_result() to chan and get job result value from wait_for_result_data_directly()
-    #[tokio::test]
-    async fn send_result_test() -> Result<()> {
-        let chan_buf = ChanBuffer::new(None, 10000);
-        let job_queue_config = Arc::new(JobQueueConfig {
-            expire_job_result_seconds: 10,
-            fetch_interval: 1000,
-        });
-        let repo = Arc::new(ChanJobQueueRepositoryImpl {
-            job_queue_config,
-            chan_buf,
-            shared_buffer: Arc::new(Mutex::new(HashMap::new())),
-        });
-        let job_result_id = JobResultId { value: 111 };
-        let job_id = JobId { value: 1 };
-        let job_result_data = JobResultData {
-            job_id: Some(job_id),
-            status: ResultStatus::Success as i32,
-            output: Some(ResultOutput {
-                items: vec!["test".as_bytes().to_owned()],
-            }),
-            timeout: 2000,
-            enqueue_time: datetime::now_millis() - 10000,
-            run_after_time: datetime::now_millis() - 10000,
-            start_time: datetime::now_millis() - 1000,
-            end_time: datetime::now_millis(),
-            ..Default::default()
-        };
-        // let r = repo.send_result_direct(job_result_data.clone()).await?;
-        // assert!(r);
-        // let res = repo.wait_for_result_data_for_response(&job_id).await?;
-        let repo2 = repo.clone();
-        let jr2 = job_result_data.clone();
-        let jh = tokio::task::spawn(async move {
-            let res = repo2
-                .wait_for_result_queue_for_response(&job_id, None)
-                .await
-                .unwrap();
-            assert_eq!(res.data.unwrap(), jr2);
-        });
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        let r = repo
-            .enqueue_result_direct(&job_result_id, &job_result_data)
-            .await?;
-        assert!(r);
-        jh.await?;
+    // // test of 'send_result()': store job result with send_result() to chan and get job result value from wait_for_result_data_directly()
+    // #[tokio::test]
+    // async fn send_result_test() -> Result<()> {
+    //     let chan_buf = ChanBuffer::new(None, 10000);
+    //     let job_queue_config = Arc::new(JobQueueConfig {
+    //         expire_job_result_seconds: 10,
+    //         fetch_interval: 1000,
+    //     });
+    //     let repo = Arc::new(ChanJobQueueRepositoryImpl {
+    //         job_queue_config,
+    //         chan_buf,
+    //         shared_buffer: Arc::new(Mutex::new(HashMap::new())),
+    //     });
+    //     let job_result_id = JobResultId { value: 111 };
+    //     let job_id = JobId { value: 1 };
+    //     let job_result_data = JobResultData {
+    //         job_id: Some(job_id),
+    //         status: ResultStatus::Success as i32,
+    //         output: Some(ResultOutput {
+    //             items: vec!["test".as_bytes().to_owned()],
+    //         }),
+    //         timeout: 2000,
+    //         enqueue_time: datetime::now_millis() - 10000,
+    //         run_after_time: datetime::now_millis() - 10000,
+    //         start_time: datetime::now_millis() - 1000,
+    //         end_time: datetime::now_millis(),
+    //         ..Default::default()
+    //     };
+    //     // let r = repo.send_result_direct(job_result_data.clone()).await?;
+    //     // assert!(r);
+    //     // let res = repo.wait_for_result_data_for_response(&job_id).await?;
+    //     let repo2 = repo.clone();
+    //     let jr2 = job_result_data.clone();
+    //     let jh = tokio::task::spawn(async move {
+    //         let res = repo2
+    //             .wait_for_result_queue_for_response(&job_id, None, false)
+    //             .await
+    //             .unwrap();
+    //         assert_eq!(res.data.unwrap(), jr2);
+    //     });
+    //     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    //     let r = repo
+    //         .enqueue_result_direct(&job_result_id, &job_result_data, None)
+    //         .await?;
+    //     assert!(r);
+    //     jh.await?;
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
     // test of 'receive_job_from_channels()' : get job from chan and check the value (priority)
     #[tokio::test]

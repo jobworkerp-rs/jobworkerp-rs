@@ -74,25 +74,36 @@ impl WorkerApp for HybridWorkerAppImpl {
         let wsid = worker
             .runner_id
             .ok_or_else(|| JobWorkerError::InvalidParameter("runner_id is required".to_string()))?;
-        self.validate_runner_settings_data(&wsid, worker.runner_settings.as_slice())
-            .await?;
-
+        let RunnerDataWithDescriptor {
+            runner_data,
+            runner_settings_descriptor: _,
+            args_descriptor: _,
+        } = self
+            .validate_runner_settings_data(&wsid, worker.runner_settings.as_slice())
+            .await?
+            .ok_or_else(|| {
+                JobWorkerError::InvalidParameter("runner settings not provided".to_string())
+            })?;
+        let mut wdata = worker.clone();
+        wdata.output_as_stream = runner_data.output_as_stream;
         let wid = {
             let db = self.rdb_worker_repository().db_pool();
             let mut tx = db.begin().await.map_err(JobWorkerError::DBError)?;
             let id = self
                 .rdb_worker_repository()
-                .create(&mut *tx, worker)
+                .create(&mut *tx, &wdata)
                 .await?;
             tx.commit().await.map_err(JobWorkerError::DBError)?;
             id
         };
+        tracing::debug!("created worker: {:?}", wid);
         let _ = self.redis_worker_repository().delete_all().await;
         // clear caches (name and list)
         self.clear_cache_by_name(&worker.name).await;
+        tracing::debug!("clear cache by name: {}", worker.name);
         let _ = self
             .redis_worker_repository()
-            .publish_worker_changed(&wid, worker)
+            .publish_worker_changed(&wid, &wdata)
             .await;
         Ok(wid)
     }
@@ -107,13 +118,25 @@ impl WorkerApp for HybridWorkerAppImpl {
                 let wsid = w.runner_id.or(owdat.runner_id).ok_or_else(|| {
                     JobWorkerError::InvalidParameter("runner_id is required".to_string())
                 })?;
-                self.validate_runner_settings_data(&wsid, w.runner_settings.as_slice())
-                    .await?;
+                let RunnerDataWithDescriptor {
+                    runner_data,
+                    runner_settings_descriptor: _,
+                    args_descriptor: _,
+                } = self
+                    .validate_runner_settings_data(&wsid, w.runner_settings.as_slice())
+                    .await?
+                    .ok_or_else(|| {
+                        JobWorkerError::InvalidParameter("runner settings not provided".to_string())
+                    })?;
+                let mut wdata = w.clone();
+                wdata.output_as_stream = runner_data.output_as_stream;
 
                 // use rdb
                 let pool = self.rdb_worker_repository().db_pool();
                 let mut tx = pool.begin().await.map_err(JobWorkerError::DBError)?;
-                self.rdb_worker_repository().update(&mut *tx, id, w).await?;
+                self.rdb_worker_repository()
+                    .update(&mut *tx, id, &wdata)
+                    .await?;
                 tx.commit().await.map_err(JobWorkerError::DBError)?;
 
                 let _ = self.redis_worker_repository().delete_all().await;
@@ -123,7 +146,7 @@ impl WorkerApp for HybridWorkerAppImpl {
 
                 let _ = self
                     .redis_worker_repository()
-                    .publish_worker_changed(id, w)
+                    .publish_worker_changed(id, &wdata)
                     .await;
 
                 Ok(true)
@@ -446,7 +469,7 @@ mod tests {
                 descriptor_cache.clone(),
             );
             let _ = runner_app
-                .create_test_runner(&RunnerId { value: 111 }, "Test")
+                .create_test_runner(&RunnerId { value: 1 }, "Test")
                 .await?;
             let worker_app = HybridWorkerAppImpl::new(
                 storage_config.clone(),
@@ -471,19 +494,19 @@ mod tests {
             let w1 = WorkerData {
                 name: "test1".to_string(),
                 runner_settings: runner_settings.clone(),
-                runner_id: Some(RunnerId { value: 111 }),
+                runner_id: Some(RunnerId { value: 1 }),
                 ..Default::default()
             };
             let w2 = WorkerData {
                 name: "test2".to_string(),
                 runner_settings: runner_settings.clone(),
-                runner_id: Some(RunnerId { value: 111 }),
+                runner_id: Some(RunnerId { value: 1 }),
                 ..Default::default()
             };
             let w3 = WorkerData {
                 name: "test3".to_string(),
                 runner_settings: runner_settings.clone(),
-                runner_id: Some(RunnerId { value: 111 }),
+                runner_id: Some(RunnerId { value: 1 }),
                 ..Default::default()
             };
             let id1 = app.create(&w1).await?;
@@ -500,7 +523,7 @@ mod tests {
             let w4 = WorkerData {
                 name: "test4".to_string(),
                 runner_settings: runner_settings.clone(),
-                // runner_id: Some(RunnerId { value: 111 }),
+                // runner_id: Some(RunnerId { value: 1 }),
                 ..Default::default()
             };
             let res = app.update(&id1, &Some(w4.clone())).await?;

@@ -1,24 +1,22 @@
-use std::{pin::Pin, sync::Arc, time::Duration};
-
-use anyhow::Result;
-use async_trait::async_trait;
-use command_utils::util::result::TapErr;
-use futures::{Stream, StreamExt};
-use infra_utils::infra::chan::{
-    broadcast::{BroadcastChan, UseBroadcastChanBuffer},
-    ChanBuffer, ChanBufferItem,
-};
-use proto::jobworkerp::data::{JobId, JobResult, JobResultData, JobResultId, WorkerId};
-
+use super::{JobResultPublisher, JobResultSubscriber};
 use crate::{
     error::JobWorkerError,
     infra::{job::rows::UseJobqueueAndCodec, JobQueueConfig, UseJobQueueConfig},
 };
-
-use super::{JobResultPublisher, JobResultSubscriber};
+use anyhow::Result;
+use async_trait::async_trait;
+use futures::{future, stream::BoxStream, Stream, StreamExt};
+use infra_utils::infra::chan::{
+    broadcast::{BroadcastChan, UseBroadcastChanBuffer},
+    ChanBuffer, ChanBufferItem,
+};
+use proto::jobworkerp::data::{
+    result_output_item, JobId, JobResult, JobResultData, JobResultId, ResultOutputItem, WorkerId,
+};
+use std::{pin::Pin, sync::Arc, time::Duration};
 
 /// publish job result to channel
-/// (note: not broadcast to all receiver: assume single instance use)
+/// (note: assume single instance use)
 #[async_trait]
 impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
     async fn publish_result(
@@ -58,7 +56,7 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
                     Some(&Duration::from_secs(
                         self.job_queue_config().expire_job_result_seconds as u64,
                     )),
-                    true,
+                    false,
                 )
                 .await
         } else {
@@ -71,11 +69,40 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
                 result_data,
                 None,
                 None,
-                true,
+                false,
             )
             .await
             .inspect_err(|e| tracing::warn!("send_to_chan_err:{:?}", e))?;
         res.map(|r| r || res2)
+    }
+
+    async fn publish_result_stream_data(
+        &self,
+        job_id: JobId,
+        stream: BoxStream<'static, ResultOutputItem>,
+    ) -> Result<bool> {
+        let cn = Self::job_result_stream_pubsub_channel_name(&job_id);
+        tracing::debug!(
+            "publish_result_stream_data: job_id={}, ch={}",
+            &job_id.value,
+            &cn
+        );
+        let res_stream = stream.map(|item| Self::serialize_message(&item)).boxed();
+
+        let res = self
+            .broadcast_chan_buf()
+            .send_stream_to_chan(
+                cn.as_str(),
+                res_stream,
+                None,
+                Some(&Duration::from_secs(
+                    self.job_queue_config().expire_job_result_seconds as u64,
+                )),
+                false,
+            )
+            .await
+            .inspect_err(|e| tracing::error!("send_stream_to_chan_err:{:?}", e))?;
+        Ok(res)
     }
 }
 
@@ -96,11 +123,74 @@ impl JobResultSubscriber for ChanJobResultPubSubRepositoryImpl {
                 )),
             )
             .await
-            .tap_err(|e| tracing::error!("receive_from_chan_err:{:?}", e))?;
+            .inspect_err(|e| tracing::error!("receive_from_chan_err:{:?}", e))?;
         let res = Self::deserialize_job_result(&message)
-            .tap_err(|e| tracing::error!("deserialize_result:{:?}", e))?;
+            .inspect_err(|e| tracing::error!("deserialize_result:{:?}", e))?;
         tracing::debug!("subscribe_result_received: result={:?}", &res);
         Ok(res)
+    }
+    // subscribe job result of listen after by all listening client using broadcast_chan and return got result immediately
+    async fn subscribe_result_stream(
+        &self,
+        job_id: &JobId,
+        timeout: Option<u64>,
+    ) -> Result<BoxStream<'static, ResultOutputItem>> {
+        let cn = Arc::new(Self::job_result_stream_pubsub_channel_name(job_id));
+        tracing::debug!(
+            "subscribe_result_stream: job_id={}, ch={}",
+            &job_id.value,
+            &cn
+        );
+
+        let stream_future = self.broadcast_chan_buf().receive_stream_from_chan(
+            cn.clone().to_string(),
+            Some(Duration::from_secs(
+                self.job_queue_config().expire_job_result_seconds as u64,
+            )),
+        );
+
+        let stream = if let Some(timeout_ms) = timeout {
+            tokio::select! {
+                result = stream_future =>
+                    result.inspect_err(|e| tracing::error!("receive_from_chan_err:{:?}", e))?,
+                _ = tokio::time::sleep(Duration::from_millis(timeout_ms)) => {
+                    return Err(JobWorkerError::RuntimeError(format!("subscribe_result_stream timeout after {}ms", timeout_ms)).into());
+                }
+            }
+        } else {
+            stream_future
+                .await
+                .inspect_err(|e| tracing::error!("receive_from_chan_err:{:?}", e))?
+        };
+        tracing::debug!(
+            "subscribe_result_stream_receiving: job_id={}",
+            &job_id.value
+        );
+        let transformed_stream = stream
+            .filter_map(|b| async move {
+                let out = Self::deserialize_message::<ResultOutputItem>(b.as_slice());
+                match out {
+                    Ok(ResultOutputItem {
+                        item: Some(result_output_item::Item::Data(data)),
+                    }) => Some(ResultOutputItem {
+                        item: Some(result_output_item::Item::Data(data)),
+                    }),
+                    Ok(ResultOutputItem {
+                        item: Some(result_output_item::Item::End(_)),
+                    }) => Some(ResultOutputItem { item: None }),
+                    Ok(_) => {
+                        tracing::error!("invalid message: {:?}", out);
+                        None
+                    }
+                    Err(e) => {
+                        tracing::error!("deserialize_message_err:{:?}", e);
+                        None
+                    }
+                }
+            })
+            .take_while(|r| future::ready(r.item.is_some()))
+            .boxed();
+        Ok(transformed_stream)
     }
     async fn subscribe_result_stream_by_worker(
         &self,
@@ -116,15 +206,15 @@ impl JobResultSubscriber for ChanJobResultPubSubRepositoryImpl {
             self.broadcast_chan_buf()
                 .receive_stream_from_chan(
                     cn,
-                    Some(&Duration::from_secs(
+                    Some(Duration::from_secs(
                         self.job_queue_config().expire_job_result_seconds as u64,
                     )),
                 )
                 .await
-                .tap_err(|e| tracing::error!("receive_from_chan_err:{:?}", e))?
+                .inspect_err(|e| tracing::error!("receive_from_chan_err:{:?}", e))?
                 .then(|r| async move {
                     Self::deserialize_job_result(&r)
-                        .tap_err(|e| tracing::error!("deserialize_result:{:?}", e))
+                        .inspect_err(|e| tracing::error!("deserialize_result:{:?}", e))
                 }),
         );
         Ok(res)
