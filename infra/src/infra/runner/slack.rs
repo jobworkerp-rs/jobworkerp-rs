@@ -5,7 +5,7 @@ use self::repository::SlackRepository;
 use crate::error::JobWorkerError;
 use crate::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
 use crate::infra::runner::RunnerTrait;
-use crate::jobworkerp::runner::SlackNotificationRunnerSettings;
+use crate::jobworkerp::runner::{ChatPostMessageArgs, SlackRunnerSettings};
 use anyhow::{anyhow, Result};
 use futures::stream::BoxStream;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
@@ -17,44 +17,56 @@ pub struct SlackResultOutput {
 }
 
 #[derive(Clone, Debug)]
-pub struct SlackNotificationRunner {
+pub struct SlackPostMessageRunner {
     slack: Option<SlackRepository>,
 }
 
-impl SlackNotificationRunner {
+impl SlackPostMessageRunner {
     pub fn new() -> Self {
         Self { slack: None }
     }
 }
 
-impl Default for SlackNotificationRunner {
+impl Default for SlackPostMessageRunner {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl RunnerTrait for SlackNotificationRunner {
+impl RunnerTrait for SlackPostMessageRunner {
     fn name(&self) -> String {
-        RunnerType::SlackNotification.as_str_name().to_string()
+        RunnerType::SlackPostMessage.as_str_name().to_string()
     }
     async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
-        let res =
-            JobqueueAndCodec::deserialize_message::<SlackNotificationRunnerSettings>(&settings)?;
+        let res = JobqueueAndCodec::deserialize_message::<SlackRunnerSettings>(&settings)?;
         self.slack = Some(SlackRepository::new(res.into()));
         Ok(())
     }
-    async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
+    async fn run(&mut self, args: &[u8]) -> Result<Vec<Vec<u8>>> {
         if let Some(slack) = self.slack.as_ref() {
-            let message = String::from_utf8_lossy(arg);
+            tracing::debug!("slack runner is initialized");
+            let message = JobqueueAndCodec::deserialize_message::<ChatPostMessageArgs>(args)
+                .map_err(|e| {
+                    JobWorkerError::InvalidParameter(format!(
+                        "cannot deserialize slack message: {:?}",
+                        e
+                    ))
+                })?;
             // not validate json structure for slack
-            let req = serde_json::from_str(&message)?;
-            tracing::debug!("try to send slack message: {:?}", &req);
-            let r = slack.send_json(&req).await;
+            tracing::debug!("try to send slack message: {:?}", &message);
+            let r = slack.send_message(&message).await;
             match r {
                 Ok(res) => {
-                    tracing::debug!("slack notification was sent: {}", &res);
-                    Ok(vec![res.into_bytes()])
+                    tracing::debug!("slack notification was sent: {:?}", &res);
+                    Ok(vec![JobqueueAndCodec::serialize_message(
+                        &res.to_proto().map_err(|e| {
+                            JobWorkerError::OtherError(format!(
+                                "cannot serialize slack result: {:?}",
+                                e
+                            ))
+                        })?,
+                    )])
                 }
                 Err(e) => {
                     tracing::error!("slack error: {:?}", &e);
@@ -80,15 +92,12 @@ impl RunnerTrait for SlackNotificationRunner {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../../protobuf/jobworkerp/runner/slack_runner.proto").to_string()
     }
-    // use json string
+    // use JobResult as job_args
     fn job_args_proto(&self) -> String {
-        "".to_string()
+        include_str!("../../../protobuf/jobworkerp/runner/slack_args.proto").to_string()
     }
     fn result_output_proto(&self) -> Option<String> {
-        None
-    }
-    fn use_job_result(&self) -> bool {
-        true
+        Some(include_str!("../../../protobuf/jobworkerp/runner/slack_result.proto").to_string())
     }
     fn output_as_stream(&self) -> bool {
         false
