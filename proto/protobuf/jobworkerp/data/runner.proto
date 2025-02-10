@@ -6,7 +6,8 @@ import "jobworkerp/data/common.proto";
 
 message RunnerData {
   // runner name (unique key, proto message prefix: e.g. name: "command",
-  // runner_settings_proto: "CommandRunnerSettings", job_args_proto: "CommandArg")
+  // runner_settings_proto: "CommandRunnerSettings", job_args_proto:
+  // "CommandArg")
   string name = 1;
   // runner type
   jobworkerp.data.RunnerType runner_type = 2;
@@ -19,6 +20,7 @@ message RunnerData {
   // message type prefix (e.g. "message CommandResult{ string result = 1; }") if
   // empty, use utf8 string as bytes array for result output(or not resolved)
   optional string result_output_proto = 5;
+  bool output_as_stream = 6; // if true, output as stream (defined by runner impl)
 }
 
 message RunnerId { int64 value = 1; }

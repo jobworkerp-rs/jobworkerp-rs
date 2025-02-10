@@ -6,7 +6,8 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use proto::jobworkerp::data::RunnerType;
+use futures::stream::BoxStream;
+use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use std::{mem, process::Stdio};
 use tokio::process::{Child, Command};
 use tokio_stream::StreamExt;
@@ -136,6 +137,12 @@ impl RunnerTrait for CommandRunnerImpl {
             }
         }
     }
+    async fn run_stream(&mut self, arg: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>> {
+        // default implementation (return empty)
+        let _ = arg;
+        Err(anyhow::anyhow!("not implemented"))
+    }
+
     async fn cancel(&mut self) {
         if let Some(c) = self.consume_child() {
             drop(c);
@@ -151,6 +158,9 @@ impl RunnerTrait for CommandRunnerImpl {
         Some("".to_string())
     }
     fn use_job_result(&self) -> bool {
+        false
+    }
+    fn output_as_stream(&self) -> bool {
         false
     }
 }

@@ -3,6 +3,7 @@ use super::super::{StorageConfig, UseStorageConfig};
 use super::{JobResultApp, JobResultAppHelper};
 use anyhow::Result;
 use async_trait::async_trait;
+use futures::stream::BoxStream;
 use infra::error::JobWorkerError;
 use infra::infra::job_result::pubsub::redis::{
     RedisJobResultPubSubRepositoryImpl, UseRedisJobResultPubSubRepository,
@@ -16,8 +17,8 @@ use infra::infra::module::HybridRepositoryModule;
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use infra_utils::infra::rdb::UseRdbPool;
 use proto::jobworkerp::data::{
-    JobId, JobResult, JobResultData, JobResultId, ResponseType, ResultStatus, Worker, WorkerData,
-    WorkerId,
+    JobId, JobResult, JobResultData, JobResultId, ResponseType, ResultOutputItem, ResultStatus,
+    Worker, WorkerData, WorkerId,
 };
 use std::pin::Pin;
 use std::sync::Arc;
@@ -78,17 +79,27 @@ impl HybridJobResultAppImpl {
         job_id: &JobId,
         wdata: &WorkerData,
         timeout: Option<&u64>,
-    ) -> Result<JobResult> {
+    ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
         if wdata.response_type != ResponseType::ListenAfter as i32 {
             Err(JobWorkerError::InvalidParameter(
                 "cannot listen job which response_type isnot ListenAfter".to_string(),
             )
             .into())
         } else {
-            // wait for result data (long polling with grpc (keep connection)))
-            self.job_result_pubsub_repository()
+            let res = self
+                .job_result_pubsub_repository()
                 .subscribe_result(job_id, timeout.copied())
-                .await
+                .await?;
+            if wdata.output_as_stream {
+                let stream = self
+                    .job_result_pubsub_repository()
+                    .subscribe_result_stream(job_id, timeout.copied())
+                    .await?;
+                Ok((res, Some(stream)))
+            } else {
+                // wait for result data (long polling with grpc (keep connection)))
+                Ok((res, None))
+            }
         }
     }
 }
@@ -181,8 +192,8 @@ impl JobResultApp for HybridJobResultAppImpl {
         job_id: &JobId,
         worker_id: Option<&WorkerId>,
         worker_name: Option<&String>,
-        timeout: u64,
-    ) -> Result<JobResult>
+        timeout: Option<u64>,
+    ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)>
     where
         Self: Send + 'static,
     {
@@ -203,17 +214,17 @@ impl JobResultApp for HybridJobResultAppImpl {
         let res = self.find_job_result_by_job_id(job_id).await?;
         match res {
             // already finished: return resolved result
-            Some(v) if self.is_finished(&v) => Ok(v),
+            Some(v) if self.is_finished(&v) => Ok((v, None)),
             // result in rdb (not finished by store_failure option)
             Some(_v) => {
                 // found not finished result: wait for result data
-                self.subscribe_result_with_check(job_id, &wd, Some(&timeout))
+                self.subscribe_result_with_check(job_id, &wd, timeout.as_ref())
                     .await
             }
             None => {
                 // not found result: wait for job
                 tracing::debug!("job result not found: find job: {:?}", job_id);
-                self.subscribe_result_with_check(job_id, &wd, Some(&timeout))
+                self.subscribe_result_with_check(job_id, &wd, timeout.as_ref())
                     .await
             }
         }
@@ -442,6 +453,7 @@ mod tests {
             store_failure: true,
             next_workers: vec![],
             use_static: false,
+            output_as_stream: false,
         };
         TEST_RUNTIME.block_on(async {
             let worker_id = app.worker_app().create(&worker_data).await?;

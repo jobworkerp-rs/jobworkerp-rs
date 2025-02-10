@@ -13,10 +13,11 @@ use bollard::container::{
 use bollard::exec::{CreateExecOptions, StartExecResults};
 use bollard::image::CreateImageOptions;
 use bollard::Docker;
-use futures_util::stream::StreamExt;
-use futures_util::TryStreamExt;
-use proto::jobworkerp::data::RunnerType;
+use futures::stream::BoxStream;
+use futures::TryStreamExt;
+use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use serde::{Deserialize, Serialize};
+use tokio_stream::StreamExt;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -287,6 +288,11 @@ impl RunnerTrait for DockerExecRunner {
             Err(anyhow!("docker instance is not found"))
         }
     }
+    async fn run_stream(&mut self, arg: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>> {
+        // default implementation (return empty)
+        let _ = arg;
+        Err(anyhow::anyhow!("not implemented"))
+    }
 
     // TODO
     async fn cancel(&mut self) {
@@ -302,6 +308,9 @@ impl RunnerTrait for DockerExecRunner {
         None
     }
     fn use_job_result(&self) -> bool {
+        false
+    }
+    fn output_as_stream(&self) -> bool {
         false
     }
 }
@@ -501,6 +510,12 @@ impl RunnerTrait for DockerRunner {
             Err(anyhow!("docker instance is not found"))
         }
     }
+    async fn run_stream(&mut self, arg: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>> {
+        // default implementation (return empty)
+        let _ = arg;
+        Err(anyhow::anyhow!("not implemented"))
+    }
+
     // TODO
     async fn cancel(&mut self) {
         todo!("todo")
@@ -515,6 +530,9 @@ impl RunnerTrait for DockerRunner {
         Some("".to_string())
     }
     fn use_job_result(&self) -> bool {
+        false
+    }
+    fn output_as_stream(&self) -> bool {
         false
     }
 }

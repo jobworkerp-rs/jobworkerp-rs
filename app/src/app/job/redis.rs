@@ -1,3 +1,4 @@
+// not used (TODO remove)
 use super::super::job_result::UseJobResultApp;
 use super::{JobApp, JobBuilder, RedisJobAppHelper};
 use crate::app::job_result::JobResultApp;
@@ -6,6 +7,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
 use command_utils::util::option::Exists;
+use futures::stream::BoxStream;
 use infra::error::JobWorkerError;
 use infra::infra::job::queue::redis::RedisJobQueueRepository;
 use infra::infra::job::redis::schedule::RedisJobScheduleRepository;
@@ -175,7 +177,12 @@ impl JobApp for RedisJobAppImpl {
         }
     }
 
-    async fn complete_job(&self, id: &JobResultId, data: &JobResultData) -> Result<bool> {
+    async fn complete_job(
+        &self,
+        id: &JobResultId,
+        data: &JobResultData,
+        stream: Option<BoxStream<'static, Vec<u8>>>,
+    ) -> Result<bool> {
         if let Some(jid) = data.job_id.as_ref() {
             self.job_status_repository().delete_status(jid).await?;
             match ResponseType::try_from(data.response_type) {

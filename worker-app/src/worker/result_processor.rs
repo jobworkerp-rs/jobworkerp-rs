@@ -16,11 +16,13 @@ use app::module::AppConfigModule;
 use app::module::AppModule;
 use command_utils::util::option::Exists;
 use debug_stub_derive::DebugStub;
+use futures::stream::BoxStream;
 use infra::error::JobWorkerError;
 use infra::infra::job::rows::JobqueueAndCodec;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use proto::jobworkerp::data::JobResultData;
 use proto::jobworkerp::data::JobResultId;
+use proto::jobworkerp::data::ResultOutputItem;
 use proto::jobworkerp::data::ResultStatus;
 use proto::jobworkerp::data::Runner;
 use proto::jobworkerp::data::Worker;
@@ -50,25 +52,25 @@ impl ResultProcessorImpl {
     pub async fn process_result(
         &self,
         id: JobResultId,
-        data: JobResultData,
+        data: (JobResultData, Option<BoxStream<'static, ResultOutputItem>>),
         w: WorkerData,
     ) -> Result<JobResult> {
         tracing::debug!("got job_result: {:?}, worker: {:?}", &id, &w.name);
         // retry first if necessary
         let retried = self
-            .process_complete_or_retry_condition(&id, &data, &w)
+            .process_complete_or_retry_condition(&id, &data.0, data.1, &w)
             .await;
         // store result if necessary by result status and worker setting
         match self
             .job_result_app()
-            .create_job_result_if_necessary(&id, &data)
+            .create_job_result_if_necessary(&id, &data.0)
             .await
         {
             Ok(_r) => {
                 retried?; // error if retried err
                 Ok(JobResult {
                     id: Some(id),
-                    data: Some(data),
+                    data: Some(data.0),
                 })
             }
             Err(e) => {
@@ -82,6 +84,7 @@ impl ResultProcessorImpl {
         &self,
         id: &JobResultId,
         dat: &JobResultData,
+        stream: Option<BoxStream<'static, ResultOutputItem>>,
         worker: &WorkerData,
     ) -> Result<()> {
         // retry or periodic job
@@ -94,7 +97,11 @@ impl ResultProcessorImpl {
             Ok(())
         } else {
             // complete job (delete first for unique key)
-            let res = self.job_app().complete_job(id, dat).await.map(|_| ());
+            let res = self
+                .job_app()
+                .complete_job(id, dat, stream)
+                .await
+                .map(|_| ());
             // the job finished
             // enqueue next worker jobs
             self.enqueue_next_worker_jobs(id, dat, worker).await?;

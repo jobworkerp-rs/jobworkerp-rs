@@ -20,6 +20,7 @@ impl RunnerRow {
                 runner_settings_proto: runner.runner_settings_proto(),
                 job_args_proto: runner.job_args_proto(),
                 result_output_proto: runner.result_output_proto(),
+                output_as_stream: runner.output_as_stream(),
             }),
         }
     }

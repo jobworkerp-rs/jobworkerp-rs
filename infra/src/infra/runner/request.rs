@@ -10,7 +10,8 @@ use crate::{
 };
 use anyhow::Result;
 use async_trait::async_trait;
-use proto::jobworkerp::data::RunnerType;
+use futures::stream::BoxStream;
+use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use reqwest::{
     header::{HeaderMap, HeaderName},
     Method, Url,
@@ -128,6 +129,11 @@ impl RunnerTrait for RequestRunner {
             Err(JobWorkerError::RuntimeError("url is not set".to_string()).into())
         }
     }
+    async fn run_stream(&mut self, arg: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>> {
+        // default implementation (return empty)
+        let _ = arg;
+        Err(anyhow::anyhow!("not implemented"))
+    }
 
     async fn cancel(&mut self) {
         tracing::warn!("cannot cancel request until timeout")
@@ -145,6 +151,9 @@ impl RunnerTrait for RequestRunner {
         )
     }
     fn use_job_result(&self) -> bool {
+        false
+    }
+    fn output_as_stream(&self) -> bool {
         false
     }
 }

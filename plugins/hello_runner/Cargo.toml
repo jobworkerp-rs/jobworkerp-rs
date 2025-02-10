@@ -12,10 +12,12 @@ crate-type = ["dylib"]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
+futures = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }
 tonic = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 

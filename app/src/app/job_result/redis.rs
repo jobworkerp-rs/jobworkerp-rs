@@ -1,6 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::option::ToVec;
+use futures::stream::BoxStream;
 use futures::Stream;
 use infra::error::JobWorkerError;
 use infra::infra::job_result::pubsub::redis::{
@@ -10,8 +11,8 @@ use infra::infra::job_result::pubsub::JobResultSubscriber;
 use infra::infra::job_result::redis::{RedisJobResultRepository, UseRedisJobResultRepository};
 use infra::infra::module::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
 use proto::jobworkerp::data::{
-    JobId, JobResult, JobResultData, JobResultId, ResponseType, ResultStatus, Worker, WorkerData,
-    WorkerId,
+    JobId, JobResult, JobResultData, JobResultId, ResponseType, ResultOutputItem, ResultStatus,
+    Worker, WorkerData, WorkerId,
 };
 use std::pin::Pin;
 use std::sync::Arc;
@@ -182,7 +183,7 @@ impl JobResultApp for RedisJobResultAppImpl {
         worker_id: Option<&WorkerId>,
         worker_name: Option<&String>,
         timeout: u64,
-    ) -> Result<JobResult>
+    ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)>
     where
         Self: Send + 'static,
     {
@@ -191,9 +192,7 @@ impl JobResultApp for RedisJobResultAppImpl {
             .worker_app
             .find_by_id_or_name(worker_id, worker_name)
             .await?;
-        let wd = wd.ok_or(JobWorkerError::NotFound(
-            "worker data not found".to_string(),
-        ))?;
+        let wd = wd.ok_or(JobWorkerError::NotFound("worker not found".to_string()))?;
         if wd.response_type != ResponseType::ListenAfter as i32 {
             return Err(JobWorkerError::InvalidParameter(format!(
                 "Cannot listen result not stored worker: {:?}",
@@ -201,12 +200,11 @@ impl JobResultApp for RedisJobResultAppImpl {
             ))
             .into());
         }
-
         // check job result (already finished or not)
         let res = self.find_job_result_by_job_id(job_id).await?;
         match res {
             // already finished: return resolved result
-            Some(v) if self.is_finished(&v) => Ok(v),
+            Some(v) if self.is_finished(&v) => Ok((v, None)),
             // result in rdb (not finished by store_failure option)
             Some(_v) => {
                 // found not finished result: wait for result data

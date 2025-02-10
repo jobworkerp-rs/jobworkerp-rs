@@ -4,8 +4,10 @@ pub mod redis;
 use std::pin::Pin;
 
 use anyhow::Result;
-use futures::Stream;
-use proto::jobworkerp::data::{JobId, JobResult, JobResultData, JobResultId, WorkerId};
+use futures::{stream::BoxStream, Stream};
+use proto::jobworkerp::data::{
+    JobId, JobResult, JobResultData, JobResultId, ResultOutputItem, WorkerId,
+};
 use tonic::async_trait;
 
 #[async_trait]
@@ -21,10 +23,21 @@ pub trait JobResultPublisher {
         data: &JobResultData,
         to_listen: bool,
     ) -> Result<bool>;
+
+    async fn publish_result_stream_data(
+        &self,
+        job_id: JobId,
+        mut stream: BoxStream<'static, ResultOutputItem>,
+    ) -> Result<bool>;
 }
 #[async_trait]
 pub trait JobResultSubscriber {
     async fn subscribe_result(&self, job_id: &JobId, timeout: Option<u64>) -> Result<JobResult>;
+    async fn subscribe_result_stream(
+        &self,
+        job_id: &JobId,
+        timeout: Option<u64>,
+    ) -> Result<BoxStream<'static, ResultOutputItem>>;
     async fn subscribe_result_stream_by_worker(
         &self,
         worker_id: WorkerId,

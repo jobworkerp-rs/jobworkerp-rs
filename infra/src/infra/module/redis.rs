@@ -76,7 +76,11 @@ impl RedisRepositoryModule {
                 redis_client.clone(),
                 worker_expire_sec,
             ),
-            redis_job_repository: RedisJobRepositoryImpl::new(job_queue_config.clone(), redis_pool),
+            redis_job_repository: RedisJobRepositoryImpl::new(
+                job_queue_config.clone(),
+                redis_pool,
+                redis_client.clone(),
+            ),
             redis_job_result_repository: RedisJobResultRepositoryImpl::new(
                 job_queue_config.clone(),
                 redis_pool,
@@ -113,6 +117,7 @@ impl RedisRepositoryModule {
             redis_job_repository: RedisJobRepositoryImpl::new(
                 config_module.job_queue_config.clone(),
                 redis_pool,
+                redis_client.clone(),
             ),
             redis_job_result_repository: RedisJobResultRepositoryImpl::new(
                 config_module.job_queue_config.clone(),
@@ -184,7 +189,11 @@ pub mod test {
                 redis_client.clone(),
                 None,
             ),
-            redis_job_repository: RedisJobRepositoryImpl::new(job_queue_config.clone(), redis_pool),
+            redis_job_repository: RedisJobRepositoryImpl::new(
+                job_queue_config.clone(),
+                redis_pool,
+                redis_client.clone(),
+            ),
             redis_job_result_repository: RedisJobResultRepositoryImpl::new(
                 job_queue_config.clone(),
                 redis_pool,

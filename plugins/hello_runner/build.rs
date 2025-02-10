@@ -12,6 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &[
                 "protobuf/hello_runner.proto",
                 "protobuf/hello_job_args.proto",
+                "protobuf/hello_result.proto",
             ],
             &["protobuf"],
         )

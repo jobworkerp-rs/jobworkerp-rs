@@ -5,27 +5,41 @@ package jobworkerp.data;
 import "jobworkerp/data/common.proto";
 import "jobworkerp/data/runner.proto";
 
+// worker data
 message WorkerData {
-    string name                                 = 1; // worker name
-    jobworkerp.data.RunnerId runner_id          = 2; // runner id
-    bytes runner_settings                       = 3; // runner settings (docker runner settings etc)
-    jobworkerp.data.RetryPolicy retry_policy    = 4; // retry policy
-    uint32 periodic_interval                    = 5; // periodic interval milliseconds (0: non-periodic) (if enabled, cannot use direct_response)
-    optional string channel                     = 6; // channel name (if empty, use default channel)
-    jobworkerp.data.QueueType queue_type        = 7; // queue type
-    jobworkerp.data.ResponseType response_type  = 8; // response type
-    bool store_success                          = 9; // if true, store result to db when process succeeded
-    bool store_failure                          = 10; // if true, store result to db when process failed
-    repeated WorkerId next_workers              = 11; // if exists, enqueue jobs after jobs of the worker
-    bool use_static                             = 12; // if true, use as static (run only one worker(runner) at a time with lock)
+  // worker name
+  string name = 1;
+  // runner id
+  jobworkerp.data.RunnerId runner_id = 2;
+  // runner settings (docker runner settings etc)
+  bytes runner_settings = 3;
+  // retry policy
+  jobworkerp.data.RetryPolicy retry_policy = 4;
+  // periodic interval milliseconds (0: non-periodic)
+  // (if enabled, cannot use direct_response)
+  uint32 periodic_interval = 5;
+  // channel name (if empty, use default channel)
+  optional string channel = 6;
+  // queue type (0: normal(no backup to rdb), 1: with backup to rdb, 2: only to
+  // rdb (not in memory queue))
+  jobworkerp.data.QueueType queue_type = 7;
+  // response type (0: no result, 1: direct, 2: listen after)
+  jobworkerp.data.ResponseType response_type = 8;
+  // if true, store result to db when process succeeded
+  bool store_success = 9;
+  // if true, store result to db when process failed
+  bool store_failure = 10;
+  // if exists, enqueue jobs after jobs of the worker
+  repeated WorkerId next_workers = 11;
+  // if true, use as static (run only one worker(runner) at a time with lock)
+  bool use_static = 12;
+  // if true, output as stream (determined by runner, not modified by request)
+  bool output_as_stream = 13;
 }
 
-message WorkerId {
-    int64 value = 1;
-}
+message WorkerId { int64 value = 1; }
 
 message Worker {
   WorkerId id = 1;
   WorkerData data = 2;
 }
-
