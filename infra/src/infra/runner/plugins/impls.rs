@@ -133,41 +133,11 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
     }
     fn job_args_proto(&self) -> String {
         block_on(self.plugin_runner.read()).job_args_proto()
-        // let plugin_runner = Arc::clone(&self.plugin_runner);
-        // plugin_runner
-        //     .read()
-        //     .map(|p| p.job_args_proto())
-        //     .unwrap_or_else(|e| format!("Error occurred: {:}", e))
     }
     fn result_output_proto(&self) -> Option<String> {
         block_on(self.plugin_runner.read()).result_output_proto()
-        // let plugin_runner = Arc::clone(&self.plugin_runner);
-        // plugin_runner
-        //     .read()
-        //     .map(|p| p.result_output_proto())
-        //     .tap_err(|e| tracing::warn!("Error occurred: {:}", e))
-        // .unwrap_or_default()
-    }
-    fn use_job_result(&self) -> bool {
-        block_on(self.plugin_runner.read()).use_job_result()
-        // let plugin_runner = Arc::clone(&self.plugin_runner);
-        // plugin_runner
-        //     .read()
-        //     .map(|p| p.use_job_result())
-        //     .unwrap_or_else(|e| {
-        //         tracing::warn!("Error occurred: {:}", e);
-        //         false
-        //     })
     }
     fn output_as_stream(&self) -> bool {
         block_on(self.plugin_runner.read()).output_as_stream()
-        // let plugin_runner = Arc::clone(&self.plugin_runner);
-        // plugin_runner
-        //     .read()
-        //     .map(|p| p.output_as_stream())
-        //     .unwrap_or_else(|e| {
-        //         tracing::warn!("Error occurred: {:}", e);
-        //         false
-        // })
     }
 }

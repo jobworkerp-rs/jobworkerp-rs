@@ -18,7 +18,6 @@ CREATE TABLE IF NOT EXISTS `worker` (
     `response_type` INT NOT NULL,
     `store_success` BOOLEAN NOT NULL,
     `store_failure` BOOLEAN NOT NULL,
-    `next_workers` TEXT NOT NULL,
     `use_static` BOOLEAN NOT NULL,
     `output_as_stream` BOOLEAN NOT NULL
 );
@@ -71,6 +70,6 @@ INSERT OR IGNORE INTO runner (`id`, `name`, `file_name`, `type`) VALUES (
 ), (
   4, 'DOCKER', 'builtin4', 4
 ), (
-  5, 'SLACK_NOTIFICATION', 'builtin0', 5
+  5, 'SLACK_POST_MESSAGE', 'builtin5', 5
 );
 

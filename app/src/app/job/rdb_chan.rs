@@ -753,7 +753,6 @@ mod tests {
                 queue_type: QueueType::Normal as i32,
                 store_failure: false,
                 store_success: false,
-                next_workers: vec![],
                 use_static: false,
                 output_as_stream: false,
             };
@@ -861,7 +860,6 @@ mod tests {
                 queue_type: QueueType::WithBackup as i32,
                 store_failure: true,
                 store_success: true,
-                next_workers: vec![],
                 use_static: false,
                 output_as_stream: false,
             };
@@ -976,7 +974,6 @@ mod tests {
             queue_type: QueueType::WithBackup as i32,
             store_success: true,
             store_failure: false,
-            next_workers: vec![],
             use_static: false,
             output_as_stream: false,
         };
@@ -1082,7 +1079,6 @@ mod tests {
                 queue_type: QueueType::WithBackup as i32, // with chan queue
                 store_success: true,
                 store_failure: false,
-                next_workers: vec![],
                 use_static: false,
                 output_as_stream: false,
             };

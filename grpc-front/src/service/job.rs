@@ -98,9 +98,10 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                     )
                     .await
             }
-            None => {
-                Err(JobWorkerError::InvalidParameter("should not reach hear!!".to_string()).into())
-            }
+            None => Err(JobWorkerError::InvalidParameter(
+                "Invalid worker type: both worker_id and worker_name are None".to_string(),
+            )
+            .into()),
         };
         match res {
             Ok((id, res, st)) => {
@@ -192,9 +193,10 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                     )
                     .await
             }
-            None => {
-                Err(JobWorkerError::InvalidParameter("should not reach hear!!".to_string()).into())
-            }
+            None => Err(JobWorkerError::InvalidParameter(
+                "Invalid worker type: both worker_id and worker_name are None".to_string(),
+            )
+            .into()),
         };
         tracing::debug!(
             "enqueue_for_stream result = {:?}",

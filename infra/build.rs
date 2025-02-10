@@ -17,6 +17,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "protobuf/jobworkerp/runner/grpc_unary_runner.proto",
                 "protobuf/jobworkerp/runner/http_request_runner.proto",
                 "protobuf/jobworkerp/runner/slack_runner.proto",
+                "protobuf/jobworkerp/runner/slack_args.proto",
+                "protobuf/jobworkerp/runner/slack_result.proto",
                 "protobuf/jobworkerp/runner/command_args.proto",
                 "protobuf/jobworkerp/runner/docker_args.proto",
                 "protobuf/jobworkerp/runner/grpc_unary_args.proto",

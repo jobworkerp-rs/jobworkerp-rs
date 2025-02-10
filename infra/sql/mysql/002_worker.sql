@@ -20,7 +20,6 @@ CREATE TABLE `worker` (
   `store_success` TINYINT(1) NOT NULL DEFAULT 0, -- store result to db in success
   `store_failure` TINYINT(1) NOT NULL DEFAULT 0, -- store result to db in failure
   -- etc
-  `next_workers` TEXT NOT NULL DEFAULT '',       -- next worker list to process
   `use_static` TINYINT(1) NOT NULL DEFAULT 0, -- use runner as static 
   `output_as_stream` TINYINT(1) NOT NULL DEFAULT 0, -- output as stream (defined by runner, not modified by request)
   UNIQUE KEY `name` (`name`)
@@ -89,5 +88,5 @@ INSERT IGNORE INTO runner (id, name, file_name, type) VALUES (
 ), (
   4, 'DOCKER', 'builtin4', 4
 ), (
-  5, 'SLACK_NOTIFICATION', 'builtin0', 5
+  5, 'SLACK_POST_MESSAGE', 'builtin5', 5
 );

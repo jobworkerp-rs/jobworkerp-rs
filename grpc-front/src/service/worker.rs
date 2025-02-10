@@ -51,7 +51,6 @@ pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig {
             response_type: dat.response_type,
             store_success: dat.store_success,
             store_failure: dat.store_failure,
-            next_workers: dat.next_workers,
             use_static: dat.use_static,
             output_as_stream: dat.output_as_stream, // no effect
         };

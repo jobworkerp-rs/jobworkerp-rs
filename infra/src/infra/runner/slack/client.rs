@@ -1,8 +1,10 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 
-/// slach post chat message api
+use crate::jobworkerp::runner::ChatPostMessageResult;
+
+/// slack post chat message api
 /// https://api.slack.com/methods/chat.postMessage
 #[derive(Clone, Debug)]
 pub struct SlackMessageClientImpl {
@@ -22,12 +24,17 @@ impl SlackMessageClientImpl {
             client: reqwest::Client::new(),
         }
     }
-    pub async fn post_message(&self, token: &str, param: &PostMessageRequest) -> Result<String> {
+    pub async fn post_message(
+        &self,
+        token: &str,
+        param: &ChatPostMessageRequest,
+    ) -> Result<String> {
         let json = serde_json::json!(param);
         self.post_json(token, &json).await
     }
     pub async fn post_json(&self, token: &str, json: &serde_json::Value) -> Result<String> {
-        let parsed_url = url::Url::parse(&Self::get_post_message_url())?;
+        let parsed_url = url::Url::parse(&Self::get_post_message_url())
+            .context("failed to parse slack post message url. check slack api base url")?;
 
         match self
             .client
@@ -55,9 +62,10 @@ impl SlackMessageClientImpl {
 }
 
 #[derive(Deserialize, Serialize, Debug, Default, PartialEq)]
-pub struct PostMessageRequest {
+pub struct ChatPostMessageRequest {
     pub channel: String,
     pub attachments: Option<Vec<Attachment>>,
+    pub blocks: Option<Vec<serde_json::Value>>,
     pub text: Option<String>,
     pub icon_emoji: Option<String>,
     pub icon_url: Option<String>,
@@ -100,4 +108,28 @@ pub struct AttachmentField {
     pub title: Option<String>,
     pub value: Option<String>,
     pub short: Option<bool>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct ChatPostMessageResponse {
+    pub ok: bool,
+    pub channel: String,
+    pub ts: String,
+    pub message: serde_json::Value,
+    pub error: Option<String>,
+}
+impl ChatPostMessageResponse {
+    pub fn to_proto(&self) -> Result<ChatPostMessageResult> {
+        if self.ok {
+            Ok(ChatPostMessageResult {
+                channel: self.channel.clone(),
+                ts: self.ts.clone(),
+                message: serde_json::to_string(&self.message)
+                    .context("failed to serialize slack result message response to proto")?,
+            })
+        } else {
+            Err(anyhow::anyhow!("slack error: {:?}", self.error))
+        }
+    }
 }

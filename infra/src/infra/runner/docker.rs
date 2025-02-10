@@ -307,9 +307,6 @@ impl RunnerTrait for DockerExecRunner {
     fn result_output_proto(&self) -> Option<String> {
         None
     }
-    fn use_job_result(&self) -> bool {
-        false
-    }
     fn output_as_stream(&self) -> bool {
         false
     }
@@ -528,9 +525,6 @@ impl RunnerTrait for DockerRunner {
     }
     fn result_output_proto(&self) -> Option<String> {
         Some("".to_string())
-    }
-    fn use_job_result(&self) -> bool {
-        false
     }
     fn output_as_stream(&self) -> bool {
         false

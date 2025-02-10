@@ -29,8 +29,6 @@ message WorkerData {
   bool store_success = 9;
   // if true, store result to db when process failed
   bool store_failure = 10;
-  // if exists, enqueue jobs after jobs of the worker
-  repeated WorkerId next_workers = 11;
   // if true, use as static (run only one worker(runner) at a time with lock)
   bool use_static = 12;
   // if true, output as stream (determined by runner, not modified by request)
