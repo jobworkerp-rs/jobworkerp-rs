@@ -178,7 +178,6 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
         use tokio_stream::StreamExt;
         let _s = Self::trace_request("job_result", "listen_stream", &request);
         let req = request.into_inner();
-        let req1 = req.clone();
         let res = match (req.job_id, req.worker) {
             (Some(job_id), Some(Worker::WorkerId(worker_id))) => {
                 self.app()
@@ -195,45 +194,34 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
             )
             .into()),
         };
-        if let Ok((res, Some(mut stream))) = res {
-            // XXX unbounded
-            let (tx, rx) = mpsc::channel(128);
-            tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        _ = tokio::signal::ctrl_c() => {
-                            break;
-                        }
-                        item = stream.next() => {
-                            tracing::debug!(
-                                "\treceive result item: job_id = {:?}, worker = {:?}, item.len = {:?}",
-                                 &req1.job_id, &req1.worker, &item.iter().len()
-                            );
-                            match item {
-                                Some(item) => {
-                                    if tx.send(Ok(item)).await.inspect_err(|e|
-                                        tracing::error!("send error: {:?}", e)
-                                    ).is_err() {
-                                        break;
-                                    }
-                                }
-                                None => break,
-                            }
-                        }
-                    }
-                }
-                tracing::info!("\tclient disconnected");
-            });
-            let output_stream = ReceiverStream::new(rx);
-            let res_header = res.encode_to_vec();
-            let mut res = Response::new(Box::pin(output_stream) as Self::ListenStreamStream);
-            res.metadata_mut().insert_bin(
-                "job-result",
-                MetadataValue::from_bytes(res_header.as_slice()),
-            );
-            Ok(res)
-        } else {
-            Err(handle_error(&res.err().unwrap()))
+        match res {
+            Ok((result, Some(stream))) => {
+                let res_header = result.encode_to_vec();
+                let stream = stream.map(Ok);
+                let stream: Self::ListenStreamStream = Box::pin(stream);
+                let mut res = Response::new(stream);
+                res.metadata_mut().insert_bin(
+                    super::JOB_RESULT_HEADER_NAME,
+                    MetadataValue::from_bytes(res_header.as_slice()),
+                );
+                Ok(res)
+            }
+            Ok((result, None)) => {
+                println!("no stream. result = {:?}", result);
+                let res_header = result.encode_to_vec();
+                // empty stream
+                let mut res = Response::new(Box::pin(stream! {
+                    yield Ok(ResultOutputItem {
+                        item: None,
+                    });
+                }) as Self::ListenStreamStream);
+                res.metadata_mut().insert_bin(
+                    super::JOB_RESULT_HEADER_NAME,
+                    MetadataValue::from_bytes(res_header.as_slice()),
+                );
+                Ok(res)
+            }
+            Err(e) => Err(handle_error(&e)),
         }
     }
 
