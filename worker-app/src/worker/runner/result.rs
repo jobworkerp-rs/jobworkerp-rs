@@ -1,9 +1,40 @@
 use anyhow::Result;
+use futures::stream::BoxStream;
 use infra::error::JobWorkerError;
 use itertools::Itertools;
-use proto::jobworkerp::data::{JobData, ResultOutput, ResultStatus, RetryPolicy, RetryType};
+use prost::Message;
+use proto::jobworkerp::data::{
+    JobData, ResultOutput, ResultOutputItem, ResultStatus, RetryPolicy, RetryType,
+};
 use tracing;
 
+pub enum ResultOutputEnum {
+    Normal(Vec<Vec<u8>>),
+    Stream(BoxStream<'static, ResultOutputItem>),
+}
+impl ResultOutputEnum {
+    pub fn bytes(&self) -> Vec<u8> {
+        match self {
+            ResultOutputEnum::Normal(v) => v.iter().flatten().copied().collect(),
+            ResultOutputEnum::Stream(_) => ResultOutputItem { item: None }.encode_to_vec(),
+        }
+    }
+    pub fn result_output(&self) -> Option<ResultOutput> {
+        match self {
+            ResultOutputEnum::Normal(v) => Some(ResultOutput { items: v.clone() }),
+            ResultOutputEnum::Stream(_) => None,
+        }
+    }
+    pub fn stream(self) -> Option<BoxStream<'static, ResultOutputItem>> {
+        match self {
+            ResultOutputEnum::Normal(_) => None,
+            ResultOutputEnum::Stream(s) => Some(s),
+        }
+    }
+    pub fn is_stream(&self) -> bool {
+        matches!(self, ResultOutputEnum::Stream(_))
+    }
+}
 pub trait RunnerResultHandler {
     const DEFAULT_RETRY_POLICY: RetryPolicy = RetryPolicy {
         r#type: RetryType::None as i32,
@@ -15,14 +46,23 @@ pub trait RunnerResultHandler {
 
     #[inline]
     fn job_status(
-        res: Result<Vec<Vec<u8>>>,
-    ) -> (ResultStatus, Option<ResultOutput>, Option<String>) {
+        res: Result<ResultOutputEnum>,
+    ) -> (ResultStatus, Option<ResultOutputEnum>, Option<String>) {
         match res {
-            Ok(mes) => (
-                ResultStatus::Success,
-                Some(ResultOutput { items: mes }),
-                None,
-            ),
+            Ok(mes) => (ResultStatus::Success, Some(mes), None),
+            Err(err) => {
+                let (st, er) = Self::handle_error(err);
+                (st, None, er)
+            }
+        }
+    }
+
+    #[inline]
+    fn job_stream_status(
+        res: Result<BoxStream<'_, Vec<u8>>>,
+    ) -> (ResultStatus, Option<BoxStream<'_, Vec<u8>>>, Option<String>) {
+        match res {
+            Ok(mes) => (ResultStatus::Success, Some(mes), None),
             Err(err) => {
                 let (st, er) = Self::handle_error(err);
                 (st, None, er)
@@ -35,8 +75,8 @@ pub trait RunnerResultHandler {
         &self,
         retry_policy: &Option<RetryPolicy>,
         job: &JobData,
-        res: Result<Vec<Vec<u8>>>,
-    ) -> (ResultStatus, ResultOutput) {
+        res: Result<ResultOutputEnum>,
+    ) -> (ResultStatus, ResultOutputEnum) {
         match Self::job_status(res) {
             (st, Some(mes), None) => {
                 // success
@@ -58,15 +98,13 @@ pub trait RunnerResultHandler {
                 };
                 (
                     st,
-                    ResultOutput {
-                        items: vec![err_mes.bytes().collect_vec()],
-                    },
+                    ResultOutputEnum::Normal(vec![err_mes.bytes().collect_vec()]),
                 )
             }
             (st, res, err_res) => {
                 // unexpected
-                tracing::error!("unexpected match: {:?}, {:?}, {:?}", st, res, err_res);
-                (st, res.unwrap_or_default())
+                tracing::error!("unexpected match: {:?}, {:?}", st, err_res);
+                (st, res.unwrap_or(ResultOutputEnum::Normal(vec![])))
             }
         }
     }
@@ -295,11 +333,11 @@ mod tests {
         let (status, mes) = runner.job_result_status(
             &worker.retry_policy,
             &job.data.clone().unwrap(),
-            Ok(vec![vec![1, 2, 3]]),
+            Ok(ResultOutputEnum::Normal(vec![vec![1, 2, 3]])),
         );
         assert_eq!(status, ResultStatus::Success);
         assert_eq!(
-            mes,
+            mes.result_output().unwrap(),
             ResultOutput {
                 items: vec![vec![1, 2, 3]]
             }
@@ -315,21 +353,21 @@ mod tests {
             Err(JobWorkerError::RuntimeError("test".to_string()).into()),
         );
         assert_eq!(status, ResultStatus::ErrorAndRetry);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
         let (status, mes) = runner.job_result_status(
             &worker.retry_policy,
             &job.data.clone().unwrap(),
             Err(JobWorkerError::TimeoutError("test".to_string()).into()),
         );
         assert_eq!(status, ResultStatus::ErrorAndRetry);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
         let (status, mes) = runner.job_result_status(
             &worker.retry_policy,
             &job.data.clone().unwrap(),
             Err(JobWorkerError::LockError("test".to_string()).into()),
         );
         assert_eq!(status, ResultStatus::ErrorAndRetry);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
         let redis_error =
             redis::RedisError::from(std::io::Error::new(std::io::ErrorKind::Other, "test"));
         let (status, mes) = runner.job_result_status(
@@ -338,7 +376,7 @@ mod tests {
             Err(JobWorkerError::RedisError(redis_error).into()),
         );
         assert_eq!(status, ResultStatus::ErrorAndRetry);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
         // let db_error = JobWorkerError::DBError(sqlx::Error::new(ErrorKind::Other, "test"));
         // let (status, mes) = runner.job_result_status(&worker.retry_policy, &job.data.unwrap(), Err(db_error.into()));
         // assert_eq!(status, JobStatus::ErrorAndRetry);
@@ -353,7 +391,7 @@ mod tests {
             .into()),
         );
         assert_eq!(status, ResultStatus::ErrorAndRetry);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
         let (status, mes) = runner.job_result_status(
             &worker.retry_policy,
             &job.data.clone().unwrap(),
@@ -364,7 +402,7 @@ mod tests {
             .into()),
         );
         assert_eq!(status, ResultStatus::ErrorAndRetry);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
 
         // max retry cases with no_retry_worker
         let (status, mes) = runner.job_result_status(
@@ -373,21 +411,21 @@ mod tests {
             Err(JobWorkerError::RuntimeError("test".to_string()).into()),
         );
         assert_eq!(status, ResultStatus::MaxRetry);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
         let (status, mes) = runner.job_result_status(
             &no_retry_worker.retry_policy,
             &job.data.clone().unwrap(),
             Err(JobWorkerError::TimeoutError("test".to_string()).into()),
         );
         assert_eq!(status, ResultStatus::MaxRetry);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
         let (status, mes) = runner.job_result_status(
             &no_retry_worker.retry_policy,
             &job.data.clone().unwrap(),
             Err(JobWorkerError::LockError("test".to_string()).into()),
         );
         assert_eq!(status, ResultStatus::MaxRetry);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
         let redis_error =
             redis::RedisError::from(std::io::Error::new(std::io::ErrorKind::Other, "test"));
         let (status, mes) = runner.job_result_status(
@@ -396,7 +434,7 @@ mod tests {
             Err(JobWorkerError::RedisError(redis_error).into()),
         );
         assert_eq!(status, ResultStatus::MaxRetry);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
         // let db_error = JobWorkerError::DBError(sqlx::Error::new(ErrorKind::Other, "test"));
         // let (status, mes) = runner.job_result_status(&no_retry_worker.retry_policy, &job.data.unwrap(), Err(db_error.into()));
         // assert_eq!(status, JobStatus::ErrorAndRetry);
@@ -411,7 +449,7 @@ mod tests {
             .into()),
         );
         assert_eq!(status, ResultStatus::MaxRetry);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
         let (status, mes) = runner.job_result_status(
             &no_retry_worker.retry_policy,
             &job.data.clone().unwrap(),
@@ -422,7 +460,7 @@ mod tests {
             .into()),
         );
         assert_eq!(status, ResultStatus::MaxRetry);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
 
         let (status, mes) = runner.job_result_status(
             &worker.retry_policy,
@@ -434,7 +472,7 @@ mod tests {
             .into()),
         );
         assert_eq!(status, ResultStatus::Abort);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
         let (status, mes) = runner.job_result_status(
             &worker.retry_policy,
             &job.data.clone().unwrap(),
@@ -444,7 +482,7 @@ mod tests {
             ),
         );
         assert_eq!(status, ResultStatus::Abort);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
 
         let (status, mes) = runner.job_result_status(
             &worker.retry_policy,
@@ -456,7 +494,7 @@ mod tests {
             .into()),
         );
         assert_eq!(status, ResultStatus::FatalError);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
         let (status, mes) = runner.job_result_status(
             &worker.retry_policy,
             &job.data.clone().unwrap(),
@@ -467,7 +505,7 @@ mod tests {
             .into()),
         );
         assert_eq!(status, ResultStatus::FatalError);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
 
         let (status, mes) = runner.job_result_status(
             &worker.retry_policy,
@@ -475,42 +513,42 @@ mod tests {
             Err(JobWorkerError::CodecError(prost::DecodeError::new("test")).into()),
         );
         assert_eq!(status, ResultStatus::OtherError);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
         let (status, mes) = runner.job_result_status(
             &worker.retry_policy,
             &job.data.clone().unwrap(),
             Err(JobWorkerError::NotFound("test".to_string()).into()),
         );
         assert_eq!(status, ResultStatus::OtherError);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
         let (status, mes) = runner.job_result_status(
             &worker.retry_policy,
             &job.data.clone().unwrap(),
             Err(JobWorkerError::InvalidParameter("test".to_string()).into()),
         );
         assert_eq!(status, ResultStatus::OtherError);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
         let (status, mes) = runner.job_result_status(
             &worker.retry_policy,
             &job.data.clone().unwrap(),
             Err(JobWorkerError::WorkerNotFound("test".to_string()).into()),
         );
         assert_eq!(status, ResultStatus::OtherError);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
         let (status, mes) = runner.job_result_status(
             &worker.retry_policy,
             &job.data.clone().unwrap(),
             Err(JobWorkerError::GenerateIdError("test".to_string()).into()),
         );
         assert_eq!(status, ResultStatus::OtherError);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
         let (status, mes) = runner.job_result_status(
             &worker.retry_policy,
             &job.data.clone().unwrap(),
             Err(JobWorkerError::AlreadyExists("test".to_string()).into()),
         );
         assert_eq!(status, ResultStatus::OtherError);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
         // let (status, mes) = runner.job_result_status(&worker.retry_policy, &job.data.clone().unwrap(), Err(JobWorkerError::TonicServerError(tonic::transport::Error::from()).into()));
         // assert_eq!(status, JobStatus::OtherError);
         // assert!(!mes.is_empty());
@@ -520,14 +558,14 @@ mod tests {
             Err(JobWorkerError::SerdeJsonError(serde_json::Error::custom("test")).into()),
         );
         assert_eq!(status, ResultStatus::OtherError);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
         let (status, mes) = runner.job_result_status(
             &worker.retry_policy,
             &job.data.clone().unwrap(),
             Err(JobWorkerError::ParseError("test".to_string()).into()),
         );
         assert_eq!(status, ResultStatus::OtherError);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
         // let (status, mes) = runner.job_result_status(&worker.retry_policy, &job.data.clone().unwrap(), Err(JobWorkerError::KubeClientError(kube::Error::RequestValidation(msg))).into());
         // assert_eq!(status, JobStatus::OtherError);
         // assert!(!mes.is_empty());
@@ -545,14 +583,14 @@ mod tests {
             ),
         );
         assert_eq!(status, ResultStatus::OtherError);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
         let (status, mes) = runner.job_result_status(
             &worker.retry_policy,
             &job.data.unwrap(),
             Err(anyhow::anyhow!("test")),
         );
         assert_eq!(status, ResultStatus::OtherError);
-        assert!(!mes.items.is_empty());
+        assert!(!mes.result_output().unwrap().items.is_empty());
 
         Ok(())
     }

@@ -1,11 +1,12 @@
 use std::fmt::Debug;
 use std::sync::Arc;
 
+use crate::proto::jobworkerp::data::{ResultOutput, ResultOutputItem};
 use crate::proto::jobworkerp::service::job_result_service_server::JobResultService;
 use crate::proto::jobworkerp::service::listen_request::Worker;
 use crate::proto::jobworkerp::service::{
-    listen_stream_by_worker_request, CountCondition, CountResponse, FindListByJobIdRequest,
-    FindListRequest, ListenRequest, ListenStreamByWorkerRequest, OptionalJobResultResponse,
+    listen_by_worker_request, CountCondition, CountResponse, FindListByJobIdRequest,
+    FindListRequest, ListenByWorkerRequest, ListenRequest, OptionalJobResultResponse,
     SuccessResponse,
 };
 use crate::service::error_handle::handle_error;
@@ -15,20 +16,23 @@ use async_stream::stream;
 use futures::stream::BoxStream;
 use infra::error::JobWorkerError;
 use infra_utils::trace::Tracing;
-use proto::jobworkerp::data::{JobResult, JobResultId};
+use prost::Message;
+use proto::jobworkerp::data::{result_output_item, JobResult, JobResultId};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::StreamExt;
+use tonic::metadata::MetadataValue;
 use tonic::Response;
 
 pub trait JobResultGrpc {
     fn app(&self) -> &Arc<dyn JobResultApp + 'static>;
 }
 // 1 day (same as expire_job_result_seconds in JobQueueConfig)
-const DEFAULT_TIMEOUT: u64 = 1000 * 60 * 60 * 24;
+// const DEFAULT_TIMEOUT: u64 = 1000 * 60 * 60 * 24;
 
 #[tonic::async_trait]
 impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultService for T {
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "delete"))]
     async fn delete(
         &self,
         request: tonic::Request<JobResultId>,
@@ -40,7 +44,7 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
             Err(e) => Err(handle_error(&e)),
         }
     }
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "find"))]
     async fn find(
         &self,
         request: tonic::Request<JobResultId>,
@@ -54,7 +58,7 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
     }
 
     type FindListStream = BoxStream<'static, Result<JobResult, tonic::Status>>;
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "find_list"))]
     async fn find_list(
         &self,
         request: tonic::Request<FindListRequest>,
@@ -76,7 +80,11 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
         }
     }
     type FindListByJobIdStream = BoxStream<'static, Result<JobResult, tonic::Status>>;
-    #[tracing::instrument]
+    #[tracing::instrument(
+        level = "info",
+        skip(self, request),
+        fields(method = "find_list_by_job_id")
+    )]
     async fn find_list_by_job_id(
         &self,
         request: tonic::Request<FindListByJobIdRequest>,
@@ -98,7 +106,7 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
             ))
         }
     }
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "count"))]
     async fn count(
         &self,
         request: tonic::Request<CountCondition>,
@@ -109,7 +117,7 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
             Err(e) => Err(handle_error(&e)),
         }
     }
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "listen"))]
     async fn listen(
         &self,
         request: tonic::Request<ListenRequest>,
@@ -119,22 +127,12 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
         let res = match (req.job_id.as_ref(), req.worker.as_ref()) {
             (Some(job_id), Some(Worker::WorkerId(worker_id))) => {
                 self.app()
-                    .listen_result(
-                        job_id,
-                        Some(worker_id),
-                        None,
-                        req.timeout.unwrap_or(DEFAULT_TIMEOUT),
-                    )
+                    .listen_result(job_id, Some(worker_id), None, req.timeout)
                     .await
             }
             (Some(job_id), Some(Worker::WorkerName(name))) => {
                 self.app()
-                    .listen_result(
-                        job_id,
-                        None,
-                        Some(name),
-                        req.timeout.unwrap_or(DEFAULT_TIMEOUT),
-                    )
+                    .listen_result(job_id, None, Some(name), req.timeout)
                     .await
             }
             _ => Err(JobWorkerError::InvalidParameter(
@@ -143,28 +141,123 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
             .into()),
         };
         match res {
-            Ok(res) => Ok(Response::new(res)),
+            Ok(res) => {
+                let data_stream_opt = res.1;
+                // not streaming mode. collect stream data and modify res.0.data
+                if let Some(data_stream) = data_stream_opt {
+                    // collect stream data and modify res.0.data
+                    let items: Vec<Vec<u8>> = data_stream
+                        .filter_map(|item| {
+                            tracing::debug!("\tstreaming item: {:?}", item);
+                            match item.item {
+                                Some(result_output_item::Item::Data(data)) => Some(data),
+                                Some(result_output_item::Item::End(_)) => None,
+                                None => None,
+                            }
+                        })
+                        .collect()
+                        .await;
+                    let mut job_result = res.0;
+                    if let Some(ref mut data) = job_result.data {
+                        data.output = Some(ResultOutput { items });
+                    }
+                    Ok(Response::new(job_result))
+                } else {
+                    Ok(Response::new(res.0))
+                }
+            }
             Err(e) => Err(handle_error(&e)),
         }
     }
-
-    type ListenStreamByWorkerStream = BoxStream<'static, Result<JobResult, tonic::Status>>;
-    #[tracing::instrument]
-    async fn listen_stream_by_worker(
+    type ListenStreamStream = BoxStream<'static, Result<ResultOutputItem, tonic::Status>>;
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "listen_stream"))]
+    async fn listen_stream(
         &self,
-        request: tonic::Request<ListenStreamByWorkerRequest>,
-    ) -> std::result::Result<tonic::Response<Self::ListenStreamByWorkerStream>, tonic::Status> {
+        request: tonic::Request<ListenRequest>,
+    ) -> std::result::Result<tonic::Response<Self::ListenStreamStream>, tonic::Status> {
+        use tokio_stream::StreamExt;
+        let _s = Self::trace_request("job_result", "listen_stream", &request);
+        let req = request.into_inner();
+        let req1 = req.clone();
+        let res = match (req.job_id, req.worker) {
+            (Some(job_id), Some(Worker::WorkerId(worker_id))) => {
+                self.app()
+                    .listen_result(&job_id, Some(&worker_id), None, None)
+                    .await
+            }
+            (Some(job_id), Some(Worker::WorkerName(name))) => {
+                self.app()
+                    .listen_result(&job_id, None, Some(&name), None)
+                    .await
+            }
+            _ => Err(JobWorkerError::InvalidParameter(
+                "job_id and worker_id are required".to_string(),
+            )
+            .into()),
+        };
+        if let Ok((res, Some(mut stream))) = res {
+            // XXX unbounded
+            let (tx, rx) = mpsc::channel(128);
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => {
+                            break;
+                        }
+                        item = stream.next() => {
+                            tracing::debug!(
+                                "\treceive result item: job_id = {:?}, worker = {:?}, item.len = {:?}",
+                                 &req1.job_id, &req1.worker, &item.iter().len()
+                            );
+                            match item {
+                                Some(item) => {
+                                    if tx.send(Ok(item)).await.inspect_err(|e|
+                                        tracing::error!("send error: {:?}", e)
+                                    ).is_err() {
+                                        break;
+                                    }
+                                }
+                                None => break,
+                            }
+                        }
+                    }
+                }
+                tracing::info!("\tclient disconnected");
+            });
+            let output_stream = ReceiverStream::new(rx);
+            let res_header = res.encode_to_vec();
+            let mut res = Response::new(Box::pin(output_stream) as Self::ListenStreamStream);
+            res.metadata_mut().insert_bin(
+                "job-result",
+                MetadataValue::from_bytes(res_header.as_slice()),
+            );
+            Ok(res)
+        } else {
+            Err(handle_error(&res.err().unwrap()))
+        }
+    }
+
+    type ListenByWorkerStream = BoxStream<'static, Result<JobResult, tonic::Status>>;
+    #[tracing::instrument(
+        level = "info",
+        skip(self, request),
+        fields(method = "listen_by_worker")
+    )]
+    async fn listen_by_worker(
+        &self,
+        request: tonic::Request<ListenByWorkerRequest>,
+    ) -> std::result::Result<tonic::Response<Self::ListenByWorkerStream>, tonic::Status> {
         use tokio_stream::StreamExt;
 
         let _s = Self::trace_request("job_result", "listen_by_worker", &request);
         let req = request.into_inner().worker;
         let res = match req.as_ref() {
-            Some(listen_stream_by_worker_request::Worker::WorkerId(worker_id)) => {
+            Some(listen_by_worker_request::Worker::WorkerId(worker_id)) => {
                 self.app()
                     .listen_result_stream_by_worker(Some(worker_id), None)
                     .await
             }
-            Some(listen_stream_by_worker_request::Worker::WorkerName(name)) => {
+            Some(listen_by_worker_request::Worker::WorkerName(name)) => {
                 self.app()
                     .listen_result_stream_by_worker(None, Some(name))
                     .await
@@ -202,7 +295,7 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
             });
             let output_stream = ReceiverStream::new(rx);
             Ok(Response::new(
-                Box::pin(output_stream) as Self::ListenStreamByWorkerStream
+                Box::pin(output_stream) as Self::ListenByWorkerStream
             ))
         } else {
             Err(handle_error(&res.err().unwrap()))

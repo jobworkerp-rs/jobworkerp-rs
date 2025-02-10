@@ -7,7 +7,8 @@ use crate::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
 use crate::infra::runner::RunnerTrait;
 use crate::jobworkerp::runner::SlackNotificationRunnerSettings;
 use anyhow::{anyhow, Result};
-use proto::jobworkerp::data::RunnerType;
+use futures::stream::BoxStream;
+use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use tonic::async_trait;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Debug)]
@@ -53,7 +54,7 @@ impl RunnerTrait for SlackNotificationRunner {
             match r {
                 Ok(res) => {
                     tracing::debug!("slack notification was sent: {}", &res);
-                    Ok(vec![])
+                    Ok(vec![res.into_bytes()])
                 }
                 Err(e) => {
                     tracing::error!("slack error: {:?}", &e);
@@ -66,6 +67,11 @@ impl RunnerTrait for SlackNotificationRunner {
                     .into(),
             )
         }
+    }
+    async fn run_stream(&mut self, arg: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>> {
+        // default implementation (return empty)
+        let _ = arg;
+        Err(anyhow::anyhow!("not implemented"))
     }
 
     async fn cancel(&mut self) {
@@ -83,5 +89,8 @@ impl RunnerTrait for SlackNotificationRunner {
     }
     fn use_job_result(&self) -> bool {
         true
+    }
+    fn output_as_stream(&self) -> bool {
+        false
     }
 }

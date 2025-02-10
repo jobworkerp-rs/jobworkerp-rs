@@ -25,6 +25,7 @@ pub struct WorkerRow {
     pub store_failure: bool,
     pub next_workers: String,
     pub use_static: bool,
+    pub output_as_stream: bool,
 }
 
 impl WorkerRow {
@@ -53,6 +54,7 @@ impl WorkerRow {
                 store_failure: self.store_failure,
                 next_workers: Self::deserialize_worker_ids(self.next_workers.as_ref()),
                 use_static: self.use_static,
+                output_as_stream: self.output_as_stream,
             }),
         })
     }

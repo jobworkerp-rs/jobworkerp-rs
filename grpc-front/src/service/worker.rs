@@ -53,6 +53,7 @@ pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig {
             store_failure: dat.store_failure,
             next_workers: dat.next_workers,
             use_static: dat.use_static,
+            output_as_stream: dat.output_as_stream, // no effect
         };
         self.validate_worker(&data)?;
         Ok(data)
@@ -155,7 +156,7 @@ impl<
         T: WorkerGrpc + RequestValidator + ResponseProcessor + Tracing + Send + Debug + Sync + 'static,
     > WorkerService for T
 {
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "create"))]
     async fn create(
         &self,
         request: tonic::Request<WorkerData>,
@@ -169,7 +170,7 @@ impl<
             Err(e) => Err(handle_error(&e)),
         }
     }
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "update"))]
     async fn update(
         &self,
         request: tonic::Request<Worker>,
@@ -188,7 +189,7 @@ impl<
             Err(tonic::Status::not_found("id not found".to_string()))
         }
     }
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "delete"))]
     async fn delete(
         &self,
         request: tonic::Request<WorkerId>,
@@ -200,7 +201,7 @@ impl<
             Err(e) => Err(handle_error(&e)),
         }
     }
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "find"))]
     async fn find(
         &self,
         request: tonic::Request<WorkerId>,
@@ -215,7 +216,7 @@ impl<
         }
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "find_by_name"))]
     async fn find_by_name(
         &self,
         request: tonic::Request<WorkerNameRequest>,
@@ -232,7 +233,7 @@ impl<
     }
 
     type FindListStream = BoxStream<'static, Result<Worker, tonic::Status>>;
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "find_list"))]
     async fn find_list(
         &self,
         request: tonic::Request<FindListRequest>,
@@ -255,7 +256,7 @@ impl<
             Err(e) => Err(handle_error(&e)),
         }
     }
-    #[tracing::instrument]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "count"))]
     async fn count(
         &self,
         request: tonic::Request<CountCondition>,

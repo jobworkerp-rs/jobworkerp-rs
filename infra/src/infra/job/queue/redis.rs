@@ -1,19 +1,28 @@
-use std::collections::HashSet;
-
 use crate::infra::job::rows::UseJobqueueAndCodec;
+use crate::infra::job_result::pubsub::redis::UseRedisJobResultPubSubRepository;
+use crate::infra::job_result::pubsub::JobResultSubscriber;
 use crate::{error::JobWorkerError, infra::UseJobQueueConfig};
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::result::FlatMap;
+use futures::stream::BoxStream;
 use infra_utils::infra::redis::UseRedisPool;
-use proto::jobworkerp::data::{Job, JobId, JobResult, JobResultData, JobResultId, Priority};
+use proto::jobworkerp::data::{
+    Job, JobId, JobResult, JobResultData, JobResultId, Priority, ResultOutputItem,
+};
 use redis::AsyncCommands;
 use signal_hook::consts::SIGINT;
 use signal_hook_tokio::Signals;
+use std::collections::HashSet;
 
 #[async_trait]
 pub trait RedisJobQueueRepository:
-    UseRedisPool + UseJobqueueAndCodec + UseJobQueueConfig + Sync + 'static
+    UseRedisPool
+    + UseRedisJobResultPubSubRepository
+    + UseJobqueueAndCodec
+    + UseJobQueueConfig
+    + Sync
+    + 'static
 where
     Self: Send + 'static,
 {
@@ -67,30 +76,74 @@ where
     async fn wait_for_result_queue_for_response(
         &self,
         job_id: &JobId,
-        timeout: Option<&u64>,
-    ) -> Result<JobResult> {
-        // TODO retry control
-        tracing::debug!("wait_for_result_data_for_response: job_id: {:?}", job_id);
+        timeout: Option<u64>,
+        output_as_stream: bool,
+    ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
+        tracing::debug!(
+            "wait_for_result_data_for_response: job_id: {:?} timeout:{}, mode: {}",
+            job_id,
+            timeout.unwrap_or(0),
+            if output_as_stream {
+                "stream"
+            } else {
+                "non-stream"
+            }
+        );
         let signal: Signals = Signals::new([SIGINT]).expect("cannot get signals");
         let handle = signal.handle();
-        let c = Self::result_queue_name(job_id); //XXX unwrap
+        let c = Self::result_queue_name(job_id);
         let mut th_p = self.redis_pool().get().await?;
-        let res = tokio::select! {
-            _ = tokio::spawn(async {
-                let mut stream = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).expect("signal error");
-                stream.recv().await
-            }) => {
-                handle.close();
-                Err(JobWorkerError::OtherError("interrupt direct waiting process".to_string()).into())
-            },
-            val = th_p.blpop::<'_, String, Vec<Vec<u8>>>(c, (*timeout.unwrap_or(&0)/1000) as f64) => {
-                let r: Result<JobResult> = val.map_err(|e|JobWorkerError::RedisError(e).into())
-                    .flat_map(|v| Self::deserialize_job_result(&v[1]));
-                r
-            },
+        let pop_future = async {
+            tokio::select! {
+                _ = tokio::spawn(async {
+                    let mut sig_stream = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+                        .expect("signal error");
+                    sig_stream.recv().await
+                }) => {
+                    handle.close();
+                    Err(JobWorkerError::RuntimeError("interrupt direct waiting process".to_string()).into())
+                },
+                val = th_p.blpop::<String, Vec<Vec<u8>>>(c, (timeout.unwrap_or(0)/1000) as f64) => {
+                    let r: Result<JobResult> = val
+                        .map_err(|e| JobWorkerError::RedisError(e).into())
+                        .flat_map(|v| {
+                            if v.is_empty() {
+                                Err(JobWorkerError::RuntimeError("timeout".to_string()).into())
+                            } else {
+                                Self::deserialize_job_result(&v[1])
+                            }
+                        });
+                    r
+                },
+            }
         };
-        tracing::debug!("wait_for_result_queue_for_response: got res: {:?}", res);
-        res
+
+        let subscribe_future = async {
+            if output_as_stream {
+                self.job_result_pubsub_repository()
+                    .subscribe_result_stream(job_id, timeout)
+                    .await
+                    .inspect_err(|e| tracing::warn!("subscribe_result_stream error: {:?}", e))
+                    .ok()
+            } else {
+                None
+            }
+        };
+
+        let (pop_result, subscribe_result) = tokio::join!(pop_future, subscribe_future);
+        tracing::debug!(
+            "wait_for_result_queue_for_response: got res: {:?} {}",
+            pop_result,
+            if subscribe_result.is_some() {
+                "with stream"
+            } else {
+                "without stream"
+            }
+        );
+        match pop_result {
+            Ok(r) => Ok((r, subscribe_result)),
+            Err(e) => Err(e),
+        }
     }
     // iterate queue and find job with id (heavy operation when queue is long)
     async fn find_from_queue(
@@ -196,6 +249,7 @@ mod test {
     use std::sync::Arc;
 
     use crate::infra::job::rows::JobqueueAndCodec;
+    use crate::infra::job_result::pubsub::redis::RedisJobResultPubSubRepositoryImpl;
     use crate::infra::JobQueueConfig;
 
     // create test of 'send_job()': store job with send_job() to redis and get job value from redis (by command)
@@ -203,6 +257,7 @@ mod test {
     use command_utils::util::datetime;
     use infra_utils::infra::redis::RedisPool;
     use infra_utils::infra::redis::UseRedisPool;
+    use infra_utils::infra::test::setup_test_redis_client;
     use infra_utils::infra::test::setup_test_redis_pool;
     use proto::jobworkerp::data::JobResultData;
     use proto::jobworkerp::data::ResultOutput;
@@ -212,6 +267,7 @@ mod test {
     struct RedisJobQueueRepositoryImpl {
         job_queue_config: Arc<JobQueueConfig>,
         pub redis_pool: &'static RedisPool,
+        job_result_pubsub_repository: RedisJobResultPubSubRepositoryImpl,
     }
     impl UseJobQueueConfig for RedisJobQueueRepositoryImpl {
         fn job_queue_config(&self) -> &JobQueueConfig {
@@ -224,11 +280,18 @@ mod test {
         }
     }
     impl UseJobqueueAndCodec for RedisJobQueueRepositoryImpl {}
+
+    impl UseRedisJobResultPubSubRepository for RedisJobQueueRepositoryImpl {
+        fn job_result_pubsub_repository(&self) -> &RedisJobResultPubSubRepositoryImpl {
+            &self.job_result_pubsub_repository
+        }
+    }
     impl RedisJobQueueRepository for RedisJobQueueRepositoryImpl {}
 
     #[tokio::test]
     async fn send_job_test() -> Result<()> {
         let redis_pool = setup_test_redis_pool().await;
+        let redis_client = setup_test_redis_client()?;
         let job_queue_config = Arc::new(JobQueueConfig {
             expire_job_result_seconds: 10,
             fetch_interval: 1000,
@@ -242,9 +305,12 @@ mod test {
                 Some(&1),
             ))
             .await?;
+        let job_result_pubsub_repository =
+            RedisJobResultPubSubRepositoryImpl::new(redis_client, job_queue_config.clone());
         let repo = RedisJobQueueRepositoryImpl {
             job_queue_config,
             redis_pool,
+            job_result_pubsub_repository,
         };
         let args = JobqueueAndCodec::serialize_message(&proto::TestArgs {
             args: vec!["test".to_string()],
@@ -284,13 +350,17 @@ mod test {
     #[tokio::test]
     async fn send_result_test() -> Result<()> {
         let redis_pool = setup_test_redis_pool().await;
+        let redis_client = setup_test_redis_client()?;
         let job_queue_config = Arc::new(JobQueueConfig {
             expire_job_result_seconds: 10,
             fetch_interval: 1000,
         });
+        let job_result_pubsub_repository =
+            RedisJobResultPubSubRepositoryImpl::new(redis_client, job_queue_config.clone());
         let repo = RedisJobQueueRepositoryImpl {
             job_queue_config,
             redis_pool,
+            job_result_pubsub_repository,
         };
         let job_result_id = JobResultId { value: 111 };
         let job_id = JobId { value: 1 };
@@ -315,9 +385,10 @@ mod test {
             .await?;
         assert!(r);
         let res = repo
-            .wait_for_result_queue_for_response(&job_id, None)
+            .wait_for_result_queue_for_response(&job_id, None, false)
             .await?;
-        assert_eq!(res.data.unwrap(), job_result_data);
+        assert_eq!(res.0.data.unwrap(), job_result_data);
+        assert!(res.1.is_none());
         Ok(())
     }
 }

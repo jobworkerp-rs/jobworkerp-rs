@@ -33,8 +33,9 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
             `response_type`,
             `store_success`,
             `store_failure`,
+            `output_as_stream`,
             `next_workers`
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(&worker.name)
         .bind(worker.runner_id.as_ref().map(|s| s.value).unwrap_or(0))
@@ -56,6 +57,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         .bind(worker.response_type)
         .bind(worker.store_success)
         .bind(worker.store_failure)
+        .bind(worker.output_as_stream)
         .bind(WorkerRow::serialize_worker_ids(&worker.next_workers))
         .execute(tx)
         .await
@@ -89,6 +91,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
             `response_type` = ?,
             `store_success` = ?,
             `store_failure` = ?,
+            `output_as_stream` = ?,
             `next_workers` = ?
             WHERE `id` = ?;",
         )
@@ -112,6 +115,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         .bind(worker.response_type)
         .bind(worker.store_success)
         .bind(worker.store_failure)
+        .bind(worker.output_as_stream)
         .bind(WorkerRow::serialize_worker_ids(&worker.next_workers))
         .bind(id.value)
         .execute(tx)
@@ -291,6 +295,7 @@ mod test {
                 WorkerId { value: 3 },
             ],
             use_static: false,
+            output_as_stream: false,
         });
 
         let mut tx = db.begin().await.context("error in test")?;
@@ -331,6 +336,7 @@ mod test {
             store_failure: false,
             next_workers: vec![],
             use_static: false,
+            output_as_stream: false,
         };
         let updated = repository
             .update(&mut *tx, &expect.id.unwrap(), &update)

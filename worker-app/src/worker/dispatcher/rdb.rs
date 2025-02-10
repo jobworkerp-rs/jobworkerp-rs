@@ -1,3 +1,4 @@
+use super::JobDispatcher;
 use crate::worker::result_processor::ResultProcessorImpl;
 use crate::worker::result_processor::UseResultProcessor;
 use crate::worker::runner::map::RunnerFactoryWithPoolMap;
@@ -21,7 +22,7 @@ use command_utils::util::option::FlatMap;
 use command_utils::util::option::ToResult;
 use command_utils::util::result::TapErr;
 use command_utils::util::shutdown::ShutdownLock;
-use futures::{stream, StreamExt};
+use futures::stream;
 use infra::error::JobWorkerError;
 use infra::infra::job::queue::rdb::RdbJobQueueRepository;
 use infra::infra::job::rdb::RdbChanJobRepositoryImpl;
@@ -41,8 +42,6 @@ use proto::jobworkerp::data::Worker;
 use proto::jobworkerp::data::WorkerId;
 use std::sync::Arc;
 use std::time::Duration;
-
-use super::JobDispatcher;
 
 // for rdb run_after, periodic job dispatching
 #[async_trait]
@@ -95,6 +94,7 @@ pub trait RdbJobDispatcher:
 
     // pop jobs using pop_run_after_jobs_to_run(), and enqueue them to redis for execute
     async fn pop_and_execute(&'static self, pairs: Vec<(String, u32)>) -> Result<()> {
+        use futures::StreamExt;
         tracing::trace!("run pop_and_execute: time:{}", datetime::now().to_rfc3339());
         // thread to return to continue fetching
         let pairs_len = pairs.len();
@@ -209,7 +209,7 @@ pub trait RdbJobDispatcher:
                     let id = JobResultId {
                         value: self.id_generator().generate_id()?,
                     };
-                    tracing::debug!("job completed. result: {:?}", &res);
+                    tracing::debug!("job completed. result: {:?}", &res.0);
                     // store result
                     self.result_processor()
                         .process_result(id, res, w)
