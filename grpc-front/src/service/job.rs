@@ -13,7 +13,7 @@ use app::app::job::JobApp;
 use app::module::AppModule;
 use async_stream::stream;
 use command_utils::util::option::Exists;
-use futures::stream::BoxStream;
+use futures::stream::{self, BoxStream};
 use futures::StreamExt;
 use infra::error::JobWorkerError;
 use infra_utils::trace::Tracing;
@@ -214,15 +214,24 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                 let stream: Self::EnqueueForStreamStream = Box::pin(stream);
                 let mut res = Response::new(stream);
                 res.metadata_mut().insert_bin(
-                    "x-job-result-bin",
+                    super::JOB_RESULT_HEADER_NAME,
                     MetadataValue::from_bytes(res_header.as_slice()),
                 );
                 Ok(res)
             }
-            Ok((id, res, _)) => Ok(Response::new(Box::pin(stream! {
-                tracing::warn!("enqueue_for_stream result(ERR?): job_id: {}, res {:?}", id.value, &res);
-                yield Err(tonic::Status::invalid_argument("no stream result"))
-            }))),
+            Ok((_id, res, _)) => {
+                let res_header = res.map(|r| r.encode_to_vec());
+                // empty stream
+                let st = stream::empty().boxed() as Self::EnqueueForStreamStream;
+                let mut res = Response::new(st);
+                if let Some(header) = res_header {
+                    res.metadata_mut().insert_bin(
+                        super::JOB_RESULT_HEADER_NAME,
+                        MetadataValue::from_bytes(header.as_slice()),
+                    );
+                }
+                Ok(res)
+            }
             Err(e) => Err(handle_error(&e)),
         }
     }
