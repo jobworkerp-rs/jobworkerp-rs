@@ -19,8 +19,6 @@ use infra::error::JobWorkerError;
 use infra_utils::trace::Tracing;
 use prost::Message;
 use proto::jobworkerp::data::{result_output_item, Job, JobId};
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 use tonic::metadata::MetadataValue;
 use tonic::Response;
 
@@ -202,9 +200,8 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
             "enqueue_for_stream result = {:?}",
             &res.as_ref().map(|r| r.0)
         );
-        let worker1 = req.worker.clone();
         match res {
-            Ok((_id, Some(res), Some(mut st))) => {
+            Ok((_id, Some(res), Some(st))) => {
                 tracing::debug!(
                     "enqueue_for_stream request = {:?}, output = {:?}",
                     &req,
@@ -213,7 +210,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         .map(|d| d.output.as_ref().map(|o| o.items.len()))
                 );
                 let res_header = res.encode_to_vec();
-                let stream = st.map(|item| Ok(item));
+                let stream = st.map(Ok);
                 let stream: Self::EnqueueForStreamStream = Box::pin(stream);
                 let mut res = Response::new(stream);
                 res.metadata_mut().insert_bin(
