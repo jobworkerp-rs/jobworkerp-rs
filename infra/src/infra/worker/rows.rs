@@ -1,5 +1,4 @@
 use anyhow::Result;
-use itertools::Itertools;
 use proto::jobworkerp::data::{RetryPolicy, RunnerId, Worker, WorkerData, WorkerId};
 
 // db row definitions
@@ -23,7 +22,6 @@ pub struct WorkerRow {
     pub response_type: i32,
     pub store_success: bool,
     pub store_failure: bool,
-    pub next_workers: String,
     pub use_static: bool,
     pub output_as_stream: bool,
 }
@@ -52,18 +50,9 @@ impl WorkerRow {
                 response_type: self.response_type,
                 store_success: self.store_success,
                 store_failure: self.store_failure,
-                next_workers: Self::deserialize_worker_ids(self.next_workers.as_ref()),
                 use_static: self.use_static,
                 output_as_stream: self.output_as_stream,
             }),
         })
-    }
-    fn deserialize_worker_ids(s: &str) -> Vec<WorkerId> {
-        s.split(',')
-            .flat_map(|i| i.parse().map(|d| WorkerId { value: d }))
-            .collect_vec()
-    }
-    pub fn serialize_worker_ids(v: &[WorkerId]) -> String {
-        v.iter().map(|i| i.value.to_string()).join(",")
     }
 }

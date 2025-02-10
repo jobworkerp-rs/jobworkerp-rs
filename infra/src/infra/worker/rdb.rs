@@ -33,9 +33,8 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
             `response_type`,
             `store_success`,
             `store_failure`,
-            `output_as_stream`,
-            `next_workers`
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            `output_as_stream`
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(&worker.name)
         .bind(worker.runner_id.as_ref().map(|s| s.value).unwrap_or(0))
@@ -58,7 +57,6 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         .bind(worker.store_success)
         .bind(worker.store_failure)
         .bind(worker.output_as_stream)
-        .bind(WorkerRow::serialize_worker_ids(&worker.next_workers))
         .execute(tx)
         .await
         .map_err(JobWorkerError::DBError)?;
@@ -91,8 +89,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
             `response_type` = ?,
             `store_success` = ?,
             `store_failure` = ?,
-            `output_as_stream` = ?,
-            `next_workers` = ?
+            `output_as_stream` = ?
             WHERE `id` = ?;",
         )
         .bind(&worker.name)
@@ -116,7 +113,6 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         .bind(worker.store_success)
         .bind(worker.store_failure)
         .bind(worker.output_as_stream)
-        .bind(WorkerRow::serialize_worker_ids(&worker.next_workers))
         .bind(id.value)
         .execute(tx)
         .await
@@ -264,7 +260,6 @@ mod test {
     use proto::jobworkerp::data::RunnerId;
     use proto::jobworkerp::data::Worker;
     use proto::jobworkerp::data::WorkerData;
-    use proto::jobworkerp::data::WorkerId;
     use proto::TestRunnerSettings;
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
@@ -289,11 +284,6 @@ mod test {
             response_type: ResponseType::NoResult as i32,
             store_success: true,
             store_failure: true,
-            next_workers: vec![
-                WorkerId { value: 1 },
-                WorkerId { value: 2 },
-                WorkerId { value: 3 },
-            ],
             use_static: false,
             output_as_stream: false,
         });
@@ -334,7 +324,6 @@ mod test {
             response_type: ResponseType::ListenAfter as i32,
             store_success: false,
             store_failure: false,
-            next_workers: vec![],
             use_static: false,
             output_as_stream: false,
         };
