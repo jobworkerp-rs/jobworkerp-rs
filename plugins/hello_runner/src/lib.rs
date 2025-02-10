@@ -21,13 +21,11 @@ pub trait PluginRunner: Send + Sync {
     // REMOVE
     fn begin_stream(&mut self, arg: Vec<u8>) -> Result<()>;
     fn receive_stream(&mut self) -> Result<Option<Vec<u8>>>;
-    fn cancel(&self) -> bool;
+    fn cancel(&mut self) -> bool;
     fn is_canceled(&self) -> bool;
     fn runner_settings_proto(&self) -> String;
     fn job_args_proto(&self) -> String;
     fn result_output_proto(&self) -> Option<String>;
-    // if true, use job result of before job, else use job args from request
-    fn use_job_result(&self) -> bool;
     fn output_as_stream(&self) -> bool;
 }
 
@@ -175,7 +173,7 @@ impl PluginRunner for HelloPlugin {
             Ok(res)
         })
     }
-    fn cancel(&self) -> bool {
+    fn cancel(&mut self) -> bool {
         // cancel the running task
         // *self.running.lock().unwrap() = false;
         // kill running task
@@ -195,10 +193,6 @@ impl PluginRunner for HelloPlugin {
     }
     fn result_output_proto(&self) -> Option<String> {
         Some(include_str!("../protobuf/hello_result.proto").to_string())
-    }
-    // if true, use job result of before job, else use job args from request
-    fn use_job_result(&self) -> bool {
-        false
     }
     // use run_stream() if true, else use run()
     fn output_as_stream(&self) -> bool {

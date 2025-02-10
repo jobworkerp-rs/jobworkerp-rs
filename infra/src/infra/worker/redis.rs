@@ -279,7 +279,6 @@ async fn redis_test() -> Result<()> {
         response_type: ResponseType::ListenAfter as i32,
         store_success: true,
         store_failure: true,
-        next_workers: vec![],
         use_static: false,
         output_as_stream: false,
     };

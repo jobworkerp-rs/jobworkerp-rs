@@ -21,7 +21,7 @@ enum RunnerType {
   HTTP_REQUEST = 2;
   GRPC_UNARY = 3;
   DOCKER = 4;
-  SLACK_NOTIFICATION = 5;
+  SLACK_POST_MESSAGE = 5;
 }
 
 enum Priority {
@@ -47,13 +47,15 @@ message RetryPolicy {
 }
 
 enum ResponseType {
-  NO_RESULT = 0; // return job id immediately. return no result. (result
-                 // available if stored rdb by worker setting)
-  DIRECT = 1; // get result in response (maybe long wait: long polling with grpc
-              // unary)
-  LISTEN_AFTER =
-      2; // return job id immediately. result available by listen api with
-         // blocking for a short time (in JobResultService. maybe long wait)
+  // return job id immediately. return no result. (result
+  // available if stored rdb by worker setting)
+  NO_RESULT = 0;
+  // get result in response (maybe long wait: long polling with grpc
+  // unary)
+  DIRECT = 1;
+  // return job id immediately. result available by listen api with
+  // blocking for a short time (in JobResultService. maybe long wait)
+  LISTEN_AFTER = 2;
 }
 
 enum ResultStatus {

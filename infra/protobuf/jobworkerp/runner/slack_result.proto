@@ -1,0 +1,11 @@
+syntax = "proto3";
+package jobworkerp.runner;
+
+message ChatPostMessageResult {
+  // channel name
+  string channel = 1;
+  // timestamp of the message
+  string ts = 2;
+  // message body (json object)
+  string message = 3;
+}

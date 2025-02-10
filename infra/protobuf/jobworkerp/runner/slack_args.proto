@@ -1,0 +1,48 @@
+syntax = "proto3";
+package jobworkerp.runner;
+
+message ChatPostMessageArgs {
+
+  /// See: <https://api.slack.com/reference/messaging/attachments#legacy_fields>
+  message Attachment {
+    optional string color = 1;
+    optional string author_icon = 2;
+    optional string author_link = 3;
+    optional string author_name = 4;
+    optional string fallback = 5;
+    repeated AttachmentField fields = 6;
+    optional string footer = 7;
+    optional string footer_icon = 8;
+    optional string image_url = 9;
+    repeated string mrkdwn_in = 10;
+    optional string pretext = 11;
+    optional string text = 12;
+    optional string title = 13;
+    optional string title_link = 14;
+    optional string thumb_url = 15;
+    optional int32 ts = 16;
+  }
+
+  /// See: <https://api.slack.com/reference/messaging/attachments#field_objects>
+  message AttachmentField {
+    optional string title = 1;
+    optional string value = 2;
+    optional bool short = 3;
+  }
+
+  string channel = 1;
+  repeated Attachment attachments = 2;
+  // json object array
+  repeated string blocks = 3;
+  optional string text = 4;
+  optional string icon_emoji = 5;
+  optional string icon_url = 6;
+  optional bool link_names = 7;
+  optional bool mrkdwn = 8;
+  optional string parse = 9;
+  optional bool reply_broadcast = 10;
+  optional string thread_ts = 11;
+  optional bool unfurl_links = 12;
+  optional bool unfurl_media = 13;
+  optional string username = 14;
+}

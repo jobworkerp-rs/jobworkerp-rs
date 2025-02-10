@@ -451,7 +451,6 @@ mod tests {
             response_type: ResponseType::Direct as i32,
             store_success: true,
             store_failure: true,
-            next_workers: vec![],
             use_static: false,
             output_as_stream: false,
         };

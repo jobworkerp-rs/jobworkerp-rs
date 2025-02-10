@@ -2,7 +2,7 @@ use super::command::CommandRunnerImpl;
 use super::docker::{DockerExecRunner, DockerRunner};
 use super::grpc_unary::GrpcUnaryRunner;
 use super::request::RequestRunner;
-use super::slack::SlackNotificationRunner;
+use super::slack::SlackPostMessageRunner;
 use super::RunnerTrait;
 use crate::infra::plugins::{PluginLoader, Plugins};
 use anyhow::Result;
@@ -48,8 +48,8 @@ impl RunnerFactory {
             Some(RunnerType::HttpRequest) => {
                 Some(Box::new(RequestRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
             }
-            Some(RunnerType::SlackNotification) => {
-                Some(Box::new(SlackNotificationRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
+            Some(RunnerType::SlackPostMessage) => {
+                Some(Box::new(SlackPostMessageRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
             }
             _ => self
                 .plugins

@@ -7,7 +7,6 @@ pub mod command;
 pub mod docker;
 pub mod factory;
 pub mod grpc_unary;
-pub mod job_result_slack;
 pub mod k8s_job;
 pub mod plugins;
 pub mod request;
@@ -28,7 +27,6 @@ pub trait RunnerTrait: Send + Sync {
     fn runner_settings_proto(&self) -> String;
     fn job_args_proto(&self) -> String;
     fn result_output_proto(&self) -> Option<String>;
-    fn use_job_result(&self) -> bool;
     // run with run_stream() if true
     fn output_as_stream(&self) -> bool;
 }

@@ -24,7 +24,6 @@ trait PluginRunner: Send + Sync {
     fn runner_settings_proto(&self) -> String;
     fn job_args_proto(&self) -> String;
     fn result_output_proto(&self) -> Option<String>;
-    fn use_job_result(&self) -> bool;
     fn output_as_stream(&self) -> bool {
         false
     }

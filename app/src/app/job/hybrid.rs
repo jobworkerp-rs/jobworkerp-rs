@@ -772,7 +772,6 @@ mod tests {
                 queue_type: QueueType::Normal as i32,
                 store_failure: false,
                 store_success: false,
-                next_workers: vec![],
                 use_static: false,
                 output_as_stream: false,
             };
@@ -881,7 +880,6 @@ mod tests {
                 queue_type: QueueType::Normal as i32, // store to rdb for failback (can find job from rdb but not from redis)
                 store_failure: false,
                 store_success: false,
-                next_workers: vec![],
                 use_static: false,
                 output_as_stream: false,
             };
@@ -995,7 +993,6 @@ mod tests {
             queue_type: QueueType::WithBackup as i32,
             store_success: true,
             store_failure: false,
-            next_workers: vec![],
             use_static: false,
             output_as_stream: false,
         };
@@ -1099,7 +1096,6 @@ mod tests {
                 queue_type: QueueType::WithBackup as i32,
                 store_success: true,
                 store_failure: false,
-                next_workers: vec![],
                 use_static: false,
                 output_as_stream: false,
             };
