@@ -71,6 +71,6 @@ INSERT OR IGNORE INTO runner (`id`, `name`, `file_name`, `type`) VALUES (
 ), (
   4, 'DOCKER', 'builtin4', 4
 ), (
-  5, 'SLACK_NOTIFICATION', 'builtin0', 5
+  5, 'SLACK_POST_MESSAGE', 'builtin5', 5
 );
 

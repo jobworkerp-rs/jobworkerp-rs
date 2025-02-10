@@ -150,9 +150,6 @@ impl RunnerTrait for RequestRunner {
                 .to_string(),
         )
     }
-    fn use_job_result(&self) -> bool {
-        false
-    }
     fn output_as_stream(&self) -> bool {
         false
     }

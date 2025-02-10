@@ -286,8 +286,8 @@ impl JobResultApp for RdbJobResultAppImpl {
                         .into());
                     } else {
                         // XXX fixed adhoc value
-                        tracing::debug!("listen_result: In retrying. sleep 3sec");
-                        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                        tracing::debug!("listen_result: In retrying. sleep 1sec");
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     }
                 }
                 Ok(Some(v)) => {
