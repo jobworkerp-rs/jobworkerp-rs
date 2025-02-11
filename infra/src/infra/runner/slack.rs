@@ -99,7 +99,7 @@ impl RunnerTrait for SlackPostMessageRunner {
     fn result_output_proto(&self) -> Option<String> {
         Some(include_str!("../../../protobuf/jobworkerp/runner/slack_result.proto").to_string())
     }
-    fn output_as_stream(&self) -> bool {
-        false
+    fn output_as_stream(&self) -> Option<bool> {
+        Some(false)
     }
 }
