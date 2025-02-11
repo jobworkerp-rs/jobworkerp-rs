@@ -265,7 +265,7 @@ mod test {
                     .to_string(),
             ),
             runner_type: 0,
-            output_as_stream: true, // hello
+            output_as_stream: Some(true), // hello
         });
 
         let org_count = repository.count_list_tx(repository.db_pool()).await?;
