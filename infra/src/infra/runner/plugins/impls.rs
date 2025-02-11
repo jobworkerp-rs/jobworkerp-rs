@@ -137,7 +137,7 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
     fn result_output_proto(&self) -> Option<String> {
         block_on(self.plugin_runner.read()).result_output_proto()
     }
-    fn output_as_stream(&self) -> bool {
+    fn output_as_stream(&self) -> Option<bool> {
         block_on(self.plugin_runner.read()).output_as_stream()
     }
 }

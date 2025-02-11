@@ -85,7 +85,10 @@ impl WorkerApp for HybridWorkerAppImpl {
                 JobWorkerError::InvalidParameter("runner settings not provided".to_string())
             })?;
         let mut wdata = worker.clone();
-        wdata.output_as_stream = runner_data.output_as_stream;
+        // overwrite output_as_stream only if data is provided from runner
+        if let Some(output_as_stream) = runner_data.output_as_stream {
+            wdata.output_as_stream = output_as_stream;
+        }
         let wid = {
             let db = self.rdb_worker_repository().db_pool();
             let mut tx = db.begin().await.map_err(JobWorkerError::DBError)?;
@@ -129,7 +132,10 @@ impl WorkerApp for HybridWorkerAppImpl {
                         JobWorkerError::InvalidParameter("runner settings not provided".to_string())
                     })?;
                 let mut wdata = w.clone();
-                wdata.output_as_stream = runner_data.output_as_stream;
+                // overwrite output_as_stream only if data is provided from runner
+                if let Some(output_as_stream) = runner_data.output_as_stream {
+                    wdata.output_as_stream = output_as_stream;
+                }
 
                 // use rdb
                 let pool = self.rdb_worker_repository().db_pool();

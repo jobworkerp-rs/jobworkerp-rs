@@ -150,8 +150,8 @@ impl RunnerTrait for RequestRunner {
                 .to_string(),
         )
     }
-    fn output_as_stream(&self) -> bool {
-        false
+    fn output_as_stream(&self) -> Option<bool> {
+        Some(false)
     }
 }
 

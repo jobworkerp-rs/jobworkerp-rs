@@ -157,8 +157,8 @@ impl RunnerTrait for CommandRunnerImpl {
     fn result_output_proto(&self) -> Option<String> {
         Some("".to_string())
     }
-    fn output_as_stream(&self) -> bool {
-        false
+    fn output_as_stream(&self) -> Option<bool> {
+        Some(false)
     }
 }
 
