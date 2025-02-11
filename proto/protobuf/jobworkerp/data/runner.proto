@@ -20,7 +20,9 @@ message RunnerData {
   // message type prefix (e.g. "message CommandResult{ string result = 1; }") if
   // empty, use utf8 string as bytes array for result output(or not resolved)
   optional string result_output_proto = 5;
-  bool output_as_stream = 6; // if true, output as stream (defined by runner impl)
+  // if true, output as stream
+  // (defined by runner impl. none: implement both stream and non-stream. can specify in worker)
+  optional bool output_as_stream = 6;
 }
 
 message RunnerId { int64 value = 1; }

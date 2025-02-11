@@ -28,5 +28,5 @@ pub trait RunnerTrait: Send + Sync {
     fn job_args_proto(&self) -> String;
     fn result_output_proto(&self) -> Option<String>;
     // run with run_stream() if true
-    fn output_as_stream(&self) -> bool;
+    fn output_as_stream(&self) -> Option<bool>;
 }

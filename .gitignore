@@ -335,4 +335,4 @@ ASALocalRun/
 .pnpm*
 .vscode/
 *.sqlite3*
-
+*.dylib

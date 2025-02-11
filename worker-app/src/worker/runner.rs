@@ -122,7 +122,7 @@ pub trait JobRunner:
         let start = datetime::now_millis();
 
         let name = runner_impl.name();
-        if runner_impl.output_as_stream() {
+        if worker_data.output_as_stream {
             tracing::debug!("start runner(stream): {}", &name);
             let res = self
                 .run_and_stream(&job, runner_impl)
