@@ -306,7 +306,7 @@ pub mod test {
             job_args_proto: include_str!("../../../proto/protobuf/test_args.proto").to_string(),
             runner_type: RunnerType::Plugin as i32,
             result_output_proto: None,
-            output_as_stream: false,
+            output_as_stream: Some(false),
         }
     }
 
