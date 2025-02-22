@@ -334,7 +334,7 @@ impl JobResultApp for RdbJobResultAppImpl {
         Self: Send + 'static,
     {
         // get worker data
-        let Worker { id: wid, data: wd } = self
+        let Worker { id: wid, data: _wd } = self
             .worker_app
             .find_by_id_or_name(worker_id, worker_name)
             .await?;
@@ -342,17 +342,18 @@ impl JobResultApp for RdbJobResultAppImpl {
             "cannot listen job which worker is None: id={:?} or name={:?}",
             worker_id, worker_name
         )))?;
-        let wd = wd.ok_or(JobWorkerError::WorkerNotFound(format!(
-            "cannot listen job which worker is None: id={:?} or name={:?}",
-            worker_id, worker_name
-        )))?;
-        if wd.response_type == ResponseType::Direct as i32 {
-            return Err(JobWorkerError::InvalidParameter(format!(
-                "Cannot listen result for direct response: {:?}",
-                &wd
-            ))
-            .into());
-        }
+        // let wd = wd.ok_or(JobWorkerError::WorkerNotFound(format!(
+        //     "cannot listen job which worker is None: id={:?} or name={:?}",
+        //     worker_id, worker_name
+        // )))?;
+        // XXX can listen by worker for direct response
+        // if wd.response_type == ResponseType::Direct as i32 {
+        //     return Err(JobWorkerError::InvalidParameter(format!(
+        //         "Cannot listen by worker result for direct response: {:?}",
+        //         &wd
+        //     ))
+        //     .into());
+        // }
 
         let cn = Self::job_result_by_worker_pubsub_channel_name(&wid);
         tracing::debug!("listen_result_stream: worker_id={}, ch={}", &wid.value, &cn);
