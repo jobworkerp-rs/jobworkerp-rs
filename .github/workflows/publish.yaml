@@ -15,6 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: nvcr.io/nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+      options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
     # Sets the permissions granted to the `GITHUB_TOKEN` for the actions in this job.
     permissions:
       contents: read
@@ -23,7 +24,7 @@ jobs:
     - name: apt upgrade
       run: |
         apt-get update
-        apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip
+        apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip ca-certificates curl gnupg lsb-release docker.io
     - uses: actions/checkout@v4
       with:
         submodules: true
@@ -91,6 +92,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: nvcr.io/nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+      options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
     # Sets the permissions granted to the `GITHUB_TOKEN` for the actions in this job.
     permissions:
       contents: read
@@ -99,7 +101,7 @@ jobs:
     - name: apt upgrade
       run: |
         apt-get update
-        apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip
+        apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip ca-certificates curl gnupg lsb-release docker.io
     - uses: actions/checkout@v4
       with:
         submodules: true
