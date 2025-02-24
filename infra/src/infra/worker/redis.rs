@@ -1,18 +1,16 @@
+use super::event::UseWorkerPublish;
 use crate::error::JobWorkerError;
 use crate::infra::job::rows::UseJobqueueAndCodec;
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::option::FlatMap;
 use command_utils::util::result::Exists;
+use deadpool_redis::redis::AsyncCommands;
 use debug_stub_derive::DebugStub;
 use infra_utils::infra::redis::{RedisPool, UseRedisClient, UseRedisPool};
 use prost::Message;
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
-use redis::AsyncCommands;
-use std::collections::BTreeMap;
-use std::io::Cursor;
-
-use super::event::UseWorkerPublish;
+use std::{collections::BTreeMap, io::Cursor};
 
 // TODO use if you need (not using in default)
 #[async_trait]

@@ -32,7 +32,7 @@ clap = "4.0"
 chrono = "0.4"
 dashmap = "6"
 deadpool = { version = "0.12", features = ["rt_tokio_1"] }
-deadpool-redis = { version = "0.18", features = ["rt_tokio_1", "cluster"] }
+deadpool-redis = { version = "0.19", features = ["rt_tokio_1", "cluster"] }
 debug_stub_derive = "0.3"
 bollard = { version = "0.18", features = ["buildkit", "chrono", "ssl"] }
 bytes = "1.9"
@@ -56,9 +56,8 @@ prost-types = "0.13"
 prost-reflect = { version = "0.14", features = ["serde"] }
 rand = "0.9"
 regex = "1.11"
-redis = { version = "0.27", features = [
+redis = { version = "0.28", features = [
     "tokio-rustls-comp",
-    "r2d2",
     "ahash",
     "cluster-async",
 ] }
