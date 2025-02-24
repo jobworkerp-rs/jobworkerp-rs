@@ -1,3 +1,5 @@
+use super::JobStatusRepository;
+use crate::error::JobWorkerError;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use command_utils::util::result::FlatMap;
@@ -5,10 +7,6 @@ use infra_utils::infra::redis::{RedisPool, UseRedisPool};
 use itertools::Itertools;
 use proto::jobworkerp::data::{JobId, JobStatus};
 use redis::AsyncCommands;
-
-use crate::error::JobWorkerError;
-
-use super::JobStatusRepository;
 
 // manage job status (except for responseType:Direct worker)
 // TODO use (listen after or create job status api)
