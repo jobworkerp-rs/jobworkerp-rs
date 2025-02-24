@@ -36,6 +36,8 @@ jobs:
 
   job-test:
     runs-on: ubuntu-latest
+    container:
+      image: nvcr.io/nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
     timeout-minutes: 30
     services:
       db:
