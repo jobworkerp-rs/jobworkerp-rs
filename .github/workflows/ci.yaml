@@ -84,7 +84,7 @@ jobs:
     - name: apt upgrade
       run: |
         apt-get update
-        apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang musl-tools cmake pkg-config libssl-dev protobuf-compiler
+        apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip
     - name: Install last version of Protoc
       uses: arduino/setup-protoc@v2
       with:
