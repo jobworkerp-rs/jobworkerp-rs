@@ -20,6 +20,10 @@ jobs:
       contents: read
       packages: write
     steps:
+    - name: apt upgrade
+      run: |
+        sudo apt-get update
+        sudo apt-get -y upgrade
     - uses: actions/checkout@v4
       with:
         submodules: true
@@ -92,6 +96,10 @@ jobs:
       contents: read
       packages: write
     steps:
+    - name: apt upgrade
+      run: |
+        sudo apt-get update
+        sudo apt-get -y upgrade
     - uses: actions/checkout@v4
       with:
         submodules: true
