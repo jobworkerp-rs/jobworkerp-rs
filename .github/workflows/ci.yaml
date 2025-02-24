@@ -37,7 +37,7 @@ jobs:
   job-test:
     runs-on: ubuntu-latest
     container:
-      image: nvcr.io/nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+      image: nvcr.io/nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
     timeout-minutes: 30
     services:
       db:
@@ -81,6 +81,10 @@ jobs:
           - 7005:7005
 
     steps:
+    - name: apt upgrade
+      run: |
+        apt-get update
+        apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang musl-tools cmake pkg-config libssl-dev protobuf-compiler
     - name: Install last version of Protoc
       uses: arduino/setup-protoc@v2
       with:

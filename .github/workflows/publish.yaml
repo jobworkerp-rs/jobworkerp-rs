@@ -14,7 +14,7 @@ jobs:
   build-and-push-image:
     runs-on: ubuntu-latest
     container:
-      image: nvcr.io/nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+      image: nvcr.io/nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
     # Sets the permissions granted to the `GITHUB_TOKEN` for the actions in this job.
     permissions:
       contents: read
@@ -23,7 +23,7 @@ jobs:
     - name: apt upgrade
       run: |
         apt-get update
-        apt-get -y upgrade
+        apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang musl-tools cmake pkg-config libssl-dev protobuf-compiler
     - uses: actions/checkout@v4
       with:
         submodules: true
@@ -90,7 +90,7 @@ jobs:
   build-and-push-all-in-one-image:
     runs-on: ubuntu-latest
     container:
-      image: nvcr.io/nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+      image: nvcr.io/nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
     # Sets the permissions granted to the `GITHUB_TOKEN` for the actions in this job.
     permissions:
       contents: read
@@ -99,7 +99,7 @@ jobs:
     - name: apt upgrade
       run: |
         apt-get update
-        apt-get -y upgrade
+        apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang musl-tools cmake pkg-config libssl-dev protobuf-compiler
     - uses: actions/checkout@v4
       with:
         submodules: true
