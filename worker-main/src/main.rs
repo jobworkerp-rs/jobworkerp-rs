@@ -9,7 +9,7 @@ use command_utils::util::{shutdown, tracing::LoggingConfig};
 use dotenvy::dotenv;
 use infra::infra::runner::factory::RunnerFactory;
 
-// start front_server
+// start all-in-one server
 // #[tokio::main]
 #[tokio::main]
 async fn main() -> Result<()> {

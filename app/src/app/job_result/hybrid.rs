@@ -247,16 +247,16 @@ impl JobResultApp for HybridJobResultAppImpl {
             .find_by_id_or_name(worker_id, worker_name)
             .await?;
         let wid = worker_id.ok_or(JobWorkerError::NotFound("worker id not found".to_string()))?;
-        let wd = wd.ok_or(JobWorkerError::NotFound(
+        let _wd = wd.ok_or(JobWorkerError::NotFound(
             "worker data not found".to_string(),
         ))?;
-        if wd.response_type == ResponseType::Direct as i32 {
-            return Err(JobWorkerError::InvalidParameter(format!(
-                "Cannot listen result for direct response: {:?}",
-                &wd
-            ))
-            .into());
-        }
+        // if wd.response_type == ResponseType::Direct as i32 {
+        //     return Err(JobWorkerError::InvalidParameter(format!(
+        //         "Cannot listen result for direct response: {:?}",
+        //         &wd
+        //     ))
+        //     .into());
+        // }
         self.job_result_pubsub_repository()
             .subscribe_result_stream_by_worker(wid)
             .await
