@@ -69,13 +69,13 @@ impl RdbJobResultAppImpl {
             "cannot listen job which worker is None: id={:?} or name={:?}",
             worker_id, worker_name
         )))?;
-        if wd.response_type == ResponseType::Direct as i32 {
-            return Err(JobWorkerError::InvalidParameter(format!(
-                "Cannot listen result for direct response: {:?}",
-                &wd
-            ))
-            .into());
-        }
+        // if wd.response_type == ResponseType::Direct as i32 {
+        //     return Err(JobWorkerError::InvalidParameter(format!(
+        //         "Cannot listen result for direct response: {:?}",
+        //         &wd
+        //     ))
+        //     .into());
+        // }
         // check job result (already finished or not)
         let res = self
             .rdb_job_result_repository()
