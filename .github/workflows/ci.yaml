@@ -54,9 +54,9 @@ jobs:
           MYSQL_ROOT_HOST: "0.0.0.0"
         options: --health-cmd "mysqladmin ping" --health-interval 10s --health-timeout 5s --health-retries 10
       redis:
-        image: redis
+        image: redis:7
         env:
-          REDIS_HOST: redis:7
+          REDIS_HOST: redis
         ports:
           - 6379:6379
         # Set health checks to wait until redis has started
@@ -115,11 +115,13 @@ jobs:
         cargo test
       env:
         PLUGINS_RUNNER_DIR: "../target/debug/"
+        TEST_REDIS_URL: "redis://redis:6379"
     - name: Run test with mysql
       run: |
         cargo build --features "mysql"
         cargo test --features "mysql"
       env:
         PLUGINS_RUNNER_DIR: "../target/debug/"
+        TEST_REDIS_URL: "redis://redis:6379"
 
 
