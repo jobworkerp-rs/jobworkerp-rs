@@ -341,6 +341,15 @@ impl JobApp for HybridJobAppImpl {
                         .redis_job_repository()
                         .enqueue_result_direct(id, data)
                         .await;
+                    // publish for listening result client
+                    // (XXX can receive response by listen_after, listen_by_worker for DIRECT response)
+                    let _ = self
+                        .job_result_pubsub_repository()
+                        .publish_result(id, data, true)
+                        .await
+                        .inspect_err(|e| {
+                            tracing::warn!("complete_job: pubsub publish error: {:?}", e)
+                        });
                     // stream data
                     if let Some(stream) = stream {
                         let pubsub_repo = self.job_result_pubsub_repository().clone();

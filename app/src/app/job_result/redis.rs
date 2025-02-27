@@ -241,13 +241,13 @@ impl JobResultApp for RedisJobResultAppImpl {
         let wd = wd.ok_or(JobWorkerError::NotFound(
             "worker data not found".to_string(),
         ))?;
-        if wd.response_type == ResponseType::Direct as i32 {
-            return Err(JobWorkerError::InvalidParameter(format!(
-                "Cannot listen result for direct response: {:?}",
-                &wd
-            ))
-            .into());
-        }
+        // if wd.response_type == ResponseType::Direct as i32 {
+        //     return Err(JobWorkerError::InvalidParameter(format!(
+        //         "Cannot listen result for direct response: {:?}",
+        //         &wd
+        //     ))
+        //     .into());
+        // }
         self.job_result_pubsub_repository()
             .subscribe_result_stream_by_worker(wid)
             .await
