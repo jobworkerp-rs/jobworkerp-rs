@@ -9,6 +9,8 @@ edition = "2021"
 proto = { path = "../proto" }
 command-utils = { path = "../modules/command-utils" }
 infra-utils = { path = "../modules/infra-utils" }
+jobworkerp-base = { path = "../base" }
+jobworkerp-runner = { path = "../runner" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -25,6 +27,7 @@ futures-util = { workspace = true }
 itertools = { workspace = true }
 #kube-client = "0.86"
 libloading = { workspace = true }
+nix = { workspace = true, features = ["signal"] }
 once_cell = { workspace = true }
 prost = { workspace = true }
 redis = { workspace = true }
@@ -37,6 +40,7 @@ signal-hook-tokio = { workspace = true }
 sqlx = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }

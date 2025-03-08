@@ -4,13 +4,13 @@ use super::RunnerTrait;
 use crate::jobworkerp::runner::{
     http_request_result::KeyValue, HttpRequestArgs, HttpRequestResult, HttpRequestRunnerSettings,
 };
-use crate::{
-    error::JobWorkerError,
-    infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec},
-};
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use jobworkerp_base::{
+    codec::{ProstMessageCodec, UseProstCodec},
+    error::JobWorkerError,
+};
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use reqwest::{
     header::{HeaderMap, HeaderName},
@@ -64,12 +64,12 @@ impl RunnerTrait for RequestRunner {
         RunnerType::HttpRequest.as_str_name().to_string()
     }
     async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
-        let op = JobqueueAndCodec::deserialize_message::<HttpRequestRunnerSettings>(&settings)?;
+        let op = ProstMessageCodec::deserialize_message::<HttpRequestRunnerSettings>(&settings)?;
         self.create(op.base_url.as_str())
     }
     async fn run(&mut self, args: &[u8]) -> Result<Vec<Vec<u8>>> {
         if let Some(url) = self.url.as_ref() {
-            let args = JobqueueAndCodec::deserialize_message::<HttpRequestArgs>(args)?;
+            let args = ProstMessageCodec::deserialize_message::<HttpRequestArgs>(args)?;
             let met = Method::from_str(args.method.as_str())?;
             let u = url.join(args.path.as_str())?;
             // create request
@@ -124,7 +124,7 @@ impl RunnerTrait for RequestRunner {
                     .collect(),
                 content: t,
             };
-            Ok(vec![JobqueueAndCodec::serialize_message(&mes)])
+            Ok(vec![ProstMessageCodec::serialize_message(&mes)?])
         } else {
             Err(JobWorkerError::RuntimeError("url is not set".to_string()).into())
         }
@@ -139,16 +139,13 @@ impl RunnerTrait for RequestRunner {
         tracing::warn!("cannot cancel request until timeout")
     }
     fn runner_settings_proto(&self) -> String {
-        include_str!("../../../protobuf/jobworkerp/runner/http_request_runner.proto").to_string()
+        include_str!("../../protobuf/jobworkerp/runner/http_request_runner.proto").to_string()
     }
     fn job_args_proto(&self) -> String {
-        include_str!("../../../protobuf/jobworkerp/runner/http_request_args.proto").to_string()
+        include_str!("../../protobuf/jobworkerp/runner/http_request_args.proto").to_string()
     }
     fn result_output_proto(&self) -> Option<String> {
-        Some(
-            include_str!("../../../protobuf/jobworkerp/runner/http_request_result.proto")
-                .to_string(),
-        )
+        Some(include_str!("../../protobuf/jobworkerp/runner/http_request_result.proto").to_string())
     }
     fn output_as_stream(&self) -> Option<bool> {
         Some(false)
@@ -161,7 +158,7 @@ async fn run_request() {
 
     let mut runner = RequestRunner::new();
     runner.create("https://www.google.com/").unwrap();
-    let arg = JobqueueAndCodec::serialize_message(&HttpRequestArgs {
+    let arg = ProstMessageCodec::serialize_message(&HttpRequestArgs {
         headers: vec![KeyValue {
             key: "Content-Type".to_string(),
             value: "plain/text".to_string(),
@@ -179,7 +176,8 @@ async fn run_request() {
         method: "GET".to_string(),
         body: None,
         path: "search".to_string(),
-    });
+    })
+    .unwrap();
 
     let res = runner.run(&arg).await;
 

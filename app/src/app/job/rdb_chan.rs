@@ -8,7 +8,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
 use futures::stream::BoxStream;
-use infra::error::JobWorkerError;
 use infra::infra::job::queue::chan::{
     ChanJobQueueRepository, ChanJobQueueRepositoryImpl, UseChanJobQueueRepository,
 };
@@ -23,6 +22,7 @@ use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryMod
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use infra_utils::infra::memory::{MemoryCacheImpl, UseMemoryCache};
 use infra_utils::infra::rdb::UseRdbPool;
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobStatus, QueueType, ResponseType,
     ResultOutputItem, Worker, WorkerData, WorkerId,

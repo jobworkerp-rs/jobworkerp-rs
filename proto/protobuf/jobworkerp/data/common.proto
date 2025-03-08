@@ -22,6 +22,7 @@ enum RunnerType {
   GRPC_UNARY = 3;
   DOCKER = 4;
   SLACK_POST_MESSAGE = 5;
+  PYTHON_COMMAND = 6;
 }
 
 enum Priority {

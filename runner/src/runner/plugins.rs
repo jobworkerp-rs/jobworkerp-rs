@@ -1,10 +1,9 @@
 pub mod impls;
-pub mod loader;
 
 use anyhow::Result;
 
 //TODO function load, run, cancel to async
-trait PluginRunner: Send + Sync {
+pub trait PluginRunner: Send + Sync {
     fn name(&self) -> String;
     fn load(&mut self, settings: Vec<u8>) -> Result<()>;
     fn run(&mut self, args: Vec<u8>) -> Result<Vec<Vec<u8>>>;

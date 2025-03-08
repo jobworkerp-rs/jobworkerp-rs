@@ -1,4 +1,4 @@
-use crate::infra::runner::RunnerTrait;
+use jobworkerp_runner::runner::RunnerTrait;
 use proto::jobworkerp::data::{Runner, RunnerData, RunnerId};
 
 // db row definitions

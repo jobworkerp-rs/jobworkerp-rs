@@ -24,6 +24,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "protobuf/jobworkerp/runner/grpc_unary_args.proto",
                 "protobuf/jobworkerp/runner/http_request_args.proto",
                 "protobuf/jobworkerp/runner/http_request_result.proto",
+                "protobuf/jobworkerp/runner/python_command_result.proto",
+                "protobuf/jobworkerp/runner/python_command_runner.proto",
+                "protobuf/jobworkerp/runner/python_command_args.proto",
             ],
             &["../proto/protobuf/", "protobuf"],
         )

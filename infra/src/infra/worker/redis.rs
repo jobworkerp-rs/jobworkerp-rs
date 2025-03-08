@@ -1,5 +1,4 @@
 use super::event::UseWorkerPublish;
-use crate::error::JobWorkerError;
 use crate::infra::job::rows::UseJobqueueAndCodec;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -8,6 +7,7 @@ use command_utils::util::result::Exists;
 use deadpool_redis::redis::AsyncCommands;
 use debug_stub_derive::DebugStub;
 use infra_utils::infra::redis::{RedisPool, UseRedisClient, UseRedisPool};
+use jobworkerp_base::{codec::UseProstCodec, error::JobWorkerError};
 use prost::Message;
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use std::{collections::BTreeMap, io::Cursor};
@@ -229,6 +229,7 @@ impl UseRedisClient for RedisWorkerRepositoryImpl {
     }
 }
 
+impl UseProstCodec for RedisWorkerRepositoryImpl {}
 impl UseJobqueueAndCodec for RedisWorkerRepositoryImpl {}
 impl UseWorkerPublish for RedisWorkerRepositoryImpl {}
 
@@ -245,6 +246,7 @@ pub trait UseRedisWorkerRepository {
 #[tokio::test]
 async fn redis_test() -> Result<()> {
     use command_utils::util::option::FlatMap;
+    use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
     use proto::jobworkerp::data::RetryPolicy;
     use proto::jobworkerp::data::{QueueType, ResponseType, RunnerId, WorkerData, WorkerId};
     use proto::TestRunnerSettings;
@@ -261,9 +263,9 @@ async fn redis_test() -> Result<()> {
     let worker = &WorkerData {
         name: "hoge1".to_string(),
         runner_id: Some(RunnerId { value: 2 }),
-        runner_settings: RedisWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
+        runner_settings: ProstMessageCodec::serialize_message(&TestRunnerSettings {
             name: "hoge1".to_string(),
-        }),
+        })?,
         retry_policy: Some(RetryPolicy {
             r#type: 5,
             interval: 6,
@@ -295,9 +297,9 @@ async fn redis_test() -> Result<()> {
     let mut worker2 = worker.clone();
     worker2.name = "fuga1".to_string();
     worker2.runner_id = Some(RunnerId { value: 5 });
-    worker2.runner_settings = RedisWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
+    worker2.runner_settings = ProstMessageCodec::serialize_message(&TestRunnerSettings {
         name: "fuga2".to_string(),
-    });
+    })?;
     worker2.retry_policy = Some(RetryPolicy {
         r#type: 6,
         interval: 7,

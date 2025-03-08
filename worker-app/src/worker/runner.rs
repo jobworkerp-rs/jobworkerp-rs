@@ -10,7 +10,8 @@ use async_trait::async_trait;
 use command_utils::util::{datetime, result::Flatten};
 use futures::{future::FutureExt, stream::BoxStream};
 use infra::infra::{job::rows::UseJobqueueAndCodec, runner::factory::UseRunnerFactory};
-use infra::{error::JobWorkerError, infra::runner::RunnerTrait};
+use jobworkerp_base::error::JobWorkerError;
+use jobworkerp_runner::runner::RunnerTrait;
 use proto::jobworkerp::data::ResultOutputItem;
 use proto::jobworkerp::data::{
     Job, JobResultData, ResultOutput, ResultStatus, RunnerData, WorkerData, WorkerId,
@@ -285,6 +286,7 @@ mod tests {
         job::rows::JobqueueAndCodec,
         runner::factory::{RunnerFactory, UseRunnerFactory},
     };
+    use jobworkerp_runner::jobworkerp::runner::{CommandArgs, CommandRunnerSettings};
     use proto::jobworkerp::data::{
         Job, JobData, JobId, ResponseType, RunnerType, WorkerData, WorkerId,
     };
@@ -330,7 +332,7 @@ mod tests {
         static JOB_RUNNER: Lazy<Box<MockJobRunner>> = Lazy::new(|| Box::new(MockJobRunner::new()));
 
         let run_after = datetime::now_millis() + 1000;
-        let jargs = JobqueueAndCodec::serialize_message(&infra::jobworkerp::runner::CommandArgs {
+        let jargs = JobqueueAndCodec::serialize_message(&CommandArgs {
             args: vec!["1".to_string()],
         });
         let job = Job {
@@ -348,11 +350,9 @@ mod tests {
             }),
         };
         let worker_id = WorkerId { value: 1 };
-        let runner_settings = JobqueueAndCodec::serialize_message(
-            &infra::jobworkerp::runner::CommandRunnerSettings {
-                name: "sleep".to_string(),
-            },
-        );
+        let runner_settings = JobqueueAndCodec::serialize_message(&CommandRunnerSettings {
+            name: "sleep".to_string(),
+        });
 
         let worker = WorkerData {
             name: "test".to_string(),
@@ -382,7 +382,7 @@ mod tests {
         assert!(res.start_time >= run_after); // wait until run_after (expect short time)
         assert!(res.end_time > res.start_time);
         assert!(res.end_time - res.start_time >= 1000); // sleep
-        let jargs = JobqueueAndCodec::serialize_message(&infra::jobworkerp::runner::CommandArgs {
+        let jargs = JobqueueAndCodec::serialize_message(&CommandArgs {
             args: vec!["2".to_string()],
         });
 

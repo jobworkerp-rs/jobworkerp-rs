@@ -1,5 +1,5 @@
-use crate::error::JobWorkerError;
 use anyhow::Result;
+use jobworkerp_base::{codec::UseProstCodec, error::JobWorkerError};
 use prost::Message;
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobResult, JobResultData, JobResultId, Worker, WorkerId,
@@ -140,6 +140,7 @@ pub trait UseJobqueueAndCodec {
 
 // for reference
 pub struct JobqueueAndCodec {}
+impl UseProstCodec for JobqueueAndCodec {}
 impl UseJobqueueAndCodec for JobqueueAndCodec {}
 
 // test for serialize and deserialize equality for job, job_result_data
@@ -147,14 +148,16 @@ impl UseJobqueueAndCodec for JobqueueAndCodec {}
 mod tests {
     use super::*;
     use chrono::Utc;
+    use jobworkerp_base::codec::ProstMessageCodec;
     use proto::jobworkerp::data::{ResponseType, ResultOutput};
     use proto::TestArgs;
 
     #[test]
     fn test_serialize_and_deserialize_job() {
-        let args = JobqueueAndCodec::serialize_message(&TestArgs {
+        let args = ProstMessageCodec::serialize_message(&TestArgs {
             args: ["test".to_string()].to_vec(),
-        });
+        })
+        .unwrap();
         let job = Job {
             id: Some(JobId { value: 1 }),
             data: Some(JobData {
@@ -170,6 +173,7 @@ mod tests {
             }),
         };
         struct JobQueueImpl {}
+        impl UseProstCodec for JobQueueImpl {}
         impl UseJobqueueAndCodec for JobQueueImpl {}
 
         let serialized = JobQueueImpl::serialize_job(&job);
@@ -179,9 +183,10 @@ mod tests {
 
     #[test]
     fn test_serialize_and_deserialize_job_result_data() {
-        let args = JobqueueAndCodec::serialize_message(&TestArgs {
+        let args = ProstMessageCodec::serialize_message(&TestArgs {
             args: ["test2".to_string()].to_vec(),
-        });
+        })
+        .unwrap();
         let job_result_data = JobResultData {
             worker_id: Some(WorkerId { value: 2 }),
             worker_name: "hoge2".to_string(),
@@ -205,6 +210,7 @@ mod tests {
             store_failure: true,
         };
         struct JobQueueImpl {}
+        impl UseProstCodec for JobQueueImpl {}
         impl UseJobqueueAndCodec for JobQueueImpl {}
 
         let id = JobResultId { value: 1234 };
