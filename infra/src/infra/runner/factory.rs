@@ -1,6 +1,7 @@
 use super::command::CommandRunnerImpl;
 use super::docker::{DockerExecRunner, DockerRunner};
 use super::grpc_unary::GrpcUnaryRunner;
+use super::python::PythonCommandRunner;
 use super::request::RequestRunner;
 use super::slack::SlackPostMessageRunner;
 use super::RunnerTrait;
@@ -35,6 +36,9 @@ impl RunnerFactory {
         match RunnerType::from_str_name(name) {
             Some(RunnerType::Command) => {
                 Some(Box::new(CommandRunnerImpl::new()) as Box<dyn RunnerTrait + Send + Sync>)
+            }
+            Some(RunnerType::PythonCommand) => {
+                Some(Box::new(PythonCommandRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
             }
             Some(RunnerType::Docker) if use_static => {
                 Some(Box::new(DockerExecRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
