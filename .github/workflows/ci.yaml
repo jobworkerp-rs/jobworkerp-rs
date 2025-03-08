@@ -54,7 +54,7 @@ jobs:
           MYSQL_ROOT_HOST: "0.0.0.0"
         options: --health-cmd "mysqladmin ping" --health-interval 10s --health-timeout 5s --health-retries 10
       redis:
-        image: redis
+        image: redis:7
         env:
           REDIS_HOST: redis
         ports:
@@ -85,6 +85,10 @@ jobs:
       run: |
         apt-get update
         apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip
+    - name: Clean up apt cache
+      run: |
+        apt-get clean
+        rm -rf /var/lib/apt/lists/*
     - name: Install last version of Protoc
       uses: arduino/setup-protoc@v2
       with:
@@ -93,33 +97,30 @@ jobs:
     - uses: actions/checkout@v4
       with:
         submodules: true
-    - uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          target/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
     - uses: actions-rs/toolchain@v1
       with:
         toolchain: stable
+    - name: Cache Rust artifacts
+      uses: Swatinem/rust-cache@v2
     - uses: actions-rs/cargo@v1
       with:
         command: build
-        args: --release --all-features
+        args: --all-features
     - name: Run test
       run: |
         cargo build
         cargo test
       env:
         PLUGINS_RUNNER_DIR: "../target/debug/"
+        TEST_REDIS_URL: "redis://redis:6379"
+        TEST_MYSQL_URL: "mysql://maria:maria@db:3306/test"
     - name: Run test with mysql
       run: |
         cargo build --features "mysql"
         cargo test --features "mysql"
       env:
         PLUGINS_RUNNER_DIR: "../target/debug/"
+        TEST_REDIS_URL: "redis://redis:6379"
+        TEST_MYSQL_URL: "mysql://maria:maria@db:3306/test"
 
 

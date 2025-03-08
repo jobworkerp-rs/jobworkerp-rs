@@ -114,17 +114,17 @@ pub struct AttachmentField {
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct ChatPostMessageResponse {
     pub ok: bool,
-    pub channel: String,
-    pub ts: String,
-    pub message: serde_json::Value,
+    pub channel: Option<String>,
+    pub ts: Option<String>,
+    pub message: Option<serde_json::Value>,
     pub error: Option<String>,
 }
 impl ChatPostMessageResponse {
     pub fn to_proto(&self) -> Result<ChatPostMessageResult> {
         if self.ok {
             Ok(ChatPostMessageResult {
-                channel: self.channel.clone(),
-                ts: self.ts.clone(),
+                channel: self.channel.clone().unwrap_or("".to_string()),
+                ts: self.ts.clone().unwrap_or("".to_string()),
                 message: serde_json::to_string(&self.message)
                     .context("failed to serialize slack result message response to proto")?,
             })
