@@ -1,11 +1,13 @@
 use crate::infra::job::rows::UseJobqueueAndCodec;
 use crate::infra::JobQueueConfig;
-use crate::{error::JobWorkerError, infra::UseJobQueueConfig};
+use crate::infra::UseJobQueueConfig;
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::option::FlatMap as _;
 use infra_utils::infra::chan::mpmc::{Chan, UseChanBuffer};
 use infra_utils::infra::chan::{ChanBuffer, ChanBufferItem};
+use jobworkerp_base::codec::UseProstCodec;
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{Job, JobId, Priority};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -331,6 +333,7 @@ impl UseJobQueueConfig for ChanJobQueueRepositoryImpl {
     }
 }
 
+impl UseProstCodec for ChanJobQueueRepositoryImpl {}
 impl UseJobqueueAndCodec for ChanJobQueueRepositoryImpl {}
 impl ChanJobQueueRepository for ChanJobQueueRepositoryImpl {}
 impl ChanJobQueueRepositoryImpl {
@@ -360,6 +363,7 @@ mod test {
     use infra_utils::infra::chan::mpmc::UseChanBuffer;
     use infra_utils::infra::chan::ChanBuffer;
     use infra_utils::infra::chan::ChanBufferItem;
+    use jobworkerp_base::codec::ProstMessageCodec;
     use proto::jobworkerp::data::{Job, JobData, JobId, WorkerId};
     use std::sync::Arc;
 
@@ -385,6 +389,7 @@ mod test {
             &self.shared_buffer
         }
     }
+    impl UseProstCodec for ChanJobQueueRepositoryImpl {}
     impl UseJobqueueAndCodec for ChanJobQueueRepositoryImpl {}
     impl ChanJobQueueRepository for ChanJobQueueRepositoryImpl {}
 
@@ -400,7 +405,7 @@ mod test {
             chan_buf: chan_buf.clone(),
             shared_buffer: Arc::new(Mutex::new(HashMap::new())),
         };
-        let args = ChanJobQueueRepositoryImpl::serialize_message(&proto::TestArgs {
+        let args = ProstMessageCodec::serialize_message(&proto::TestArgs {
             args: vec!["test".to_string()],
         });
         let job_id = JobId { value: 123 };
@@ -446,7 +451,7 @@ mod test {
 
         assert_eq!(
             chan_buf
-                .get_chan_if_exists(ChanJobQueueRepositoryImpl::queue_channel_name(
+                .get_chan_if_exists(JobqueueAndCodec::queue_channel_name(
                     ChanJobQueueRepositoryImpl::DEFAULT_CHANNEL_NAME,
                     Some(&1),
                 ))
@@ -520,7 +525,7 @@ mod test {
             chan_buf,
             shared_buffer: Arc::new(Mutex::new(HashMap::new())),
         };
-        let args = JobqueueAndCodec::serialize_message(&proto::TestArgs {
+        let args = ProstMessageCodec::serialize_message(&proto::TestArgs {
             args: vec!["test".to_string()],
         });
         let job1 = Job {

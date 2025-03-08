@@ -1,10 +1,11 @@
 use super::rows::WorkerRow;
-use crate::{error::JobWorkerError, infra::job::rows::UseJobqueueAndCodec};
+use crate::infra::job::rows::UseJobqueueAndCodec;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use command_utils::util::{option::FlatMap as _, result::ToOption as _};
 use infra_utils::infra::rdb::{query_result, Rdb, RdbPool, UseRdbPool};
 use itertools::Itertools;
+use jobworkerp_base::{codec::UseProstCodec, error::JobWorkerError};
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use sqlx::Executor;
 
@@ -240,6 +241,7 @@ impl UseRdbPool for RdbWorkerRepositoryImpl {
         self.pool
     }
 }
+impl UseProstCodec for RdbWorkerRepositoryImpl {}
 impl UseJobqueueAndCodec for RdbWorkerRepositoryImpl {}
 
 impl RdbWorkerRepository for RdbWorkerRepositoryImpl {}

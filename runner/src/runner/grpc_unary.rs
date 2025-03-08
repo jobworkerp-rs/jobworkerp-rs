@@ -1,11 +1,11 @@
 use crate::jobworkerp::runner::{GrpcUnaryArgs, GrpcUnaryRunnerSettings};
-use crate::{
-    error::JobWorkerError,
-    infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec},
-};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use jobworkerp_base::{
+    codec::{ProstMessageCodec, UseProstCodec},
+    error::JobWorkerError,
+};
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use tonic::{transport::Channel, IntoRequest};
 
@@ -45,13 +45,13 @@ impl RunnerTrait for GrpcUnaryRunner {
         RunnerType::GrpcUnary.as_str_name().to_string()
     }
     async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
-        let req = JobqueueAndCodec::deserialize_message::<GrpcUnaryRunnerSettings>(&settings)?;
+        let req = ProstMessageCodec::deserialize_message::<GrpcUnaryRunnerSettings>(&settings)?;
         self.create(&req.host, &req.port).await
     }
     // args: {headers:{<headers map>}, queries:[<query string array>], body: <body string or struct>}
     async fn run(&mut self, args: &[u8]) -> Result<Vec<Vec<u8>>> {
         if let Some(client) = self.client.as_mut() {
-            let req = JobqueueAndCodec::deserialize_message::<GrpcUnaryArgs>(args)?;
+            let req = ProstMessageCodec::deserialize_message::<GrpcUnaryArgs>(args)?;
             let codec = tonic::codec::ProstCodec::default();
             // todo
             // let mut client = tonic::client::Grpc::new(self.conn.clone());
@@ -91,10 +91,10 @@ impl RunnerTrait for GrpcUnaryRunner {
         tracing::warn!("cannot cancel grpc request until timeout")
     }
     fn runner_settings_proto(&self) -> String {
-        include_str!("../../../protobuf/jobworkerp/runner/grpc_unary_runner.proto").to_string()
+        include_str!("../../protobuf/jobworkerp/runner/grpc_unary_runner.proto").to_string()
     }
     fn job_args_proto(&self) -> String {
-        include_str!("../../../protobuf/jobworkerp/runner/grpc_unary_args.proto").to_string()
+        include_str!("../../protobuf/jobworkerp/runner/grpc_unary_args.proto").to_string()
     }
     // TODO resolve by reflection api if possible
     fn result_output_proto(&self) -> Option<String> {
@@ -116,7 +116,7 @@ async fn run_request() -> Result<()> {
         // path: "/jobworkerp.service.WorkerService/FindList".to_string(),
         request: b"".to_vec(),
     };
-    let arg = JobqueueAndCodec::serialize_message(&arg);
+    let arg = ProstMessageCodec::serialize_message(&arg);
     let res = runner.run(&arg).await;
     println!("arg: {:?}, res: {:?}", arg, res); // XXX missing response error
                                                 // TODO

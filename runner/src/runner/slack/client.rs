@@ -1,8 +1,7 @@
+use crate::jobworkerp::runner::ChatPostMessageResult;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
-
-use crate::jobworkerp::runner::ChatPostMessageResult;
 
 /// slack post chat message api
 /// https://api.slack.com/methods/chat.postMessage

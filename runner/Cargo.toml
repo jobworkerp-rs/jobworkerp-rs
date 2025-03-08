@@ -1,51 +1,62 @@
 [package]
-name = "worker-app"
+name = "jobworkerp-runner"
 version.workspace = true
+edition.workspace = true
 authors.workspace = true
-edition = "2021"
-
+description.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
 
 [dependencies]
+
 proto = { path = "../proto" }
 command-utils = { path = "../modules/command-utils" }
 infra-utils = { path = "../modules/infra-utils" }
 jobworkerp-base = { path = "../base" }
-jobworkerp-runner = { path = "../runner" }
-infra = { path = "../infra" }
-app = { path = "../app" }
-
+# runner = { path = "../runner" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-bytes = { workspace = true }
+async-stream = { workspace = true }
 bollard = { workspace = true }
 chrono = { workspace = true }
-deadpool = { workspace = true }
+dashmap = { workspace = true }
+deadpool-redis = { workspace = true }
 debug_stub_derive = { workspace = true }
+dotenvy = { workspace = true }
 envy = { workspace = true }
-futures = { workspace = true, default-features = false }
-http = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
 itertools = { workspace = true }
-#k8s-openapi = { version = "0.20", features = ["v1_26"] }
-#kube = { version = "0.86", features = ["runtime", "derive", "ws"] }
-lazy_static = { workspace = true }
+#kube-client = "0.86"
 libloading = { workspace = true }
-num-derive = { workspace = true }
-num-traits = { workspace = true }
+nix = { workspace = true, features = ["signal"] }
 once_cell = { workspace = true }
 prost = { workspace = true }
-prost-types = { workspace = true }
-rand = { workspace = true }
 redis = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_with = { workspace = true }
 signal-hook = { workspace = true }
 signal-hook-tokio = { workspace = true }
-stretto = { workspace = true }
+# sqlx = { workspace = true }
 strum = { workspace = true }
+strum_macros = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+url = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }
+
+# [features]
+# default = []
+# mysql = ["infra-utils/mysql"]

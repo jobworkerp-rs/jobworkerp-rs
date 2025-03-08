@@ -12,7 +12,6 @@ use async_trait::async_trait;
 use command_utils::util::option::ToResult;
 use command_utils::util::result::TapErr;
 use command_utils::util::shutdown::ShutdownLock;
-use infra::error::JobWorkerError;
 use infra::infra::job::queue::chan::{
     ChanJobQueueRepository, ChanJobQueueRepositoryImpl, UseChanJobQueueRepository,
 };
@@ -23,6 +22,7 @@ use infra::infra::job::status::memory::MemoryJobStatusRepository;
 use infra::infra::job::status::{JobStatusRepository, UseJobStatusRepository};
 use infra::infra::runner::factory::{RunnerFactory, UseRunnerFactory};
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, Runner, Worker,
 };

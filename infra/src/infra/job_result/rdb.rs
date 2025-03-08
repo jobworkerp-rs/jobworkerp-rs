@@ -1,9 +1,10 @@
 use super::rows::JobResultRow;
-use crate::{error::JobWorkerError, infra::job::rows::UseJobqueueAndCodec};
+use crate::infra::job::rows::UseJobqueueAndCodec;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use infra_utils::infra::rdb::{Rdb, RdbPool, UseRdbPool};
 use itertools::Itertools;
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{JobId, JobResult, JobResultData, JobResultId};
 use sqlx::{Executor, Transaction};
 
@@ -212,9 +213,10 @@ impl UseRdbPool for RdbJobResultRepositoryImpl {
     }
 }
 
-impl RdbJobResultRepository for RdbJobResultRepositoryImpl {}
-
 impl UseJobqueueAndCodec for RdbJobResultRepositoryImpl {}
+
+#[async_trait]
+impl RdbJobResultRepository for RdbJobResultRepositoryImpl {}
 
 mod test {
     use super::RdbJobResultRepository;

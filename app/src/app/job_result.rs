@@ -6,7 +6,7 @@ use super::worker::UseWorkerApp;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use infra::error::JobWorkerError;
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     JobId, JobResult, JobResultData, JobResultId, ResultOutputItem, ResultStatus, WorkerId,
 };

@@ -1,14 +1,15 @@
 use super::{JobResultPublisher, JobResultSubscriber};
-use crate::{
-    error::JobWorkerError,
-    infra::{job::rows::UseJobqueueAndCodec, JobQueueConfig, UseJobQueueConfig},
-};
+use crate::infra::{job::rows::UseJobqueueAndCodec, JobQueueConfig, UseJobQueueConfig};
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::result::{TapErr, ToOption};
 use debug_stub_derive::DebugStub;
 use futures::{stream::BoxStream, Stream, StreamExt};
 use infra_utils::infra::redis::{RedisClient, UseRedisClient};
+use jobworkerp_base::{
+    codec::{ProstMessageCodec, UseProstCodec},
+    error::JobWorkerError,
+};
 use proto::jobworkerp::data::{
     result_output_item, JobId, JobResult, JobResultData, JobResultId, ResultOutputItem, WorkerId,
 };
@@ -62,7 +63,9 @@ impl JobResultPublisher for RedisJobResultPubSubRepositoryImpl {
         stream: BoxStream<'static, ResultOutputItem>,
     ) -> Result<bool> {
         let ch = Self::job_result_stream_pubsub_channel_name(&job_id);
-        let res_stream = stream.map(|item| Self::serialize_message(&item)).boxed();
+        let res_stream = stream
+            .map(|item| ProstMessageCodec::serialize_message(&item))
+            .boxed();
 
         self.publish_stream(ch.as_str(), res_stream)
             .await
@@ -174,7 +177,10 @@ impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
                                 "subscribe_result_stream_received: payload len={:?}",
                                 &payload.len()
                             );
-                            let result = Self::deserialize_message::<ResultOutputItem>(&payload)
+                            let result =
+                                ProstMessageCodec::deserialize_message::<ResultOutputItem>(
+                                    &payload,
+                                )
                                 .inspect_err(|e| tracing::error!("deserialize_result:{:?}", e))
                                 .to_option()?;
                             match result.item {
@@ -318,6 +324,7 @@ impl UseRedisClient for RedisJobResultPubSubRepositoryImpl {
     }
 }
 
+impl UseProstCodec for RedisJobResultPubSubRepositoryImpl {}
 impl UseJobqueueAndCodec for RedisJobResultPubSubRepositoryImpl {}
 impl UseJobQueueConfig for RedisJobResultPubSubRepositoryImpl {
     fn job_queue_config(&self) -> &JobQueueConfig {

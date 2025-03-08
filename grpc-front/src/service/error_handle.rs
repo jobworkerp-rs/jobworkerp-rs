@@ -1,4 +1,4 @@
-use infra::error::JobWorkerError;
+use jobworkerp_base::error::JobWorkerError;
 use sqlx::{error::DatabaseError, mysql::MySqlDatabaseError, sqlite::SqliteError};
 
 // TODO map redis etc error

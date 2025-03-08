@@ -1,13 +1,13 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use super::impls::PluginRunnerWrapperImpl;
-use super::PluginRunner;
-use crate::infra::plugins::PluginLoader;
 use anyhow::{anyhow, Result};
 use command_utils::util::result::{TapErr as _, ToOption as _};
+use jobworkerp_runner::runner::plugins::{impls::PluginRunnerWrapperImpl, PluginRunner};
 use libloading::{Library, Symbol};
 use tokio::sync::RwLock;
+
+use super::PluginLoader;
 
 #[allow(improper_ctypes_definitions)]
 type LoaderFunc<'a> = Symbol<'a, extern "C" fn() -> Box<dyn PluginRunner + Send + Sync>>;

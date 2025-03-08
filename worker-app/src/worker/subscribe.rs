@@ -85,10 +85,12 @@ mod test {
         module::load_worker_config,
     };
     use infra::infra::{
-        job::rows::JobqueueAndCodec, runner::factory::RunnerFactory, test::new_for_test_config_rdb,
+        runner::factory::RunnerFactory, test::new_for_test_config_rdb,
         worker::event::UseWorkerPublish, IdGeneratorWrapper,
     };
     use infra_utils::infra::{memory::MemoryCacheImpl, test::setup_test_redis_client};
+    use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+    use jobworkerp_runner::jobworkerp::runner::CommandRunnerSettings;
     use proto::jobworkerp::data::{RunnerId, StorageType, WorkerData};
     use std::sync::Arc;
     use tokio::time::{sleep, Duration};
@@ -191,11 +193,9 @@ mod test {
         });
         sleep(Duration::from_millis(100)).await;
 
-        let runner_settings = JobqueueAndCodec::serialize_message(
-            &infra::jobworkerp::runner::CommandRunnerSettings {
-                name: "ls".to_string(),
-            },
-        );
+        let runner_settings = ProstMessageCodec::serialize_message(&CommandRunnerSettings {
+            name: "ls".to_string(),
+        });
         let worker_data = WorkerData {
             name: "hoge_worker".to_string(),
             runner_id: Some(RunnerId { value: 1 }),

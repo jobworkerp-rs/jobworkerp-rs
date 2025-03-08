@@ -9,7 +9,6 @@ use async_trait::async_trait;
 use command_utils::util::datetime;
 use command_utils::util::option::{Exists, FlatMap};
 use futures::stream::BoxStream;
-use infra::error::JobWorkerError;
 use infra::infra::job::queue::redis::RedisJobQueueRepository;
 use infra::infra::job::rdb::{RdbJobRepository, UseRdbChanJobRepository};
 use infra::infra::job::redis::{RedisJobRepository, UseRedisJobRepository};
@@ -24,6 +23,7 @@ use infra::infra::module::HybridRepositoryModule;
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use infra_utils::infra::memory::{MemoryCacheImpl, UseMemoryCache};
 use infra_utils::infra::rdb::UseRdbPool;
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobStatus, Priority, QueueType,
     ResponseType, ResultOutputItem, Worker, WorkerId,

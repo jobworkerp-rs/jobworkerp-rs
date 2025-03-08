@@ -1,10 +1,10 @@
 use super::rows::RunnerRow;
-use crate::error::JobWorkerError;
 use crate::infra::runner::factory::{RunnerFactory, UseRunnerFactory};
 use crate::infra::{IdGeneratorWrapper, UseIdGenerator};
 use anyhow::Result;
 use async_trait::async_trait;
 use infra_utils::infra::redis::{RedisPool, UseRedisPool};
+use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
 use proto::jobworkerp::data::{Runner, RunnerData, RunnerId, RunnerType};
 use redis::AsyncCommands;

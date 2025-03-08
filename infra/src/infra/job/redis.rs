@@ -5,7 +5,6 @@ use super::queue::redis::RedisJobQueueRepository;
 use super::rows::UseJobqueueAndCodec;
 use super::status::redis::RedisJobStatusRepository;
 use super::status::{JobStatusRepository, UseJobStatusRepository};
-use crate::error::JobWorkerError;
 use crate::infra::job_result::pubsub::redis::{
     RedisJobResultPubSubRepositoryImpl, UseRedisJobResultPubSubRepository,
 };
@@ -14,6 +13,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use debug_stub_derive::DebugStub;
 use infra_utils::infra::redis::{RedisClient, RedisPool, UseRedisLock, UseRedisPool};
+use jobworkerp_base::codec::UseProstCodec;
+use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
 use proto::jobworkerp::data::{Job, JobData, JobId};
 use redis::AsyncCommands;
@@ -180,6 +181,7 @@ impl UseJobQueueConfig for RedisJobRepositoryImpl {
     }
 }
 // for use jobqueue by redis
+impl UseProstCodec for RedisJobRepositoryImpl {}
 impl UseJobqueueAndCodec for RedisJobRepositoryImpl {}
 impl RedisJobQueueRepository for RedisJobRepositoryImpl {}
 impl UseRedisJobResultPubSubRepository for RedisJobRepositoryImpl {
@@ -204,6 +206,7 @@ pub trait UseRedisJobRepository {
 #[tokio::test]
 async fn redis_test() -> Result<()> {
     use command_utils::util::option::FlatMap;
+    use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
     use proto::jobworkerp::data::WorkerId;
 
     let pool = infra_utils::infra::test::setup_test_redis_pool().await;
@@ -224,7 +227,7 @@ async fn redis_test() -> Result<()> {
             ),
     };
     let id = JobId { value: 1 };
-    let jargs = RedisJobRepositoryImpl::serialize_message(&proto::TestArgs {
+    let jargs = ProstMessageCodec::serialize_message(&proto::TestArgs {
         args: vec!["GET".to_string(), "/".to_string()],
     });
     let job = &JobData {
@@ -249,7 +252,7 @@ async fn redis_test() -> Result<()> {
 
     let mut job2 = job.clone();
     job2.worker_id = Some(WorkerId { value: 3 });
-    job2.args = RedisJobRepositoryImpl::serialize_message(&proto::TestArgs {
+    job2.args = ProstMessageCodec::serialize_message(&proto::TestArgs {
         args: vec!["POST".to_string(), "/form".to_string()],
     });
     job2.uniq_key = Some("fuga3".to_string());
