@@ -89,4 +89,6 @@ INSERT IGNORE INTO runner (id, name, file_name, type) VALUES (
   4, 'DOCKER', 'builtin4', 4
 ), (
   5, 'SLACK_POST_MESSAGE', 'builtin5', 5
+), (
+  6, 'PYTHON_COMMAND', 'builtin6', 6
 );

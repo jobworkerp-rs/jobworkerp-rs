@@ -1,0 +1,11 @@
+syntax = "proto3";
+package jobworkerp.runner;
+
+message PythonRunnerSettings {
+  message PackagesList { repeated string packages = 1; }
+  string python_version = 1;
+  oneof requirements_spec {
+    PackagesList packages = 2;
+    string requirements_url = 3;
+  }
+}

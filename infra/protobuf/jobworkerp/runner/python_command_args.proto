@@ -1,0 +1,15 @@
+syntax = "proto3";
+package jobworkerp.runner;
+
+message PythonJobArgs {
+  map<string, string> env_vars = 1;
+  oneof script {
+    string script_content = 2;
+    string script_url = 3;
+  }
+  oneof input_data {
+    bytes data_body = 4;
+    string data_url = 5;
+  }
+  bool with_stderr = 6;
+}
