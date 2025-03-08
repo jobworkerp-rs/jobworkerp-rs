@@ -65,6 +65,7 @@ impl JobResultPublisher for RedisJobResultPubSubRepositoryImpl {
         let ch = Self::job_result_stream_pubsub_channel_name(&job_id);
         let res_stream = stream
             .map(|item| ProstMessageCodec::serialize_message(&item))
+            .filter_map(|r| async move { r.ok() })
             .boxed();
 
         self.publish_stream(ch.as_str(), res_stream)

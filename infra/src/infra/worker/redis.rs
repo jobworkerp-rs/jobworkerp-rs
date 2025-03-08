@@ -265,7 +265,7 @@ async fn redis_test() -> Result<()> {
         runner_id: Some(RunnerId { value: 2 }),
         runner_settings: ProstMessageCodec::serialize_message(&TestRunnerSettings {
             name: "hoge1".to_string(),
-        }),
+        })?,
         retry_policy: Some(RetryPolicy {
             r#type: 5,
             interval: 6,
@@ -299,7 +299,7 @@ async fn redis_test() -> Result<()> {
     worker2.runner_id = Some(RunnerId { value: 5 });
     worker2.runner_settings = ProstMessageCodec::serialize_message(&TestRunnerSettings {
         name: "fuga2".to_string(),
-    });
+    })?;
     worker2.retry_policy = Some(RetryPolicy {
         r#type: 6,
         interval: 7,

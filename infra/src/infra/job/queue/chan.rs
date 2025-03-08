@@ -407,7 +407,7 @@ mod test {
         };
         let args = ProstMessageCodec::serialize_message(&proto::TestArgs {
             args: vec!["test".to_string()],
-        });
+        })?;
         let job_id = JobId { value: 123 };
         let job_id2 = JobId { value: 321 };
         let job = Job {
@@ -527,7 +527,7 @@ mod test {
         };
         let args = ProstMessageCodec::serialize_message(&proto::TestArgs {
             args: vec!["test".to_string()],
-        });
+        })?;
         let job1 = Job {
             id: Some(JobId { value: 1 }),
             data: Some(JobData {

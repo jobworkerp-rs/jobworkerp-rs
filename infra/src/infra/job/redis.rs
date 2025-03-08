@@ -229,7 +229,7 @@ async fn redis_test() -> Result<()> {
     let id = JobId { value: 1 };
     let jargs = ProstMessageCodec::serialize_message(&proto::TestArgs {
         args: vec!["GET".to_string(), "/".to_string()],
-    });
+    })?;
     let job = &JobData {
         worker_id: Some(WorkerId { value: 2 }),
         args: jargs,
@@ -254,7 +254,7 @@ async fn redis_test() -> Result<()> {
     job2.worker_id = Some(WorkerId { value: 3 });
     job2.args = ProstMessageCodec::serialize_message(&proto::TestArgs {
         args: vec!["POST".to_string(), "/form".to_string()],
-    });
+    })?;
     job2.uniq_key = Some("fuga3".to_string());
     job2.enqueue_time = 6;
     job2.grabbed_until_time = Some(7);

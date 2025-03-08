@@ -124,7 +124,7 @@ impl RunnerTrait for RequestRunner {
                     .collect(),
                 content: t,
             };
-            Ok(vec![ProstMessageCodec::serialize_message(&mes)])
+            Ok(vec![ProstMessageCodec::serialize_message(&mes)?])
         } else {
             Err(JobWorkerError::RuntimeError("url is not set".to_string()).into())
         }
@@ -176,7 +176,8 @@ async fn run_request() {
         method: "GET".to_string(),
         body: None,
         path: "search".to_string(),
-    });
+    })
+    .unwrap();
 
     let res = runner.run(&arg).await;
 

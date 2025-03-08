@@ -333,7 +333,7 @@ async fn exec_test() -> Result<()> {
     let arg = ProstMessageCodec::serialize_message(&DockerArgs {
         cmd: vec!["ls".to_string(), "-alh".to_string(), "/etc".to_string()],
         ..Default::default()
-    });
+    })?;
     let handle1 = tokio::spawn(async move {
         let res = runner1.run(&arg).await;
         tracing::info!("result:{:?}", &res);
@@ -343,7 +343,7 @@ async fn exec_test() -> Result<()> {
     let arg2 = ProstMessageCodec::serialize_message(&DockerArgs {
         cmd: vec!["cat".to_string(), "/etc/resolv.conf".to_string()],
         ..Default::default()
-    });
+    })?;
     let handle2 = tokio::spawn(async move {
         let res = runner2.run(&arg2).await;
         tracing::info!("result:{:?}", &res);
@@ -552,7 +552,7 @@ async fn run_test() -> Result<()> {
         image: Some("busybox:latest".to_string()),
         cmd: vec!["ls".to_string(), "-alh".to_string(), "/".to_string()],
         ..Default::default()
-    });
+    })?;
     let handle1 = tokio::spawn(async move {
         let res = runner1.run(&arg).await;
         tracing::info!("result:{:?}", &res);
@@ -563,7 +563,7 @@ async fn run_test() -> Result<()> {
         image: Some("busybox:latest".to_string()),
         cmd: vec!["echo".to_string(), "run in docker container".to_string()],
         ..Default::default()
-    });
+    })?;
     let handle2 = tokio::spawn(async move {
         let res = runner2.run(&arg2).await;
         tracing::info!("result:{:?}", &res);

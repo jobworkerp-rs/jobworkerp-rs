@@ -195,7 +195,7 @@ mod test {
 
         let runner_settings = ProstMessageCodec::serialize_message(&CommandRunnerSettings {
             name: "ls".to_string(),
-        });
+        })?;
         let worker_data = WorkerData {
             name: "hoge_worker".to_string(),
             runner_id: Some(RunnerId { value: 1 }),

@@ -181,7 +181,7 @@ mod tests {
             args: vec!["-vvv".to_string(), "https://www.google.com".to_string()],
         };
         let res = runner
-            .run(&ProstMessageCodec::serialize_message(&arg))
+            .run(&ProstMessageCodec::serialize_message(&arg).unwrap())
             .await;
         assert!(res.is_ok());
         let r = res.unwrap().pop().unwrap();
@@ -201,7 +201,7 @@ mod tests {
             args: vec!["10".to_string()],
         };
         let res = runner
-            .run(&ProstMessageCodec::serialize_message(&arg))
+            .run(&ProstMessageCodec::serialize_message(&arg).unwrap())
             .await;
 
         print!("====== run and cancel res: {:?}", res);
