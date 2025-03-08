@@ -23,10 +23,10 @@ pub trait UseProstCodec {
     //     "rc:zset".to_string()
     // }
 
-    fn serialize_message<T: Message>(args: &T) -> Vec<u8> {
+    fn serialize_message<T: Message>(args: &T) -> Result<Vec<u8>> {
         let mut buf = Vec::with_capacity(args.encoded_len());
-        args.encode(&mut buf).unwrap();
-        buf
+        args.encode(&mut buf)?;
+        Ok(buf)
     }
 
     fn deserialize_message<T: Message + Default>(buf: &[u8]) -> Result<T> {

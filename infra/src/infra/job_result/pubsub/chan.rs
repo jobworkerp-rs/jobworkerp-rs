@@ -89,8 +89,7 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
             &cn
         );
         let res_stream = stream
-            .map(|item| ProstMessageCodec::serialize_message(&item))
-            .boxed();
+            .filter_map(|item| async move { ProstMessageCodec::serialize_message(&item).ok() });
 
         let res = self
             .broadcast_chan_buf()

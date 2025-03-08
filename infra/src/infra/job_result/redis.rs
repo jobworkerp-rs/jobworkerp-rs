@@ -247,7 +247,7 @@ async fn redis_test() -> Result<()> {
         job_id: Some(JobId { value: 1 }),
         worker_id: Some(WorkerId { value: 2 }),
         worker_name: "hoge2".to_string(),
-        args: ProstMessageCodec::serialize_message(&jarg),
+        args: ProstMessageCodec::serialize_message(&jarg)?,
         uniq_key: Some("hoge4".to_string()),
         status: 6,
         output: Some(ResultOutput {
@@ -279,7 +279,7 @@ async fn redis_test() -> Result<()> {
     job_result2.worker_name = "fuga2".to_string();
     job_result2.args = ProstMessageCodec::serialize_message(&proto::TestArgs {
         args: vec!["test2".to_string(), "test2".to_string()],
-    });
+    })?;
     job_result2.uniq_key = Some("fuga4".to_string());
     job_result2.status = 7;
     job_result2.output = Some(ResultOutput {

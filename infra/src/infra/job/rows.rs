@@ -156,7 +156,8 @@ mod tests {
     fn test_serialize_and_deserialize_job() {
         let args = ProstMessageCodec::serialize_message(&TestArgs {
             args: ["test".to_string()].to_vec(),
-        });
+        })
+        .unwrap();
         let job = Job {
             id: Some(JobId { value: 1 }),
             data: Some(JobData {
@@ -184,7 +185,8 @@ mod tests {
     fn test_serialize_and_deserialize_job_result_data() {
         let args = ProstMessageCodec::serialize_message(&TestArgs {
             args: ["test2".to_string()].to_vec(),
-        });
+        })
+        .unwrap();
         let job_result_data = JobResultData {
             worker_id: Some(WorkerId { value: 2 }),
             worker_name: "hoge2".to_string(),

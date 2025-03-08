@@ -66,7 +66,7 @@ impl RunnerTrait for SlackPostMessageRunner {
                                 e
                             ))
                         })?,
-                    )])
+                    )?])
                 }
                 Err(e) => {
                     tracing::error!("slack error: {:?}", &e);

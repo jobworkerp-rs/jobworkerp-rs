@@ -116,7 +116,7 @@ async fn run_request() -> Result<()> {
         // path: "/jobworkerp.service.WorkerService/FindList".to_string(),
         request: b"".to_vec(),
     };
-    let arg = ProstMessageCodec::serialize_message(&arg);
+    let arg = ProstMessageCodec::serialize_message(&arg)?;
     let res = runner.run(&arg).await;
     println!("arg: {:?}, res: {:?}", arg, res); // XXX missing response error
                                                 // TODO
