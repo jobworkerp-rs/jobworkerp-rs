@@ -1,9 +1,10 @@
-use crate::{error::JobWorkerError, infra::job::rows::JobRow};
+use crate::infra::job::rows::JobRow;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use command_utils::util::datetime;
 use infra_utils::infra::rdb::{Rdb, RdbArguments, UseRdbPool};
 use itertools::Itertools;
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{Job, JobId, WorkerId};
 use sqlx::{Arguments, FromRow};
 

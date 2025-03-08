@@ -1,7 +1,7 @@
 use anyhow::Result;
 use futures::stream::BoxStream;
-use infra::error::JobWorkerError;
 use itertools::Itertools;
+use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
 use proto::jobworkerp::data::{
     JobData, ResultOutput, ResultOutputItem, ResultStatus, RetryPolicy, RetryType,
@@ -263,10 +263,8 @@ pub trait RunnerResultHandler {
 mod tests {
     use super::*;
     use anyhow::Result;
-    use infra::{
-        infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec},
-        jobworkerp::runner::{CommandArgs, CommandRunnerSettings},
-    };
+    use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
+    use jobworkerp_runner::jobworkerp::runner::{CommandArgs, CommandRunnerSettings};
     use proto::jobworkerp::data::{
         Job, JobData, JobId, ResponseType, RetryType, WorkerData, WorkerId,
     };

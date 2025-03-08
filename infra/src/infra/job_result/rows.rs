@@ -1,6 +1,6 @@
-use crate::error::JobWorkerError;
 use anyhow::Result;
 use command_utils::util::result::{TapErr, ToOption};
+use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
 use proto::jobworkerp::data::{
     JobId, JobResult, JobResultData, JobResultId, ResultOutput, WorkerId,

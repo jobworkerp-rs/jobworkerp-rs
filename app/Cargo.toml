@@ -9,6 +9,7 @@ edition = "2021"
 proto = { path = "../proto" }
 command-utils = { path = "../modules/command-utils" }
 infra-utils = { path = "../modules/infra-utils" }
+jobworkerp-base = { path = "../base" }
 infra = { path = "../infra" }
 
 anyhow = { workspace = true }
@@ -29,6 +30,7 @@ tokio-stream = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-tracing-subscriber = { workspace = true }
-sqlx = { workspace = true }
 dotenvy = { workspace = true }
+jobworkerp-runner = { path = "../runner" }
+sqlx = { workspace = true }
+tracing-subscriber = { workspace = true }

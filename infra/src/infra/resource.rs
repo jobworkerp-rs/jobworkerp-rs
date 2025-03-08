@@ -1,9 +1,9 @@
-use crate::error::JobWorkerError;
 use anyhow::Result;
 use infra_utils::infra::{
     rdb::{RdbConfig, RdbConfigImpl, RdbPool, RdbUrlConfigImpl},
     redis::{RedisConfig, RedisPool},
 };
+use jobworkerp_base::error::JobWorkerError;
 
 const SQLITE_SCHEMA: &str = include_str!("../../sql/sqlite/001_schema.sql");
 

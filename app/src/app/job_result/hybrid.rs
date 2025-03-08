@@ -4,7 +4,6 @@ use super::{JobResultApp, JobResultAppHelper};
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use infra::error::JobWorkerError;
 use infra::infra::job_result::pubsub::redis::{
     RedisJobResultPubSubRepositoryImpl, UseRedisJobResultPubSubRepository,
 };
@@ -16,6 +15,7 @@ use infra::infra::module::redis::{RedisRepositoryModule, UseRedisRepositoryModul
 use infra::infra::module::HybridRepositoryModule;
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use infra_utils::infra::rdb::UseRdbPool;
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     JobId, JobResult, JobResultData, JobResultId, ResponseType, ResultOutputItem, ResultStatus,
     Worker, WorkerData, WorkerId,
@@ -328,9 +328,9 @@ mod tests {
     use infra::infra::module::redis::test::setup_test_redis_module;
     use infra::infra::module::HybridRepositoryModule;
     use infra::infra::IdGeneratorWrapper;
-    use infra::jobworkerp::runner::CommandArgs;
-    use infra::jobworkerp::runner::CommandRunnerSettings;
     use infra_utils::infra::test::TEST_RUNTIME;
+    use jobworkerp_runner::jobworkerp::runner::CommandArgs;
+    use jobworkerp_runner::jobworkerp::runner::CommandRunnerSettings;
     use proto::jobworkerp::data::Priority;
     use proto::jobworkerp::data::QueueType;
     use proto::jobworkerp::data::ResultOutput;

@@ -1,6 +1,3 @@
-// use super::factory::RunnerFactoryImpl;
-use super::RunnerTrait;
-// use crate::worker::runner::factory::RunnerFactory;
 use anyhow::{anyhow, Result};
 use app::app::WorkerConfig;
 use deadpool::managed::Timeouts;
@@ -8,8 +5,9 @@ use deadpool::{
     managed::{Manager, Metrics, Object, Pool, PoolConfig, RecycleResult},
     Runtime,
 };
-use infra::error::JobWorkerError;
 use infra::infra::runner::factory::RunnerFactory;
+use jobworkerp_base::error::JobWorkerError;
+use jobworkerp_runner::runner::RunnerTrait;
 use proto::jobworkerp::data::{RunnerData, WorkerData};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -145,7 +143,7 @@ mod tests {
     use super::*;
     use anyhow::Result;
     use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
-    use infra::jobworkerp::runner::CommandRunnerSettings;
+    use jobworkerp_runner::jobworkerp::runner::CommandRunnerSettings;
     use proto::jobworkerp::data::{RunnerType, WorkerData};
 
     #[tokio::test]

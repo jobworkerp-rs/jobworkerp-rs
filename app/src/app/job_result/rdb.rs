@@ -7,7 +7,6 @@ use command_utils::util::datetime;
 use command_utils::util::option::Exists;
 use futures::stream::BoxStream;
 use futures::Stream;
-use infra::error::JobWorkerError;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::job_result::pubsub::chan::{
     ChanJobResultPubSubRepositoryImpl, UseChanJobResultPubSubRepository,
@@ -17,6 +16,7 @@ use infra::infra::job_result::rdb::{RdbJobResultRepository, UseRdbJobResultRepos
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use infra_utils::infra::rdb::UseRdbPool;
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     JobId, JobResult, JobResultData, JobResultId, ResponseType, ResultOutputItem, ResultStatus,
     Worker, WorkerData, WorkerId,

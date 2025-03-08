@@ -1,11 +1,12 @@
-use super::command::CommandRunnerImpl;
-use super::docker::{DockerExecRunner, DockerRunner};
-use super::grpc_unary::GrpcUnaryRunner;
-use super::request::RequestRunner;
-use super::slack::SlackPostMessageRunner;
-use super::RunnerTrait;
 use crate::infra::plugins::{PluginLoader, Plugins};
 use anyhow::Result;
+use jobworkerp_runner::runner::command::CommandRunnerImpl;
+use jobworkerp_runner::runner::docker::{DockerExecRunner, DockerRunner};
+use jobworkerp_runner::runner::grpc_unary::GrpcUnaryRunner;
+use jobworkerp_runner::runner::python::PythonCommandRunner;
+use jobworkerp_runner::runner::request::RequestRunner;
+use jobworkerp_runner::runner::slack::SlackPostMessageRunner;
+use jobworkerp_runner::runner::RunnerTrait;
 use proto::jobworkerp::data::RunnerType;
 
 #[derive(Debug)]
@@ -35,6 +36,9 @@ impl RunnerFactory {
         match RunnerType::from_str_name(name) {
             Some(RunnerType::Command) => {
                 Some(Box::new(CommandRunnerImpl::new()) as Box<dyn RunnerTrait + Send + Sync>)
+            }
+            Some(RunnerType::PythonCommand) => {
+                Some(Box::new(PythonCommandRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
             }
             Some(RunnerType::Docker) if use_static => {
                 Some(Box::new(DockerExecRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)

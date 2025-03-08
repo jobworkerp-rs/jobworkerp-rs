@@ -1,4 +1,3 @@
-pub mod error;
 pub mod infra;
 
 // If not making a type alias like this, the dependency inside the auto-generated proto code will be wrong.
@@ -8,8 +7,5 @@ pub mod jobworkerp {
         use proto::jobworkerp::data;
         pub type ResultStatus = data::ResultStatus;
         pub type ResultOutput = data::ResultOutput;
-    }
-    pub mod runner {
-        tonic::include_proto!("jobworkerp.runner");
     }
 }

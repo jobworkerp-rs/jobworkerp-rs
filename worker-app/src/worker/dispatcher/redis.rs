@@ -14,7 +14,6 @@ use command_utils::util::option::ToResult;
 use command_utils::util::result::TapErr;
 use command_utils::util::shutdown::ShutdownLock;
 use futures::TryFutureExt;
-use infra::error::JobWorkerError;
 use infra::infra::job::queue::rdb::RdbJobQueueRepository;
 use infra::infra::job::rdb::{
     RdbChanJobRepositoryImpl, RdbJobRepository, UseRdbChanJobRepositoryOptional,
@@ -27,6 +26,7 @@ use infra::infra::runner::factory::{RunnerFactory, UseRunnerFactory};
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use infra_utils::infra::redis::{RedisClient, UseRedisClient};
 use infra_utils::infra::redis::{RedisPool, UseRedisPool};
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, Runner, Worker,
 };

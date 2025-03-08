@@ -7,7 +7,6 @@ pub mod resource;
 pub mod runner;
 pub mod worker;
 
-use crate::error::JobWorkerError;
 use anyhow::Result;
 use command_utils::util::{
     datetime,
@@ -16,6 +15,7 @@ use command_utils::util::{
 };
 use debug_stub_derive::DebugStub;
 use infra_utils::infra::{rdb::RdbConfig, redis::RedisConfig};
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{Job, JobData};
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
