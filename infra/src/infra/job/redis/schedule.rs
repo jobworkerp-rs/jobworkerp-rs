@@ -1,11 +1,10 @@
-use std::collections::VecDeque;
-
-use crate::error::JobWorkerError;
 use crate::infra::job::rows::UseJobqueueAndCodec;
 use anyhow::Result;
 use infra_utils::infra::redis::UseRedisLock;
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{Job, JobId};
 use redis::AsyncCommands;
+use std::collections::VecDeque;
 
 // not efficient for large number of run_after jobs, workers (using lock to keep consistency for zset and serialized_job key)
 // (should I use hash key and multi command for redis cluster?)

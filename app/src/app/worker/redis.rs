@@ -9,12 +9,12 @@ use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::option::FlatMap;
 use command_utils::util::result::TapErr;
-use infra::error::JobWorkerError;
 use infra::infra::module::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
 use infra::infra::worker::event::UseWorkerPublish;
 use infra::infra::worker::redis::{RedisWorkerRepository, UseRedisWorkerRepository};
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use infra_utils::infra::memory::{MemoryCacheImpl, UseMemoryCache};
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use std::sync::Arc;
 

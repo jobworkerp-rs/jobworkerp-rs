@@ -4,10 +4,7 @@ use super::{
     queue::{chan::UseChanQueueBuffer, rdb::RdbJobQueueRepository},
     rows::{JobRow, UseJobqueueAndCodec},
 };
-use crate::{
-    error::JobWorkerError,
-    infra::{JobQueueConfig, UseJobQueueConfig},
-};
+use crate::infra::{JobQueueConfig, UseJobQueueConfig};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use command_utils::util::datetime;
@@ -19,6 +16,7 @@ use infra_utils::infra::{
     rdb::{Rdb, RdbPool, UseRdbPool},
 };
 use itertools::Itertools;
+use jobworkerp_base::{codec::UseProstCodec, error::JobWorkerError};
 use proto::jobworkerp::data::{Job, JobData, JobId, JobStatus};
 use sqlx::Executor;
 
@@ -308,6 +306,7 @@ impl RdbJobQueueRepository for RdbChanJobRepositoryImpl {}
 
 impl RdbJobRepository for RdbChanJobRepositoryImpl {}
 
+impl UseProstCodec for RdbChanJobRepositoryImpl {}
 impl UseJobqueueAndCodec for RdbChanJobRepositoryImpl {}
 
 impl UseJobQueueConfig for RdbChanJobRepositoryImpl {

@@ -1,10 +1,12 @@
 use crate::infra::job::rows::UseJobqueueAndCodec;
 use crate::infra::JobQueueConfig;
-use crate::{error::JobWorkerError, infra::UseJobQueueConfig};
+use crate::infra::UseJobQueueConfig;
 use anyhow::Result;
 use async_trait::async_trait;
 use debug_stub_derive::DebugStub;
 use infra_utils::infra::redis::{RedisPool, UseRedisPool};
+use jobworkerp_base::codec::UseProstCodec;
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{JobId, JobResult, JobResultData, JobResultId, ResponseType};
 use redis::AsyncCommands;
 use std::collections::BTreeMap;
@@ -207,6 +209,7 @@ impl UseRedisPool for RedisJobResultRepositoryImpl {
 //     }
 // }
 
+impl UseProstCodec for RedisJobResultRepositoryImpl {}
 impl UseJobqueueAndCodec for RedisJobResultRepositoryImpl {}
 impl UseJobQueueConfig for RedisJobResultRepositoryImpl {
     fn job_queue_config(&self) -> &JobQueueConfig {
@@ -223,6 +226,7 @@ pub trait UseRedisJobResultRepository {
 #[tokio::test]
 async fn redis_test() -> Result<()> {
     use command_utils::util::option::FlatMap;
+    use jobworkerp_base::codec::ProstMessageCodec;
     use proto::jobworkerp::data::{JobId, ResponseType, ResultOutput, WorkerId};
 
     let pool = infra_utils::infra::test::setup_test_redis_pool().await;
@@ -243,7 +247,7 @@ async fn redis_test() -> Result<()> {
         job_id: Some(JobId { value: 1 }),
         worker_id: Some(WorkerId { value: 2 }),
         worker_name: "hoge2".to_string(),
-        args: RedisJobResultRepositoryImpl::serialize_message(&jarg),
+        args: ProstMessageCodec::serialize_message(&jarg),
         uniq_key: Some("hoge4".to_string()),
         status: 6,
         output: Some(ResultOutput {
@@ -273,7 +277,7 @@ async fn redis_test() -> Result<()> {
     let mut job_result2 = job_result.clone();
     job_result2.worker_id = Some(WorkerId { value: 3 });
     job_result2.worker_name = "fuga2".to_string();
-    job_result2.args = RedisJobResultRepositoryImpl::serialize_message(&proto::TestArgs {
+    job_result2.args = ProstMessageCodec::serialize_message(&proto::TestArgs {
         args: vec!["test2".to_string(), "test2".to_string()],
     });
     job_result2.uniq_key = Some("fuga4".to_string());

@@ -1,7 +1,7 @@
-use crate::infra::runner::RunnerTrait;
 use crate::jobworkerp::runner::{
     python_job_args, python_runner_settings, PythonJobArgs, PythonResult, PythonRunnerSettings,
 };
+use crate::runner::RunnerTrait;
 use anyhow::{anyhow, Context, Result};
 use futures::stream::BoxStream;
 use prost::Message;
@@ -42,6 +42,12 @@ impl PythonCommandRunner {
                 venv.join("bin").join("python")
             }
         })
+    }
+}
+
+impl Default for PythonCommandRunner {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -296,16 +302,16 @@ impl RunnerTrait for PythonCommandRunner {
     }
 
     fn runner_settings_proto(&self) -> String {
-        include_str!("../../../protobuf/jobworkerp/runner/python_command_runner.proto").to_string()
+        include_str!("../../protobuf/jobworkerp/runner/python_command_runner.proto").to_string()
     }
 
     fn job_args_proto(&self) -> String {
-        include_str!("../../../protobuf/jobworkerp/runner/python_command_args.proto").to_string()
+        include_str!("../../protobuf/jobworkerp/runner/python_command_args.proto").to_string()
     }
 
     fn result_output_proto(&self) -> Option<String> {
         Some(
-            include_str!("../../../protobuf/jobworkerp/runner/python_command_result.proto")
+            include_str!("../../protobuf/jobworkerp/runner/python_command_result.proto")
                 .to_string(),
         )
     }

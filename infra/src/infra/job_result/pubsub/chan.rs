@@ -1,14 +1,15 @@
 use super::{JobResultPublisher, JobResultSubscriber};
-use crate::{
-    error::JobWorkerError,
-    infra::{job::rows::UseJobqueueAndCodec, JobQueueConfig, UseJobQueueConfig},
-};
+use crate::infra::{job::rows::UseJobqueueAndCodec, JobQueueConfig, UseJobQueueConfig};
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::{future, stream::BoxStream, Stream, StreamExt};
 use infra_utils::infra::chan::{
     broadcast::{BroadcastChan, UseBroadcastChanBuffer},
     ChanBuffer, ChanBufferItem,
+};
+use jobworkerp_base::{
+    codec::{ProstMessageCodec, UseProstCodec},
+    error::JobWorkerError,
 };
 use proto::jobworkerp::data::{
     result_output_item, JobId, JobResult, JobResultData, JobResultId, ResultOutputItem, WorkerId,
@@ -87,7 +88,9 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
             &job_id.value,
             &cn
         );
-        let res_stream = stream.map(|item| Self::serialize_message(&item)).boxed();
+        let res_stream = stream
+            .map(|item| ProstMessageCodec::serialize_message(&item))
+            .boxed();
 
         let res = self
             .broadcast_chan_buf()
@@ -168,7 +171,7 @@ impl JobResultSubscriber for ChanJobResultPubSubRepositoryImpl {
         );
         let transformed_stream = stream
             .filter_map(|b| async move {
-                let out = Self::deserialize_message::<ResultOutputItem>(b.as_slice());
+                let out = ProstMessageCodec::deserialize_message::<ResultOutputItem>(b.as_slice());
                 match out {
                     Ok(ResultOutputItem {
                         item: Some(result_output_item::Item::Data(data)),
@@ -247,6 +250,7 @@ impl UseBroadcastChanBuffer for ChanJobResultPubSubRepositoryImpl {
 }
 
 impl UseJobqueueAndCodec for ChanJobResultPubSubRepositoryImpl {}
+impl UseProstCodec for ChanJobResultPubSubRepositoryImpl {}
 impl UseJobQueueConfig for ChanJobResultPubSubRepositoryImpl {
     fn job_queue_config(&self) -> &JobQueueConfig {
         &self.job_queue_config

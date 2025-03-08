@@ -9,6 +9,8 @@ edition = "2021"
 proto = { path = "../proto" }
 command-utils = { path = "../modules/command-utils" }
 infra-utils = { path = "../modules/infra-utils" }
+jobworkerp-base = { path = "../base" }
+jobworkerp-runner = { path = "../runner" }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

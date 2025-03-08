@@ -4,12 +4,13 @@ members = [
     "modules/command-utils",
     "modules/infra-utils",
     "proto",
+    "runner",
     "infra",
     "worker-app",
     "grpc-front",
     "worker-main",
     "plugins/test_runner",
-    "plugins/hello_runner",
+    "plugins/hello_runner", "base",
 ]
 
 resolver = "2"

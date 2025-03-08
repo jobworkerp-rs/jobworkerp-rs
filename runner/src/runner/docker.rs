@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 
 use super::RunnerTrait;
-use crate::error::JobWorkerError;
-use crate::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
 use crate::jobworkerp::runner::{DockerArgs, DockerRunnerSettings};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -15,6 +13,8 @@ use bollard::image::CreateImageOptions;
 use bollard::Docker;
 use futures::stream::BoxStream;
 use futures::TryStreamExt;
+use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
@@ -257,13 +257,13 @@ impl RunnerTrait for DockerExecRunner {
     }
     // create and start container
     async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
-        let op = JobqueueAndCodec::deserialize_message::<DockerRunnerSettings>(&settings)?;
+        let op = ProstMessageCodec::deserialize_message::<DockerRunnerSettings>(&settings)?;
         self.create(&op.into()).await
     }
 
     async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
         if let Some(docker) = self.docker.as_ref() {
-            let req = JobqueueAndCodec::deserialize_message::<DockerArgs>(arg)?;
+            let req = ProstMessageCodec::deserialize_message::<DockerArgs>(arg)?;
             let mut c: CreateExecOptions<String> = self.trans_exec_arg(req.clone());
             // for log
             c.attach_stdout = Some(true);
@@ -299,10 +299,10 @@ impl RunnerTrait for DockerExecRunner {
         todo!("todo")
     }
     fn runner_settings_proto(&self) -> String {
-        include_str!("../../../protobuf/jobworkerp/runner/docker_runner.proto").to_string()
+        include_str!("../../protobuf/jobworkerp/runner/docker_runner.proto").to_string()
     }
     fn job_args_proto(&self) -> String {
-        include_str!("../../../protobuf/jobworkerp/runner/docker_args.proto").to_string()
+        include_str!("../../protobuf/jobworkerp/runner/docker_args.proto").to_string()
     }
     fn result_output_proto(&self) -> Option<String> {
         None
@@ -330,7 +330,7 @@ async fn exec_test() -> Result<()> {
             "busybox:latest".to_string(),
         )))
         .await?;
-    let arg = JobqueueAndCodec::serialize_message(&DockerArgs {
+    let arg = ProstMessageCodec::serialize_message(&DockerArgs {
         cmd: vec!["ls".to_string(), "-alh".to_string(), "/etc".to_string()],
         ..Default::default()
     });
@@ -340,7 +340,7 @@ async fn exec_test() -> Result<()> {
         runner1.stop(2, false).await.flat_map(|_| res)
     });
 
-    let arg2 = JobqueueAndCodec::serialize_message(&DockerArgs {
+    let arg2 = ProstMessageCodec::serialize_message(&DockerArgs {
         cmd: vec!["cat".to_string(), "/etc/resolv.conf".to_string()],
         ..Default::default()
     });
@@ -445,12 +445,12 @@ impl RunnerTrait for DockerRunner {
     }
     // create and start container
     async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
-        let op = JobqueueAndCodec::deserialize_message::<DockerRunnerSettings>(&settings)?;
+        let op = ProstMessageCodec::deserialize_message::<DockerRunnerSettings>(&settings)?;
         self.create(&op.into()).await
     }
     async fn run(&mut self, args: &[u8]) -> Result<Vec<Vec<u8>>> {
         if let Some(docker) = self.docker.as_ref() {
-            let arg = JobqueueAndCodec::deserialize_message::<DockerArgs>(args)?;
+            let arg = ProstMessageCodec::deserialize_message::<DockerArgs>(args)?;
             let mut config = self.trans_docker_arg_to_config(&arg);
             // to output log
             config.attach_stdout = Some(true);
@@ -518,10 +518,10 @@ impl RunnerTrait for DockerRunner {
         todo!("todo")
     }
     fn runner_settings_proto(&self) -> String {
-        include_str!("../../../protobuf/jobworkerp/runner/docker_runner.proto").to_string()
+        include_str!("../../protobuf/jobworkerp/runner/docker_runner.proto").to_string()
     }
     fn job_args_proto(&self) -> String {
-        include_str!("../../../protobuf/jobworkerp/runner/docker_args.proto").to_string()
+        include_str!("../../protobuf/jobworkerp/runner/docker_args.proto").to_string()
     }
     fn result_output_proto(&self) -> Option<String> {
         Some("".to_string())
@@ -548,7 +548,7 @@ async fn run_test() -> Result<()> {
             "busybox:latest".to_string(),
         )))
         .await?;
-    let arg = JobqueueAndCodec::serialize_message(&DockerArgs {
+    let arg = ProstMessageCodec::serialize_message(&DockerArgs {
         image: Some("busybox:latest".to_string()),
         cmd: vec!["ls".to_string(), "-alh".to_string(), "/".to_string()],
         ..Default::default()
@@ -559,7 +559,7 @@ async fn run_test() -> Result<()> {
         res
     });
 
-    let arg2 = JobqueueAndCodec::serialize_message(&DockerArgs {
+    let arg2 = ProstMessageCodec::serialize_message(&DockerArgs {
         image: Some("busybox:latest".to_string()),
         cmd: vec!["echo".to_string(), "run in docker container".to_string()],
         ..Default::default()

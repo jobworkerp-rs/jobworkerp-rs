@@ -1,12 +1,13 @@
-use super::RunnerTrait;
 use crate::jobworkerp::runner::{CommandArgs, CommandRunnerSettings};
-use crate::{
-    error::JobWorkerError,
-    infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec},
-};
+
+use super::RunnerTrait;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use jobworkerp_base::{
+    codec::{ProstMessageCodec, UseProstCodec},
+    error::JobWorkerError,
+};
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use std::{mem, process::Stdio};
 use tokio::process::{Child, Command};
@@ -87,7 +88,7 @@ impl RunnerTrait for CommandRunnerImpl {
         RunnerType::Command.as_str_name().to_string()
     }
     async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
-        let data = JobqueueAndCodec::deserialize_message::<CommandRunnerSettings>(&settings)
+        let data = ProstMessageCodec::deserialize_message::<CommandRunnerSettings>(&settings)
             .context("on run job")?;
         self.command = Box::new(data.name);
         Ok(())
@@ -98,7 +99,7 @@ impl RunnerTrait for CommandRunnerImpl {
             return Err(JobWorkerError::RuntimeError("command is empty".to_string()).into());
         }
         let data =
-            JobqueueAndCodec::deserialize_message::<CommandArgs>(args).context("on run job")?;
+            ProstMessageCodec::deserialize_message::<CommandArgs>(args).context("on run job")?;
         let args: &Vec<String> = &data.args;
         let mut messages = Vec::<Vec<u8>>::new();
         tracing::info!("run command: {}, args: {:?}", &self.command, args);
@@ -149,10 +150,10 @@ impl RunnerTrait for CommandRunnerImpl {
         }
     }
     fn runner_settings_proto(&self) -> String {
-        include_str!("../../../protobuf/jobworkerp/runner/command_runner.proto").to_string()
+        include_str!("../../protobuf/jobworkerp/runner/command_runner.proto").to_string()
     }
     fn job_args_proto(&self) -> String {
-        include_str!("../../../protobuf/jobworkerp/runner/command_args.proto").to_string()
+        include_str!("../../protobuf/jobworkerp/runner/command_args.proto").to_string()
     }
     fn result_output_proto(&self) -> Option<String> {
         Some("".to_string())
@@ -179,7 +180,9 @@ mod tests {
         let arg = CommandArgs {
             args: vec!["-vvv".to_string(), "https://www.google.com".to_string()],
         };
-        let res = runner.run(&JobqueueAndCodec::serialize_message(&arg)).await;
+        let res = runner
+            .run(&ProstMessageCodec::serialize_message(&arg))
+            .await;
         assert!(res.is_ok());
         let r = res.unwrap().pop().unwrap();
         let mes = String::from_utf8_lossy(r.as_ref()).to_string();
@@ -197,7 +200,9 @@ mod tests {
         let arg = CommandArgs {
             args: vec!["10".to_string()],
         };
-        let res = runner.run(&JobqueueAndCodec::serialize_message(&arg)).await;
+        let res = runner
+            .run(&ProstMessageCodec::serialize_message(&arg))
+            .await;
 
         print!("====== run and cancel res: {:?}", res);
         assert!(res.is_ok());

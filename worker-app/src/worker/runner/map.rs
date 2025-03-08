@@ -1,11 +1,11 @@
 use super::pool::{RunnerFactoryWithPool, RunnerPoolManagerImpl};
-use super::RunnerTrait;
 use anyhow::Result;
 use app::app::WorkerConfig;
 use command_utils::util::result::TapErr;
 use deadpool::managed::{Object, Timeouts};
-use infra::error::JobWorkerError;
 use infra::infra::runner::factory::RunnerFactory;
+use jobworkerp_base::error::JobWorkerError;
+use jobworkerp_runner::runner::RunnerTrait;
 use proto::jobworkerp::data::{RunnerData, WorkerData, WorkerId};
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -1,12 +1,13 @@
 use crate::infra::job::rows::UseJobqueueAndCodec;
 use crate::infra::job_result::pubsub::redis::UseRedisJobResultPubSubRepository;
 use crate::infra::job_result::pubsub::JobResultSubscriber;
-use crate::{error::JobWorkerError, infra::UseJobQueueConfig};
+use crate::infra::UseJobQueueConfig;
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::result::FlatMap;
 use futures::stream::BoxStream;
 use infra_utils::infra::redis::UseRedisPool;
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     Job, JobId, JobResult, JobResultData, JobResultId, Priority, ResultOutputItem,
 };

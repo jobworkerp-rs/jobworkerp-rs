@@ -1,4 +1,6 @@
-use super::runner::plugins::loader::RunnerPluginLoader;
+pub mod loader;
+
+use self::loader::RunnerPluginLoader;
 use anyhow::Result;
 use command_utils::util::option::Exists;
 use itertools::Itertools;

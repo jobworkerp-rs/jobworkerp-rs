@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use super::rows::RunnerRow;
-use crate::error::JobWorkerError;
 use crate::infra::runner::factory::RunnerFactory;
 use crate::infra::runner::factory::UseRunnerFactory;
 use crate::infra::IdGeneratorWrapper;
@@ -11,6 +10,7 @@ use async_trait::async_trait;
 use infra_utils::infra::rdb::Rdb;
 use infra_utils::infra::rdb::RdbPool;
 use infra_utils::infra::rdb::UseRdbPool;
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::RunnerType;
 use proto::jobworkerp::data::{Runner, RunnerId};
 use sqlx::{Executor, Pool};

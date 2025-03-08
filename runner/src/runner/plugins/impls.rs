@@ -1,4 +1,4 @@
-use crate::infra::runner::RunnerTrait;
+use crate::runner::RunnerTrait;
 use std::sync::Arc;
 
 use super::PluginRunner;
@@ -24,7 +24,7 @@ pub struct PluginRunnerWrapperImpl {
 
 impl PluginRunnerWrapperImpl {
     // #[allow(clippy::borrowed_box)]
-    pub(super) fn new(plugin_runner: Arc<RwLock<Box<dyn PluginRunner + Send + Sync>>>) -> Self {
+    pub fn new(plugin_runner: Arc<RwLock<Box<dyn PluginRunner + Send + Sync>>>) -> Self {
         Self { plugin_runner }
     }
     async fn create(&self, settings: Vec<u8>) -> Result<()> {
