@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
 use super::rows::RunnerRow;
-use crate::infra::runner::factory::RunnerFactory;
-use crate::infra::runner::factory::UseRunnerFactory;
 use crate::infra::IdGeneratorWrapper;
 use crate::infra::UseIdGenerator;
 use anyhow::{Context, Result};
@@ -11,14 +9,18 @@ use infra_utils::infra::rdb::Rdb;
 use infra_utils::infra::rdb::RdbPool;
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
+use jobworkerp_runner::runner::factory::RunnerSpecFactory;
+use jobworkerp_runner::runner::factory::UseRunnerSpecFactory;
 use proto::jobworkerp::data::RunnerType;
 use proto::jobworkerp::data::{Runner, RunnerId};
 use sqlx::{Executor, Pool};
 
 #[async_trait]
-pub trait RunnerRepository: UseRdbPool + UseRunnerFactory + UseIdGenerator + Sync + Send {
+pub trait RunnerRepository:
+    UseRdbPool + UseRunnerSpecFactory + UseIdGenerator + Sync + Send
+{
     async fn add_from_plugins(&self) -> Result<()> {
-        let names = self.runner_factory().load_plugins().await;
+        let names = self.plugin_runner_factory().load_plugins().await;
         for (name, fname) in names.iter() {
             let data = RunnerRow {
                 id: self.id_generator().generate_id()?,
@@ -103,7 +105,7 @@ pub trait RunnerRepository: UseRdbPool + UseRunnerFactory + UseIdGenerator + Syn
             .map(|r| r.rows_affected() > 0)
             .map_err(JobWorkerError::DBError)?;
         if let Some(rem) = rem {
-            if let Err(e) = self.runner_factory().unload_plugins(&rem.name).await {
+            if let Err(e) = self.plugin_runner_factory().unload_plugins(&rem.name).await {
                 tracing::warn!("Failed to remove runner: {:?}", e);
             }
         }
@@ -113,7 +115,11 @@ pub trait RunnerRepository: UseRdbPool + UseRunnerFactory + UseIdGenerator + Syn
     async fn find(&self, id: &RunnerId) -> Result<Option<Runner>> {
         let row = self.find_row_tx(self.db_pool(), id).await?;
         if let Some(r2) = row {
-            if let Some(r3) = self.runner_factory().create_by_name(&r2.name, false).await {
+            if let Some(r3) = self
+                .plugin_runner_factory()
+                .create_plugin_by_name(&r2.name, false)
+                .await
+            {
                 Ok(Some(r2.to_proto(r3)))
             } else {
                 Ok(None)
@@ -140,7 +146,11 @@ pub trait RunnerRepository: UseRdbPool + UseRunnerFactory + UseIdGenerator + Syn
         let rows = self.find_row_list_tx(self.db_pool(), limit, offset).await?;
         let mut results = Vec::new();
         for row in rows {
-            if let Some(r) = self.runner_factory().create_by_name(&row.name, false).await {
+            if let Some(r) = self
+                .plugin_runner_factory()
+                .create_plugin_by_name(&row.name, false)
+                .await
+            {
                 results.push(row.to_proto(r));
             }
         }
@@ -182,7 +192,7 @@ pub trait RunnerRepository: UseRdbPool + UseRunnerFactory + UseIdGenerator + Syn
 #[derive(Debug, Clone)]
 pub struct RdbRunnerRepositoryImpl {
     pool: &'static RdbPool,
-    pub runner_factory: Arc<RunnerFactory>,
+    pub runner_factory: Arc<RunnerSpecFactory>,
     id_generator: Arc<IdGeneratorWrapper>,
 }
 
@@ -193,7 +203,7 @@ pub trait UseRdbRunnerRepository {
 impl RdbRunnerRepositoryImpl {
     pub fn new(
         pool: &'static RdbPool,
-        runner_factory: Arc<RunnerFactory>,
+        runner_factory: Arc<RunnerSpecFactory>,
         id_generator: Arc<IdGeneratorWrapper>,
     ) -> Self {
         Self {
@@ -209,8 +219,8 @@ impl UseRdbPool for RdbRunnerRepositoryImpl {
         self.pool
     }
 }
-impl UseRunnerFactory for RdbRunnerRepositoryImpl {
-    fn runner_factory(&self) -> &RunnerFactory {
+impl UseRunnerSpecFactory for RdbRunnerRepositoryImpl {
+    fn plugin_runner_factory(&self) -> &RunnerSpecFactory {
         &self.runner_factory
     }
 }
@@ -225,12 +235,13 @@ impl RunnerRepository for RdbRunnerRepositoryImpl {}
 mod test {
     use super::RdbRunnerRepositoryImpl;
     use super::RunnerRepository;
-    use crate::infra::runner::factory::RunnerFactory;
     use crate::infra::runner::rows::RunnerRow;
     use anyhow::Context;
     use anyhow::Result;
     use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::rdb::UseRdbPool;
+    use jobworkerp_runner::runner::factory::RunnerSpecFactory;
+    use jobworkerp_runner::runner::plugins::Plugins;
     use proto::jobworkerp::data::Runner;
     use proto::jobworkerp::data::RunnerData;
     use proto::jobworkerp::data::RunnerId;
@@ -238,7 +249,7 @@ mod test {
     use std::sync::Arc;
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
-        let p = RunnerFactory::new();
+        let p = RunnerSpecFactory::new(Arc::new(Plugins::new()));
         std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug");
         p.load_plugins().await;
         let id_generator = Arc::new(crate::infra::IdGeneratorWrapper::new());

@@ -1,20 +1,19 @@
 use std::sync::Arc;
 
-use debug_stub_derive::DebugStub;
-use infra_utils::infra::redis::RedisClient;
-
 use crate::infra::job::redis::RedisJobRepositoryImpl;
 use crate::infra::job::redis::UseRedisJobRepository;
 use crate::infra::job_result::pubsub::redis::RedisJobResultPubSubRepositoryImpl;
 use crate::infra::job_result::redis::RedisJobResultRepositoryImpl;
 use crate::infra::job_result::redis::UseRedisJobResultRepository;
 use crate::infra::load_job_queue_config_from_env;
-use crate::infra::runner::factory::RunnerFactory;
 use crate::infra::runner::redis::RedisRunnerRepositoryImpl;
 use crate::infra::runner::redis::UseRedisRunnerRepository;
 use crate::infra::worker::redis::{RedisWorkerRepositoryImpl, UseRedisWorkerRepository};
 use crate::infra::IdGeneratorWrapper;
 use crate::infra::InfraConfigModule;
+use debug_stub_derive::DebugStub;
+use infra_utils::infra::redis::RedisClient;
+use jobworkerp_runner::runner::factory::RunnerSpecFactory;
 
 pub trait UseRedisRepositoryModule {
     fn redis_repository_module(&self) -> &RedisRepositoryModule;
@@ -57,7 +56,7 @@ impl RedisRepositoryModule {
     pub async fn new_by_env(
         worker_expire_sec: Option<usize>,
         id_generator: Arc<IdGeneratorWrapper>,
-        runner_factory: Arc<RunnerFactory>,
+        runner_spec_factory: Arc<RunnerSpecFactory>,
     ) -> Self {
         let redis_pool = super::super::resource::setup_redis_pool_by_env().await;
         let redis_client = super::super::resource::setup_redis_client_by_env().await;
@@ -69,7 +68,7 @@ impl RedisRepositoryModule {
                 redis_pool,
                 redis_client.clone(),
                 id_generator,
-                runner_factory,
+                runner_spec_factory,
             ),
             redis_worker_repository: RedisWorkerRepositoryImpl::new(
                 redis_pool,
@@ -94,7 +93,7 @@ impl RedisRepositoryModule {
     pub async fn new(
         config_module: &InfraConfigModule,
         id_generator: Arc<IdGeneratorWrapper>,
-        runner_factory: Arc<RunnerFactory>,
+        runner_spec_factory: Arc<RunnerSpecFactory>,
         worker_expire_sec: Option<usize>,
     ) -> Self {
         let conf = config_module.redis_config.clone().unwrap();
@@ -107,7 +106,7 @@ impl RedisRepositoryModule {
                 redis_pool,
                 redis_client.clone(),
                 id_generator,
-                runner_factory,
+                runner_spec_factory,
             ),
             redis_worker_repository: RedisWorkerRepositoryImpl::new(
                 redis_pool,
@@ -142,13 +141,13 @@ pub mod test {
         job_result::{
             pubsub::redis::RedisJobResultPubSubRepositoryImpl, redis::RedisJobResultRepositoryImpl,
         },
-        runner::factory::RunnerFactory,
         runner::redis::RedisRunnerRepositoryImpl,
         worker::redis::RedisWorkerRepositoryImpl,
         IdGeneratorWrapper,
     };
     use anyhow::Context;
     use infra_utils::infra::test::{setup_test_redis_client, setup_test_redis_pool};
+    use jobworkerp_runner::runner::{factory::RunnerSpecFactory, plugins::Plugins};
     use std::sync::Arc;
 
     // create RedsRepositoryModule for test
@@ -173,7 +172,7 @@ pub mod test {
             .await
             .unwrap();
 
-        let p = RunnerFactory::new();
+        let p = RunnerSpecFactory::new(Arc::new(Plugins::new()));
         p.load_plugins().await;
         RedisRepositoryModule {
             redis_pool,

@@ -1,4 +1,4 @@
-use jobworkerp_runner::runner::RunnerTrait;
+use jobworkerp_runner::runner::RunnerSpec;
 use proto::jobworkerp::data::{Runner, RunnerData, RunnerId};
 
 // db row definitions
@@ -11,7 +11,7 @@ pub struct RunnerRow {
 }
 
 impl RunnerRow {
-    pub fn to_proto(&self, runner: Box<dyn RunnerTrait + Send + Sync>) -> Runner {
+    pub fn to_proto(&self, runner: Box<dyn RunnerSpec + Send + Sync>) -> Runner {
         Runner {
             id: Some(RunnerId { value: self.id }),
             data: Some(RunnerData {

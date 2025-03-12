@@ -76,22 +76,13 @@ mod test {
     use super::*;
     use crate::worker::runner::map::RunnerFactoryWithPoolMap;
     use anyhow::Result;
-    use app::{
-        app::{
-            runner::{hybrid::HybridRunnerAppImpl, RunnerApp, RunnerDataWithDescriptor},
-            worker::{hybrid::HybridWorkerAppImpl, WorkerApp},
-            StorageConfig,
-        },
-        module::load_worker_config,
-    };
-    use infra::infra::{
-        runner::factory::RunnerFactory, test::new_for_test_config_rdb,
-        worker::event::UseWorkerPublish, IdGeneratorWrapper,
-    };
-    use infra_utils::infra::{memory::MemoryCacheImpl, test::setup_test_redis_client};
+    use app::{app::worker::WorkerApp, module::load_worker_config};
+    use app_wrapper::runner::RunnerFactory;
+    use infra::infra::worker::event::UseWorkerPublish;
+    use infra_utils::infra::test::setup_test_redis_client;
     use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
     use jobworkerp_runner::jobworkerp::runner::CommandRunnerSettings;
-    use proto::jobworkerp::data::{RunnerId, StorageType, WorkerData};
+    use proto::jobworkerp::data::{RunnerId, WorkerData};
     use std::sync::Arc;
     use tokio::time::{sleep, Duration};
 
@@ -121,69 +112,24 @@ mod test {
     impl UseSubscribeWorker for UseWorkerMapAndSubscribeImpl {}
     impl UseWorkerPublish for UseWorkerMapAndSubscribeImpl {}
 
+    #[cfg(test)]
     #[tokio::test]
     async fn subscribe_worker_changed_test() -> Result<()> {
         let redis_client = setup_test_redis_client()?;
-        let storage_config = Arc::new(StorageConfig {
-            r#type: StorageType::Scalable,
-            restore_at_startup: Some(false),
-        });
-        let id_generator = Arc::new(IdGeneratorWrapper::new());
-        let module = new_for_test_config_rdb();
-        let runner_factory = Arc::new(RunnerFactory::new());
-        let repositories = Arc::new(
-            infra::infra::module::HybridRepositoryModule::new(
-                &module,
-                id_generator.clone(),
-                runner_factory.clone(),
-            )
-            .await,
-        );
-        let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
-            num_counters: 10,
-            max_cost: 1000000,
-            use_metrics: false,
-        };
         let worker_config = Arc::new(load_worker_config());
+        let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
+        let worker_app2 = app_module.worker_app.clone();
+        worker_app2.delete_all().await?;
+
+        let runner_factory = Arc::new(RunnerFactory::new(app_module.clone()));
         // XXX empty runner map (must confirm deletion: use mock?)
         let runner_map = RunnerFactoryWithPoolMap::new(runner_factory.clone(), worker_config);
-        let descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>> =
-            Arc::new(MemoryCacheImpl::new(
-                &infra_utils::infra::memory::MemoryCacheConfig {
-                    num_counters: 10,
-                    max_cost: 1000000,
-                    use_metrics: false,
-                },
-                Some(Duration::from_secs(60)),
-            ));
 
-        let runner_app = Arc::new(HybridRunnerAppImpl::new(
-            storage_config.clone(),
-            &infra_utils::infra::memory::MemoryCacheConfig {
-                num_counters: 10,
-                max_cost: 1000000,
-                use_metrics: false,
-            },
-            repositories.clone(),
-            descriptor_cache.clone(),
-        ));
-        runner_app.load_runner().await?;
-
-        let worker_app = Arc::new(HybridWorkerAppImpl::new(
-            storage_config,
-            id_generator,
-            &mc_config,
-            repositories,
-            descriptor_cache,
-            runner_app,
-        ));
-        let worker_app2 = worker_app.clone();
         let repo = UseWorkerMapAndSubscribeImpl {
-            worker_app,
+            worker_app: app_module.worker_app.clone(),
             redis_client,
             runner_map,
         };
-        worker_app2.delete_all().await?;
 
         let r = repo; //.clone();
 

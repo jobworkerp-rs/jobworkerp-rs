@@ -6,10 +6,11 @@ use self::map::UseRunnerPoolMap;
 use self::result::RunnerResultHandler;
 use anyhow::anyhow;
 use anyhow::Result;
+use app_wrapper::runner::UseRunnerFactory;
 use async_trait::async_trait;
 use command_utils::util::{datetime, result::Flatten};
 use futures::{future::FutureExt, stream::BoxStream};
-use infra::infra::{job::rows::UseJobqueueAndCodec, runner::factory::UseRunnerFactory};
+use infra::infra::job::rows::UseJobqueueAndCodec;
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::runner::RunnerTrait;
 use proto::jobworkerp::data::ResultOutputItem;
@@ -282,15 +283,14 @@ mod tests {
     use super::{map::RunnerFactoryWithPoolMap, *};
     use anyhow::Result;
     use app::app::WorkerConfig;
-    use infra::infra::{
-        job::rows::JobqueueAndCodec,
-        runner::factory::{RunnerFactory, UseRunnerFactory},
-    };
+    use app_wrapper::runner::RunnerFactory;
+    use infra::infra::job::rows::JobqueueAndCodec;
     use jobworkerp_runner::jobworkerp::runner::{CommandArgs, CommandRunnerSettings};
     use proto::jobworkerp::data::{
         Job, JobData, JobId, ResponseType, RunnerType, WorkerData, WorkerId,
     };
     use std::sync::Arc;
+    use tokio::sync::OnceCell;
 
     // create JobRunner for test
     struct MockJobRunner {
@@ -298,11 +298,12 @@ mod tests {
         runner_pool: RunnerFactoryWithPoolMap,
     }
     impl MockJobRunner {
-        fn new() -> Self {
+        async fn new() -> Self {
+            let app_module = Arc::new(app::module::test::create_hybrid_test_app().await.unwrap());
             MockJobRunner {
-                runner_factory: Arc::new(RunnerFactory::new()),
+                runner_factory: Arc::new(RunnerFactory::new(app_module.clone())),
                 runner_pool: RunnerFactoryWithPoolMap::new(
-                    Arc::new(RunnerFactory::new()),
+                    Arc::new(RunnerFactory::new(app_module)),
                     Arc::new(WorkerConfig::default()),
                 ),
             }
@@ -327,9 +328,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_job() -> Result<()> {
-        use once_cell::sync::Lazy;
-
-        static JOB_RUNNER: Lazy<Box<MockJobRunner>> = Lazy::new(|| Box::new(MockJobRunner::new()));
+        static JOB_RUNNER: OnceCell<Box<MockJobRunner>> = OnceCell::const_new();
+        JOB_RUNNER
+            .get_or_init(|| async { Box::new(MockJobRunner::new().await) })
+            .await;
 
         let run_after = datetime::now_millis() + 1000;
         let jargs = JobqueueAndCodec::serialize_message(&CommandArgs {
@@ -369,6 +371,8 @@ mod tests {
             ..Default::default()
         };
         let (res, _) = JOB_RUNNER
+            .get()
+            .unwrap()
             .run_job(&runner_data, &worker_id, &worker, job.clone())
             .await;
         assert_eq!(res.status, ResultStatus::Success as i32);
@@ -395,6 +399,8 @@ mod tests {
             }),
         };
         let (res, _) = JOB_RUNNER
+            .get()
+            .unwrap()
             .run_job(&runner_data, &worker_id, &worker, timeout_job.clone())
             .await;
         assert_eq!(res.status, ResultStatus::MaxRetry as i32); // no retry

@@ -5,11 +5,11 @@ use crate::infra::job::rdb::{RdbChanJobRepositoryImpl, UseRdbChanJobRepository};
 use crate::infra::job::status::memory::MemoryJobStatusRepository;
 use crate::infra::job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl;
 use crate::infra::job_result::rdb::{RdbJobResultRepositoryImpl, UseRdbJobResultRepository};
-use crate::infra::runner::factory::RunnerFactory;
 use crate::infra::runner::rdb::RdbRunnerRepositoryImpl;
 use crate::infra::worker::rdb::{RdbWorkerRepositoryImpl, UseRdbWorkerRepository};
 use crate::infra::{IdGeneratorWrapper, InfraConfigModule, JobQueueConfig};
 use infra_utils::infra::chan::ChanBuffer;
+use jobworkerp_runner::runner::factory::RunnerSpecFactory;
 
 pub trait UseRdbChanRepositoryModule {
     fn rdb_repository_module(&self) -> &RdbChanRepositoryModule;
@@ -44,7 +44,7 @@ pub struct RdbChanRepositoryModule {
 impl RdbChanRepositoryModule {
     pub async fn new_by_env(
         job_queue_config: Arc<JobQueueConfig>,
-        runner_factory: Arc<RunnerFactory>,
+        runner_factory: Arc<RunnerSpecFactory>,
         id_generator: Arc<IdGeneratorWrapper>,
     ) -> Self {
         let pool = super::super::resource::setup_rdb_by_env().await;
@@ -66,7 +66,7 @@ impl RdbChanRepositoryModule {
     }
     pub async fn new(
         config_module: &InfraConfigModule,
-        runner_factory: Arc<RunnerFactory>,
+        runner_factory: Arc<RunnerSpecFactory>,
         id_generator: Arc<IdGeneratorWrapper>,
     ) -> Self {
         let pool =
@@ -98,10 +98,10 @@ impl UseRdbChanRepositoryModule for RdbChanRepositoryModule {
     }
 }
 
+#[cfg(any(test, feature = "test-utils"))]
 pub mod test {
     use super::RdbChanRepositoryModule;
     use crate::infra::job::queue::chan::ChanJobQueueRepositoryImpl;
-    use crate::infra::runner::factory::RunnerFactory;
     use crate::infra::runner::rdb::RdbRunnerRepositoryImpl;
     use crate::infra::IdGeneratorWrapper;
     use crate::infra::{
@@ -112,51 +112,51 @@ pub mod test {
         job::status::memory::MemoryJobStatusRepository,
         job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl, JobQueueConfig,
     };
-    use infra_utils::infra::test::{setup_test_rdb_from, TEST_RUNTIME};
+    use infra_utils::infra::test::setup_test_rdb_from;
+    use jobworkerp_runner::runner::factory::RunnerSpecFactory;
+    use jobworkerp_runner::runner::plugins::Plugins;
     use sqlx::Executor;
     use std::sync::Arc;
 
-    pub fn setup_test_rdb_module() -> RdbChanRepositoryModule {
+    pub async fn setup_test_rdb_module() -> RdbChanRepositoryModule {
         use infra_utils::infra::{chan::ChanBuffer, test::truncate_tables};
 
-        TEST_RUNTIME.block_on(async {
-            let dir = if cfg!(feature = "mysql") {
-                "../infra/sql/mysql"
-            } else {
-                "../infra/sql/sqlite"
-            };
-            let pool = setup_test_rdb_from(dir).await;
-            pool.execute("SELECT 1;").await.expect("test connection");
-            // not runner
-            truncate_tables(pool, vec!["job", "worker", "job_result"]).await;
-            pool.execute("DELETE FROM runner WHERE id > 100;")
-                .await
-                .expect("test connection");
-            let runner_factory = RunnerFactory::new();
-            runner_factory.load_plugins().await;
-            let id_generator = Arc::new(IdGeneratorWrapper::new());
-            RdbChanRepositoryModule {
-                runner_repository: RdbRunnerRepositoryImpl::new(
-                    pool,
-                    Arc::new(runner_factory),
-                    id_generator,
-                ),
-                worker_repository: RdbWorkerRepositoryImpl::new(pool),
-                job_repository: RdbChanJobRepositoryImpl::new(
-                    Arc::new(JobQueueConfig::default()),
-                    pool,
-                ),
-                job_result_repository: RdbJobResultRepositoryImpl::new(pool),
-                memory_job_status_repository: Arc::new(MemoryJobStatusRepository::new()),
-                chan_job_result_pubsub_repository: ChanJobResultPubSubRepositoryImpl::new(
-                    ChanBuffer::new(None, 10000),
-                    Arc::new(JobQueueConfig::default()),
-                ),
-                chan_job_queue_repository: ChanJobQueueRepositoryImpl::new(
-                    Arc::new(JobQueueConfig::default()),
-                    ChanBuffer::new(None, 10000),
-                ),
-            }
-        })
+        let dir = if cfg!(feature = "mysql") {
+            "../infra/sql/mysql"
+        } else {
+            "../infra/sql/sqlite"
+        };
+        let pool = setup_test_rdb_from(dir).await;
+        pool.execute("SELECT 1;").await.expect("test connection");
+        // not runner
+        truncate_tables(pool, vec!["job", "worker", "job_result"]).await;
+        pool.execute("DELETE FROM runner WHERE id > 100;")
+            .await
+            .expect("test connection");
+        let runner_factory = RunnerSpecFactory::new(Arc::new(Plugins::new()));
+        runner_factory.load_plugins().await;
+        let id_generator = Arc::new(IdGeneratorWrapper::new());
+        RdbChanRepositoryModule {
+            runner_repository: RdbRunnerRepositoryImpl::new(
+                pool,
+                Arc::new(runner_factory),
+                id_generator,
+            ),
+            worker_repository: RdbWorkerRepositoryImpl::new(pool),
+            job_repository: RdbChanJobRepositoryImpl::new(
+                Arc::new(JobQueueConfig::default()),
+                pool,
+            ),
+            job_result_repository: RdbJobResultRepositoryImpl::new(pool),
+            memory_job_status_repository: Arc::new(MemoryJobStatusRepository::new()),
+            chan_job_result_pubsub_repository: ChanJobResultPubSubRepositoryImpl::new(
+                ChanBuffer::new(None, 10000),
+                Arc::new(JobQueueConfig::default()),
+            ),
+            chan_job_queue_repository: ChanJobQueueRepositoryImpl::new(
+                Arc::new(JobQueueConfig::default()),
+                ChanBuffer::new(None, 10000),
+            ),
+        }
     }
 }

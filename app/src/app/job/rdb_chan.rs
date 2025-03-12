@@ -645,100 +645,99 @@ mod tests {
     use infra::infra::job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl;
     use infra::infra::job_result::pubsub::JobResultSubscriber;
     use infra::infra::module::rdb::test::setup_test_rdb_module;
-    use infra::infra::runner::factory::RunnerFactory;
     use infra::infra::IdGeneratorWrapper;
     use infra_utils::infra::test::TEST_RUNTIME;
+    use jobworkerp_runner::runner::factory::RunnerSpecFactory;
+    use jobworkerp_runner::runner::plugins::Plugins;
     use proto::jobworkerp::data::{
         JobResult, JobResultId, Priority, QueueType, ResponseType, ResultOutput, ResultStatus,
         RunnerId, WorkerData,
     };
     use std::sync::Arc;
 
-    fn create_test_app(
+    async fn create_test_app(
         use_mock_id: bool,
     ) -> Result<(RdbChanJobAppImpl, ChanJobResultPubSubRepositoryImpl)> {
         std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug");
-        let rdb_module = setup_test_rdb_module();
-        TEST_RUNTIME.block_on(async {
-            let repositories = Arc::new(rdb_module);
-            // mock id generator (generate 1 until called set method)
-            let id_generator = if use_mock_id {
-                Arc::new(IdGeneratorWrapper::new_mock())
-            } else {
-                Arc::new(IdGeneratorWrapper::new())
-            };
-            let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
-                num_counters: 10000,
-                max_cost: 10000,
-                use_metrics: false,
-            };
-            let job_memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
-                &mc_config,
-                Some(Duration::from_secs(60)),
-            );
-            let storage_config = Arc::new(StorageConfig {
-                r#type: StorageType::Standalone,
-                restore_at_startup: Some(false),
-            });
-            let job_queue_config = Arc::new(JobQueueConfig {
-                expire_job_result_seconds: 10,
-                fetch_interval: 1000,
-            });
-            let worker_config = Arc::new(WorkerConfig {
-                default_concurrency: 4,
-                channels: vec!["test".to_string()],
-                channel_concurrencies: vec![2],
-            });
-            let descriptor_cache = Arc::new(infra_utils::infra::memory::MemoryCacheImpl::new(
-                &mc_config,
-                Some(Duration::from_secs(60)),
-            ));
-            let runner_app = Arc::new(RdbRunnerAppImpl::new(
-                storage_config.clone(),
-                &mc_config,
-                repositories.clone(),
-                descriptor_cache.clone(),
-            ));
-            let worker_app = RdbWorkerAppImpl::new(
-                storage_config.clone(),
-                id_generator.clone(),
-                &mc_config,
-                repositories.clone(),
-                descriptor_cache,
-                runner_app.clone(),
-            );
-            let _ = runner_app
-                .create_test_runner(&RunnerId { value: 1 }, "Test")
-                .await?;
+        let rdb_module = setup_test_rdb_module().await;
+        let repositories = Arc::new(rdb_module);
+        // mock id generator (generate 1 until called set method)
+        let id_generator = if use_mock_id {
+            Arc::new(IdGeneratorWrapper::new_mock())
+        } else {
+            Arc::new(IdGeneratorWrapper::new())
+        };
+        let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
+            num_counters: 10000,
+            max_cost: 10000,
+            use_metrics: false,
+        };
+        let job_memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
+            &mc_config,
+            Some(Duration::from_secs(60)),
+        );
+        let storage_config = Arc::new(StorageConfig {
+            r#type: StorageType::Standalone,
+            restore_at_startup: Some(false),
+        });
+        let job_queue_config = Arc::new(JobQueueConfig {
+            expire_job_result_seconds: 10,
+            fetch_interval: 1000,
+        });
+        let worker_config = Arc::new(WorkerConfig {
+            default_concurrency: 4,
+            channels: vec!["test".to_string()],
+            channel_concurrencies: vec![2],
+        });
+        let descriptor_cache = Arc::new(infra_utils::infra::memory::MemoryCacheImpl::new(
+            &mc_config,
+            Some(Duration::from_secs(60)),
+        ));
+        let runner_app = Arc::new(RdbRunnerAppImpl::new(
+            storage_config.clone(),
+            &mc_config,
+            repositories.clone(),
+            descriptor_cache.clone(),
+        ));
+        let worker_app = RdbWorkerAppImpl::new(
+            storage_config.clone(),
+            id_generator.clone(),
+            &mc_config,
+            repositories.clone(),
+            descriptor_cache,
+            runner_app.clone(),
+        );
+        let _ = runner_app
+            .create_test_runner(&RunnerId { value: 1 }, "Test")
+            .await?;
 
-            let runner_factory = RunnerFactory::new();
-            runner_factory.load_plugins().await;
-            let config_module = Arc::new(AppConfigModule {
-                storage_config,
-                worker_config,
-                job_queue_config: job_queue_config.clone(),
-                runner_factory: Arc::new(runner_factory),
-            });
-            let subscrber = repositories.chan_job_result_pubsub_repository.clone();
-            Ok((
-                RdbChanJobAppImpl::new(
-                    config_module,
-                    id_generator,
-                    repositories,
-                    Arc::new(worker_app),
-                    job_memory_cache,
-                ),
-                subscrber,
-            ))
-        })
+        let runner_factory = RunnerSpecFactory::new(Arc::new(Plugins::new()));
+        runner_factory.load_plugins().await;
+        let config_module = Arc::new(AppConfigModule {
+            storage_config,
+            worker_config,
+            job_queue_config: job_queue_config.clone(),
+            runner_factory: Arc::new(runner_factory),
+        });
+        let subscrber = repositories.chan_job_result_pubsub_repository.clone();
+        Ok((
+            RdbChanJobAppImpl::new(
+                config_module,
+                id_generator,
+                repositories,
+                Arc::new(worker_app),
+                job_memory_cache,
+            ),
+            subscrber,
+        ))
     }
 
     #[test]
     fn test_create_direct_job_complete() -> Result<()> {
         // tracing_init_test(tracing::Level::DEBUG);
         // enqueue, find, complete, find, delete, find
-        let (app, _) = create_test_app(true)?;
         TEST_RUNTIME.block_on(async {
+            let (app, _) = create_test_app(true).await?;
             let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
                 name: "ls".to_string(),
             });
@@ -844,8 +843,8 @@ mod tests {
     fn test_create_listen_after_job_complete() -> Result<()> {
         // tracing_init_test(tracing::Level::DEBUG);
         // enqueue, find, complete, find, delete, find
-        let (app, subscriber) = create_test_app(true)?;
         TEST_RUNTIME.block_on(async {
+            let (app, subscriber) = create_test_app(true).await?;
             let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
                 name: "ls".to_string(),
             });
@@ -959,7 +958,6 @@ mod tests {
     #[test]
     fn test_create_normal_job_complete() -> Result<()> {
         // enqueue, find, complete, find, delete, find
-        let (app, _) = create_test_app(true)?;
         let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
             name: "ls".to_string(),
         });
@@ -978,6 +976,7 @@ mod tests {
             output_as_stream: false,
         };
         TEST_RUNTIME.block_on(async {
+            let (app, _) = create_test_app(true).await?;
             let worker_id = app.worker_app().create(&wd).await?;
             let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["/".to_string()],
@@ -1062,8 +1061,8 @@ mod tests {
         let priority = Priority::Medium;
         let channel: Option<&String> = None;
 
-        let (app, _) = create_test_app(false)?;
         TEST_RUNTIME.block_on(async {
+            let (app, _) = create_test_app(false).await?;
             // create command worker with backup queue
             let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
                 name: "ls".to_string(),

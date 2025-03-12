@@ -9,7 +9,7 @@ use jobworkerp_base::{
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use tonic::{transport::Channel, IntoRequest};
 
-use super::RunnerTrait;
+use super::{RunnerSpec, RunnerTrait};
 
 /// grpc unary request runner.
 /// specify protobuf payload as arg in enqueue.
@@ -39,11 +39,25 @@ impl Default for GrpcUnaryRunner {
     }
 }
 
-#[async_trait]
-impl RunnerTrait for GrpcUnaryRunner {
+impl RunnerSpec for GrpcUnaryRunner {
     fn name(&self) -> String {
         RunnerType::GrpcUnary.as_str_name().to_string()
     }
+    fn runner_settings_proto(&self) -> String {
+        include_str!("../../protobuf/jobworkerp/runner/grpc_unary_runner.proto").to_string()
+    }
+    fn job_args_proto(&self) -> String {
+        include_str!("../../protobuf/jobworkerp/runner/grpc_unary_args.proto").to_string()
+    }
+    fn result_output_proto(&self) -> Option<String> {
+        None
+    }
+    fn output_as_stream(&self) -> Option<bool> {
+        Some(false)
+    }
+}
+#[async_trait]
+impl RunnerTrait for GrpcUnaryRunner {
     async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
         let req = ProstMessageCodec::deserialize_message::<GrpcUnaryRunnerSettings>(&settings)?;
         self.create(&req.host, &req.port).await
@@ -89,19 +103,6 @@ impl RunnerTrait for GrpcUnaryRunner {
 
     async fn cancel(&mut self) {
         tracing::warn!("cannot cancel grpc request until timeout")
-    }
-    fn runner_settings_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/grpc_unary_runner.proto").to_string()
-    }
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/grpc_unary_args.proto").to_string()
-    }
-    // TODO resolve by reflection api if possible
-    fn result_output_proto(&self) -> Option<String> {
-        None
-    }
-    fn output_as_stream(&self) -> Option<bool> {
-        Some(false)
     }
 }
 

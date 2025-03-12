@@ -2,9 +2,8 @@ pub mod rdb;
 pub mod redis;
 
 use self::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
-use super::{
-    runner::factory::RunnerFactory, IdGeneratorWrapper, InfraConfigModule, JobQueueConfig,
-};
+use super::{IdGeneratorWrapper, InfraConfigModule, JobQueueConfig};
+use jobworkerp_runner::runner::factory::RunnerSpecFactory;
 use rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use std::sync::Arc;
 
@@ -21,7 +20,7 @@ impl HybridRepositoryModule {
     pub async fn new(
         infra_config_module: &InfraConfigModule,
         id_generator: Arc<IdGeneratorWrapper>,
-        runner_factory: Arc<RunnerFactory>,
+        runner_factory: Arc<RunnerSpecFactory>,
     ) -> Self {
         let redis_module = RedisRepositoryModule::new(
             infra_config_module,
@@ -40,7 +39,7 @@ impl HybridRepositoryModule {
     pub async fn new_by_env(
         job_queue_config: Arc<JobQueueConfig>,
         id_generator: Arc<IdGeneratorWrapper>,
-        runner_factory: Arc<RunnerFactory>,
+        runner_factory: Arc<RunnerSpecFactory>,
     ) -> Self {
         let redis_module = RedisRepositoryModule::new_by_env(
             Self::DEFAULT_WORKER_REDIS_EXPIRE_SEC,

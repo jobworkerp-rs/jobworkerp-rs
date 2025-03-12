@@ -156,7 +156,7 @@ impl RunnerApp for RdbRunnerAppImpl {
     }
 
     // for test
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     async fn create_test_runner(
         &self,
         runner_id: &RunnerId,

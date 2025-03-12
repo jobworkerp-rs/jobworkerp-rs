@@ -1,11 +1,11 @@
 use anyhow::{anyhow, Result};
 use app::app::WorkerConfig;
+use app_wrapper::runner::RunnerFactory;
 use deadpool::managed::Timeouts;
 use deadpool::{
     managed::{Manager, Metrics, Object, Pool, PoolConfig, RecycleResult},
     Runtime,
 };
-use infra::infra::runner::factory::RunnerFactory;
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::runner::RunnerTrait;
 use proto::jobworkerp::data::{RunnerData, WorkerData};
@@ -150,7 +150,9 @@ mod tests {
     async fn test_runner_pool() -> Result<()> {
         // dotenvy::dotenv()?;
         std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug/");
-        let runner_factory = RunnerFactory::new();
+
+        let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
+        let runner_factory = RunnerFactory::new(app_module.clone());
         runner_factory.load_plugins().await;
         let ope = CommandRunnerSettings {
             name: "ls".to_string(),
@@ -193,7 +195,8 @@ mod tests {
     async fn test_runner_pool_non_static_err() -> Result<()> {
         std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug/");
         // dotenvy::dotenv()?;
-        let runner_factory = RunnerFactory::new();
+        let app_module = Arc::new(app::module::test::create_hybrid_test_app().await.unwrap());
+        let runner_factory = RunnerFactory::new(app_module);
         runner_factory.load_plugins().await;
         let ope = CommandRunnerSettings {
             name: "ls".to_string(),
