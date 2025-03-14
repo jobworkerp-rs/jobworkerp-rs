@@ -113,94 +113,95 @@ mod test {
     impl UseWorkerPublish for UseWorkerMapAndSubscribeImpl {}
 
     #[cfg(test)]
-    #[tokio::test]
-    async fn subscribe_worker_changed_test() -> Result<()> {
-        let redis_client = setup_test_redis_client()?;
-        let worker_config = Arc::new(load_worker_config());
-        let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
-        let worker_app2 = app_module.worker_app.clone();
-        worker_app2.delete_all().await?;
+    #[test]
+    fn subscribe_worker_changed_test() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let redis_client = setup_test_redis_client()?;
+            let worker_config = Arc::new(load_worker_config());
+            let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
+            let worker_app2 = app_module.worker_app.clone();
+            worker_app2.delete_all().await?;
 
-        let runner_factory = Arc::new(RunnerFactory::new(app_module.clone()));
-        // XXX empty runner map (must confirm deletion: use mock?)
-        let runner_map = RunnerFactoryWithPoolMap::new(runner_factory.clone(), worker_config);
+            let runner_factory = Arc::new(RunnerFactory::new(app_module.clone()));
+            // XXX empty runner map (must confirm deletion: use mock?)
+            let runner_map = RunnerFactoryWithPoolMap::new(runner_factory.clone(), worker_config);
 
-        let repo = UseWorkerMapAndSubscribeImpl {
-            worker_app: app_module.worker_app.clone(),
-            redis_client,
-            runner_map,
-        };
+            let repo = UseWorkerMapAndSubscribeImpl {
+                worker_app: app_module.worker_app.clone(),
+                redis_client,
+                runner_map,
+            };
 
-        let r = repo; //.clone();
+            let r = repo; //.clone();
 
-        // begin subscribe
-        let handle = tokio::spawn(async move {
-            r.subscribe_worker_changed().await.unwrap();
-        });
-        sleep(Duration::from_millis(100)).await;
+            // begin subscribe
+            let handle = tokio::spawn(async move {
+                r.subscribe_worker_changed().await.unwrap();
+            });
+            sleep(Duration::from_millis(100)).await;
 
-        let runner_settings = ProstMessageCodec::serialize_message(&CommandRunnerSettings {
-            name: "ls".to_string(),
-        })?;
-        let worker_data = WorkerData {
-            name: "hoge_worker".to_string(),
-            runner_id: Some(RunnerId { value: 1 }),
-            runner_settings,
-            channel: Some("test_channel".to_string()),
-            ..Default::default()
-        };
-        // create worker_data via redis pubsub
+            let runner_settings = ProstMessageCodec::serialize_message(&CommandRunnerSettings {
+                name: "ls".to_string(),
+            })?;
+            let worker_data = WorkerData {
+                name: "hoge_worker".to_string(),
+                runner_id: Some(RunnerId { value: 1 }),
+                runner_settings,
+                channel: Some("test_channel".to_string()),
+                ..Default::default()
+            };
+            // create worker_data via redis pubsub
 
-        // publish event and test clear cache (publish in redis repository)
-        let worker_id = worker_app2.create(&worker_data).await?;
-        sleep(Duration::from_millis(100)).await;
+            // publish event and test clear cache (publish in redis repository)
+            let worker_id = worker_app2.create(&worker_data).await?;
+            sleep(Duration::from_millis(100)).await;
 
-        // ref worker_map2
-        assert_eq!(
-            worker_app2
-                .find_data_by_opt(Some(&worker_id))
-                .await
-                .unwrap()
-                .unwrap()
-                .channel,
-            Some("test_channel".to_string())
-        );
-        // publish worker deleted event
-        assert!(worker_app2.delete(&worker_id).await?);
-        // repo.publish_worker_deleted(&worker_id).await.unwrap();
-        sleep(Duration::from_millis(100)).await;
+            // ref worker_map2
+            assert_eq!(
+                worker_app2
+                    .find_data_by_opt(Some(&worker_id))
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .channel,
+                Some("test_channel".to_string())
+            );
+            // publish worker deleted event
+            assert!(worker_app2.delete(&worker_id).await?);
+            // repo.publish_worker_deleted(&worker_id).await.unwrap();
+            sleep(Duration::from_millis(100)).await;
 
-        assert_eq!(worker_app2.find_data(&worker_id).await.unwrap(), None);
+            assert_eq!(worker_app2.find_data(&worker_id).await.unwrap(), None);
 
-        // create worker_data again
-        let worker_id2 = worker_app2.create(&worker_data).await?;
-        // repo.publish_worker_changed(&worker_id2, &worker_data)
-        //     .await
-        //     .unwrap();
-        sleep(Duration::from_millis(100)).await;
-        // ref worker_map2
-        assert_eq!(
-            worker_app2
-                .find_data_by_opt(Some(&worker_id2))
-                .await
-                .unwrap()
-                .unwrap()
-                .channel,
-            Some("test_channel".to_string())
-        );
+            // create worker_data again
+            let worker_id2 = worker_app2.create(&worker_data).await?;
+            // repo.publish_worker_changed(&worker_id2, &worker_data)
+            //     .await
+            //     .unwrap();
+            sleep(Duration::from_millis(100)).await;
+            // ref worker_map2
+            assert_eq!(
+                worker_app2
+                    .find_data_by_opt(Some(&worker_id2))
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .channel,
+                Some("test_channel".to_string())
+            );
 
-        // publish worker all deleted event
-        // repo.publish_worker_all_deleted().await.unwrap();
-        sleep(Duration::from_millis(100)).await;
-        assert_eq!(
-            worker_app2
-                .find_data_by_opt(Some(&worker_id))
-                .await
-                .unwrap(),
-            None
-        );
-        handle.abort();
-
-        Ok(())
+            // publish worker all deleted event
+            // repo.publish_worker_all_deleted().await.unwrap();
+            sleep(Duration::from_millis(100)).await;
+            assert_eq!(
+                worker_app2
+                    .find_data_by_opt(Some(&worker_id))
+                    .await
+                    .unwrap(),
+                None
+            );
+            handle.abort();
+            Ok(())
+        })
     }
 }

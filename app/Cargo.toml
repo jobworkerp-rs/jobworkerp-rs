@@ -39,3 +39,4 @@ dotenvy = { workspace = true }
 sqlx = { workspace = true }
 tracing-subscriber = { workspace = true }
 app = { path = ".", features = ["test-utils"] }
+infra = { path = "../infra", features = ["test-utils"] }
