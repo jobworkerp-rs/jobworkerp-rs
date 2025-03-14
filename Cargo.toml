@@ -6,13 +6,14 @@ members = [
     "proto",
     "base",
     "runner",
+    "plugins/test_runner",
+    "plugins/hello_runner",
     "infra",
+    "app",
     "app-wrapper",
     "worker-app",
     "grpc-front",
     "worker-main",
-    "plugins/test_runner",
-    "plugins/hello_runner",
 ]
 
 resolver = "2"
