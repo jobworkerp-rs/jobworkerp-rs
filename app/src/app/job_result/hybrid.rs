@@ -311,58 +311,48 @@ impl UseRedisJobResultPubSubRepository for HybridJobResultAppImpl {
 
 //TODO
 // create test
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "test-utils"))]
+pub mod tests {
     use super::HybridJobResultAppImpl;
-    use super::JobResultApp;
-    use super::*;
     use crate::app::runner::hybrid::HybridRunnerAppImpl;
     use crate::app::runner::RunnerApp;
     use crate::app::worker::hybrid::HybridWorkerAppImpl;
     use crate::app::{StorageConfig, StorageType};
     use anyhow::Result;
-    use command_utils::util::datetime;
-    use infra::infra::job::rows::JobqueueAndCodec;
-    use infra::infra::job::rows::UseJobqueueAndCodec;
     use infra::infra::module::rdb::test::setup_test_rdb_module;
     use infra::infra::module::redis::test::setup_test_redis_module;
     use infra::infra::module::HybridRepositoryModule;
     use infra::infra::IdGeneratorWrapper;
-    use infra_utils::infra::test::TEST_RUNTIME;
-    use jobworkerp_runner::jobworkerp::runner::CommandArgs;
-    use jobworkerp_runner::jobworkerp::runner::CommandRunnerSettings;
-    use proto::jobworkerp::data::Priority;
-    use proto::jobworkerp::data::QueueType;
-    use proto::jobworkerp::data::ResultOutput;
-    use proto::jobworkerp::data::RunnerId;
-    use proto::jobworkerp::data::{
-        JobId, JobResult, ResponseType, ResultStatus, Worker, WorkerData,
-    };
     use std::sync::Arc;
     use std::time::Duration;
 
     #[test]
     fn test_should_store() {
+        use crate::app::job_result::JobResultAppHelper;
+        use command_utils::util::datetime;
+        use infra::infra::job::rows::JobqueueAndCodec;
+        use infra::infra::job::rows::UseJobqueueAndCodec;
+
         let args = JobqueueAndCodec::serialize_message(&proto::TestArgs {
             args: vec!["test".to_string()],
         });
-        let mut job_result_data = JobResultData {
+        let mut job_result_data = proto::jobworkerp::data::JobResultData {
             job_id: None,
             worker_id: None,
-            status: ResultStatus::Success as i32,
+            status: proto::jobworkerp::data::ResultStatus::Success as i32,
             worker_name: "".to_string(),
             args,
             uniq_key: None,
-            output: Some(ResultOutput {
+            output: Some(proto::jobworkerp::data::ResultOutput {
                 items: vec![b"data".to_vec()],
             }),
             retried: 0,
             max_retry: 0,
-            priority: Priority::High as i32,
+            priority: proto::jobworkerp::data::Priority::High as i32,
             timeout: 0,
             enqueue_time: datetime::now_millis(),
             run_after_time: 0,
-            response_type: ResponseType::NoResult as i32,
+            response_type: proto::jobworkerp::data::ResponseType::NoResult as i32,
             start_time: datetime::now_millis(),
             end_time: datetime::now_millis(),
             store_success: false,
@@ -370,84 +360,89 @@ mod tests {
         };
         assert!(!HybridJobResultAppImpl::_should_store(&job_result_data));
 
-        job_result_data.status = ResultStatus::ErrorAndRetry as i32;
+        job_result_data.status = proto::jobworkerp::data::ResultStatus::ErrorAndRetry as i32;
         assert!(!HybridJobResultAppImpl::_should_store(&job_result_data));
 
         job_result_data.store_success = true;
-        job_result_data.status = ResultStatus::Success as i32;
+        job_result_data.status = proto::jobworkerp::data::ResultStatus::Success as i32;
         assert!(HybridJobResultAppImpl::_should_store(&job_result_data));
-        job_result_data.status = ResultStatus::ErrorAndRetry as i32;
+        job_result_data.status = proto::jobworkerp::data::ResultStatus::ErrorAndRetry as i32;
         assert!(!HybridJobResultAppImpl::_should_store(&job_result_data));
 
         job_result_data.store_failure = true;
-        job_result_data.status = ResultStatus::ErrorAndRetry as i32;
+        job_result_data.status = proto::jobworkerp::data::ResultStatus::ErrorAndRetry as i32;
         assert!(HybridJobResultAppImpl::_should_store(&job_result_data));
 
         job_result_data.store_success = false;
-        job_result_data.status = ResultStatus::Success as i32;
+        job_result_data.status = proto::jobworkerp::data::ResultStatus::Success as i32;
         assert!(!HybridJobResultAppImpl::_should_store(&job_result_data));
     }
 
-    fn setup() -> Result<HybridJobResultAppImpl> {
+    pub async fn create_test_app() -> Result<HybridJobResultAppImpl> {
         // dotenv::dotenv().ok();
-        let rdb_module = setup_test_rdb_module();
-        TEST_RUNTIME.block_on(async {
-            let redis_module = setup_test_redis_module().await;
-            let repositories = Arc::new(HybridRepositoryModule {
-                redis_module,
-                rdb_chan_module: rdb_module,
-            });
-            let id_generator = Arc::new(IdGeneratorWrapper::new());
-            let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
-                num_counters: 10000,
-                max_cost: 10000,
-                use_metrics: false,
-            };
-            let storage_config = Arc::new(StorageConfig {
-                r#type: StorageType::Scalable,
-                restore_at_startup: Some(false),
-            });
-            let descriptor_cache = Arc::new(infra_utils::infra::memory::MemoryCacheImpl::new(
-                &mc_config,
-                Some(Duration::from_secs(5 * 60)),
-            ));
-            let runner_app = Arc::new(HybridRunnerAppImpl::new(
-                storage_config.clone(),
-                &mc_config,
-                repositories.clone(),
-                descriptor_cache.clone(),
-            ));
-            runner_app.load_runner().await.unwrap();
-            let worker_app = Arc::new(HybridWorkerAppImpl::new(
-                storage_config.clone(),
-                id_generator.clone(),
-                &mc_config,
-                repositories.clone(),
-                descriptor_cache.clone(),
-                runner_app,
-            ));
-            Ok(HybridJobResultAppImpl::new(
-                storage_config,
-                id_generator.clone(),
-                repositories,
-                worker_app,
-            ))
-        })
+        let rdb_module = setup_test_rdb_module().await;
+        let redis_module = setup_test_redis_module().await;
+        let repositories = Arc::new(HybridRepositoryModule {
+            redis_module,
+            rdb_chan_module: rdb_module,
+        });
+        let id_generator = Arc::new(IdGeneratorWrapper::new());
+        let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
+            num_counters: 10000,
+            max_cost: 10000,
+            use_metrics: false,
+        };
+        let storage_config = Arc::new(StorageConfig {
+            r#type: StorageType::Scalable,
+            restore_at_startup: Some(false),
+        });
+        let descriptor_cache = Arc::new(infra_utils::infra::memory::MemoryCacheImpl::new(
+            &mc_config,
+            Some(Duration::from_secs(5 * 60)),
+        ));
+        let runner_app = Arc::new(HybridRunnerAppImpl::new(
+            storage_config.clone(),
+            &mc_config,
+            repositories.clone(),
+            descriptor_cache.clone(),
+        ));
+        runner_app.load_runner().await.unwrap();
+        let worker_app = Arc::new(HybridWorkerAppImpl::new(
+            storage_config.clone(),
+            id_generator.clone(),
+            &mc_config,
+            repositories.clone(),
+            descriptor_cache.clone(),
+            runner_app,
+        ));
+        Ok(HybridJobResultAppImpl::new(
+            storage_config,
+            id_generator.clone(),
+            repositories,
+            worker_app,
+        ))
     }
     #[test]
     fn test_create_job_result_if_necessary() -> Result<()> {
-        let app = setup()?;
+        use super::*;
+        use command_utils::util::datetime;
+        use infra::infra::job::rows::JobqueueAndCodec;
+        use infra::infra::job::rows::UseJobqueueAndCodec;
+        use infra_utils::infra::test::TEST_RUNTIME;
+        use jobworkerp_runner::jobworkerp::runner::CommandArgs;
+        use jobworkerp_runner::jobworkerp::runner::CommandRunnerSettings;
+
         let runner_settings = JobqueueAndCodec::serialize_message(&CommandRunnerSettings {
             name: "ls".to_string(),
         });
         let worker_data = WorkerData {
             name: "test".to_string(),
-            runner_id: Some(RunnerId { value: 1 }),
+            runner_id: Some(proto::jobworkerp::data::RunnerId { value: 1 }),
             runner_settings,
             retry_policy: None,
             periodic_interval: 0,
             channel: Some("hoge".to_string()),
-            queue_type: QueueType::ForcedRdb as i32,
+            queue_type: proto::jobworkerp::data::QueueType::ForcedRdb as i32,
             response_type: ResponseType::Direct as i32,
             store_success: true,
             store_failure: true,
@@ -455,6 +450,7 @@ mod tests {
             output_as_stream: false,
         };
         TEST_RUNTIME.block_on(async {
+            let app = create_test_app().await?;
             let worker_id = app.worker_app().create(&worker_data).await?;
             let worker = Worker {
                 id: Some(worker_id),
@@ -476,12 +472,12 @@ mod tests {
                 worker_name: worker_data.name.clone(),
                 args,
                 uniq_key: Some("uniq_key".to_string()),
-                output: Some(ResultOutput {
+                output: Some(proto::jobworkerp::data::ResultOutput {
                     items: vec![b"data".to_vec()],
                 }),
                 retried: 0,
                 max_retry: worker_data.retry_policy.map(|p| p.max_retry).unwrap_or(0),
-                priority: Priority::High as i32,
+                priority: proto::jobworkerp::data::Priority::High as i32,
                 timeout: 0,
                 enqueue_time: datetime::now_millis(),
                 run_after_time: 0,

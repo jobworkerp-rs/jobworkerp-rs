@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package jobworkerp.runner;
+
+message WorkflowResult {
+  enum WorkflowStatus {
+    Completed = 0;
+    Faulted = 1;
+    Cancelled = 2;
+    // illegal status as result (bug?)
+    Pending = 3;
+    Running = 4;
+    Waiting = 5;
+  }
+  // workflow id (uuid v7)
+  string id = 1;
+  // output string (plain string or json string)
+  string output = 2;
+  // workflow status
+  WorkflowStatus status = 3;
+  // error message (if any)
+  optional string error_message = 4;
+}

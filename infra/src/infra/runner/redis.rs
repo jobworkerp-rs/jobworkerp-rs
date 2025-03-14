@@ -1,10 +1,10 @@
 use super::rows::RunnerRow;
-use crate::infra::runner::factory::{RunnerFactory, UseRunnerFactory};
 use crate::infra::{IdGeneratorWrapper, UseIdGenerator};
 use anyhow::Result;
 use async_trait::async_trait;
 use infra_utils::infra::redis::{RedisPool, UseRedisPool};
 use jobworkerp_base::error::JobWorkerError;
+use jobworkerp_runner::runner::factory::{RunnerSpecFactory, UseRunnerSpecFactory};
 use prost::Message;
 use proto::jobworkerp::data::{Runner, RunnerData, RunnerId, RunnerType};
 use redis::AsyncCommands;
@@ -15,16 +15,20 @@ use std::sync::Arc;
 // TODO use if you need (not using in default)
 #[async_trait]
 pub trait RedisRunnerRepository:
-    UseRedisPool + UseRunnerFactory + UseIdGenerator + Sync + 'static
+    UseRedisPool + UseRunnerSpecFactory + UseIdGenerator + Sync + 'static
 where
     Self: Send + 'static,
 {
     const CACHE_KEY: &'static str = "RUNNER_DEF";
 
     async fn add_from_plugins(&self) -> Result<()> {
-        let names = self.runner_factory().load_plugins().await;
+        let names = self.plugin_runner_factory().load_plugins().await;
         for (name, fname) in names.iter() {
-            if let Some(p) = self.runner_factory().create_by_name(name, false).await {
+            if let Some(p) = self
+                .plugin_runner_factory()
+                .create_plugin_by_name(name, false)
+                .await
+            {
                 let runner = RunnerRow {
                     id: self.id_generator().generate_id()?,
                     name: name.clone(),
@@ -110,7 +114,11 @@ where
             data: Some(data),
         }) = rem
         {
-            if let Err(e) = self.runner_factory().unload_plugins(&data.name).await {
+            if let Err(e) = self
+                .plugin_runner_factory()
+                .unload_plugins(&data.name)
+                .await
+            {
                 tracing::warn!("Failed to remove runner: {:?}", e);
             }
         }
@@ -179,7 +187,7 @@ where
     }
 }
 
-impl<T: UseRedisPool + UseIdGenerator + UseRunnerFactory + Send + Sync + 'static>
+impl<T: UseRedisPool + UseIdGenerator + UseRunnerSpecFactory + Send + Sync + 'static>
     RedisRunnerRepository for T
 {
 }
@@ -189,20 +197,20 @@ pub struct RedisRunnerRepositoryImpl {
     pub redis_pool: &'static RedisPool,
     pub redis_client: deadpool_redis::redis::Client,
     id_generator: Arc<IdGeneratorWrapper>,
-    runner_factory: Arc<RunnerFactory>,
+    runner_spec_factory: Arc<RunnerSpecFactory>,
 }
 impl RedisRunnerRepositoryImpl {
     pub fn new(
         redis_pool: &'static RedisPool,
         client: deadpool_redis::redis::Client,
         id_generator: Arc<IdGeneratorWrapper>,
-        runner_factory: Arc<RunnerFactory>,
+        runner_factory: Arc<RunnerSpecFactory>,
     ) -> Self {
         Self {
             redis_pool,
             redis_client: client,
             id_generator,
-            runner_factory,
+            runner_spec_factory: runner_factory,
         }
     }
 }
@@ -218,9 +226,9 @@ impl UseIdGenerator for RedisRunnerRepositoryImpl {
         &self.id_generator
     }
 }
-impl UseRunnerFactory for RedisRunnerRepositoryImpl {
-    fn runner_factory(&self) -> &RunnerFactory {
-        &self.runner_factory
+impl UseRunnerSpecFactory for RedisRunnerRepositoryImpl {
+    fn plugin_runner_factory(&self) -> &RunnerSpecFactory {
+        &self.runner_spec_factory
     }
 }
 
@@ -231,17 +239,18 @@ pub trait UseRedisRunnerRepository {
 #[tokio::test]
 async fn redis_test() -> Result<()> {
     use command_utils::util::option::FlatMap;
+    use jobworkerp_runner::runner::plugins::Plugins;
 
     let pool = infra_utils::infra::test::setup_test_redis_pool().await;
     let cli = infra_utils::infra::test::setup_test_redis_client()?;
-    let runner_factory = Arc::new(RunnerFactory::new());
-    runner_factory.load_plugins().await;
+    let runner_spec_factory = Arc::new(RunnerSpecFactory::new(Arc::new(Plugins::new())));
+    runner_spec_factory.load_plugins().await;
 
     let repo = RedisRunnerRepositoryImpl {
         redis_pool: pool,
         redis_client: cli,
         id_generator: Arc::new(IdGeneratorWrapper::new()),
-        runner_factory,
+        runner_spec_factory,
     };
     let id = RunnerId { value: 1 };
     let runner_data = &RunnerData {

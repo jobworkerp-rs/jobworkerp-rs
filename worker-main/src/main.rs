@@ -5,9 +5,10 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use app::module::{AppConfigModule, AppModule};
+use app_wrapper::runner::RunnerFactory;
 use command_utils::util::{shutdown, tracing::LoggingConfig};
 use dotenvy::dotenv;
-use infra::infra::runner::factory::RunnerFactory;
+use jobworkerp_runner::runner::{factory::RunnerSpecFactory, plugins::Plugins};
 
 // start all-in-one server
 // #[tokio::main]
@@ -24,14 +25,16 @@ async fn main() -> Result<()> {
     };
     command_utils::util::tracing::tracing_init(conf).await?;
 
-    let runner_factory = Arc::new(RunnerFactory::new());
-
     let (lock, mut wait) = shutdown::create_lock_and_wait();
 
-    let app_config_module = Arc::new(AppConfigModule::new_by_env(runner_factory.clone()));
+    let plugins = Arc::new(Plugins::new());
+    let runner_spec_factory = Arc::new(RunnerSpecFactory::new(plugins.clone()));
+    let app_config_module = Arc::new(AppConfigModule::new_by_env(runner_spec_factory.clone()));
 
     let app_module = Arc::new(AppModule::new_by_env(app_config_module).await?);
     app_module.on_start_all_in_one().await?;
+
+    let runner_factory = Arc::new(RunnerFactory::new(app_module.clone()));
 
     tracing::info!("start worker");
     let jh = tokio::spawn(lib::start_worker(

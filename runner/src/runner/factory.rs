@@ -1,25 +1,28 @@
-use crate::infra::plugins::{PluginLoader, Plugins};
+use std::sync::Arc;
+
+use super::{
+    command::CommandRunnerImpl,
+    docker::{DockerExecRunner, DockerRunner},
+    grpc_unary::GrpcUnaryRunner,
+    plugins::{PluginLoader, Plugins},
+    python::PythonCommandRunner,
+    request::RequestRunner,
+    simple_workflow::SimpleWorkflowRunnerSpecImpl,
+    slack::SlackPostMessageRunner,
+    RunnerSpec,
+};
 use anyhow::Result;
-use jobworkerp_runner::runner::command::CommandRunnerImpl;
-use jobworkerp_runner::runner::docker::{DockerExecRunner, DockerRunner};
-use jobworkerp_runner::runner::grpc_unary::GrpcUnaryRunner;
-use jobworkerp_runner::runner::python::PythonCommandRunner;
-use jobworkerp_runner::runner::request::RequestRunner;
-use jobworkerp_runner::runner::slack::SlackPostMessageRunner;
-use jobworkerp_runner::runner::RunnerTrait;
 use proto::jobworkerp::data::RunnerType;
 
 #[derive(Debug)]
-pub struct RunnerFactory {
+pub struct RunnerSpecFactory {
     // TODO to map?
-    plugins: Plugins,
+    pub plugins: Arc<Plugins>,
 }
 
-impl RunnerFactory {
-    pub fn new() -> Self {
-        Self {
-            plugins: Plugins::new(),
-        }
+impl RunnerSpecFactory {
+    pub fn new(plugins: Arc<Plugins>) -> Self {
+        Self { plugins }
     }
     pub async fn load_plugins(&self) -> Vec<(String, String)> {
         self.plugins.load_plugin_files_from_env().await
@@ -28,32 +31,36 @@ impl RunnerFactory {
         self.plugins.runner_plugins().write().await.unload(name)
     }
     // use_static: need to specify correctly to create for running
-    pub async fn create_by_name(
+    pub async fn create_plugin_by_name(
         &self,
         name: &str,
         use_static: bool,
-    ) -> Option<Box<dyn RunnerTrait + Send + Sync>> {
+    ) -> Option<Box<dyn RunnerSpec + Send + Sync>> {
         match RunnerType::from_str_name(name) {
             Some(RunnerType::Command) => {
-                Some(Box::new(CommandRunnerImpl::new()) as Box<dyn RunnerTrait + Send + Sync>)
+                Some(Box::new(CommandRunnerImpl::new()) as Box<dyn RunnerSpec + Send + Sync>)
             }
             Some(RunnerType::PythonCommand) => {
-                Some(Box::new(PythonCommandRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
+                Some(Box::new(PythonCommandRunner::new()) as Box<dyn RunnerSpec + Send + Sync>)
             }
             Some(RunnerType::Docker) if use_static => {
-                Some(Box::new(DockerExecRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
+                Some(Box::new(DockerExecRunner::new()) as Box<dyn RunnerSpec + Send + Sync>)
             }
             Some(RunnerType::Docker) => {
-                Some(Box::new(DockerRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
+                Some(Box::new(DockerRunner::new()) as Box<dyn RunnerSpec + Send + Sync>)
             }
             Some(RunnerType::GrpcUnary) => {
-                Some(Box::new(GrpcUnaryRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
+                Some(Box::new(GrpcUnaryRunner::new()) as Box<dyn RunnerSpec + Send + Sync>)
             }
             Some(RunnerType::HttpRequest) => {
-                Some(Box::new(RequestRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
+                Some(Box::new(RequestRunner::new()) as Box<dyn RunnerSpec + Send + Sync>)
             }
             Some(RunnerType::SlackPostMessage) => {
-                Some(Box::new(SlackPostMessageRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
+                Some(Box::new(SlackPostMessageRunner::new()) as Box<dyn RunnerSpec + Send + Sync>)
+            }
+            Some(RunnerType::SimpleWorkflow) => {
+                Some(Box::new(SimpleWorkflowRunnerSpecImpl::new())
+                    as Box<dyn RunnerSpec + Send + Sync>)
             }
             _ => self
                 .plugins
@@ -61,19 +68,13 @@ impl RunnerFactory {
                 .write()
                 .await
                 .find_plugin_runner_by_name(name)
-                .map(|r| Box::new(r) as Box<dyn RunnerTrait + Send + Sync>),
+                .map(|r| Box::new(r) as Box<dyn RunnerSpec + Send + Sync>),
         }
     }
 }
 
-impl Default for RunnerFactory {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-pub trait UseRunnerFactory {
-    fn runner_factory(&self) -> &RunnerFactory;
+pub trait UseRunnerSpecFactory {
+    fn plugin_runner_factory(&self) -> &RunnerSpecFactory;
 }
 
 #[cfg(test)]
@@ -83,7 +84,7 @@ mod test {
     #[tokio::test]
     async fn test_new() {
         std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug");
-        let runner_factory = RunnerFactory::new();
+        let runner_factory = RunnerSpecFactory::new(Arc::new(Plugins::new()));
         runner_factory.load_plugins().await;
         assert_eq!(
             runner_factory
@@ -98,7 +99,7 @@ mod test {
         // from builtins
         assert_eq!(
             runner_factory
-                .create_by_name(RunnerType::GrpcUnary.as_str_name(), false)
+                .create_plugin_by_name(RunnerType::GrpcUnary.as_str_name(), false)
                 .await
                 .unwrap()
                 .name(),
@@ -107,7 +108,7 @@ mod test {
         // from plugins
         assert_eq!(
             runner_factory
-                .create_by_name("Test", false)
+                .create_plugin_by_name("Test", false)
                 .await
                 .unwrap()
                 .name(),
@@ -117,10 +118,10 @@ mod test {
 
     #[tokio::test]
     async fn test_create_by_name() {
-        let runner_factory = RunnerFactory::new();
+        let runner_factory = RunnerSpecFactory::new(Arc::new(Plugins::new()));
         runner_factory.load_plugins().await;
         let runner = runner_factory
-            .create_by_name(RunnerType::Command.as_str_name(), false)
+            .create_plugin_by_name(RunnerType::Command.as_str_name(), false)
             .await
             .unwrap();
         assert_eq!(runner.name(), "COMMAND");

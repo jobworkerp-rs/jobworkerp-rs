@@ -52,6 +52,10 @@ url = { workspace = true }
 [build-dependencies]
 tonic-build = { workspace = true }
 
+[dev-dependencies]
+infra = { path = ".", features = ["test-utils"] }
+
 [features]
 default = []
+test-utils = []
 mysql = ["infra-utils/mysql"]

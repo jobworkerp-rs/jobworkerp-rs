@@ -22,8 +22,10 @@ path = "src/bin/worker.rs"
 proto = { path = "../proto" }
 command-utils = { path = "../modules/command-utils" }
 infra-utils = { path = "../modules/infra-utils" }
+jobworkerp-runner = { path = "../runner" }
 infra = { path = "../infra" }
 app = { path = "../app" }
+app-wrapper = { path = "../app-wrapper" }
 worker-app = { path = "../worker-app" }
 grpc-front = { path = "../grpc-front" }
 

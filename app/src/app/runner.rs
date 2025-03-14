@@ -41,7 +41,7 @@ pub trait RunnerApp: fmt::Debug + Send + Sync {
         Self: Send + 'static;
 
     // for test
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     async fn create_test_runner(
         &self,
         runner_id: &RunnerId,
@@ -115,10 +115,32 @@ pub trait UseRunnerParserWithCache: Send + Sync {
                 )))?;
             Some(arg_d)
         };
+        // result_output_proto
+        let result_d = if let Some(result_output_proto) = &runner_data.result_output_proto {
+            if (*result_output_proto).is_empty() {
+                None
+            } else {
+                let result_d = ProtobufDescriptor::new(result_output_proto).map_err(|e| {
+                    JobWorkerError::ParseError(format!("schema result_output_proto error:{:?}", e))
+                })?;
+                let _result_m =
+                    result_d
+                        .get_messages()
+                        .first()
+                        .ok_or(JobWorkerError::InvalidParameter(format!(
+                            "illegal RunnerData: message name is not found from {}",
+                            result_output_proto
+                        )))?;
+                Some(result_d)
+            }
+        } else {
+            None
+        };
         Ok(RunnerDataWithDescriptor {
             runner_data,
             runner_settings_descriptor: ope_d,
             args_descriptor: arg_d,
+            result_descriptor: result_d,
         })
     }
 
@@ -203,6 +225,7 @@ pub struct RunnerDataWithDescriptor {
     pub runner_data: RunnerData,
     pub runner_settings_descriptor: Option<ProtobufDescriptor>,
     pub args_descriptor: Option<ProtobufDescriptor>,
+    pub result_descriptor: Option<ProtobufDescriptor>,
 }
 impl RunnerDataWithDescriptor {
     pub fn get_runner_settings_message(&self) -> Result<Option<MessageDescriptor>> {
@@ -294,7 +317,8 @@ pub trait RunnerCacheHelper {
     }
 }
 
-#[cfg(test)]
+// #[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 pub mod test {
     use super::RunnerDataWithDescriptor;
     use proto::jobworkerp::data::{RunnerData, RunnerType};
@@ -324,6 +348,7 @@ pub mod test {
                 command_utils::protobuf::ProtobufDescriptor::new(&runner_data.job_args_proto)
                     .unwrap(),
             ),
+            result_descriptor: None,
         }
     }
 }

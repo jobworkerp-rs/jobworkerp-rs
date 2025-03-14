@@ -78,6 +78,7 @@ impl WorkerApp for HybridWorkerAppImpl {
             runner_data,
             runner_settings_descriptor: _,
             args_descriptor: _,
+            result_descriptor: _,
         } = self
             .validate_runner_settings_data(&wsid, worker.runner_settings.as_slice())
             .await?
@@ -125,6 +126,7 @@ impl WorkerApp for HybridWorkerAppImpl {
                     runner_data,
                     runner_settings_descriptor: _,
                     args_descriptor: _,
+                    result_descriptor: _,
                 } = self
                     .validate_runner_settings_data(&wsid, w.runner_settings.as_slice())
                     .await?
@@ -443,57 +445,55 @@ mod tests {
     use proto::TestRunnerSettings;
     use std::sync::Arc;
 
-    fn create_test_app(use_mock_id: bool) -> Result<HybridWorkerAppImpl> {
+    async fn create_test_app(use_mock_id: bool) -> Result<HybridWorkerAppImpl> {
         std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug");
-        let rdb_module = setup_test_rdb_module();
-        TEST_RUNTIME.block_on(async {
-            let redis_module = setup_test_redis_module().await;
-            let repositories = Arc::new(HybridRepositoryModule {
-                redis_module,
-                rdb_chan_module: rdb_module,
-            });
-            // mock id generator (generate 1 until called set method)
-            let id_generator = if use_mock_id {
-                Arc::new(IdGeneratorWrapper::new_mock())
-            } else {
-                Arc::new(IdGeneratorWrapper::new())
-            };
-            let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
-                num_counters: 10000,
-                max_cost: 10000,
-                use_metrics: false,
-            };
-            let descriptor_cache = Arc::new(MemoryCacheImpl::new(&mc_config, None));
-            let storage_config = Arc::new(StorageConfig {
-                r#type: StorageType::Scalable,
-                restore_at_startup: Some(false),
-            });
-            let runner_app = HybridRunnerAppImpl::new(
-                storage_config.clone(),
-                &mc_config,
-                repositories.clone(),
-                descriptor_cache.clone(),
-            );
-            let _ = runner_app
-                .create_test_runner(&RunnerId { value: 1 }, "Test")
-                .await?;
-            let worker_app = HybridWorkerAppImpl::new(
-                storage_config.clone(),
-                id_generator.clone(),
-                &mc_config,
-                repositories.clone(),
-                descriptor_cache,
-                Arc::new(runner_app),
-            );
-            Ok(worker_app)
-        })
+        let rdb_module = setup_test_rdb_module().await;
+        let redis_module = setup_test_redis_module().await;
+        let repositories = Arc::new(HybridRepositoryModule {
+            redis_module,
+            rdb_chan_module: rdb_module,
+        });
+        // mock id generator (generate 1 until called set method)
+        let id_generator = if use_mock_id {
+            Arc::new(IdGeneratorWrapper::new_mock())
+        } else {
+            Arc::new(IdGeneratorWrapper::new())
+        };
+        let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
+            num_counters: 10000,
+            max_cost: 10000,
+            use_metrics: false,
+        };
+        let descriptor_cache = Arc::new(MemoryCacheImpl::new(&mc_config, None));
+        let storage_config = Arc::new(StorageConfig {
+            r#type: StorageType::Scalable,
+            restore_at_startup: Some(false),
+        });
+        let runner_app = HybridRunnerAppImpl::new(
+            storage_config.clone(),
+            &mc_config,
+            repositories.clone(),
+            descriptor_cache.clone(),
+        );
+        let _ = runner_app
+            .create_test_runner(&RunnerId { value: 1 }, "Test")
+            .await?;
+        let worker_app = HybridWorkerAppImpl::new(
+            storage_config.clone(),
+            id_generator.clone(),
+            &mc_config,
+            repositories.clone(),
+            descriptor_cache,
+            Arc::new(runner_app),
+        );
+        Ok(worker_app)
     }
 
     #[test]
     fn test_integrated() -> Result<()> {
         // test create 3 workers and find list and update 1 worker and find list and delete 1 worker and find list
-        let app = create_test_app(false)?;
         TEST_RUNTIME.block_on(async {
+            let app = create_test_app(false).await?;
             let runner_settings = JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                 name: "ls".to_string(),
             });

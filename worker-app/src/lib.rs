@@ -1,5 +1,6 @@
 use app::module::{AppConfigModule, AppModule};
-use infra::infra::{runner::factory::RunnerFactory, IdGeneratorWrapper};
+use app_wrapper::runner::RunnerFactory;
+use infra::infra::IdGeneratorWrapper;
 use proto::jobworkerp::data::StorageType;
 use std::sync::Arc;
 use worker::{
