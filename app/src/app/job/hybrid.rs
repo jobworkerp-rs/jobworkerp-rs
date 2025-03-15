@@ -665,7 +665,6 @@ pub mod tests {
     pub async fn create_test_app(
         use_mock_id: bool,
     ) -> Result<(HybridJobAppImpl, RedisJobResultPubSubRepositoryImpl)> {
-        std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug");
         let rdb_module = setup_test_rdb_module().await;
         let redis_module = setup_test_redis_module().await;
         let repositories = Arc::new(HybridRepositoryModule {
@@ -679,8 +678,8 @@ pub mod tests {
             Arc::new(IdGeneratorWrapper::new())
         };
         let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
-            num_counters: 10000,
-            max_cost: 10000,
+            num_counters: 1000000,
+            max_cost: 1000000,
             use_metrics: false,
         };
         let job_memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
@@ -712,8 +711,9 @@ pub mod tests {
         ));
         runner_app.load_runner().await?;
         let _ = runner_app
-            .create_test_runner(&RunnerId { value: 1 }, "Test")
-            .await?;
+            .create_test_runner(&RunnerId { value: 10000 }, "Test")
+            .await
+            .unwrap();
         let worker_app = HybridWorkerAppImpl::new(
             storage_config.clone(),
             id_generator.clone(),
@@ -763,7 +763,7 @@ pub mod tests {
             });
             let wd = proto::jobworkerp::data::WorkerData {
                 name: "testworker".to_string(),
-                runner_id: Some(RunnerId { value: 1 }),
+                runner_id: Some(RunnerId { value: 10000 }),
                 runner_settings,
                 channel: None,
                 response_type: ResponseType::Direct as i32,
@@ -874,7 +874,7 @@ pub mod tests {
             });
             let wd = proto::jobworkerp::data::WorkerData {
                 name: "testworker".to_string(),
-                runner_id: Some(RunnerId { value: 1 }),
+                runner_id: Some(RunnerId { value: 10000 }),
                 runner_settings,
                 channel: None,
                 response_type: ResponseType::ListenAfter as i32,
@@ -987,7 +987,7 @@ pub mod tests {
         });
         let wd = proto::jobworkerp::data::WorkerData {
             name: "testworker".to_string(),
-            runner_id: Some(RunnerId { value: 1 }),
+            runner_id: Some(RunnerId { value: 10000 }),
             runner_settings,
             channel: None,
             response_type: ResponseType::NoResult as i32,
@@ -1093,7 +1093,7 @@ pub mod tests {
             });
             let wd = proto::jobworkerp::data::WorkerData {
                 name: "testworker".to_string(),
-                runner_id: Some(RunnerId { value: 1 }),
+                runner_id: Some(RunnerId { value: 10000 }),
                 runner_settings,
                 channel: channel.cloned(),
                 response_type: ResponseType::NoResult as i32,

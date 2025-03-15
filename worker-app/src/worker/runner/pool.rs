@@ -149,9 +149,6 @@ mod tests {
     #[test]
     fn test_runner_pool() -> Result<()> {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
-            // dotenvy::dotenv()?;
-            std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug/");
-
             let app_module = app::module::test::create_hybrid_test_app().await.unwrap();
             let runner_factory = RunnerFactory::new(Arc::new(app_module));
             runner_factory.load_plugins().await;
@@ -196,7 +193,6 @@ mod tests {
 
     #[test]
     fn test_runner_pool_non_static_err() -> Result<()> {
-        std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug/");
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             // dotenvy::dotenv()?;
             let app_module = app::module::test::create_hybrid_test_app().await.unwrap();
