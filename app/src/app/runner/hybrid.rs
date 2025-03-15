@@ -196,8 +196,8 @@ mod test {
             rdb_chan_module: rdb_module,
         });
         let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
-            num_counters: 10000,
-            max_cost: 10000,
+            num_counters: 1000000,
+            max_cost: 1000000,
             use_metrics: false,
         };
         let descriptor_cache = Arc::new(MemoryCacheImpl::new(&mc_config, None));

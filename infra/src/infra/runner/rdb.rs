@@ -250,7 +250,6 @@ mod test {
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
         let p = RunnerSpecFactory::new(Arc::new(Plugins::new()));
-        std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug");
         p.load_plugins().await;
         let id_generator = Arc::new(crate::infra::IdGeneratorWrapper::new());
         let repository = RdbRunnerRepositoryImpl::new(pool, Arc::new(p), id_generator);

@@ -446,7 +446,6 @@ mod tests {
     use std::sync::Arc;
 
     async fn create_test_app(use_mock_id: bool) -> Result<HybridWorkerAppImpl> {
-        std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug");
         let rdb_module = setup_test_rdb_module().await;
         let redis_module = setup_test_redis_module().await;
         let repositories = Arc::new(HybridRepositoryModule {
@@ -475,9 +474,7 @@ mod tests {
             repositories.clone(),
             descriptor_cache.clone(),
         );
-        let _ = runner_app
-            .create_test_runner(&RunnerId { value: 1 }, "Test")
-            .await?;
+        runner_app.load_runner().await?;
         let worker_app = HybridWorkerAppImpl::new(
             storage_config.clone(),
             id_generator.clone(),
@@ -529,7 +526,7 @@ mod tests {
             let w4 = WorkerData {
                 name: "test4".to_string(),
                 runner_settings: runner_settings.clone(),
-                // runner_id: Some(RunnerId { value: 1 }),
+                // runner_id: Some(RunnerId { value: 10000 }),
                 ..Default::default()
             };
             let res = app.update(&id1, &Some(w4.clone())).await?;

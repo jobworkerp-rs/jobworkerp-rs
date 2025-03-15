@@ -197,12 +197,10 @@ pub trait UseRunnerAppParserWithCache:
             if let Some(Runner {
                 id: _,
                 data: Some(runner_data),
-            }) = {
-                runner_app
-                    .find_runner(runner_id, self.default_ttl())
-                    .await?
-            } {
-                tracing::debug!("runner_data: {:?}", &runner_data);
+            }) = runner_app
+                .find_runner(runner_id, self.default_ttl())
+                .await?
+            {
                 self.validate_runner_settings_data_with_schema(
                     runner_id,
                     &runner_data,
