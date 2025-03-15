@@ -27,6 +27,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "protobuf/jobworkerp/runner/python_command_result.proto",
                 "protobuf/jobworkerp/runner/python_command_runner.proto",
                 "protobuf/jobworkerp/runner/python_command_args.proto",
+                "protobuf/jobworkerp/runner/workflow_result.proto",
+                "protobuf/jobworkerp/runner/workflow_args.proto",
             ],
             &["../proto/protobuf/", "protobuf"],
         )

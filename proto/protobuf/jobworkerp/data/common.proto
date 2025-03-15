@@ -23,6 +23,7 @@ enum RunnerType {
   DOCKER = 4;
   SLACK_POST_MESSAGE = 5;
   PYTHON_COMMAND = 6;
+  SIMPLE_WORKFLOW = 65535;
 }
 
 enum Priority {

@@ -15,6 +15,8 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tonic::async_trait;
 
+use super::RunnerSpec;
+
 pub struct PythonCommandRunner {
     venv_path: Option<PathBuf>,
     temp_dir: Option<TempDir>,
@@ -50,13 +52,29 @@ impl Default for PythonCommandRunner {
         Self::new()
     }
 }
-
-#[async_trait]
-impl RunnerTrait for PythonCommandRunner {
+impl RunnerSpec for PythonCommandRunner {
     fn name(&self) -> String {
         RunnerType::PythonCommand.as_str_name().to_string()
     }
+    fn runner_settings_proto(&self) -> String {
+        include_str!("../../protobuf/jobworkerp/runner/python_command_runner.proto").to_string()
+    }
+    fn job_args_proto(&self) -> String {
+        include_str!("../../protobuf/jobworkerp/runner/python_command_args.proto").to_string()
+    }
+    fn result_output_proto(&self) -> Option<String> {
+        Some(
+            include_str!("../../protobuf/jobworkerp/runner/python_command_result.proto")
+                .to_string(),
+        )
+    }
+    fn output_as_stream(&self) -> Option<bool> {
+        Some(false)
+    }
+}
 
+#[async_trait]
+impl RunnerTrait for PythonCommandRunner {
     async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
         let settings = PythonRunnerSettings::decode(settings.as_slice())
             .context("Failed to decode PythonRunnerSettings")?;
@@ -299,25 +317,6 @@ impl RunnerTrait for PythonCommandRunner {
                 }
             }
         }
-    }
-
-    fn runner_settings_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/python_command_runner.proto").to_string()
-    }
-
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/python_command_args.proto").to_string()
-    }
-
-    fn result_output_proto(&self) -> Option<String> {
-        Some(
-            include_str!("../../protobuf/jobworkerp/runner/python_command_result.proto")
-                .to_string(),
-        )
-    }
-
-    fn output_as_stream(&self) -> Option<bool> {
-        Some(false)
     }
 }
 

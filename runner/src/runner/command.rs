@@ -1,6 +1,6 @@
 use crate::jobworkerp::runner::{CommandArgs, CommandRunnerSettings};
 
-use super::RunnerTrait;
+use super::{RunnerSpec, RunnerTrait};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -82,11 +82,26 @@ impl CommandRunner for CommandRunnerImpl {
     }
 }
 
-#[async_trait]
-impl RunnerTrait for CommandRunnerImpl {
+impl RunnerSpec for CommandRunnerImpl {
     fn name(&self) -> String {
         RunnerType::Command.as_str_name().to_string()
     }
+    fn runner_settings_proto(&self) -> String {
+        include_str!("../../protobuf/jobworkerp/runner/command_runner.proto").to_string()
+    }
+    fn job_args_proto(&self) -> String {
+        include_str!("../../protobuf/jobworkerp/runner/command_args.proto").to_string()
+    }
+    fn result_output_proto(&self) -> Option<String> {
+        Some("".to_string())
+    }
+    fn output_as_stream(&self) -> Option<bool> {
+        Some(false)
+    }
+}
+
+#[async_trait]
+impl RunnerTrait for CommandRunnerImpl {
     async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
         let data = ProstMessageCodec::deserialize_message::<CommandRunnerSettings>(&settings)
             .context("on run job")?;
@@ -148,18 +163,6 @@ impl RunnerTrait for CommandRunnerImpl {
         if let Some(c) = self.consume_child() {
             drop(c);
         }
-    }
-    fn runner_settings_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/command_runner.proto").to_string()
-    }
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/command_args.proto").to_string()
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        Some("".to_string())
-    }
-    fn output_as_stream(&self) -> Option<bool> {
-        Some(false)
     }
 }
 

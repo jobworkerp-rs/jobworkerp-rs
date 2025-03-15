@@ -1,9 +1,9 @@
 use super::pool::{RunnerFactoryWithPool, RunnerPoolManagerImpl};
 use anyhow::Result;
 use app::app::WorkerConfig;
+use app_wrapper::runner::RunnerFactory;
 use command_utils::util::result::TapErr;
 use deadpool::managed::{Object, Timeouts};
-use infra::infra::runner::factory::RunnerFactory;
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::runner::RunnerTrait;
 use proto::jobworkerp::data::{RunnerData, WorkerData, WorkerId};

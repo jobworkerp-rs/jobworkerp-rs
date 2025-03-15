@@ -13,6 +13,7 @@ jobworkerp-base = { path = "../base" }
 jobworkerp-runner = { path = "../runner" }
 infra = { path = "../infra" }
 app = { path = "../app" }
+app-wrapper = { path = "../app-wrapper" }
 
 
 anyhow = { workspace = true }
@@ -49,3 +50,7 @@ tokio-stream = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+app = { path = "../app", features = ["test-utils"] }
+infra = { path = "../infra", features = ["test-utils"] }

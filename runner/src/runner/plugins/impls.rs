@@ -1,3 +1,4 @@
+use crate::runner::RunnerSpec;
 use crate::runner::RunnerTrait;
 use std::sync::Arc;
 
@@ -42,8 +43,7 @@ impl PluginRunnerWrapperImpl {
     }
 }
 
-#[async_trait]
-impl RunnerTrait for PluginRunnerWrapperImpl {
+impl RunnerSpec for PluginRunnerWrapperImpl {
     fn name(&self) -> String {
         let plugin_runner = Arc::clone(&self.plugin_runner);
         let n = block_on(plugin_runner.read()).name();
@@ -51,6 +51,24 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         // .unwrap_or_else(|e| format!("Error occurred: {:}", e));
         n
     }
+    fn runner_settings_proto(&self) -> String {
+        // let plugin_runner = Arc::clone(&self.plugin_runner);
+        block_on(self.plugin_runner.read()).runner_settings_proto()
+        // .map(|p| p.runner_settings_proto())
+        // .unwrap_or_else(|e| format!("Error occurred: {:}", e))
+    }
+    fn job_args_proto(&self) -> String {
+        block_on(self.plugin_runner.read()).job_args_proto()
+    }
+    fn result_output_proto(&self) -> Option<String> {
+        block_on(self.plugin_runner.read()).result_output_proto()
+    }
+    fn output_as_stream(&self) -> Option<bool> {
+        block_on(self.plugin_runner.read()).output_as_stream()
+    }
+}
+#[async_trait]
+impl RunnerTrait for PluginRunnerWrapperImpl {
     async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
         self.create(settings).await?;
         Ok(())
@@ -124,20 +142,5 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
 
     async fn cancel(&mut self) {
         let _ = self.plugin_runner.write().await.cancel(); //.map(|mut r| r.cancel());
-    }
-    fn runner_settings_proto(&self) -> String {
-        // let plugin_runner = Arc::clone(&self.plugin_runner);
-        block_on(self.plugin_runner.read()).runner_settings_proto()
-        // .map(|p| p.runner_settings_proto())
-        // .unwrap_or_else(|e| format!("Error occurred: {:}", e))
-    }
-    fn job_args_proto(&self) -> String {
-        block_on(self.plugin_runner.read()).job_args_proto()
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        block_on(self.plugin_runner.read()).result_output_proto()
-    }
-    fn output_as_stream(&self) -> Option<bool> {
-        block_on(self.plugin_runner.read()).output_as_stream()
     }
 }

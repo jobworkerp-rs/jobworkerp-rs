@@ -8,6 +8,7 @@ use app::app::runner::{RunnerApp, UseRunnerApp};
 use app::app::worker::{UseWorkerApp, WorkerApp};
 use app::app::{UseWorkerConfig, WorkerConfig};
 use app::module::AppModule;
+use app_wrapper::runner::{RunnerFactory, UseRunnerFactory};
 use async_trait::async_trait;
 use command_utils::util::option::ToResult;
 use command_utils::util::result::TapErr;
@@ -20,7 +21,6 @@ use infra::infra::job::rdb::{RdbChanJobRepositoryImpl, RdbJobRepository, UseRdbC
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::job::status::memory::MemoryJobStatusRepository;
 use infra::infra::job::status::{JobStatusRepository, UseJobStatusRepository};
-use infra::infra::runner::factory::{RunnerFactory, UseRunnerFactory};
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
@@ -330,11 +330,6 @@ impl UseWorkerApp for ChanJobDispatcherImpl {
     }
 }
 
-impl UseRunnerFactory for ChanJobDispatcherImpl {
-    fn runner_factory(&self) -> &RunnerFactory {
-        &self.runner_factory
-    }
-}
 // impl UseSubscribeWorker for ChanJobDispatcherImpl {}
 impl RunnerResultHandler for ChanJobDispatcherImpl {}
 impl UseRunnerPoolMap for ChanJobDispatcherImpl {
@@ -367,6 +362,11 @@ impl UseRunnerApp for ChanJobDispatcherImpl {
     }
 }
 impl ChanJobDispatcher for ChanJobDispatcherImpl {}
+impl UseRunnerFactory for ChanJobDispatcherImpl {
+    fn runner_factory(&self) -> &RunnerFactory {
+        &self.runner_factory
+    }
+}
 impl UseJobQueueConfig for ChanJobDispatcherImpl {
     fn job_queue_config(&self) -> &JobQueueConfig {
         &self.app_module.config_module.job_queue_config

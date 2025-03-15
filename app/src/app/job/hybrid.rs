@@ -644,120 +644,111 @@ impl RedisJobAppHelper for HybridJobAppImpl {}
 
 //TODO
 // create test
-#[cfg(test)]
-mod tests {
-    use super::HybridJobAppImpl;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod tests {
     use super::*;
     use crate::app::runner::hybrid::HybridRunnerAppImpl;
     use crate::app::runner::RunnerApp;
     use crate::app::worker::hybrid::HybridWorkerAppImpl;
     use crate::app::{StorageConfig, StorageType};
     use anyhow::Result;
-    use command_utils::util::datetime;
-    use command_utils::util::option::FlatMap;
-    use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
     use infra::infra::job_result::pubsub::redis::RedisJobResultPubSubRepositoryImpl;
-    use infra::infra::job_result::pubsub::JobResultSubscriber;
     use infra::infra::module::rdb::test::setup_test_rdb_module;
     use infra::infra::module::redis::test::setup_test_redis_module;
     use infra::infra::module::HybridRepositoryModule;
-    use infra::infra::runner::factory::RunnerFactory;
     use infra::infra::IdGeneratorWrapper;
-    use infra_utils::infra::test::TEST_RUNTIME;
-    use proto::jobworkerp::data::{
-        JobResult, JobResultId, Priority, QueueType, ResponseType, ResultOutput, ResultStatus,
-        RunnerId, WorkerData,
-    };
+    use jobworkerp_runner::runner::factory::RunnerSpecFactory;
+    use jobworkerp_runner::runner::plugins::Plugins;
+    use proto::jobworkerp::data::RunnerId;
     use std::sync::Arc;
 
-    fn create_test_app(
+    pub async fn create_test_app(
         use_mock_id: bool,
     ) -> Result<(HybridJobAppImpl, RedisJobResultPubSubRepositoryImpl)> {
-        std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug");
-        let rdb_module = setup_test_rdb_module();
-        TEST_RUNTIME.block_on(async {
-            let redis_module = setup_test_redis_module().await;
-            let repositories = Arc::new(HybridRepositoryModule {
-                redis_module: redis_module.clone(),
-                rdb_chan_module: rdb_module,
-            });
-            // mock id generator (generate 1 until called set method)
-            let id_generator = if use_mock_id {
-                Arc::new(IdGeneratorWrapper::new_mock())
-            } else {
-                Arc::new(IdGeneratorWrapper::new())
-            };
-            let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
-                num_counters: 10000,
-                max_cost: 10000,
-                use_metrics: false,
-            };
-            let job_memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
-                &mc_config,
-                Some(Duration::from_secs(60)),
-            );
-            let storage_config = Arc::new(StorageConfig {
-                r#type: StorageType::Scalable,
-                restore_at_startup: Some(false),
-            });
-            let job_queue_config = Arc::new(JobQueueConfig {
-                expire_job_result_seconds: 10,
-                fetch_interval: 1000,
-            });
-            let worker_config = Arc::new(WorkerConfig {
-                default_concurrency: 4,
-                channels: vec!["test".to_string()],
-                channel_concurrencies: vec![2],
-            });
-            let descriptor_cache = Arc::new(infra_utils::infra::memory::MemoryCacheImpl::new(
-                &mc_config,
-                Some(Duration::from_secs(60 * 60)),
-            ));
-            let runner_app = Arc::new(HybridRunnerAppImpl::new(
-                storage_config.clone(),
-                &mc_config,
-                repositories.clone(),
-                descriptor_cache.clone(),
-            ));
-            runner_app.load_runner().await?;
-            let _ = runner_app
-                .create_test_runner(&RunnerId { value: 1 }, "Test")
-                .await?;
-            let worker_app = HybridWorkerAppImpl::new(
-                storage_config.clone(),
-                id_generator.clone(),
-                &mc_config,
-                repositories.clone(),
-                descriptor_cache,
-                runner_app,
-            );
-            let subscrber = RedisJobResultPubSubRepositoryImpl::new(
-                redis_module.redis_client,
-                job_queue_config.clone(),
-            );
-            let runner_factory = RunnerFactory::new();
-            runner_factory.load_plugins().await;
-            let config_module = Arc::new(AppConfigModule {
-                storage_config,
-                worker_config,
-                job_queue_config,
-                runner_factory: Arc::new(runner_factory),
-            });
-            Ok((
-                HybridJobAppImpl::new(
-                    config_module,
-                    id_generator,
-                    repositories,
-                    Arc::new(worker_app),
-                    job_memory_cache,
-                ),
-                subscrber,
-            ))
-        })
+        let rdb_module = setup_test_rdb_module().await;
+        let redis_module = setup_test_redis_module().await;
+        let repositories = Arc::new(HybridRepositoryModule {
+            redis_module: redis_module.clone(),
+            rdb_chan_module: rdb_module,
+        });
+        // mock id generator (generate 1 until called set method)
+        let id_generator = if use_mock_id {
+            Arc::new(IdGeneratorWrapper::new_mock())
+        } else {
+            Arc::new(IdGeneratorWrapper::new())
+        };
+        let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
+            num_counters: 1000000,
+            max_cost: 1000000,
+            use_metrics: false,
+        };
+        let job_memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
+            &mc_config,
+            Some(Duration::from_secs(60)),
+        );
+        let storage_config = Arc::new(StorageConfig {
+            r#type: StorageType::Scalable,
+            restore_at_startup: Some(false),
+        });
+        let job_queue_config = Arc::new(JobQueueConfig {
+            expire_job_result_seconds: 10,
+            fetch_interval: 1000,
+        });
+        let worker_config = Arc::new(WorkerConfig {
+            default_concurrency: 4,
+            channels: vec!["test".to_string()],
+            channel_concurrencies: vec![2],
+        });
+        let descriptor_cache = Arc::new(infra_utils::infra::memory::MemoryCacheImpl::new(
+            &mc_config,
+            Some(Duration::from_secs(60 * 60)),
+        ));
+        let runner_app = Arc::new(HybridRunnerAppImpl::new(
+            storage_config.clone(),
+            &mc_config,
+            repositories.clone(),
+            descriptor_cache.clone(),
+        ));
+        runner_app.load_runner().await?;
+        let _ = runner_app
+            .create_test_runner(&RunnerId { value: 10000 }, "Test")
+            .await
+            .unwrap();
+        let worker_app = HybridWorkerAppImpl::new(
+            storage_config.clone(),
+            id_generator.clone(),
+            &mc_config,
+            repositories.clone(),
+            descriptor_cache,
+            runner_app,
+        );
+        let subscrber = RedisJobResultPubSubRepositoryImpl::new(
+            redis_module.redis_client,
+            job_queue_config.clone(),
+        );
+        let runner_factory = RunnerSpecFactory::new(Arc::new(Plugins::new()));
+        runner_factory.load_plugins().await;
+        let config_module = Arc::new(AppConfigModule {
+            storage_config,
+            worker_config,
+            job_queue_config,
+            runner_factory: Arc::new(runner_factory),
+        });
+        Ok((
+            HybridJobAppImpl::new(
+                config_module,
+                id_generator,
+                repositories,
+                Arc::new(worker_app),
+                job_memory_cache,
+            ),
+            subscrber,
+        ))
     }
 
     #[test]
     fn test_create_direct_job_complete() -> Result<()> {
+        use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
         // enqueue, find, complete, find, delete, find
         // tracing_subscriber::fmt()
         //     .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -765,14 +756,14 @@ mod tests {
         //     .compact()
         //     .init();
 
-        let (app, _) = create_test_app(true)?;
-        TEST_RUNTIME.block_on(async {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let (app, _) = create_test_app(true).await?;
             let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
                 name: "ls".to_string(),
             });
-            let wd = WorkerData {
+            let wd = proto::jobworkerp::data::WorkerData {
                 name: "testworker".to_string(),
-                runner_id: Some(RunnerId { value: 1 }),
+                runner_id: Some(RunnerId { value: 10000 }),
                 runner_settings,
                 channel: None,
                 response_type: ResponseType::Direct as i32,
@@ -835,8 +826,8 @@ mod tests {
                     worker_name: wd.name.clone(),
                     args: jarg,
                     uniq_key: None,
-                    status: ResultStatus::Success as i32,
-                    output: Some(ResultOutput {
+                    status: proto::jobworkerp::data::ResultStatus::Success as i32,
+                    output: Some(proto::jobworkerp::data::ResultOutput {
                         items: { vec!["test".as_bytes().to_vec()] },
                     }),
                     retried: 0,
@@ -872,15 +863,18 @@ mod tests {
 
     #[test]
     fn test_create_listen_after_job_complete() -> Result<()> {
+        use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
+        use infra::infra::job_result::pubsub::JobResultSubscriber;
+
         // enqueue, find, complete, find, delete, find
-        let (app, subscriber) = create_test_app(true)?;
-        TEST_RUNTIME.block_on(async {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let (app, subscriber) = create_test_app(true).await?;
             let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
                 name: "ls".to_string(),
             });
-            let wd = WorkerData {
+            let wd = proto::jobworkerp::data::WorkerData {
                 name: "testworker".to_string(),
-                runner_id: Some(RunnerId { value: 1 }),
+                runner_id: Some(RunnerId { value: 10000 }),
                 runner_settings,
                 channel: None,
                 response_type: ResponseType::ListenAfter as i32,
@@ -932,8 +926,8 @@ mod tests {
                     worker_name: wd.name.clone(),
                     args: jarg,
                     uniq_key: None,
-                    status: ResultStatus::Success as i32,
-                    output: Some(ResultOutput {
+                    status: proto::jobworkerp::data::ResultStatus::Success as i32,
+                    output: Some(proto::jobworkerp::data::ResultOutput {
                         items: { vec!["test".as_bytes().to_vec()] },
                     }),
                     retried: 0,
@@ -986,14 +980,14 @@ mod tests {
     }
     #[test]
     fn test_create_normal_job_complete() -> Result<()> {
+        use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
         // enqueue, find, complete, find, delete, find
-        let (app, _) = create_test_app(true)?;
         let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
             name: "ls".to_string(),
         });
-        let wd = WorkerData {
+        let wd = proto::jobworkerp::data::WorkerData {
             name: "testworker".to_string(),
-            runner_id: Some(RunnerId { value: 1 }),
+            runner_id: Some(RunnerId { value: 10000 }),
             runner_settings,
             channel: None,
             response_type: ResponseType::NoResult as i32,
@@ -1005,7 +999,8 @@ mod tests {
             use_static: false,
             output_as_stream: false,
         };
-        TEST_RUNTIME.block_on(async {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let (app, _) = create_test_app(true).await?;
             let worker_id = app.worker_app().create(&wd).await?;
             let jarg = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["/".to_string()],
@@ -1045,8 +1040,8 @@ mod tests {
                     worker_name: wd.name.clone(),
                     args: jarg,
                     uniq_key: None,
-                    status: ResultStatus::Success as i32,
-                    output: Some(ResultOutput {
+                    status: proto::jobworkerp::data::ResultStatus::Success as i32,
+                    output: Some(proto::jobworkerp::data::ResultOutput {
                         items: { vec!["test".as_bytes().to_vec()] },
                     }),
                     retried: 0,
@@ -1085,18 +1080,20 @@ mod tests {
 
     #[test]
     fn test_restore_jobs_from_rdb() -> Result<()> {
+        use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
+
         let priority = Priority::Medium;
         let channel: Option<&String> = None;
 
-        let (app, _) = create_test_app(false)?;
-        TEST_RUNTIME.block_on(async {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let (app, _) = create_test_app(false).await?;
             // create command worker with hybrid queue
             let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
                 name: "ls".to_string(),
             });
-            let wd = WorkerData {
+            let wd = proto::jobworkerp::data::WorkerData {
                 name: "testworker".to_string(),
-                runner_id: Some(RunnerId { value: 1 }),
+                runner_id: Some(RunnerId { value: 10000 }),
                 runner_settings,
                 channel: channel.cloned(),
                 response_type: ResponseType::NoResult as i32,
