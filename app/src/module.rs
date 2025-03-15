@@ -6,7 +6,7 @@ use crate::app::job_result::rdb::RdbJobResultAppImpl;
 use crate::app::job_result::JobResultApp;
 use crate::app::runner::hybrid::HybridRunnerAppImpl;
 use crate::app::runner::rdb::RdbRunnerAppImpl;
-use crate::app::runner::RunnerApp;
+use crate::app::runner::{RunnerApp, RunnerDataWithDescriptor};
 use crate::app::worker::hybrid::HybridWorkerAppImpl;
 use crate::app::worker::rdb::RdbWorkerAppImpl;
 use crate::app::worker::WorkerApp;
@@ -14,9 +14,9 @@ use crate::app::{StorageConfig, WorkerConfig};
 use anyhow::Result;
 use infra::infra::module::rdb::RdbChanRepositoryModule;
 use infra::infra::module::{HybridRepositoryModule, RedisRdbOptionalRepositoryModule};
-use infra::infra::runner::factory::RunnerFactory;
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig};
 use infra_utils::infra::memory::MemoryCacheImpl;
+use jobworkerp_runner::runner::factory::RunnerSpecFactory;
 use proto::jobworkerp::data::StorageType;
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,10 +37,10 @@ pub struct AppConfigModule {
     pub storage_config: Arc<StorageConfig>,
     pub worker_config: Arc<WorkerConfig>,
     pub job_queue_config: Arc<JobQueueConfig>,
-    pub runner_factory: Arc<RunnerFactory>,
+    pub runner_factory: Arc<RunnerSpecFactory>,
 }
 impl AppConfigModule {
-    pub fn new_by_env(runner_factory: Arc<RunnerFactory>) -> Self {
+    pub fn new_by_env(runner_factory: Arc<RunnerSpecFactory>) -> Self {
         Self {
             storage_config: Arc::new(load_storage_config()),
             worker_config: Arc::new(load_worker_config()),
@@ -69,9 +69,29 @@ pub struct AppModule {
     pub job_app: Arc<dyn JobApp + 'static>,
     pub job_result_app: Arc<dyn JobResultApp + 'static>,
     pub runner_app: Arc<dyn RunnerApp + 'static>,
+    pub descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
 }
 
 impl AppModule {
+    pub fn new(
+        config_module: Arc<AppConfigModule>,
+        repositories: Arc<RedisRdbOptionalRepositoryModule>,
+        worker_app: Arc<dyn WorkerApp + 'static>,
+        job_app: Arc<dyn JobApp + 'static>,
+        job_result_app: Arc<dyn JobResultApp + 'static>,
+        runner_app: Arc<dyn RunnerApp + 'static>,
+        descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
+    ) -> Self {
+        Self {
+            config_module,
+            repositories,
+            worker_app,
+            job_app,
+            job_result_app,
+            runner_app,
+            descriptor_cache,
+        }
+    }
     pub async fn new_by_env(config_module: Arc<AppConfigModule>) -> Result<Self> {
         // TODO from env
         //TODO recover redis records from rdb if option is enabled
@@ -129,6 +149,7 @@ impl AppModule {
                     job_app,
                     job_result_app,
                     runner_app,
+                    descriptor_cache,
                 })
             }
             // TODO not used now (remove or implement later)
@@ -201,7 +222,7 @@ impl AppModule {
                     id_generator.clone(),
                     &mc_config,
                     repositories.clone(),
-                    descriptor_cache,
+                    descriptor_cache.clone(),
                     runner_app.clone(),
                 ));
                 let job_app = Arc::new(HybridJobAppImpl::new(
@@ -227,6 +248,7 @@ impl AppModule {
                     job_app,
                     job_result_app,
                     runner_app,
+                    descriptor_cache,
                 })
             }
         }
@@ -262,5 +284,113 @@ impl AppModule {
     async fn load_runner(&self) -> Result<()> {
         self.runner_app.load_runner().await?;
         Ok(())
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test {
+    use super::*;
+    use crate::{
+        app::{
+            runner::{hybrid::HybridRunnerAppImpl, RunnerApp, RunnerDataWithDescriptor},
+            worker::hybrid::HybridWorkerAppImpl,
+            StorageConfig,
+        },
+        module::{AppConfigModule, AppModule},
+    };
+    use anyhow::Result;
+    use infra::infra::{
+        module::RedisRdbOptionalRepositoryModule, test::new_for_test_config_rdb, IdGeneratorWrapper,
+    };
+    use infra_utils::infra::memory::MemoryCacheImpl;
+    use jobworkerp_runner::runner::{factory::RunnerSpecFactory, plugins::Plugins};
+    use proto::jobworkerp::data::StorageType;
+    use std::sync::Arc;
+    use tokio::time::Duration;
+
+    pub async fn create_hybrid_test_app() -> Result<AppModule> {
+        // let redis_client = setup_test_redis_client()?;
+        let storage_config = Arc::new(StorageConfig {
+            r#type: StorageType::Scalable,
+            restore_at_startup: Some(false),
+        });
+        let id_generator = Arc::new(IdGeneratorWrapper::new());
+        let module = new_for_test_config_rdb();
+        let plugins = Arc::new(Plugins::new());
+        let runner_factory = Arc::new(RunnerSpecFactory::new(plugins));
+        let repositories = Arc::new(
+            infra::infra::module::HybridRepositoryModule::new(
+                &module,
+                id_generator.clone(),
+                runner_factory.clone(),
+            )
+            .await,
+        );
+        let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
+            num_counters: 10,
+            max_cost: 1000000,
+            use_metrics: false,
+        };
+        // let worker_config = Arc::new(load_worker_config());
+        let app_config = Arc::new(AppConfigModule::new_by_env(runner_factory.clone()));
+        let descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>> =
+            Arc::new(MemoryCacheImpl::new(
+                &infra_utils::infra::memory::MemoryCacheConfig {
+                    num_counters: 10,
+                    max_cost: 1000000,
+                    use_metrics: false,
+                },
+                Some(Duration::from_secs(60)),
+            ));
+
+        let runner_app = Arc::new(HybridRunnerAppImpl::new(
+            storage_config.clone(),
+            &infra_utils::infra::memory::MemoryCacheConfig {
+                num_counters: 10,
+                max_cost: 1000000,
+                use_metrics: false,
+            },
+            repositories.clone(),
+            descriptor_cache.clone(),
+        ));
+        runner_app.load_runner().await?;
+
+        let worker_app = Arc::new(HybridWorkerAppImpl::new(
+            storage_config.clone(),
+            id_generator.clone(),
+            &mc_config,
+            repositories.clone(),
+            descriptor_cache.clone(),
+            runner_app.clone(),
+        ));
+        let job_memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
+            &mc_config,
+            Some(Duration::from_secs(60)),
+        );
+
+        let job_app = Arc::new(HybridJobAppImpl::new(
+            app_config.clone(),
+            id_generator.clone(),
+            repositories.clone(),
+            worker_app.clone(),
+            job_memory_cache,
+        ));
+
+        let job_result_app = Arc::new(HybridJobResultAppImpl::new(
+            storage_config,
+            id_generator,
+            repositories.clone(),
+            worker_app.clone(),
+        ));
+
+        Ok(AppModule::new(
+            app_config,
+            Arc::new(RedisRdbOptionalRepositoryModule::from(repositories)),
+            worker_app,
+            job_app,
+            job_result_app,
+            runner_app,
+            descriptor_cache,
+        ))
     }
 }

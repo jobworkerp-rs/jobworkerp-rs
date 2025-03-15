@@ -11,6 +11,8 @@ use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use tonic::async_trait;
 
+use super::RunnerSpec;
+
 #[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Debug)]
 pub struct SlackResultOutput {
     pub items: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
@@ -33,11 +35,26 @@ impl Default for SlackPostMessageRunner {
     }
 }
 
-#[async_trait]
-impl RunnerTrait for SlackPostMessageRunner {
+impl RunnerSpec for SlackPostMessageRunner {
     fn name(&self) -> String {
         RunnerType::SlackPostMessage.as_str_name().to_string()
     }
+    fn runner_settings_proto(&self) -> String {
+        include_str!("../../protobuf/jobworkerp/runner/slack_runner.proto").to_string()
+    }
+    // use JobResult as job_args
+    fn job_args_proto(&self) -> String {
+        include_str!("../../protobuf/jobworkerp/runner/slack_args.proto").to_string()
+    }
+    fn result_output_proto(&self) -> Option<String> {
+        Some(include_str!("../../protobuf/jobworkerp/runner/slack_result.proto").to_string())
+    }
+    fn output_as_stream(&self) -> Option<bool> {
+        Some(false)
+    }
+}
+#[async_trait]
+impl RunnerTrait for SlackPostMessageRunner {
     async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
         let res = ProstMessageCodec::deserialize_message::<SlackRunnerSettings>(&settings)?;
         self.slack = Some(SlackRepository::new(res.into()));
@@ -88,18 +105,5 @@ impl RunnerTrait for SlackPostMessageRunner {
 
     async fn cancel(&mut self) {
         // do nothing
-    }
-    fn runner_settings_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/slack_runner.proto").to_string()
-    }
-    // use JobResult as job_args
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/slack_args.proto").to_string()
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        Some(include_str!("../../protobuf/jobworkerp/runner/slack_result.proto").to_string())
-    }
-    fn output_as_stream(&self) -> Option<bool> {
-        Some(false)
     }
 }

@@ -123,7 +123,7 @@ impl RunnerApp for HybridRunnerAppImpl {
     }
 
     // for test
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     async fn create_test_runner(
         &self,
         runner_id: &RunnerId,
@@ -188,43 +188,41 @@ mod test {
     use proto::jobworkerp::data::RunnerId;
     use std::sync::Arc;
 
-    fn create_test_app() -> Result<HybridRunnerAppImpl> {
-        let rdb_module = setup_test_rdb_module();
-        TEST_RUNTIME.block_on(async {
-            let redis_module = setup_test_redis_module().await;
-            let repositories = Arc::new(HybridRepositoryModule {
-                redis_module,
-                rdb_chan_module: rdb_module,
-            });
-            let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
-                num_counters: 10000,
-                max_cost: 10000,
-                use_metrics: false,
-            };
-            let descriptor_cache = Arc::new(MemoryCacheImpl::new(&mc_config, None));
-            let storage_config = Arc::new(StorageConfig {
-                r#type: StorageType::Scalable,
-                restore_at_startup: Some(false),
-            });
-            let runner_app = HybridRunnerAppImpl::new(
-                storage_config.clone(),
-                &mc_config,
-                repositories.clone(),
-                descriptor_cache.clone(),
-            );
-            runner_app.load_runner().await?;
-            // let _ = runner_app
-            //     .create_test_runner(&RunnerId { value: 1 }, "Test")
-            //     .await?;
-            Ok(runner_app)
-        })
+    async fn create_test_app() -> Result<HybridRunnerAppImpl> {
+        let rdb_module = setup_test_rdb_module().await;
+        let redis_module = setup_test_redis_module().await;
+        let repositories = Arc::new(HybridRepositoryModule {
+            redis_module,
+            rdb_chan_module: rdb_module,
+        });
+        let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
+            num_counters: 1000000,
+            max_cost: 1000000,
+            use_metrics: false,
+        };
+        let descriptor_cache = Arc::new(MemoryCacheImpl::new(&mc_config, None));
+        let storage_config = Arc::new(StorageConfig {
+            r#type: StorageType::Scalable,
+            restore_at_startup: Some(false),
+        });
+        let runner_app = HybridRunnerAppImpl::new(
+            storage_config.clone(),
+            &mc_config,
+            repositories.clone(),
+            descriptor_cache.clone(),
+        );
+        runner_app.load_runner().await?;
+        // let _ = runner_app
+        //     .create_test_runner(&RunnerId { value: 1 }, "Test")
+        //     .await?;
+        Ok(runner_app)
     }
 
     // create test (create and find)
     #[test]
     fn test_hybrid_runner() {
-        let app = create_test_app().unwrap();
         TEST_RUNTIME.block_on(async {
+            let app = create_test_app().await.unwrap();
             let res = app.find_runner(&RunnerId { value: 1 }, None).await.unwrap();
             assert!(res.is_some());
             let res = app.find_runner_list(None, None, None).await.unwrap();
@@ -235,8 +233,8 @@ mod test {
     // create test (create and find)
     #[test]
     fn test_hybrid_runner_count() {
-        let app = create_test_app().unwrap();
         TEST_RUNTIME.block_on(async {
+            let app = create_test_app().await.unwrap();
             let res = app.count().await;
             assert!(res.is_ok());
         });

@@ -7,13 +7,13 @@ use self::{
 use super::{result_processor::ResultProcessorImpl, runner::map::RunnerFactoryWithPoolMap};
 use anyhow::Result;
 use app::module::{AppConfigModule, AppModule};
+use app_wrapper::runner::RunnerFactory;
 use async_trait::async_trait;
 use chan::{ChanJobDispatcher, ChanJobDispatcherImpl};
 use command_utils::util::shutdown::ShutdownLock;
 use infra::infra::{
     job::rdb::UseRdbChanJobRepository,
     module::{rdb::RdbChanRepositoryModule, redis::RedisRepositoryModule},
-    runner::factory::RunnerFactory,
     IdGeneratorWrapper,
 };
 use proto::jobworkerp::data::StorageType;

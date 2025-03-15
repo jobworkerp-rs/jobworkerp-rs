@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::RunnerTrait;
+use super::{RunnerSpec, RunnerTrait};
 use crate::jobworkerp::runner::{DockerArgs, DockerRunnerSettings};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -249,12 +249,25 @@ impl Default for DockerExecRunner {
         Self::new()
     }
 }
-
-#[async_trait]
-impl RunnerTrait for DockerExecRunner {
+impl RunnerSpec for DockerExecRunner {
     fn name(&self) -> String {
         RunnerType::Docker.as_str_name().to_string()
     }
+    fn runner_settings_proto(&self) -> String {
+        include_str!("../../protobuf/jobworkerp/runner/docker_runner.proto").to_string()
+    }
+    fn job_args_proto(&self) -> String {
+        include_str!("../../protobuf/jobworkerp/runner/docker_args.proto").to_string()
+    }
+    fn result_output_proto(&self) -> Option<String> {
+        None
+    }
+    fn output_as_stream(&self) -> Option<bool> {
+        Some(false)
+    }
+}
+#[async_trait]
+impl RunnerTrait for DockerExecRunner {
     // create and start container
     async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
         let op = ProstMessageCodec::deserialize_message::<DockerRunnerSettings>(&settings)?;
@@ -297,18 +310,6 @@ impl RunnerTrait for DockerExecRunner {
     // TODO
     async fn cancel(&mut self) {
         todo!("todo")
-    }
-    fn runner_settings_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/docker_runner.proto").to_string()
-    }
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/docker_args.proto").to_string()
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        None
-    }
-    fn output_as_stream(&self) -> Option<bool> {
-        Some(false)
     }
 }
 
@@ -438,11 +439,26 @@ impl Default for DockerRunner {
     }
 }
 
-#[async_trait]
-impl RunnerTrait for DockerRunner {
+impl RunnerSpec for DockerRunner {
     fn name(&self) -> String {
         RunnerType::Docker.as_str_name().to_string()
     }
+    fn runner_settings_proto(&self) -> String {
+        include_str!("../../protobuf/jobworkerp/runner/docker_runner.proto").to_string()
+    }
+    fn job_args_proto(&self) -> String {
+        include_str!("../../protobuf/jobworkerp/runner/docker_args.proto").to_string()
+    }
+    fn result_output_proto(&self) -> Option<String> {
+        Some("".to_string())
+    }
+    fn output_as_stream(&self) -> Option<bool> {
+        Some(false)
+    }
+}
+
+#[async_trait]
+impl RunnerTrait for DockerRunner {
     // create and start container
     async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
         let op = ProstMessageCodec::deserialize_message::<DockerRunnerSettings>(&settings)?;
@@ -516,18 +532,6 @@ impl RunnerTrait for DockerRunner {
     // TODO
     async fn cancel(&mut self) {
         todo!("todo")
-    }
-    fn runner_settings_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/docker_runner.proto").to_string()
-    }
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/docker_args.proto").to_string()
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        Some("".to_string())
-    }
-    fn output_as_stream(&self) -> Option<bool> {
-        Some(false)
     }
 }
 

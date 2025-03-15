@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package jobworkerp.runner;
+
+message WorkflowArg {
+  // workflow yaml file url or file path (absolute path)
+  optional string workflow_url = 1;
+  // workflow yaml string (need 'do:' task list)
+  optional string workflow_yaml = 2;
+  // input string
+  // (use as input for the workflow context, plain string or json string)
+  string input = 3;
+  // context string (use as workflow context, plain string or json string)
+  optional string workflow_context = 4;
+}

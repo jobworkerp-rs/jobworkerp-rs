@@ -139,7 +139,7 @@ impl RunnerApp for RedisRunnerAppImpl {
         Ok(cnt)
     }
     // for test
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     async fn create_test_runner(
         &self,
         runner_id: &RunnerId,

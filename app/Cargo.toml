@@ -10,6 +10,7 @@ proto = { path = "../proto" }
 command-utils = { path = "../modules/command-utils" }
 infra-utils = { path = "../modules/infra-utils" }
 jobworkerp-base = { path = "../base" }
+jobworkerp-runner = { path = "../runner" }
 infra = { path = "../infra" }
 
 anyhow = { workspace = true }
@@ -29,8 +30,13 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tracing = { workspace = true }
 
+[features]
+default = []
+test-utils = []
+
 [dev-dependencies]
 dotenvy = { workspace = true }
-jobworkerp-runner = { path = "../runner" }
 sqlx = { workspace = true }
 tracing-subscriber = { workspace = true }
+app = { path = ".", features = ["test-utils"] }
+infra = { path = "../infra", features = ["test-utils"] }

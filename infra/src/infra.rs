@@ -2,7 +2,6 @@ pub mod event;
 pub mod job;
 pub mod job_result;
 pub mod module;
-pub mod plugins;
 pub mod resource;
 pub mod runner;
 pub mod worker;
@@ -120,6 +119,7 @@ impl InfraConfigModule {
     }
 }
 // using from other test
+#[cfg(any(test, feature = "test-utils"))]
 pub mod test {
     use super::{InfraConfigModule, JobQueueConfig};
     use once_cell::sync::Lazy;

@@ -1,0 +1,54 @@
+document:
+  id: 1
+  name: ls-test
+  title: Workflow test (ls)
+do:
+  - ListWorker: # worker name for jobworkerp (if not use static, add random suffix as temporary worker)
+      run:
+        script:
+          language: jobworkerp # fixed value
+          code: COMMAND # built-in runner type or plugin name
+          arguments:
+            args: ["/"] # arguments for the runner defined with protobuf
+      metadata:
+        runnerSettings: # runner settings for jobworkerp defined with protobuf
+          name: ls
+        worker: # worker settings for jobworkerp worker creation (as WorkerData values)
+          channel: workflow
+          use_static: false
+          store_success: true
+          store_failure: true
+      output:
+        as: |- # transform definition ($${} is used for variable substitution by liquid template, not mixed with plain string)
+          $${
+          {%- assign files = raw_input | newline_to_br | split: '<br />' -%}
+          {"files": [
+          {%- for file in files -%}
+          "{{- file |strip_newlines -}}"{% unless forloop.last %},{% endunless -%}
+          {%- endfor -%}
+          ] }
+          }
+  - EachFileIteration:
+      for:
+        each: file # name (default: item)
+        in: ${.files} # must be array (${} is used for variable substitution by jq, not mixed with plain string)
+        at: ind # index name (default: index)
+      #while: ${$ind < 5} # condition for loop
+      metadata:
+        worker:
+          channel: workflow
+      do: # run as workflow job
+        - ListWorkerInner:
+            if: |-
+              $${{%- assign head_char = file | slice: 0, 1 -%}{%- if head_char == "d" %}true{% else %}false{% endif -%}}
+            run:
+              script:
+                language: jobworkerp
+                code: COMMAND
+                arguments:
+                  args: ["$${/{{file}}}"]
+            metadata:
+              runnerSettings:
+                name: ls
+              worker:
+                channel: workflow

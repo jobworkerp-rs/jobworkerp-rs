@@ -6,10 +6,11 @@ use self::map::UseRunnerPoolMap;
 use self::result::RunnerResultHandler;
 use anyhow::anyhow;
 use anyhow::Result;
+use app_wrapper::runner::UseRunnerFactory;
 use async_trait::async_trait;
 use command_utils::util::{datetime, result::Flatten};
 use futures::{future::FutureExt, stream::BoxStream};
-use infra::infra::{job::rows::UseJobqueueAndCodec, runner::factory::UseRunnerFactory};
+use infra::infra::job::rows::UseJobqueueAndCodec;
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::runner::RunnerTrait;
 use proto::jobworkerp::data::ResultOutputItem;
@@ -282,15 +283,14 @@ mod tests {
     use super::{map::RunnerFactoryWithPoolMap, *};
     use anyhow::Result;
     use app::app::WorkerConfig;
-    use infra::infra::{
-        job::rows::JobqueueAndCodec,
-        runner::factory::{RunnerFactory, UseRunnerFactory},
-    };
+    use app_wrapper::runner::RunnerFactory;
+    use infra::infra::job::rows::JobqueueAndCodec;
     use jobworkerp_runner::jobworkerp::runner::{CommandArgs, CommandRunnerSettings};
     use proto::jobworkerp::data::{
         Job, JobData, JobId, ResponseType, RunnerType, WorkerData, WorkerId,
     };
     use std::sync::Arc;
+    use tokio::sync::OnceCell;
 
     // create JobRunner for test
     struct MockJobRunner {
@@ -298,11 +298,12 @@ mod tests {
         runner_pool: RunnerFactoryWithPoolMap,
     }
     impl MockJobRunner {
-        fn new() -> Self {
+        async fn new() -> Self {
+            let app_module = Arc::new(app::module::test::create_hybrid_test_app().await.unwrap());
             MockJobRunner {
-                runner_factory: Arc::new(RunnerFactory::new()),
+                runner_factory: Arc::new(RunnerFactory::new(app_module.clone())),
                 runner_pool: RunnerFactoryWithPoolMap::new(
-                    Arc::new(RunnerFactory::new()),
+                    Arc::new(RunnerFactory::new(app_module)),
                     Arc::new(WorkerConfig::default()),
                 ),
             }
@@ -325,94 +326,100 @@ mod tests {
     // create test for run_job() using command runner (sleep)
     // and create timeout test (using command runner)
 
-    #[tokio::test]
-    async fn test_run_job() -> Result<()> {
-        use once_cell::sync::Lazy;
+    #[test]
+    fn test_run_job() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            static JOB_RUNNER: OnceCell<Box<MockJobRunner>> = OnceCell::const_new();
+            JOB_RUNNER
+                .get_or_init(|| async { Box::new(MockJobRunner::new().await) })
+                .await;
 
-        static JOB_RUNNER: Lazy<Box<MockJobRunner>> = Lazy::new(|| Box::new(MockJobRunner::new()));
+            let run_after = datetime::now_millis() + 1000;
+            let jargs = JobqueueAndCodec::serialize_message(&CommandArgs {
+                args: vec!["1".to_string()],
+            });
+            let job = Job {
+                id: Some(JobId { value: 1 }),
+                data: Some(JobData {
+                    worker_id: Some(WorkerId { value: 1 }),
+                    args: jargs,
+                    uniq_key: Some("test".to_string()),
+                    retried: 0,
+                    priority: 0,
+                    timeout: 0,
+                    enqueue_time: 0,
+                    run_after_time: run_after,
+                    grabbed_until_time: None,
+                }),
+            };
+            let worker_id = WorkerId { value: 1 };
+            let runner_settings = JobqueueAndCodec::serialize_message(&CommandRunnerSettings {
+                name: "sleep".to_string(),
+            });
 
-        let run_after = datetime::now_millis() + 1000;
-        let jargs = JobqueueAndCodec::serialize_message(&CommandArgs {
-            args: vec!["1".to_string()],
+            let worker = WorkerData {
+                name: "test".to_string(),
+                runner_settings,
+                retry_policy: None,
+                channel: Some("test".to_string()),
+                response_type: ResponseType::NoResult as i32,
+                store_success: false,
+                store_failure: false,
+                ..Default::default()
+            };
+            let runner_data = RunnerData {
+                name: RunnerType::Command.as_str_name().to_string(),
+                ..Default::default()
+            };
+            let (res, _) = JOB_RUNNER
+                .get()
+                .unwrap()
+                .run_job(&runner_data, &worker_id, &worker, job.clone())
+                .await;
+            assert_eq!(res.status, ResultStatus::Success as i32);
+            assert_eq!(res.output.unwrap().items, vec![b""]);
+            assert_eq!(res.retried, 0);
+            assert_eq!(res.max_retry, 0);
+            assert_eq!(res.priority, 0);
+            assert_eq!(res.timeout, 0);
+            assert_eq!(res.enqueue_time, 0);
+            assert_eq!(res.run_after_time, run_after);
+            assert!(res.start_time >= run_after); // wait until run_after (expect short time)
+            assert!(res.end_time > res.start_time);
+            assert!(res.end_time - res.start_time >= 1000); // sleep
+            let jargs = JobqueueAndCodec::serialize_message(&CommandArgs {
+                args: vec!["2".to_string()],
+            });
+
+            let timeout_job = Job {
+                id: Some(JobId { value: 2 }),
+                data: Some(JobData {
+                    args: jargs,   // sleep 2sec
+                    timeout: 1000, // timeout 1sec
+                    ..job.data.as_ref().unwrap().clone()
+                }),
+            };
+            let (res, _) = JOB_RUNNER
+                .get()
+                .unwrap()
+                .run_job(&runner_data, &worker_id, &worker, timeout_job.clone())
+                .await;
+            assert_eq!(res.status, ResultStatus::MaxRetry as i32); // no retry
+            assert_eq!(
+                res.output.unwrap().items,
+                vec![b"timeout error: \"timeout: 1000ms\""]
+            ); // timeout error
+            assert_eq!(res.retried, 0);
+            assert_eq!(res.max_retry, 0);
+            assert_eq!(res.priority, 0);
+            assert_eq!(res.timeout, 1000);
+            assert_eq!(res.enqueue_time, 0);
+            assert_eq!(res.run_after_time, run_after);
+            assert!(res.start_time > run_after);
+            assert!(res.end_time > 0);
+            assert!(res.end_time - res.start_time >= 1000); // wait timeout 1sec
+            assert!(res.end_time - res.start_time < 2000); // timeout 1sec
         });
-        let job = Job {
-            id: Some(JobId { value: 1 }),
-            data: Some(JobData {
-                worker_id: Some(WorkerId { value: 1 }),
-                args: jargs,
-                uniq_key: Some("test".to_string()),
-                retried: 0,
-                priority: 0,
-                timeout: 0,
-                enqueue_time: 0,
-                run_after_time: run_after,
-                grabbed_until_time: None,
-            }),
-        };
-        let worker_id = WorkerId { value: 1 };
-        let runner_settings = JobqueueAndCodec::serialize_message(&CommandRunnerSettings {
-            name: "sleep".to_string(),
-        });
-
-        let worker = WorkerData {
-            name: "test".to_string(),
-            runner_settings,
-            retry_policy: None,
-            channel: Some("test".to_string()),
-            response_type: ResponseType::NoResult as i32,
-            store_success: false,
-            store_failure: false,
-            ..Default::default()
-        };
-        let runner_data = RunnerData {
-            name: RunnerType::Command.as_str_name().to_string(),
-            ..Default::default()
-        };
-        let (res, _) = JOB_RUNNER
-            .run_job(&runner_data, &worker_id, &worker, job.clone())
-            .await;
-        assert_eq!(res.status, ResultStatus::Success as i32);
-        assert_eq!(res.output.unwrap().items, vec![b""]);
-        assert_eq!(res.retried, 0);
-        assert_eq!(res.max_retry, 0);
-        assert_eq!(res.priority, 0);
-        assert_eq!(res.timeout, 0);
-        assert_eq!(res.enqueue_time, 0);
-        assert_eq!(res.run_after_time, run_after);
-        assert!(res.start_time >= run_after); // wait until run_after (expect short time)
-        assert!(res.end_time > res.start_time);
-        assert!(res.end_time - res.start_time >= 1000); // sleep
-        let jargs = JobqueueAndCodec::serialize_message(&CommandArgs {
-            args: vec!["2".to_string()],
-        });
-
-        let timeout_job = Job {
-            id: Some(JobId { value: 2 }),
-            data: Some(JobData {
-                args: jargs,   // sleep 2sec
-                timeout: 1000, // timeout 1sec
-                ..job.data.as_ref().unwrap().clone()
-            }),
-        };
-        let (res, _) = JOB_RUNNER
-            .run_job(&runner_data, &worker_id, &worker, timeout_job.clone())
-            .await;
-        assert_eq!(res.status, ResultStatus::MaxRetry as i32); // no retry
-        assert_eq!(
-            res.output.unwrap().items,
-            vec![b"timeout error: \"timeout: 1000ms\""]
-        ); // timeout error
-        assert_eq!(res.retried, 0);
-        assert_eq!(res.max_retry, 0);
-        assert_eq!(res.priority, 0);
-        assert_eq!(res.timeout, 1000);
-        assert_eq!(res.enqueue_time, 0);
-        assert_eq!(res.run_after_time, run_after);
-        assert!(res.start_time > run_after);
-        assert!(res.end_time > 0);
-        assert!(res.end_time - res.start_time >= 1000); // wait timeout 1sec
-        assert!(res.end_time - res.start_time < 2000); // timeout 1sec
-
         Ok(())
     }
 }

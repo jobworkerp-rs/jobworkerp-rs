@@ -1,11 +1,11 @@
 use anyhow::{anyhow, Result};
 use app::app::WorkerConfig;
+use app_wrapper::runner::RunnerFactory;
 use deadpool::managed::Timeouts;
 use deadpool::{
     managed::{Manager, Metrics, Object, Pool, PoolConfig, RecycleResult},
     Runtime,
 };
-use infra::infra::runner::factory::RunnerFactory;
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::runner::RunnerTrait;
 use proto::jobworkerp::data::{RunnerData, WorkerData};
@@ -146,77 +146,81 @@ mod tests {
     use jobworkerp_runner::jobworkerp::runner::CommandRunnerSettings;
     use proto::jobworkerp::data::{RunnerType, WorkerData};
 
-    #[tokio::test]
-    async fn test_runner_pool() -> Result<()> {
-        // dotenvy::dotenv()?;
-        std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug/");
-        let runner_factory = RunnerFactory::new();
-        runner_factory.load_plugins().await;
-        let ope = CommandRunnerSettings {
-            name: "ls".to_string(),
-        };
-        let factory = RunnerFactoryWithPool::new(
-            Arc::new(RunnerData {
-                name: RunnerType::Command.as_str_name().to_string(),
-                ..Default::default()
-            }),
-            Arc::new(WorkerData {
-                runner_settings: JobqueueAndCodec::serialize_message(&ope),
-                channel: None,
-                use_static: true,
-                ..Default::default()
-            }),
-            Arc::new(runner_factory),
-            // default worker_config concurrency: 1
-            Arc::new(WorkerConfig {
-                default_concurrency: 1, // => runner pool size 1
-                ..WorkerConfig::default()
-            }),
-        )
-        .await?;
-        let runner = factory.get().await?;
-        let name = runner.lock().await.name();
-        assert_eq!(name, RunnerType::Command.as_str_name());
-        let res = factory.timeout_get(&Timeouts::wait_millis(1000)).await;
-        // timeout
-        assert!(res.is_err());
-        // release runner
-        drop(runner);
-        assert!(factory
-            .timeout_get(&Timeouts::wait_millis(1000))
+    #[test]
+    fn test_runner_pool() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = app::module::test::create_hybrid_test_app().await.unwrap();
+            let runner_factory = RunnerFactory::new(Arc::new(app_module));
+            runner_factory.load_plugins().await;
+            let ope = CommandRunnerSettings {
+                name: "ls".to_string(),
+            };
+            let factory = RunnerFactoryWithPool::new(
+                Arc::new(RunnerData {
+                    name: RunnerType::Command.as_str_name().to_string(),
+                    ..Default::default()
+                }),
+                Arc::new(WorkerData {
+                    runner_settings: JobqueueAndCodec::serialize_message(&ope),
+                    channel: None,
+                    use_static: true,
+                    ..Default::default()
+                }),
+                Arc::new(runner_factory),
+                // default worker_config concurrency: 1
+                Arc::new(WorkerConfig {
+                    default_concurrency: 1, // => runner pool size 1
+                    ..WorkerConfig::default()
+                }),
+            )
             .await
-            .is_ok());
+            .unwrap();
+            let runner = factory.get().await.unwrap();
+            let name = runner.lock().await.name();
+            assert_eq!(name, RunnerType::Command.as_str_name());
+            let res = factory.timeout_get(&Timeouts::wait_millis(1000)).await;
+            // timeout
+            assert!(res.is_err());
+            // release runner
+            drop(runner);
+            assert!(factory
+                .timeout_get(&Timeouts::wait_millis(1000))
+                .await
+                .is_ok());
+        });
         Ok(())
     }
 
-    #[tokio::test]
-    async fn test_runner_pool_non_static_err() -> Result<()> {
-        std::env::set_var("PLUGINS_RUNNER_DIR", "../target/debug/");
-        // dotenvy::dotenv()?;
-        let runner_factory = RunnerFactory::new();
-        runner_factory.load_plugins().await;
-        let ope = CommandRunnerSettings {
-            name: "ls".to_string(),
-        };
-        assert!(RunnerFactoryWithPool::new(
-            Arc::new(RunnerData {
-                name: RunnerType::Command.as_str_name().to_string(),
-                ..Default::default()
-            }),
-            Arc::new(WorkerData {
-                runner_settings: JobqueueAndCodec::serialize_message(&ope),
-                channel: None,
-                use_static: false,
-                ..Default::default()
-            }),
-            Arc::new(runner_factory),
-            Arc::new(WorkerConfig {
-                default_concurrency: 1, // => runner pool size 1
-                ..WorkerConfig::default()
-            }),
-        )
-        .await
-        .is_err());
+    #[test]
+    fn test_runner_pool_non_static_err() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            // dotenvy::dotenv()?;
+            let app_module = app::module::test::create_hybrid_test_app().await.unwrap();
+            let runner_factory = RunnerFactory::new(Arc::new(app_module));
+            runner_factory.load_plugins().await;
+            let ope = CommandRunnerSettings {
+                name: "ls".to_string(),
+            };
+            assert!(RunnerFactoryWithPool::new(
+                Arc::new(RunnerData {
+                    name: RunnerType::Command.as_str_name().to_string(),
+                    ..Default::default()
+                }),
+                Arc::new(WorkerData {
+                    runner_settings: JobqueueAndCodec::serialize_message(&ope),
+                    channel: None,
+                    use_static: false,
+                    ..Default::default()
+                }),
+                Arc::new(runner_factory),
+                Arc::new(WorkerConfig {
+                    default_concurrency: 1, // => runner pool size 1
+                    ..WorkerConfig::default()
+                }),
+            )
+            .await
+            .is_err());
+        });
         Ok(())
     }
 }

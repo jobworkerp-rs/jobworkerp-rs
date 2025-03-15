@@ -1,6 +1,6 @@
 use std::{str::FromStr, time::Duration};
 
-use super::RunnerTrait;
+use super::{RunnerSpec, RunnerTrait};
 use crate::jobworkerp::runner::{
     http_request_result::KeyValue, HttpRequestArgs, HttpRequestResult, HttpRequestRunnerSettings,
 };
@@ -56,13 +56,27 @@ impl Default for RequestRunner {
     }
 }
 
+impl RunnerSpec for RequestRunner {
+    fn name(&self) -> String {
+        RunnerType::HttpRequest.as_str_name().to_string()
+    }
+    fn runner_settings_proto(&self) -> String {
+        include_str!("../../protobuf/jobworkerp/runner/http_request_runner.proto").to_string()
+    }
+    fn job_args_proto(&self) -> String {
+        include_str!("../../protobuf/jobworkerp/runner/http_request_args.proto").to_string()
+    }
+    fn result_output_proto(&self) -> Option<String> {
+        Some(include_str!("../../protobuf/jobworkerp/runner/http_request_result.proto").to_string())
+    }
+    fn output_as_stream(&self) -> Option<bool> {
+        Some(false)
+    }
+}
 // arg: {headers:{<headers map>}, queries:[<query string array>], body: <body string or struct>}
 // res: vec![result_bytes]  (fixed size 1)
 #[async_trait]
 impl RunnerTrait for RequestRunner {
-    fn name(&self) -> String {
-        RunnerType::HttpRequest.as_str_name().to_string()
-    }
     async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
         let op = ProstMessageCodec::deserialize_message::<HttpRequestRunnerSettings>(&settings)?;
         self.create(op.base_url.as_str())
@@ -137,18 +151,6 @@ impl RunnerTrait for RequestRunner {
 
     async fn cancel(&mut self) {
         tracing::warn!("cannot cancel request until timeout")
-    }
-    fn runner_settings_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/http_request_runner.proto").to_string()
-    }
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/http_request_args.proto").to_string()
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        Some(include_str!("../../protobuf/jobworkerp/runner/http_request_result.proto").to_string())
-    }
-    fn output_as_stream(&self) -> Option<bool> {
-        Some(false)
     }
 }
 
