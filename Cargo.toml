@@ -68,6 +68,14 @@ redis = { version = "0.28", features = [
 ] }
 reqwest = "0.12"
 rs-snowflake = "0.6"
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "logging",
+    "std",
+    "tls12",
+] }
+schemars = { version = "1.0.0-alpha.17", features = ["chrono04"] }
+#schemars = { version = "0.8", features = ["chrono"] }
 serde = "1.0"
 serde_json = "1.0"
 serde_derive = "1.0"

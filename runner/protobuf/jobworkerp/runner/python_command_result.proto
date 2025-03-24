@@ -1,7 +1,7 @@
 syntax = "proto3";
 package jobworkerp.runner;
 
-message PythonResult {
+message PythonCommandResult {
   int32 exit_code = 1;
   bytes output = 2;
   optional bytes output_stderr = 3;

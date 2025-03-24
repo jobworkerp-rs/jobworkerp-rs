@@ -2,7 +2,13 @@ syntax = "proto3";
 package jobworkerp.runner;
 
 message GrpcUnaryArgs {
-    string path = 1;
+    // Full method name in format "service/method"
+    string method = 1;
+    // Serialized request payload
     bytes request = 2;
+    // Request metadata (key-value pairs)
+    map<string, string> metadata = 3;
+    // Timeout in milliseconds for the request
+    int64 timeout = 4;
 }
 

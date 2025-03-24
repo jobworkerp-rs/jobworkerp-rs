@@ -2,16 +2,17 @@ syntax = "proto3";
 
 package jobworkerp.runner;
 
+// # a list of output items from a job
 message ResultOutput {
     repeated bytes items = 1;
 }
 
-// jobworkerp.data.ResultStatus
+// # job result status
 enum ResultStatus {
-    SUCCESS = 0; //  job succeeded
-    ERROR_AND_RETRY = 1; // error and retry job
-    FATAL_ERROR = 2; // fatal worker result error (cannot retry)
-    ABORT = 3;  // abort (cannot retry)
-    MAX_RETRY = 4; // reach max retry count (cannot retry)
-    OTHER_ERROR = 5; // unexpected system status error (cannot retry)
+    SUCCESS = 0; // # job succeeded
+    ERROR_AND_RETRY = 1; // # error and retry job
+    FATAL_ERROR = 2; // # fatal worker result error (cannot retry)
+    ABORT = 3;  // # abort (cannot retry)
+    MAX_RETRY = 4; // # reach max retry count (cannot retry)
+    OTHER_ERROR = 5; // # unexpected system status error (cannot retry)
 }

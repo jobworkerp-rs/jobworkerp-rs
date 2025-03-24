@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package jobworkerp.runner;
 
-message WorkflowArg {
+message WorkflowArgs {
   // workflow yaml file url or file path (absolute path)
   optional string workflow_url = 1;
   // workflow yaml string (need 'do:' task list)
