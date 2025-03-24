@@ -1,4 +1,4 @@
-use crate::jobworkerp::runner::ChatPostMessageResult;
+use crate::jobworkerp::runner::SlackChatPostMessageResult;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
@@ -119,9 +119,9 @@ pub struct ChatPostMessageResponse {
     pub error: Option<String>,
 }
 impl ChatPostMessageResponse {
-    pub fn to_proto(&self) -> Result<ChatPostMessageResult> {
+    pub fn to_proto(&self) -> Result<SlackChatPostMessageResult> {
         if self.ok {
-            Ok(ChatPostMessageResult {
+            Ok(SlackChatPostMessageResult {
                 channel: self.channel.clone().unwrap_or("".to_string()),
                 ts: self.ts.clone().unwrap_or("".to_string()),
                 message: serde_json::to_string(&self.message)

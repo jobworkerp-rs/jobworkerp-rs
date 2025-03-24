@@ -13,7 +13,7 @@ use jobworkerp_runner::runner::{
 use proto::jobworkerp::data::RunnerType;
 use std::sync::Arc;
 
-use crate::simple_workflow::runner::SimpleWorkflowRunner;
+use crate::{llm::LLMRunnerImpl, simple_workflow::runner::SimpleWorkflowRunner};
 
 #[derive(Debug)]
 pub struct RunnerFactory {
@@ -71,6 +71,9 @@ impl RunnerFactory {
                         None
                     }
                 }
+            }
+            Some(RunnerType::Llm) => {
+                Some(Box::new(LLMRunnerImpl::new()) as Box<dyn RunnerTrait + Send + Sync>)
             }
             // _ => self.runner_factory().create_plugin_by_name(name).await,
             _ => self

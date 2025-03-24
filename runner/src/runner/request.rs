@@ -16,6 +16,7 @@ use reqwest::{
     header::{HeaderMap, HeaderName},
     Method, Url,
 };
+use schemars::JsonSchema;
 
 #[derive(Clone, Debug)]
 pub struct RequestRunner {
@@ -56,6 +57,12 @@ impl Default for RequestRunner {
     }
 }
 
+#[derive(Debug, JsonSchema, serde::Deserialize, serde::Serialize)]
+struct HttpRequestRunnerInputSchema {
+    settings: HttpRequestRunnerSettings,
+    args: HttpRequestArgs,
+}
+
 impl RunnerSpec for RequestRunner {
     fn name(&self) -> String {
         RunnerType::HttpRequest.as_str_name().to_string()
@@ -71,6 +78,27 @@ impl RunnerSpec for RequestRunner {
     }
     fn output_as_stream(&self) -> Option<bool> {
         Some(false)
+    }
+    fn input_json_schema(&self) -> String {
+        let schema = schemars::schema_for!(HttpRequestRunnerInputSchema);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn output_json_schema(&self) -> Option<String> {
+        // plain string with title
+        let schema = schemars::schema_for!(HttpRequestResult);
+        match serde_json::to_string(&schema) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::error!("error in output_json_schema: {:?}", e);
+                None
+            }
+        }
     }
 }
 // arg: {headers:{<headers map>}, queries:[<query string array>], body: <body string or struct>}

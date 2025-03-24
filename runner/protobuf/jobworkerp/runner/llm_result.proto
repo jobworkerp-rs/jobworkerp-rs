@@ -1,0 +1,176 @@
+syntax = "proto3";
+package jobworkerp.runner;
+
+// LLM chat result containing all possible response types
+message LLMResult {
+    message ToolCallResponse {
+        string id = 1;
+        string type = 2;
+        string function_name = 3;
+        string function_arguments = 4;
+    }
+    
+    // TopLogprob - トークンの確率情報
+    message TopLogprob {
+        uint32 token = 1;
+        float logprob = 2;
+        optional string bytes = 3;
+    }
+    
+    // Chat completion response message
+    message ResponseMessage {
+        optional string content = 1;
+        string role = 2;
+        repeated ToolCallResponse tool_calls = 3;
+    }
+    
+    // Delta in content for streaming response
+    message Delta {
+        optional string content = 1;
+        string role = 2;
+        repeated ToolCallResponse tool_calls = 3;
+    }
+    
+    // A logprob with the top logprobs for this token
+    message ResponseLogprob {
+        string token = 1;
+        float logprob = 2;
+        optional bytes bytes = 3;
+        repeated TopLogprob top_logprobs = 4;
+    }
+    
+    // Logprobs per token
+    message Logprobs {
+        repeated ResponseLogprob content = 1;
+    }
+    enum FinishReason{
+        UNKNOWN = 0;
+        STOP = 1;
+        LENGTH = 2;
+        CANCELED = 3;
+        GENERATED_IMAGE = 4;
+    }
+    // Chat completion choice
+    message Choice {
+        FinishReason finish_reason = 1;
+        uint32 index = 2;
+        ResponseMessage message = 3;
+        optional Logprobs logprobs = 4;
+    }
+    
+    // Chat completion streaming chunk choice
+    message ChunkChoice {
+        optional FinishReason finish_reason = 1;
+        uint32 index = 2;
+        Delta delta = 3;
+        optional ResponseLogprob logprobs = 4;
+    }
+    
+    // Chat completion streaming chunk choice for completion
+    message CompletionChunkChoice {
+        string text = 1;
+        uint32 index = 2;
+        optional ResponseLogprob logprobs = 3;
+        optional FinishReason finish_reason = 4;
+    }
+    
+    // OpenAI compatible usage during a request
+    message Usage {
+        uint32 completion_tokens = 1;
+        uint32 prompt_tokens = 2;
+        uint32 total_tokens = 3;
+        float avg_tok_per_sec = 4;
+        float avg_prompt_tok_per_sec = 5;
+        float avg_compl_tok_per_sec = 6;
+        float total_time_sec = 7;
+        float total_prompt_time_sec = 8;
+        float total_completion_time_sec = 9;
+    }
+    
+    // An OpenAI compatible chat completion response
+    message ChatCompletionResponse {
+        string id = 1;
+        repeated Choice choices = 2;
+        uint64 created = 3;
+        string model = 4;
+        string system_fingerprint = 5;
+        string object = 6;
+        Usage usage = 7;
+    }
+    
+    // Chat completion streaming request chunk
+    message ChatCompletionChunkResponse {
+        string id = 1;
+        repeated ChunkChoice choices = 2;
+        uint64 created = 3;
+        string model = 4;
+        string system_fingerprint = 5;
+        string object = 6;
+        optional Usage usage = 7;
+    }
+    
+    // Completion request choice
+    message CompletionChoice {
+        string finish_reason = 1;
+        uint32 index = 2;
+        string text = 3;
+        bool has_logprobs = 4;
+    }
+    
+    // An OpenAI compatible completion response
+    message CompletionResponse {
+        string id = 1;
+        repeated CompletionChoice choices = 2;
+        uint64 created = 3;
+        string model = 4;
+        string system_fingerprint = 5;
+        string object = 6;
+        Usage usage = 7;
+    }
+    
+    // Completion chunk response
+    message CompletionChunkResponse {
+        string id = 1;
+        repeated CompletionChunkChoice choices = 2;
+        uint64 created = 3;
+        string model = 4;
+        string system_fingerprint = 5;
+        string object = 6;
+    }
+    
+    // Image choice
+    message ImageChoice {
+        optional string url = 1;
+        optional string b64_json = 2;
+    }
+    
+    // Image generation response
+    message ImageGenerationResponse {
+        uint64 created = 1;
+        repeated ImageChoice data = 2;
+    }
+    
+    // Raw response data (tensors and tokens)
+    message RawResponse {
+        // Note: Tensor representation is simplified
+        repeated bytes logits_chunks = 1;
+        repeated uint32 tokens = 2;
+    }
+
+    // main body
+    oneof result {
+        // currently used response
+        ChatCompletionResponse chat_completion = 1;
+        // currently used streaming response
+        ChatCompletionChunkResponse chat_completion_chunk = 2;
+        // not used
+        CompletionResponse completion = 3;
+        // not used
+        CompletionChunkResponse completion_chunk = 4;
+        // not used
+        ImageGenerationResponse image_generation = 5;
+        // not used
+        RawResponse raw = 6;
+    }
+
+}

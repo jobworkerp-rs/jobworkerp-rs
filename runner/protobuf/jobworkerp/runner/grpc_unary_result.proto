@@ -1,0 +1,20 @@
+syntax = "proto3";
+package jobworkerp.runner;
+
+message GrpcUnaryResult {
+    // Initial metadata (headers) from the response
+    map<string, string> metadata = 1;
+    
+    // Response payload
+    bytes body = 2;
+    
+    // Trailing metadata from the response
+    map<string, string> trailers = 3;
+    
+    // gRPC status code (0 = OK, other values indicate errors)
+    int32 code = 4;
+    
+    // Human-readable status message
+    string message = 5;
+}
+

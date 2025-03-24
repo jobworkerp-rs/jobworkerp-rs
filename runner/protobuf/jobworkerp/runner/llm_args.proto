@@ -1,0 +1,109 @@
+syntax = "proto3";
+package jobworkerp.runner;
+
+// LLM runner settings
+message LLMArgs {
+  // LLM request options for generation configuration
+  message LLMRequestOptions {
+    optional uint32 max_tokens = 1;
+    optional float presence_penalty = 2;
+    optional float frequency_penalty = 3;
+    optional double temperature = 4;
+    optional double top_p = 5;
+    optional uint32 top_k = 6;
+    repeated string stop_seqs = 7;
+    map<uint32, float> logit_bias = 8;
+    uint32 n_choices = 9;
+    
+    // Grammar configuration using oneof to enforce single grammar type
+    oneof grammar_config {
+      string json = 10;        // JSON schema for structured output
+      string regex = 11;       // Regular expression pattern
+      string lark = 12;        // Lark grammar specification
+      // string llguidance = 13;  // llguidance grammar
+    }
+    
+    repeated string adapters = 14;
+    optional double min_p = 15;
+    repeated string tool_schemas = 16;
+    optional ToolChoiceOption tool_choice = 17;
+    optional ToolCall forced_tool = 18;
+    optional float dry_multiplier = 19;
+    optional float dry_base = 20;
+    optional uint32 dry_allowed_length = 21; 
+    repeated string dry_sequence_breakers = 22;
+  }
+
+  // Completion request (text completion)
+  message CompletionRequest {
+    string prompt = 1;
+    optional uint32 best_of = 2;
+    bool echo_prompt = 3; 
+    optional string suffix = 4;
+    bool stream = 5;
+    optional LLMRequestOptions options = 6;
+  }
+
+  // Chat completion request 
+  message ChatCompletionRequest {
+    oneof messages_format {
+      string prompt_string = 1;
+      ChatMessages chat_messages = 2;
+    }
+    bool logprobs = 3;
+    optional uint32 top_logprobs = 4;
+    bool stream = 5;
+    LLMRequestOptions options = 6;
+  }
+
+  // Tool choice options
+  enum ToolChoiceOption {
+      NONE = 0;        // NO_TOOLS
+      AUTO = 1;        // AUTO
+      FORCED_TOOL = 2; // use forced_tool
+  }
+
+  // Chat message formats
+  message ChatMessages {
+    repeated ChatMessage messages = 1;
+  }
+
+  // MessageContentList to hold repeated MessageContent (workaround for oneof limitation)
+  message MessageContentList {
+    repeated MessageContent items = 1;
+  }
+  enum Role {
+      USER = 0;
+      ASSISTANT = 1;
+      SYSTEM = 2;
+      TOOL = 3;
+      CUSTOM = 4;
+  }
+  message ChatMessage {
+    Role role = 1;
+    oneof content {
+      string text = 2;
+      MessageContentList content_parts = 3;
+    }
+  }
+
+  message MessageContent {
+    oneof content {
+      string text = 1;
+      ToolCall tool_call = 2;
+    }
+  }
+
+  message ToolCall {
+    string name = 1;
+    optional string description = 2;
+    map<string, string> arguments = 3;
+  }
+
+  // main body
+  // Request type options
+  oneof request {
+    CompletionRequest completion = 1;
+    ChatCompletionRequest chat_completion = 2;
+  }
+}

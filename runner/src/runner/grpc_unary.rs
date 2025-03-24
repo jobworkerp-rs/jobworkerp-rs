@@ -7,6 +7,7 @@ use jobworkerp_base::{
     error::JobWorkerError,
 };
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
+use schemars::JsonSchema;
 use tonic::{transport::Channel, IntoRequest};
 
 use super::{RunnerSpec, RunnerTrait};
@@ -39,6 +40,12 @@ impl Default for GrpcUnaryRunner {
     }
 }
 
+#[derive(Debug, JsonSchema, serde::Deserialize, serde::Serialize)]
+struct GrpcUnaryRunnerInputSchema {
+    settings: GrpcUnaryRunnerSettings,
+    args: GrpcUnaryArgs,
+}
+
 impl RunnerSpec for GrpcUnaryRunner {
     fn name(&self) -> String {
         RunnerType::GrpcUnary.as_str_name().to_string()
@@ -54,6 +61,31 @@ impl RunnerSpec for GrpcUnaryRunner {
     }
     fn output_as_stream(&self) -> Option<bool> {
         Some(false)
+    }
+    fn input_json_schema(&self) -> String {
+        let schema = schemars::schema_for!(GrpcUnaryRunnerInputSchema);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn output_json_schema(&self) -> Option<String> {
+        // plain string with title
+        let mut schema = schemars::schema_for!(String);
+        schema.insert(
+            "title".to_string(),
+            serde_json::Value::String("Command stdout".to_string()),
+        );
+        match serde_json::to_string(&schema) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::error!("error in output_json_schema: {:?}", e);
+                None
+            }
+        }
     }
 }
 #[async_trait]
@@ -79,7 +111,7 @@ impl RunnerTrait for GrpcUnaryRunner {
             client
                 .unary(
                     req.request.clone().into_request(),
-                    req.path.clone().try_into()?,
+                    req.method.clone().try_into()?,
                     codec,
                 )
                 .await
@@ -113,9 +145,10 @@ async fn run_request() -> Result<()> {
     let mut runner = GrpcUnaryRunner::new();
     runner.create("http://localhost", &9000u32).await?;
     let arg = crate::jobworkerp::runner::GrpcUnaryArgs {
-        path: "/jobworkerp.service.JobService/Count".to_string(),
+        method: "/jobworkerp.service.JobService/Count".to_string(),
         // path: "/jobworkerp.service.WorkerService/FindList".to_string(),
         request: b"".to_vec(),
+        ..Default::default()
     };
     let arg = ProstMessageCodec::serialize_message(&arg)?;
     let res = runner.run(&arg).await;

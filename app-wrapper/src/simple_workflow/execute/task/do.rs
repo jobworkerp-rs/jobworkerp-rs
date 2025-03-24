@@ -9,7 +9,7 @@ use crate::simple_workflow::{
     },
 };
 use anyhow::Result;
-use jobworkerp_runner::jobworkerp::runner::{workflow_result::WorkflowStatus, WorkflowArg};
+use jobworkerp_runner::jobworkerp::runner::{workflow_result::WorkflowStatus, WorkflowArgs};
 use prost::Message;
 use proto::jobworkerp::data::RunnerType;
 use std::sync::Arc;
@@ -42,7 +42,7 @@ impl<'a> DoTaskExecutor<'a> {
         // XXX timeout_sec: None
         let worker_params =
             metadata.get(crate::simple_workflow::definition::WORKER_PARAMS_METADATA_LABEL);
-        let args = WorkflowArg {
+        let args = WorkflowArgs {
             workflow_url: None,
             workflow_yaml: Some(yaml.to_string()),
             input: input.to_string(),

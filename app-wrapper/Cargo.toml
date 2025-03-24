@@ -41,6 +41,8 @@ jsonschema = "0.29"
 #kube-client = "0.86"
 libloading = { workspace = true }
 liquid = "0.26"
+llguidance = "0.7"
+mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs.git" }
 nix = { workspace = true, features = ["signal"] }
 once_cell = { workspace = true }
 prost = { workspace = true }
@@ -48,6 +50,7 @@ prost = { workspace = true }
 rand = { workspace = true }
 regress = "0.10"
 reqwest = { workspace = true }
+schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
@@ -67,3 +70,14 @@ tonic = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 uuid = { version = "1", features = ["v7", "serde"] }
+
+[features]
+default = []
+# mysql = ["infra-utils/mysql"]
+cuda = ["mistralrs/cuda"]
+cudnn = ["mistralrs/cudnn"]
+metal = ["mistralrs/metal"]
+flash-attn = ["cuda", "mistralrs/flash-attn"]
+accelerate = ["mistralrs/accelerate"]
+mkl = ["mistralrs/mkl"]
+nccl = ["mistralrs/nccl"]

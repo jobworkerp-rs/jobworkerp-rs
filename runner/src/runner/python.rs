@@ -1,11 +1,13 @@
 use crate::jobworkerp::runner::{
-    python_job_args, python_runner_settings, PythonJobArgs, PythonResult, PythonRunnerSettings,
+    python_command_args, python_command_runner_settings, PythonCommandArgs, PythonCommandResult,
+    PythonCommandRunnerSettings,
 };
 use crate::runner::RunnerTrait;
 use anyhow::{anyhow, Context, Result};
 use futures::stream::BoxStream;
 use prost::Message;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
+use schemars::JsonSchema;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
@@ -20,7 +22,7 @@ use super::RunnerSpec;
 pub struct PythonCommandRunner {
     venv_path: Option<PathBuf>,
     temp_dir: Option<TempDir>,
-    settings: Option<PythonRunnerSettings>,
+    settings: Option<PythonCommandRunnerSettings>,
     process_cancel: Arc<Mutex<bool>>,
     current_process_id: Arc<Mutex<Option<u32>>>,
 }
@@ -52,6 +54,13 @@ impl Default for PythonCommandRunner {
         Self::new()
     }
 }
+
+#[derive(Debug, JsonSchema, serde::Deserialize, serde::Serialize)]
+struct PythonCommandRunnerInputSchema {
+    settings: PythonCommandRunnerSettings,
+    args: PythonCommandArgs,
+}
+
 impl RunnerSpec for PythonCommandRunner {
     fn name(&self) -> String {
         RunnerType::PythonCommand.as_str_name().to_string()
@@ -71,13 +80,34 @@ impl RunnerSpec for PythonCommandRunner {
     fn output_as_stream(&self) -> Option<bool> {
         Some(false)
     }
+    fn input_json_schema(&self) -> String {
+        let schema = schemars::schema_for!(PythonCommandRunnerInputSchema);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn output_json_schema(&self) -> Option<String> {
+        // plain string with title
+        let schema = schemars::schema_for!(PythonCommandResult);
+        match serde_json::to_string(&schema) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::error!("error in output_json_schema: {:?}", e);
+                None
+            }
+        }
+    }
 }
 
 #[async_trait]
 impl RunnerTrait for PythonCommandRunner {
     async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
-        let settings = PythonRunnerSettings::decode(settings.as_slice())
-            .context("Failed to decode PythonRunnerSettings")?;
+        let settings = PythonCommandRunnerSettings::decode(settings.as_slice())
+            .context("Failed to decode PythonCommandRunnerSettings")?;
 
         let temp_dir = TempDir::new().context("Failed to create temporary directory")?;
         let venv_path = temp_dir.path().join("venv");
@@ -121,7 +151,7 @@ impl RunnerTrait for PythonCommandRunner {
             ]);
 
             match req_spec {
-                python_runner_settings::RequirementsSpec::Packages(packages_list) => {
+                python_command_runner_settings::RequirementsSpec::Packages(packages_list) => {
                     if !packages_list.packages.is_empty() {
                         pip_cmd.args(&packages_list.packages);
 
@@ -136,7 +166,7 @@ impl RunnerTrait for PythonCommandRunner {
                         }
                     }
                 }
-                python_runner_settings::RequirementsSpec::RequirementsUrl(url) => {
+                python_command_runner_settings::RequirementsSpec::RequirementsUrl(url) => {
                     pip_cmd.args(vec!["-r", url]);
 
                     let output = pip_cmd
@@ -164,7 +194,8 @@ impl RunnerTrait for PythonCommandRunner {
             .python_bin_path()
             .ok_or_else(|| anyhow!("Virtual environment not loaded"))?;
 
-        let job_args = PythonJobArgs::decode(arg).context("Failed to decode PythonJobArgs")?;
+        let job_args =
+            PythonCommandArgs::decode(arg).context("Failed to decode PythonCommandArgs")?;
 
         let temp_dir_path = self
             .temp_dir
@@ -176,11 +207,11 @@ impl RunnerTrait for PythonCommandRunner {
 
         if let Some(script_spec) = &job_args.script {
             let script_content = match script_spec {
-                python_job_args::Script::ScriptContent(script) => {
+                python_command_args::Script::ScriptContent(script) => {
                     // content
                     script.clone()
                 }
-                python_job_args::Script::ScriptUrl(url) => {
+                python_command_args::Script::ScriptUrl(url) => {
                     // download from URL
                     let response = reqwest::get(url)
                         .await
@@ -212,8 +243,8 @@ impl RunnerTrait for PythonCommandRunner {
             let input_path = temp_dir_path.join("input.bin");
 
             let input_data = match input_data_spec {
-                python_job_args::InputData::DataBody(data) => data.clone(),
-                python_job_args::InputData::DataUrl(url) => {
+                python_command_args::InputData::DataBody(data) => data.clone(),
+                python_command_args::InputData::DataUrl(url) => {
                     let response = reqwest::get(url)
                         .await
                         .context(format!("Failed to download input data from URL: {}", url))?;
@@ -269,7 +300,7 @@ impl RunnerTrait for PythonCommandRunner {
 
         *self.current_process_id.lock().await = None;
 
-        let result = PythonResult {
+        let result = PythonCommandResult {
             output: output.stdout,
             output_stderr: if job_args.with_stderr {
                 Some(output.stderr)
@@ -331,10 +362,10 @@ mod tests {
 
         let mut runner = PythonCommandRunner::new();
 
-        let settings = PythonRunnerSettings {
+        let settings = PythonCommandRunnerSettings {
             python_version: "3.12".to_string(),
-            requirements_spec: Some(python_runner_settings::RequirementsSpec::Packages(
-                python_runner_settings::PackagesList {
+            requirements_spec: Some(python_command_runner_settings::RequirementsSpec::Packages(
+                python_command_runner_settings::PackagesList {
                     packages: vec!["requests".to_string()],
                 },
             )),
@@ -351,8 +382,8 @@ mod tests {
                 load_result.err()
             );
 
-            let job_args = PythonJobArgs {
-                script: Some(python_job_args::Script::ScriptContent(
+            let job_args = PythonCommandArgs {
+                script: Some(python_command_args::Script::ScriptContent(
                     r#"
 print("Hello from Python!")
 print("Version info:")
@@ -377,7 +408,7 @@ print(f"Requests version: {requests.__version__}")
             let output = run_result.unwrap();
             assert!(!output.is_empty());
 
-            let result = PythonResult::decode(output[0].as_slice()).unwrap();
+            let result = PythonCommandResult::decode(output[0].as_slice()).unwrap();
             let stdout = String::from_utf8_lossy(&result.output);
 
             assert!(stdout.contains("Hello from Python!"));
