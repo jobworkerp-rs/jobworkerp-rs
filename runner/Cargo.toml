@@ -29,6 +29,7 @@ dotenvy = { workspace = true }
 envy = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
+http = { workspace = true }
 itertools = { workspace = true }
 #kube-client = "0.86"
 libloading = { workspace = true }
@@ -44,6 +45,7 @@ serde_with = { workspace = true }
 signal-hook = { workspace = true }
 signal-hook-tokio = { workspace = true }
 # sqlx = { workspace = true }
+rustls = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
 sysinfo = "0.33"
