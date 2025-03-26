@@ -66,6 +66,13 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
     fn output_as_stream(&self) -> Option<bool> {
         block_on(self.plugin_runner.read()).output_as_stream()
     }
+    fn input_json_schema(&self) -> String {
+        block_on(self.plugin_runner.read()).input_json_schema()
+    }
+    fn output_json_schema(&self) -> Option<String> {
+        block_on(self.plugin_runner.read()).output_json_schema()
+    }
+
 }
 #[async_trait]
 impl RunnerTrait for PluginRunnerWrapperImpl {

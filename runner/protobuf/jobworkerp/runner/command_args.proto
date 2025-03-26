@@ -2,8 +2,13 @@ syntax = "proto3";
 
 package jobworkerp.runner;
 
-// CommandArgs is a list of arguments for a CommandRunner.
+// # shell command arguments
 message CommandArgs {
-  repeated string args = 1;
+  // # linux shell command name (e.g. "echo")
+  string command = 1;
+  // # list of arguments
+  repeated string args = 2;
+  // # whether to monitor memory usage
+  bool with_memory_monitoring = 3;
 }
 

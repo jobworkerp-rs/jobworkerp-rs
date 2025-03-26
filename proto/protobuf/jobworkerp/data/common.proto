@@ -23,6 +23,7 @@ enum RunnerType {
   DOCKER = 4;
   SLACK_POST_MESSAGE = 5;
   PYTHON_COMMAND = 6;
+  LLM = 65534;
   SIMPLE_WORKFLOW = 65535;
 }
 

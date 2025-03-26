@@ -5,11 +5,12 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use infra_utils::infra::net::reqwest::ReqwestClient;
 use jobworkerp_runner::jobworkerp::runner::WorkflowResult;
-use jobworkerp_runner::jobworkerp::runner::{workflow_result::WorkflowStatus, WorkflowArg};
+use jobworkerp_runner::jobworkerp::runner::{workflow_result::WorkflowStatus, WorkflowArgs};
 use jobworkerp_runner::runner::simple_workflow::SimpleWorkflowRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use prost::Message;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
+use schemars::JsonSchema;
 use std::{sync::Arc, time::Duration};
 
 #[derive(Debug, Clone)]
@@ -32,6 +33,12 @@ impl SimpleWorkflowRunner {
     }
 }
 impl SimpleWorkflowRunnerSpec for SimpleWorkflowRunner {}
+
+#[derive(Debug, JsonSchema, serde::Deserialize, serde::Serialize)]
+struct WorkflowRunnerInputSchema {
+    args: WorkflowArgs,
+}
+
 impl RunnerSpec for SimpleWorkflowRunner {
     fn name(&self) -> String {
         SimpleWorkflowRunnerSpec::name(self)
@@ -52,6 +59,27 @@ impl RunnerSpec for SimpleWorkflowRunner {
     fn output_as_stream(&self) -> Option<bool> {
         SimpleWorkflowRunnerSpec::output_as_stream(self)
     }
+    fn input_json_schema(&self) -> String {
+        let schema = schemars::schema_for!(WorkflowRunnerInputSchema);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn output_json_schema(&self) -> Option<String> {
+        // plain string with title
+        let schema = schemars::schema_for!(WorkflowResult);
+        match serde_json::to_string(&schema) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::error!("error in output_json_schema: {:?}", e);
+                None
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -60,7 +88,7 @@ impl RunnerTrait for SimpleWorkflowRunner {
         Ok(())
     }
     async fn run(&mut self, args: &[u8]) -> Result<Vec<Vec<u8>>> {
-        let arg = WorkflowArg::decode(args)?;
+        let arg = WorkflowArgs::decode(args)?;
         if self.canceled {
             return Err(anyhow::anyhow!(
                 "canceled by user: {}, {:?}",

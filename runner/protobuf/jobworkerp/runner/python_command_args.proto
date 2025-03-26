@@ -1,7 +1,7 @@
 syntax = "proto3";
 package jobworkerp.runner;
 
-message PythonJobArgs {
+message PythonCommandArgs {
   map<string, string> env_vars = 1;
   oneof script {
     string script_content = 2;

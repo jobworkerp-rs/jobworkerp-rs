@@ -57,6 +57,9 @@ pub trait RunnerSpec: Send + Sync {
     fn result_output_proto(&self) -> Option<String>;
     // run_stream() available if true
     fn output_as_stream(&self) -> Option<bool>;
+    // for json schema validation in the workflow API
+    fn input_json_schema(&self) -> String;
+    fn output_json_schema(&self) -> Option<String>;
 }
 
 #[async_trait]

@@ -1,5 +1,5 @@
 use super::client::{ChatPostMessageResponse, SlackMessageClientImpl};
-use crate::jobworkerp::runner::{ChatPostMessageArgs, SlackRunnerSettings};
+use crate::jobworkerp::runner::{SlackChatPostMessageArgs, SlackRunnerSettings};
 use anyhow::Result;
 use serde::Deserialize;
 
@@ -31,7 +31,7 @@ impl SlackRepository {
             client: SlackMessageClientImpl::new(),
         }
     }
-    pub async fn send_message(&self, req: &ChatPostMessageArgs) -> Result<ChatPostMessageResponse> {
+    pub async fn send_message(&self, req: &SlackChatPostMessageArgs) -> Result<ChatPostMessageResponse> {
         let response = self.send_json(&serde_json::to_value(req)?).await;
         serde_json::from_str(&response?)
             .map_err(|e| anyhow::anyhow!("failed to parse slack response: {:?}", e))
