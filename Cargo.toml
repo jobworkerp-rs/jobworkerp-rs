@@ -96,11 +96,11 @@ strum = "0.27"
 strum_macros = "0.27"
 tempfile = "3.17"
 thiserror = "2.0"
-tonic = { version = "0.12", features = ["tls", "tls-webpki-roots"] }
-tonic-build = "0.12"
-tonic-health = "0.12"
-tonic-reflection = "0.12"
-tonic-web = "0.12"
+tonic = { version = "0.13", features = ["tls-ring", "tls-webpki-roots"] }
+tonic-build = "0.13"
+tonic-health = "0.13"
+tonic-reflection = "0.13"
+tonic-web = "0.13"
 tokio-stream = { version = "0.1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["full"] }
 tokio = { version = "1", features = ["full"] }
