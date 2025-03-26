@@ -311,17 +311,27 @@ pub trait UseJobExecutorHelper:
         }
     }
 
-    // enqueue job for worker and get result data
-    // if worker not exists, create worker (use temporary worker name and delete worker after process if not use_static)
-    // argument is json string or plain string (serce_json::Value::String)
-    // return value is json string
+    /// Enqueues a job for a worker and retrieves the raw output data.
+    ///
+    /// This function creates a worker if it doesn't exist and uses a temporary name.
+    /// The worker is deleted after processing unless `use_static` is set to true.
+    ///
+    /// # Parameters
+    /// * `name` - The name of the runner
+    /// * `runner_settings` - Binary data for runner configuration
+    /// * `worker_params` - Optional worker parameters (uses defaults if not provided)
+    /// * `job_args` - Binary data for job arguments
+    /// * `job_timeout_sec` - Timeout in seconds for the job execution
+    ///
+    /// # Returns
+    /// Raw binary output data
     fn setup_worker_and_enqueue_with_raw_output(
         &self,
-        name: &str,                               // runner(runner) name
-        runner_settings: Vec<u8>,                 // runner_settings data
-        worker_params: Option<serde_json::Value>, // worker parameters (if not exists, use default values)
-        job_args: Vec<u8>,                        // enqueue job args
-        job_timeout_sec: u32,                     // job timeout in seconds
+        name: &str,
+        runner_settings: Vec<u8>,
+        worker_params: Option<serde_json::Value>,
+        job_args: Vec<u8>,
+        job_timeout_sec: u32,
     ) -> impl std::future::Future<Output = Result<Vec<u8>>> + Send {
         let name = name.to_owned();
         // let job_args = job_args;
@@ -333,12 +343,16 @@ pub trait UseJobExecutorHelper:
             {
                 let mut worker: WorkerData =
                     if let Some(serde_json::Value::Object(obj)) = worker_params {
-                        // override values with workflow metadata
+                        // Override values with workflow metadata
                         WorkerData {
                             name: obj
                                 .get("name")
                                 .and_then(|v| v.as_str().map(|s| s.to_string()))
                                 .unwrap_or_else(|| name.to_string().clone()),
+                            description: obj
+                                .get("description")
+                                .and_then(|v| v.as_str().map(|s| s.to_string()))
+                                .unwrap_or_else(|| "".to_string()),
                             runner_id: Some(sid),
                             runner_settings,
                             periodic_interval: 0,
@@ -370,6 +384,7 @@ pub trait UseJobExecutorHelper:
                         // default values
                         WorkerData {
                             name: name.to_string().clone(),
+                            description: "".to_string(),
                             runner_id: Some(sid),
                             runner_settings,
                             periodic_interval: 0,

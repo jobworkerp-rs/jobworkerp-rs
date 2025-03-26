@@ -1,14 +1,12 @@
-use crate::jobworkerp::runner::{GrpcUnaryArgs, GrpcUnaryRunnerSettings};
+use crate::jobworkerp::runner::{GrpcUnaryArgs, GrpcUnaryResult, GrpcUnaryRunnerSettings};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use infra_utils::infra::net::grpc::RawBytesCodec;
-use jobworkerp_base::{
-    codec::{ProstMessageCodec, UseProstCodec},
-    error::JobWorkerError,
-};
-use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
+use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+use proto::jobworkerp::data::{ResultOutputItem, Runner, RunnerType};
 use schemars::JsonSchema;
+use std::collections::HashMap;
 use std::time::Duration;
 use tonic::{
     metadata::MetadataValue,
@@ -83,9 +81,9 @@ impl GrpcUnaryRunner {
                 }
 
                 // Apply skip verification if set
-                if tls_settings.skip_verification {
-                    // TODO
-                }
+                // if tls_settings.skip_verification {
+                //     // TODO
+                // }
             } else {
                 // Default to using system roots
                 // https://github.com/rustls/rustls/issues/1938
@@ -112,6 +110,31 @@ impl GrpcUnaryRunner {
         self.client = Some(tonic::client::Grpc::new(channel));
 
         Ok(())
+    }
+
+    // Helper function to convert MetadataMap to HashMap<String, String>
+    fn metadata_map_to_hashmap(metadata: &tonic::metadata::MetadataMap) -> HashMap<String, String> {
+        let mut result = HashMap::new();
+        for key_and_value in metadata.iter() {
+            match key_and_value {
+                tonic::metadata::KeyAndValueRef::Ascii(key, value) => {
+                    if let Ok(value_str) = value.to_str() {
+                        result.insert(key.to_string(), value_str.to_string());
+                    } else {
+                        tracing::warn!(
+                            "Failed to convert ASCII metadata value to string for key: {}",
+                            key
+                        );
+                    }
+                }
+                tonic::metadata::KeyAndValueRef::Binary(key, value) => {
+                    // For binary values, we could use base64 encoding
+                    let value_str = base64::encode(value.as_encoded_bytes());
+                    result.insert(format!("{}-bin", key), value_str);
+                }
+            }
+        }
+        result
     }
 }
 
@@ -244,27 +267,41 @@ impl RunnerTrait for GrpcUnaryRunner {
             // For better clarity, handle timeout differently
             let response = if req.timeout > 0 {
                 let timeout_duration = Duration::from_millis(req.timeout as u64);
-
                 // Use tokio timeout to wrap the entire gRPC call
-                match tokio::time::timeout(timeout_duration, client.unary(request, method, codec))
+                tokio::time::timeout(timeout_duration, client.unary(request, method, codec))
                     .await
-                {
-                    Ok(result) => result.map_err(|e| {
-                        tracing::warn!("grpc request error: status={:?}", e);
-                        anyhow::Error::from(JobWorkerError::TonicClientError(e))
-                    }),
-                    Err(_) => Err(anyhow!("Request timed out after {} ms", req.timeout)),
-                }
+                    .map(|r| {
+                        r.inspect_err(|e| tracing::warn!("grpc request error: status={:?}", e))
+                    })
+                    .map_err(|_| anyhow!("Request timed out after {} ms", req.timeout))?
             } else {
                 // Send the unary request without timeout
-                client.unary(request, method, codec).await.map_err(|e| {
+                client
+                    .unary(request, method, codec)
+                    .await
+                    .inspect_err(|e| tracing::warn!("grpc request error: status={:?}", e))
+            };
+            let res = match response {
+                Ok(response) => GrpcUnaryResult {
+                    metadata: Self::metadata_map_to_hashmap(response.metadata()),
+                    body: response.into_inner(),
+                    code: tonic::Code::Ok as i32,
+                    message: None,
+                },
+                Err(e) => {
                     tracing::warn!("grpc request error: status={:?}", e);
-                    anyhow::Error::from(JobWorkerError::TonicClientError(e))
-                })
-            }?;
+                    let res = GrpcUnaryResult {
+                        metadata: Self::metadata_map_to_hashmap(e.metadata()),
+                        body: e.details().to_vec(),
+                        code: e.code() as i32,
+                        message: Some(e.message().to_string()),
+                    };
+                    res
+                }
+            };
 
-            tracing::info!("grpc unary runner result: {:?}", &response);
-            Ok(vec![response.into_inner()])
+            tracing::info!("grpc unary runner result: {:?}", &res);
+            Ok(vec![ProstMessageCodec::serialize_message(&res)?])
         } else {
             Err(anyhow!("grpc client is not initialized"))
         }
@@ -321,14 +358,28 @@ async fn run_request() -> Result<()> {
         Ok(data) => {
             if !data.is_empty() {
                 // Try to deserialize the response as a Runner message
-                match proto::jobworkerp::data::Runner::decode(data[0].as_slice()) {
-                    Ok(runner) => {
-                        println!("Successfully received runner: {:?}", runner);
-                        assert!(runner.data.is_some());
+                match GrpcUnaryResult::decode(data[0].as_slice()) {
+                    Ok(result) => {
+                        #[derive(Clone, PartialEq, prost::Message)]
+                        pub struct OptionRunner {
+                            #[prost(message, optional, tag = "1")]
+                            data: Option<Runner>,
+                        }
+                        println!("Successfully received runner: {:#?}", result);
+                        assert!(result.code == tonic::Code::Ok as i32);
+                        assert!(result.body.len() > 0);
+                        println!(
+                            "runner: {:#?}",
+                            ProstMessageCodec::deserialize_message::<OptionRunner>(
+                                result.body.as_slice()
+                            )
+                            .unwrap()
+                        );
                     }
                     Err(e) => {
                         println!("Failed to decode response as Runner: {:?}", e);
                         println!("Raw response: {:?}", data[0]);
+                        assert!(false);
                     }
                 }
             } else {

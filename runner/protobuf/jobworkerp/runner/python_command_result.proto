@@ -1,8 +1,19 @@
 syntax = "proto3";
 package jobworkerp.runner;
 
+// # Python Command Result
+// Response data structure containing the execution results of a Python script
 message PythonCommandResult {
+  // # Exit Code
+  // The exit code returned by the Python process
   int32 exit_code = 1;
+  
+  // # Standard Output
+  // The captured standard output (stdout) from the Python script execution
   bytes output = 2;
+  
+  // # Standard Error
+  // The captured standard error (stderr) from the Python script execution
+  // Only present if with_stderr was set to true in the request
   optional bytes output_stderr = 3;
 }

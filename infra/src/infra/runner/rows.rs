@@ -6,6 +6,7 @@ use proto::jobworkerp::data::{Runner, RunnerData, RunnerId};
 pub struct RunnerRow {
     pub id: i64,
     pub name: String,
+    pub description: String,
     pub file_name: String,
     pub r#type: i32,
 }
@@ -16,6 +17,7 @@ impl RunnerRow {
             id: Some(RunnerId { value: self.id }),
             data: Some(RunnerData {
                 name: self.name.clone(),
+                description: self.description.clone(),
                 runner_type: self.r#type,
                 runner_settings_proto: runner.runner_settings_proto(),
                 job_args_proto: runner.job_args_proto(),

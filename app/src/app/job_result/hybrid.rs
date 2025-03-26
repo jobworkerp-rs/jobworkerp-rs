@@ -434,6 +434,7 @@ pub mod tests {
         let runner_settings = vec![];
         let worker_data = WorkerData {
             name: "test".to_string(),
+            description: "desc1".to_string(),
             runner_id: Some(proto::jobworkerp::data::RunnerId { value: 1 }),
             runner_settings,
             retry_policy: None,

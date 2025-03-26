@@ -1,15 +1,32 @@
 syntax = "proto3";
 package jobworkerp.runner;
 
+// # Python Command Arguments
+// Definition of arguments required to execute a Python script via the runner service
 message PythonCommandArgs {
+  // # Environment Variables
+  // Key-value pairs of environment variables to be set when executing the Python script
   map<string, string> env_vars = 1;
+  
+  // # Script Source
+  // One of the following must be provided to define the script to be executed
   oneof script {
+    // Python script content as a string
     string script_content = 2;
+    // URL pointing to a Python script to be downloaded and executed
     string script_url = 3;
   }
+  
+  // # Input Data
+  // Optional data to be passed to the script as input
   oneof input_data {
+    // Raw binary data to be passed to the script
     bytes data_body = 4;
+    // URL pointing to data to be downloaded and passed to the script
     string data_url = 5;
   }
+  
+  // # Stderr Capture
+  // Whether to capture and return standard error output in the response
   bool with_stderr = 6;
 }

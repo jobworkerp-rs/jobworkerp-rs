@@ -262,6 +262,7 @@ async fn redis_test() -> Result<()> {
     let id = WorkerId { value: 1 };
     let worker = &WorkerData {
         name: "hoge1".to_string(),
+        description: "hoge2".to_string(),
         runner_id: Some(RunnerId { value: 2 }),
         runner_settings: ProstMessageCodec::serialize_message(&TestRunnerSettings {
             name: "hoge1".to_string(),

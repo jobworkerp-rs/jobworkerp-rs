@@ -36,6 +36,7 @@ pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig {
     fn validate_create(&self, dat: WorkerData) -> Result<WorkerData, tonic::Status> {
         let data = WorkerData {
             name: dat.name,
+            description: dat.description,
             runner_id: dat.runner_id,
             runner_settings: dat.runner_settings,
             retry_policy: dat.retry_policy,

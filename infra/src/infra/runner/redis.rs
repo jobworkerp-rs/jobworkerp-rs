@@ -22,18 +22,19 @@ where
     const CACHE_KEY: &'static str = "RUNNER_DEF";
 
     async fn add_from_plugins(&self) -> Result<()> {
-        let names = self.plugin_runner_factory().load_plugins().await;
-        for (name, fname) in names.iter() {
+        let metas = self.plugin_runner_factory().load_plugins().await;
+        for meta in metas.iter() {
             if let Some(p) = self
                 .plugin_runner_factory()
-                .create_plugin_by_name(name, false)
+                .create_plugin_by_name(&meta.name, false)
                 .await
             {
                 let runner = RunnerRow {
                     id: self.id_generator().generate_id()?,
-                    name: name.clone(),
-                    file_name: fname.clone(),
-                    r#type: RunnerType::from_str_name(name)
+                    name: meta.name.clone(),
+                    description: meta.description.clone(),
+                    file_name: meta.filename.clone(),
+                    r#type: RunnerType::from_str_name(&meta.name)
                         .map(|t| t as i32)
                         .unwrap_or(0), // default: PLUGIN
                 }
@@ -50,10 +51,10 @@ where
                         }
                     }
                 } else {
-                    tracing::error!("runner create error: {}, {:?}", name, runner);
+                    tracing::error!("runner create error: {}, {:?}", &meta.name, runner);
                 }
             } else {
-                tracing::error!("loaded plugin not found: {}", name);
+                tracing::error!("loaded plugin not found: {}", &meta.name);
             }
         }
         Ok(())
@@ -255,6 +256,7 @@ async fn redis_test() -> Result<()> {
     let id = RunnerId { value: 1 };
     let runner_data = &RunnerData {
         name: "hoge1".to_string(),
+        description: "hoge2".to_string(),
         runner_type: 1,
         runner_settings_proto: "hoge3".to_string(),
         job_args_proto: "hoge5".to_string(),
