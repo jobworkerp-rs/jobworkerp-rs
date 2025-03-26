@@ -2166,6 +2166,7 @@ dependencies = [
  "log",
  "once_cell",
  "opentelemetry 0.27.1",
+ "prost",
  "readability",
  "redis",
  "regex",

@@ -2,7 +2,9 @@ pub mod client;
 pub mod repository;
 
 use self::repository::SlackRepository;
-use crate::jobworkerp::runner::{SlackChatPostMessageArgs, SlackChatPostMessageResult, SlackRunnerSettings};
+use crate::jobworkerp::runner::{
+    SlackChatPostMessageArgs, SlackChatPostMessageResult, SlackRunnerSettings,
+};
 use crate::runner::RunnerTrait;
 use anyhow::{anyhow, Result};
 use futures::stream::BoxStream;

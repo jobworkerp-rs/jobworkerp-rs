@@ -430,11 +430,8 @@ pub mod tests {
         use infra::infra::job::rows::UseJobqueueAndCodec;
         use infra_utils::infra::test::TEST_RUNTIME;
         use jobworkerp_runner::jobworkerp::runner::CommandArgs;
-        use jobworkerp_runner::jobworkerp::runner::CommandRunnerSettings;
 
-        let runner_settings = JobqueueAndCodec::serialize_message(&CommandRunnerSettings {
-            name: "ls".to_string(),
-        });
+        let runner_settings = vec![];
         let worker_data = WorkerData {
             name: "test".to_string(),
             runner_id: Some(proto::jobworkerp::data::RunnerId { value: 1 }),
@@ -463,7 +460,9 @@ pub mod tests {
             };
             let job_id = JobId { value: 100 };
             let args = JobqueueAndCodec::serialize_message(&CommandArgs {
+                command: "echo".to_string(),
                 args: vec!["arg1".to_string()],
+                with_memory_monitoring: false,
             });
             let mut data = JobResultData {
                 job_id: Some(job_id),

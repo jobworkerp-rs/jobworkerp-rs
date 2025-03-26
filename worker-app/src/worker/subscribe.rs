@@ -80,8 +80,6 @@ mod test {
     use app_wrapper::runner::RunnerFactory;
     use infra::infra::worker::event::UseWorkerPublish;
     use infra_utils::infra::test::setup_test_redis_client;
-    use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
-    use jobworkerp_runner::jobworkerp::runner::CommandRunnerSettings;
     use proto::jobworkerp::data::{RunnerId, WorkerData};
     use std::sync::Arc;
     use tokio::time::{sleep, Duration};
@@ -140,9 +138,7 @@ mod test {
             });
             sleep(Duration::from_millis(100)).await;
 
-            let runner_settings = ProstMessageCodec::serialize_message(&CommandRunnerSettings {
-                name: "ls".to_string(),
-            })?;
+            let runner_settings = vec![];
             let worker_data = WorkerData {
                 name: "hoge_worker".to_string(),
                 runner_id: Some(RunnerId { value: 1 }),
