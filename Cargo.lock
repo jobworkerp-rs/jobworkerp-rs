@@ -2400,6 +2400,7 @@ dependencies = [
  "anyhow",
  "async-stream",
  "async-trait",
+ "base64 0.22.1",
  "bollard",
  "chrono",
  "command-utils 0.1.0",

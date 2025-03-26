@@ -14,6 +14,7 @@ static ALLOCATOR: System = System;
 
 pub trait PluginRunner: Send + Sync {
     fn name(&self) -> String;
+    fn description(&self) -> String;
     fn load(&mut self, settings: Vec<u8>) -> Result<()>;
     fn run(&mut self, arg: Vec<u8>) -> Result<Vec<Vec<u8>>>;
     // REMOVE
@@ -68,6 +69,9 @@ impl PluginRunner for TestPlugin {
     fn name(&self) -> String {
         // specify as same string as worker.runner
         String::from("Test")
+    }
+    fn description(&self) -> String {
+        String::from("Test plugin description")
     }
     fn load(&mut self, runner_settings: Vec<u8>) -> Result<()> {
         tracing::info!("Test plugin load!");

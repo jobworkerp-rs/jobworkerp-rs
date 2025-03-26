@@ -1,45 +1,55 @@
 syntax = "proto3";
 package jobworkerp.runner;
 
-// GrpcUnaryRunnerSettings defines the configuration parameters
-// needed to establish and maintain a gRPC connection to a server.
+// Configuration for gRPC unary runner connections
 message GrpcUnaryRunnerSettings {
+    // TLS configuration settings for secure connections
+    message TlsConfig {
+        // # CA Certificate Path
+        // Path to CA certificate for verifying server
+        string ca_cert_path = 1;
+
+        // # Client Certificate Path
+        // Path to client certificate (for mutual TLS)
+        string client_cert_path = 2;
+
+        // # Client Key Path
+        // Path to client private key (for mutual TLS)
+        string client_key_path = 3;
+
+        // # Server Name Override
+        // Server name to use for verification (if different from host)
+        string server_name_override = 4;
+
+        // # Skip Verification
+        // Whether to skip TLS verification (not recommended for production)
+        // bool skip_verification = 5;
+    }
+    // # Host
     // Host address of the gRPC server (hostname or IP)
     string host = 1;
     
+    // # Port
     // Port number of the gRPC server
     uint32 port = 2;
     
+    // # TLS Enabled
     // Whether to use TLS encryption for the connection
     bool tls = 3;
     
+    // # Timeout
     // Connection timeout in milliseconds
     optional uint32 timeout_ms = 4;
     
+    // # Max Message Size
     // Maximum message size in bytes (0 for default)
     optional uint32 max_message_size = 5;
     
+    // # Authentication Token
     // Authentication token or API key (if required)
     optional string auth_token = 6;
     
+    // # TLS Configuration
     // TLS configuration options (relevant when tls=true)
     optional TlsConfig tls_config = 7;
-}
-
-// TlsConfig contains settings specific to TLS connections
-message TlsConfig {
-    // Path to CA certificate for verifying server
-    string ca_cert_path = 1;
-    
-    // Path to client certificate (for mutual TLS)
-    string client_cert_path = 2;
-    
-    // Path to client private key (for mutual TLS)
-    string client_key_path = 3;
-    
-    // Server name to use for verification (if different from host)
-    string server_name_override = 4;
-    
-    // Whether to skip TLS verification (not recommended for production)
-    bool skip_verification = 5;
 }

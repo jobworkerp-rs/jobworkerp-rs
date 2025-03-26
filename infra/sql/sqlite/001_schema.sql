@@ -5,6 +5,7 @@ PRAGMA encoding = 'UTF-8';
 CREATE TABLE IF NOT EXISTS `worker` (
     `id` INTEGER PRIMARY KEY AUTOINCREMENT,
     `name` TEXT NOT NULL UNIQUE,
+    `description` TEXT NOT NULL,
     `runner_id` BIGINT NOT NULL,
     `runner_settings` BLOB NOT NULL,
     `retry_type` INT NOT NULL,
@@ -55,25 +56,40 @@ CREATE TABLE IF NOT EXISTS `job_result` (
 CREATE TABLE IF NOT EXISTS `runner` (
     `id` INTEGER PRIMARY KEY,
     `name` TEXT NOT NULL UNIQUE,
+    `description` TEXT NOT NULL,
     `file_name` VARCHAR(512) NOT NULL UNIQUE, -- file name of the runner dynamic library
     `type` INT(10) NOT NULL -- runner type. enum: command, request, grpc_unary, plugin
 );
 
 -- builtin runner definitions (runner.type != 0 cannot edit or delete)
 -- (file_name is not real file name(built-in runner), but just a name for identification)
-INSERT OR IGNORE INTO runner (`id`, `name`, `file_name`, `type`) VALUES (
-  1, 'COMMAND', 'builtin1', 1
+INSERT OR IGNORE INTO runner (`id`, `name`, `description`,`file_name`, `type`) VALUES (
+  1, 'COMMAND', 
+  'Runner for command execution. It executes the shell command with the given arguments.',
+  'builtin1', 1
 ), (
-  2, 'HTTP_REQUEST', 'builtin2', 2
+  2, 'HTTP_REQUEST',
+  'Runner for HTTP request. It sends the HTTP request to the given URL with the given method, header, and body.',
+  'builtin2', 2
 ), (
-  3, 'GRPC_UNARY', 'builtin3', 3
+  3, 'GRPC_UNARY',
+  'Runner for gRPC unary request. It sends the gRPC unary request to the given URL with the given method, metadata, and body.',
+  'builtin3', 3
 ), (
-  4, 'DOCKER', 'builtin4', 4
+  4, 'DOCKER',
+  'Runner for docker container execution. It executes the docker container with the given image and arguments.',
+  'builtin4', 4
 ), (
-  5, 'SLACK_POST_MESSAGE', 'builtin5', 5
+  5, 'SLACK_POST_MESSAGE',
+  'Runner for slack chat message posting. It posts the message to the given slack channel with the given token and message.',
+  'builtin5', 5
 ), (
-  6, 'PYTHON_COMMAND', 'builtin6', 6
+  6, 'PYTHON_COMMAND',
+  'Runner for python command execution. It executes the python command with the given arguments.',
+  'builtin6', 6
 ), (
-  65535, 'SIMPLE_WORKFLOW', 'builtin7', 65535
+  65535, 'SIMPLE_WORKFLOW',
+  'Runner for simple workflow execution. It executes the simple workflow with the given arguments.',
+  'builtin7', 65535
 );
 

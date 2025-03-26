@@ -13,8 +13,14 @@ use std::{
 };
 use tokio::sync::RwLock as TokioRwLock;
 
+pub struct PluginMetadata {
+    pub name: String,
+    pub description: String,
+    pub filename: String,
+}
+
 pub trait PluginLoader: Send + Sync {
-    fn load_path(&mut self, path: &Path) -> Result<String>;
+    fn load_path(&mut self, path: &Path) -> Result<(String, String)>;
     fn unload(&mut self, name: &str) -> Result<bool>;
     #[allow(dead_code)]
     fn clear(&mut self) -> Result<()>;
@@ -41,7 +47,7 @@ impl Plugins {
         }
     }
 
-    pub async fn load_plugin_files_from_env(&self) -> Vec<(String, String)> {
+    pub async fn load_plugin_files_from_env(&self) -> Vec<PluginMetadata> {
         // default: current dir
         let runner_dir_str = env::var("PLUGINS_RUNNER_DIR").unwrap_or("./".to_string());
         let runner_dirs: Vec<&str> = runner_dir_str.split(',').collect_vec();
@@ -77,11 +83,7 @@ impl Plugins {
     }
 
     // return: (name, file_name)
-    async fn load_plugin_files_from(
-        &self,
-        dir: ReadDir,
-        ptype: PluginType,
-    ) -> Vec<(String, String)> {
+    async fn load_plugin_files_from(&self, dir: ReadDir, ptype: PluginType) -> Vec<PluginMetadata> {
         let mut loaded = Vec::new();
         for file in dir.flatten() {
             if file.path().is_file()
@@ -99,9 +101,13 @@ impl Plugins {
                             .await
                             .load_path(file.path().as_path())
                         {
-                            Ok(name) => {
+                            Ok((name, description)) => {
                                 tracing::info!("runner plugin loaded: {}", file.path().display());
-                                loaded.push((name, file.file_name().to_string_lossy().to_string()));
+                                loaded.push(PluginMetadata {
+                                    name,
+                                    description,
+                                    filename: file.file_name().to_string_lossy().to_string(),
+                                });
                             }
                             Err(e) => {
                                 tracing::warn!(
@@ -125,6 +131,7 @@ impl Plugins {
 //TODO function load, run, cancel to async
 pub trait PluginRunner: Send + Sync {
     fn name(&self) -> String;
+    fn description(&self) -> String;
     fn load(&mut self, settings: Vec<u8>) -> Result<()>;
     fn run(&mut self, args: Vec<u8>) -> Result<Vec<Vec<u8>>>;
     // run for generating stream

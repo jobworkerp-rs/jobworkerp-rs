@@ -1,20 +1,25 @@
 syntax = "proto3";
 package jobworkerp.runner;
 
+// # GrpcUnaryResult
+// Message definition for unary gRPC response results used in the job-worker system.
+// Contains all information returned from a completed gRPC unary call.
 message GrpcUnaryResult {
-    // Initial metadata (headers) from the response
+    // # Metadata
+    // Initial metadata (headers) received from the gRPC response
     map<string, string> metadata = 1;
     
-    // Response payload
+    // # Body
+    // Response payload containing the binary-encoded response message
     bytes body = 2;
-    
-    // Trailing metadata from the response
-    map<string, string> trailers = 3;
-    
+   
+    // # Code
     // gRPC status code (0 = OK, other values indicate errors)
-    int32 code = 4;
+    // See: https://grpc.github.io/grpc/core/md_doc_statuscodes.html
+    int32 code = 3;
     
-    // Human-readable status message
-    string message = 5;
+    // # Message
+    // Error message describing the result
+    optional string message = 4;
 }
 

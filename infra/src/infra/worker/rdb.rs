@@ -20,6 +20,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         let res = sqlx::query::<Rdb>(
             "INSERT INTO worker (
             `name`,
+            `description`,
             `runner_id`,
             `use_static`,
             `runner_settings`,
@@ -35,9 +36,10 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
             `store_success`,
             `store_failure`,
             `output_as_stream`
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(&worker.name)
+        .bind(&worker.description)
         .bind(worker.runner_id.as_ref().map(|s| s.value).unwrap_or(0))
         .bind(worker.use_static)
         .bind(&worker.runner_settings)
@@ -76,6 +78,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         sqlx::query(
             "UPDATE `worker` SET
             `name` = ?,
+            `description` = ?,
             `runner_id` = ?,
             `use_static` = ?,
             `runner_settings` = ?,
@@ -94,6 +97,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
             WHERE `id` = ?;",
         )
         .bind(&worker.name)
+        .bind(&worker.description)
         .bind(worker.runner_id.map(|s| s.value).unwrap_or(0))
         .bind(worker.use_static)
         .bind(&worker.runner_settings)
@@ -269,6 +273,7 @@ mod test {
         let db = repository.db_pool();
         let data = Some(WorkerData {
             name: "hoge1".to_string(),
+            description: "hoge2".to_string(),
             runner_id: Some(RunnerId { value: 323 }),
             runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                 name: "hoge".to_string(),
@@ -309,6 +314,7 @@ mod test {
         tx = db.begin().await.context("error in test")?;
         let update = WorkerData {
             name: "fuga1".to_string(),
+            description: "fuga2".to_string(),
             runner_id: Some(RunnerId { value: 324 }),
             runner_settings: RdbWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
                 name: "fuga".to_string(),

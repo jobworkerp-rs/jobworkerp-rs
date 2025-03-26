@@ -3,21 +3,39 @@ syntax = "proto3";
 package jobworkerp.runner;
 
 message WorkflowResult {
+  // # Workflow Status
+  // Represents the current state of a workflow execution
   enum WorkflowStatus {
+    // Workflow completed successfully
     Completed = 0;
+    // Workflow failed due to an error
     Faulted = 1;
+    // Workflow was explicitly cancelled
     Cancelled = 2;
-    // illegal status as result (bug?)
+    // States below should not appear in final results
+    // Pending status (should not appear in results - indicates a potential bug)
     Pending = 3;
+    // Workflow is currently executing
     Running = 4;
+    // Workflow is waiting for an external condition
     Waiting = 5;
   }
-  // workflow id (uuid v7)
+  
+  // # Workflow ID
+  // Unique identifier for the workflow (UUID v7 format)
   string id = 1;
-  // output string (plain string or json string)
+  
+  // # Output
+  // Result of the workflow execution
+  // Can be a plain string or JSON formatted string
   string output = 2;
-  // workflow status
+  
+  // # Status
+  // Current status of the workflow execution
   WorkflowStatus status = 3;
-  // error message (if any)
+  
+  // # Error Message
+  // Detailed error information if the workflow failed
+  // Only populated when status is Faulted
   optional string error_message = 4;
 }

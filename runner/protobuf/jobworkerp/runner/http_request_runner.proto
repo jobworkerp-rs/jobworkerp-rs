@@ -1,7 +1,10 @@
 syntax = "proto3";
 package jobworkerp.runner;
 
-// http request runner settings
+// # HTTP Request Runner Settings
+// Configuration for the HTTP request runner component
 message HttpRequestRunnerSettings {
+    // # Base URL
+    // The base URL to which request paths will be appended
     string base_url = 1;
 }

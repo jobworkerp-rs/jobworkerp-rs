@@ -16,6 +16,7 @@ static ALLOCATOR: System = System;
 
 pub trait PluginRunner: Send + Sync {
     fn name(&self) -> String;
+    fn description(&self) -> String;
     fn load(&mut self, settings: Vec<u8>) -> Result<()>;
     fn run(&mut self, arg: Vec<u8>) -> Result<Vec<Vec<u8>>>;
     // REMOVE
@@ -126,6 +127,9 @@ impl PluginRunner for HelloPlugin {
     fn name(&self) -> String {
         // specify as same string as worker.runner_settings
         String::from("HelloPlugin")
+    }
+    fn description(&self) -> String {
+        String::from("HelloPlugin: Hello world plugin version 0.1")
     }
     fn load(&mut self, settings: Vec<u8>) -> Result<()> {
         tracing::info!("HelloPlugin load!");
