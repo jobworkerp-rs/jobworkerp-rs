@@ -2,74 +2,20 @@ use crate::jobworkerp::runner::{GrpcUnaryArgs, GrpcUnaryRunnerSettings};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use infra_utils::infra::net::grpc::RawBytesCodec;
 use jobworkerp_base::{
     codec::{ProstMessageCodec, UseProstCodec},
     error::JobWorkerError,
 };
-use prost::bytes::{Buf, BufMut};
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use schemars::JsonSchema;
 use std::time::Duration;
 use tonic::{
-    codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder},
     metadata::MetadataValue,
     transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity},
-    IntoRequest,
 };
 
 use super::{RunnerSpec, RunnerTrait};
-
-// Define a custom codec that passes through raw bytes without additional protobuf encoding
-#[derive(Debug, Clone)]
-struct RawBytesCodec;
-
-impl Default for RawBytesCodec {
-    fn default() -> Self {
-        RawBytesCodec
-    }
-}
-
-impl Encoder for RawBytesCodec {
-    type Item = Vec<u8>;
-    type Error = tonic::Status;
-
-    fn encode(&mut self, item: Self::Item, buf: &mut EncodeBuf<'_>) -> Result<(), Self::Error> {
-        // Simply write the raw bytes as-is
-        buf.reserve(item.len());
-        buf.put_slice(&item);
-        Ok(())
-    }
-}
-
-impl Decoder for RawBytesCodec {
-    type Item = Vec<u8>;
-    type Error = tonic::Status;
-
-    fn decode(&mut self, buf: &mut DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error> {
-        if !buf.has_remaining() {
-            return Ok(None);
-        }
-
-        // Just copy the entire buffer into a new Vec<u8>
-        let bytes = buf.copy_to_bytes(buf.remaining());
-        Ok(Some(bytes.to_vec()))
-    }
-}
-
-impl Codec for RawBytesCodec {
-    type Encode = Vec<u8>;
-    type Decode = Vec<u8>;
-    type Encoder = RawBytesCodec;
-    type Decoder = RawBytesCodec;
-
-    fn encoder(&mut self) -> Self::Encoder {
-        RawBytesCodec
-    }
-
-    fn decoder(&mut self) -> Self::Decoder {
-        RawBytesCodec
-    }
-}
 
 /// grpc unary request runner.
 /// specify protobuf payload as arg in enqueue.
@@ -96,7 +42,7 @@ impl GrpcUnaryRunner {
         let port = &settings.port;
 
         // Create the base endpoint
-        let mut endpoint = tonic::transport::Endpoint::new(format!("{}:{}", host, port))?;
+        let mut endpoint = Endpoint::new(format!("{}:{}", host, port))?;
 
         // Apply timeout if specified
         if let Some(timeout_ms) = settings.timeout_ms {
@@ -235,7 +181,7 @@ impl RunnerTrait for GrpcUnaryRunner {
         if let Some(mut client) = self.client.clone() {
             let req = ProstMessageCodec::deserialize_message::<GrpcUnaryArgs>(args)?;
             // Use our custom BytesCodec instead of ProstCodec to handle raw byte data correctly
-            let codec = RawBytesCodec::default();
+            let codec = RawBytesCodec;
 
             // Setup the message size limits if needed
             if let Some(size) = self.max_message_size {

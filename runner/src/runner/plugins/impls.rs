@@ -72,7 +72,6 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
     fn output_json_schema(&self) -> Option<String> {
         block_on(self.plugin_runner.read()).output_json_schema()
     }
-
 }
 #[async_trait]
 impl RunnerTrait for PluginRunnerWrapperImpl {
