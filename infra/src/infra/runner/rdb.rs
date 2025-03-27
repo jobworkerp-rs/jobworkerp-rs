@@ -69,7 +69,8 @@ pub trait RunnerRepository:
                 `description`,
                 `file_name`,
                 `type`
-                ) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE `name` = VALUES(`name`), `file_name` = VALUES(`file_name`)"
+                ) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE
+                  `name` = VALUES(`name`), `description` = VALUES(`description`), `file_name` = VALUES(`file_name`)"
             } else { // XXX sqlite does not support ON DUPLICATE KEY UPDATE
                 "INSERT OR IGNORE INTO `runner` (
                 `id`,
