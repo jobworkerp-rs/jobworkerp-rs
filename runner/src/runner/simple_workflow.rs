@@ -1,4 +1,4 @@
-use crate::jobworkerp::runner::{WorkflowArgs, WorkflowResult};
+use crate::jobworkerp::runner::WorkflowArgs;
 
 use super::RunnerSpec;
 use proto::jobworkerp::data::RunnerType;
@@ -61,19 +61,5 @@ impl RunnerSpec for SimpleWorkflowRunnerSpecImpl {
 
     fn output_as_stream(&self) -> Option<bool> {
         SimpleWorkflowRunnerSpec::output_as_stream(self)
-    }
-    fn input_json_schema(&self) -> String {
-        "".to_string()
-    }
-    fn output_json_schema(&self) -> Option<String> {
-        // plain string with title
-        let schema = schemars::schema_for!(WorkflowResult);
-        match serde_json::to_string(&schema) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::error!("error in output_json_schema: {:?}", e);
-                None
-            }
-        }
     }
 }
