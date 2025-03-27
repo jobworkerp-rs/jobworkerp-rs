@@ -1,10 +1,11 @@
 use crate::jobworkerp::runner::{GrpcUnaryArgs, GrpcUnaryResult, GrpcUnaryRunnerSettings};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use base64::Engine;
 use futures::stream::BoxStream;
 use infra_utils::infra::net::grpc::RawBytesCodec;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
-use proto::jobworkerp::data::{ResultOutputItem, Runner, RunnerType};
+use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use schemars::JsonSchema;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -129,7 +130,9 @@ impl GrpcUnaryRunner {
                 }
                 tonic::metadata::KeyAndValueRef::Binary(key, value) => {
                     // For binary values, we could use base64 encoding
-                    let value_str = base64::encode(value.as_encoded_bytes());
+                    let value_str =
+                        base64::engine::general_purpose::STANDARD.encode(value.as_encoded_bytes());
+
                     result.insert(format!("{}-bin", key), value_str);
                 }
             }
@@ -318,75 +321,81 @@ impl RunnerTrait for GrpcUnaryRunner {
     }
 }
 
-#[tokio::test]
-#[ignore] // need to start front server and fix handling empty stream...
-async fn run_request() -> Result<()> {
-    use prost::Message;
-    // common::util::tracing::tracing_init_test(tracing::Level::INFO);
-    let mut runner = GrpcUnaryRunner::new();
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proto::jobworkerp::data::Runner;
 
-    let settings = GrpcUnaryRunnerSettings {
-        host: "http://localhost".to_string(),
-        port: 9000,
-        tls: false,
-        timeout_ms: None,
-        max_message_size: None,
-        auth_token: None,
-        tls_config: None,
-    };
+    #[tokio::test]
+    #[ignore] // need to start front server and fix handling empty stream...
+    async fn run_request() -> Result<()> {
+        use prost::Message;
+        // common::util::tracing::tracing_init_test(tracing::Level::INFO);
+        let mut runner = GrpcUnaryRunner::new();
 
-    runner
-        .load(ProstMessageCodec::serialize_message(&settings)?)
-        .await?;
+        let settings = GrpcUnaryRunnerSettings {
+            host: "http://localhost".to_string(),
+            port: 9000,
+            tls: false,
+            timeout_ms: None,
+            max_message_size: None,
+            auth_token: None,
+            tls_config: None,
+        };
 
-    // Create properly encoded protobuf message
-    let runner_id = proto::jobworkerp::data::RunnerId { value: 1 };
-    let mut buf = Vec::with_capacity(runner_id.encoded_len());
-    runner_id.encode(&mut buf)?;
+        runner
+            .load(ProstMessageCodec::serialize_message(&settings)?)
+            .await?;
 
-    let arg = crate::jobworkerp::runner::GrpcUnaryArgs {
-        method: "/jobworkerp.service.RunnerService/Find".to_string(),
-        request: buf,
-        metadata: Default::default(),
-        timeout: 0,
-    };
+        // Create properly encoded protobuf message
+        let runner_id = proto::jobworkerp::data::RunnerId { value: 1 };
+        let mut buf = Vec::with_capacity(runner_id.encoded_len());
+        runner_id.encode(&mut buf)?;
 
-    let arg = ProstMessageCodec::serialize_message(&arg)?;
-    let res = runner.run(&arg).await;
+        let arg = crate::jobworkerp::runner::GrpcUnaryArgs {
+            method: "/jobworkerp.service.RunnerService/Find".to_string(),
+            request: buf,
+            metadata: Default::default(),
+            timeout: 0,
+        };
 
-    match res {
-        Ok(data) => {
-            if !data.is_empty() {
-                // Try to deserialize the response as a Runner message
-                match GrpcUnaryResult::decode(data[0].as_slice()) {
-                    Ok(result) => {
-                        #[derive(Clone, PartialEq, prost::Message)]
-                        pub struct OptionRunner {
-                            #[prost(message, optional, tag = "1")]
-                            data: Option<Runner>,
+        let arg = ProstMessageCodec::serialize_message(&arg)?;
+        let res = runner.run(&arg).await;
+
+        match res {
+            Ok(data) => {
+                if !data.is_empty() {
+                    // Try to deserialize the response as a Runner message
+                    match GrpcUnaryResult::decode(data[0].as_slice()) {
+                        Ok(result) => {
+                            #[derive(Clone, PartialEq, prost::Message)]
+                            pub struct OptionRunner {
+                                #[prost(message, optional, tag = "1")]
+                                data: Option<Runner>,
+                            }
+                            println!("Successfully received runner: {:#?}", result);
+                            assert!(result.code == tonic::Code::Ok as i32);
+                            assert!(!result.body.is_empty());
+                            println!(
+                                "runner: {:#?}",
+                                ProstMessageCodec::deserialize_message::<OptionRunner>(
+                                    result.body.as_slice()
+                                )
+                                .unwrap()
+                            );
                         }
-                        println!("Successfully received runner: {:#?}", result);
-                        assert!(result.code == tonic::Code::Ok as i32);
-                        assert!(result.body.len() > 0);
-                        println!(
-                            "runner: {:#?}",
-                            ProstMessageCodec::deserialize_message::<OptionRunner>(
-                                result.body.as_slice()
-                            )
-                            .unwrap()
-                        );
+                        Err(e) => {
+                            println!("Failed to decode response as Runner: {:?}", e);
+                            println!("Raw response: {:?}", data[0]);
+                            unreachable!()
+                        }
                     }
-                    Err(e) => {
-                        println!("Failed to decode response as Runner: {:?}", e);
-                        println!("Raw response: {:?}", data[0]);
-                        assert!(false);
-                    }
+                } else {
+                    println!("Received empty response");
                 }
-            } else {
-                println!("Received empty response");
+                Ok(())
             }
-            Ok(())
+            Err(e) => Err(e),
         }
-        Err(e) => Err(e),
     }
 }
