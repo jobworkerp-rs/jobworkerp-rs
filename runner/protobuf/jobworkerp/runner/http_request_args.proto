@@ -1,15 +1,35 @@
 syntax = "proto3";
 package jobworkerp.runner;
 
+// # HTTP Request Arguments
+// Defines the structure for HTTP request parameters used by the job worker
+
 message HttpRequestArgs {
+  // # Key-Value Pair
+  // Represents a generic key-value pair for headers, query parameters, etc.
   message KeyValue {
-    string key = 1;
-    string value = 2;
+    string key = 1;    // Key identifier
+    string value = 2;  // Associated value
   }
+  
+  // # HTTP Headers
+  // Collection of HTTP header fields
   repeated KeyValue headers = 1;
-  string  method = 2;
-  string  path = 3;
-  optional string  body = 4;
+  
+  // # HTTP Method
+  // The HTTP method (GET, POST, PUT, DELETE, etc.)
+  string method = 2;
+  
+  // # Request Path
+  // The URL path for the request
+  string path = 3;
+  
+  // # Request Body
+  // Optional payload data for the request
+  optional string body = 4;
+  
+  // # Query Parameters
+  // Collection of URL query parameters
   repeated KeyValue queries = 5;
 }
 

@@ -1,9 +1,7 @@
 use std::{str::FromStr, time::Duration};
 
 use super::{RunnerSpec, RunnerTrait};
-use crate::jobworkerp::runner::{
-    http_request_result::KeyValue, HttpRequestArgs, HttpRequestResult, HttpRequestRunnerSettings,
-};
+use crate::jobworkerp::runner::{HttpRequestArgs, HttpRequestRunnerSettings, HttpResponseResult};
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -16,6 +14,7 @@ use reqwest::{
     header::{HeaderMap, HeaderName},
     Method, Url,
 };
+use schemars::JsonSchema;
 
 #[derive(Clone, Debug)]
 pub struct RequestRunner {
@@ -56,6 +55,12 @@ impl Default for RequestRunner {
     }
 }
 
+#[derive(Debug, JsonSchema, serde::Deserialize, serde::Serialize)]
+struct HttpRequestRunnerInputSchema {
+    settings: HttpRequestRunnerSettings,
+    args: HttpRequestArgs,
+}
+
 impl RunnerSpec for RequestRunner {
     fn name(&self) -> String {
         RunnerType::HttpRequest.as_str_name().to_string()
@@ -71,6 +76,27 @@ impl RunnerSpec for RequestRunner {
     }
     fn output_as_stream(&self) -> Option<bool> {
         Some(false)
+    }
+    fn input_json_schema(&self) -> String {
+        let schema = schemars::schema_for!(HttpRequestRunnerInputSchema);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn output_json_schema(&self) -> Option<String> {
+        // plain string with title
+        let schema = schemars::schema_for!(HttpResponseResult);
+        match serde_json::to_string(&schema) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::error!("error in output_json_schema: {:?}", e);
+                None
+            }
+        }
     }
 }
 // arg: {headers:{<headers map>}, queries:[<query string array>], body: <body string or struct>}
@@ -127,14 +153,16 @@ impl RunnerTrait for RequestRunner {
             let h = res.headers().clone();
             let s = res.status().as_u16();
             let t = res.text().await.map_err(JobWorkerError::ReqwestError)?;
-            let mes = HttpRequestResult {
+            let mes = HttpResponseResult {
                 status_code: s as u32,
                 headers: h
                     .iter()
-                    .map(|(k, v)| KeyValue {
-                        key: k.as_str().to_string(),
-                        value: v.to_str().unwrap().to_string(),
-                    })
+                    .map(
+                        |(k, v)| crate::jobworkerp::runner::http_response_result::KeyValue {
+                            key: k.as_str().to_string(),
+                            value: v.to_str().unwrap().to_string(),
+                        },
+                    )
                     .collect(),
                 content: t,
             };

@@ -264,7 +264,7 @@ mod tests {
     use super::*;
     use anyhow::Result;
     use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
-    use jobworkerp_runner::jobworkerp::runner::{CommandArgs, CommandRunnerSettings};
+    use jobworkerp_runner::jobworkerp::runner::CommandArgs;
     use proto::jobworkerp::data::{
         Job, JobData, JobId, ResponseType, RetryType, WorkerData, WorkerId,
     };
@@ -283,9 +283,7 @@ mod tests {
     #[tokio::test]
     async fn test_job_result_status() -> Result<()> {
         let runner = MockResultHandler::new();
-        let runner_settings = JobqueueAndCodec::serialize_message(&CommandRunnerSettings {
-            name: "ls".to_string(),
-        });
+        let runner_settings = vec![];
         let worker = WorkerData {
             name: "test".to_string(),
             runner_settings: runner_settings.clone(),
@@ -312,7 +310,9 @@ mod tests {
             ..Default::default()
         };
         let args = JobqueueAndCodec::serialize_message(&CommandArgs {
+            command: "echo".to_string(),
             args: vec!["test".to_string()],
+            with_memory_monitoring: false,
         });
         let job = Job {
             id: Some(JobId { value: 1 }),

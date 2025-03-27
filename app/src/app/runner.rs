@@ -323,6 +323,7 @@ pub mod test {
     pub fn test_runner(name: &str) -> RunnerData {
         proto::jobworkerp::data::RunnerData {
             name: name.to_string(),
+            description: "test runner desc".to_string(),
             runner_settings_proto: include_str!("../../../proto/protobuf/test_runner.proto")
                 .to_string(),
             job_args_proto: include_str!("../../../proto/protobuf/test_args.proto").to_string(),

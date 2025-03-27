@@ -2,13 +2,16 @@ pub mod client;
 pub mod repository;
 
 use self::repository::SlackRepository;
-use crate::jobworkerp::runner::{ChatPostMessageArgs, SlackRunnerSettings};
+use crate::jobworkerp::runner::{
+    SlackChatPostMessageArgs, SlackChatPostMessageResult, SlackRunnerSettings,
+};
 use crate::runner::RunnerTrait;
 use anyhow::{anyhow, Result};
 use futures::stream::BoxStream;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
+use schemars::JsonSchema;
 use tonic::async_trait;
 
 use super::RunnerSpec;
@@ -35,6 +38,12 @@ impl Default for SlackPostMessageRunner {
     }
 }
 
+#[derive(Debug, JsonSchema, serde::Deserialize, serde::Serialize)]
+struct SlackPostMessageRunnerInputSchema {
+    settings: SlackRunnerSettings,
+    args: SlackChatPostMessageArgs,
+}
+
 impl RunnerSpec for SlackPostMessageRunner {
     fn name(&self) -> String {
         RunnerType::SlackPostMessage.as_str_name().to_string()
@@ -52,6 +61,27 @@ impl RunnerSpec for SlackPostMessageRunner {
     fn output_as_stream(&self) -> Option<bool> {
         Some(false)
     }
+    fn input_json_schema(&self) -> String {
+        let schema = schemars::schema_for!(SlackPostMessageRunnerInputSchema);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn output_json_schema(&self) -> Option<String> {
+        // plain string with title
+        let schema = schemars::schema_for!(SlackChatPostMessageResult);
+        match serde_json::to_string(&schema) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::error!("error in output_json_schema: {:?}", e);
+                None
+            }
+        }
+    }
 }
 #[async_trait]
 impl RunnerTrait for SlackPostMessageRunner {
@@ -63,7 +93,7 @@ impl RunnerTrait for SlackPostMessageRunner {
     async fn run(&mut self, args: &[u8]) -> Result<Vec<Vec<u8>>> {
         if let Some(slack) = self.slack.as_ref() {
             tracing::debug!("slack runner is initialized");
-            let message = ProstMessageCodec::deserialize_message::<ChatPostMessageArgs>(args)
+            let message = ProstMessageCodec::deserialize_message::<SlackChatPostMessageArgs>(args)
                 .map_err(|e| {
                     JobWorkerError::InvalidParameter(format!(
                         "cannot deserialize slack message: {:?}",

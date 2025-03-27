@@ -5,24 +5,31 @@ package jobworkerp.data;
 import "jobworkerp/data/common.proto";
 
 message RunnerData {
-  // runner name (unique key, proto message prefix: e.g. name: "command",
-  // runner_settings_proto: "CommandRunnerSettings", job_args_proto:
-  // "CommandArg")
+  // # Runner Name
+  // Unique key and proto message prefix (e.g. name: "command",
+  // runner_settings_proto: "CommandRunnerSettings", job_args_proto: "CommandArg")
   string name = 1;
-  // runner type
-  jobworkerp.data.RunnerType runner_type = 2;
-  // runner_settings definition as proto file
-  string runner_settings_proto = 3;
-  // job arg message definition as proto file. must use this.name as message
-  // type prefix (e.g. "message CommandArg{ repeated string args = 1; }")
-  string job_args_proto = 4;
-  // result output message definition as proto file. must use this.name as
-  // message type prefix (e.g. "message CommandResult{ string result = 1; }") if
-  // empty, use utf8 string as bytes array for result output(or not resolved)
-  optional string result_output_proto = 5;
-  // if true, output as stream
-  // (defined by runner impl. none: implement both stream and non-stream. can specify in worker)
-  optional bool output_as_stream = 6;
+  // # Runner Description
+  // Description of runner implementation
+  string description = 2;
+  // # Runner Type
+  // Defines the category of runner implementation
+  jobworkerp.data.RunnerType runner_type = 3;
+  // # Runner Settings Definition
+  // Proto file definition for runner configuration
+  string runner_settings_proto = 4;
+  // # Job Arguments Definition
+  // Proto file definition for job arguments
+  string job_args_proto = 5;
+  // # Result Output Definition
+  // Proto file definition for job execution results
+  // If empty, UTF-8 string will be used as bytes array for result output
+  optional string result_output_proto = 6;
+  // # Stream Output Flag
+  // If true, JobService/EnqueueForStream and JobResultService/ListenStream will be available for this runner
+  // Defined by runner implementation. When not specified, runner should implement
+  // both streaming and non-streaming outputs (configurable in worker)
+  optional bool output_as_stream = 7;
 }
 
 message RunnerId { int64 value = 1; }

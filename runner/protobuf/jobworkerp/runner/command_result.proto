@@ -1,0 +1,25 @@
+syntax = "proto3";
+package jobworkerp.runner;
+
+// # CommandResult represents the result of an executed command
+message CommandResult {
+  // # Exit code returned by the command
+  // 0: typically indicates success
+  optional int32 exit_code = 1;
+  
+  // # Standard output (stdout) from the command as bytes
+  optional bytes stdout = 2;
+  
+  // # Standard error (stderr) from the command as bytes (optional)
+  optional bytes stderr = 3;
+  
+  // # Duration of command execution in milliseconds
+  optional uint64 execution_time_ms = 4;
+ 
+  // # Timestamp when the command started execution
+  // Unix timestamp in seconds
+  optional uint64 started_at = 5;
+  
+  // # Memory usage in kilobytes if available
+  optional uint64 max_memory_usage_kb = 6;
+}

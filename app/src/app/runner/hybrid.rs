@@ -139,6 +139,7 @@ impl RunnerApp for HybridRunnerAppImpl {
             .create(&RunnerRow {
                 id: runner_id.value,
                 name: name.to_string(),
+                description: runner_data.runner_data.description.clone(),
                 file_name: format!("lib{}.so", name),
                 r#type: RunnerType::Plugin as i32,
             })

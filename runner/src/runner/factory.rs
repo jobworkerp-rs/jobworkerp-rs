@@ -4,7 +4,7 @@ use super::{
     command::CommandRunnerImpl,
     docker::{DockerExecRunner, DockerRunner},
     grpc_unary::GrpcUnaryRunner,
-    plugins::{PluginLoader, Plugins},
+    plugins::{PluginLoader, PluginMetadata, Plugins},
     python::PythonCommandRunner,
     request::RequestRunner,
     simple_workflow::SimpleWorkflowRunnerSpecImpl,
@@ -24,7 +24,7 @@ impl RunnerSpecFactory {
     pub fn new(plugins: Arc<Plugins>) -> Self {
         Self { plugins }
     }
-    pub async fn load_plugins(&self) -> Vec<(String, String)> {
+    pub async fn load_plugins(&self) -> Vec<PluginMetadata> {
         self.plugins.load_plugin_files_from_env().await
     }
     pub async fn unload_plugins(&self, name: &str) -> Result<bool> {

@@ -2,92 +2,224 @@ syntax = "proto3";
 
 package jobworkerp.data;
 
+// # Empty Message
+// Represents an empty message with no fields, used as a placeholder
 message Empty {}
 
-// queue storage type
-// (rdb: periodic job, run_after_time job, backup job, recovery job, record job
-// result) (redis: normal job, fast dequeue, pubsub)
+// # Storage Type
+// Defines the storage backend type used for job queue and result storage
 enum StorageType {
-  // use memory channel and sqlite for job queue and result storage
+  // # Standalone Mode
+  // Uses memory channel and SQLite for job queue and result storage
+  // Suitable for single-node deployments
   STANDALONE = 0;
-  // use redis and mysql for job queue and result storage
+  
+  // # Scalable Mode
+  // Uses Redis and MySQL for job queue and result storage
+  // Suitable for distributed deployments
   SCALABLE = 1;
 }
 
-// builtin runner types
+// # Runner Type
+// Defines the built-in runner implementation types
 enum RunnerType {
+  // # Plugin Runner
+  // Executes jobs through custom plugin modules
   PLUGIN = 0;
+  
+  // # Command Runner
+  // Executes shell commands
   COMMAND = 1;
+  
+  // # HTTP Request Runner
+  // Makes HTTP requests to specified endpoints
   HTTP_REQUEST = 2;
+  
+  // # gRPC Unary Runner
+  // Makes unary gRPC calls to specified services
   GRPC_UNARY = 3;
+  
+  // # Docker Runner
+  // Executes commands inside Docker containers
   DOCKER = 4;
+  
+  // # Slack Message Runner
+  // Posts messages to Slack channels
   SLACK_POST_MESSAGE = 5;
+  
+  // # Python Command Runner
+  // Executes Python scripts as commands
   PYTHON_COMMAND = 6;
+  
+  // # LLM Runner
+  // Interacts with Large Language Models
+  LLM = 65534;
+  
+  // # Simple Workflow Runner
+  // Executes a sequence of jobs as a workflow
   SIMPLE_WORKFLOW = 65535;
 }
 
+// # Priority Level
+// Defines the execution priority of a job
 enum Priority {
+  // # Medium Priority (Default)
+  // Standard priority level for most jobs
   PRIORITY_MEDIUM = 0;
+  
+  // # Low Priority
+  // Lower priority, executed after medium priority jobs
   PRIORITY_LOW = -1;
+  
+  // # High Priority
+  // Higher priority, executed before medium priority jobs
   PRIORITY_HIGH = 1;
 }
 
+// # Retry Type
+// Defines the algorithm used for retry intervals
 enum RetryType {
+  // # No Retry
+  // Failed jobs will not be retried
   NONE = 0;
-  EXPONENTIAL = 1; // interval * basis ^ (retry_count - 1)
-  LINEAR = 2;      // inteval msec * retry_count
-  CONSTANT = 3;    // always interval msec
+  
+  // # Exponential Backoff
+  // Retry interval increases exponentially with each attempt
+  // Formula: interval * basis ^ (retry_count - 1)
+  EXPONENTIAL = 1;
+  
+  // # Linear Backoff
+  // Retry interval increases linearly with each attempt
+  // Formula: interval * retry_count
+  LINEAR = 2;
+  
+  // # Constant Interval
+  // Same retry interval is used for all retry attempts
+  CONSTANT = 3;
 }
 
+// # Retry Policy
+// Configuration for how failed jobs should be retried
 message RetryPolicy {
+  // # Retry Type
+  // Algorithm used for calculating retry intervals
   RetryType type = 1;
-  uint32 interval = 2;     // : 1000 // millisecond for retry interval
-  uint32 max_interval = 3; // : 60000 // millisecond for max retry interval
-  uint32 max_retry = 4;    // : 10 // max count for retry until (0: unlimited)
-  float basis = 5; // : 10 // basis of exponential backoff (wait millisecond =
-                   // basis ^ (retry_count - 1) * interval)
+  
+  // # Base Interval
+  // Basic retry interval in milliseconds
+  uint32 interval = 2;
+  
+  // # Maximum Interval
+  // Maximum retry interval in milliseconds
+  uint32 max_interval = 3;
+  
+  // # Maximum Retry Count
+  // Maximum number of retry attempts (0: unlimited)
+  uint32 max_retry = 4;
+  
+  // # Exponential Basis
+  // Base for exponential backoff calculation
+  // Formula: wait_time = basis ^ (retry_count - 1) * interval
+  float basis = 5;
 }
 
+// # Response Type
+// Defines how job results should be returned to the client
 enum ResponseType {
-  // return job id immediately. return no result. (result
-  // available if stored rdb by worker setting)
+  // # No Result
+  // Returns job ID immediately, but no result
+  // Results may be available in database if stored by worker settings
   NO_RESULT = 0;
-  // get result in response (maybe long wait: long polling with grpc
-  // unary)
+  
+  // # Direct Response
+  // Gets result in the same response
+  // May involve long wait (long polling with gRPC unary)
   DIRECT = 1;
-  // return job id immediately. result available by listen api with
-  // blocking for a short time (in JobResultService. maybe long wait)
+  
+  // # Listen After
+  // Returns job ID immediately, then client can listen for results
+  // Results available via JobResultService with blocking for a short time
   LISTEN_AFTER = 2;
 }
 
+// # Result Status
+// Defines the execution outcome of a job
 enum ResultStatus {
-  SUCCESS = 0;         //  job succeeded
-  ERROR_AND_RETRY = 1; // error and retry job
-  FATAL_ERROR = 2;     // fatal worker result error (cannot retry)
-  ABORT = 3;           // abort (cannot retry)
-  MAX_RETRY = 4;       // reach max retry count (cannot retry)
-  OTHER_ERROR = 5;     // unexpected system status error (cannot retry)
+  // # Success
+  // Job completed successfully
+  SUCCESS = 0;
+  
+  // # Error with Retry
+  // Job failed but will be retried
+  ERROR_AND_RETRY = 1;
+  
+  // # Fatal Error
+  // Job failed with a fatal error (cannot retry)
+  FATAL_ERROR = 2;
+  
+  // # Aborted
+  // Job was manually aborted (cannot retry)
+  ABORT = 3;
+  
+  // # Maximum Retries Reached
+  // Job failed and reached maximum retry count (cannot retry further)
+  MAX_RETRY = 4;
+  
+  // # Other Error
+  // Unexpected system error occurred (cannot retry)
+  OTHER_ERROR = 5;
 }
 
+// # Job Status
+// Defines the current processing state of a job
 enum JobStatus {
+  // # Pending
+  // Job is waiting to be processed
   PENDING = 0;
+  
+  // # Running
+  // Job is currently being executed
   RUNNING = 1;
+  
+  // # Waiting for Result
+  // Job has completed execution and is waiting for result processing
   WAIT_RESULT = 2;
 }
 
+// # Queue Type
+// Defines how jobs are queued and persisted
 enum QueueType {
-  NORMAL = 0;      // normal queue type
-  WITH_BACKUP = 1; // queue  with backup to (for recovery, slow)
-  FORCED_RDB = 2;  // force to rdb (slow)
+  // # Normal Queue
+  // Standard in-memory queue with no persistence
+  NORMAL = 0;
+  
+  // # Queue with Backup
+  // In-memory queue with database backup for recovery (slower)
+  WITH_BACKUP = 1;
+  
+  // # Database-Only Queue
+  // Forces all jobs to be stored in database (slowest)
+  FORCED_RDB = 2;
 }
 
-// stream item
+// # Result Output Item
+// Individual item in a streaming result output
 message ResultOutputItem {
   oneof item {
+    // # Data Chunk
+    // A piece of result data in a stream
     bytes data = 1;
-    // end of stream
+    
+    // # End of Stream
+    // Marker indicating the end of the stream
     Empty end = 2;
   }
 }
 
-message ResultOutput { repeated bytes items = 1; }
+// # Result Output
+// Collection of result data items for non-streaming output
+message ResultOutput { 
+  // # Result Items
+  // List of binary data chunks representing the result
+  repeated bytes items = 1; 
+}

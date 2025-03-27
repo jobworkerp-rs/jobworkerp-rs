@@ -15,6 +15,7 @@ use anyhow::anyhow;
 use anyhow::Result;
 use app::module::AppModule;
 use command_utils::util::shutdown::ShutdownLock;
+use infra_utils::infra::net::grpc::enable_grpc_web;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tonic::transport::Server;
@@ -51,22 +52,22 @@ pub async fn start_server(
             .accept_http1(true) // for gRPC-web
             .max_frame_size(max_frame_size) // 16MB
             // .layer(GrpcWebLayer::new()) // for grpc-web // server type is changed if this line is added
-            .add_service(tonic_web::enable(RunnerServiceServer::new(
+            .add_service(enable_grpc_web(RunnerServiceServer::new(
                 RunnerGrpcImpl::new(app_module.clone()),
             )))
-            .add_service(tonic_web::enable(WorkerServiceServer::new(
+            .add_service(enable_grpc_web(WorkerServiceServer::new(
                 WorkerGrpcImpl::new(app_module.clone()),
             )))
-            .add_service(tonic_web::enable(JobServiceServer::new(JobGrpcImpl::new(
+            .add_service(enable_grpc_web(JobServiceServer::new(JobGrpcImpl::new(
                 app_module.clone(),
             ))))
-            .add_service(tonic_web::enable(JobStatusServiceServer::new(
+            .add_service(enable_grpc_web(JobStatusServiceServer::new(
                 JobStatusGrpcImpl::new(app_module.clone()),
             )))
-            .add_service(tonic_web::enable(JobRestoreServiceServer::new(
+            .add_service(enable_grpc_web(JobRestoreServiceServer::new(
                 JobRestoreGrpcImpl::new(app_module.clone()),
             )))
-            .add_service(tonic_web::enable(JobResultServiceServer::new(
+            .add_service(enable_grpc_web(JobResultServiceServer::new(
                 JobResultGrpcImpl::new(app_module.clone()),
             )))
     } else {
@@ -79,8 +80,8 @@ pub async fn start_server(
             .add_service(JobStatusServiceServer::new(JobStatusGrpcImpl::new(
                 app_module.clone(),
             )))
-            .add_service(tonic_web::enable(JobRestoreServiceServer::new(
-                JobRestoreGrpcImpl::new(app_module.clone()),
+            .add_service(JobRestoreServiceServer::new(JobRestoreGrpcImpl::new(
+                app_module.clone(),
             )))
             .add_service(JobResultServiceServer::new(JobResultGrpcImpl::new(
                 app_module,

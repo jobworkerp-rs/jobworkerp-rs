@@ -20,12 +20,13 @@ pub trait RunnerRepository:
     UseRdbPool + UseRunnerSpecFactory + UseIdGenerator + Sync + Send
 {
     async fn add_from_plugins(&self) -> Result<()> {
-        let names = self.plugin_runner_factory().load_plugins().await;
-        for (name, fname) in names.iter() {
+        let metas = self.plugin_runner_factory().load_plugins().await;
+        for meta in metas.iter() {
             let data = RunnerRow {
                 id: self.id_generator().generate_id()?,
-                name: name.clone(),
-                file_name: fname.clone(),
+                name: meta.name.clone(),
+                description: meta.description.clone(),
+                file_name: meta.filename.clone(),
                 r#type: RunnerType::Plugin as i32, // PLUGIN
             };
             let db = self.db_pool();
@@ -57,27 +58,32 @@ pub trait RunnerRepository:
                 "INSERT IGNORE INTO `runner` (
                 `id`,
                 `name`,
+                `description`,
                 `file_name`,
                 `type`
-                ) VALUES (?,?,?,?)"
+                ) VALUES (?,?,?,?,?)"
             } else if cfg!(feature = "mysql") {
                 "INSERT INTO `runner` (
                 `id`,
                 `name`,
+                `description`,
                 `file_name`,
                 `type`
-                ) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE `name` = VALUES(`name`), `file_name` = VALUES(`file_name`)"
+                ) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE
+                  `name` = VALUES(`name`), `description` = VALUES(`description`), `file_name` = VALUES(`file_name`)"
             } else { // XXX sqlite does not support ON DUPLICATE KEY UPDATE
                 "INSERT OR IGNORE INTO `runner` (
                 `id`,
                 `name`,
+                `description`,
                 `file_name`,
                 `type`
-                ) VALUES (?,?,?,?)"
+                ) VALUES (?,?,?,?,?)"
             }
         )
         .bind(runner_row.id)
         .bind(&runner_row.name)
+        .bind(&runner_row.description)
         .bind(&runner_row.file_name)
         .bind(runner_row.r#type)
         .execute(tx)
@@ -257,11 +263,13 @@ mod test {
         let row = Some(RunnerRow {
             id: 123456, // XXX generated
             name: "HelloPlugin".to_string(),
+            description: "Hello! Plugin".to_string(),
             file_name: "libplugin_runner_hello.dylib".to_string(),
             r#type: RunnerType::Plugin as i32,
         });
         let data = Some(RunnerData {
             name: row.clone().unwrap().name.clone(),
+            description: row.clone().unwrap().description.clone(),
             runner_settings_proto: include_str!(
                 "../../../../plugins/hello_runner/protobuf/hello_runner.proto"
             )

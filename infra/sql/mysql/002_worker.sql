@@ -2,16 +2,17 @@ DROP TABLE IF EXISTS worker;
 CREATE TABLE `worker` (
   `id` BIGINT(10) PRIMARY KEY AUTO_INCREMENT,
   `name` VARCHAR(128) NOT NULL,
+  `description` TEXT NOT NULL,
   `runner_id` BIGINT(10) NOT NULL,
   `runner_settings` MEDIUMBLOB NOT NULL,
   -- retry and timeout setting
-  `retry_type` INT(10) NOT NULL,             -- using as enum: exponential, constant or exponential (backoff) or none
+  `retry_type` INT(10) NOT NULL,             -- using as enum: constant, linear, exponential (backoff) or none
   `interval` INT(10) NOT NULL DEFAULT 0,     -- millisecond for retry interval
   `max_interval` INT(10) NOT NULL DEFAULT 0, -- millisecond for max retry interval
   `max_retry`  INT(10) NOT NULL DEFAULT 0,   -- max count for retry until (0: unlimited)
   `basis`  FLOAT(10) NOT NULL DEFAULT 2.0,   -- basis for exponential backoff
   -- periodic setting
-  `periodic_interval` INT(10) NOT NULL DEFAULT 0, -- 0 means not periodic, 0 >: millisecond
+  `periodic_interval` INT(10) NOT NULL DEFAULT 0, -- 0 means not periodic, >0: interval in milliseconds
   -- execution setting
   `channel` VARCHAR(32) DEfAULT NULL,             -- queue channel (null means using default channel)
   `queue_type` INT(10) NOT NULL DEFAULT 0,   -- job queue type (redis or db or hybrid)
@@ -71,6 +72,7 @@ DROP TABLE IF EXISTS runner;
 CREATE TABLE `runner` (
   `id` BIGINT(10) PRIMARY KEY,
   `name` VARCHAR(128) NOT NULL, -- name for identification
+  `description` TEXT NOT NULL, -- runner description
   `file_name` VARCHAR(512) NOT NULL, -- file name of the runner dynamic library
   `type` INT(10) NOT NULL, -- runner type. enum: command, request, grpc_unary, plugin
   UNIQUE KEY `name` (`name`),
@@ -79,18 +81,32 @@ CREATE TABLE `runner` (
 
 -- builtin runner definitions (runner.type != 0 cannot edit or delete)
 -- (file_name is not real file name(built-in runner), but just a name for identification)
-INSERT IGNORE INTO runner (id, name, file_name, type) VALUES (
-  1, 'COMMAND', 'builtin1', 1
+INSERT IGNORE INTO runner (id, name, description, file_name, type) VALUES (
+  1, 'COMMAND', 
+  'Runner for command execution. It executes the shell command with the given arguments.',
+  'builtin1', 1
 ), (
-  2, 'HTTP_REQUEST', 'builtin2', 2
+  2, 'HTTP_REQUEST',
+  'Runner for HTTP request. It sends the HTTP request to the given URL with the given method, header, and body.',
+  'builtin2', 2
 ), (
-  3, 'GRPC_UNARY', 'builtin3', 3
+  3, 'GRPC_UNARY',
+  'Runner for gRPC unary request. It sends the gRPC unary request to the given URL with the given method, metadata, and body.',
+  'builtin3', 3
 ), (
-  4, 'DOCKER', 'builtin4', 4
+  4, 'DOCKER',
+  'Runner for docker container execution. It executes the docker container with the given image and arguments.',
+  'builtin4', 4
 ), (
-  5, 'SLACK_POST_MESSAGE', 'builtin5', 5
+  5, 'SLACK_POST_MESSAGE',
+  'Runner for slack chat message posting. It posts the message to the given slack channel with the given token and message.',
+  'builtin5', 5
 ), (
-  6, 'PYTHON_COMMAND', 'builtin6', 6
+  6, 'PYTHON_COMMAND',
+  'Runner for python command execution. It executes the python command with the given arguments.',
+  'builtin6', 6
 ), (
-  65535, 'SIMPLE_WORKFLOW', 'builtin7', 65535
+  65535, 'SIMPLE_WORKFLOW',
+  'Runner for simple workflow execution. It executes the simple workflow with the given arguments.',
+  'builtin7', 65535
 );

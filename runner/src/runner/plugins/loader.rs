@@ -50,12 +50,13 @@ impl Default for RunnerPluginLoader {
 }
 
 impl PluginLoader for RunnerPluginLoader {
-    fn load_path(&mut self, path: &Path) -> Result<String> {
+    fn load_path(&mut self, path: &Path) -> Result<(String, String)> {
         // XXX load plugin only for getting name
         let lib = unsafe { Library::new(path) }?;
         let load_plugin: LoaderFunc = unsafe { lib.get(b"load_plugin") }?;
         let plugin = load_plugin();
         let name = plugin.name().clone();
+        let description = plugin.description().clone();
 
         let lib = unsafe { Library::new(path) }?;
         if self.plugin_loaders.iter().any(|p| p.0.as_str() == name) {
@@ -73,7 +74,7 @@ impl PluginLoader for RunnerPluginLoader {
                     .to_string(),
                 lib,
             ));
-            Ok(name)
+            Ok((name, description))
         }
     }
     fn unload(&mut self, name: &str) -> Result<bool> {
