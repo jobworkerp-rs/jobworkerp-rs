@@ -1,48 +1,114 @@
 syntax = "proto3";
 package jobworkerp.runner;
 
-message ChatPostMessageArgs {
+// # Slack Chat Post Message Arguments
+// Arguments required to post a message to a Slack channel
+message SlackChatPostMessageArgs {
 
-  /// See: <https://api.slack.com/reference/messaging/attachments#legacy_fields>
+  // # Attachment
+  // Defines a message attachment for enhanced formatting
+  // See: <https://api.slack.com/reference/messaging/attachments#legacy_fields>
   message Attachment {
+    // Color used as a left border for the attachment
     optional string color = 1;
+    // URL to author icon
     optional string author_icon = 2;
+    // Link for author text
     optional string author_link = 3;
+    // Author name text
     optional string author_name = 4;
+    // Plain text summary of the attachment
     optional string fallback = 5;
+    // Fields displayed in a table inside the attachment
     repeated AttachmentField fields = 6;
+    // Text that appears at the bottom of the attachment
     optional string footer = 7;
+    // Icon that appears beside the footer text
     optional string footer_icon = 8;
+    // URL to an image to display in the attachment
     optional string image_url = 9;
+    // List of fields that should be formatted with markdown
     repeated string mrkdwn_in = 10;
+    // Text that appears above the attachment
     optional string pretext = 11;
+    // Main text content of the attachment
     optional string text = 12;
+    // Title text of the attachment
     optional string title = 13;
+    // URL for the title text
     optional string title_link = 14;
+    // URL to a thumbnail image to display on the right
     optional string thumb_url = 15;
+    // Unix timestamp to display with the attachment
     optional int32 ts = 16;
   }
 
-  /// See: <https://api.slack.com/reference/messaging/attachments#field_objects>
+  // # Attachment Field
+  // Defines a field within an attachment for structured data display
+  // See: <https://api.slack.com/reference/messaging/attachments#field_objects>
   message AttachmentField {
+    // Title of the field
     optional string title = 1;
+    // Text value of the field
     optional string value = 2;
+    // Whether this field should be displayed in a short format
     optional bool short = 3;
   }
 
+  // # Channel
+  // The Slack channel ID or name where the message should be posted
   string channel = 1;
+  
+  // # Attachments
+  // List of rich message attachments
   repeated Attachment attachments = 2;
-  // json object array
+  
+  // # Blocks
+  // JSON array of structured message blocks (currently not functioning)
+  // TODO not working now 
   repeated string blocks = 3;
+  
+  // # Text
+  // Main text content of the message
   optional string text = 4;
+  
+  // # Icon Emoji
+  // Emoji to use as the message icon
   optional string icon_emoji = 5;
+  
+  // # Icon URL
+  // URL to an image to use as the message icon
   optional string icon_url = 6;
+  
+  // # Link Names
+  // Whether to find and link channel names and usernames
   optional bool link_names = 7;
+  
+  // # Markdown
+  // Whether to parse markdown in the message text
   optional bool mrkdwn = 8;
+  
+  // # Parse
+  // Change how messages are treated (e.g., "full" or "none")
   optional string parse = 9;
+  
+  // # Reply Broadcast
+  // Whether to broadcast a thread reply to the channel
   optional bool reply_broadcast = 10;
+  
+  // # Thread Timestamp
+  // Timestamp of a thread to reply to
   optional string thread_ts = 11;
+  
+  // # Unfurl Links
+  // Whether to include link previews in the message
   optional bool unfurl_links = 12;
+  
+  // # Unfurl Media
+  // Whether to include media previews in the message
   optional bool unfurl_media = 13;
+  
+  // # Username
+  // Custom username for the message
   optional string username = 14;
 }

@@ -1,8 +1,23 @@
 syntax = "proto3";
 package jobworkerp.runner;
 
+// # GrpcUnaryArgs
+// Message definition for unary gRPC request arguments used in the job-worker system.
+// Encapsulates all necessary information to make a gRPC unary call.
 message GrpcUnaryArgs {
-    string path = 1;
+    // # Method
+    // Full method name in format "service/method" that identifies the gRPC endpoint
+    string method = 1;
+    
+    // # Request
+    // Serialized request payload containing the protobuf binary-encoded request message
     bytes request = 2;
+    
+    // # Metadata
+    // Request metadata as key-value pairs to be sent with the gRPC call
+    map<string, string> metadata = 3;
+    
+    // # Timeout
+    // Maximum time in milliseconds to wait for the request to complete
+    int64 timeout = 4;
 }
-

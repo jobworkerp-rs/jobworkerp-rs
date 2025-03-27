@@ -1,11 +1,26 @@
 syntax = "proto3";
 package jobworkerp.runner;
 
-message PythonRunnerSettings {
-  message PackagesList { repeated string packages = 1; }
+// # Python Command Runner Settings
+// Configuration settings for the Python environment used to execute scripts
+message PythonCommandRunnerSettings {
+  // # Packages List
+  // A collection of Python package names to be installed in the execution environment
+  message PackagesList { 
+    // List of Python package names
+    repeated string packages = 1; 
+  }
+  
+  // # Python Version
+  // The version of Python interpreter to use for execution (e.g. "3.9", "3.10")
   string python_version = 1;
+  
+  // # Requirements Specification
+  // One of the following must be provided to specify required Python packages
   oneof requirements_spec {
+    // Direct list of package names to install
     PackagesList packages = 2;
+    // URL pointing to a requirements.txt file to download and use
     string requirements_url = 3;
   }
 }

@@ -2,7 +2,7 @@
 name = "plugin_runner_hello"
 version.workspace = true
 authors.workspace = true
-edition = "2021"
+edition.workspace = true
 description = "Example for jobworkerp runner plugin"
 
 [lib]

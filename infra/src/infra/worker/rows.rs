@@ -6,6 +6,7 @@ use proto::jobworkerp::data::{RetryPolicy, RunnerId, Worker, WorkerData, WorkerI
 pub struct WorkerRow {
     pub id: i64,
     pub name: String,
+    pub description: String,
     pub runner_id: i64,
     pub runner_settings: Vec<u8>,
     pub retry_type: i32,
@@ -32,6 +33,7 @@ impl WorkerRow {
             id: Some(WorkerId { value: self.id }),
             data: Some(WorkerData {
                 name: self.name.clone(),
+                description: self.description.clone(),
                 runner_id: Some(RunnerId {
                     value: self.runner_id,
                 }),

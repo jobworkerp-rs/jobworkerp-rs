@@ -2,7 +2,7 @@
 name = "plugin_runner_test"
 version.workspace = true
 authors.workspace = true
-edition = "2021"
+edition.workspace = true
 description = "jobworkerp runner plugin for test"
 
 [lib]

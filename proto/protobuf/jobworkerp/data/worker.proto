@@ -5,38 +5,60 @@ package jobworkerp.data;
 import "jobworkerp/data/common.proto";
 import "jobworkerp/data/runner.proto";
 
-// worker data
+// # Worker Data
+// Configuration for worker execution
 message WorkerData {
-  // worker name
+  // # Worker Name
+  // Unique identifier for the worker
   string name = 1;
-  // runner id
-  jobworkerp.data.RunnerId runner_id = 2;
-  // runner settings (docker runner settings etc)
-  bytes runner_settings = 3;
-  // retry policy
-  jobworkerp.data.RetryPolicy retry_policy = 4;
-  // periodic interval milliseconds (0: non-periodic)
-  // (if enabled, cannot use direct_response)
-  uint32 periodic_interval = 5;
-  // channel name (if empty, use default channel)
-  optional string channel = 6;
-  // queue type (0: normal(no backup to rdb), 1: with backup to rdb, 2: only to
-  // rdb (not in memory queue))
-  jobworkerp.data.QueueType queue_type = 7;
-  // response type (0: no result, 1: direct, 2: listen after)
-  jobworkerp.data.ResponseType response_type = 8;
-  // if true, store result to db when process succeeded
-  bool store_success = 9;
-  // if true, store result to db when process failed
-  bool store_failure = 10;
-  // if true, use as static (run only one worker(runner) at a time with lock)
-  bool use_static = 12;
-  // if true, output as stream (determined by runner, not modified by request)
-  bool output_as_stream = 13;
+  // # Description
+  // Description of the worker
+  string description = 2;
+  // # Runner ID
+  // Reference to the runner implementation to use
+  jobworkerp.data.RunnerId runner_id = 3;
+  // # Runner Settings
+  // Configuration bytes for the specific runner (e.g. docker runner settings)
+  bytes runner_settings = 4;
+  // # Retry Policy
+  // Configuration for job retry behavior on failure
+  jobworkerp.data.RetryPolicy retry_policy = 5;
+  // # Periodic Interval
+  // Milliseconds between periodic job executions (0: non-periodic)
+  // If enabled, direct_response cannot be used
+  uint32 periodic_interval = 6;
+  // # Channel Name
+  // Message channel for job (if empty, default channel will be used)
+  optional string channel = 7;
+  // # Queue Type
+  // 0: normal (no backup to database)
+  // 1: with backup to database
+  // 2: only to database (not in memory queue)
+  jobworkerp.data.QueueType queue_type = 8;
+  // # Response Type
+  // 0: no result
+  // 1: direct response
+  // 2: listen after execution
+  jobworkerp.data.ResponseType response_type = 9;
+  // # Store Success Flag
+  // If true, job results will be stored in database when execution succeeds
+  bool store_success = 10;
+  // # Store Failure Flag
+  // If true, job results will be stored in database when execution fails
+  bool store_failure = 11;
+  // # Static Execution Flag
+  // If true, fixed number instance of this worker will run at a time (with lock)
+  bool use_static = 13;
+  // # Stream Output Flag
+  // If true, results will be output as a stream
+  // This is determined by the runner and cannot be modified by the request
+  bool output_as_stream = 14;
 }
 
 message WorkerId { int64 value = 1; }
 
+// # Worker
+// A worker that loads a runner with specified settings and executes jobs by providing arguments
 message Worker {
   WorkerId id = 1;
   WorkerData data = 2;

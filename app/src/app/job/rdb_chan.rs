@@ -742,6 +742,7 @@ mod tests {
             });
             let wd = WorkerData {
                 name: "testworker".to_string(),
+                description: "desc1".to_string(),
                 runner_id: Some(RunnerId { value: 1 }),
                 runner_settings,
                 channel: None,
@@ -849,6 +850,7 @@ mod tests {
             });
             let wd = WorkerData {
                 name: "testworker".to_string(),
+                description: "desc1".to_string(),
                 runner_id: Some(RunnerId { value: 1 }),
                 runner_settings,
                 channel: None,
@@ -962,6 +964,7 @@ mod tests {
         });
         let wd = WorkerData {
             name: "testworker".to_string(),
+            description: "desc1".to_string(),
             runner_id: Some(RunnerId { value: 1 }),
             runner_settings,
             channel: None,
@@ -1068,6 +1071,7 @@ mod tests {
             });
             let wd = WorkerData {
                 name: "testworker".to_string(),
+                description: "desc1".to_string(),
                 runner_id: Some(RunnerId { value: 1 }),
                 runner_settings,
                 channel: channel.cloned(),

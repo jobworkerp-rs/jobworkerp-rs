@@ -1,5 +1,8 @@
+use crate::jobworkerp::runner::{WorkflowArgs, WorkflowResult};
+
 use super::RunnerSpec;
 use proto::jobworkerp::data::RunnerType;
+use schemars::JsonSchema;
 
 pub struct SimpleWorkflowRunnerSpecImpl {}
 impl SimpleWorkflowRunnerSpecImpl {
@@ -33,6 +36,12 @@ pub trait SimpleWorkflowRunnerSpec: RunnerSpec {
     }
 }
 impl SimpleWorkflowRunnerSpec for SimpleWorkflowRunnerSpecImpl {}
+
+#[derive(Debug, JsonSchema, serde::Deserialize, serde::Serialize)]
+struct SimpleWorkflowRunnerInputSchema {
+    args: WorkflowArgs,
+}
+
 impl RunnerSpec for SimpleWorkflowRunnerSpecImpl {
     fn name(&self) -> String {
         SimpleWorkflowRunnerSpec::name(self)
@@ -52,5 +61,19 @@ impl RunnerSpec for SimpleWorkflowRunnerSpecImpl {
 
     fn output_as_stream(&self) -> Option<bool> {
         SimpleWorkflowRunnerSpec::output_as_stream(self)
+    }
+    fn input_json_schema(&self) -> String {
+        "".to_string()
+    }
+    fn output_json_schema(&self) -> Option<String> {
+        // plain string with title
+        let schema = schemars::schema_for!(WorkflowResult);
+        match serde_json::to_string(&schema) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::error!("error in output_json_schema: {:?}", e);
+                None
+            }
+        }
     }
 }

@@ -134,6 +134,7 @@ impl UseRedisRepositoryModule for RedisRepositoryModule {
         self
     }
 }
+#[cfg(any(test, feature = "test-utils"))]
 pub mod test {
     use super::RedisRepositoryModule;
     use crate::infra::{

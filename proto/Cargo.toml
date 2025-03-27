@@ -2,7 +2,7 @@
 name = "proto"
 version.workspace = true
 authors.workspace = true
-edition = "2021"
+edition.workspace = true
 description = "Protobuf definition for jobworkerp"
 
 

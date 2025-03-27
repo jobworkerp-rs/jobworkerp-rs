@@ -48,6 +48,7 @@ prost = { workspace = true }
 rand = { workspace = true }
 regress = "0.10"
 reqwest = { workspace = true }
+schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }

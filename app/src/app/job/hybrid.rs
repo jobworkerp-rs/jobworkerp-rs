@@ -763,6 +763,7 @@ pub mod tests {
             });
             let wd = proto::jobworkerp::data::WorkerData {
                 name: "testworker".to_string(),
+                description: "desc1".to_string(),
                 runner_id: Some(RunnerId { value: 10000 }),
                 runner_settings,
                 channel: None,
@@ -874,6 +875,7 @@ pub mod tests {
             });
             let wd = proto::jobworkerp::data::WorkerData {
                 name: "testworker".to_string(),
+                description: "desc1".to_string(),
                 runner_id: Some(RunnerId { value: 10000 }),
                 runner_settings,
                 channel: None,
@@ -987,6 +989,7 @@ pub mod tests {
         });
         let wd = proto::jobworkerp::data::WorkerData {
             name: "testworker".to_string(),
+            description: "desc1".to_string(),
             runner_id: Some(RunnerId { value: 10000 }),
             runner_settings,
             channel: None,
@@ -1093,6 +1096,7 @@ pub mod tests {
             });
             let wd = proto::jobworkerp::data::WorkerData {
                 name: "testworker".to_string(),
+                description: "desc1".to_string(),
                 runner_id: Some(RunnerId { value: 10000 }),
                 runner_settings,
                 channel: channel.cloned(),

@@ -5,27 +5,59 @@ package jobworkerp.data;
 import "jobworkerp/data/common.proto";
 import "jobworkerp/data/worker.proto";
 
+// # Job Data
+// Configuration and state for a job that will be executed by a worker
 message JobData {
+    // # Worker ID
+    // Reference to the worker that will execute this job
     jobworkerp.data.WorkerId worker_id = 1;
-    // job argument
+    
+    // # Job Arguments
+    // Serialized arguments that will be passed to the runner
     bytes args = 2;
-    // unique key: cannot register jobs with same uniq_key at once
+    
+    // # Unique Key
+    // Optional identifier to prevent duplicate job registration
+    // Jobs with the same unique key cannot be registered simultaneously
     optional string uniq_key = 3;
-    // job enqueue-ed(registered) time
+    
+    // # Enqueue Time
+    // Timestamp when the job was registered in the queue (Unix time in seconds)
     int64 enqueue_time = 4;
-    // time that the job grabbed until to process on worker (not specify manually)
+    
+    // # Grabbed Until Time
+    // Timestamp until which the job is locked for processing (Unix time in seconds)
+    // This should not be specified manually - it's set by the system
     optional int64 grabbed_until_time = 5;
-    // specify time that the job run after
+    
+    // # Run After Time
+    // Timestamp when the job should be executed (Unix time in seconds)
+    // Jobs will not be processed until this time is reached
     int64 run_after_time = 6;
+    
+    // # Retry Count
+    // Number of times this job has been retried after failure
     uint32 retried = 7;
-    jobworkerp.data.Priority priority = 8; // Priority: -1, 0, 1 (in service/job.proto: because cannot reference enum in other proto (bug?))
+    
+    // # Priority
+    // Execution priority level: -1 (low), 0 (normal), 1 (high)
+    // Note: Using enum directly in proto is not possible due to reference limitations
+    jobworkerp.data.Priority priority = 8;
+    
+    // # Timeout
+    // Maximum execution time for the job in seconds
+    // Job will be terminated if it exceeds this duration
     uint64 timeout = 9;
 }
 
+// # Job ID
+// Unique identifier for a job
 message JobId {
     int64 value = 1;
 }
 
+// # Job
+// A job that is executed by a worker
 message Job {
   JobId id = 1;
   JobData data = 2;

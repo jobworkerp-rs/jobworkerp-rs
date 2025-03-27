@@ -14,6 +14,7 @@ static ALLOCATOR: System = System;
 
 pub trait PluginRunner: Send + Sync {
     fn name(&self) -> String;
+    fn description(&self) -> String;
     fn load(&mut self, settings: Vec<u8>) -> Result<()>;
     fn run(&mut self, arg: Vec<u8>) -> Result<Vec<Vec<u8>>>;
     // REMOVE
@@ -29,12 +30,12 @@ pub trait PluginRunner: Send + Sync {
 
 // suppress warn improper_ctypes_definitions
 #[allow(improper_ctypes_definitions)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn load_plugin() -> Box<dyn PluginRunner + Send + Sync> {
     Box::new(TestPlugin::new())
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(improper_ctypes_definitions)]
 pub extern "C" fn free_plugin(ptr: Box<dyn PluginRunner + Send + Sync>) {
     drop(ptr);
@@ -68,6 +69,9 @@ impl PluginRunner for TestPlugin {
     fn name(&self) -> String {
         // specify as same string as worker.runner
         String::from("Test")
+    }
+    fn description(&self) -> String {
+        String::from("Test plugin description")
     }
     fn load(&mut self, runner_settings: Vec<u8>) -> Result<()> {
         tracing::info!("Test plugin load!");

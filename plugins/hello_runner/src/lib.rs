@@ -16,6 +16,7 @@ static ALLOCATOR: System = System;
 
 pub trait PluginRunner: Send + Sync {
     fn name(&self) -> String;
+    fn description(&self) -> String;
     fn load(&mut self, settings: Vec<u8>) -> Result<()>;
     fn run(&mut self, arg: Vec<u8>) -> Result<Vec<Vec<u8>>>;
     // REMOVE
@@ -31,7 +32,7 @@ pub trait PluginRunner: Send + Sync {
 
 // suppress warn improper_ctypes_definitions
 #[allow(improper_ctypes_definitions)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn load_plugin() -> Box<dyn PluginRunner + Send + Sync> {
     Box::new(HelloPlugin::new())
 }
@@ -41,7 +42,7 @@ pub extern "C" fn load_plugin() -> Box<dyn PluginRunner + Send + Sync> {
 /// must ensure that the pointer is valid and that it was created by the
 /// `load_plugin` function. The caller must also ensure that the `Box` created
 /// by `Box::from_raw` is not used after it has been dropped.
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(improper_ctypes_definitions)]
 pub extern "C" fn free_plugin(ptr: Box<dyn PluginRunner + Send + Sync>) {
     drop(ptr);
@@ -126,6 +127,9 @@ impl PluginRunner for HelloPlugin {
     fn name(&self) -> String {
         // specify as same string as worker.runner_settings
         String::from("HelloPlugin")
+    }
+    fn description(&self) -> String {
+        String::from("HelloPlugin: Hello world plugin version 0.1")
     }
     fn load(&mut self, settings: Vec<u8>) -> Result<()> {
         tracing::info!("HelloPlugin load!");

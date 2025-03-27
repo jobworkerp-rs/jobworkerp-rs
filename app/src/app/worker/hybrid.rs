@@ -492,7 +492,7 @@ mod tests {
         TEST_RUNTIME.block_on(async {
             let app = create_test_app(false).await?;
             let runner_settings = JobqueueAndCodec::serialize_message(&TestRunnerSettings {
-                name: "ls".to_string(),
+                name: "testRunner1".to_string(),
             });
             let w1 = WorkerData {
                 name: "test1".to_string(),
