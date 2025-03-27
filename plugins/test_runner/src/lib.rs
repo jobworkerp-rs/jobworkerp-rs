@@ -30,12 +30,12 @@ pub trait PluginRunner: Send + Sync {
 
 // suppress warn improper_ctypes_definitions
 #[allow(improper_ctypes_definitions)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn load_plugin() -> Box<dyn PluginRunner + Send + Sync> {
     Box::new(TestPlugin::new())
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(improper_ctypes_definitions)]
 pub extern "C" fn free_plugin(ptr: Box<dyn PluginRunner + Send + Sync>) {
     drop(ptr);
