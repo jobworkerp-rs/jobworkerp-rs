@@ -77,27 +77,6 @@ impl RunnerSpec for RequestRunner {
     fn output_as_stream(&self) -> Option<bool> {
         Some(false)
     }
-    fn input_json_schema(&self) -> String {
-        let schema = schemars::schema_for!(HttpRequestRunnerInputSchema);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
-    }
-    fn output_json_schema(&self) -> Option<String> {
-        // plain string with title
-        let schema = schemars::schema_for!(HttpResponseResult);
-        match serde_json::to_string(&schema) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::error!("error in output_json_schema: {:?}", e);
-                None
-            }
-        }
-    }
 }
 // arg: {headers:{<headers map>}, queries:[<query string array>], body: <body string or struct>}
 // res: vec![result_bytes]  (fixed size 1)
