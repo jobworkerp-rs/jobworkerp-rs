@@ -2,7 +2,9 @@ pub mod client;
 pub mod repository;
 
 use self::repository::SlackRepository;
-use crate::jobworkerp::runner::{SlackChatPostMessageArgs, SlackRunnerSettings};
+use crate::jobworkerp::runner::{
+    SlackChatPostMessageArgs, SlackChatPostMessageResult, SlackRunnerSettings,
+};
 use crate::runner::RunnerTrait;
 use anyhow::{anyhow, Result};
 use futures::stream::BoxStream;
@@ -58,6 +60,27 @@ impl RunnerSpec for SlackPostMessageRunner {
     }
     fn output_as_stream(&self) -> Option<bool> {
         Some(false)
+    }
+    fn input_json_schema(&self) -> String {
+        let schema = schemars::schema_for!(SlackPostMessageRunnerInputSchema);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn output_json_schema(&self) -> Option<String> {
+        // plain string with title
+        let schema = schemars::schema_for!(SlackChatPostMessageResult);
+        match serde_json::to_string(&schema) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::error!("error in output_json_schema: {:?}", e);
+                None
+            }
+        }
     }
 }
 #[async_trait]

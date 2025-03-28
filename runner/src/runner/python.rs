@@ -80,6 +80,27 @@ impl RunnerSpec for PythonCommandRunner {
     fn output_as_stream(&self) -> Option<bool> {
         Some(false)
     }
+    fn input_json_schema(&self) -> String {
+        let schema = schemars::schema_for!(PythonCommandRunnerInputSchema);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn output_json_schema(&self) -> Option<String> {
+        // plain string with title
+        let schema = schemars::schema_for!(PythonCommandResult);
+        match serde_json::to_string(&schema) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::error!("error in output_json_schema: {:?}", e);
+                None
+            }
+        }
+    }
 }
 
 #[async_trait]
