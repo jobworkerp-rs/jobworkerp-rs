@@ -5,8 +5,7 @@ use base64::Engine;
 use futures::stream::BoxStream;
 use infra_utils::infra::net::grpc::RawBytesCodec;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
-use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
-use schemars::JsonSchema;
+use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
 use std::collections::HashMap;
 use std::time::Duration;
 use tonic::{
@@ -147,12 +146,6 @@ impl Default for GrpcUnaryRunner {
     }
 }
 
-#[derive(Debug, JsonSchema, serde::Deserialize, serde::Serialize)]
-struct GrpcUnaryRunnerInputSchema {
-    settings: GrpcUnaryRunnerSettings,
-    args: GrpcUnaryArgs,
-}
-
 impl RunnerSpec for GrpcUnaryRunner {
     fn name(&self) -> String {
         RunnerType::GrpcUnary.as_str_name().to_string()
@@ -166,11 +159,21 @@ impl RunnerSpec for GrpcUnaryRunner {
     fn result_output_proto(&self) -> Option<String> {
         None
     }
-    fn output_as_stream(&self) -> Option<bool> {
-        Some(false)
+    fn output_type(&self) -> StreamingOutputType {
+        StreamingOutputType::NonStreaming
     }
-    fn input_json_schema(&self) -> String {
-        let schema = schemars::schema_for!(GrpcUnaryRunnerInputSchema);
+    fn settings_schema(&self) -> String {
+        let schema = schemars::schema_for!(GrpcUnaryRunnerSettings);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in config_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn arguments_schema(&self) -> String {
+        let schema = schemars::schema_for!(GrpcUnaryArgs);
         match serde_json::to_string(&schema) {
             Ok(s) => s,
             Err(e) => {
@@ -179,7 +182,7 @@ impl RunnerSpec for GrpcUnaryRunner {
             }
         }
     }
-    fn output_json_schema(&self) -> Option<String> {
+    fn output_schema(&self) -> Option<String> {
         // plain string with title
         let mut schema = schemars::schema_for!(String);
         schema.insert(

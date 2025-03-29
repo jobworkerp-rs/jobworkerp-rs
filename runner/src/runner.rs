@@ -35,7 +35,7 @@
 //! job cancellation.
 use anyhow::Result;
 use futures::stream::BoxStream;
-use proto::jobworkerp::data::ResultOutputItem;
+use proto::jobworkerp::data::{ResultOutputItem, StreamingOutputType};
 use tonic::async_trait;
 
 pub mod command;
@@ -55,11 +55,12 @@ pub trait RunnerSpec: Send + Sync {
     fn runner_settings_proto(&self) -> String;
     fn job_args_proto(&self) -> String;
     fn result_output_proto(&self) -> Option<String>;
-    // run_stream() available if true
-    fn output_as_stream(&self) -> Option<bool>;
+    // run(), run_stream() availability
+    fn output_type(&self) -> StreamingOutputType;
     // for json schema validation in the workflow API
-    fn input_json_schema(&self) -> String;
-    fn output_json_schema(&self) -> Option<String>;
+    fn settings_schema(&self) -> String;
+    fn arguments_schema(&self) -> String;
+    fn output_schema(&self) -> Option<String>;
 }
 
 #[async_trait]

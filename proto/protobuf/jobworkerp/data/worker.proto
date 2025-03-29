@@ -50,7 +50,7 @@ message WorkerData {
   // If true, fixed number instance of this worker will run at a time (with lock)
   bool use_static = 13;
   // # Stream Output Flag
-  // If true, results will be output as a stream
+  // If true, results will be output as a stream (JobResultService/ListenStreamByWorker)
   // This is determined by the runner and cannot be modified by the request
   bool output_as_stream = 14;
 }

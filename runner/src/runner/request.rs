@@ -9,12 +9,11 @@ use jobworkerp_base::{
     codec::{ProstMessageCodec, UseProstCodec},
     error::JobWorkerError,
 };
-use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
+use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
 use reqwest::{
     header::{HeaderMap, HeaderName},
     Method, Url,
 };
-use schemars::JsonSchema;
 
 #[derive(Clone, Debug)]
 pub struct RequestRunner {
@@ -55,12 +54,6 @@ impl Default for RequestRunner {
     }
 }
 
-#[derive(Debug, JsonSchema, serde::Deserialize, serde::Serialize)]
-struct HttpRequestRunnerInputSchema {
-    settings: HttpRequestRunnerSettings,
-    args: HttpRequestArgs,
-}
-
 impl RunnerSpec for RequestRunner {
     fn name(&self) -> String {
         RunnerType::HttpRequest.as_str_name().to_string()
@@ -74,11 +67,12 @@ impl RunnerSpec for RequestRunner {
     fn result_output_proto(&self) -> Option<String> {
         Some(include_str!("../../protobuf/jobworkerp/runner/http_request_result.proto").to_string())
     }
-    fn output_as_stream(&self) -> Option<bool> {
-        Some(false)
+    fn output_type(&self) -> StreamingOutputType {
+        StreamingOutputType::NonStreaming
     }
-    fn input_json_schema(&self) -> String {
-        let schema = schemars::schema_for!(HttpRequestRunnerInputSchema);
+    fn settings_schema(&self) -> String {
+        // plain string with title
+        let schema = schemars::schema_for!(HttpRequestRunnerSettings);
         match serde_json::to_string(&schema) {
             Ok(s) => s,
             Err(e) => {
@@ -87,7 +81,17 @@ impl RunnerSpec for RequestRunner {
             }
         }
     }
-    fn output_json_schema(&self) -> Option<String> {
+    fn arguments_schema(&self) -> String {
+        let schema = schemars::schema_for!(HttpRequestArgs);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn output_schema(&self) -> Option<String> {
         // plain string with title
         let schema = schemars::schema_for!(HttpResponseResult);
         match serde_json::to_string(&schema) {

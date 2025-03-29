@@ -1,8 +1,7 @@
-use crate::jobworkerp::runner::{WorkflowArgs, WorkflowResult};
+use crate::jobworkerp::runner::{Empty, WorkflowArgs, WorkflowResult};
 
 use super::RunnerSpec;
-use proto::jobworkerp::data::RunnerType;
-use schemars::JsonSchema;
+use proto::jobworkerp::data::{RunnerType, StreamingOutputType};
 
 pub struct SimpleWorkflowRunnerSpecImpl {}
 impl SimpleWorkflowRunnerSpecImpl {
@@ -31,16 +30,11 @@ pub trait SimpleWorkflowRunnerSpec: RunnerSpec {
     fn result_output_proto(&self) -> Option<String> {
         Some(include_str!("../../protobuf/jobworkerp/runner/workflow_result.proto").to_string())
     }
-    fn output_as_stream(&self) -> Option<bool> {
-        Some(false)
+    fn output_type(&self) -> StreamingOutputType {
+        StreamingOutputType::NonStreaming
     }
 }
 impl SimpleWorkflowRunnerSpec for SimpleWorkflowRunnerSpecImpl {}
-
-#[derive(Debug, JsonSchema, serde::Deserialize, serde::Serialize)]
-struct SimpleWorkflowRunnerInputSchema {
-    args: WorkflowArgs,
-}
 
 impl RunnerSpec for SimpleWorkflowRunnerSpecImpl {
     fn name(&self) -> String {
@@ -59,13 +53,33 @@ impl RunnerSpec for SimpleWorkflowRunnerSpecImpl {
         SimpleWorkflowRunnerSpec::result_output_proto(self)
     }
 
-    fn output_as_stream(&self) -> Option<bool> {
-        SimpleWorkflowRunnerSpec::output_as_stream(self)
+    fn output_type(&self) -> StreamingOutputType {
+        SimpleWorkflowRunnerSpec::output_type(self)
     }
-    fn input_json_schema(&self) -> String {
-        "".to_string()
+    fn settings_schema(&self) -> String {
+        // plain string with title
+        let schema = schemars::schema_for!(Empty);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
     }
-    fn output_json_schema(&self) -> Option<String> {
+    // TODO add schema for workflow yaml as json schema
+    fn arguments_schema(&self) -> String {
+        // plain string with title
+        let schema = schemars::schema_for!(WorkflowArgs);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn output_schema(&self) -> Option<String> {
         // plain string with title
         let schema = schemars::schema_for!(WorkflowResult);
         match serde_json::to_string(&schema) {

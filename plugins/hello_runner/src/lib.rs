@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use futures::{stream::BoxStream, StreamExt};
 use hello::{HelloArgs, HelloRunnerResult, HelloRunnerSettings};
+use jobworkerp_runner::runner::plugins::PluginRunner;
 use prost::Message;
 use std::{alloc::System, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, Mutex};
@@ -13,22 +14,6 @@ pub mod hello {
 
 #[global_allocator]
 static ALLOCATOR: System = System;
-
-pub trait PluginRunner: Send + Sync {
-    fn name(&self) -> String;
-    fn description(&self) -> String;
-    fn load(&mut self, settings: Vec<u8>) -> Result<()>;
-    fn run(&mut self, arg: Vec<u8>) -> Result<Vec<Vec<u8>>>;
-    // REMOVE
-    fn begin_stream(&mut self, arg: Vec<u8>) -> Result<()>;
-    fn receive_stream(&mut self) -> Result<Option<Vec<u8>>>;
-    fn cancel(&mut self) -> bool;
-    fn is_canceled(&self) -> bool;
-    fn runner_settings_proto(&self) -> String;
-    fn job_args_proto(&self) -> String;
-    fn result_output_proto(&self) -> Option<String>;
-    fn output_as_stream(&self) -> bool;
-}
 
 // suppress warn improper_ctypes_definitions
 #[allow(improper_ctypes_definitions)]
@@ -199,8 +184,38 @@ impl PluginRunner for HelloPlugin {
         Some(include_str!("../protobuf/hello_result.proto").to_string())
     }
     // use run_stream() if true, else use run()
-    fn output_as_stream(&self) -> bool {
-        true
+    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
+        proto::jobworkerp::data::StreamingOutputType::Both
+    }
+    fn settings_schema(&self) -> String {
+        let schema = schemars::schema_for!(HelloRunnerSettings);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn arguments_schema(&self) -> String {
+        let schema = schemars::schema_for!(HelloArgs);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn output_json_schema(&self) -> Option<String> {
+        let schema = schemars::schema_for!(HelloRunnerResult);
+        match serde_json::to_string(&schema) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                None
+            }
+        }
     }
 }
 

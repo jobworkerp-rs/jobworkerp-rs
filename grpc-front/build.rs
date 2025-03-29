@@ -13,6 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "../proto/protobuf/jobworkerp/service/common.proto",
                 "../proto/protobuf/jobworkerp/service/runner.proto",
                 "../proto/protobuf/jobworkerp/service/worker.proto",
+                "../proto/protobuf/jobworkerp/service/tool.proto",
                 "../proto/protobuf/jobworkerp/service/job.proto",
                 "../proto/protobuf/jobworkerp/service/job_result.proto",
             ],

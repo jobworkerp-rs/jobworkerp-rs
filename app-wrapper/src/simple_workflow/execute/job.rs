@@ -15,10 +15,11 @@ use command_utils::util::datetime;
 use command_utils::util::option::{Exists, FlatMap};
 use command_utils::util::scoped_cache::ScopedCache;
 use futures::stream::BoxStream;
+use infra::infra::runner::rows::RunnerWithSchema;
 use infra_utils::infra::memory::MemoryCacheImpl;
 use proto::jobworkerp::data::{
     JobId, JobResult, JobResultData, Priority, QueueType, ResponseType, ResultOutputItem,
-    ResultStatus, RetryPolicy, RetryType, Runner, Worker, WorkerData, WorkerId,
+    ResultStatus, RetryPolicy, RetryType, Worker, WorkerData, WorkerId,
 };
 use proto::ProtobufHelper;
 use std::hash::{DefaultHasher, Hasher};
@@ -80,9 +81,9 @@ pub trait UseJobExecutorHelper:
 {
     fn find_runner_by_name_with_cache(
         &self,
-        cache: &ScopedCache<String, Option<Runner>>,
+        cache: &ScopedCache<String, Option<RunnerWithSchema>>,
         name: &str,
-    ) -> impl std::future::Future<Output = Result<Option<Runner>>> + Send
+    ) -> impl std::future::Future<Output = Result<Option<RunnerWithSchema>>> + Send
     where
         Self: Send + Sync,
     {
@@ -97,7 +98,7 @@ pub trait UseJobExecutorHelper:
     fn find_runner_by_name(
         &self,
         name: &str,
-    ) -> impl std::future::Future<Output = Result<Option<Runner>>> + Send
+    ) -> impl std::future::Future<Output = Result<Option<RunnerWithSchema>>> + Send
     where
         Self: Send + Sync,
     {
@@ -336,9 +337,10 @@ pub trait UseJobExecutorHelper:
         let name = name.to_owned();
         // let job_args = job_args;
         async move {
-            if let Some(Runner {
+            if let Some(RunnerWithSchema {
                 id: Some(sid),
                 data: Some(_sdata),
+                ..
             }) = self.find_runner_by_name(name.as_str()).await?
             {
                 let mut worker: WorkerData =
@@ -457,9 +459,10 @@ pub trait UseJobExecutorHelper:
     ) -> impl std::future::Future<Output = Result<serde_json::Value>> + Send {
         async move {
             // use memory cache?
-            if let Some(Runner {
+            if let Some(RunnerWithSchema {
                 id: Some(rid),
                 data: Some(rdata),
+                ..
             }) = self.find_runner_by_name(runner_name).await?
             {
                 let descriptors = self.parse_proto_with_cache(&rid, &rdata).await?;
@@ -512,9 +515,10 @@ pub trait UseJobExecutorHelper:
         job_timeout_sec: u32,                     // job timeout in seconds
     ) -> impl std::future::Future<Output = Result<serde_json::Value>> + Send {
         async move {
-            if let Some(Runner {
+            if let Some(RunnerWithSchema {
                 id: Some(rid),
                 data: Some(rdata),
+                ..
             }) = self.find_runner_by_name(runner_name).await?
             // TODO local cache? (2 times request in this function)
             {

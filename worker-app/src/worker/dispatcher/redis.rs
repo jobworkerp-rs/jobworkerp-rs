@@ -23,12 +23,13 @@ use infra::infra::job::redis::RedisJobRepositoryImpl;
 use infra::infra::job::redis::UseRedisJobRepository;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::job::status::UseJobStatusRepository;
+use infra::infra::runner::rows::RunnerWithSchema;
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use infra_utils::infra::redis::{RedisClient, UseRedisClient};
 use infra_utils::infra::redis::{RedisPool, UseRedisPool};
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
-    Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, Runner, Worker,
+    Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, Worker,
 };
 use redis::{AsyncCommands, RedisError};
 use std::sync::Arc;
@@ -236,9 +237,10 @@ pub trait RedisJobDispatcher:
         let sid = wdat.runner_id.to_result(|| {
             JobWorkerError::InvalidParameter("worker runner_id is not found.".to_string())
         })?;
-        let runner_data = if let Some(Runner {
+        let runner_data = if let Some(RunnerWithSchema {
             id: _,
             data: runner_data,
+            ..
         }) = self.runner_app().find_runner(&sid, None).await?
         {
             runner_data.to_result(|| {
