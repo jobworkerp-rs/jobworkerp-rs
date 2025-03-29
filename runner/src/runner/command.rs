@@ -9,10 +9,9 @@ use jobworkerp_base::{
     codec::{ProstMessageCodec, UseProstCodec},
     error::JobWorkerError,
 };
-use proto::jobworkerp::data::result_output_item::Item;
 use proto::jobworkerp::data::Empty;
+use proto::jobworkerp::data::{result_output_item::Item, StreamingOutputType};
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
-use schemars::JsonSchema;
 use std::pin::Pin;
 use std::{
     future::Future,
@@ -81,11 +80,6 @@ impl CommandRunner for CommandRunnerImpl {
     }
 }
 
-#[derive(Debug, JsonSchema, serde::Deserialize, serde::Serialize)]
-struct CommandRunnerInputSchema {
-    args: CommandArgs,
-}
-
 impl RunnerSpec for CommandRunnerImpl {
     fn name(&self) -> String {
         RunnerType::Command.as_str_name().to_string()
@@ -99,11 +93,11 @@ impl RunnerSpec for CommandRunnerImpl {
     fn result_output_proto(&self) -> Option<String> {
         Some(include_str!("../../protobuf/jobworkerp/runner/command_result.proto").to_string())
     }
-    fn output_as_stream(&self) -> Option<bool> {
-        Some(false)
+    fn output_type(&self) -> StreamingOutputType {
+        StreamingOutputType::Both
     }
-    fn input_json_schema(&self) -> String {
-        let schema = schemars::schema_for!(CommandRunnerInputSchema);
+    fn settings_schema(&self) -> String {
+        let schema = schemars::schema_for!(crate::jobworkerp::runner::Empty);
         match serde_json::to_string(&schema) {
             Ok(s) => s,
             Err(e) => {
@@ -112,7 +106,17 @@ impl RunnerSpec for CommandRunnerImpl {
             }
         }
     }
-    fn output_json_schema(&self) -> Option<String> {
+    fn arguments_schema(&self) -> String {
+        let schema = schemars::schema_for!(CommandArgs);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn output_schema(&self) -> Option<String> {
         // plain string with title
         let schema = schemars::schema_for!(CommandResult);
         match serde_json::to_string(&schema) {

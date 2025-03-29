@@ -74,22 +74,13 @@ impl WorkerApp for HybridWorkerAppImpl {
         let wsid = worker
             .runner_id
             .ok_or_else(|| JobWorkerError::InvalidParameter("runner_id is required".to_string()))?;
-        let RunnerDataWithDescriptor {
-            runner_data,
-            runner_settings_descriptor: _,
-            args_descriptor: _,
-            result_descriptor: _,
-        } = self
+        let _ = self
             .validate_runner_settings_data(&wsid, worker.runner_settings.as_slice())
             .await?
             .ok_or_else(|| {
                 JobWorkerError::InvalidParameter("runner settings not provided".to_string())
             })?;
-        let mut wdata = worker.clone();
-        // overwrite output_as_stream only if data is provided from runner
-        if let Some(output_as_stream) = runner_data.output_as_stream {
-            wdata.output_as_stream = output_as_stream;
-        }
+        let wdata = worker.clone();
         let wid = {
             let db = self.rdb_worker_repository().db_pool();
             let mut tx = db.begin().await.map_err(JobWorkerError::DBError)?;
@@ -122,23 +113,13 @@ impl WorkerApp for HybridWorkerAppImpl {
                 let wsid = w.runner_id.or(owdat.runner_id).ok_or_else(|| {
                     JobWorkerError::InvalidParameter("runner_id is required".to_string())
                 })?;
-                let RunnerDataWithDescriptor {
-                    runner_data,
-                    runner_settings_descriptor: _,
-                    args_descriptor: _,
-                    result_descriptor: _,
-                } = self
+                let _ = self
                     .validate_runner_settings_data(&wsid, w.runner_settings.as_slice())
                     .await?
                     .ok_or_else(|| {
                         JobWorkerError::InvalidParameter("runner settings not provided".to_string())
                     })?;
-                let mut wdata = w.clone();
-                // overwrite output_as_stream only if data is provided from runner
-                if let Some(output_as_stream) = runner_data.output_as_stream {
-                    wdata.output_as_stream = output_as_stream;
-                }
-
+                let wdata = w.clone();
                 // use rdb
                 let pool = self.rdb_worker_repository().db_pool();
                 let mut tx = pool.begin().await.map_err(JobWorkerError::DBError)?;
