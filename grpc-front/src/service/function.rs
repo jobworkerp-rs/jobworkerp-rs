@@ -120,10 +120,7 @@ fn convert_runner_to_function_specs(runner: RunnerWithSchema) -> FunctionSpecs {
             settings: Some(runner.settings_schema),
             arguments: runner.arguments_schema,
         }),
-        result_output_schema: runner
-            .data
-            .as_ref()
-            .and_then(|data| data.result_output_proto.clone()),
+        result_output_schema: runner.output_schema,
         output_type: runner
             .data
             .as_ref()
@@ -146,7 +143,7 @@ fn convert_worker_to_function_specs(
             settings: None, // Workers don't have config (already set)
             arguments: runner.arguments_schema,
         }),
-        result_output_schema: None, // Workers don't have result schema in the proto definition
+        result_output_schema: runner.output_schema,
         output_type: runner
             .data
             .map(|data| data.output_type)
