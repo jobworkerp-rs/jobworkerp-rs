@@ -125,7 +125,7 @@ checksum = "d301b3b94cb4b2f23d7917810addbbaff90738e0ca2be692bd027e70d7e0330c"
 
 [[package]]
 name = "app"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "app",
@@ -157,7 +157,7 @@ dependencies = [
 
 [[package]]
 name = "app-wrapper"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "app",
@@ -1574,7 +1574,7 @@ checksum = "a8d1add55171497b4705a648c6b583acafb01d58050a51727785f0b2c8e0a2b2"
 
 [[package]]
 name = "grpc-front"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "app",
@@ -2156,7 +2156,7 @@ dependencies = [
 
 [[package]]
 name = "infra"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2361,7 +2361,7 @@ dependencies = [
 
 [[package]]
 name = "jobworkerp-base"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "bollard",
@@ -2376,7 +2376,7 @@ dependencies = [
 
 [[package]]
 name = "jobworkerp-main"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "app",
@@ -2396,7 +2396,7 @@ dependencies = [
 
 [[package]]
 name = "jobworkerp-runner"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3416,7 +3416,7 @@ checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 
 [[package]]
 name = "plugin_runner_hello"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3438,7 +3438,7 @@ dependencies = [
 
 [[package]]
 name = "plugin_runner_test"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3706,7 +3706,7 @@ dependencies = [
 
 [[package]]
 name = "proto"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "command-utils 0.1.0",
@@ -6451,7 +6451,7 @@ dependencies = [
 
 [[package]]
 name = "worker-app"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "app",
