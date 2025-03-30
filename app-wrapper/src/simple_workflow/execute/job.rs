@@ -382,7 +382,7 @@ pub trait UseJobExecutorHelper:
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false),
                             retry_policy: Some(DEFAULT_RETRY_POLICY), //TODO
-                            broadcast_results: true, 
+                            broadcast_results: true,
                         }
                     } else {
                         // default values

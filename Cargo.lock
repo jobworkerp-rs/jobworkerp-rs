@@ -2360,7 +2360,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "jobworker"
+name = "jobworkerp-base"
+version = "0.10.0"
+dependencies = [
+ "anyhow",
+ "bollard",
+ "prost",
+ "redis",
+ "reqwest 0.12.15",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.12",
+ "tonic 0.13.0",
+]
+
+[[package]]
+name = "jobworkerp-main"
 version = "0.10.0"
 dependencies = [
  "anyhow",
@@ -2377,21 +2392,6 @@ dependencies = [
  "tokio",
  "tracing",
  "worker-app",
-]
-
-[[package]]
-name = "jobworkerp-base"
-version = "0.10.0"
-dependencies = [
- "anyhow",
- "bollard",
- "prost",
- "redis",
- "reqwest 0.12.15",
- "serde_json",
- "sqlx",
- "thiserror 2.0.12",
- "tonic 0.13.0",
 ]
 
 [[package]]

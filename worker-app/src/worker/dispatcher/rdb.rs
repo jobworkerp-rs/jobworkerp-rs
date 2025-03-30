@@ -127,7 +127,10 @@ pub trait RdbJobDispatcher:
                         .await
                         .tap_err(|e| tracing::error!("failed to fetch jobs: {:?}", e))
                         .unwrap_or(vec![]); // skip if failed to fetch jobs
-                    tracing::trace!("pop and execute: fetched jobs:{}: {:?}", &ch, jobs);
+
+                    if !jobs.is_empty() {
+                        tracing::debug!("pop and execute: jobs: ch={}: jobs={:?}", &ch, &jobs);
+                    }
                     // cunc threads for each channel
                     stream::iter(jobs)
                         .map(|job| {

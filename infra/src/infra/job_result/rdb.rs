@@ -259,7 +259,7 @@ mod test {
             max_retry: 0, // fixed
             priority: 1,
             timeout: 1000,
-            request_streaming: false, 
+            request_streaming: false,
             enqueue_time: 9,
             run_after_time: 10,
             start_time: 11,
@@ -301,7 +301,7 @@ mod test {
             max_retry: 0, // fixed
             priority: -1,
             timeout: 2000,
-            request_streaming: true, 
+            request_streaming: true,
             enqueue_time: 10,
             run_after_time: 11,
             start_time: 12,

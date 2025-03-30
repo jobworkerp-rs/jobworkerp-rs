@@ -3,7 +3,9 @@ use std::{fmt::Debug, time::Duration};
 
 use crate::proto::jobworkerp::data::FunctionId;
 use crate::proto::jobworkerp::data::WorkerData;
-use crate::proto::jobworkerp::data::{RunnerId, FunctionInputSchema, FunctionSpecs, Worker, WorkerId};
+use crate::proto::jobworkerp::data::{
+    FunctionInputSchema, FunctionSpecs, RunnerId, Worker, WorkerId,
+};
 use crate::proto::jobworkerp::service::function_service_server::FunctionService;
 use crate::proto::jobworkerp::service::FindFunctionRequest;
 use crate::service::error_handle::handle_error;

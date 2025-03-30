@@ -1,13 +1,8 @@
 [package]
-name = "jobworker"
+name = "jobworkerp-main"
 version.workspace = true
 authors.workspace = true
-edition = "2021"
-
-
-[lib]
-name = "lib"
-path = "src/lib.rs"
+edition.workspace = true
 
 [[bin]]
 name = "all-in-one"
