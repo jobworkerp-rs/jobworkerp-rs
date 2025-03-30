@@ -4,10 +4,11 @@ use command_utils::util::result::TapErr;
 use debug_stub_derive::DebugStub;
 use infra::infra::module::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
 use infra::infra::runner::redis::{RedisRunnerRepository, UseRedisRunnerRepository};
+use infra::infra::runner::rows::RunnerWithSchema;
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use infra_utils::infra::lock::RwLockWithKey;
 use infra_utils::infra::memory::{self, MemoryCacheConfig, MemoryCacheImpl, UseMemoryCache};
-use proto::jobworkerp::data::{Runner, RunnerId};
+use proto::jobworkerp::data::RunnerId;
 use std::sync::Arc;
 use std::time::Duration;
 use stretto::AsyncCache;
@@ -20,8 +21,8 @@ use super::{RunnerApp, RunnerCacheHelper, RunnerDataWithDescriptor, UseRunnerPar
 pub struct RedisRunnerAppImpl {
     storage_config: Arc<StorageConfig>,
     id_generator: Arc<IdGeneratorWrapper>,
-    #[debug_stub = "AsyncCache<Arc<String>, Vec<Runner>>"]
-    async_cache: AsyncCache<Arc<String>, Vec<Runner>>,
+    #[debug_stub = "AsyncCache<Arc<String>, Vec<RunnerWithSchema>>"]
+    async_cache: AsyncCache<Arc<String>, Vec<RunnerWithSchema>>,
     descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     repositories: Arc<RedisRepositoryModule>,
     key_lock: RwLockWithKey<Arc<String>>,
@@ -72,7 +73,11 @@ impl RunnerApp for RedisRunnerAppImpl {
         Ok(res)
     }
 
-    async fn find_runner(&self, id: &RunnerId, ttl: Option<&Duration>) -> Result<Option<Runner>>
+    async fn find_runner(
+        &self,
+        id: &RunnerId,
+        ttl: Option<&Duration>,
+    ) -> Result<Option<RunnerWithSchema>>
     where
         Self: Send + 'static,
     {
@@ -95,7 +100,7 @@ impl RunnerApp for RedisRunnerAppImpl {
         limit: Option<&i32>,
         offset: Option<&i64>,
         _ttl: Option<&Duration>,
-    ) -> Result<Vec<Runner>>
+    ) -> Result<Vec<RunnerWithSchema>>
     where
         Self: Send + 'static,
     {
@@ -118,7 +123,7 @@ impl RunnerApp for RedisRunnerAppImpl {
         // .await
     }
 
-    async fn find_runner_all_list(&self, ttl: Option<&Duration>) -> Result<Vec<Runner>>
+    async fn find_runner_all_list(&self, ttl: Option<&Duration>) -> Result<Vec<RunnerWithSchema>>
     where
         Self: Send + 'static,
     {
@@ -146,11 +151,14 @@ impl RunnerApp for RedisRunnerAppImpl {
         name: &str,
     ) -> Result<RunnerDataWithDescriptor> {
         use super::test::test_runner_with_descriptor;
+        use super::test::test_runner_with_schema;
 
         let runner = test_runner_with_descriptor(name);
+        let runner_with_schema = test_runner_with_schema(runner_id, name);
+
         let _res = self
             .redis_runner_repository()
-            .upsert(runner_id, &runner.runner_data)
+            .upsert(runner_id, &runner_with_schema)
             .await?;
         self.store_proto_cache(runner_id, &runner).await;
         // clear memory cache
@@ -177,8 +185,8 @@ impl UseRedisRepositoryModule for RedisRunnerAppImpl {
         &self.repositories
     }
 }
-impl UseMemoryCache<Arc<String>, Vec<Runner>> for RedisRunnerAppImpl {
-    fn cache(&self) -> &AsyncCache<Arc<String>, Vec<Runner>> {
+impl UseMemoryCache<Arc<String>, Vec<RunnerWithSchema>> for RedisRunnerAppImpl {
+    fn cache(&self) -> &AsyncCache<Arc<String>, Vec<RunnerWithSchema>> {
         &self.async_cache
     }
 

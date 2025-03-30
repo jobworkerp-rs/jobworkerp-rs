@@ -4,11 +4,12 @@ use app::module::AppModule;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use infra_utils::infra::net::reqwest::ReqwestClient;
-use jobworkerp_runner::jobworkerp::runner::WorkflowResult;
 use jobworkerp_runner::jobworkerp::runner::{workflow_result::WorkflowStatus, WorkflowArgs};
+use jobworkerp_runner::jobworkerp::runner::{Empty, WorkflowResult};
 use jobworkerp_runner::runner::simple_workflow::SimpleWorkflowRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use prost::Message;
+use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use schemars::JsonSchema;
 use std::{sync::Arc, time::Duration};
@@ -56,8 +57,40 @@ impl RunnerSpec for SimpleWorkflowRunner {
         SimpleWorkflowRunnerSpec::result_output_proto(self)
     }
 
-    fn output_as_stream(&self) -> Option<bool> {
-        SimpleWorkflowRunnerSpec::output_as_stream(self)
+    fn output_type(&self) -> StreamingOutputType {
+        SimpleWorkflowRunnerSpec::output_type(self)
+    }
+    fn settings_schema(&self) -> String {
+        // plain string with title
+        let schema = schemars::schema_for!(Empty);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in settings_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn arguments_schema(&self) -> String {
+        let schema = schemars::schema_for!(WorkflowRunnerInputSchema);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn output_schema(&self) -> Option<String> {
+        // plain string with title
+        let schema = schemars::schema_for!(WorkflowResult);
+        match serde_json::to_string(&schema) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::error!("error in output_json_schema: {:?}", e);
+                None
+            }
+        }
     }
 }
 

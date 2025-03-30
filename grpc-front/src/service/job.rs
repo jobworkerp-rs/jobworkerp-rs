@@ -81,6 +81,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         req.priority.unwrap_or(Priority::Medium as i32),
                         req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
                         None,
+                        false,
                     )
                     .await
             }
@@ -95,6 +96,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         req.priority.unwrap_or(Priority::Medium as i32),
                         req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
                         None,
+                        false,
                     )
                     .await
             }
@@ -176,6 +178,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         req.priority.unwrap_or(Priority::Medium as i32),
                         req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
                         None,
+                        true,
                     )
                     .await
             }
@@ -190,6 +193,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         req.priority.unwrap_or(Priority::Medium as i32),
                         req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
                         None,
+                        true,
                     )
                     .await
             }

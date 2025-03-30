@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use super::rows::RunnerRow;
+use super::rows::RunnerWithSchema;
 use crate::infra::IdGeneratorWrapper;
 use crate::infra::UseIdGenerator;
 use anyhow::{Context, Result};
@@ -11,8 +12,8 @@ use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::runner::factory::RunnerSpecFactory;
 use jobworkerp_runner::runner::factory::UseRunnerSpecFactory;
+use proto::jobworkerp::data::RunnerId;
 use proto::jobworkerp::data::RunnerType;
-use proto::jobworkerp::data::{Runner, RunnerId};
 use sqlx::{Executor, Pool};
 
 #[async_trait]
@@ -118,7 +119,7 @@ pub trait RunnerRepository:
         Ok(del)
     }
 
-    async fn find(&self, id: &RunnerId) -> Result<Option<Runner>> {
+    async fn find(&self, id: &RunnerId) -> Result<Option<RunnerWithSchema>> {
         let row = self.find_row_tx(self.db_pool(), id).await?;
         if let Some(r2) = row {
             if let Some(r3) = self
@@ -126,7 +127,7 @@ pub trait RunnerRepository:
                 .create_plugin_by_name(&r2.name, false)
                 .await
             {
-                Ok(Some(r2.to_proto(r3)))
+                Ok(Some(r2.to_runner_with_schema(r3)))
             } else {
                 Ok(None)
             }
@@ -148,7 +149,11 @@ pub trait RunnerRepository:
             .context(format!("error in find: id = {}", id.value))
     }
 
-    async fn find_list(&self, limit: Option<&i32>, offset: Option<&i64>) -> Result<Vec<Runner>> {
+    async fn find_list(
+        &self,
+        limit: Option<&i32>,
+        offset: Option<&i64>,
+    ) -> Result<Vec<RunnerWithSchema>> {
         let rows = self.find_row_list_tx(self.db_pool(), limit, offset).await?;
         let mut results = Vec::new();
         for row in rows {
@@ -157,7 +162,7 @@ pub trait RunnerRepository:
                 .create_plugin_by_name(&row.name, false)
                 .await
             {
-                results.push(row.to_proto(r));
+                results.push(row.to_runner_with_schema(r));
             }
         }
         Ok(results)
@@ -242,23 +247,24 @@ mod test {
     use super::RdbRunnerRepositoryImpl;
     use super::RunnerRepository;
     use crate::infra::runner::rows::RunnerRow;
+    use crate::infra::runner::rows::RunnerWithSchema;
     use anyhow::Context;
     use anyhow::Result;
     use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::rdb::UseRdbPool;
     use jobworkerp_runner::runner::factory::RunnerSpecFactory;
     use jobworkerp_runner::runner::plugins::Plugins;
-    use proto::jobworkerp::data::Runner;
     use proto::jobworkerp::data::RunnerData;
     use proto::jobworkerp::data::RunnerId;
     use proto::jobworkerp::data::RunnerType;
+    use proto::jobworkerp::data::StreamingOutputType;
     use std::sync::Arc;
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
-        let p = RunnerSpecFactory::new(Arc::new(Plugins::new()));
+        let p = Arc::new(RunnerSpecFactory::new(Arc::new(Plugins::new())));
         p.load_plugins().await;
         let id_generator = Arc::new(crate::infra::IdGeneratorWrapper::new());
-        let repository = RdbRunnerRepositoryImpl::new(pool, Arc::new(p), id_generator);
+        let repository = RdbRunnerRepositoryImpl::new(pool, p.clone(), id_generator);
         let db = repository.db_pool();
         let row = Some(RunnerRow {
             id: 123456, // XXX generated
@@ -283,8 +289,12 @@ mod test {
                     .to_string(),
             ),
             runner_type: 0,
-            output_as_stream: Some(true), // hello
+            output_type: StreamingOutputType::Both as i32, // hello
         });
+        let plugin = p
+            .create_plugin_by_name(&data.as_ref().unwrap().name, false)
+            .await
+            .unwrap();
 
         let org_count = repository.count_list_tx(repository.db_pool()).await?;
 
@@ -298,9 +308,12 @@ mod test {
         let id1 = RunnerId {
             value: row.clone().unwrap().id,
         };
-        let expect = Runner {
+        let expect = RunnerWithSchema {
             id: Some(id1),
             data,
+            settings_schema: plugin.settings_schema(),
+            arguments_schema: plugin.arguments_schema(),
+            output_schema: plugin.output_schema(),
         };
 
         // find

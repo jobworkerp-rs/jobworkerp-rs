@@ -6,10 +6,11 @@ use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::protobuf::ProtobufDescriptor;
 use command_utils::util::result::FlatMap;
+use infra::infra::runner::rows::RunnerWithSchema;
 use infra_utils::infra::memory::{MemoryCacheImpl, UseMemoryCache};
 use jobworkerp_base::error::JobWorkerError;
 use prost_reflect::{DynamicMessage, MessageDescriptor};
-use proto::jobworkerp::data::{Runner, RunnerData, RunnerId};
+use proto::jobworkerp::data::{RunnerData, RunnerId};
 use std::{fmt, future::Future, sync::Arc, time::Duration};
 
 #[async_trait]
@@ -19,7 +20,11 @@ pub trait RunnerApp: fmt::Debug + Send + Sync {
 
     async fn delete_runner(&self, id: &RunnerId) -> Result<bool>;
 
-    async fn find_runner(&self, id: &RunnerId, ttl: Option<&Duration>) -> Result<Option<Runner>>
+    async fn find_runner(
+        &self,
+        id: &RunnerId,
+        ttl: Option<&Duration>,
+    ) -> Result<Option<RunnerWithSchema>>
     where
         Self: Send + 'static;
 
@@ -28,11 +33,11 @@ pub trait RunnerApp: fmt::Debug + Send + Sync {
         limit: Option<&i32>,
         offset: Option<&i64>,
         ttl: Option<&Duration>,
-    ) -> Result<Vec<Runner>>
+    ) -> Result<Vec<RunnerWithSchema>>
     where
         Self: Send + 'static;
 
-    async fn find_runner_all_list(&self, ttl: Option<&Duration>) -> Result<Vec<Runner>>
+    async fn find_runner_all_list(&self, ttl: Option<&Duration>) -> Result<Vec<RunnerWithSchema>>
     where
         Self: Send + 'static;
 
@@ -194,9 +199,10 @@ pub trait UseRunnerAppParserWithCache:
     ) -> impl Future<Output = Result<Option<RunnerDataWithDescriptor>>> + Send {
         let runner_app = self.runner_app().clone();
         async move {
-            if let Some(Runner {
+            if let Some(RunnerWithSchema {
                 id: _,
                 data: Some(runner_data),
+                ..
             }) = runner_app
                 .find_runner(runner_id, self.default_ttl())
                 .await?
@@ -319,8 +325,9 @@ pub trait RunnerCacheHelper {
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test {
     use super::RunnerDataWithDescriptor;
-    use proto::jobworkerp::data::{RunnerData, RunnerType};
-    pub fn test_runner(name: &str) -> RunnerData {
+    use infra::infra::runner::rows::RunnerWithSchema;
+    use proto::jobworkerp::data::{RunnerData, RunnerId, RunnerType, StreamingOutputType};
+    pub fn test_runner_data(name: &str) -> RunnerData {
         proto::jobworkerp::data::RunnerData {
             name: name.to_string(),
             description: "test runner desc".to_string(),
@@ -329,12 +336,21 @@ pub mod test {
             job_args_proto: include_str!("../../../proto/protobuf/test_args.proto").to_string(),
             runner_type: RunnerType::Plugin as i32,
             result_output_proto: None,
-            output_as_stream: Some(false),
+            output_type: StreamingOutputType::NonStreaming as i32,
+        }
+    }
+    pub fn test_runner_with_schema(id: &RunnerId, name: &str) -> RunnerWithSchema {
+        RunnerWithSchema {
+            id: Some(*id),
+            data: Some(test_runner_data(name)),
+            settings_schema: "settings_schema".to_string(),
+            arguments_schema: "arguments_schema".to_string(),
+            output_schema: Some("output_schema".to_string()),
         }
     }
 
     pub fn test_runner_with_descriptor(name: &str) -> RunnerDataWithDescriptor {
-        let runner_data = test_runner(name);
+        let runner_data = test_runner_data(name);
         RunnerDataWithDescriptor {
             runner_data: runner_data.clone(),
             runner_settings_descriptor: Some(

@@ -54,33 +54,37 @@ message JobResultData {
     // from enqueue arguments
     uint64 timeout                             = 11;
     
+    // # Request Streaming
+    // from enqueue arguments
+    bool request_streaming                     = 12;
+
     // # Enqueue Time
     // Timestamp when the job was registered in the queue (Unix time in seconds)
-    int64 enqueue_time                         = 12;
+    int64 enqueue_time                         = 13;
     
     // # Run After Time
     // Timestamp when the job was scheduled to execute (specified by client)
-    int64 run_after_time                       = 13;
+    int64 run_after_time                       = 14;
     
     // # Start Time
     // Timestamp when the job execution started (Unix time in seconds)
-    int64 start_time                           = 14;
+    int64 start_time                           = 15;
     
     // # End Time
     // Timestamp when the job execution completed (Unix time in seconds)
-    int64 end_time                             = 15;
+    int64 end_time                             = 16;
     
     // # Response Type
     // How the result should be handled (none, direct, listen after)
-    jobworkerp.data.ResponseType response_type = 16;
+    jobworkerp.data.ResponseType response_type = 17;
     
     // # Store Success Flag
     // from worker.data.store_success
-    bool store_success                         = 17;
+    bool store_success                         = 18;
     
     // # Store Failure Flag
     // from worker.data.store_failure
-    bool store_failure                         = 18;
+    bool store_failure                         = 19;
 }
 
 // # Job Result ID

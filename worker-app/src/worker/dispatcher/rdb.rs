@@ -29,6 +29,7 @@ use infra::infra::job::queue::rdb::RdbJobQueueRepository;
 use infra::infra::job::rdb::RdbChanJobRepositoryImpl;
 use infra::infra::job::rdb::UseRdbChanJobRepository;
 use infra::infra::job::rows::UseJobqueueAndCodec;
+use infra::infra::runner::rows::RunnerWithSchema;
 use infra::infra::IdGeneratorWrapper;
 use infra::infra::JobQueueConfig;
 use infra::infra::UseIdGenerator;
@@ -37,7 +38,6 @@ use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::Job;
 use proto::jobworkerp::data::JobResult;
 use proto::jobworkerp::data::JobResultId;
-use proto::jobworkerp::data::Runner;
 use proto::jobworkerp::data::Worker;
 use proto::jobworkerp::data::WorkerId;
 use std::sync::Arc;
@@ -127,7 +127,10 @@ pub trait RdbJobDispatcher:
                         .await
                         .tap_err(|e| tracing::error!("failed to fetch jobs: {:?}", e))
                         .unwrap_or(vec![]); // skip if failed to fetch jobs
-                    tracing::trace!("pop and execute: fetched jobs:{}: {:?}", &ch, jobs);
+
+                    if !jobs.is_empty() {
+                        tracing::debug!("pop and execute: jobs: ch={}: jobs={:?}", &ch, &jobs);
+                    }
                     // cunc threads for each channel
                     stream::iter(jobs)
                         .map(|job| {
@@ -174,9 +177,10 @@ pub trait RdbJobDispatcher:
                 JobWorkerError::NotFound(format!("failed to get runner_id: {:?}", &job)).into(),
             );
         };
-        let runner_data = if let Some(Runner {
+        let runner_data = if let Some(RunnerWithSchema {
             id: _,
             data: runner_data,
+            ..
         }) = self.runner_app().find_runner(rid, None).await?
         {
             runner_data.to_result(|| {

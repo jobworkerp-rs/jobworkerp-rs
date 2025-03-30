@@ -55,7 +55,10 @@ impl<T: RunnerGrpc + Tracing + Send + Debug + Sync + 'static> RunnerService for 
         let _s = Self::trace_request("runner", "find", &request);
         let req = request.get_ref();
         match self.app().find_runner(req, Some(&DEFAULT_TTL)).await {
-            Ok(res) => Ok(Response::new(OptionalRunnerResponse { data: res })),
+            Ok(Some(res)) => Ok(Response::new(OptionalRunnerResponse {
+                data: Some(res.into_proto()),
+            })),
+            Ok(None) => Ok(Response::new(OptionalRunnerResponse { data: None })),
             Err(e) => Err(handle_error(&e)),
         }
     }
@@ -82,7 +85,7 @@ impl<T: RunnerGrpc + Tracing + Send + Debug + Sync + 'static> RunnerService for 
                 // TODO streamingのより良いやり方がないか?
                 Ok(Response::new(Box::pin(stream! {
                     for s in list {
-                        yield Ok(s)
+                        yield Ok(s.into_proto());
                     }
                 })))
             }

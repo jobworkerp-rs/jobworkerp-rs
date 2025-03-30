@@ -35,3 +35,7 @@ enum ResultStatus {
     // An unexpected system error occurred and the job cannot be retried
     OTHER_ERROR = 5;
 }
+
+// # empty
+// Represents an empty object
+message Empty {}

@@ -323,6 +323,7 @@ mod tests {
                 retried: 0,
                 priority: 0,
                 timeout: 0,
+                request_streaming: false,
                 enqueue_time: 0,
                 run_after_time: 0,
                 grabbed_until_time: None,

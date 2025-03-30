@@ -240,6 +240,7 @@ async fn redis_test() -> Result<()> {
         retried: 8,
         priority: 9,
         timeout: 1000,
+        request_streaming: true,
     };
     // clear first
     repo.delete(&id).await?;
@@ -262,6 +263,7 @@ async fn redis_test() -> Result<()> {
     job2.retried = 9;
     job2.priority = 10;
     job2.timeout = 2000;
+    job2.request_streaming = false;
     // update and find
     assert!(!repo.upsert(&id, &job2).await?);
     let res2 = repo.find(&id).await?;
