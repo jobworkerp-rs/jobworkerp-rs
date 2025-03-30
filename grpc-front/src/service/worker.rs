@@ -53,7 +53,7 @@ pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig {
             store_success: dat.store_success,
             store_failure: dat.store_failure,
             use_static: dat.use_static,
-            output_as_stream: dat.output_as_stream, // no effect
+            broadcast_results: dat.broadcast_results, // no effect
         };
         self.validate_worker(&data)?;
         Ok(data)

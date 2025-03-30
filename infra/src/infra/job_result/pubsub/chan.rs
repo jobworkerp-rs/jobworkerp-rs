@@ -48,6 +48,9 @@ impl JobResultPublisher for ChanJobResultPubSubRepositoryImpl {
                 &jid.value
             )))?;
         let result_data = Self::serialize_job_result(*id, data.clone());
+        // TODO not publish if worker.broadcast_result is false
+        // (Currently we're preventing subscription by closing the receiving end(listen, listen_by_worker),
+        //  but it's no sense to publish when not needed)
         let res = if to_listen {
             self.broadcast_chan_buf()
                 .send_to_chan(

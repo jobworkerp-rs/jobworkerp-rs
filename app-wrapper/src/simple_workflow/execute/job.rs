@@ -257,6 +257,7 @@ pub trait UseJobExecutorHelper:
                     Priority::High as i32,
                     timeout_sec as u64 * 1000,
                     None,
+                    false, // TODO can treat as stream job?
                 )
                 .await
         }
@@ -281,6 +282,7 @@ pub trait UseJobExecutorHelper:
                     Priority::High as i32, // higher priority for user slack response
                     timeout_sec as u64 * 1000,
                     None,
+                    false, // TODO can treat as stream job?
                 )
                 .await
                 .map(|r| r.1)
@@ -380,7 +382,7 @@ pub trait UseJobExecutorHelper:
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false),
                             retry_policy: Some(DEFAULT_RETRY_POLICY), //TODO
-                            output_as_stream: false,
+                            broadcast_results: true, 
                         }
                     } else {
                         // default values
@@ -397,7 +399,7 @@ pub trait UseJobExecutorHelper:
                             store_failure: true, //
                             use_static: false,
                             retry_policy: Some(DEFAULT_RETRY_POLICY), //TODO
-                            output_as_stream: false,
+                            broadcast_results: true,
                         }
                     };
                 // random name (temporary name for not static worker)

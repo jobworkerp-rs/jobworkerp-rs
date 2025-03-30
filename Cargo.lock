@@ -2241,7 +2241,6 @@ dependencies = [
  "strum 0.27.1",
  "strum_macros 0.27.1",
  "thirtyfour",
- "thiserror 2.0.12",
  "tokio",
  "tokio-stream",
  "tonic 0.13.0",

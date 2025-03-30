@@ -24,7 +24,7 @@ pub struct WorkerRow {
     pub store_success: bool,
     pub store_failure: bool,
     pub use_static: bool,
-    pub output_as_stream: bool,
+    pub broadcast_results: bool,
 }
 
 impl WorkerRow {
@@ -53,7 +53,7 @@ impl WorkerRow {
                 store_success: self.store_success,
                 store_failure: self.store_failure,
                 use_static: self.use_static,
-                output_as_stream: self.output_as_stream,
+                broadcast_results: self.broadcast_results,
             }),
         })
     }

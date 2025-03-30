@@ -79,6 +79,7 @@ impl HybridJobResultAppImpl {
         job_id: &JobId,
         wdata: &WorkerData,
         timeout: Option<&u64>,
+        request_streaming: bool,
     ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
         if wdata.response_type != ResponseType::ListenAfter as i32 {
             Err(JobWorkerError::InvalidParameter(
@@ -90,7 +91,7 @@ impl HybridJobResultAppImpl {
                 .job_result_pubsub_repository()
                 .subscribe_result(job_id, timeout.copied())
                 .await?;
-            if wdata.output_as_stream {
+            if request_streaming {
                 let stream = self
                     .job_result_pubsub_repository()
                     .subscribe_result_stream(job_id, timeout.copied())
@@ -193,40 +194,73 @@ impl JobResultApp for HybridJobResultAppImpl {
         worker_id: Option<&WorkerId>,
         worker_name: Option<&String>,
         timeout: Option<u64>,
+        request_streaming: bool,
     ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)>
     where
         Self: Send + 'static,
     {
         // get worker data
-        let Worker { id: _, data: wd } = self
+        if let Worker {
+            id: Some(wid),
+            data: Some(wd),
+        } = self
             .worker_app
             .find_by_id_or_name(worker_id, worker_name)
-            .await?;
-        let wd = wd.ok_or(JobWorkerError::NotFound("worker not found".to_string()))?;
-        if wd.response_type != ResponseType::ListenAfter as i32 {
-            return Err(JobWorkerError::InvalidParameter(format!(
-                "Cannot listen result not stored worker: {:?}",
-                &wd
-            ))
-            .into());
-        }
-        // check job result (already finished or not)
-        let res = self.find_job_result_by_job_id(job_id).await?;
-        match res {
-            // already finished: return resolved result
-            Some(v) if self.is_finished(&v) => Ok((v, None)),
-            // result in rdb (not finished by store_failure option)
-            Some(_v) => {
-                // found not finished result: wait for result data
-                self.subscribe_result_with_check(job_id, &wd, timeout.as_ref())
-                    .await
+            .await?
+        {
+            if wd.response_type != ResponseType::ListenAfter as i32 {
+                return Err(JobWorkerError::InvalidParameter(format!(
+                    "Cannot listen result not stored worker: {:?}",
+                    &wd
+                ))
+                .into());
             }
-            None => {
-                // not found result: wait for job
-                tracing::debug!("job result not found: find job: {:?}", job_id);
-                self.subscribe_result_with_check(job_id, &wd, timeout.as_ref())
-                    .await
+            if !wd.broadcast_results {
+                return Err(JobWorkerError::InvalidParameter(format!(
+                    "Cannot listen result not broadcast worker: {:?}",
+                    &wd
+                ))
+                .into());
             }
+            // check request streaming
+            self.worker_app()
+                .check_worker_streaming(&wid, request_streaming)
+                .await?;
+            // check job result (already finished or not)
+            let res = self.find_job_result_by_job_id(job_id).await?;
+            match res {
+                // already finished: return resolved result
+                Some(v) if self.is_finished(&v) => Ok((v, None)),
+                // result in rdb (not finished by store_failure option)
+                Some(v) => {
+                    // found not finished result: wait for result data
+                    self.subscribe_result_with_check(
+                        job_id,
+                        &wd,
+                        timeout.as_ref(),
+                        v.data
+                            .map(|r| r.request_streaming)
+                            .unwrap_or(request_streaming),
+                    )
+                    .await
+                }
+                None => {
+                    // not found result: wait for job
+                    tracing::debug!("job result not found: find job: {:?}", job_id);
+                    self.subscribe_result_with_check(
+                        job_id,
+                        &wd,
+                        timeout.as_ref(),
+                        request_streaming,
+                    )
+                    .await
+                }
+            }
+        } else {
+            Err(JobWorkerError::WorkerNotFound(
+                "cannot listen job which worker is None".to_string(),
+            )
+            .into())
         }
     }
 
@@ -247,9 +281,16 @@ impl JobResultApp for HybridJobResultAppImpl {
             .find_by_id_or_name(worker_id, worker_name)
             .await?;
         let wid = worker_id.ok_or(JobWorkerError::NotFound("worker id not found".to_string()))?;
-        let _wd = wd.ok_or(JobWorkerError::NotFound(
+        let wd = wd.ok_or(JobWorkerError::NotFound(
             "worker data not found".to_string(),
         ))?;
+        if !wd.broadcast_results {
+            return Err(JobWorkerError::InvalidParameter(format!(
+                "Cannot listen result not broadcast worker: {:?}",
+                &wd
+            ))
+            .into());
+        }
         // if wd.response_type == ResponseType::Direct as i32 {
         //     return Err(JobWorkerError::InvalidParameter(format!(
         //         "Cannot listen result for direct response: {:?}",
@@ -350,6 +391,7 @@ pub mod tests {
             max_retry: 0,
             priority: proto::jobworkerp::data::Priority::High as i32,
             timeout: 0,
+            request_streaming: false,
             enqueue_time: datetime::now_millis(),
             run_after_time: 0,
             response_type: proto::jobworkerp::data::ResponseType::NoResult as i32,
@@ -445,7 +487,7 @@ pub mod tests {
             store_success: true,
             store_failure: true,
             use_static: false,
-            output_as_stream: false,
+            broadcast_results: false,
         };
         TEST_RUNTIME.block_on(async {
             let app = create_test_app().await?;
@@ -479,6 +521,7 @@ pub mod tests {
                 max_retry: worker_data.retry_policy.map(|p| p.max_retry).unwrap_or(0),
                 priority: proto::jobworkerp::data::Priority::High as i32,
                 timeout: 0,
+                request_streaming: false,
                 enqueue_time: datetime::now_millis(),
                 run_after_time: 0,
                 response_type: worker_data.response_type,
@@ -557,6 +600,60 @@ pub mod tests {
             // no store retrying result in cache
             assert_eq!(app.find_job_result_by_job_id(&job_id).await?, None);
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_error_listen_result() -> Result<()> {
+        use super::*;
+        use infra_utils::infra::test::TEST_RUNTIME;
+
+        let runner_settings = vec![];
+        let worker_data = WorkerData {
+            name: "test".to_string(),
+            description: "desc1".to_string(),
+            runner_id: Some(proto::jobworkerp::data::RunnerId { value: 1 }),
+            runner_settings,
+            retry_policy: None,
+            periodic_interval: 0,
+            channel: Some("hoge".to_string()),
+            queue_type: proto::jobworkerp::data::QueueType::ForcedRdb as i32,
+            response_type: ResponseType::Direct as i32,
+            store_success: true,
+            store_failure: true,
+            use_static: false,
+            broadcast_results: false,
+        };
+        TEST_RUNTIME.block_on(async {
+            let app = create_test_app().await?;
+            let worker_id = app.worker_app().create(&worker_data).await?;
+            // let worker = Worker {
+            //     id: Some(worker_id),
+            //     data: Some(worker_data.clone()),
+            // };
+
+            // // app.worker_app.create(&worker_data).await?;
+            // let id = JobResultId {
+            //     value: app.id_generator().generate_id()?,
+            // };
+            let job_id = JobId { value: 100 };
+
+            let res = app
+                .listen_result(
+                    &job_id,
+                    Some(&worker_id),
+                    Some(&worker_data.name),
+                    None,
+                    false,
+                )
+                .await;
+            assert!(res.is_err());
+
+            let res = app
+                .listen_result_stream_by_worker(Some(&worker_id), Some(&worker_data.name))
+                .await;
+            assert!(res.is_err());
             Ok(())
         })
     }

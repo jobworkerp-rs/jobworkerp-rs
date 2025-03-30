@@ -23,11 +23,12 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
                 retried,
                 priority,
                 timeout,
+                request_streaming,
                 enqueue_time,
                 run_after_time,
                 start_time,
                 end_time
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(id.value)
         .bind(job_result.job_id.as_ref().unwrap().value) //XXX unwrap
@@ -45,6 +46,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
         .bind(job_result.retried as i64)
         .bind(job_result.priority)
         .bind(job_result.timeout as i64)
+        .bind(job_result.request_streaming)
         .bind(job_result.enqueue_time)
         .bind(job_result.run_after_time)
         .bind(job_result.start_time)
@@ -73,6 +75,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
             retried = ?,
             priority = ?,
             timeout = ?,
+            request_streaming = ?,
             enqueue_time = ?,
             run_after_time = ?,
             start_time = ?,
@@ -94,6 +97,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
         .bind(job_result.retried as i64)
         .bind(job_result.priority)
         .bind(job_result.timeout as i64)
+        .bind(job_result.request_streaming)
         .bind(job_result.enqueue_time)
         .bind(job_result.run_after_time)
         .bind(job_result.start_time)
@@ -255,6 +259,7 @@ mod test {
             max_retry: 0, // fixed
             priority: 1,
             timeout: 1000,
+            request_streaming: false, 
             enqueue_time: 9,
             run_after_time: 10,
             start_time: 11,
@@ -296,6 +301,7 @@ mod test {
             max_retry: 0, // fixed
             priority: -1,
             timeout: 2000,
+            request_streaming: true, 
             enqueue_time: 10,
             run_after_time: 11,
             start_time: 12,
