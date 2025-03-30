@@ -124,7 +124,7 @@ pub trait JobRunner:
         let start = datetime::now_millis();
 
         let name = runner_impl.name();
-        if worker_data.output_as_stream {
+        if data.request_streaming {
             tracing::debug!("start runner(stream): {}", &name);
             let res = self
                 .run_and_stream(&job, runner_impl)
@@ -250,7 +250,7 @@ pub trait JobRunner:
         start_msec: i64,
         end_msec: i64,
     ) -> JobResultData {
-        let dat = job.data.unwrap(); // TODO unwrap
+        let dat = job.data.unwrap_or_default(); // XXX unwrap or default
         JobResultData {
             job_id: job.id,
             worker_id: dat.worker_id,
@@ -267,6 +267,7 @@ pub trait JobRunner:
                 .max_retry,
             priority: dat.priority,
             timeout: dat.timeout,
+            request_streaming: dat.request_streaming,
             enqueue_time: dat.enqueue_time,
             run_after_time: dat.run_after_time,
             start_time: start_msec,
@@ -353,6 +354,7 @@ mod tests {
                     enqueue_time: 0,
                     run_after_time: run_after,
                     grabbed_until_time: None,
+                    request_streaming: false,
                 }),
             };
             let worker_id = WorkerId { value: 1 };

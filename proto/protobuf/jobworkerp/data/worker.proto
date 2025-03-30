@@ -49,10 +49,10 @@ message WorkerData {
   // # Static Execution Flag
   // If true, fixed number instance of this worker will run at a time (with lock)
   bool use_static = 13;
-  // # Stream Output Flag
-  // If true, results will be output as a stream (JobResultService/ListenStreamByWorker)
-  // This is determined by the runner and cannot be modified by the request
-  bool output_as_stream = 14;
+  // # Output Broadcast Flag
+  // If true, job execution results will be broadcasted to all listeners
+  // using JobResultService/ListenStreamByWorker
+  bool broadcast_results = 14;
 }
 
 message WorkerId { int64 value = 1; }

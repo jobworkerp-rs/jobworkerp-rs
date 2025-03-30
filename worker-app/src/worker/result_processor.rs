@@ -110,6 +110,7 @@ impl ResultProcessorImpl {
                         pj.priority,
                         pj.timeout,
                         dat.job_id, // use same job id for periodic job if possible
+                        pj.request_streaming,
                     )
                     .await?;
                 tracing::info!(

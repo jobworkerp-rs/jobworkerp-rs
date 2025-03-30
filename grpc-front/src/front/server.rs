@@ -1,17 +1,17 @@
+use crate::proto::jobworkerp::service::function_service_server::FunctionServiceServer;
 use crate::proto::jobworkerp::service::job_restore_service_server::JobRestoreServiceServer;
 use crate::proto::jobworkerp::service::job_result_service_server::JobResultServiceServer;
 use crate::proto::jobworkerp::service::job_service_server::JobServiceServer;
 use crate::proto::jobworkerp::service::job_status_service_server::JobStatusServiceServer;
 use crate::proto::jobworkerp::service::runner_service_server::RunnerServiceServer;
-use crate::proto::jobworkerp::service::tool_service_server::ToolServiceServer;
 use crate::proto::jobworkerp::service::worker_service_server::WorkerServiceServer;
 use crate::proto::FILE_DESCRIPTOR_SET;
+use crate::service::function::FunctionGrpcImpl;
 use crate::service::job::JobGrpcImpl;
 use crate::service::job_restore::JobRestoreGrpcImpl;
 use crate::service::job_result::JobResultGrpcImpl;
 use crate::service::job_status::JobStatusGrpcImpl;
 use crate::service::runner::RunnerGrpcImpl;
-use crate::service::tool::ToolGrpcImpl;
 use crate::service::worker::WorkerGrpcImpl;
 use anyhow::anyhow;
 use anyhow::Result;
@@ -60,9 +60,9 @@ pub async fn start_server(
             .add_service(enable_grpc_web(WorkerServiceServer::new(
                 WorkerGrpcImpl::new(app_module.clone()),
             )))
-            .add_service(enable_grpc_web(ToolServiceServer::new(ToolGrpcImpl::new(
-                app_module.clone(),
-            ))))
+            .add_service(enable_grpc_web(FunctionServiceServer::new(
+                FunctionGrpcImpl::new(app_module.clone()),
+            )))
             .add_service(enable_grpc_web(JobServiceServer::new(JobGrpcImpl::new(
                 app_module.clone(),
             ))))
@@ -84,7 +84,7 @@ pub async fn start_server(
             .add_service(WorkerServiceServer::new(WorkerGrpcImpl::new(
                 app_module.clone(),
             )))
-            .add_service(ToolServiceServer::new(ToolGrpcImpl::new(
+            .add_service(FunctionServiceServer::new(FunctionGrpcImpl::new(
                 app_module.clone(),
             )))
             .add_service(JobServiceServer::new(JobGrpcImpl::new(app_module.clone())))

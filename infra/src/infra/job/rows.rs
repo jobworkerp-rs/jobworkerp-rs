@@ -19,6 +19,7 @@ pub struct JobRow {
     pub retried: i64, // u32
     pub priority: i32,
     pub timeout: i64,
+    pub request_streaming: bool,
 }
 
 impl JobRow {
@@ -37,6 +38,7 @@ impl JobRow {
                 retried: self.retried as u32,
                 priority: self.priority,
                 timeout: self.timeout as u64,
+                request_streaming: self.request_streaming,
             }),
         }
     }
@@ -66,11 +68,11 @@ pub trait UseJobqueueAndCodec {
         format!("rj:{}", job_id.value)
     }
 
-    // jobId based channel name for direct or listen after response
+    // jobId based channel name for direct response
     fn result_queue_name(job_id: &JobId) -> String {
         format!("r:d:{}", job_id.value)
     }
-    // pubsub channel
+    // pubsub channel for listen result
     fn job_result_pubsub_channel_name(job_id: &JobId) -> String {
         format!("job_result_changed:job:{}", job_id.value)
     }
@@ -170,6 +172,7 @@ mod tests {
                 retried: 0,
                 priority: 0,
                 timeout: 1000,
+                request_streaming: false,
             }),
         };
         struct JobQueueImpl {}
@@ -201,6 +204,7 @@ mod tests {
             retried: 8,
             priority: -1,
             timeout: 1000,
+            request_streaming: true,
             enqueue_time: 9,
             run_after_time: 10,
             start_time: 11,

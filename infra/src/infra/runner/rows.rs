@@ -1,7 +1,7 @@
 use jobworkerp_runner::runner::RunnerSpec;
 use proto::jobworkerp::data::{
-    tool_specs::ToolId, Runner, RunnerData, RunnerId, StreamingOutputType, ToolInputSchema,
-    ToolSpecs,
+    function_specs::FunctionId, FunctionInputSchema, FunctionSpecs, Runner, RunnerData, RunnerId,
+    StreamingOutputType,
 };
 
 // db row definitions
@@ -64,15 +64,15 @@ impl RunnerWithSchema {
             data: self.data,
         }
     }
-    pub fn to_tool_proto(&self) -> ToolSpecs {
-        ToolSpecs {
-            tool_id: self.id.as_ref().map(|i| ToolId::RunnerId(*i)),
+    pub fn to_function_proto(&self) -> FunctionSpecs {
+        FunctionSpecs {
+            function_id: self.id.as_ref().map(|i| FunctionId::RunnerId(*i)),
             name: self.data.as_ref().map_or(String::new(), |d| d.name.clone()),
             description: self
                 .data
                 .as_ref()
                 .map_or(String::new(), |d| d.description.clone()),
-            input_schema: Some(ToolInputSchema {
+            input_schema: Some(FunctionInputSchema {
                 settings: Some(self.settings_schema.clone()),
                 arguments: self.arguments_schema.clone(),
             }),

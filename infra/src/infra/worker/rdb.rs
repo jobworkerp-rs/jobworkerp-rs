@@ -35,7 +35,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
             `response_type`,
             `store_success`,
             `store_failure`,
-            `output_as_stream`
+            `broadcast_results`
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(&worker.name)
@@ -59,7 +59,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         .bind(worker.response_type)
         .bind(worker.store_success)
         .bind(worker.store_failure)
-        .bind(worker.output_as_stream)
+        .bind(worker.broadcast_results)
         .execute(tx)
         .await
         .map_err(JobWorkerError::DBError)?;
@@ -93,7 +93,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
             `response_type` = ?,
             `store_success` = ?,
             `store_failure` = ?,
-            `output_as_stream` = ?
+            `broadcast_results` = ?
             WHERE `id` = ?;",
         )
         .bind(&worker.name)
@@ -117,7 +117,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         .bind(worker.response_type)
         .bind(worker.store_success)
         .bind(worker.store_failure)
-        .bind(worker.output_as_stream)
+        .bind(worker.broadcast_results)
         .bind(id.value)
         .execute(tx)
         .await
@@ -292,7 +292,7 @@ mod test {
             store_success: true,
             store_failure: true,
             use_static: false,
-            output_as_stream: false,
+            broadcast_results: false,
         });
 
         let mut tx = db.begin().await.context("error in test")?;
@@ -333,7 +333,7 @@ mod test {
             store_success: false,
             store_failure: false,
             use_static: false,
-            output_as_stream: false,
+            broadcast_results: false,
         };
         let updated = repository
             .update(&mut *tx, &expect.id.unwrap(), &update)

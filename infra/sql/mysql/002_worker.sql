@@ -22,7 +22,7 @@ CREATE TABLE `worker` (
   `store_failure` TINYINT(1) NOT NULL DEFAULT 0, -- store result to db in failure
   -- etc
   `use_static` TINYINT(1) NOT NULL DEFAULT 0, -- use runner as static 
-  `output_as_stream` TINYINT(1) NOT NULL DEFAULT 0, -- output as stream (defined by runner, not modified by request)
+  `broadcast_results` TINYINT(1) NOT NULL DEFAULT 0, -- broadcast results to all listeners
   UNIQUE KEY `name` (`name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -40,6 +40,7 @@ CREATE TABLE `job` (
   `retried` INT(10) NOT NULL DEFAULT '0',
   `priority` INT(10) NOT NULL DEFAULT '0',
   `timeout` BIGINT(20) NOT NULL DEfAULT 0,
+  `request_streaming` TINYINT(1) NOT NULL DEFAULT 0, -- request streaming (available if supported by runner)
   KEY `worker_id_key` (`worker_id`),
   KEY `find_job_key` (`run_after_time`, `grabbed_until_time`, `worker_id`, `priority`),
   KEY `find_job_key2` (`run_after_time`, `grabbed_until_time`, `priority`),
@@ -62,6 +63,7 @@ CREATE TABLE `job_result` (
   `start_time` BIGINT(20) NOT NULL,
   `end_time` BIGINT(20) NOT NULL,
   `timeout` BIGINT(20) NOT NULL DEfAULT 0,
+  `request_streaming` TINYINT(1) NOT NULL DEFAULT 0,
   KEY `job_id_key` (`job_id`, `end_time`),
   KEY `worker_id_key` (`worker_id`, `job_id`),
   KEY `uniq_key_idx` (`uniq_key`)

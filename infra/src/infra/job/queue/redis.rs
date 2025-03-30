@@ -78,16 +78,16 @@ where
         &self,
         job_id: &JobId,
         timeout: Option<u64>,
-        output_as_stream: bool,
+        request_streaming: bool,
     ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
         tracing::debug!(
             "wait_for_result_data_for_response: job_id: {:?} timeout:{}, mode: {}",
             job_id,
             timeout.unwrap_or(0),
-            if output_as_stream {
-                "stream"
+            if request_streaming {
+                "streaming"
             } else {
-                "non-stream"
+                "direct"
             }
         );
         let signal: Signals = Signals::new([SIGINT]).expect("cannot get signals");
@@ -120,7 +120,7 @@ where
         };
 
         let subscribe_future = async {
-            if output_as_stream {
+            if request_streaming {
                 self.job_result_pubsub_repository()
                     .subscribe_result_stream(job_id, timeout)
                     .await
@@ -328,6 +328,7 @@ mod test {
                 retried: 0,
                 priority: 1,
                 timeout: 1000,
+                request_streaming: false,
             }),
         };
         let r = repo.enqueue_job(None, &job).await?;

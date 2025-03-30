@@ -189,34 +189,51 @@ impl RunnerTrait for CommandRunnerImpl {
                     // Set up memory monitoring if we have a valid PID
                     if let Some(process_pid) = pid {
                         let max_mem = Arc::clone(&max_memory);
-                        // Spawn a task to monitor memory usage
-                        Some(tokio::spawn(async move {
-                            let mut sys = System::new();
-                            let mut current_max = 0u64;
+                        // Create a oneshot channel to signal the monitoring task to stop
+                        let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
 
-                            // Poll every 100ms for memory usage
-                            loop {
-                                let pids = [sysinfo::Pid::from(process_pid)];
-                                sys.refresh_processes(
-                                    sysinfo::ProcessesToUpdate::Some(&pids[..]),
-                                    false,
-                                );
-                                if let Some(process) = sys.process(pids[0]) {
-                                    let memory = process.memory(); // in Byte
-                                    tracing::info!("Memory usage: {:.3}KB", memory as f64 / 1024.0);
-                                    if memory > current_max {
-                                        current_max = memory;
-                                        if let Ok(mut max) = max_mem.lock() {
-                                            *max = current_max;
-                                        }
+                        // Spawn a task to monitor memory usage
+                        Some((
+                            tokio::spawn(async move {
+                                let mut sys = System::new();
+                                let mut current_max = 0u64;
+
+                                // Poll every 100ms for memory usage
+                                loop {
+                                    // Check if stop signal received
+                                    if rx.try_recv().is_ok() {
+                                        tracing::debug!(
+                                            "Memory monitoring task received stop signal"
+                                        );
+                                        break;
                                     }
-                                } else {
-                                    // Process not found, probably exited
-                                    break;
+
+                                    let pids = [sysinfo::Pid::from(process_pid)];
+                                    sys.refresh_processes(
+                                        sysinfo::ProcessesToUpdate::Some(&pids[..]),
+                                        false,
+                                    );
+                                    if let Some(process) = sys.process(pids[0]) {
+                                        let memory = process.memory(); // in Byte
+                                        tracing::info!(
+                                            "Memory usage: {:.3}KB",
+                                            memory as f64 / 1024.0
+                                        );
+                                        if memory > current_max {
+                                            current_max = memory;
+                                            if let Ok(mut max) = max_mem.lock() {
+                                                *max = current_max;
+                                            }
+                                        }
+                                    } else {
+                                        // Process not found, probably exited
+                                        break;
+                                    }
+                                    tokio::time::sleep(Duration::from_millis(100)).await;
                                 }
-                                tokio::time::sleep(Duration::from_millis(100)).await;
-                            }
-                        }))
+                            }),
+                            tx,
+                        ))
                     } else {
                         None
                     }
@@ -249,12 +266,19 @@ impl RunnerTrait for CommandRunnerImpl {
                 }
 
                 // Wait for memory monitor to finish if it was started
-                if let Some(handle) = memory_monitor_handle {
+                if let Some((handle, stop_tx)) = memory_monitor_handle {
+                    // Signal the monitoring task to stop
+                    let _ = stop_tx.send(());
+
+                    // Create a clone of the handle for aborting if timeout occurs
+                    let handle_clone = handle.abort_handle();
+
                     // Give it a little time to finish but don't wait forever
                     match tokio::time::timeout(Duration::from_millis(500), handle).await {
                         Ok(_) => {}
                         Err(_) => {
-                            tracing::warn!("Memory monitor task didn't complete in time");
+                            tracing::warn!("Memory monitor task didn't complete in time, aborting");
+                            handle_clone.abort();
                         }
                     }
                 }
@@ -375,14 +399,23 @@ impl RunnerTrait for CommandRunnerImpl {
                     let memory_monitor_handle = if should_monitor_memory && process_id.is_some() {
                         let process_pid = process_id.unwrap() as usize;
                         let max_mem = Arc::clone(&max_memory);
+                        
+                        // Create a oneshot channel to signal the monitoring task to stop
+                        let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
 
                         // Spawn a task to monitor memory usage
-                        Some(tokio::spawn(async move {
+                        Some((tokio::spawn(async move {
                             let mut sys = System::new();
                             let mut current_max = 0u64;
 
                             // Poll every 100ms for memory usage
                             loop {
+                                // Check if stop signal received
+                                if rx.try_recv().is_ok() {
+                                    tracing::debug!("Memory monitoring task in stream mode received stop signal");
+                                    break;
+                                }
+                                
                                 let pids = [sysinfo::Pid::from(process_pid)];
                                 sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&pids[..]), false);
                                 if let Some(process) = sys.process(pids[0]) {
@@ -399,7 +432,7 @@ impl RunnerTrait for CommandRunnerImpl {
                                 }
                                 tokio::time::sleep(Duration::from_millis(100)).await;
                             }
-                        }))
+                        }), tx))
                     } else {
                         None
                     };
@@ -633,11 +666,20 @@ impl RunnerTrait for CommandRunnerImpl {
                     };
 
                     // Wait for memory monitor to finish if it was started
-                    if let Some(handle) = memory_monitor_handle {
+                    if let Some((handle, stop_tx)) = memory_monitor_handle {
+                        // Signal the monitoring task to stop
+                        let _ = stop_tx.send(());
+                        
+                        // Create a clone of the handle for aborting if timeout occurs
+                        let handle_clone = handle.abort_handle();
+                        
                         // Give it a little time to finish but don't wait forever
                         match tokio::time::timeout(Duration::from_millis(500), handle).await {
                             Ok(_) => {},
-                            Err(_) => { tracing::warn!("Memory monitor task didn't complete in time"); }
+                            Err(_) => { 
+                                tracing::warn!("Memory monitor task in stream mode didn't complete in time, aborting");
+                                handle_clone.abort();
+                            }
                         }
                     }
 
