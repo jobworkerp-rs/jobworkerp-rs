@@ -233,7 +233,7 @@ impl JobApp for RdbChanJobAppImpl {
                     || w.queue_type == QueueType::WithBackup as i32
                 {
                     // XXX should compare grabbed_until_time and update if not changed or not (now not compared)
-                    self.rdb_job_repository().update(jid, data).await
+                    self.rdb_job_repository().upsert(jid, data).await
                 } else {
                     Ok(false)
                 };

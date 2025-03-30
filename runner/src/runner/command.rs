@@ -399,7 +399,7 @@ impl RunnerTrait for CommandRunnerImpl {
                     let memory_monitor_handle = if should_monitor_memory && process_id.is_some() {
                         let process_pid = process_id.unwrap() as usize;
                         let max_mem = Arc::clone(&max_memory);
-                        
+
                         // Create a oneshot channel to signal the monitoring task to stop
                         let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
 
@@ -415,7 +415,7 @@ impl RunnerTrait for CommandRunnerImpl {
                                     tracing::debug!("Memory monitoring task in stream mode received stop signal");
                                     break;
                                 }
-                                
+
                                 let pids = [sysinfo::Pid::from(process_pid)];
                                 sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&pids[..]), false);
                                 if let Some(process) = sys.process(pids[0]) {
@@ -669,14 +669,14 @@ impl RunnerTrait for CommandRunnerImpl {
                     if let Some((handle, stop_tx)) = memory_monitor_handle {
                         // Signal the monitoring task to stop
                         let _ = stop_tx.send(());
-                        
+
                         // Create a clone of the handle for aborting if timeout occurs
                         let handle_clone = handle.abort_handle();
-                        
+
                         // Give it a little time to finish but don't wait forever
                         match tokio::time::timeout(Duration::from_millis(500), handle).await {
                             Ok(_) => {},
-                            Err(_) => { 
+                            Err(_) => {
                                 tracing::warn!("Memory monitor task in stream mode didn't complete in time, aborting");
                                 handle_clone.abort();
                             }

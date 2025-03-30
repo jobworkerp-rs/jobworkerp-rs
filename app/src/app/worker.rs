@@ -246,7 +246,6 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
             Err(JobWorkerError::InvalidParameter("runner not found".to_string()).into())
         }
     }
-
 }
 
 pub trait UseWorkerApp {

@@ -303,8 +303,13 @@ impl JobApp for HybridJobAppImpl {
                     || w.queue_type == QueueType::ForcedRdb as i32
                     || w.queue_type == QueueType::WithBackup as i32
                 {
+                    tracing::debug!(
+                        "re-enqueue job to rdb(upsert): {:?}, worker: {:?}",
+                        &job,
+                        &w.name
+                    );
                     // XXX should compare grabbed_until_time and update if not changed or not (now not compared)
-                    self.rdb_job_repository().update(jid, data).await
+                    self.rdb_job_repository().upsert(jid, data).await
                 } else {
                     Ok(false)
                 };
@@ -317,6 +322,7 @@ impl JobApp for HybridJobAppImpl {
                     && (w.queue_type == QueueType::Normal as i32
                         || w.queue_type == QueueType::WithBackup as i32)
                 {
+                    tracing::debug!("re-enqueue job to redis: {:?}, worker: {:?}", &job, &w.name);
                     // enqueue to redis for instant job
                     self.enqueue_job_to_redis_with_wait_if_needed(job, &w, data.request_streaming)
                         .await
@@ -336,9 +342,15 @@ impl JobApp for HybridJobAppImpl {
                     Err(e) => Err(e),
                 }
             } else {
+                tracing::error!(
+                    "re-enqueue job: worker not found: {:?}, job: {:?}",
+                    &data.worker_id,
+                    &job,
+                );
                 Err(JobWorkerError::WorkerNotFound(format!("in re-enqueue job: {:?}", &job)).into())
             }
         } else {
+            tracing::error!("re-enqueue job: invalid job: {:?}", &job,);
             Err(JobWorkerError::NotFound(format!("illegal re-enqueue job: {:?}", &job)).into())
         }
     }
