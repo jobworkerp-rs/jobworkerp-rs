@@ -4,18 +4,10 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum JobWorkerError {
-    #[error("TonicServerError({0:?})")]
-    TonicServerError(tonic::transport::Error),
-    #[error("TonicClientError({0:?})")]
-    TonicClientError(tonic::Status),
-    #[error("ReqwestError({0:?})")]
-    ReqwestError(reqwest::Error),
-    #[error("TimeoutError({0})")]
-    TimeoutError(String),
-    #[error("RuntimeError({0})")]
-    RuntimeError(String),
     #[error("InvalidParameter({0})")]
     InvalidParameter(String),
+    #[error("ParseError({0})")]
+    ParseError(String),
     #[error("CodecError({0:?})")]
     CodecError(DecodeError),
     #[error("WorkerNotFound({0})")]
@@ -24,24 +16,32 @@ pub enum JobWorkerError {
     NotFound(String),
     #[error("AlreadyExists({0})")]
     AlreadyExists(String),
+    #[error("LockError({0:?})")]
+    LockError(String),
+    #[error("TimeoutError({0})")]
+    TimeoutError(String),
+    #[error("GenerateIdError({0})")]
+    GenerateIdError(String),
     #[error("ChanError({0:?})")]
     ChanError(anyhow::Error),
+    #[error("serde_json error({0:?})")]
+    SerdeJsonError(serde_json::error::Error),
     #[error("RedisError({0:?})")]
     RedisError(RedisError),
     #[error("DBError({0:?})")]
     DBError(sqlx::Error),
-    #[error("LockError({0:?})")]
-    LockError(String),
-    #[error("GenerateIdError({0})")]
-    GenerateIdError(String),
-    #[error("ParseError({0})")]
-    ParseError(String),
-    #[error("serde_json error({0:?})")]
-    SerdeJsonError(serde_json::error::Error),
     #[error("docker error({0:?})")]
     DockerError(bollard::errors::Error),
+    #[error("TonicServerError({0:?})")]
+    TonicServerError(tonic::transport::Error),
+    #[error("TonicClientError({0:?})")]
+    TonicClientError(tonic::Status),
+    #[error("ReqwestError({0:?})")]
+    ReqwestError(reqwest::Error),
     // #[error("kube error({0:?})")]
     // KubeClientError(kube_client::error::Error),
+    #[error("RuntimeError({0})")]
+    RuntimeError(String),
     #[error("OtherError({0})")]
     OtherError(String),
 }

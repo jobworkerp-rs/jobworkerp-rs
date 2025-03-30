@@ -422,6 +422,7 @@ mod test {
                 retried: 0,
                 priority: Priority::High as i32,
                 timeout: 1000,
+                request_streaming: false,
             }),
         };
         let r = repo.enqueue_job(None, &job).await?;
@@ -540,6 +541,7 @@ mod test {
                 retried: 0,
                 priority: Priority::Low as i32,
                 timeout: 1000,
+                request_streaming: false,
             }),
         };
         let job2 = Job {
@@ -554,6 +556,7 @@ mod test {
                 retried: 0,
                 priority: Priority::High as i32,
                 timeout: 1000,
+                request_streaming: false,
             }),
         };
         let r = repo.enqueue_job(None, &job1).await?;

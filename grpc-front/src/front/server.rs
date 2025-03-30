@@ -1,3 +1,4 @@
+use crate::proto::jobworkerp::service::function_service_server::FunctionServiceServer;
 use crate::proto::jobworkerp::service::job_restore_service_server::JobRestoreServiceServer;
 use crate::proto::jobworkerp::service::job_result_service_server::JobResultServiceServer;
 use crate::proto::jobworkerp::service::job_service_server::JobServiceServer;
@@ -5,6 +6,7 @@ use crate::proto::jobworkerp::service::job_status_service_server::JobStatusServi
 use crate::proto::jobworkerp::service::runner_service_server::RunnerServiceServer;
 use crate::proto::jobworkerp::service::worker_service_server::WorkerServiceServer;
 use crate::proto::FILE_DESCRIPTOR_SET;
+use crate::service::function::FunctionGrpcImpl;
 use crate::service::job::JobGrpcImpl;
 use crate::service::job_restore::JobRestoreGrpcImpl;
 use crate::service::job_result::JobResultGrpcImpl;
@@ -58,6 +60,9 @@ pub async fn start_server(
             .add_service(enable_grpc_web(WorkerServiceServer::new(
                 WorkerGrpcImpl::new(app_module.clone()),
             )))
+            .add_service(enable_grpc_web(FunctionServiceServer::new(
+                FunctionGrpcImpl::new(app_module.clone()),
+            )))
             .add_service(enable_grpc_web(JobServiceServer::new(JobGrpcImpl::new(
                 app_module.clone(),
             ))))
@@ -73,7 +78,13 @@ pub async fn start_server(
     } else {
         Server::builder()
             .max_frame_size(max_frame_size) // 16MB
+            .add_service(RunnerServiceServer::new(RunnerGrpcImpl::new(
+                app_module.clone(),
+            )))
             .add_service(WorkerServiceServer::new(WorkerGrpcImpl::new(
+                app_module.clone(),
+            )))
+            .add_service(FunctionServiceServer::new(FunctionGrpcImpl::new(
                 app_module.clone(),
             )))
             .add_service(JobServiceServer::new(JobGrpcImpl::new(app_module.clone())))

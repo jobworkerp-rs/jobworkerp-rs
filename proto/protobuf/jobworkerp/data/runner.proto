@@ -4,6 +4,14 @@ package jobworkerp.data;
 
 import "jobworkerp/data/common.proto";
 
+// # Output Type
+// Defines the streaming capability of the runner
+enum StreamingOutputType {
+  NON_STREAMING = 0; // Runner only supports non-streaming output
+  STREAMING = 1;     // Runner only supports streaming output
+  BOTH = 2;          // Runner supports both streaming and non-streaming outputs
+}
+ 
 message RunnerData {
   // # Runner Name
   // Unique key and proto message prefix (e.g. name: "command",
@@ -25,11 +33,12 @@ message RunnerData {
   // Proto file definition for job execution results
   // If empty, UTF-8 string will be used as bytes array for result output
   optional string result_output_proto = 6;
-  // # Stream Output Flag
-  // If true, JobService/EnqueueForStream and JobResultService/ListenStream will be available for this runner
-  // Defined by runner implementation. When not specified, runner should implement
-  // both streaming and non-streaming outputs (configurable in worker)
-  optional bool output_as_stream = 7;
+
+ 
+  // # Output Type Configuration
+  // Specifies the streaming capability of this runner
+  // This determines how job results can be retrieved from this runner
+  StreamingOutputType output_type = 7;
 }
 
 message RunnerId { int64 value = 1; }

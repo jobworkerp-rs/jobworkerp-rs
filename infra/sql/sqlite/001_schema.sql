@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS `worker` (
     `store_success` BOOLEAN NOT NULL,
     `store_failure` BOOLEAN NOT NULL,
     `use_static` BOOLEAN NOT NULL,
-    `output_as_stream` BOOLEAN NOT NULL
+    `broadcast_results` BOOLEAN NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS `job` (
@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS `job` (
     `run_after_time` BIGINT NOT NULL,
     `retried` INT NOT NULL,
     `priority` INT NOT NULL,
-    `timeout` BIGINT NOT NULL
+    `timeout` BIGINT NOT NULL,
+    `request_streaming` BOOLEAN NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS `job_result` (
@@ -50,7 +51,8 @@ CREATE TABLE IF NOT EXISTS `job_result` (
     `run_after_time` BIGINT NOT NULL,
     `start_time` BIGINT NOT NULL,
     `end_time` BIGINT NOT NULL,
-    `timeout` BIGINT NOT NULL DEFAULT 0
+    `timeout` BIGINT NOT NULL DEFAULT 0,
+    `request_streaming` BOOLEAN NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS `runner` (

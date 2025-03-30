@@ -48,6 +48,12 @@ message JobData {
     // Maximum execution time for the job in seconds
     // Job will be terminated if it exceeds this duration
     uint64 timeout = 9;
+
+    // # Request Streaming
+    // Job that requests to return a response with streaming.
+    // (if not supported by runner, it will be ignored)
+    bool request_streaming = 10;
+
 }
 
 // # Job ID

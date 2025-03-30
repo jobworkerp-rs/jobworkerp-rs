@@ -5,6 +5,7 @@ use self::loader::RunnerPluginLoader;
 use anyhow::Result;
 use command_utils::util::option::Exists;
 use itertools::Itertools;
+use proto::jobworkerp::data::StreamingOutputType;
 use std::{
     env,
     fs::{self, ReadDir},
@@ -150,7 +151,30 @@ pub trait PluginRunner: Send + Sync {
     fn runner_settings_proto(&self) -> String;
     fn job_args_proto(&self) -> String;
     fn result_output_proto(&self) -> Option<String>;
-    fn output_as_stream(&self) -> Option<bool> {
-        Some(false)
+    fn output_type(&self) -> StreamingOutputType {
+        StreamingOutputType::NonStreaming
+    }
+    fn settings_schema(&self) -> String {
+        let schema = schemars::schema_for!(crate::jobworkerp::runner::Empty);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn arguments_schema(&self) -> String {
+        let schema = schemars::schema_for!(crate::jobworkerp::runner::Empty);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn output_json_schema(&self) -> Option<String> {
+        None
     }
 }

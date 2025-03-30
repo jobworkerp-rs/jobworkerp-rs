@@ -6,8 +6,7 @@ use crate::runner::RunnerTrait;
 use anyhow::{anyhow, Context, Result};
 use futures::stream::BoxStream;
 use prost::Message;
-use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
-use schemars::JsonSchema;
+use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
@@ -55,12 +54,6 @@ impl Default for PythonCommandRunner {
     }
 }
 
-#[derive(Debug, JsonSchema, serde::Deserialize, serde::Serialize)]
-struct PythonCommandRunnerInputSchema {
-    settings: PythonCommandRunnerSettings,
-    args: PythonCommandArgs,
-}
-
 impl RunnerSpec for PythonCommandRunner {
     fn name(&self) -> String {
         RunnerType::PythonCommand.as_str_name().to_string()
@@ -77,8 +70,39 @@ impl RunnerSpec for PythonCommandRunner {
                 .to_string(),
         )
     }
-    fn output_as_stream(&self) -> Option<bool> {
-        Some(false)
+    fn output_type(&self) -> StreamingOutputType {
+        StreamingOutputType::NonStreaming
+    }
+    fn settings_schema(&self) -> String {
+        let schema = schemars::schema_for!(PythonCommandRunnerSettings);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in settings_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn arguments_schema(&self) -> String {
+        let schema = schemars::schema_for!(PythonCommandArgs);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn output_schema(&self) -> Option<String> {
+        // plain string with title
+        let schema = schemars::schema_for!(PythonCommandResult);
+        match serde_json::to_string(&schema) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::error!("error in output_json_schema: {:?}", e);
+                None
+            }
+        }
     }
 }
 

@@ -20,6 +20,7 @@ pub struct JobResultRow {
     pub retried: i64,    // u32
     pub priority: i32,
     pub timeout: i64,
+    pub request_streaming: bool,
     pub enqueue_time: i64,
     pub run_after_time: i64,
     pub start_time: i64,
@@ -47,6 +48,7 @@ impl JobResultRow {
                 retried: self.retried as u32,
                 priority: self.priority,
                 timeout: self.timeout as u64,
+                request_streaming: self.request_streaming,
                 enqueue_time: self.enqueue_time,
                 run_after_time: self.run_after_time,
                 start_time: self.start_time,

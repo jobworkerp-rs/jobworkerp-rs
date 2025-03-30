@@ -45,8 +45,9 @@ pub trait RdbJobRepository:
                   run_after_time,
                   retried,
                   priority,
-                  timeout
-                ) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                  timeout,
+                  request_streaming
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             )
             .bind(id.value)
             .bind(data.worker_id.as_ref().unwrap().value) // XXX unwrap
@@ -58,6 +59,7 @@ pub trait RdbJobRepository:
             .bind(data.retried as i64)
             .bind(data.priority)
             .bind(data.timeout as i32)
+            .bind(data.request_streaming)
             .execute(tx)
             .await
             .map_err(JobWorkerError::DBError)?;
@@ -67,6 +69,100 @@ pub trait RdbJobRepository:
         }
     }
 
+    async fn upsert(&self, id: &JobId, job: &JobData) -> Result<bool> {
+        self.upsert_tx(self.db_pool(), id, job).await
+    }
+    // filepath: [rdb.rs](http://_vscodecontentref_/0)
+    #[inline]
+    async fn upsert_tx<'c, E: Executor<'c, Database = Rdb>>(
+        &self,
+        tx: E,
+        id: &JobId,
+        job: &JobData,
+    ) -> Result<bool> {
+        #[cfg(feature = "mysql")]
+        {
+            // MySQL specific implementation with ON DUPLICATE KEY UPDATE
+            sqlx::query(
+                "INSERT INTO job (
+                  id,
+                  worker_id,
+                  args,
+                  uniq_key,
+                  enqueue_time,
+                  grabbed_until_time,
+                  run_after_time,
+                  retried,
+                  priority,
+                  timeout,
+                  request_streaming
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                  ON DUPLICATE KEY UPDATE
+                    worker_id = VALUES(worker_id),
+                    args = VALUES(args),
+                    uniq_key = VALUES(uniq_key),
+                    enqueue_time = VALUES(enqueue_time),
+                    grabbed_until_time = VALUES(grabbed_until_time),
+                    run_after_time = VALUES(run_after_time),
+                    retried = VALUES(retried),
+                    priority = VALUES(priority),
+                    timeout = VALUES(timeout),
+                    request_streaming = VALUES(request_streaming);",
+            )
+            .bind(id.value)
+            .bind(job.worker_id.as_ref().unwrap().value) // XXX unwrap
+            .bind(&job.args)
+            .bind(&job.uniq_key)
+            .bind(job.enqueue_time)
+            .bind(job.grabbed_until_time.unwrap_or(0))
+            .bind(job.run_after_time)
+            .bind(job.retried as i64)
+            .bind(job.priority)
+            .bind(job.timeout as i64)
+            .bind(job.request_streaming)
+            .execute(tx)
+            .await
+            .map(|r| r.rows_affected() > 0)
+            .map_err(JobWorkerError::DBError)
+            .context(format!("error in upsert (MySQL): id = {}", id.value))
+        }
+
+        #[cfg(not(feature = "mysql"))]
+        {
+            // SQLite implementation using INSERT OR REPLACE
+            sqlx::query(
+                "INSERT OR REPLACE INTO job (
+              id,
+              worker_id,
+              args,
+              uniq_key,
+              enqueue_time,
+              grabbed_until_time,
+              run_after_time,
+              retried,
+              priority,
+              timeout,
+              request_streaming
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?);",
+            )
+            .bind(id.value)
+            .bind(job.worker_id.as_ref().unwrap().value) // XXX unwrap
+            .bind(&job.args)
+            .bind(&job.uniq_key)
+            .bind(job.enqueue_time)
+            .bind(job.grabbed_until_time.unwrap_or(0))
+            .bind(job.run_after_time)
+            .bind(job.retried as i64)
+            .bind(job.priority)
+            .bind(job.timeout as i64)
+            .bind(job.request_streaming)
+            .execute(tx)
+            .await
+            .map(|r| r.rows_affected() > 0)
+            .map_err(JobWorkerError::DBError)
+            .context(format!("error in upsert (SQLite): id = {}", id.value))
+        }
+    }
     async fn update(&self, id: &JobId, job: &JobData) -> Result<bool> {
         self.update_tx(self.db_pool(), id, job).await
     }
@@ -87,7 +183,8 @@ pub trait RdbJobRepository:
             run_after_time = ?,
             retried = ?,
             priority = ?,
-            timeout = ?
+            timeout = ?,
+            request_streaming = ?
             WHERE id = ?;",
         )
         .bind(job.worker_id.as_ref().unwrap().value) // XXX unwrap
@@ -99,6 +196,7 @@ pub trait RdbJobRepository:
         .bind(job.retried as i64)
         .bind(job.priority)
         .bind(job.timeout as i64)
+        .bind(job.request_streaming)
         .bind(id.value)
         .execute(tx)
         .await
@@ -328,6 +426,7 @@ impl UseChanQueueBuffer for RdbChanJobRepositoryImpl {
     }
 }
 
+#[cfg(test)]
 mod test {
     use std::sync::Arc;
 
@@ -360,6 +459,7 @@ mod test {
             retried: 8,
             priority: 2,
             timeout: 10000,
+            request_streaming: false,
         });
         let job = Job {
             id: Some(id),
@@ -384,14 +484,15 @@ mod test {
             worker_id: Some(WorkerId { value: 3 }),
             args: args2,
             uniq_key: Some("fuga3".to_string()),
-            enqueue_time: 6,
+            enqueue_time: 6, // to be unchanged
             grabbed_until_time: Some(7),
             run_after_time: 8,
             retried: 9,
             priority: 1,
             timeout: 10000,
+            request_streaming: true,
         };
-        let updated = repository.update(&expect.id.unwrap(), &update).await?;
+        let updated = repository.upsert(&expect.id.unwrap(), &update).await?;
         assert!(updated);
 
         // find
@@ -420,6 +521,7 @@ mod test {
             retried: 8,
             priority: 2,
             timeout: 10000,
+            request_streaming: false,
         });
         let job = Job {
             id: Some(JobId { value: 1 }),
@@ -441,6 +543,7 @@ mod test {
             retried: 8,
             priority: 2,
             timeout: 10000,
+            request_streaming: false,
         });
         let job = Job {
             id: Some(JobId { value: 2 }),
@@ -461,6 +564,7 @@ mod test {
             retried: 8,
             priority: 2,
             timeout: 10000,
+            request_streaming: false,
         });
         let job = Job {
             id: Some(JobId { value: 3 }),

@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package jobworkerp.data;
+
+import "jobworkerp/data/common.proto";
+import "jobworkerp/data/runner.proto";
+import "jobworkerp/data/worker.proto";
+
+// # Function Specs
+// Metadata that describes function capabilities and interface for clients
+// Represents either a runner or worker as a function
+message FunctionSpecs {
+  // # Function ID
+  // Unique identifier for the function
+  oneof function_id {
+    jobworkerp.data.RunnerId runner_id = 1;
+    jobworkerp.data.WorkerId worker_id = 2;
+  }
+  // # Function Name
+  // Unique identifier for the function (e.g. "command", "image-processor")
+  string name = 3;
+  // # Function Description
+  // Human-readable explanation of what the function does
+  string description = 4;
+  // # Function Input Definition
+  // JSON schema defining the function's input parameters
+  FunctionInputSchema input_schema = 5;
+  // # Result Output Definition
+  // JSON schema defining the structure of job execution results
+  optional string result_output_schema = 6;
+
+  // # Stream Output Flag
+  // When true, the function supports streaming output mode
+  // Enables JobService/EnqueueForStream and JobResultService/ListenStream
+  // If not specified, the function should support both streaming and non-streaming modes
+  jobworkerp.data.StreamingOutputType output_type = 7;
+}
+
+message FunctionInputSchema {
+  // # Function Settings Definition
+  // JSON schema for function setting parameters
+  // If empty, the function requires no settings
+  // (Always empty when this spec is for a worker)
+  optional string settings = 1;
+  // # Job Arguments Definition
+  // JSON schema defining the parameters required for job execution
+  string arguments = 2;
+}

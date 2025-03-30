@@ -9,6 +9,9 @@ description = "jobworkerp runner plugin for test"
 crate-type = ["dylib"]
 
 [dependencies]
+proto = { path = "../../proto" }
+jobworkerp-runner = { path = "../../runner" }
+
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }

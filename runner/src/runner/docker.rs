@@ -15,8 +15,7 @@ use futures::stream::BoxStream;
 use futures::TryStreamExt;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
-use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
-use schemars::JsonSchema;
+use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
 use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
 
@@ -153,12 +152,6 @@ where
     }
 }
 
-#[derive(Debug, JsonSchema, serde::Deserialize, serde::Serialize)]
-struct DockerRunnerInputSchema {
-    settings: DockerRunnerSettings,
-    args: DockerArgs,
-}
-
 //
 // run with docker tty and exec with shell
 // TODO instance pooling and stop docker instance when stopping worker
@@ -270,8 +263,45 @@ impl RunnerSpec for DockerExecRunner {
     fn result_output_proto(&self) -> Option<String> {
         Some("".to_string())
     }
-    fn output_as_stream(&self) -> Option<bool> {
-        Some(false)
+    fn output_type(&self) -> StreamingOutputType {
+        StreamingOutputType::NonStreaming
+    }
+
+    fn settings_schema(&self) -> String {
+        let schema = schemars::schema_for!(DockerRunnerSettings);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn arguments_schema(&self) -> String {
+        let schema = schemars::schema_for!(DockerArgs);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+
+    fn output_schema(&self) -> Option<String> {
+        // plain string with title
+        let mut schema = schemars::schema_for!(String);
+        schema.insert(
+            "title".to_string(),
+            serde_json::Value::String("Command stdout".to_string()),
+        );
+        match serde_json::to_string(&schema) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::error!("error in output_json_schema: {:?}", e);
+                None
+            }
+        }
     }
 }
 #[async_trait]
@@ -460,8 +490,43 @@ impl RunnerSpec for DockerRunner {
     fn result_output_proto(&self) -> Option<String> {
         Some("".to_string())
     }
-    fn output_as_stream(&self) -> Option<bool> {
-        Some(false)
+    fn output_type(&self) -> StreamingOutputType {
+        StreamingOutputType::NonStreaming
+    }
+    fn settings_schema(&self) -> String {
+        let schema = schemars::schema_for!(DockerRunnerSettings);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn arguments_schema(&self) -> String {
+        let schema = schemars::schema_for!(DockerArgs);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn output_schema(&self) -> Option<String> {
+        // plain string with title
+        let mut schema = schemars::schema_for!(String);
+        schema.insert(
+            "title".to_string(),
+            serde_json::Value::String("Command stdout".to_string()),
+        );
+        match serde_json::to_string(&schema) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::error!("error in output_json_schema: {:?}", e);
+                None
+            }
+        }
     }
 }
 

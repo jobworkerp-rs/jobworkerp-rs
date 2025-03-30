@@ -9,12 +9,17 @@ description = "Example for jobworkerp runner plugin"
 crate-type = ["dylib"]
 
 [dependencies]
+proto = { path = "../../proto" }
+jobworkerp-runner = { path = "../../runner" }
+
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
 prost = { workspace = true }
+schemars = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 tonic = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }

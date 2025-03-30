@@ -6,11 +6,14 @@ use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::option::{Exists, FlatMap};
 use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
+use infra::infra::runner::rows::RunnerWithSchema;
 use infra_utils::infra::memory::{MemoryCacheImpl, UseMemoryCache};
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use std::fmt;
 use std::sync::Arc;
+
+use super::runner::UseRunnerApp;
 
 #[async_trait]
 pub trait WorkerAppCacheHelper: Send + Sync {
@@ -64,7 +67,7 @@ pub trait WorkerAppCacheHelper: Send + Sync {
 }
 
 #[async_trait]
-pub trait WorkerApp: fmt::Debug + Send + Sync + 'static {
+pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
     // async fn reflesh_redis_record_from_rdb(&self) -> Result<()> ;
 
     async fn create(&self, worker: &WorkerData) -> Result<WorkerId>;
@@ -184,6 +187,65 @@ pub trait WorkerApp: fmt::Debug + Send + Sync + 'static {
     }
     // for pubsub
     async fn clear_cache_by(&self, id: Option<&WorkerId>, name: Option<&String>) -> Result<()>;
+
+    // Check if the worker(runner) supports streaming mode or not
+    async fn check_worker_streaming(&self, id: &WorkerId, request_streaming: bool) -> Result<()> {
+        let runner_id = if let Some(Worker {
+            id: _,
+            data: Some(wd),
+        }) = self.find(id).await?
+        {
+            wd.runner_id.ok_or_else(|| {
+                anyhow::Error::from(JobWorkerError::InvalidParameter(format!(
+                    "worker does not have runner_id: id={}",
+                    &id.value
+                )))
+            })?
+        } else {
+            return Err(
+                JobWorkerError::NotFound(format!("worker not found: id={}", &id.value)).into(),
+            );
+        };
+        if let Some(RunnerWithSchema {
+            id: _,
+            data: Some(runner_data),
+            ..
+        }) = self.runner_app().find_runner(&runner_id, None).await?
+        {
+            match proto::jobworkerp::data::StreamingOutputType::try_from(runner_data.output_type)
+                .ok()
+            {
+                Some(proto::jobworkerp::data::StreamingOutputType::Streaming) => {
+                    if request_streaming {
+                        Ok(())
+                    } else {
+                        Err(JobWorkerError::InvalidParameter(
+                            "runner does not support streaming".to_string(),
+                        )
+                        .into())
+                    }
+                }
+                Some(proto::jobworkerp::data::StreamingOutputType::NonStreaming) => {
+                    if request_streaming {
+                        Err(JobWorkerError::InvalidParameter(
+                            "runner does not support streaming".to_string(),
+                        )
+                        .into())
+                    } else {
+                        Ok(())
+                    }
+                }
+                Some(_) => Ok(()), // Both
+                None => Err(JobWorkerError::InvalidParameter(format!(
+                    "runner does not support streaming mode: {}",
+                    runner_data.output_type
+                ))
+                .into()),
+            }
+        } else {
+            Err(JobWorkerError::InvalidParameter("runner not found".to_string()).into())
+        }
+    }
 }
 
 pub trait UseWorkerApp {

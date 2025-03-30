@@ -11,6 +11,7 @@ use futures::stream::StreamExt;
 use proto::jobworkerp::data::result_output_item;
 use proto::jobworkerp::data::Empty;
 use proto::jobworkerp::data::ResultOutputItem;
+use proto::jobworkerp::data::StreamingOutputType;
 use tokio::sync::RwLock;
 
 /**
@@ -63,8 +64,17 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
     fn result_output_proto(&self) -> Option<String> {
         block_on(self.plugin_runner.read()).result_output_proto()
     }
-    fn output_as_stream(&self) -> Option<bool> {
-        block_on(self.plugin_runner.read()).output_as_stream()
+    fn output_type(&self) -> StreamingOutputType {
+        block_on(self.plugin_runner.read()).output_type()
+    }
+    fn settings_schema(&self) -> String {
+        block_on(self.plugin_runner.read()).settings_schema()
+    }
+    fn arguments_schema(&self) -> String {
+        block_on(self.plugin_runner.read()).arguments_schema()
+    }
+    fn output_schema(&self) -> Option<String> {
+        block_on(self.plugin_runner.read()).output_json_schema()
     }
 }
 #[async_trait]
