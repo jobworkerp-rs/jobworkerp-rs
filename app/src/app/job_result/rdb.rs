@@ -76,6 +76,14 @@ impl RdbJobResultAppImpl {
         //     ))
         //     .into());
         // }
+        if !wd.broadcast_results {
+            return Err(JobWorkerError::InvalidParameter(format!(
+                "Cannot listen result not broadcast worker: {:?}",
+                &wd
+            ))
+            .into());
+        }
+
         // check job result (already finished or not)
         let res = self
             .rdb_job_result_repository()
@@ -252,6 +260,13 @@ impl JobResultApp for RdbJobResultAppImpl {
             return self
                 .listen_result_stream(job_id, worker_id, worker_name, timeout)
                 .await;
+        }
+        if !wd.broadcast_results {
+            return Err(JobWorkerError::InvalidParameter(format!(
+                "Cannot listen result not broadcast worker: {:?}",
+                &wd
+            ))
+            .into());
         }
         if !(wd.store_failure && wd.store_success) {
             return Err(JobWorkerError::InvalidParameter(format!(

@@ -2,6 +2,7 @@ pub mod impls;
 pub mod loader;
 
 use self::loader::RunnerPluginLoader;
+use crate::{schema_to_json_string, schema_to_json_string_option};
 use anyhow::Result;
 use command_utils::util::option::Exists;
 use itertools::Itertools;
@@ -155,24 +156,10 @@ pub trait PluginRunner: Send + Sync {
         StreamingOutputType::NonStreaming
     }
     fn settings_schema(&self) -> String {
-        let schema = schemars::schema_for!(crate::jobworkerp::runner::Empty);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+        schema_to_json_string!(crate::jobworkerp::runner::Empty, "settings_schema")
     }
     fn arguments_schema(&self) -> String {
-        let schema = schemars::schema_for!(crate::jobworkerp::runner::Empty);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+        schema_to_json_string!(crate::jobworkerp::runner::Empty, "arguments_schema")
     }
     fn output_json_schema(&self) -> Option<String> {
         None

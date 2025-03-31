@@ -1,4 +1,5 @@
 use crate::jobworkerp::runner::{Empty, WorkflowArgs, WorkflowResult};
+use crate::{schema_to_json_string, schema_to_json_string_option};
 
 use super::RunnerSpec;
 use proto::jobworkerp::data::{RunnerType, StreamingOutputType};
@@ -56,38 +57,17 @@ impl RunnerSpec for SimpleWorkflowRunnerSpecImpl {
     fn output_type(&self) -> StreamingOutputType {
         SimpleWorkflowRunnerSpec::output_type(self)
     }
+    
     fn settings_schema(&self) -> String {
-        // plain string with title
-        let schema = schemars::schema_for!(Empty);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+        schema_to_json_string!(Empty, "settings_schema")
     }
+    
     // TODO add schema for workflow yaml as json schema
     fn arguments_schema(&self) -> String {
-        // plain string with title
-        let schema = schemars::schema_for!(WorkflowArgs);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+        schema_to_json_string!(WorkflowArgs, "arguments_schema")
     }
+    
     fn output_schema(&self) -> Option<String> {
-        // plain string with title
-        let schema = schemars::schema_for!(WorkflowResult);
-        match serde_json::to_string(&schema) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::error!("error in output_json_schema: {:?}", e);
-                None
-            }
-        }
+        schema_to_json_string_option!(WorkflowResult, "output_schema")
     }
 }
