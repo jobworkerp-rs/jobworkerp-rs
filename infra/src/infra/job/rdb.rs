@@ -484,7 +484,7 @@ mod test {
             worker_id: Some(WorkerId { value: 3 }),
             args: args2,
             uniq_key: Some("fuga3".to_string()),
-            enqueue_time: 6, // to be unchanged
+            enqueue_time: 6,
             grabbed_until_time: Some(7),
             run_after_time: 8,
             retried: 9,

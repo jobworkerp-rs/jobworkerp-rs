@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use super::{RunnerSpec, RunnerTrait};
 use crate::jobworkerp::runner::{DockerArgs, DockerRunnerSettings};
+use crate::{schema_to_json_string, schema_to_json_string_option};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use bollard::container::{
@@ -268,28 +269,15 @@ impl RunnerSpec for DockerExecRunner {
     }
 
     fn settings_schema(&self) -> String {
-        let schema = schemars::schema_for!(DockerRunnerSettings);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+        schema_to_json_string!(DockerRunnerSettings, "settings_schema")
     }
+
     fn arguments_schema(&self) -> String {
-        let schema = schemars::schema_for!(DockerArgs);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+        schema_to_json_string!(DockerArgs, "arguments_schema")
     }
 
     fn output_schema(&self) -> Option<String> {
-        // plain string with title
+        // not use macro to assign title to schema
         let mut schema = schemars::schema_for!(String);
         schema.insert(
             "title".to_string(),
@@ -298,7 +286,7 @@ impl RunnerSpec for DockerExecRunner {
         match serde_json::to_string(&schema) {
             Ok(s) => Some(s),
             Err(e) => {
-                tracing::error!("error in output_json_schema: {:?}", e);
+                tracing::error!("error in output_schema: {:?}", e);
                 None
             }
         }
@@ -494,27 +482,15 @@ impl RunnerSpec for DockerRunner {
         StreamingOutputType::NonStreaming
     }
     fn settings_schema(&self) -> String {
-        let schema = schemars::schema_for!(DockerRunnerSettings);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+        schema_to_json_string!(DockerRunnerSettings, "settings_schema")
     }
+
     fn arguments_schema(&self) -> String {
-        let schema = schemars::schema_for!(DockerArgs);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+        schema_to_json_string!(DockerArgs, "arguments_schema")
     }
+
     fn output_schema(&self) -> Option<String> {
-        // plain string with title
+        // not use macro to assign title to schema
         let mut schema = schemars::schema_for!(String);
         schema.insert(
             "title".to_string(),
@@ -523,7 +499,7 @@ impl RunnerSpec for DockerRunner {
         match serde_json::to_string(&schema) {
             Ok(s) => Some(s),
             Err(e) => {
-                tracing::error!("error in output_json_schema: {:?}", e);
+                tracing::error!("error in output_schema: {:?}", e);
                 None
             }
         }

@@ -1,4 +1,5 @@
 use crate::jobworkerp::runner::{CommandArgs, CommandResult};
+use crate::{schema_to_json_string, schema_to_json_string_option};
 
 use super::{RunnerSpec, RunnerTrait};
 use anyhow::{Context, Result};
@@ -97,35 +98,13 @@ impl RunnerSpec for CommandRunnerImpl {
         StreamingOutputType::Both
     }
     fn settings_schema(&self) -> String {
-        let schema = schemars::schema_for!(crate::jobworkerp::runner::Empty);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+        schema_to_json_string!(crate::jobworkerp::runner::Empty, "settings_schema")
     }
     fn arguments_schema(&self) -> String {
-        let schema = schemars::schema_for!(CommandArgs);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+        schema_to_json_string!(CommandArgs, "arguments_schema")
     }
     fn output_schema(&self) -> Option<String> {
-        // plain string with title
-        let schema = schemars::schema_for!(CommandResult);
-        match serde_json::to_string(&schema) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::error!("error in output_json_schema: {:?}", e);
-                None
-            }
-        }
+        schema_to_json_string_option!(CommandResult, "output_schema")
     }
 }
 

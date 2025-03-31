@@ -6,6 +6,7 @@ use crate::jobworkerp::runner::{
     SlackChatPostMessageArgs, SlackChatPostMessageResult, SlackRunnerSettings,
 };
 use crate::runner::RunnerTrait;
+use crate::{schema_to_json_string, schema_to_json_string_option};
 use anyhow::{anyhow, Result};
 use futures::stream::BoxStream;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
@@ -55,35 +56,13 @@ impl RunnerSpec for SlackPostMessageRunner {
         StreamingOutputType::NonStreaming
     }
     fn settings_schema(&self) -> String {
-        let schema = schemars::schema_for!(SlackRunnerSettings);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in settings_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+        schema_to_json_string!(SlackRunnerSettings, "settings_schema")
     }
     fn arguments_schema(&self) -> String {
-        let schema = schemars::schema_for!(SlackChatPostMessageArgs);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+        schema_to_json_string!(SlackChatPostMessageArgs, "arguments_schema")
     }
     fn output_schema(&self) -> Option<String> {
-        // plain string with title
-        let schema = schemars::schema_for!(SlackChatPostMessageResult);
-        match serde_json::to_string(&schema) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::error!("error in output_json_schema: {:?}", e);
-                None
-            }
-        }
+        schema_to_json_string_option!(SlackChatPostMessageResult, "output_schema")
     }
 }
 #[async_trait]

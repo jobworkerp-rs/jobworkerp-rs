@@ -49,6 +49,36 @@ pub mod request;
 pub mod simple_workflow;
 pub mod slack;
 
+/// Macro to convert a Rust type to a JSON schema string
+#[macro_export]
+macro_rules! schema_to_json_string {
+    ($type:ty, $method_name:expr) => {{
+        let schema = schemars::schema_for!($type);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in {}: {:?}", $method_name, e);
+                "".to_string()
+            }
+        }
+    }};
+}
+
+/// Macro to convert a Rust type to an Option<String> JSON schema
+#[macro_export]
+macro_rules! schema_to_json_string_option {
+    ($type:ty, $method_name:expr) => {{
+        let schema = schemars::schema_for!($type);
+        match serde_json::to_string(&schema) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::error!("error in {}: {:?}", $method_name, e);
+                None
+            }
+        }
+    }};
+}
+
 pub trait RunnerSpec: Send + Sync {
     fn name(&self) -> String;
     // only implement for stream runner (output_as_stream() == true)
