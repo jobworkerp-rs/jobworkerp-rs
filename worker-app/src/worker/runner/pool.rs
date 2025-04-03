@@ -142,6 +142,7 @@ impl RunnerFactoryWithPool {
 mod tests {
     use super::*;
     use anyhow::Result;
+    use app::module::test::TEST_PLUGIN_DIR;
     use proto::jobworkerp::data::{RunnerType, WorkerData};
 
     #[test]
@@ -149,7 +150,7 @@ mod tests {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let app_module = app::module::test::create_hybrid_test_app().await.unwrap();
             let runner_factory = RunnerFactory::new(Arc::new(app_module));
-            runner_factory.load_plugins().await;
+            runner_factory.load_plugins_from(TEST_PLUGIN_DIR).await;
             let factory = RunnerFactoryWithPool::new(
                 Arc::new(RunnerData {
                     name: RunnerType::Command.as_str_name().to_string(),
@@ -192,7 +193,7 @@ mod tests {
             // dotenvy::dotenv()?;
             let app_module = app::module::test::create_hybrid_test_app().await.unwrap();
             let runner_factory = RunnerFactory::new(Arc::new(app_module));
-            runner_factory.load_plugins().await;
+            runner_factory.load_plugins_from(TEST_PLUGIN_DIR).await;
             assert!(RunnerFactoryWithPool::new(
                 Arc::new(RunnerData {
                     name: RunnerType::Command.as_str_name().to_string(),

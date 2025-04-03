@@ -413,6 +413,7 @@ mod tests {
     use crate::app::worker::hybrid::HybridWorkerAppImpl;
     use crate::app::worker::WorkerApp;
     use crate::app::StorageConfig;
+    use crate::module::test::TEST_PLUGIN_DIR;
     use anyhow::Result;
     use command_utils::util::option::FlatMap;
     use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
@@ -450,6 +451,7 @@ mod tests {
             restore_at_startup: Some(false),
         });
         let runner_app = HybridRunnerAppImpl::new(
+            TEST_PLUGIN_DIR.to_string(),
             storage_config.clone(),
             &mc_config,
             repositories.clone(),

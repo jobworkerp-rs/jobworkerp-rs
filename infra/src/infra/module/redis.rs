@@ -138,13 +138,9 @@ impl UseRedisRepositoryModule for RedisRepositoryModule {
 pub mod test {
     use super::RedisRepositoryModule;
     use crate::infra::{
-        job::redis::RedisJobRepositoryImpl,
-        job_result::{
+        job::redis::RedisJobRepositoryImpl, job_result::{
             pubsub::redis::RedisJobResultPubSubRepositoryImpl, redis::RedisJobResultRepositoryImpl,
-        },
-        runner::redis::RedisRunnerRepositoryImpl,
-        worker::redis::RedisWorkerRepositoryImpl,
-        IdGeneratorWrapper,
+        }, module::test::TEST_PLUGIN_DIR, runner::redis::RedisRunnerRepositoryImpl, worker::redis::RedisWorkerRepositoryImpl, IdGeneratorWrapper
     };
     use anyhow::Context;
     use infra_utils::infra::test::{setup_test_redis_client, setup_test_redis_pool};
@@ -155,7 +151,7 @@ pub mod test {
     pub async fn setup_test_redis_module() -> RedisRepositoryModule {
         // use normal redis
         let job_queue_config =
-            Arc::new(crate::infra::load_job_queue_config_from_env().unwrap_or_default());
+            Arc::new(crate::infra::JobQueueConfig::default());
         let redis_pool = setup_test_redis_pool().await;
         let redis_client = setup_test_redis_client().unwrap();
 
@@ -174,7 +170,7 @@ pub mod test {
             .unwrap();
 
         let p = RunnerSpecFactory::new(Arc::new(Plugins::new()));
-        p.load_plugins().await;
+        p.load_plugins_from(TEST_PLUGIN_DIR).await;
         RedisRepositoryModule {
             redis_pool,
             redis_client: redis_client.clone(),

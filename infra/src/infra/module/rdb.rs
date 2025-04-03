@@ -102,6 +102,7 @@ impl UseRdbChanRepositoryModule for RdbChanRepositoryModule {
 pub mod test {
     use super::RdbChanRepositoryModule;
     use crate::infra::job::queue::chan::ChanJobQueueRepositoryImpl;
+    use crate::infra::module::test::TEST_PLUGIN_DIR;
     use crate::infra::runner::rdb::RdbRunnerRepositoryImpl;
     use crate::infra::IdGeneratorWrapper;
     use crate::infra::{
@@ -134,7 +135,7 @@ pub mod test {
             .await
             .expect("test connection");
         let runner_factory = RunnerSpecFactory::new(Arc::new(Plugins::new()));
-        runner_factory.load_plugins().await;
+        runner_factory.load_plugins_from(TEST_PLUGIN_DIR).await;
         let id_generator = Arc::new(IdGeneratorWrapper::new());
         RdbChanRepositoryModule {
             runner_repository: RdbRunnerRepositoryImpl::new(

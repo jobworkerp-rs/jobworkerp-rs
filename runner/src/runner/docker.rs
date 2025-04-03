@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use super::{RunnerSpec, RunnerTrait};
 use crate::jobworkerp::runner::{DockerArgs, DockerRunnerSettings};
-use crate::{schema_to_json_string, schema_to_json_string_option};
+use crate::schema_to_json_string;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use bollard::container::{

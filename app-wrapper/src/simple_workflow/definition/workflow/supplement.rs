@@ -57,70 +57,31 @@ pub trait TaskTrait {
 
 impl TaskTrait for CallTask {
     fn export(&self) -> ::std::option::Option<&Export> {
-        match self {
-            CallTask::AsyncApi { export, .. }
-            | CallTask::Grpc { export, .. }
-            | CallTask::Http { export, .. }
-            | CallTask::OpenApi { export, .. }
-            | CallTask::Function { export, .. } => export.as_ref(),
-        }
+        self.export.as_ref()
     }
 
     fn if_(&self) -> ::std::option::Option<&String> {
-        match self {
-            CallTask::AsyncApi { if_, .. }
-            | CallTask::Grpc { if_, .. }
-            | CallTask::Http { if_, .. }
-            | CallTask::OpenApi { if_, .. }
-            | CallTask::Function { if_, .. } => if_.as_ref(),
-        }
+        self.if_.as_ref()
     }
 
     fn input(&self) -> ::std::option::Option<&Input> {
-        match self {
-            CallTask::AsyncApi { input, .. }
-            | CallTask::Grpc { input, .. }
-            | CallTask::Http { input, .. }
-            | CallTask::OpenApi { input, .. }
-            | CallTask::Function { input, .. } => input.as_ref(),
-        }
+        self.input.as_ref()
     }
 
     fn metadata(&self) -> &::serde_json::Map<::std::string::String, ::serde_json::Value> {
-        match self {
-            CallTask::AsyncApi { metadata, .. }
-            | CallTask::Grpc { metadata, .. }
-            | CallTask::Http { metadata, .. }
-            | CallTask::OpenApi { metadata, .. }
-            | CallTask::Function { metadata, .. } => metadata,
-        }
+        &self.metadata
     }
 
     fn output(&self) -> ::std::option::Option<&Output> {
-        match self {
-            CallTask::AsyncApi { output, .. }
-            | CallTask::Grpc { output, .. }
-            | CallTask::Http { output, .. }
-            | CallTask::OpenApi { output, .. }
-            | CallTask::Function { output, .. } => output.as_ref(),
-        }
+        self.output.as_ref()
     }
 
     fn then(&self) -> ::std::option::Option<&FlowDirective> {
-        match self {
-            CallTask::AsyncApi { then, .. }
-            | CallTask::Grpc { then, .. }
-            | CallTask::Http { then, .. }
-            | CallTask::OpenApi { then, .. }
-            | CallTask::Function { then, .. } => then.as_ref(),
-        }
+        self.then.as_ref()
     }
 
     fn timeout(&self) -> ::std::option::Option<&TaskTimeout> {
-        match self {
-            CallTask::AsyncApi { timeout, .. } => timeout.as_ref(),
-            _ => None,
-        }
+        self.timeout.as_ref()
     }
 }
 impl TaskTrait for DoTask {
@@ -216,37 +177,6 @@ impl TaskTrait for ForTask {
 }
 
 impl TaskTrait for ForkTask {
-    fn export(&self) -> ::std::option::Option<&Export> {
-        self.export.as_ref()
-    }
-
-    fn if_(&self) -> ::std::option::Option<&::std::string::String> {
-        self.if_.as_ref()
-    }
-
-    fn input(&self) -> ::std::option::Option<&Input> {
-        self.input.as_ref()
-    }
-
-    fn metadata(&self) -> &::serde_json::Map<::std::string::String, ::serde_json::Value> {
-        &self.metadata
-    }
-
-    fn output(&self) -> ::std::option::Option<&Output> {
-        self.output.as_ref()
-    }
-
-    fn then(&self) -> ::std::option::Option<&FlowDirective> {
-        self.then.as_ref()
-    }
-
-    fn timeout(&self) -> ::std::option::Option<&TaskTimeout> {
-        // Convert TaskTimeout to CallTaskAsyncApiTimeout if needed
-        self.timeout.as_ref()
-    }
-}
-
-impl TaskTrait for ListenTask {
     fn export(&self) -> ::std::option::Option<&Export> {
         self.export.as_ref()
     }
@@ -464,7 +394,6 @@ impl TaskTrait for Task {
             Task::EmitTask(t) => t.export(),
             Task::ForTask(t) => t.export(), // Needs to be matched before DoTask
             Task::DoTask(t) => t.export(),
-            Task::ListenTask(t) => t.export(),
             Task::RaiseTask(t) => t.export(),
             Task::RunTask(t) => t.export(),
             Task::SetTask(t) => t.export(),
@@ -481,7 +410,6 @@ impl TaskTrait for Task {
             Task::EmitTask(t) => t.if_(),
             Task::ForTask(t) => t.if_(), // Needs to be matched before DoTask
             Task::DoTask(t) => t.if_(),
-            Task::ListenTask(t) => t.if_(),
             Task::RaiseTask(t) => t.if_(),
             Task::RunTask(t) => t.if_(),
             Task::SetTask(t) => t.if_(),
@@ -498,7 +426,6 @@ impl TaskTrait for Task {
             Task::EmitTask(t) => t.input(),
             Task::ForTask(t) => t.input(), // Needs to be matched before DoTask
             Task::DoTask(t) => t.input(),
-            Task::ListenTask(t) => t.input(),
             Task::RaiseTask(t) => t.input(),
             Task::RunTask(t) => t.input(),
             Task::SetTask(t) => t.input(),
@@ -515,7 +442,6 @@ impl TaskTrait for Task {
             Task::EmitTask(t) => t.metadata(),
             Task::ForTask(t) => t.metadata(),
             Task::DoTask(t) => t.metadata(),
-            Task::ListenTask(t) => t.metadata(),
             Task::RaiseTask(t) => t.metadata(),
             Task::RunTask(t) => t.metadata(),
             Task::SetTask(t) => t.metadata(),
@@ -532,7 +458,6 @@ impl TaskTrait for Task {
             Task::EmitTask(t) => t.output(),
             Task::ForTask(t) => t.output(),
             Task::DoTask(t) => t.output(),
-            Task::ListenTask(t) => t.output(),
             Task::RaiseTask(t) => t.output(),
             Task::RunTask(t) => t.output(),
             Task::SetTask(t) => t.output(),
@@ -549,7 +474,6 @@ impl TaskTrait for Task {
             Task::EmitTask(t) => t.then(),
             Task::ForTask(t) => t.then(),
             Task::DoTask(t) => t.then(),
-            Task::ListenTask(t) => t.then(),
             Task::RaiseTask(t) => t.then(),
             Task::RunTask(t) => t.then(),
             Task::SetTask(t) => t.then(),
@@ -566,7 +490,6 @@ impl TaskTrait for Task {
             Task::EmitTask(t) => t.timeout(),
             Task::ForTask(t) => t.timeout(),
             Task::DoTask(t) => t.timeout(),
-            Task::ListenTask(t) => t.timeout(),
             Task::RaiseTask(t) => t.timeout(),
             Task::RunTask(t) => t.timeout(),
             Task::SetTask(t) => t.timeout(),
@@ -597,32 +520,32 @@ impl Default for DoTask {
 impl Default for Document {
     fn default() -> Self {
         Self {
-            // dsl: Default::default(),
+            dsl: Default::default(),
             metadata: Default::default(),
             name: Default::default(),
-            // namespace: Default::default(),
+            namespace: Default::default(),
             summary: Default::default(),
             tags: Default::default(),
             title: Default::default(),
-            // version: Default::default(),
+            version: Default::default(),
         }
     }
 }
-impl Default for WorkflowDsl {
-    fn default() -> Self {
-        Self("0.0.1".into())
-    }
-}
-impl Default for WorkflowNamespace {
-    fn default() -> Self {
-        Self("default".into())
-    }
-}
-impl Default for WorkflowVersion {
-    fn default() -> Self {
-        Self("0.0.1".into())
-    }
-}
+//impl Default for WorkflowDsl {
+//    fn default() -> Self {
+//        Self("0.0.1".into())
+//    }
+//}
+//impl Default for WorkflowNamespace {
+//    fn default() -> Self {
+//        Self("default".into())
+//    }
+//}
+//impl Default for WorkflowVersion {
+//    fn default() -> Self {
+//        Self("0.0.1".into())
+//    }
+//}
 impl Default for WorkflowName {
     fn default() -> Self {
         Self("default-workflow".into())

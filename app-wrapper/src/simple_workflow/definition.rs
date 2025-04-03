@@ -25,23 +25,20 @@ impl WorkflowLoader {
         &self,
         url_or_path: Option<&str>,
         yaml_data: Option<&str>,
-    ) -> Result<workflow::ServerlessWorkflow> {
+    ) -> Result<workflow::WorkflowSchema> {
         let wf = if let Some(url_or_path) = url_or_path {
             tracing::debug!("workflow url_or_path: {}", url_or_path);
-            self.load_yaml::<workflow::ServerlessWorkflow>(url_or_path)
+            self.load_yaml::<workflow::WorkflowSchema>(url_or_path)
                 .await
         } else if let Some(yaml_data) = yaml_data {
             tracing::debug!("workflow yaml_data: {}", yaml_data);
             // load as do_ task list
             let do_task: workflow::DoTask = serde_yaml::from_str(yaml_data)?;
-            Ok(workflow::ServerlessWorkflow {
+            Ok(workflow::WorkflowSchema {
                 do_: do_task.do_,
-                input: do_task.input,
+                input: do_task.input.unwrap_or_default(),
                 output: do_task.output,
                 document: workflow::Document::default(),
-                schedule: None,
-                timeout: None,
-                use_: None,
             })
         } else {
             Err(anyhow!("url_or_path or yaml_data is required"))
@@ -92,7 +89,7 @@ mod test {
 
     use infra_utils::infra::net::reqwest::ReqwestClient;
 
-    use crate::simple_workflow::definition::workflow;
+    use crate::simple_workflow::definition::workflow::{self, FunctionOptions};
     // use tracing::Level;
 
     // parse example flow yaml
@@ -108,44 +105,62 @@ mod test {
         println!("{:#?}", flow);
         assert_eq!(flow.document.title, Some("Workflow test (ls)".to_string()));
         assert_eq!(flow.document.name.as_str(), "ls-test");
+        assert!(flow
+            .input
+            .schema
+            .as_ref()
+            .is_some_and(|s| { s.json_schema().is_some() }));
+
         let run_task = match &flow.do_.0[0]["ListWorker"] {
             workflow::Task::RunTask(run_task) => run_task,
             _ => panic!("unexpected task type"),
         };
-        assert_eq!(
-            run_task.metadata.get("runnerSettings").unwrap(),
-            &serde_json::json!({
-                "name": "ls"
-            })
-        );
+        assert!(run_task.metadata.is_empty());
+        assert!(run_task
+            .output
+            .as_ref()
+            .is_some_and(|o| o.as_.as_ref().is_some_and(|s| {
+                match s {
+                    workflow::OutputAs::Variant0(_v) => true, // string
+                    _ => false,
+                }
+            })));
+        assert!(run_task.input.as_ref().is_none());
         match run_task.run.clone() {
-            workflow::RunTaskConfiguration::Variant1 {
-                await_,
-                script:
-                    workflow::Script::Variant0 {
+            workflow::RunTaskConfiguration {
+                function:
+                    workflow::Function {
                         arguments,
-                        code,
-                        environment,
-                        language,
+                        options,
+                        runner_name,
+                        settings,
                     },
+                await_,
+                ..
             } => {
-                assert_eq!(language, "jobworkerp");
-                assert_eq!(code, "COMMAND");
-                assert_eq!(arguments.len(), 1);
+                assert_eq!(runner_name, "COMMAND".to_string());
                 assert_eq!(
-                    arguments["args"].as_array().unwrap(),
-                    &vec![serde_json::Value::String("/".to_string())]
+                    serde_json::Value::Object(arguments),
+                    serde_json::json!({
+                        "command": "ls",
+                        "args": ["${.}"]
+                    })
                 );
-                assert_eq!(environment, serde_json::Map::new());
+                assert_eq!(serde_json::Value::Object(settings), serde_json::json!({}));
+                let mut opts = FunctionOptions::default();
+                opts.channel = Some("workflow".to_string());
+                opts.store_failure = Some(true);
+                opts.store_success = Some(true);
+                opts.use_static = Some(false);
+                assert_eq!(options, Some(opts));
                 assert!(await_); // default true
-            }
-            _ => panic!("unexpected script variant"),
+            } // _ => panic!("unexpected script variant"),
         }
         let for_task = match &flow.do_.0[1]["EachFileIteration"] {
             workflow::Task::ForTask(for_task) => for_task,
-            _ => panic!("unexpected task type"),
+            f => panic!("unexpected task type: {:#?}", f),
         };
-        println!("====FOR: {:#?}", for_task);
+        // println!("====FOR: {:#?}", for_task);
 
         Ok(())
     }

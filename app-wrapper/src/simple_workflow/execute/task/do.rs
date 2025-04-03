@@ -35,6 +35,7 @@ impl<'a> DoTaskExecutor<'a> {
     async fn execute_by_jobworkerp(
         &self,
         yaml: &str,
+        // XXX runner settings and options in metadata
         metadata: &serde_json::Value,
         input: serde_json::Value,
         context: serde_json::Value,
@@ -52,14 +53,20 @@ impl<'a> DoTaskExecutor<'a> {
                 Some(context.to_string())
             },
         };
-
+        let worker_data = self
+            .job_executor_wrapper
+            .create_worker_data_from(
+                RunnerType::SimpleWorkflow.as_str_name(),
+                worker_params.cloned(),
+                vec![],
+            )
+            .await?;
         // workflow result
         let result = self
             .job_executor_wrapper
             .setup_worker_and_enqueue(
                 RunnerType::SimpleWorkflow.as_str_name(),
-                vec![],
-                worker_params.cloned(),
+                worker_data,
                 args.encode_to_vec(),
                 Self::TIMEOUT_SEC,
             )
@@ -84,6 +91,7 @@ impl<'a> DoTaskExecutor<'a> {
     }
 }
 
+// XXX runner settings and options in metadata
 impl TaskExecutorTrait for DoTaskExecutor<'_> {
     async fn execute(
         &self,

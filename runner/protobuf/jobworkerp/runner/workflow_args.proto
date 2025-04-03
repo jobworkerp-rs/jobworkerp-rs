@@ -5,21 +5,24 @@ package jobworkerp.runner;
 message WorkflowArgs {
   // # Workflow URL
   // URL or absolute file path to the workflow YAML file
-  // (simplified version of the full ServerlessWorkflow definition (schema TO BE defined))
+  // (simplified version of the full ServerlessWorkflow definition (schema TO BE
+  // defined))
   optional string workflow_url = 1;
-  
+
   // # Workflow YAML
   // Raw YAML string containing workflow definition with 'do:' task list
-  // (simplified version of the full ServerlessWorkflow definition (schema TO BE defined))
+  // (simplified version of the full ServerlessWorkflow definition (schema TO BE
+  // defined))
   optional string workflow_yaml = 2;
-  
+
   // # Input
   // String input for the workflow context
   // Can be a plain string or JSON formatted string
   string input = 3;
-  
+
   // # Workflow Context
   // Additional context information for workflow execution
   // Can be a plain string or JSON formatted string
+  // context can be used in Jq expressions or Liquid templates variables
   optional string workflow_context = 4;
 }
