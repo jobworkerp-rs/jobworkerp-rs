@@ -2,13 +2,12 @@ pub mod impls;
 pub mod loader;
 
 use self::loader::RunnerPluginLoader;
-use crate::{schema_to_json_string, schema_to_json_string_option};
+use crate::schema_to_json_string;
 use anyhow::Result;
 use command_utils::util::option::Exists;
 use itertools::Itertools;
 use proto::jobworkerp::data::StreamingOutputType;
 use std::{
-    env,
     fs::{self, ReadDir},
     path::Path,
     sync::Arc,
@@ -48,10 +47,8 @@ impl Plugins {
             runner_loader: Arc::new(TokioRwLock::new(RunnerPluginLoader::new())),
         }
     }
-
-    pub async fn load_plugin_files_from_env(&self) -> Vec<PluginMetadata> {
+    pub async fn load_plugin_files(&self, runner_dir_str: &str) -> Vec<PluginMetadata> {
         // default: current dir
-        let runner_dir_str = env::var("PLUGINS_RUNNER_DIR").unwrap_or("./".to_string());
         let runner_dirs: Vec<&str> = runner_dir_str.split(',').collect_vec();
         let mut loaded = Vec::new();
         for runner_dir in runner_dirs {

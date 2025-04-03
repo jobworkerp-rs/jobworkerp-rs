@@ -20,8 +20,8 @@ use sqlx::{Executor, Pool};
 pub trait RunnerRepository:
     UseRdbPool + UseRunnerSpecFactory + UseIdGenerator + Sync + Send
 {
-    async fn add_from_plugins(&self) -> Result<()> {
-        let metas = self.plugin_runner_factory().load_plugins().await;
+    async fn add_from_plugins_from(&self, dir: &str) -> Result<()> {
+        let metas = self.plugin_runner_factory().load_plugins_from(dir).await;
         for meta in metas.iter() {
             let data = RunnerRow {
                 id: self.id_generator().generate_id()?,
@@ -129,9 +129,11 @@ pub trait RunnerRepository:
             {
                 Ok(Some(r2.to_runner_with_schema(r3)))
             } else {
+                tracing::debug!("runner not found from runners: {:?}", &id);
                 Ok(None)
             }
         } else {
+            tracing::debug!("runner not found from db: {:?}", &id);
             Ok(None)
         }
     }
@@ -246,6 +248,7 @@ impl RunnerRepository for RdbRunnerRepositoryImpl {}
 mod test {
     use super::RdbRunnerRepositoryImpl;
     use super::RunnerRepository;
+    use crate::infra::module::test::TEST_PLUGIN_DIR;
     use crate::infra::runner::rows::RunnerRow;
     use crate::infra::runner::rows::RunnerWithSchema;
     use anyhow::Context;
@@ -262,7 +265,7 @@ mod test {
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
         let p = Arc::new(RunnerSpecFactory::new(Arc::new(Plugins::new())));
-        p.load_plugins().await;
+        p.load_plugins_from(TEST_PLUGIN_DIR).await;
         let id_generator = Arc::new(crate::infra::IdGeneratorWrapper::new());
         let repository = RdbRunnerRepositoryImpl::new(pool, p.clone(), id_generator);
         let db = repository.db_pool();
@@ -324,7 +327,11 @@ mod test {
         assert_eq!(1, count - org_count);
 
         // add from plugins (no additional record, no error)
-        repository.add_from_plugins().await?;
+        repository
+            .add_from_plugins_from(
+                "./debug/plugins,../debug/plugins,./release/plugins,../release/plugins",
+            )
+            .await?;
 
         // delete record
         tx = db.begin().await.context("error in test")?;

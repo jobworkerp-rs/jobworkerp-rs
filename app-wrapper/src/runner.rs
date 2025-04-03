@@ -29,8 +29,8 @@ impl RunnerFactory {
             plugins: app_module.config_module.runner_factory.plugins.clone(),
         }
     }
-    pub async fn load_plugins(&self) -> Vec<PluginMetadata> {
-        self.plugins.load_plugin_files_from_env().await
+    pub async fn load_plugins_from(&self, dir: &str) -> Vec<PluginMetadata> {
+        self.plugins.load_plugin_files(dir).await
     }
     pub async fn unload_plugins(&self, name: &str) -> Result<bool> {
         self.plugins.runner_plugins().write().await.unload(name)

@@ -1,7 +1,7 @@
 use super::{job::JobExecutorWrapper, task::TaskExecutor};
 use crate::simple_workflow::definition::{
     transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
-    workflow::{ServerlessWorkflow, Task},
+    workflow::{Task, WorkflowSchema},
 };
 use crate::simple_workflow::execute::context::{
     self, TaskContext, Then, UseExpression, WorkflowContext, WorkflowStatus,
@@ -17,7 +17,7 @@ use tokio::sync::{Mutex, RwLock};
 pub struct WorkflowExecutor {
     pub job_executors: Arc<JobExecutorWrapper>,
     pub http_client: ReqwestClient,
-    pub workflow: ServerlessWorkflow,
+    pub workflow: WorkflowSchema,
     pub workflow_context: Arc<RwLock<context::WorkflowContext>>,
 }
 impl UseJqAndTemplateTransformer for WorkflowExecutor {}
@@ -28,7 +28,7 @@ impl WorkflowExecutor {
     pub fn new(
         app_module: Arc<AppModule>,
         http_client: ReqwestClient,
-        workflow: ServerlessWorkflow,
+        workflow: WorkflowSchema,
         input: Arc<serde_json::Value>,
         context: Arc<serde_json::Value>,
     ) -> Self {
@@ -58,7 +58,7 @@ impl WorkflowExecutor {
         let input = lock.input.clone();
         drop(lock);
 
-        if let Some(schema) = self.workflow.input.as_ref().and_then(|i| i.schema.as_ref()) {
+        if let Some(schema) = self.workflow.input.schema.as_ref() {
             if let Some(schema) = schema.json_schema() {
                 match jsonschema::validate(schema, &input).map_err(|e| {
                     anyhow::anyhow!("Failed to validate workflow input schema: {:#?}", e)
@@ -108,22 +108,21 @@ impl WorkflowExecutor {
         };
 
         // Transform input
-        let transformed_input =
-            if let Some(from) = self.workflow.input.as_ref().and_then(|i| i.from.as_ref()) {
-                match Self::transform_input(input.clone(), from, &expression) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::debug!("Failed to transform input: {:#?}", e);
-                        let mut wf = self.workflow_context.write().await;
-                        wf.status = WorkflowStatus::Faulted;
-                        wf.output = Some(Arc::new(serde_json::json!({"error": e.to_string()})));
-                        drop(wf);
-                        return self.workflow_context.clone();
-                    }
+        let transformed_input = if let Some(from) = self.workflow.input.from.as_ref() {
+            match Self::transform_input(input.clone(), from, &expression) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::debug!("Failed to transform input: {:#?}", e);
+                    let mut wf = self.workflow_context.write().await;
+                    wf.status = WorkflowStatus::Faulted;
+                    wf.output = Some(Arc::new(serde_json::json!({"error": e.to_string()})));
+                    drop(wf);
+                    return self.workflow_context.clone();
                 }
-            } else {
-                input.clone()
-            };
+            }
+        } else {
+            input.clone()
+        };
         task_context.set_input(transformed_input);
         // Execute tasks
         match self.execute_task_list(task_map.clone(), task_context).await {

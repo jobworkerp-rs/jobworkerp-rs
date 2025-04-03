@@ -58,6 +58,11 @@ enum RunnerType {
   // # Simple Workflow Runner
   // Executes a sequence of jobs as a workflow
   SIMPLE_WORKFLOW = 65535;
+
+  // # Saved Simple Workflow Runner
+  // Executes a sequence of jobs as a workflow
+  // Specialized for functions api (create workflow as function)
+  SAVED_WORKFLOW = -1;
 }
 
 // # Priority Level

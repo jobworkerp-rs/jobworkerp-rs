@@ -1,4 +1,5 @@
 use super::rows::{RunnerRow, RunnerWithSchema};
+use crate::infra::module::test::TEST_PLUGIN_DIR;
 use crate::infra::{IdGeneratorWrapper, UseIdGenerator};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -21,7 +22,7 @@ where
     const CACHE_KEY: &'static str = "RUNNER_DEF";
 
     async fn add_from_plugins(&self) -> Result<()> {
-        let metas = self.plugin_runner_factory().load_plugins().await;
+        let metas = self.plugin_runner_factory().load_plugins_from(TEST_PLUGIN_DIR).await;
         for meta in metas.iter() {
             if let Some(p) = self
                 .plugin_runner_factory()
@@ -232,7 +233,7 @@ async fn redis_test() -> Result<()> {
     let pool = infra_utils::infra::test::setup_test_redis_pool().await;
     let cli = infra_utils::infra::test::setup_test_redis_client()?;
     let runner_spec_factory = Arc::new(RunnerSpecFactory::new(Arc::new(Plugins::new())));
-    runner_spec_factory.load_plugins().await;
+    runner_spec_factory.load_plugins_from(TEST_PLUGIN_DIR).await;
 
     let repo = RedisRunnerRepositoryImpl {
         redis_pool: pool,

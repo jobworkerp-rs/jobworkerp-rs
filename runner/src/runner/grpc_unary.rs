@@ -1,5 +1,5 @@
 use crate::jobworkerp::runner::{GrpcUnaryArgs, GrpcUnaryResult, GrpcUnaryRunnerSettings};
-use crate::{schema_to_json_string, schema_to_json_string_option};
+use crate::schema_to_json_string;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use base64::Engine;

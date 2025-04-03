@@ -681,6 +681,7 @@ pub mod tests {
     use crate::app::runner::RunnerApp;
     use crate::app::worker::hybrid::HybridWorkerAppImpl;
     use crate::app::{StorageConfig, StorageType};
+    use crate::module::test::TEST_PLUGIN_DIR;
     use anyhow::Result;
     use infra::infra::job_result::pubsub::redis::RedisJobResultPubSubRepositoryImpl;
     use infra::infra::module::rdb::test::setup_test_rdb_module;
@@ -734,6 +735,7 @@ pub mod tests {
             Some(Duration::from_secs(60 * 60)),
         ));
         let runner_app = Arc::new(HybridRunnerAppImpl::new(
+            TEST_PLUGIN_DIR.to_string(),
             storage_config.clone(),
             &mc_config,
             repositories.clone(),
@@ -757,7 +759,9 @@ pub mod tests {
             job_queue_config.clone(),
         );
         let runner_factory = RunnerSpecFactory::new(Arc::new(Plugins::new()));
-        runner_factory.load_plugins().await;
+        runner_factory
+            .load_plugins_from("./target/debug,../target/debug,./target/release,../target/release")
+            .await;
         let config_module = Arc::new(AppConfigModule {
             storage_config,
             worker_config,

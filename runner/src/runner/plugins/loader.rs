@@ -1,7 +1,7 @@
 use super::PluginLoader;
 use crate::runner::plugins::{impls::PluginRunnerWrapperImpl, PluginRunner};
 use anyhow::{anyhow, Result};
-use command_utils::util::result::{TapErr as _, ToOption as _};
+use command_utils::util::result::ToOption as _;
 use libloading::{Library, Symbol};
 use std::path::Path;
 use std::sync::Arc;
@@ -31,10 +31,9 @@ impl RunnerPluginLoader {
 
     // find plugin (not loaded. reference only. cannot run)
     pub fn find_plugin_runner_by_name(&self, name: &str) -> Option<PluginRunnerWrapperImpl> {
-        if let Some((name, _, lib)) = self.plugin_loaders.iter().find(|p| p.0.as_str() == name) {
+        if let Some((_name, _, lib)) = self.plugin_loaders.iter().find(|p| p.0.as_str() == name) {
             // XXX unsafe
             unsafe { lib.get(b"load_plugin") }
-                .tap_err(|e| tracing::error!("error in loading runner plugin:{name}, error: {e:?}"))
                 .to_option()
                 .map(|lp: LoaderFunc<'_>| PluginRunnerWrapperImpl::new(Arc::new(RwLock::new(lp()))))
         } else {

@@ -24,8 +24,8 @@ impl RunnerSpecFactory {
     pub fn new(plugins: Arc<Plugins>) -> Self {
         Self { plugins }
     }
-    pub async fn load_plugins(&self) -> Vec<PluginMetadata> {
-        self.plugins.load_plugin_files_from_env().await
+    pub async fn load_plugins_from(&self, dir: &str) -> Vec<PluginMetadata> {
+        self.plugins.load_plugin_files(dir).await
     }
     pub async fn unload_plugins(&self, name: &str) -> Result<bool> {
         self.plugins.runner_plugins().write().await.unload(name)
@@ -80,11 +80,13 @@ pub trait UseRunnerSpecFactory {
 #[cfg(test)]
 mod test {
     use super::*;
+    pub const TEST_PLUGIN_DIR: &str =
+        "./target/debug,../target/debug,../target/release,./target/release";
 
     #[tokio::test]
     async fn test_new() {
         let runner_factory = RunnerSpecFactory::new(Arc::new(Plugins::new()));
-        runner_factory.load_plugins().await;
+        runner_factory.load_plugins_from(TEST_PLUGIN_DIR).await;
         assert_eq!(
             runner_factory
                 .plugins
@@ -118,7 +120,7 @@ mod test {
     #[tokio::test]
     async fn test_create_by_name() {
         let runner_factory = RunnerSpecFactory::new(Arc::new(Plugins::new()));
-        runner_factory.load_plugins().await;
+        runner_factory.load_plugins_from(TEST_PLUGIN_DIR).await;
         let runner = runner_factory
             .create_plugin_by_name(RunnerType::Command.as_str_name(), false)
             .await

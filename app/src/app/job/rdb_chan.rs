@@ -638,6 +638,7 @@ mod tests {
     use crate::app::runner::RunnerApp;
     use crate::app::worker::rdb::RdbWorkerAppImpl;
     use crate::app::{StorageConfig, StorageType};
+    use crate::module::test::TEST_PLUGIN_DIR;
     use anyhow::Result;
     use command_utils::util::datetime;
     use command_utils::util::option::FlatMap;
@@ -694,6 +695,7 @@ mod tests {
             Some(Duration::from_secs(60)),
         ));
         let runner_app = Arc::new(RdbRunnerAppImpl::new(
+            TEST_PLUGIN_DIR.to_string(),
             storage_config.clone(),
             &mc_config,
             repositories.clone(),
@@ -712,7 +714,7 @@ mod tests {
             .await?;
 
         let runner_factory = RunnerSpecFactory::new(Arc::new(Plugins::new()));
-        runner_factory.load_plugins().await;
+        runner_factory.load_plugins_from(TEST_PLUGIN_DIR).await;
         let config_module = Arc::new(AppConfigModule {
             storage_config,
             worker_config,
