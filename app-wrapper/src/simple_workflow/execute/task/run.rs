@@ -36,7 +36,7 @@ impl<'a> RunTaskExecutor<'a> {
     ) -> Option<WorkerData> {
         if let Some(options) = options {
             // Initialize with struct syntax instead of default() + field assignments
-            let mut worker_data = WorkerData {
+            let worker_data = WorkerData {
                 name: name.to_string(),
                 description: String::new(),
                 broadcast_results: options.broadcast_results_to_listener.unwrap_or(false),
@@ -48,19 +48,11 @@ impl<'a> RunTaskExecutor<'a> {
                 } else {
                     proto::jobworkerp::data::QueueType::Normal as i32
                 },
+                channel: options.channel,
+                retry_policy: options.retry.map(|r| r.to_jobworkerp()),
+                response_type: ResponseType::Direct as i32,
                 ..Default::default()
             };
-
-            // Handle optional fields that can't be set in the initial struct
-            if let Some(channel) = options.channel {
-                worker_data.channel = Some(channel);
-            }
-
-            // Handle retry options
-            if let Some(retry_opts) = options.retry.map(|r| r.to_jobworkerp()) {
-                worker_data.retry_policy = Some(retry_opts);
-            }
-
             Some(worker_data)
         } else {
             None

@@ -261,7 +261,6 @@ mod test {
     use proto::jobworkerp::data::RunnerId;
     use proto::jobworkerp::data::RunnerType;
     use proto::jobworkerp::data::StreamingOutputType;
-    use reqwest::header::TE;
     use std::sync::Arc;
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
