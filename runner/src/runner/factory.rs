@@ -7,8 +7,8 @@ use super::{
     plugins::{PluginLoader, PluginMetadata, Plugins},
     python::PythonCommandRunner,
     request::RequestRunner,
-    workflow::SimpleWorkflowRunnerSpecImpl,
     slack::SlackPostMessageRunner,
+    workflow::SimpleWorkflowRunnerSpecImpl,
     RunnerSpec,
 };
 use anyhow::Result;

@@ -421,7 +421,7 @@ pub trait UseJobExecutorHelper:
             if let Worker {
                 id: Some(wid),
                 data: Some(wdata),
-            } = self.find_or_create_worker(&worker_data).await?
+            } = self.find_or_create_worker(worker_data).await?
             {
                 let output = self
                     .enqueue_job_and_get_output(&wid, job_args, job_timeout_sec)

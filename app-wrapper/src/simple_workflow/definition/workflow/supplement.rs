@@ -532,21 +532,6 @@ impl Default for Document {
         }
     }
 }
-//impl Default for WorkflowDsl {
-//    fn default() -> Self {
-//        Self("0.0.1".into())
-//    }
-//}
-//impl Default for WorkflowNamespace {
-//    fn default() -> Self {
-//        Self("default".into())
-//    }
-//}
-//impl Default for WorkflowVersion {
-//    fn default() -> Self {
-//        Self("0.0.1".into())
-//    }
-//}
 impl Default for WorkflowName {
     fn default() -> Self {
         Self("default-workflow".into())
@@ -637,32 +622,28 @@ impl Duration {
                 for c in date_part.chars() {
                     if c.is_ascii_digit() || c == '.' {
                         current_number.push(c);
-                    } else {
-                        if !current_number.is_empty() {
-                            let value = current_number.parse::<f64>().unwrap_or(0.0);
-                            match c {
-                                'Y' => {
-                                    // Approximate a year as 365.25 days
-                                    total_ms +=
-                                        (value * 365.25 * 24.0 * 60.0 * 60.0 * 1000.0) as u64;
-                                }
-                                'M' => {
-                                    // Approximate a month as 30.44 days
-                                    total_ms +=
-                                        (value * 30.44 * 24.0 * 60.0 * 60.0 * 1000.0) as u64;
-                                }
-                                'W' => {
-                                    // A week is exactly 7 days
-                                    total_ms += (value * 7.0 * 24.0 * 60.0 * 60.0 * 1000.0) as u64;
-                                }
-                                'D' => {
-                                    // A day is exactly 24 hours
-                                    total_ms += (value * 24.0 * 60.0 * 60.0 * 1000.0) as u64;
-                                }
-                                _ => {}
+                    } else if !current_number.is_empty() {
+                        let value = current_number.parse::<f64>().unwrap_or(0.0);
+                        match c {
+                            'Y' => {
+                                // Approximate a year as 365.25 days
+                                total_ms += (value * 365.25 * 24.0 * 60.0 * 60.0 * 1000.0) as u64;
                             }
-                            current_number.clear();
+                            'M' => {
+                                // Approximate a month as 30.44 days
+                                total_ms += (value * 30.44 * 24.0 * 60.0 * 60.0 * 1000.0) as u64;
+                            }
+                            'W' => {
+                                // A week is exactly 7 days
+                                total_ms += (value * 7.0 * 24.0 * 60.0 * 60.0 * 1000.0) as u64;
+                            }
+                            'D' => {
+                                // A day is exactly 24 hours
+                                total_ms += (value * 24.0 * 60.0 * 60.0 * 1000.0) as u64;
+                            }
+                            _ => {}
                         }
+                        current_number.clear();
                     }
                 }
 
@@ -671,26 +652,24 @@ impl Duration {
                 for c in time_part.chars() {
                     if c.is_ascii_digit() || c == '.' {
                         current_number.push(c);
-                    } else {
-                        if !current_number.is_empty() {
-                            let value = current_number.parse::<f64>().unwrap_or(0.0);
-                            match c {
-                                'H' => {
-                                    // An hour is exactly 60 minutes
-                                    total_ms += (value * 60.0 * 60.0 * 1000.0) as u64;
-                                }
-                                'M' => {
-                                    // A minute is exactly 60 seconds
-                                    total_ms += (value * 60.0 * 1000.0) as u64;
-                                }
-                                'S' => {
-                                    // A second is exactly 1000 milliseconds
-                                    total_ms += (value * 1000.0) as u64;
-                                }
-                                _ => {}
+                    } else if !current_number.is_empty() {
+                        let value = current_number.parse::<f64>().unwrap_or(0.0);
+                        match c {
+                            'H' => {
+                                // An hour is exactly 60 minutes
+                                total_ms += (value * 60.0 * 60.0 * 1000.0) as u64;
                             }
-                            current_number.clear();
+                            'M' => {
+                                // A minute is exactly 60 seconds
+                                total_ms += (value * 60.0 * 1000.0) as u64;
+                            }
+                            'S' => {
+                                // A second is exactly 1000 milliseconds
+                                total_ms += (value * 1000.0) as u64;
+                            }
+                            _ => {}
                         }
+                        current_number.clear();
                     }
                 }
 

@@ -261,6 +261,7 @@ mod test {
     use proto::jobworkerp::data::RunnerId;
     use proto::jobworkerp::data::RunnerType;
     use proto::jobworkerp::data::StreamingOutputType;
+    use reqwest::header::TE;
     use std::sync::Arc;
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
@@ -327,11 +328,7 @@ mod test {
         assert_eq!(1, count - org_count);
 
         // add from plugins (no additional record, no error)
-        repository
-            .add_from_plugins_from(
-                "./debug/plugins,../debug/plugins,./release/plugins,../release/plugins",
-            )
-            .await?;
+        repository.add_from_plugins_from(TEST_PLUGIN_DIR).await?;
 
         // delete record
         tx = db.begin().await.context("error in test")?;

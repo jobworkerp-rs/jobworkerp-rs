@@ -46,8 +46,8 @@ pub mod k8s_job;
 pub mod plugins;
 pub mod python;
 pub mod request;
-pub mod workflow;
 pub mod slack;
+pub mod workflow;
 
 /// Macro to convert a Rust type to a JSON schema string
 #[macro_export]
