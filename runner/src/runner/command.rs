@@ -120,8 +120,8 @@ impl RunnerTrait for CommandRunnerImpl {
             ProstMessageCodec::deserialize_message::<CommandArgs>(args).context("on run job")?;
         let mut command = Command::new(data.command.as_str());
         let args: &Vec<String> = &data.args;
-        let mut stdout_messages = Vec::<Vec<u8>>::new();
-        let mut stderr_messages = Vec::<Vec<u8>>::new();
+        let mut stdout_messages = Vec::<String>::new();
+        let mut stderr_messages = Vec::<String>::new();
 
         // Get current Unix time in milliseconds using SystemTime
         let started_at = SystemTime::now()
@@ -230,7 +230,7 @@ impl RunnerTrait for CommandRunnerImpl {
                     // Process stdout
                     while let Some(line) = stdout_reader.next().await {
                         match line {
-                            Ok(l) => stdout_messages.push(format!("{}\n", l).bytes().collect()),
+                            Ok(l) => stdout_messages.push(l),
                             Err(e) => tracing::error!("command stdout line decode err: {:?}", e),
                         }
                     }
@@ -238,7 +238,7 @@ impl RunnerTrait for CommandRunnerImpl {
                     // Process stderr
                     while let Some(line) = stderr_reader.next().await {
                         match line {
-                            Ok(l) => stderr_messages.push(format!("{}\n", l).bytes().collect()),
+                            Ok(l) => stderr_messages.push(l),
                             Err(e) => tracing::error!("command stderr line decode err: {:?}", e),
                         }
                     }
@@ -301,8 +301,8 @@ impl RunnerTrait for CommandRunnerImpl {
 
                 let result = CommandResult {
                     exit_code: exit_code.code(),
-                    stdout: Some(stdout_messages.concat()),
-                    stderr: Some(stderr_messages.concat()),
+                    stdout: Some(stdout_messages.join("\n")),
+                    stderr: Some(stderr_messages.join("\n")),
                     execution_time_ms: Some(execution_time_ms),
                     started_at: Some(started_at), // Use Unix timestamp in milliseconds
                     max_memory_usage_kb: if should_monitor_memory {
@@ -424,7 +424,7 @@ impl RunnerTrait for CommandRunnerImpl {
                             let error_result = CommandResult {
                                 exit_code: Some(-1),
                                 stdout: None,
-                                stderr: Some(b"=== FAILED TO CAPTURE STDOUT ===".to_vec()),
+                                stderr: Some("=== FAILED TO CAPTURE STDOUT ===".to_string()),
                                 execution_time_ms: None,
                                 started_at: Some(started_at),
                                 max_memory_usage_kb: None,
@@ -451,7 +451,7 @@ impl RunnerTrait for CommandRunnerImpl {
                             let error_result = CommandResult {
                                 exit_code: Some(-1),
                                 stdout: None,
-                                stderr: Some(b"=== FAILED TO CAPTURE STDERR ===".to_vec()),
+                                stderr: Some("=== FAILED TO CAPTURE STDERR ===".to_string()),
                                 execution_time_ms: None,
                                 started_at: Some(started_at),
                                 max_memory_usage_kb: None,
@@ -531,7 +531,7 @@ impl RunnerTrait for CommandRunnerImpl {
                                                     // Create CommandResult with stdout data
                                                     let result = CommandResult {
                                                         exit_code: None, // Not finished yet
-                                                        stdout: Some(line.to_vec()),
+                                                        stdout: Some(String::from_utf8_lossy(line).to_string()),
                                                         stderr: None,
                                                         execution_time_ms: None, // Not finished yet
                                                         started_at: Some(started_at),
@@ -587,7 +587,7 @@ impl RunnerTrait for CommandRunnerImpl {
                                                     let result = CommandResult {
                                                         exit_code: None, // Not finished yet
                                                         stdout: None,
-                                                        stderr: Some(line.to_vec()),
+                                                        stderr: Some(String::from_utf8_lossy(line).to_string()),
                                                         execution_time_ms: None, // Not finished yet
                                                         started_at: Some(started_at),
                                                         max_memory_usage_kb: if should_monitor_memory {
@@ -720,7 +720,7 @@ impl RunnerTrait for CommandRunnerImpl {
                     let error_result = CommandResult {
                         exit_code: Some(-1), // Conventional error code
                         stdout: None,
-                        stderr: Some(format!("Command error: {}", e).into_bytes()),
+                        stderr: Some(format!("Command error: {}", e)),
                         execution_time_ms: Some(0),
                         started_at: Some(started_at),
                         max_memory_usage_kb: None,
@@ -784,7 +784,7 @@ mod tests {
 
         // Check that the output contains the expected string
         let binding = result.stdout.unwrap_or_default();
-        let stdout = String::from_utf8_lossy(&binding);
+        let stdout = &binding;
         assert!(stdout.contains("Hello, World!"));
 
         // Verify execution time is present
@@ -897,15 +897,15 @@ mod tests {
                     let result = result.unwrap();
                     println!("Stream result: exit_code: {:?}, stdout: {:?}, stderr: {:?}, execution_time_ms: {:?}",
                         result.exit_code,
-                        result.stdout.as_ref().map(|s| String::from_utf8_lossy(s)),
-                        result.stderr.as_ref().map(|s| String::from_utf8_lossy(s)),
+                        result.stdout.as_ref(),
+                        result.stderr.as_ref(),
                         result.execution_time_ms
                     );
 
                     // Check if this is a stdout data packet or the final result
                     if let Some(stdout) = result.stdout {
                         // This is an intermediate output, should contain our test string
-                        let stdout_str = String::from_utf8_lossy(&stdout);
+                        let stdout_str = &stdout;
                         if stdout_str.contains("Stream test") {
                             found_stdout_data = true;
                         }
@@ -991,7 +991,7 @@ mod tests {
                         // Check if this is a stdout/stderr data packet or the final result
                         if let Some(stdout) = result.stdout {
                             // This is an intermediate output line
-                            let stdout_str = String::from_utf8_lossy(&stdout);
+                            let stdout_str = &stdout;
                             eprintln!("[{}ms] STDOUT: {}", elapsed, stdout_str.trim());
                             io::stderr().flush().unwrap();
 
@@ -1000,7 +1000,7 @@ mod tests {
                             }
                         } else if let Some(stderr) = result.stderr {
                             // This is an error or stderr output
-                            let stderr_str = String::from_utf8_lossy(&stderr);
+                            let stderr_str = &stderr;
                             eprintln!("[{}ms] STDERR: {}", elapsed, stderr_str.trim());
                             io::stderr().flush().unwrap();
 

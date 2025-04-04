@@ -20,8 +20,8 @@ message PythonCommandArgs {
   // # Input Data
   // Optional data to be passed to the script as input
   oneof input_data {
-    // Raw binary data to be passed to the script
-    bytes data_body = 4;
+    // string data to be passed to the script
+    string data_body = 4;
     // URL pointing to data to be downloaded and passed to the script
     string data_url = 5;
   }

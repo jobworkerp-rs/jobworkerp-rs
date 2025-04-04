@@ -8,10 +8,10 @@ message CommandResult {
   optional int32 exit_code = 1;
   
   // # Standard output (stdout) from the command as bytes
-  optional bytes stdout = 2;
+  optional string stdout = 2;
   
   // # Standard error (stderr) from the command as bytes (optional)
-  optional bytes stderr = 3;
+  optional string stderr = 3;
   
   // # Duration of command execution in milliseconds
   optional uint64 execution_time_ms = 4;

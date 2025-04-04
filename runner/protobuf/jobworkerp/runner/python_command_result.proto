@@ -10,10 +10,10 @@ message PythonCommandResult {
   
   // # Standard Output
   // The captured standard output (stdout) from the Python script execution
-  bytes output = 2;
+  string output = 2;
   
   // # Standard Error
   // The captured standard error (stderr) from the Python script execution
   // Only present if with_stderr was set to true in the request
-  optional bytes output_stderr = 3;
+  optional string output_stderr = 3;
 }

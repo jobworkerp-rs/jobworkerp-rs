@@ -28,7 +28,7 @@ do:
       output:
         as: |- # transform definition ($${} is used for variable substitution by liquid template, not mixed with plain string)
           $${
-          {%- assign files = raw_input | newline_to_br | split: '<br />' -%}
+          {%- assign files = stdout | newline_to_br | split: '<br />' -%}
           {"files": [
           {%- for file in files -%}
           "{{- file |strip_newlines -}}"{% unless forloop.last %},{% endunless -%}
@@ -42,7 +42,7 @@ do:
         at: ind # index name (default: index)
       #while: ${$ind < 5} # condition for loop
       metadata:
-        function:
+        options:
           channel: workflow
       do: # run as workflow job
         - ListWorkerInner:
