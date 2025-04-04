@@ -12,7 +12,6 @@ use app::module::AppModule;
 use command_utils::cache_ok;
 use command_utils::protobuf::ProtobufDescriptor;
 use command_utils::util::datetime;
-use command_utils::util::option::{Exists, FlatMap};
 use command_utils::util::scoped_cache::ScopedCache;
 use futures::stream::BoxStream;
 use infra::infra::runner::rows::RunnerWithSchema;
@@ -110,7 +109,7 @@ pub trait UseJobExecutorHelper:
                 .await?;
             Ok(list
                 .iter()
-                .find(|r| r.data.as_ref().exists(|d| d.name == name))
+                .find(|r| r.data.as_ref().is_some_and(|d| d.name == name))
                 .cloned())
         }
     }
@@ -455,10 +454,10 @@ pub trait UseJobExecutorHelper:
     }
     fn setup_worker_and_enqueue(
         &self,
-        runner_name: &str,                        // runner(runner) name
+        runner_name: &str,           // runner(runner) name
         mut worker_data: WorkerData, // worker parameters (if not exists, use default values)
-        job_args: Vec<u8>,                        // enqueue job args
-        job_timeout_sec: u32,                     // job timeout in seconds
+        job_args: Vec<u8>,           // enqueue job args
+        job_timeout_sec: u32,        // job timeout in seconds
     ) -> impl std::future::Future<Output = Result<serde_json::Value>> + Send {
         async move {
             // use memory cache?
@@ -475,7 +474,7 @@ pub trait UseJobExecutorHelper:
                 let descriptors = self.parse_proto_with_cache(&rid, &rdata).await?;
                 let result_descriptor = descriptors
                     .result_descriptor
-                    .flat_map(|d| d.get_messages().first().cloned());
+                    .and_then(|d| d.get_messages().first().cloned());
                 let output = self
                     .setup_worker_and_enqueue_with_raw_output(
                         &mut worker_data,
@@ -516,8 +515,8 @@ pub trait UseJobExecutorHelper:
         runner_name: &str,                          // runner(runner) name
         runner_settings: Option<serde_json::Value>, // runner_settings data
         mut worker_data: WorkerData, // worker parameters (if not exists, use default values)
-        job_args: serde_json::Value,              // enqueue job args
-        job_timeout_sec: u32,                     // job timeout in seconds
+        job_args: serde_json::Value, // enqueue job args
+        job_timeout_sec: u32,        // job timeout in seconds
     ) -> impl std::future::Future<Output = Result<serde_json::Value>> + Send {
         async move {
             if let Some(RunnerWithSchema {
@@ -531,10 +530,10 @@ pub trait UseJobExecutorHelper:
                 let descriptors = self.parse_proto_with_cache(&rid, &rdata).await?;
                 let runner_settings_descriptor = descriptors
                     .runner_settings_descriptor
-                    .flat_map(|d| d.get_messages().first().cloned());
+                    .and_then(|d| d.get_messages().first().cloned());
                 let args_descriptor = descriptors
                     .args_descriptor
-                    .flat_map(|d| d.get_messages().first().cloned());
+                    .and_then(|d| d.get_messages().first().cloned());
                 // let runner_settings_descriptor =
                 //     Self::parse_runner_settings_schema_descriptor(&rdata).map_err(|e| {
                 //         anyhow::anyhow!(
@@ -572,7 +571,7 @@ pub trait UseJobExecutorHelper:
                 worker_data.runner_settings = runner_settings;
                 self.setup_worker_and_enqueue(
                     runner_name,     // runner(runner) name
-                    worker_data,   // worker parameters (if not exists, use default values)
+                    worker_data,     // worker parameters (if not exists, use default values)
                     job_args,        // enqueue job args
                     job_timeout_sec, // job timeout in seconds
                 )

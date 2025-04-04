@@ -7,7 +7,7 @@ use super::{
     plugins::{PluginLoader, PluginMetadata, Plugins},
     python::PythonCommandRunner,
     request::RequestRunner,
-    simple_workflow::SimpleWorkflowRunnerSpecImpl,
+    workflow::SimpleWorkflowRunnerSpecImpl,
     slack::SlackPostMessageRunner,
     RunnerSpec,
 };

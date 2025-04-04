@@ -1,7 +1,6 @@
 use anyhow::Result;
 use app::app::worker::UseWorkerApp;
 use async_trait::async_trait;
-use command_utils::util::result::TapErr;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra_utils::infra::redis::UseRedisClient;
 use tokio_stream::StreamExt;
@@ -17,7 +16,7 @@ pub trait UseSubscribeWorker:
         let mut sub = self
             .subscribe(Self::WORKER_PUBSUB_CHANNEL_NAME)
             .await
-            .tap_err(|e| tracing::error!("redis_err:{:?}", e))?;
+            .inspect_err(|e| tracing::error!("redis_err:{:?}", e))?;
 
         // for shutdown notification (spmc broadcast)
         let (send, mut recv) = tokio::sync::watch::channel(false);
@@ -26,7 +25,7 @@ pub trait UseSubscribeWorker:
             tokio::signal::ctrl_c().await.map(|_| {
                 tracing::debug!("got sigint signal....");
                 send.send(true)
-                    .tap_err(|e| tracing::error!("mpmc send error: {:?}", e))
+                    .inspect_err(|e| tracing::error!("mpmc send error: {:?}", e))
                     .unwrap();
             })
         });
@@ -43,9 +42,9 @@ pub trait UseSubscribeWorker:
                         // skip if error in processing message
                         let payload: Vec<u8> = msg
                             .get_payload()
-                            .tap_err(|e| tracing::error!("get_payload:{:?}", e))?;
+                            .inspect_err(|e| tracing::error!("get_payload:{:?}", e))?;
                         let worker = Self::deserialize_worker(&payload)
-                            .tap_err(|e| tracing::error!("deserialize_worker:{:?}", e))?;
+                            .inspect_err(|e| tracing::error!("deserialize_worker:{:?}", e))?;
                         tracing::info!("subscribe_worker_changed: worker changed: {:?}", worker);
                         if let Some(wid) = worker.id.as_ref() {
                             // TODO not delete for changing trivial condition?
@@ -54,7 +53,7 @@ pub trait UseSubscribeWorker:
                             self.runner_pool_map().clear().await;
                         }
                         let _ = self.worker_app().clear_cache_by(worker.id.as_ref(), worker.data.as_ref().map(|d| &d.name)).await
-                            .tap_err(|e| tracing::error!("update error:{:?}", e));
+                            .inspect_err(|e| tracing::error!("update error:{:?}", e));
                     } else {
                         tracing::debug!("message.next() is None");
                     }

@@ -1,11 +1,9 @@
+use anyhow::Result;
 use std::sync::Arc;
 use std::{fmt::Debug, time::Duration};
 
-use crate::proto::jobworkerp::data::FunctionId;
 use crate::proto::jobworkerp::data::WorkerData;
-use crate::proto::jobworkerp::data::{
-    FunctionInputSchema, FunctionSpecs, RunnerId, Worker, WorkerId,
-};
+use crate::proto::jobworkerp::data::{FunctionInputSchema, FunctionSpecs, Worker, WorkerId};
 use crate::proto::jobworkerp::service::function_service_server::FunctionService;
 use crate::proto::jobworkerp::service::FindFunctionRequest;
 use crate::service::error_handle::handle_error;
@@ -16,7 +14,9 @@ use async_stream::stream;
 use futures::stream::BoxStream;
 use infra::infra::runner::rows::RunnerWithSchema;
 use infra_utils::trace::Tracing;
-use proto::jobworkerp::data::StreamingOutputType;
+use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+use jobworkerp_runner::jobworkerp::runner::SavedWorkflowRunnerSettings;
+use proto::jobworkerp::data::{RunnerType, StreamingOutputType};
 use tonic::Response;
 
 pub trait FunctionGrpc {
@@ -71,9 +71,17 @@ impl<T: FunctionGrpc + Tracing + Send + Debug + Sync + 'static> FunctionService 
                                     Ok(Some(runner)) => {
                                         // Check if the worker is associated with the runner
                                         if runner.id == Some(rid) {
-                                            functions.push(convert_worker_to_function_specs(
+                                            // warn only
+                                            let _ =  convert_worker_to_function_specs(
                                                 wid, data, runner,
-                                            ));
+                                            ).map(|r| {
+                                                functions.push(r);
+                                            }).inspect_err(|e|
+                                                tracing::warn!(
+                                                    "Failed to convert worker to function specs: {:?}",
+                                                    e
+                                                )
+                                            );
                                         }
                                     }
                                     Ok(None) => {
@@ -105,9 +113,8 @@ impl<T: FunctionGrpc + Tracing + Send + Debug + Sync + 'static> FunctionService 
 // Helper function to convert Runner to FunctionSpecs
 fn convert_runner_to_function_specs(runner: RunnerWithSchema) -> FunctionSpecs {
     FunctionSpecs {
-        function_id: Some(FunctionId::RunnerId(RunnerId {
-            value: runner.id.as_ref().map_or(0, |id| id.value),
-        })),
+        runner_id: runner.id,
+        worker_id: None,
         name: runner
             .data
             .as_ref()
@@ -134,20 +141,48 @@ fn convert_worker_to_function_specs(
     id: WorkerId,
     data: WorkerData,
     runner: RunnerWithSchema,
-) -> FunctionSpecs {
-    FunctionSpecs {
-        function_id: Some(FunctionId::WorkerId(id)),
-        name: data.name,
-        description: data.description,
-        input_schema: Some(FunctionInputSchema {
-            settings: None, // Workers don't have config (already set)
-            arguments: runner.arguments_schema,
-        }),
-        result_output_schema: runner.output_schema,
-        output_type: runner
-            .data
-            .map(|data| data.output_type)
-            .unwrap_or(StreamingOutputType::NonStreaming as i32),
+) -> Result<FunctionSpecs> {
+    // change input schema to the input of saved workflow
+    if runner
+        .data
+        .as_ref()
+        .is_some_and(|d| d.runner_type == RunnerType::SavedWorkflow as i32)
+    {
+        let settings = ProstMessageCodec::deserialize_message::<SavedWorkflowRunnerSettings>(
+            data.runner_settings.as_slice(),
+        )?;
+        Ok(FunctionSpecs {
+            runner_id: runner.id,
+            worker_id: Some(id),
+            name: data.name,
+            description: data.description,
+            input_schema: settings.input_schema().map(|s| FunctionInputSchema {
+                settings: None, // Workers don't have config (already set)
+                arguments: s.to_string(),
+            }),
+            result_output_schema: runner.output_schema,
+            output_type: runner
+                .data
+                .map(|data| data.output_type)
+                .unwrap_or(StreamingOutputType::NonStreaming as i32),
+        })
+    } else {
+        Ok(FunctionSpecs {
+            runner_id: runner.id,
+            worker_id: Some(id),
+            name: data.name,
+            description: data.description,
+            input_schema: Some(FunctionInputSchema {
+                settings: None, // Workers don't have config (already set)
+                arguments: runner.arguments_schema,
+            }),
+            result_output_schema: runner.output_schema,
+            output_type: runner
+                .data
+                .as_ref()
+                .map(|data| data.output_type)
+                .unwrap_or(StreamingOutputType::NonStreaming as i32),
+        })
     }
 }
 

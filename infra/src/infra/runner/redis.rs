@@ -1,5 +1,4 @@
-use super::rows::{RunnerRow, RunnerWithSchema};
-use crate::infra::module::test::TEST_PLUGIN_DIR;
+use super::rows::RunnerWithSchema;
 use crate::infra::{IdGeneratorWrapper, UseIdGenerator};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -7,7 +6,7 @@ use infra_utils::infra::redis::{RedisPool, UseRedisPool};
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::runner::factory::{RunnerSpecFactory, UseRunnerSpecFactory};
-use proto::jobworkerp::data::{RunnerId, RunnerType};
+use proto::jobworkerp::data::RunnerId;
 use redis::AsyncCommands;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -21,40 +20,40 @@ where
 {
     const CACHE_KEY: &'static str = "RUNNER_DEF";
 
-    async fn add_from_plugins(&self) -> Result<()> {
-        let metas = self.plugin_runner_factory().load_plugins_from(TEST_PLUGIN_DIR).await;
-        for meta in metas.iter() {
-            if let Some(p) = self
-                .plugin_runner_factory()
-                .create_plugin_by_name(&meta.name, false)
-                .await
-            {
-                let runner = RunnerRow {
-                    id: self.id_generator().generate_id()?,
-                    name: meta.name.clone(),
-                    description: meta.description.clone(),
-                    file_name: meta.filename.clone(),
-                    r#type: RunnerType::from_str_name(&meta.name)
-                        .map(|t| t as i32)
-                        .unwrap_or(0), // default: PLUGIN
-                }
-                .to_runner_with_schema(p);
-                if let Some(id) = runner.id {
-                    match self.create(&id, &runner).await {
-                        Ok(_) => {}
-                        Err(e) => {
-                            tracing::warn!("error in add_from_plugins: {:?}", e);
-                        }
-                    }
-                } else {
-                    tracing::error!("runner id not found: {}", &meta.name);
-                }
-            } else {
-                tracing::error!("loaded plugin not found: {}", &meta.name);
-            }
-        }
-        Ok(())
-    }
+    // async fn add_from_plugins(&self) -> Result<()> {
+    //     let metas = self.plugin_runner_factory().load_plugins_from(TEST_PLUGIN_DIR).await;
+    //     for meta in metas.iter() {
+    //         if let Some(p) = self
+    //             .plugin_runner_factory()
+    //             .create_plugin_by_name(&meta.name, false)
+    //             .await
+    //         {
+    //             let runner = RunnerRow {
+    //                 id: self.id_generator().generate_id()?,
+    //                 name: meta.name.clone(),
+    //                 description: meta.description.clone(),
+    //                 file_name: meta.filename.clone(),
+    //                 r#type: RunnerType::from_str_name(&meta.name)
+    //                     .map(|t| t as i32)
+    //                     .unwrap_or(0), // default: PLUGIN
+    //             }
+    //             .to_runner_with_schema(p);
+    //             if let Some(id) = runner.id {
+    //                 match self.create(&id, &runner).await {
+    //                     Ok(_) => {}
+    //                     Err(e) => {
+    //                         tracing::warn!("error in add_from_plugins: {:?}", e);
+    //                     }
+    //                 }
+    //             } else {
+    //                 tracing::error!("runner id not found: {}", &meta.name);
+    //             }
+    //         } else {
+    //             tracing::error!("loaded plugin not found: {}", &meta.name);
+    //         }
+    //     }
+    //     Ok(())
+    // }
 
     async fn create(&self, id: &RunnerId, runner: &RunnerWithSchema) -> Result<()> {
         let res: Result<bool> = self
@@ -226,7 +225,7 @@ pub trait UseRedisRunnerRepository {
 
 #[tokio::test]
 async fn redis_test() -> Result<()> {
-    use command_utils::util::option::FlatMap;
+    use crate::infra::module::test::TEST_PLUGIN_DIR;
     use jobworkerp_runner::runner::plugins::Plugins;
     use proto::jobworkerp::data::{RunnerData, RunnerId, StreamingOutputType};
 
@@ -265,7 +264,7 @@ async fn redis_test() -> Result<()> {
     repo.create(&id, &runner_with_schema).await?;
     assert!(repo.create(&id, &runner_with_schema).await.err().is_some()); // already exists
     let res = repo.find(&id).await?;
-    assert_eq!(res.flat_map(|r| r.data).as_ref(), Some(runner_data));
+    assert_eq!(res.and_then(|r| r.data).as_ref(), Some(runner_data));
 
     let mut runner_data2 = runner_data.clone();
     runner_data2.name = "fuga1".to_string();
@@ -280,7 +279,7 @@ async fn redis_test() -> Result<()> {
     // update and find
     assert!(!repo.upsert(&id, &runner_with_schema2).await?);
     let res2 = repo.find(&id).await?;
-    assert_eq!(res2.flat_map(|r| r.data).as_ref(), Some(&runner_data2));
+    assert_eq!(res2.and_then(|r| r.data).as_ref(), Some(&runner_data2));
 
     // delete and not found
     assert!(repo.delete(&id).await?);

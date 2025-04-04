@@ -7,7 +7,6 @@ use super::{JobApp, JobCacheKeys, RedisJobAppHelper};
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
-use command_utils::util::option::{Exists, FlatMap};
 use futures::stream::BoxStream;
 use infra::infra::job::queue::redis::RedisJobQueueRepository;
 use infra::infra::job::rdb::{RdbJobRepository, UseRdbChanJobRepository};
@@ -94,7 +93,11 @@ impl HybridJobAppImpl {
                     .find_list_in(jids)
                     .await?
                     .into_iter()
-                    .filter(|j| j.data.as_ref().exists(|d| !self.is_run_after_job_data(d))),
+                    .filter(|j| {
+                        j.data
+                            .as_ref()
+                            .is_some_and(|d| !self.is_run_after_job_data(d))
+                    }),
             );
         }
         Ok(ret)
@@ -108,7 +111,7 @@ impl HybridJobAppImpl {
             // unwrap
             if let Ok(Some(w)) = self
                 .worker_app
-                .find_data_by_opt(job.data.as_ref().flat_map(|d| d.worker_id.as_ref()))
+                .find_data_by_opt(job.data.as_ref().and_then(|d| d.worker_id.as_ref()))
                 .await
             {
                 // not restore use rdb jobs (periodic worker or run after jobs)(should not exists in 'restores')
@@ -832,7 +835,7 @@ pub mod tests {
                     .find_job(
                         &job_res
                             .clone()
-                            .flat_map(|j| j.data.flat_map(|d| d.job_id))
+                            .and_then(|j| j.data.and_then(|d| d.job_id))
                             .unwrap(),
                         Some(&Duration::from_millis(100)),
                     )

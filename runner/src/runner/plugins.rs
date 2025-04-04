@@ -4,7 +4,6 @@ pub mod loader;
 use self::loader::RunnerPluginLoader;
 use crate::schema_to_json_string;
 use anyhow::Result;
-use command_utils::util::option::Exists;
 use itertools::Itertools;
 use proto::jobworkerp::data::StreamingOutputType;
 use std::{
@@ -89,7 +88,7 @@ impl Plugins {
                 && file
                     .file_name()
                     .to_str()
-                    .exists(|n| n.ends_with(Self::get_library_extension()))
+                    .is_some_and(|n| n.ends_with(Self::get_library_extension()))
             {
                 tracing::info!("load {:?} plugin file: {}", ptype, file.path().display());
                 match ptype {

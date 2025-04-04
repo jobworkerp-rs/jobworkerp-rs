@@ -4,6 +4,7 @@
 #![allow(clippy::clone_on_copy)]
 
 pub mod supplement;
+pub mod supplement_test;
 
 #[doc = r" Error types."]
 pub mod error {
@@ -991,7 +992,7 @@ impl Document {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum Duration {
     Inline {
@@ -3048,43 +3049,10 @@ impl ForkTaskConfiguration {
 #[doc = "          \"description\": \"The channel to use when running the function. (Channel controls execution concurrency)\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        },"]
-#[doc = "        \"retryOptions\": {"]
-#[doc = "          \"title\": \"RetryOptions\","]
-#[doc = "          \"description\": \"The retry options to use when running the function.\","]
-#[doc = "          \"type\": \"object\","]
-#[doc = "          \"properties\": {"]
-#[doc = "            \"basis\": {"]
-#[doc = "              \"title\": \"ExponentialBackoffBasis\","]
-#[doc = "              \"description\": \"The basis of the exponential backoff.\","]
-#[doc = "              \"type\": \"number\""]
-#[doc = "            },"]
-#[doc = "            \"interval\": {"]
-#[doc = "              \"title\": \"RetryInterval\","]
-#[doc = "              \"description\": \"The interval between retries in milliseconds (initial value).\","]
-#[doc = "              \"type\": \"integer\""]
-#[doc = "            },"]
-#[doc = "            \"maxCount\": {"]
-#[doc = "              \"title\": \"MaxRetryCount\","]
-#[doc = "              \"description\": \"The maximum number of retries to perform.\","]
-#[doc = "              \"type\": \"integer\""]
-#[doc = "            },"]
-#[doc = "            \"maxInterval\": {"]
-#[doc = "              \"title\": \"MaxRetryInterval\","]
-#[doc = "              \"description\": \"The maximum interval between retries in milliseconds.\","]
-#[doc = "              \"type\": \"integer\""]
-#[doc = "            },"]
-#[doc = "            \"retryType\": {"]
-#[doc = "              \"title\": \"RetryType\","]
-#[doc = "              \"description\": \"The backoff strategy to use when retrying (exponential, linear, constant).\","]
-#[doc = "              \"type\": \"string\","]
-#[doc = "              \"enum\": ["]
-#[doc = "                \"none\","]
-#[doc = "                \"exponential\","]
-#[doc = "                \"linear\","]
-#[doc = "                \"constant\""]
-#[doc = "              ]"]
-#[doc = "            }"]
-#[doc = "          }"]
+#[doc = "        \"retry\": {"]
+#[doc = "          \"title\": \"RetryPolicyDefinition\","]
+#[doc = "          \"description\": \"The retry policy to use, if any, when catching errors.\","]
+#[doc = "          \"$ref\": \"#/$defs/retryPolicy\""]
 #[doc = "        },"]
 #[doc = "        \"storeFailure\": {"]
 #[doc = "          \"title\": \"StoreFailureResult\","]
@@ -3166,43 +3134,10 @@ impl Function {
 #[doc = "      \"description\": \"The channel to use when running the function. (Channel controls execution concurrency)\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
-#[doc = "    \"retryOptions\": {"]
-#[doc = "      \"title\": \"RetryOptions\","]
-#[doc = "      \"description\": \"The retry options to use when running the function.\","]
-#[doc = "      \"type\": \"object\","]
-#[doc = "      \"properties\": {"]
-#[doc = "        \"basis\": {"]
-#[doc = "          \"title\": \"ExponentialBackoffBasis\","]
-#[doc = "          \"description\": \"The basis of the exponential backoff.\","]
-#[doc = "          \"type\": \"number\""]
-#[doc = "        },"]
-#[doc = "        \"interval\": {"]
-#[doc = "          \"title\": \"RetryInterval\","]
-#[doc = "          \"description\": \"The interval between retries in milliseconds (initial value).\","]
-#[doc = "          \"type\": \"integer\""]
-#[doc = "        },"]
-#[doc = "        \"maxCount\": {"]
-#[doc = "          \"title\": \"MaxRetryCount\","]
-#[doc = "          \"description\": \"The maximum number of retries to perform.\","]
-#[doc = "          \"type\": \"integer\""]
-#[doc = "        },"]
-#[doc = "        \"maxInterval\": {"]
-#[doc = "          \"title\": \"MaxRetryInterval\","]
-#[doc = "          \"description\": \"The maximum interval between retries in milliseconds.\","]
-#[doc = "          \"type\": \"integer\""]
-#[doc = "        },"]
-#[doc = "        \"retryType\": {"]
-#[doc = "          \"title\": \"RetryType\","]
-#[doc = "          \"description\": \"The backoff strategy to use when retrying (exponential, linear, constant).\","]
-#[doc = "          \"type\": \"string\","]
-#[doc = "          \"enum\": ["]
-#[doc = "            \"none\","]
-#[doc = "            \"exponential\","]
-#[doc = "            \"linear\","]
-#[doc = "            \"constant\""]
-#[doc = "          ]"]
-#[doc = "        }"]
-#[doc = "      }"]
+#[doc = "    \"retry\": {"]
+#[doc = "      \"title\": \"RetryPolicyDefinition\","]
+#[doc = "      \"description\": \"The retry policy to use, if any, when catching errors.\","]
+#[doc = "      \"$ref\": \"#/$defs/retryPolicy\""]
 #[doc = "    },"]
 #[doc = "    \"storeFailure\": {"]
 #[doc = "      \"title\": \"StoreFailureResult\","]
@@ -3240,12 +3175,9 @@ pub struct FunctionOptions {
     #[doc = "The channel to use when running the function. (Channel controls execution concurrency)"]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub channel: ::std::option::Option<::std::string::String>,
-    #[serde(
-        rename = "retryOptions",
-        default,
-        skip_serializing_if = "::std::option::Option::is_none"
-    )]
-    pub retry_options: ::std::option::Option<RetryOptions>,
+    #[doc = "The retry policy to use, if any, when catching errors."]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub retry: ::std::option::Option<RetryPolicy>,
     #[doc = "Whether to store failure results to database."]
     #[serde(
         rename = "storeFailure",
@@ -3285,7 +3217,7 @@ impl ::std::default::Default for FunctionOptions {
         Self {
             broadcast_results_to_listener: Default::default(),
             channel: Default::default(),
-            retry_options: Default::default(),
+            retry: Default::default(),
             store_failure: Default::default(),
             store_success: Default::default(),
             use_static: Default::default(),
@@ -4938,7 +4870,7 @@ impl<'de> ::serde::Deserialize<'de> for ReferenceableAuthenticationPolicyName {
 #[doc = "      ],"]
 #[doc = "      \"properties\": {"]
 #[doc = "        \"constant\": {"]
-#[doc = "          \"description\": \"The definition of the constant backoff to use, if any.\","]
+#[doc = "          \"description\": \"The definition of the constant backoff to use, if any. value is empty object.\","]
 #[doc = "          \"type\": \"object\""]
 #[doc = "        }"]
 #[doc = "      }"]
@@ -4950,7 +4882,7 @@ impl<'de> ::serde::Deserialize<'de> for ReferenceableAuthenticationPolicyName {
 #[doc = "      ],"]
 #[doc = "      \"properties\": {"]
 #[doc = "        \"exponential\": {"]
-#[doc = "          \"description\": \"The definition of the exponential backoff to use, if any.\","]
+#[doc = "          \"description\": \"The definition of the exponential backoff to use, if any. value is empty object.\","]
 #[doc = "          \"type\": \"object\""]
 #[doc = "        }"]
 #[doc = "      }"]
@@ -4962,7 +4894,7 @@ impl<'de> ::serde::Deserialize<'de> for ReferenceableAuthenticationPolicyName {
 #[doc = "      ],"]
 #[doc = "      \"properties\": {"]
 #[doc = "        \"linear\": {"]
-#[doc = "          \"description\": \"The definition of the linear backoff to use, if any.\","]
+#[doc = "          \"description\": \"The definition of the linear backoff to use, if any. value is empty object.\","]
 #[doc = "          \"type\": \"object\""]
 #[doc = "        }"]
 #[doc = "      }"]
@@ -4972,7 +4904,7 @@ impl<'de> ::serde::Deserialize<'de> for ReferenceableAuthenticationPolicyName {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub enum RetryBackoff {
     #[serde(rename = "constant")]
     Constant(::serde_json::Map<::std::string::String, ::serde_json::Value>),
@@ -5012,24 +4944,16 @@ impl ::std::convert::From<&Self> for RetryBackoff {
 #[doc = "        }"]
 #[doc = "      },"]
 #[doc = "      \"unevaluatedProperties\": false"]
-#[doc = "    },"]
-#[doc = "    \"duration\": {"]
-#[doc = "      \"title\": \"RetryLimitDuration\","]
-#[doc = "      \"description\": \"The duration limit, if any, for all retry attempts.\","]
-#[doc = "      \"$ref\": \"#/$defs/duration\""]
 #[doc = "    }"]
 #[doc = "  },"]
 #[doc = "  \"unevaluatedProperties\": false"]
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct RetryLimit {
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub attempt: ::std::option::Option<RetryLimitAttempt>,
-    #[doc = "The duration limit, if any, for all retry attempts."]
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub duration: ::std::option::Option<Duration>,
 }
 impl ::std::convert::From<&RetryLimit> for RetryLimit {
     fn from(value: &RetryLimit) -> Self {
@@ -5040,7 +4964,6 @@ impl ::std::default::Default for RetryLimit {
     fn default() -> Self {
         Self {
             attempt: Default::default(),
-            duration: Default::default(),
         }
     }
 }
@@ -5073,7 +4996,7 @@ impl RetryLimit {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct RetryLimitAttempt {
     #[doc = "The maximum amount of retry attempts, if any."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -5100,101 +5023,6 @@ impl RetryLimitAttempt {
         Default::default()
     }
 }
-#[doc = "The retry options to use when running the function."]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"title\": \"RetryOptions\","]
-#[doc = "  \"description\": \"The retry options to use when running the function.\","]
-#[doc = "  \"type\": \"object\","]
-#[doc = "  \"properties\": {"]
-#[doc = "    \"basis\": {"]
-#[doc = "      \"title\": \"ExponentialBackoffBasis\","]
-#[doc = "      \"description\": \"The basis of the exponential backoff.\","]
-#[doc = "      \"type\": \"number\""]
-#[doc = "    },"]
-#[doc = "    \"interval\": {"]
-#[doc = "      \"title\": \"RetryInterval\","]
-#[doc = "      \"description\": \"The interval between retries in milliseconds (initial value).\","]
-#[doc = "      \"type\": \"integer\""]
-#[doc = "    },"]
-#[doc = "    \"maxCount\": {"]
-#[doc = "      \"title\": \"MaxRetryCount\","]
-#[doc = "      \"description\": \"The maximum number of retries to perform.\","]
-#[doc = "      \"type\": \"integer\""]
-#[doc = "    },"]
-#[doc = "    \"maxInterval\": {"]
-#[doc = "      \"title\": \"MaxRetryInterval\","]
-#[doc = "      \"description\": \"The maximum interval between retries in milliseconds.\","]
-#[doc = "      \"type\": \"integer\""]
-#[doc = "    },"]
-#[doc = "    \"retryType\": {"]
-#[doc = "      \"title\": \"RetryType\","]
-#[doc = "      \"description\": \"The backoff strategy to use when retrying (exponential, linear, constant).\","]
-#[doc = "      \"type\": \"string\","]
-#[doc = "      \"enum\": ["]
-#[doc = "        \"none\","]
-#[doc = "        \"exponential\","]
-#[doc = "        \"linear\","]
-#[doc = "        \"constant\""]
-#[doc = "      ]"]
-#[doc = "    }"]
-#[doc = "  }"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
-pub struct RetryOptions {
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub basis: ::std::option::Option<f64>,
-    #[doc = "The interval between retries in milliseconds (initial value)."]
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub interval: ::std::option::Option<i64>,
-    #[doc = "The maximum number of retries to perform."]
-    #[serde(
-        rename = "maxCount",
-        default,
-        skip_serializing_if = "::std::option::Option::is_none"
-    )]
-    pub max_count: ::std::option::Option<i64>,
-    #[doc = "The maximum interval between retries in milliseconds."]
-    #[serde(
-        rename = "maxInterval",
-        default,
-        skip_serializing_if = "::std::option::Option::is_none"
-    )]
-    pub max_interval: ::std::option::Option<i64>,
-    #[doc = "The backoff strategy to use when retrying (exponential, linear, constant)."]
-    #[serde(
-        rename = "retryType",
-        default,
-        skip_serializing_if = "::std::option::Option::is_none"
-    )]
-    pub retry_type: ::std::option::Option<RetryType>,
-}
-impl ::std::convert::From<&RetryOptions> for RetryOptions {
-    fn from(value: &RetryOptions) -> Self {
-        value.clone()
-    }
-}
-impl ::std::default::Default for RetryOptions {
-    fn default() -> Self {
-        Self {
-            basis: Default::default(),
-            interval: Default::default(),
-            max_count: Default::default(),
-            max_interval: Default::default(),
-            retry_type: Default::default(),
-        }
-    }
-}
-impl RetryOptions {
-    pub fn builder() -> builder::RetryOptions {
-        Default::default()
-    }
-}
 #[doc = "Defines a retry policy."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -5217,7 +5045,7 @@ impl RetryOptions {
 #[doc = "          ],"]
 #[doc = "          \"properties\": {"]
 #[doc = "            \"constant\": {"]
-#[doc = "              \"description\": \"The definition of the constant backoff to use, if any.\","]
+#[doc = "              \"description\": \"The definition of the constant backoff to use, if any. value is empty object.\","]
 #[doc = "              \"type\": \"object\""]
 #[doc = "            }"]
 #[doc = "          }"]
@@ -5229,7 +5057,7 @@ impl RetryOptions {
 #[doc = "          ],"]
 #[doc = "          \"properties\": {"]
 #[doc = "            \"exponential\": {"]
-#[doc = "              \"description\": \"The definition of the exponential backoff to use, if any.\","]
+#[doc = "              \"description\": \"The definition of the exponential backoff to use, if any. value is empty object.\","]
 #[doc = "              \"type\": \"object\""]
 #[doc = "            }"]
 #[doc = "          }"]
@@ -5241,7 +5069,7 @@ impl RetryOptions {
 #[doc = "          ],"]
 #[doc = "          \"properties\": {"]
 #[doc = "            \"linear\": {"]
-#[doc = "              \"description\": \"The definition of the linear backoff to use, if any.\","]
+#[doc = "              \"description\": \"The definition of the linear backoff to use, if any. value is empty object.\","]
 #[doc = "              \"type\": \"object\""]
 #[doc = "            }"]
 #[doc = "          }"]
@@ -5253,33 +5081,6 @@ impl RetryOptions {
 #[doc = "      \"title\": \"RetryDelay\","]
 #[doc = "      \"description\": \"The duration to wait between retry attempts.\","]
 #[doc = "      \"$ref\": \"#/$defs/duration\""]
-#[doc = "    },"]
-#[doc = "    \"exceptWhen\": {"]
-#[doc = "      \"title\": \"RetryExcepWhen\","]
-#[doc = "      \"description\": \"A runtime expression used to determine whether or not to retry running the task, in a given context.\","]
-#[doc = "      \"type\": \"string\""]
-#[doc = "    },"]
-#[doc = "    \"jitter\": {"]
-#[doc = "      \"title\": \"RetryPolicyJitter\","]
-#[doc = "      \"description\": \"The parameters, if any, that control the randomness or variability of the delay between retry attempts.\","]
-#[doc = "      \"type\": \"object\","]
-#[doc = "      \"required\": ["]
-#[doc = "        \"from\","]
-#[doc = "        \"to\""]
-#[doc = "      ],"]
-#[doc = "      \"properties\": {"]
-#[doc = "        \"from\": {"]
-#[doc = "          \"title\": \"RetryPolicyJitterFrom\","]
-#[doc = "          \"description\": \"The minimum duration of the jitter range.\","]
-#[doc = "          \"$ref\": \"#/$defs/duration\""]
-#[doc = "        },"]
-#[doc = "        \"to\": {"]
-#[doc = "          \"title\": \"RetryPolicyJitterTo\","]
-#[doc = "          \"description\": \"The maximum duration of the jitter range.\","]
-#[doc = "          \"$ref\": \"#/$defs/duration\""]
-#[doc = "        }"]
-#[doc = "      },"]
-#[doc = "      \"unevaluatedProperties\": false"]
 #[doc = "    },"]
 #[doc = "    \"limit\": {"]
 #[doc = "      \"title\": \"RetryLimit\","]
@@ -5302,26 +5103,16 @@ impl RetryOptions {
 #[doc = "            }"]
 #[doc = "          },"]
 #[doc = "          \"unevaluatedProperties\": false"]
-#[doc = "        },"]
-#[doc = "        \"duration\": {"]
-#[doc = "          \"title\": \"RetryLimitDuration\","]
-#[doc = "          \"description\": \"The duration limit, if any, for all retry attempts.\","]
-#[doc = "          \"$ref\": \"#/$defs/duration\""]
 #[doc = "        }"]
 #[doc = "      },"]
 #[doc = "      \"unevaluatedProperties\": false"]
-#[doc = "    },"]
-#[doc = "    \"when\": {"]
-#[doc = "      \"title\": \"RetryWhen\","]
-#[doc = "      \"description\": \"A runtime expression, if any, used to determine whether or not to retry running the task, in a given context.\","]
-#[doc = "      \"type\": \"string\""]
 #[doc = "    }"]
 #[doc = "  },"]
 #[doc = "  \"unevaluatedProperties\": false"]
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct RetryPolicy {
     #[doc = "The retry duration backoff."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -5329,20 +5120,8 @@ pub struct RetryPolicy {
     #[doc = "The duration to wait between retry attempts."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub delay: ::std::option::Option<Duration>,
-    #[doc = "A runtime expression used to determine whether or not to retry running the task, in a given context."]
-    #[serde(
-        rename = "exceptWhen",
-        default,
-        skip_serializing_if = "::std::option::Option::is_none"
-    )]
-    pub except_when: ::std::option::Option<::std::string::String>,
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub jitter: ::std::option::Option<RetryPolicyJitter>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub limit: ::std::option::Option<RetryLimit>,
-    #[doc = "A runtime expression, if any, used to determine whether or not to retry running the task, in a given context."]
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub when: ::std::option::Option<::std::string::String>,
 }
 impl ::std::convert::From<&RetryPolicy> for RetryPolicy {
     fn from(value: &RetryPolicy) -> Self {
@@ -5354,151 +5133,13 @@ impl ::std::default::Default for RetryPolicy {
         Self {
             backoff: Default::default(),
             delay: Default::default(),
-            except_when: Default::default(),
-            jitter: Default::default(),
             limit: Default::default(),
-            when: Default::default(),
         }
     }
 }
 impl RetryPolicy {
     pub fn builder() -> builder::RetryPolicy {
         Default::default()
-    }
-}
-#[doc = "The parameters, if any, that control the randomness or variability of the delay between retry attempts."]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"title\": \"RetryPolicyJitter\","]
-#[doc = "  \"description\": \"The parameters, if any, that control the randomness or variability of the delay between retry attempts.\","]
-#[doc = "  \"type\": \"object\","]
-#[doc = "  \"required\": ["]
-#[doc = "    \"from\","]
-#[doc = "    \"to\""]
-#[doc = "  ],"]
-#[doc = "  \"properties\": {"]
-#[doc = "    \"from\": {"]
-#[doc = "      \"title\": \"RetryPolicyJitterFrom\","]
-#[doc = "      \"description\": \"The minimum duration of the jitter range.\","]
-#[doc = "      \"$ref\": \"#/$defs/duration\""]
-#[doc = "    },"]
-#[doc = "    \"to\": {"]
-#[doc = "      \"title\": \"RetryPolicyJitterTo\","]
-#[doc = "      \"description\": \"The maximum duration of the jitter range.\","]
-#[doc = "      \"$ref\": \"#/$defs/duration\""]
-#[doc = "    }"]
-#[doc = "  },"]
-#[doc = "  \"unevaluatedProperties\": false"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
-pub struct RetryPolicyJitter {
-    #[doc = "The minimum duration of the jitter range."]
-    pub from: Duration,
-    #[doc = "The maximum duration of the jitter range."]
-    pub to: Duration,
-}
-impl ::std::convert::From<&RetryPolicyJitter> for RetryPolicyJitter {
-    fn from(value: &RetryPolicyJitter) -> Self {
-        value.clone()
-    }
-}
-impl RetryPolicyJitter {
-    pub fn builder() -> builder::RetryPolicyJitter {
-        Default::default()
-    }
-}
-#[doc = "The backoff strategy to use when retrying (exponential, linear, constant)."]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"title\": \"RetryType\","]
-#[doc = "  \"description\": \"The backoff strategy to use when retrying (exponential, linear, constant).\","]
-#[doc = "  \"type\": \"string\","]
-#[doc = "  \"enum\": ["]
-#[doc = "    \"none\","]
-#[doc = "    \"exponential\","]
-#[doc = "    \"linear\","]
-#[doc = "    \"constant\""]
-#[doc = "  ]"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(
-    :: serde :: Deserialize,
-    :: serde :: Serialize,
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-)]
-pub enum RetryType {
-    #[serde(rename = "none")]
-    None,
-    #[serde(rename = "exponential")]
-    Exponential,
-    #[serde(rename = "linear")]
-    Linear,
-    #[serde(rename = "constant")]
-    Constant,
-}
-impl ::std::convert::From<&Self> for RetryType {
-    fn from(value: &RetryType) -> Self {
-        value.clone()
-    }
-}
-impl ::std::fmt::Display for RetryType {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-        match *self {
-            Self::None => write!(f, "none"),
-            Self::Exponential => write!(f, "exponential"),
-            Self::Linear => write!(f, "linear"),
-            Self::Constant => write!(f, "constant"),
-        }
-    }
-}
-impl ::std::str::FromStr for RetryType {
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        match value {
-            "none" => Ok(Self::None),
-            "exponential" => Ok(Self::Exponential),
-            "linear" => Ok(Self::Linear),
-            "constant" => Ok(Self::Constant),
-            _ => Err("invalid value".into()),
-        }
-    }
-}
-impl ::std::convert::TryFrom<&str> for RetryType {
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String> for RetryType {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String> for RetryType {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
     }
 }
 #[doc = "RunTask"]
@@ -5580,43 +5221,10 @@ impl ::std::convert::TryFrom<::std::string::String> for RetryType {
 #[doc = "                      \"description\": \"The channel to use when running the function. (Channel controls execution concurrency)\","]
 #[doc = "                      \"type\": \"string\""]
 #[doc = "                    },"]
-#[doc = "                    \"retryOptions\": {"]
-#[doc = "                      \"title\": \"RetryOptions\","]
-#[doc = "                      \"description\": \"The retry options to use when running the function.\","]
-#[doc = "                      \"type\": \"object\","]
-#[doc = "                      \"properties\": {"]
-#[doc = "                        \"basis\": {"]
-#[doc = "                          \"title\": \"ExponentialBackoffBasis\","]
-#[doc = "                          \"description\": \"The basis of the exponential backoff.\","]
-#[doc = "                          \"type\": \"number\""]
-#[doc = "                        },"]
-#[doc = "                        \"interval\": {"]
-#[doc = "                          \"title\": \"RetryInterval\","]
-#[doc = "                          \"description\": \"The interval between retries in milliseconds (initial value).\","]
-#[doc = "                          \"type\": \"integer\""]
-#[doc = "                        },"]
-#[doc = "                        \"maxCount\": {"]
-#[doc = "                          \"title\": \"MaxRetryCount\","]
-#[doc = "                          \"description\": \"The maximum number of retries to perform.\","]
-#[doc = "                          \"type\": \"integer\""]
-#[doc = "                        },"]
-#[doc = "                        \"maxInterval\": {"]
-#[doc = "                          \"title\": \"MaxRetryInterval\","]
-#[doc = "                          \"description\": \"The maximum interval between retries in milliseconds.\","]
-#[doc = "                          \"type\": \"integer\""]
-#[doc = "                        },"]
-#[doc = "                        \"retryType\": {"]
-#[doc = "                          \"title\": \"RetryType\","]
-#[doc = "                          \"description\": \"The backoff strategy to use when retrying (exponential, linear, constant).\","]
-#[doc = "                          \"type\": \"string\","]
-#[doc = "                          \"enum\": ["]
-#[doc = "                            \"none\","]
-#[doc = "                            \"exponential\","]
-#[doc = "                            \"linear\","]
-#[doc = "                            \"constant\""]
-#[doc = "                          ]"]
-#[doc = "                        }"]
-#[doc = "                      }"]
+#[doc = "                    \"retry\": {"]
+#[doc = "                      \"title\": \"RetryPolicyDefinition\","]
+#[doc = "                      \"description\": \"The retry policy to use, if any, when catching errors.\","]
+#[doc = "                      \"$ref\": \"#/$defs/retryPolicy\""]
 #[doc = "                    },"]
 #[doc = "                    \"storeFailure\": {"]
 #[doc = "                      \"title\": \"StoreFailureResult\","]
@@ -5788,43 +5396,10 @@ impl RunTask {
 #[doc = "                  \"description\": \"The channel to use when running the function. (Channel controls execution concurrency)\","]
 #[doc = "                  \"type\": \"string\""]
 #[doc = "                },"]
-#[doc = "                \"retryOptions\": {"]
-#[doc = "                  \"title\": \"RetryOptions\","]
-#[doc = "                  \"description\": \"The retry options to use when running the function.\","]
-#[doc = "                  \"type\": \"object\","]
-#[doc = "                  \"properties\": {"]
-#[doc = "                    \"basis\": {"]
-#[doc = "                      \"title\": \"ExponentialBackoffBasis\","]
-#[doc = "                      \"description\": \"The basis of the exponential backoff.\","]
-#[doc = "                      \"type\": \"number\""]
-#[doc = "                    },"]
-#[doc = "                    \"interval\": {"]
-#[doc = "                      \"title\": \"RetryInterval\","]
-#[doc = "                      \"description\": \"The interval between retries in milliseconds (initial value).\","]
-#[doc = "                      \"type\": \"integer\""]
-#[doc = "                    },"]
-#[doc = "                    \"maxCount\": {"]
-#[doc = "                      \"title\": \"MaxRetryCount\","]
-#[doc = "                      \"description\": \"The maximum number of retries to perform.\","]
-#[doc = "                      \"type\": \"integer\""]
-#[doc = "                    },"]
-#[doc = "                    \"maxInterval\": {"]
-#[doc = "                      \"title\": \"MaxRetryInterval\","]
-#[doc = "                      \"description\": \"The maximum interval between retries in milliseconds.\","]
-#[doc = "                      \"type\": \"integer\""]
-#[doc = "                    },"]
-#[doc = "                    \"retryType\": {"]
-#[doc = "                      \"title\": \"RetryType\","]
-#[doc = "                      \"description\": \"The backoff strategy to use when retrying (exponential, linear, constant).\","]
-#[doc = "                      \"type\": \"string\","]
-#[doc = "                      \"enum\": ["]
-#[doc = "                        \"none\","]
-#[doc = "                        \"exponential\","]
-#[doc = "                        \"linear\","]
-#[doc = "                        \"constant\""]
-#[doc = "                      ]"]
-#[doc = "                    }"]
-#[doc = "                  }"]
+#[doc = "                \"retry\": {"]
+#[doc = "                  \"title\": \"RetryPolicyDefinition\","]
+#[doc = "                  \"description\": \"The retry policy to use, if any, when catching errors.\","]
+#[doc = "                  \"$ref\": \"#/$defs/retryPolicy\""]
 #[doc = "                },"]
 #[doc = "                \"storeFailure\": {"]
 #[doc = "                  \"title\": \"StoreFailureResult\","]
@@ -9965,10 +9540,8 @@ pub mod builder {
             ::std::option::Option<::std::string::String>,
             ::std::string::String,
         >,
-        retry_options: ::std::result::Result<
-            ::std::option::Option<super::RetryOptions>,
-            ::std::string::String,
-        >,
+        retry:
+            ::std::result::Result<::std::option::Option<super::RetryPolicy>, ::std::string::String>,
         store_failure: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
         store_success: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
         use_static: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
@@ -9979,7 +9552,7 @@ pub mod builder {
             Self {
                 broadcast_results_to_listener: Ok(Default::default()),
                 channel: Ok(Default::default()),
-                retry_options: Ok(Default::default()),
+                retry: Ok(Default::default()),
                 store_failure: Ok(Default::default()),
                 store_success: Ok(Default::default()),
                 use_static: Ok(Default::default()),
@@ -10011,14 +9584,14 @@ pub mod builder {
                 .map_err(|e| format!("error converting supplied value for channel: {}", e));
             self
         }
-        pub fn retry_options<T>(mut self, value: T) -> Self
+        pub fn retry<T>(mut self, value: T) -> Self
         where
-            T: ::std::convert::TryInto<::std::option::Option<super::RetryOptions>>,
+            T: ::std::convert::TryInto<::std::option::Option<super::RetryPolicy>>,
             T::Error: ::std::fmt::Display,
         {
-            self.retry_options = value
+            self.retry = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for retry_options: {}", e));
+                .map_err(|e| format!("error converting supplied value for retry: {}", e));
             self
         }
         pub fn store_failure<T>(mut self, value: T) -> Self
@@ -10070,7 +9643,7 @@ pub mod builder {
             Ok(Self {
                 broadcast_results_to_listener: value.broadcast_results_to_listener?,
                 channel: value.channel?,
-                retry_options: value.retry_options?,
+                retry: value.retry?,
                 store_failure: value.store_failure?,
                 store_success: value.store_success?,
                 use_static: value.use_static?,
@@ -10083,7 +9656,7 @@ pub mod builder {
             Self {
                 broadcast_results_to_listener: Ok(value.broadcast_results_to_listener),
                 channel: Ok(value.channel),
-                retry_options: Ok(value.retry_options),
+                retry: Ok(value.retry),
                 store_failure: Ok(value.store_failure),
                 store_success: Ok(value.store_success),
                 use_static: Ok(value.use_static),
@@ -10933,14 +10506,11 @@ pub mod builder {
             ::std::option::Option<super::RetryLimitAttempt>,
             ::std::string::String,
         >,
-        duration:
-            ::std::result::Result<::std::option::Option<super::Duration>, ::std::string::String>,
     }
     impl ::std::default::Default for RetryLimit {
         fn default() -> Self {
             Self {
                 attempt: Ok(Default::default()),
-                duration: Ok(Default::default()),
             }
         }
     }
@@ -10955,16 +10525,6 @@ pub mod builder {
                 .map_err(|e| format!("error converting supplied value for attempt: {}", e));
             self
         }
-        pub fn duration<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<super::Duration>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.duration = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for duration: {}", e));
-            self
-        }
     }
     impl ::std::convert::TryFrom<RetryLimit> for super::RetryLimit {
         type Error = super::error::ConversionError;
@@ -10973,7 +10533,6 @@ pub mod builder {
         ) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
                 attempt: value.attempt?,
-                duration: value.duration?,
             })
         }
     }
@@ -10981,7 +10540,6 @@ pub mod builder {
         fn from(value: super::RetryLimit) -> Self {
             Self {
                 attempt: Ok(value.attempt),
-                duration: Ok(value.duration),
             }
         }
     }
@@ -11041,133 +10599,21 @@ pub mod builder {
         }
     }
     #[derive(Clone, Debug)]
-    pub struct RetryOptions {
-        basis: ::std::result::Result<::std::option::Option<f64>, ::std::string::String>,
-        interval: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
-        max_count: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
-        max_interval: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
-        retry_type:
-            ::std::result::Result<::std::option::Option<super::RetryType>, ::std::string::String>,
-    }
-    impl ::std::default::Default for RetryOptions {
-        fn default() -> Self {
-            Self {
-                basis: Ok(Default::default()),
-                interval: Ok(Default::default()),
-                max_count: Ok(Default::default()),
-                max_interval: Ok(Default::default()),
-                retry_type: Ok(Default::default()),
-            }
-        }
-    }
-    impl RetryOptions {
-        pub fn basis<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<f64>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.basis = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for basis: {}", e));
-            self
-        }
-        pub fn interval<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<i64>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.interval = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for interval: {}", e));
-            self
-        }
-        pub fn max_count<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<i64>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.max_count = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for max_count: {}", e));
-            self
-        }
-        pub fn max_interval<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<i64>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.max_interval = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for max_interval: {}", e));
-            self
-        }
-        pub fn retry_type<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<super::RetryType>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.retry_type = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for retry_type: {}", e));
-            self
-        }
-    }
-    impl ::std::convert::TryFrom<RetryOptions> for super::RetryOptions {
-        type Error = super::error::ConversionError;
-        fn try_from(
-            value: RetryOptions,
-        ) -> ::std::result::Result<Self, super::error::ConversionError> {
-            Ok(Self {
-                basis: value.basis?,
-                interval: value.interval?,
-                max_count: value.max_count?,
-                max_interval: value.max_interval?,
-                retry_type: value.retry_type?,
-            })
-        }
-    }
-    impl ::std::convert::From<super::RetryOptions> for RetryOptions {
-        fn from(value: super::RetryOptions) -> Self {
-            Self {
-                basis: Ok(value.basis),
-                interval: Ok(value.interval),
-                max_count: Ok(value.max_count),
-                max_interval: Ok(value.max_interval),
-                retry_type: Ok(value.retry_type),
-            }
-        }
-    }
-    #[derive(Clone, Debug)]
     pub struct RetryPolicy {
         backoff: ::std::result::Result<
             ::std::option::Option<super::RetryBackoff>,
             ::std::string::String,
         >,
         delay: ::std::result::Result<::std::option::Option<super::Duration>, ::std::string::String>,
-        except_when: ::std::result::Result<
-            ::std::option::Option<::std::string::String>,
-            ::std::string::String,
-        >,
-        jitter: ::std::result::Result<
-            ::std::option::Option<super::RetryPolicyJitter>,
-            ::std::string::String,
-        >,
         limit:
             ::std::result::Result<::std::option::Option<super::RetryLimit>, ::std::string::String>,
-        when: ::std::result::Result<
-            ::std::option::Option<::std::string::String>,
-            ::std::string::String,
-        >,
     }
     impl ::std::default::Default for RetryPolicy {
         fn default() -> Self {
             Self {
                 backoff: Ok(Default::default()),
                 delay: Ok(Default::default()),
-                except_when: Ok(Default::default()),
-                jitter: Ok(Default::default()),
                 limit: Ok(Default::default()),
-                when: Ok(Default::default()),
             }
         }
     }
@@ -11192,26 +10638,6 @@ pub mod builder {
                 .map_err(|e| format!("error converting supplied value for delay: {}", e));
             self
         }
-        pub fn except_when<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.except_when = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for except_when: {}", e));
-            self
-        }
-        pub fn jitter<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<super::RetryPolicyJitter>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.jitter = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for jitter: {}", e));
-            self
-        }
         pub fn limit<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<::std::option::Option<super::RetryLimit>>,
@@ -11220,16 +10646,6 @@ pub mod builder {
             self.limit = value
                 .try_into()
                 .map_err(|e| format!("error converting supplied value for limit: {}", e));
-            self
-        }
-        pub fn when<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.when = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for when: {}", e));
             self
         }
     }
@@ -11241,10 +10657,7 @@ pub mod builder {
             Ok(Self {
                 backoff: value.backoff?,
                 delay: value.delay?,
-                except_when: value.except_when?,
-                jitter: value.jitter?,
                 limit: value.limit?,
-                when: value.when?,
             })
         }
     }
@@ -11253,64 +10666,7 @@ pub mod builder {
             Self {
                 backoff: Ok(value.backoff),
                 delay: Ok(value.delay),
-                except_when: Ok(value.except_when),
-                jitter: Ok(value.jitter),
                 limit: Ok(value.limit),
-                when: Ok(value.when),
-            }
-        }
-    }
-    #[derive(Clone, Debug)]
-    pub struct RetryPolicyJitter {
-        from: ::std::result::Result<super::Duration, ::std::string::String>,
-        to: ::std::result::Result<super::Duration, ::std::string::String>,
-    }
-    impl ::std::default::Default for RetryPolicyJitter {
-        fn default() -> Self {
-            Self {
-                from: Err("no value supplied for from".to_string()),
-                to: Err("no value supplied for to".to_string()),
-            }
-        }
-    }
-    impl RetryPolicyJitter {
-        pub fn from<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<super::Duration>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.from = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for from: {}", e));
-            self
-        }
-        pub fn to<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<super::Duration>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.to = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for to: {}", e));
-            self
-        }
-    }
-    impl ::std::convert::TryFrom<RetryPolicyJitter> for super::RetryPolicyJitter {
-        type Error = super::error::ConversionError;
-        fn try_from(
-            value: RetryPolicyJitter,
-        ) -> ::std::result::Result<Self, super::error::ConversionError> {
-            Ok(Self {
-                from: value.from?,
-                to: value.to?,
-            })
-        }
-    }
-    impl ::std::convert::From<super::RetryPolicyJitter> for RetryPolicyJitter {
-        fn from(value: super::RetryPolicyJitter) -> Self {
-            Self {
-                from: Ok(value.from),
-                to: Ok(value.to),
             }
         }
     }

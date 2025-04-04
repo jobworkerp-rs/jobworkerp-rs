@@ -4,7 +4,6 @@ use super::{JobResultApp, JobResultAppHelper};
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
-use command_utils::util::option::Exists;
 use futures::stream::BoxStream;
 use futures::Stream;
 use infra::infra::job::rows::UseJobqueueAndCodec;
@@ -287,10 +286,10 @@ impl JobResultApp for RdbJobResultAppImpl {
                 Ok(Some(v))
                     if v.data
                         .as_ref()
-                        .exists(|d| d.status == ResultStatus::ErrorAndRetry as i32) =>
+                        .is_some_and(|d| d.status == ResultStatus::ErrorAndRetry as i32) =>
                 {
                     // XXX setting?
-                    if timeout.exists(|t| {
+                    if timeout.is_some_and(|t| {
                         datetime::now()
                             .signed_duration_since(start)
                             .num_milliseconds() as u64
@@ -313,7 +312,7 @@ impl JobResultApp for RdbJobResultAppImpl {
                     return self._fill_worker_data(v).await.map(|r| (r, None));
                 }
                 Ok(None) => {
-                    if timeout.exists(|t| {
+                    if timeout.is_some_and(|t| {
                         datetime::now()
                             .signed_duration_since(start)
                             .num_milliseconds() as u64

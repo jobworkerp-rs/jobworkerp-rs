@@ -10,12 +10,14 @@ import "jobworkerp/data/worker.proto";
 // Metadata that describes function capabilities and interface for clients
 // Represents either a runner or worker as a function
 message FunctionSpecs {
-  // # Function ID
-  // Unique identifier for the function
-  oneof function_id {
-    jobworkerp.data.RunnerId runner_id = 1;
-    jobworkerp.data.WorkerId worker_id = 2;
-  }
+  // # Runner ID
+  // Runner Id for the function
+  jobworkerp.data.RunnerId runner_id = 1;
+
+  // # Worker ID
+  // Worker Id for the function. present if created as a worker
+  optional jobworkerp.data.WorkerId worker_id = 2;
+
   // # Function Name
   // Unique identifier for the function (e.g. "command", "image-processor")
   string name = 3;
@@ -32,7 +34,8 @@ message FunctionSpecs {
   // # Stream Output Flag
   // When true, the function supports streaming output mode
   // Enables JobService/EnqueueForStream and JobResultService/ListenStream
-  // If not specified, the function should support both streaming and non-streaming modes
+  // If not specified, the function should support both streaming and
+  // non-streaming modes
   jobworkerp.data.StreamingOutputType output_type = 7;
 }
 

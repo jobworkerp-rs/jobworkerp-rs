@@ -641,7 +641,6 @@ mod tests {
     use crate::module::test::TEST_PLUGIN_DIR;
     use anyhow::Result;
     use command_utils::util::datetime;
-    use command_utils::util::option::FlatMap;
     use infra::infra::job::rows::JobqueueAndCodec;
     // use command_utils::util::tracing::tracing_init_test;
     use infra::infra::job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl;
@@ -779,7 +778,7 @@ mod tests {
                     .find_job(
                         &job_res
                             .clone()
-                            .flat_map(|j| j.data.flat_map(|d| d.job_id))
+                            .and_then(|j| j.data.and_then(|d| d.job_id))
                             .unwrap(),
                         Some(&Duration::from_millis(100)),
                     )

@@ -1,7 +1,6 @@
 use super::PluginLoader;
 use crate::runner::plugins::{impls::PluginRunnerWrapperImpl, PluginRunner};
 use anyhow::{anyhow, Result};
-use command_utils::util::result::ToOption as _;
 use libloading::{Library, Symbol};
 use std::path::Path;
 use std::sync::Arc;
@@ -34,7 +33,7 @@ impl RunnerPluginLoader {
         if let Some((_name, _, lib)) = self.plugin_loaders.iter().find(|p| p.0.as_str() == name) {
             // XXX unsafe
             unsafe { lib.get(b"load_plugin") }
-                .to_option()
+                .ok()
                 .map(|lp: LoaderFunc<'_>| PluginRunnerWrapperImpl::new(Arc::new(RwLock::new(lp()))))
         } else {
             None

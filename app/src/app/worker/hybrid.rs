@@ -1,6 +1,5 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use command_utils::util::option::FlatMap;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::module::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
@@ -213,7 +212,7 @@ impl WorkerApp for HybridWorkerAppImpl {
     {
         self.find_by_name(name)
             .await
-            .map(|w| w.flat_map(|wd| wd.data))
+            .map(|w| w.and_then(|wd| wd.data))
     }
 
     async fn find_by_name(&self, name: &str) -> Result<Option<Worker>>
@@ -415,7 +414,6 @@ mod tests {
     use crate::app::StorageConfig;
     use crate::module::test::TEST_PLUGIN_DIR;
     use anyhow::Result;
-    use command_utils::util::option::FlatMap;
     use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
     use infra::infra::module::rdb::test::setup_test_rdb_module;
     use infra::infra::module::redis::test::setup_test_redis_module;
@@ -517,7 +515,7 @@ mod tests {
 
             let f = app.find(&id1).await?;
             assert!(f.is_some());
-            let fd = f.flat_map(|w| w.data);
+            let fd = f.and_then(|w| w.data);
             assert!(fd.is_some());
             assert_eq!(fd.unwrap().name, w4.name);
             // find list

@@ -44,8 +44,11 @@ impl<'a> DoTaskExecutor<'a> {
         let worker_params =
             metadata.get(crate::simple_workflow::definition::WORKER_PARAMS_METADATA_LABEL);
         let args = WorkflowArgs {
-            workflow_url: None,
-            workflow_yaml: Some(yaml.to_string()),
+            workflow_source: Some(
+                jobworkerp_runner::jobworkerp::runner::workflow_args::WorkflowSource::JsonData(
+                    yaml.to_string(),
+                ),
+            ),
             input: input.to_string(),
             workflow_context: if context.is_null() {
                 None

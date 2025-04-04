@@ -2,7 +2,6 @@ use super::rows::WorkerRow;
 use crate::infra::job::rows::UseJobqueueAndCodec;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use command_utils::util::{option::FlatMap as _, result::ToOption as _};
 use infra_utils::infra::rdb::{query_result, Rdb, RdbPool, UseRdbPool};
 use itertools::Itertools;
 use jobworkerp_base::{codec::UseProstCodec, error::JobWorkerError};
@@ -159,13 +158,13 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
             .await
             .map_err(JobWorkerError::DBError)
             .context(format!("error in find: name = {}", name))
-            .map(|r| r.flat_map(|r2| r2.to_proto().to_option()))
+            .map(|r| r.and_then(|r2| r2.to_proto().ok()))
     }
 
     async fn find(&self, id: &WorkerId) -> Result<Option<Worker>> {
         self.find_row_tx(self.db_pool(), id)
             .await
-            .map(|r| r.flat_map(|r2| r2.to_proto().to_option()))
+            .map(|r| r.and_then(|r2| r2.to_proto().ok()))
     }
 
     async fn find_row_tx<'c, E: Executor<'c, Database = Rdb>>(
@@ -184,11 +183,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
     async fn find_list(&self, limit: Option<i32>, offset: Option<i64>) -> Result<Vec<Worker>> {
         self.find_row_list_tx(self.db_pool(), limit, offset)
             .await
-            .map(|r| {
-                r.iter()
-                    .flat_map(|r2| r2.to_proto().to_option())
-                    .collect_vec()
-            })
+            .map(|r| r.iter().flat_map(|r2| r2.to_proto().ok()).collect_vec())
     }
 
     async fn find_row_list_tx<'c, E: Executor<'c, Database = Rdb>>(
@@ -329,7 +324,7 @@ mod test {
             periodic_interval: 12,
             channel: Some("hoge11".to_string()),
             queue_type: QueueType::Normal as i32,
-            response_type: ResponseType::ListenAfter as i32,
+            response_type: ResponseType::Direct as i32,
             store_success: false,
             store_failure: false,
             use_static: false,

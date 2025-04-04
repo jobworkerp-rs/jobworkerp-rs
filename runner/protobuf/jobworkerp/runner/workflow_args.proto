@@ -3,17 +3,16 @@ syntax = "proto3";
 package jobworkerp.runner;
 
 message WorkflowArgs {
-  // # Workflow URL
-  // URL or absolute file path to the workflow YAML file
-  // (simplified version of the full ServerlessWorkflow definition (schema TO BE
-  // defined))
-  optional string workflow_url = 1;
-
-  // # Workflow YAML
-  // Raw YAML string containing workflow definition with 'do:' task list
-  // (simplified version of the full ServerlessWorkflow definition (schema TO BE
-  // defined))
-  optional string workflow_yaml = 2;
+  // # Workflow data
+  // URL (absolute file path) to the workflow JSON or YAML file or raw JSON
+  // string (simplified version of the full ServerlessWorkflow definition
+  // (schema TO BE defined))
+  oneof workflow_source {
+    // URL or path to the workflow JSON or YAML file
+    string url = 1;
+    // the workflow JSON data string
+    string json_data = 2;
+  }
 
   // # Input
   // String input for the workflow context

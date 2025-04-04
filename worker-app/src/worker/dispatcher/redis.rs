@@ -11,8 +11,6 @@ use app::app::{UseWorkerConfig, WorkerConfig};
 use app::module::{AppConfigModule, AppModule};
 use app_wrapper::runner::{RunnerFactory, UseRunnerFactory};
 use async_trait::async_trait;
-use command_utils::util::option::ToResult;
-use command_utils::util::result::TapErr;
 use command_utils::util::shutdown::ShutdownLock;
 use futures::TryFutureExt;
 use infra::infra::job::queue::rdb::RdbJobQueueRepository;
@@ -75,7 +73,7 @@ pub trait RedisJobDispatcher:
             tokio::signal::ctrl_c().await.map(|_| {
                 tracing::debug!("got sigint signal....");
                 send.send(true)
-                    .tap_err(|e| tracing::error!("mpmc send error: {:?}", e))
+                    .inspect_err(|e| tracing::error!("mpmc send error: {:?}", e))
                     .unwrap();
             })
         });
@@ -234,18 +232,19 @@ pub trait RedisJobDispatcher:
             }
             return Err(JobWorkerError::NotFound(mes).into());
         };
-        let sid = wdat.runner_id.to_result(|| {
-            JobWorkerError::InvalidParameter("worker runner_id is not found.".to_string())
-        })?;
+        let sid = wdat.runner_id.ok_or(JobWorkerError::InvalidParameter(
+            "worker runner_id is not found.".to_string(),
+        ))?;
         let runner_data = if let Some(RunnerWithSchema {
             id: _,
             data: runner_data,
             ..
         }) = self.runner_app().find_runner(&sid, None).await?
         {
-            runner_data.to_result(|| {
-                JobWorkerError::NotFound(format!("runner_data {:?} is not found.", &sid))
-            })
+            runner_data.ok_or(JobWorkerError::NotFound(format!(
+                "runner_data {:?} is not found.",
+                &sid
+            )))
         } else {
             Err(JobWorkerError::NotFound(format!(
                 "runner_data {:?} is not found.",

@@ -20,9 +20,6 @@ use app_wrapper::runner::RunnerFactory;
 use app_wrapper::runner::UseRunnerFactory;
 use async_trait::async_trait;
 use command_utils::util::datetime;
-use command_utils::util::option::FlatMap;
-use command_utils::util::option::ToResult;
-use command_utils::util::result::TapErr;
 use command_utils::util::shutdown::ShutdownLock;
 use futures::stream;
 use infra::infra::job::queue::rdb::RdbJobQueueRepository;
@@ -106,7 +103,7 @@ pub trait RdbJobDispatcher:
                         .worker_app()
                         .find_worker_ids_by_channel(&ch)
                         .await
-                        .tap_err(|e| {
+                        .inspect_err(|e| {
                             tracing::error!("failed to find worker_ids_by_channel: {:?}", e)
                         })
                         .unwrap_or(vec![]);
@@ -125,7 +122,7 @@ pub trait RdbJobDispatcher:
                             true,
                         )
                         .await
-                        .tap_err(|e| tracing::error!("failed to fetch jobs: {:?}", e))
+                        .inspect_err(|e| tracing::error!("failed to fetch jobs: {:?}", e))
                         .unwrap_or(vec![]); // skip if failed to fetch jobs
 
                     if !jobs.is_empty() {
@@ -155,7 +152,7 @@ pub trait RdbJobDispatcher:
             ))
             .into());
         }
-        let wid = job.data.as_ref().flat_map(|d| d.worker_id.as_ref());
+        let wid = job.data.as_ref().and_then(|d| d.worker_id.as_ref());
         // get worker
         let (wid, w) = if let Some(Worker {
             id: Some(wid),
@@ -183,9 +180,10 @@ pub trait RdbJobDispatcher:
             ..
         }) = self.runner_app().find_runner(rid, None).await?
         {
-            runner_data.to_result(|| {
-                JobWorkerError::NotFound(format!("runner data {:?} is not found.", &rid))
-            })
+            runner_data.ok_or(JobWorkerError::NotFound(format!(
+                "runner data {:?} is not found.",
+                &rid
+            )))
         } else {
             tracing::error!("failed to get runner data for job: {:?}", &job);
             Err(JobWorkerError::NotFound(format!(
@@ -202,7 +200,7 @@ pub trait RdbJobDispatcher:
                 job.data.as_ref().map(|d| d.timeout),
                 job.data
                     .as_ref()
-                    .flat_map(|d| d.grabbed_until_time)
+                    .and_then(|d| d.grabbed_until_time)
                     .unwrap_or(0),
             )
             .await
@@ -218,7 +216,7 @@ pub trait RdbJobDispatcher:
                     self.result_processor()
                         .process_result(id, res, w)
                         .await
-                        .tap_err(|e| {
+                        .inspect_err(|e| {
                             tracing::error!(
                                 "failed to process result: worker_id={:?}, err={:?}",
                                 &wid,
