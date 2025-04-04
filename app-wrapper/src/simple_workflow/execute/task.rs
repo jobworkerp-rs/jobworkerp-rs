@@ -198,12 +198,6 @@ impl TaskExecutor {
                     .execute(self.task_name.as_str(), workflow_context, task_context)
                     .await
             }
-            Task::ListenTask(task) => {
-                let task_executor = ListenTaskExecutor::new(task);
-                task_executor
-                    .execute(self.task_name.as_str(), workflow_context, task_context)
-                    .await
-            }
             Task::RaiseTask(task) => {
                 let task_executor = RaiseTaskExecutor::new(task);
                 task_executor
@@ -290,26 +284,6 @@ impl TaskExecutorTrait for EmitTaskExecutor<'_> {
         _task_context: TaskContext,
     ) -> Result<TaskContext> {
         tracing::error!("EmitTaskExecutor not implemented yet!: {:?}", self.task);
-        todo!()
-    }
-}
-
-pub struct ListenTaskExecutor<'a> {
-    task: &'a workflow::ListenTask,
-}
-impl<'a> ListenTaskExecutor<'a> {
-    pub fn new(task: &'a workflow::ListenTask) -> Self {
-        Self { task }
-    }
-}
-impl TaskExecutorTrait for ListenTaskExecutor<'_> {
-    async fn execute(
-        &self,
-        _task_name: &str,
-        _workflow_context: Arc<RwLock<WorkflowContext>>,
-        _task_context: TaskContext,
-    ) -> Result<TaskContext> {
-        tracing::error!("ListenTaskExecutor not implemented yet!: {:?}", self.task);
         todo!()
     }
 }

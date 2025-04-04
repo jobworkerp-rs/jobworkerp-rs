@@ -2,7 +2,6 @@ use super::{JobResultPublisher, JobResultSubscriber};
 use crate::infra::{job::rows::UseJobqueueAndCodec, JobQueueConfig, UseJobQueueConfig};
 use anyhow::Result;
 use async_trait::async_trait;
-use command_utils::util::result::{TapErr, ToOption};
 use debug_stub_derive::DebugStub;
 use futures::{stream::BoxStream, Stream, StreamExt};
 use infra_utils::infra::redis::{RedisClient, UseRedisClient};
@@ -84,7 +83,7 @@ impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
         let mut sub = self
             .subscribe(cn.as_str())
             .await
-            .tap_err(|e| tracing::error!("redis_err:{:?}", e))?;
+            .inspect_err(|e| tracing::error!("redis_err:{:?}", e))?;
         // for timeout delay
         let delay = if let Some(to) = timeout {
             tokio::time::sleep(Duration::from_millis(to))
@@ -106,9 +105,9 @@ impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
                         // skip if error in processing message
                         let payload: Vec<u8> = msg
                             .get_payload()
-                            .tap_err(|e| tracing::error!("get_payload:{:?}", e))?;
+                            .inspect_err(|e| tracing::error!("get_payload:{:?}", e))?;
                         let result = Self::deserialize_job_result(&payload)
-                            .tap_err(|e| tracing::error!("deserialize_result:{:?}", e))?;
+                            .inspect_err(|e| tracing::error!("deserialize_result:{:?}", e))?;
                         tracing::debug!("subscribe_result_received: result={:?}", &result);
                         Ok(result)
                     } else {
@@ -160,7 +159,7 @@ impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
         } else {
             self.subscribe(cn.as_str())
                 .await
-                .tap_err(|e| tracing::error!("redis_err:{:?}", e))
+                .inspect_err(|e| tracing::error!("redis_err:{:?}", e))
         }?;
 
         let repo = Arc::new(self.clone());
@@ -183,7 +182,7 @@ impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
                                     &payload,
                                 )
                                 .inspect_err(|e| tracing::error!("deserialize_result:{:?}", e))
-                                .to_option()?;
+                                .ok()?;
                             match result.item {
                                 Some(result_output_item::Item::End(_)) => {
                                     tracing::debug!(
@@ -241,7 +240,7 @@ impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
         let sub = self
             .subscribe(cn.as_str())
             .await
-            .tap_err(|e| tracing::error!("redis_err:{:?}", e))?;
+            .inspect_err(|e| tracing::error!("redis_err:{:?}", e))?;
         // for timeout delay
         let res = Box::pin({
             sub.into_on_message().map(|msg| {
@@ -249,7 +248,7 @@ impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
                     .get_payload()
                     .inspect_err(|e| tracing::error!("get_payload:{:?}", e))?;
                 Self::deserialize_job_result(&payload)
-                    .tap_err(|e| tracing::error!("deserialize_result:{:?}", e))
+                    .inspect_err(|e| tracing::error!("deserialize_result:{:?}", e))
             })
         });
         Ok(res)

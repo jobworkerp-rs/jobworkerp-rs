@@ -2,12 +2,11 @@ pub mod impls;
 pub mod loader;
 
 use self::loader::RunnerPluginLoader;
+use crate::schema_to_json_string;
 use anyhow::Result;
-use command_utils::util::option::Exists;
 use itertools::Itertools;
 use proto::jobworkerp::data::StreamingOutputType;
 use std::{
-    env,
     fs::{self, ReadDir},
     path::Path,
     sync::Arc,
@@ -47,10 +46,8 @@ impl Plugins {
             runner_loader: Arc::new(TokioRwLock::new(RunnerPluginLoader::new())),
         }
     }
-
-    pub async fn load_plugin_files_from_env(&self) -> Vec<PluginMetadata> {
+    pub async fn load_plugin_files(&self, runner_dir_str: &str) -> Vec<PluginMetadata> {
         // default: current dir
-        let runner_dir_str = env::var("PLUGINS_RUNNER_DIR").unwrap_or("./".to_string());
         let runner_dirs: Vec<&str> = runner_dir_str.split(',').collect_vec();
         let mut loaded = Vec::new();
         for runner_dir in runner_dirs {
@@ -91,7 +88,7 @@ impl Plugins {
                 && file
                     .file_name()
                     .to_str()
-                    .exists(|n| n.ends_with(Self::get_library_extension()))
+                    .is_some_and(|n| n.ends_with(Self::get_library_extension()))
             {
                 tracing::info!("load {:?} plugin file: {}", ptype, file.path().display());
                 match ptype {
@@ -155,24 +152,10 @@ pub trait PluginRunner: Send + Sync {
         StreamingOutputType::NonStreaming
     }
     fn settings_schema(&self) -> String {
-        let schema = schemars::schema_for!(crate::jobworkerp::runner::Empty);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+        schema_to_json_string!(crate::jobworkerp::runner::Empty, "settings_schema")
     }
     fn arguments_schema(&self) -> String {
-        let schema = schemars::schema_for!(crate::jobworkerp::runner::Empty);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+        schema_to_json_string!(crate::jobworkerp::runner::Empty, "arguments_schema")
     }
     fn output_json_schema(&self) -> Option<String> {
         None

@@ -3,6 +3,7 @@ use crate::jobworkerp::runner::{
     PythonCommandRunnerSettings,
 };
 use crate::runner::RunnerTrait;
+use crate::{schema_to_json_string, schema_to_json_string_option};
 use anyhow::{anyhow, Context, Result};
 use futures::stream::BoxStream;
 use prost::Message;
@@ -74,35 +75,13 @@ impl RunnerSpec for PythonCommandRunner {
         StreamingOutputType::NonStreaming
     }
     fn settings_schema(&self) -> String {
-        let schema = schemars::schema_for!(PythonCommandRunnerSettings);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in settings_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+        schema_to_json_string!(PythonCommandRunnerSettings, "settings_schema")
     }
     fn arguments_schema(&self) -> String {
-        let schema = schemars::schema_for!(PythonCommandArgs);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+        schema_to_json_string!(PythonCommandArgs, "arguments_schema")
     }
     fn output_schema(&self) -> Option<String> {
-        // plain string with title
-        let schema = schemars::schema_for!(PythonCommandResult);
-        match serde_json::to_string(&schema) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::error!("error in output_json_schema: {:?}", e);
-                None
-            }
-        }
+        schema_to_json_string_option!(PythonCommandResult, "output_schema")
     }
 }
 

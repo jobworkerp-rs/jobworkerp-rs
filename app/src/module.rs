@@ -18,6 +18,7 @@ use infra::infra::{IdGeneratorWrapper, JobQueueConfig};
 use infra_utils::infra::memory::MemoryCacheImpl;
 use jobworkerp_runner::runner::factory::RunnerSpecFactory;
 use proto::jobworkerp::data::StorageType;
+use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -99,6 +100,7 @@ impl AppModule {
         let mc_config = envy::prefixed("MEMORY_CACHE_")
             .from_env::<infra_utils::infra::memory::MemoryCacheConfig>()
             .unwrap_or_default();
+        let plugin_dir = env::var("PLUGINS_RUNNER_DIR").unwrap_or("./".to_string());
         let job_queue_config = config_module.job_queue_config.clone();
         let id_generator = Arc::new(IdGeneratorWrapper::new());
         let descriptor_cache = Arc::new(MemoryCacheImpl::new(&mc_config, None));
@@ -113,6 +115,7 @@ impl AppModule {
                     .await,
                 );
                 let runner_app = Arc::new(RdbRunnerAppImpl::new(
+                    plugin_dir.clone(),
                     config_module.storage_config.clone(),
                     &mc_config,
                     repositories.clone(),
@@ -212,6 +215,7 @@ impl AppModule {
                 );
                 // TODO imprement and use hybrid runner app
                 let runner_app = Arc::new(HybridRunnerAppImpl::new(
+                    plugin_dir,
                     config_module.storage_config.clone(),
                     &mc_config,
                     repositories.clone(),
@@ -307,6 +311,7 @@ pub mod test {
     use proto::jobworkerp::data::StorageType;
     use std::sync::Arc;
     use tokio::time::Duration;
+    pub const TEST_PLUGIN_DIR: &str = infra::infra::module::test::TEST_PLUGIN_DIR;
 
     pub async fn create_hybrid_test_app() -> Result<AppModule> {
         // let redis_client = setup_test_redis_client()?;
@@ -344,6 +349,7 @@ pub mod test {
             ));
 
         let runner_app = Arc::new(HybridRunnerAppImpl::new(
+            TEST_PLUGIN_DIR.to_string(),
             storage_config.clone(),
             &infra_utils::infra::memory::MemoryCacheConfig {
                 num_counters: 10,

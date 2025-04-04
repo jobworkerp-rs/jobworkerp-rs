@@ -1,10 +1,8 @@
 pub mod hybrid;
 pub mod rdb;
-pub mod redis;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use command_utils::util::option::{Exists, FlatMap};
 use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
 use infra::infra::runner::rows::RunnerWithSchema;
 use infra_utils::infra::memory::{MemoryCacheImpl, UseMemoryCache};
@@ -82,14 +80,14 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
     {
         self.find_by_name(name)
             .await
-            .map(|w| w.flat_map(|w| w.data))
+            .map(|w| w.and_then(|w| w.data))
     }
 
     async fn find_data(&self, id: &WorkerId) -> Result<Option<WorkerData>>
     where
         Self: Send + 'static,
     {
-        self.find(id).await.map(|w| w.flat_map(|w| w.data))
+        self.find(id).await.map(|w| w.and_then(|w| w.data))
     }
 
     async fn find_data_by_opt(&self, idopt: Option<&WorkerId>) -> Result<Option<WorkerData>>
@@ -177,9 +175,13 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
         self.find_all_worker_list().await.map(|ws| {
             ws.into_iter()
                 .filter(|w| {
-                    w.data.as_ref().map(|d| d.channel.as_ref()).exists(|c| {
-                        c.unwrap_or(&JobqueueAndCodec::DEFAULT_CHANNEL_NAME.to_string()) == channel
-                    })
+                    w.data
+                        .as_ref()
+                        .map(|d| d.channel.as_ref())
+                        .is_some_and(|c| {
+                            c.unwrap_or(&JobqueueAndCodec::DEFAULT_CHANNEL_NAME.to_string())
+                                == channel
+                        })
                 })
                 .filter_map(|w| w.id)
                 .collect()

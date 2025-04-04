@@ -12,7 +12,6 @@ use crate::service::error_handle::handle_error;
 use app::app::job::JobApp;
 use app::module::AppModule;
 use async_stream::stream;
-use command_utils::util::option::Exists;
 use futures::stream::{self, BoxStream};
 use futures::StreamExt;
 use infra_utils::trace::Tracing;
@@ -40,7 +39,7 @@ pub trait RequestValidator {
             )));
         }
         // run_after_time should be positive or none
-        if req.run_after_time.exists(|t| t < 0) {
+        if req.run_after_time.is_some_and(|t| t < 0) {
             return Err(tonic::Status::invalid_argument(
                 "run_after_time should be positive",
             ));
@@ -109,7 +108,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
             Ok((id, res, st)) => {
                 // if st is some, collect it and return as result
                 if let Some(mut res) = res {
-                    if res.data.as_ref().exists(|d| d.output.is_none()) {
+                    if res.data.as_ref().is_some_and(|d| d.output.is_none()) {
                         // if stream is some, collect it and return as result
                         let data = if let Some(stream) = st {
                             // XXX try to collect result stream

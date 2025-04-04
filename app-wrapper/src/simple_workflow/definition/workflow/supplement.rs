@@ -1,6 +1,7 @@
 // cannot generate structure by typist (for serverless workflow version 1.0: generated from 1.0-alpha5)
 
 use super::*;
+use proto::jobworkerp::data::RetryPolicy as JobworkerpRetryPolicy;
 
 // helper for schema
 impl Schema {
@@ -57,70 +58,31 @@ pub trait TaskTrait {
 
 impl TaskTrait for CallTask {
     fn export(&self) -> ::std::option::Option<&Export> {
-        match self {
-            CallTask::AsyncApi { export, .. }
-            | CallTask::Grpc { export, .. }
-            | CallTask::Http { export, .. }
-            | CallTask::OpenApi { export, .. }
-            | CallTask::Function { export, .. } => export.as_ref(),
-        }
+        self.export.as_ref()
     }
 
     fn if_(&self) -> ::std::option::Option<&String> {
-        match self {
-            CallTask::AsyncApi { if_, .. }
-            | CallTask::Grpc { if_, .. }
-            | CallTask::Http { if_, .. }
-            | CallTask::OpenApi { if_, .. }
-            | CallTask::Function { if_, .. } => if_.as_ref(),
-        }
+        self.if_.as_ref()
     }
 
     fn input(&self) -> ::std::option::Option<&Input> {
-        match self {
-            CallTask::AsyncApi { input, .. }
-            | CallTask::Grpc { input, .. }
-            | CallTask::Http { input, .. }
-            | CallTask::OpenApi { input, .. }
-            | CallTask::Function { input, .. } => input.as_ref(),
-        }
+        self.input.as_ref()
     }
 
     fn metadata(&self) -> &::serde_json::Map<::std::string::String, ::serde_json::Value> {
-        match self {
-            CallTask::AsyncApi { metadata, .. }
-            | CallTask::Grpc { metadata, .. }
-            | CallTask::Http { metadata, .. }
-            | CallTask::OpenApi { metadata, .. }
-            | CallTask::Function { metadata, .. } => metadata,
-        }
+        &self.metadata
     }
 
     fn output(&self) -> ::std::option::Option<&Output> {
-        match self {
-            CallTask::AsyncApi { output, .. }
-            | CallTask::Grpc { output, .. }
-            | CallTask::Http { output, .. }
-            | CallTask::OpenApi { output, .. }
-            | CallTask::Function { output, .. } => output.as_ref(),
-        }
+        self.output.as_ref()
     }
 
     fn then(&self) -> ::std::option::Option<&FlowDirective> {
-        match self {
-            CallTask::AsyncApi { then, .. }
-            | CallTask::Grpc { then, .. }
-            | CallTask::Http { then, .. }
-            | CallTask::OpenApi { then, .. }
-            | CallTask::Function { then, .. } => then.as_ref(),
-        }
+        self.then.as_ref()
     }
 
     fn timeout(&self) -> ::std::option::Option<&TaskTimeout> {
-        match self {
-            CallTask::AsyncApi { timeout, .. } => timeout.as_ref(),
-            _ => None,
-        }
+        self.timeout.as_ref()
     }
 }
 impl TaskTrait for DoTask {
@@ -216,37 +178,6 @@ impl TaskTrait for ForTask {
 }
 
 impl TaskTrait for ForkTask {
-    fn export(&self) -> ::std::option::Option<&Export> {
-        self.export.as_ref()
-    }
-
-    fn if_(&self) -> ::std::option::Option<&::std::string::String> {
-        self.if_.as_ref()
-    }
-
-    fn input(&self) -> ::std::option::Option<&Input> {
-        self.input.as_ref()
-    }
-
-    fn metadata(&self) -> &::serde_json::Map<::std::string::String, ::serde_json::Value> {
-        &self.metadata
-    }
-
-    fn output(&self) -> ::std::option::Option<&Output> {
-        self.output.as_ref()
-    }
-
-    fn then(&self) -> ::std::option::Option<&FlowDirective> {
-        self.then.as_ref()
-    }
-
-    fn timeout(&self) -> ::std::option::Option<&TaskTimeout> {
-        // Convert TaskTimeout to CallTaskAsyncApiTimeout if needed
-        self.timeout.as_ref()
-    }
-}
-
-impl TaskTrait for ListenTask {
     fn export(&self) -> ::std::option::Option<&Export> {
         self.export.as_ref()
     }
@@ -464,7 +395,6 @@ impl TaskTrait for Task {
             Task::EmitTask(t) => t.export(),
             Task::ForTask(t) => t.export(), // Needs to be matched before DoTask
             Task::DoTask(t) => t.export(),
-            Task::ListenTask(t) => t.export(),
             Task::RaiseTask(t) => t.export(),
             Task::RunTask(t) => t.export(),
             Task::SetTask(t) => t.export(),
@@ -481,7 +411,6 @@ impl TaskTrait for Task {
             Task::EmitTask(t) => t.if_(),
             Task::ForTask(t) => t.if_(), // Needs to be matched before DoTask
             Task::DoTask(t) => t.if_(),
-            Task::ListenTask(t) => t.if_(),
             Task::RaiseTask(t) => t.if_(),
             Task::RunTask(t) => t.if_(),
             Task::SetTask(t) => t.if_(),
@@ -498,7 +427,6 @@ impl TaskTrait for Task {
             Task::EmitTask(t) => t.input(),
             Task::ForTask(t) => t.input(), // Needs to be matched before DoTask
             Task::DoTask(t) => t.input(),
-            Task::ListenTask(t) => t.input(),
             Task::RaiseTask(t) => t.input(),
             Task::RunTask(t) => t.input(),
             Task::SetTask(t) => t.input(),
@@ -515,7 +443,6 @@ impl TaskTrait for Task {
             Task::EmitTask(t) => t.metadata(),
             Task::ForTask(t) => t.metadata(),
             Task::DoTask(t) => t.metadata(),
-            Task::ListenTask(t) => t.metadata(),
             Task::RaiseTask(t) => t.metadata(),
             Task::RunTask(t) => t.metadata(),
             Task::SetTask(t) => t.metadata(),
@@ -532,7 +459,6 @@ impl TaskTrait for Task {
             Task::EmitTask(t) => t.output(),
             Task::ForTask(t) => t.output(),
             Task::DoTask(t) => t.output(),
-            Task::ListenTask(t) => t.output(),
             Task::RaiseTask(t) => t.output(),
             Task::RunTask(t) => t.output(),
             Task::SetTask(t) => t.output(),
@@ -549,7 +475,6 @@ impl TaskTrait for Task {
             Task::EmitTask(t) => t.then(),
             Task::ForTask(t) => t.then(),
             Task::DoTask(t) => t.then(),
-            Task::ListenTask(t) => t.then(),
             Task::RaiseTask(t) => t.then(),
             Task::RunTask(t) => t.then(),
             Task::SetTask(t) => t.then(),
@@ -566,7 +491,6 @@ impl TaskTrait for Task {
             Task::EmitTask(t) => t.timeout(),
             Task::ForTask(t) => t.timeout(),
             Task::DoTask(t) => t.timeout(),
-            Task::ListenTask(t) => t.timeout(),
             Task::RaiseTask(t) => t.timeout(),
             Task::RunTask(t) => t.timeout(),
             Task::SetTask(t) => t.timeout(),
@@ -597,34 +521,194 @@ impl Default for DoTask {
 impl Default for Document {
     fn default() -> Self {
         Self {
-            // dsl: Default::default(),
+            dsl: Default::default(),
             metadata: Default::default(),
             name: Default::default(),
-            // namespace: Default::default(),
+            namespace: Default::default(),
             summary: Default::default(),
             tags: Default::default(),
             title: Default::default(),
-            // version: Default::default(),
+            version: Default::default(),
         }
-    }
-}
-impl Default for WorkflowDsl {
-    fn default() -> Self {
-        Self("0.0.1".into())
-    }
-}
-impl Default for WorkflowNamespace {
-    fn default() -> Self {
-        Self("default".into())
-    }
-}
-impl Default for WorkflowVersion {
-    fn default() -> Self {
-        Self("0.0.1".into())
     }
 }
 impl Default for WorkflowName {
     fn default() -> Self {
         Self("default-workflow".into())
+    }
+}
+
+impl Duration {
+    pub fn from_millis(milliseconds: u64) -> Self {
+        let r = milliseconds;
+        let ms = r % 1000;
+        let r = r / 1000;
+        let seconds = r % 60;
+        let r = r / 60;
+        let minutes = r % 60;
+        let r = r / 60;
+        let hours = r % 24;
+        let days = r / 24;
+
+        Duration::Inline {
+            days: Some(days as i64),
+            hours: Some(hours as i64),
+            minutes: Some(minutes as i64),
+            seconds: Some(seconds as i64),
+            milliseconds: Some(ms as i64),
+        }
+    }
+    pub fn to_millis(&self) -> u64 {
+        match self {
+            Duration::Inline {
+                days,
+                hours,
+                minutes,
+                seconds,
+                milliseconds,
+            } => {
+                let mut total_ms: u64 = 0;
+
+                if let Some(days) = days {
+                    // Convert days to u64 before multiplication to avoid overflow
+                    if let Some(ms) = (*days as u64).checked_mul(24 * 60 * 60 * 1000) {
+                        total_ms = total_ms.saturating_add(ms);
+                    }
+                }
+
+                if let Some(hours) = hours {
+                    // Convert hours to u64 before multiplication to avoid overflow
+                    if let Some(ms) = (*hours as u64).checked_mul(60 * 60 * 1000) {
+                        total_ms = total_ms.saturating_add(ms);
+                    }
+                }
+
+                if let Some(minutes) = minutes {
+                    // Convert minutes to u64 before multiplication to avoid overflow
+                    if let Some(ms) = (*minutes as u64).checked_mul(60 * 1000) {
+                        total_ms = total_ms.saturating_add(ms);
+                    }
+                }
+
+                if let Some(seconds) = seconds {
+                    // Convert seconds to u64 before multiplication to avoid overflow
+                    if let Some(ms) = (*seconds as u64).checked_mul(1000) {
+                        total_ms = total_ms.saturating_add(ms);
+                    }
+                }
+
+                if let Some(milliseconds) = milliseconds {
+                    // Add milliseconds directly, checking for overflow
+                    total_ms = total_ms.saturating_add(*milliseconds as u64);
+                }
+
+                total_ms
+            }
+            Duration::Expression(expr) => {
+                // Parse ISO 8601 duration expression
+                // Format: P[n]Y[n]M[n]DT[n]H[n]M[n]S
+                // P is the duration designator, T is the time designator
+
+                let expr_str = expr.0.as_str();
+                let mut total_ms = 0u64;
+
+                // Split at the 'T' character to separate date and time parts
+                let parts: Vec<&str> = expr_str.split('T').collect();
+                let date_part = parts[0].strip_prefix('P').unwrap_or("");
+                let time_part = if parts.len() > 1 { parts[1] } else { "" };
+
+                // Parse date part (P[n]Y[n]M[n]W[n]D)
+                let mut current_number = String::new();
+                for c in date_part.chars() {
+                    if c.is_ascii_digit() || c == '.' {
+                        current_number.push(c);
+                    } else if !current_number.is_empty() {
+                        let value = current_number.parse::<f64>().unwrap_or(0.0);
+                        match c {
+                            'Y' => {
+                                // Approximate a year as 365.25 days
+                                total_ms += (value * 365.25 * 24.0 * 60.0 * 60.0 * 1000.0) as u64;
+                            }
+                            'M' => {
+                                // Approximate a month as 30.44 days
+                                total_ms += (value * 30.44 * 24.0 * 60.0 * 60.0 * 1000.0) as u64;
+                            }
+                            'W' => {
+                                // A week is exactly 7 days
+                                total_ms += (value * 7.0 * 24.0 * 60.0 * 60.0 * 1000.0) as u64;
+                            }
+                            'D' => {
+                                // A day is exactly 24 hours
+                                total_ms += (value * 24.0 * 60.0 * 60.0 * 1000.0) as u64;
+                            }
+                            _ => {}
+                        }
+                        current_number.clear();
+                    }
+                }
+
+                // Parse time part ([n]H[n]M[n]S)
+                current_number.clear();
+                for c in time_part.chars() {
+                    if c.is_ascii_digit() || c == '.' {
+                        current_number.push(c);
+                    } else if !current_number.is_empty() {
+                        let value = current_number.parse::<f64>().unwrap_or(0.0);
+                        match c {
+                            'H' => {
+                                // An hour is exactly 60 minutes
+                                total_ms += (value * 60.0 * 60.0 * 1000.0) as u64;
+                            }
+                            'M' => {
+                                // A minute is exactly 60 seconds
+                                total_ms += (value * 60.0 * 1000.0) as u64;
+                            }
+                            'S' => {
+                                // A second is exactly 1000 milliseconds
+                                total_ms += (value * 1000.0) as u64;
+                            }
+                            _ => {}
+                        }
+                        current_number.clear();
+                    }
+                }
+
+                total_ms
+            }
+        }
+    }
+}
+impl RetryPolicy {
+    pub fn to_jobworkerp(self) -> JobworkerpRetryPolicy {
+        JobworkerpRetryPolicy {
+            r#type: self
+                .backoff
+                .map(|x| match x {
+                    RetryBackoff::Constant(_) => {
+                        proto::jobworkerp::data::RetryType::Constant as i32
+                    }
+                    RetryBackoff::Exponential(_) => {
+                        proto::jobworkerp::data::RetryType::Exponential as i32
+                    }
+                    RetryBackoff::Linear(_) => proto::jobworkerp::data::RetryType::Linear as i32,
+                })
+                .unwrap_or_default(),
+            interval: self.delay.map(|x| x.to_millis() as u32).unwrap_or_default(),
+            max_retry: self
+                .limit
+                .as_ref()
+                .and_then(|l| l.attempt.as_ref().and_then(|a| a.count.map(|i| i as u32)))
+                .unwrap_or_default(),
+            max_interval: self
+                .limit
+                .as_ref()
+                .and_then(|l| {
+                    l.attempt
+                        .as_ref()
+                        .and_then(|a| a.duration.as_ref().map(|d| d.to_millis() as u32))
+                })
+                .unwrap_or_default(),
+            basis: 2.0, // XXX fixed
+        }
     }
 }

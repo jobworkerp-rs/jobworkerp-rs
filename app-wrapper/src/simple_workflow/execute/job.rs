@@ -12,7 +12,6 @@ use app::module::AppModule;
 use command_utils::cache_ok;
 use command_utils::protobuf::ProtobufDescriptor;
 use command_utils::util::datetime;
-use command_utils::util::option::{Exists, FlatMap};
 use command_utils::util::scoped_cache::ScopedCache;
 use futures::stream::BoxStream;
 use infra::infra::runner::rows::RunnerWithSchema;
@@ -110,7 +109,7 @@ pub trait UseJobExecutorHelper:
                 .await?;
             Ok(list
                 .iter()
-                .find(|r| r.data.as_ref().exists(|d| d.name == name))
+                .find(|r| r.data.as_ref().is_some_and(|d| d.name == name))
                 .cloned())
         }
     }
@@ -314,6 +313,81 @@ pub trait UseJobExecutorHelper:
         }
     }
 
+    fn create_worker_data_from(
+        &self,
+        name: &str,
+        worker_params: Option<serde_json::Value>,
+        runner_settings: Vec<u8>,
+    ) -> impl std::future::Future<Output = Result<WorkerData>> + Send {
+        async move {
+            if let Some(RunnerWithSchema {
+                id: Some(sid),
+                data: Some(_sdata),
+                ..
+            }) = self.find_runner_by_name(name).await?
+            {
+                if let Some(serde_json::Value::Object(obj)) = worker_params {
+                    // Override values with workflow metadata
+                    Ok(WorkerData {
+                        name: obj
+                            .get("name")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                            .unwrap_or_else(|| name.to_string().clone()),
+                        description: obj
+                            .get("description")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                            .unwrap_or_else(|| "".to_string()),
+                        runner_id: Some(sid),
+                        runner_settings,
+                        periodic_interval: 0,
+                        channel: obj
+                            .get("channel")
+                            .and_then(|v| v.as_str().map(|s| s.to_string())),
+                        queue_type: obj
+                            .get("queue_type")
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                            .and_then(|s| QueueType::from_str_name(&s).map(|q| q as i32))
+                            .unwrap_or(QueueType::Normal as i32),
+                        response_type: ResponseType::Direct as i32,
+                        store_success: obj
+                            .get("store_success")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
+                        store_failure: obj
+                            .get("store_success")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(true), //
+                        use_static: obj
+                            .get("use_static")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
+                        retry_policy: Some(DEFAULT_RETRY_POLICY), //TODO
+                        broadcast_results: true,
+                    })
+                } else {
+                    // default values
+                    Ok(WorkerData {
+                        name: name.to_string().clone(),
+                        description: "".to_string(),
+                        runner_id: Some(sid),
+                        runner_settings,
+                        periodic_interval: 0,
+                        channel: None,
+                        queue_type: QueueType::Normal as i32,
+                        response_type: ResponseType::Direct as i32,
+                        store_success: false,
+                        store_failure: true, //
+                        use_static: false,
+                        retry_policy: Some(DEFAULT_RETRY_POLICY), //TODO
+                        broadcast_results: true,
+                    })
+                }
+            } else {
+                Err(anyhow::anyhow!("Not found runner: {}", name))
+            }
+        }
+    }
+
     /// Enqueues a job for a worker and retrieves the raw output data.
     ///
     /// This function creates a worker if it doesn't exist and uses a temporary name.
@@ -330,134 +404,60 @@ pub trait UseJobExecutorHelper:
     /// Raw binary output data
     fn setup_worker_and_enqueue_with_raw_output(
         &self,
-        name: &str,
-        runner_settings: Vec<u8>,
-        worker_params: Option<serde_json::Value>,
+        worker_data: &mut WorkerData, // change name (add random postfix) if not static
         job_args: Vec<u8>,
         job_timeout_sec: u32,
     ) -> impl std::future::Future<Output = Result<Vec<u8>>> + Send {
-        let name = name.to_owned();
-        // let job_args = job_args;
         async move {
-            if let Some(RunnerWithSchema {
-                id: Some(sid),
-                data: Some(_sdata),
-                ..
-            }) = self.find_runner_by_name(name.as_str()).await?
+            // random name (temporary name for not static worker)
+            if !worker_data.use_static {
+                let mut hasher = DefaultHasher::default();
+                hasher.write_i64(datetime::now_millis());
+                hasher.write_i64(rand::random()); // random
+                worker_data.name = format!("{}_{:x}", worker_data.name, hasher.finish());
+                tracing::debug!("Worker name with hash: {}", &worker_data.name);
+            }
+            // TODO unwind and delete not static worker if failed to enqueue job
+            if let Worker {
+                id: Some(wid),
+                data: Some(wdata),
+            } = self.find_or_create_worker(worker_data).await?
             {
-                let mut worker: WorkerData =
-                    if let Some(serde_json::Value::Object(obj)) = worker_params {
-                        // Override values with workflow metadata
-                        WorkerData {
-                            name: obj
-                                .get("name")
-                                .and_then(|v| v.as_str().map(|s| s.to_string()))
-                                .unwrap_or_else(|| name.to_string().clone()),
-                            description: obj
-                                .get("description")
-                                .and_then(|v| v.as_str().map(|s| s.to_string()))
-                                .unwrap_or_else(|| "".to_string()),
-                            runner_id: Some(sid),
-                            runner_settings,
-                            periodic_interval: 0,
-                            channel: obj
-                                .get("channel")
-                                .and_then(|v| v.as_str().map(|s| s.to_string())),
-                            queue_type: obj
-                                .get("queue_type")
-                                .and_then(|v| v.as_str().map(|s| s.to_string()))
-                                .and_then(|s| QueueType::from_str_name(&s).map(|q| q as i32))
-                                .unwrap_or(QueueType::Normal as i32),
-                            response_type: ResponseType::Direct as i32,
-                            store_success: obj
-                                .get("store_success")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false),
-                            store_failure: obj
-                                .get("store_success")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(true), //
-                            use_static: obj
-                                .get("use_static")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false),
-                            retry_policy: Some(DEFAULT_RETRY_POLICY), //TODO
-                            broadcast_results: true,
-                        }
-                    } else {
-                        // default values
-                        WorkerData {
-                            name: name.to_string().clone(),
-                            description: "".to_string(),
-                            runner_id: Some(sid),
-                            runner_settings,
-                            periodic_interval: 0,
-                            channel: None,
-                            queue_type: QueueType::Normal as i32,
-                            response_type: ResponseType::Direct as i32,
-                            store_success: false,
-                            store_failure: true, //
-                            use_static: false,
-                            retry_policy: Some(DEFAULT_RETRY_POLICY), //TODO
-                            broadcast_results: true,
-                        }
-                    };
-                // random name (temporary name for not static worker)
-                if !worker.use_static {
-                    let mut hasher = DefaultHasher::default();
-                    hasher.write_i64(datetime::now_millis());
-                    hasher.write_i64(rand::random()); // random
-                    worker.name = format!("{}_{:x}", worker.name, hasher.finish());
-                    tracing::debug!("Worker name with hash: {}", &worker.name);
-                }
-                // TODO unwind and delete not static worker if failed to enqueue job
-                if let Worker {
-                    id: Some(wid),
-                    data: Some(wdata),
-                } = self.find_or_create_worker(&worker).await?
-                {
-                    let output = self
-                        .enqueue_job_and_get_output(&wid, job_args, job_timeout_sec)
-                        .await
-                        .inspect_err(|e| {
-                            tracing::warn!(
-                                "Execute task failed: enqueue job and get output: {:#?}",
-                                e
-                            )
-                        });
-                    // use worker one-time
-                    // XXX use_static means static worker in jobworkerp, not in workflow (but use as a temporary worker or not)
-                    if !wdata.use_static {
-                        match self.worker_app().delete(&wid).await {
-                            Ok(deleted) => {
-                                if !deleted {
-                                    tracing::warn!("Worker not deleted: {:?}", wid);
-                                }
+                let output = self
+                    .enqueue_job_and_get_output(&wid, job_args, job_timeout_sec)
+                    .await
+                    .inspect_err(|e| {
+                        tracing::warn!("Execute task failed: enqueue job and get output: {:#?}", e)
+                    });
+                // use worker one-time
+                // XXX use_static means static worker in jobworkerp, not in workflow (but use as a temporary worker or not)
+                if !wdata.use_static {
+                    match self.worker_app().delete(&wid).await {
+                        Ok(deleted) => {
+                            if !deleted {
+                                tracing::warn!("Worker not deleted: {:?}", wid);
                             }
-                            Err(e) => {
-                                tracing::warn!("Failed to delete worker: {:?}, {:?}", wid, e);
-                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to delete worker: {:?}, {:?}", wid, e);
                         }
                     }
-                    output
-                } else {
-                    Err(anyhow::anyhow!(
-                        "Failed to find or create worker: {:#?}",
-                        worker
-                    ))
                 }
+                output
             } else {
-                Err(anyhow::anyhow!("Not found runner: {}", name))
+                Err(anyhow::anyhow!(
+                    "Failed to find or create worker: {:#?}",
+                    worker_data
+                ))
             }
         }
     }
     fn setup_worker_and_enqueue(
         &self,
-        runner_name: &str,                        // runner(runner) name
-        runner_settings: Vec<u8>,                 // runner_settings data
-        worker_params: Option<serde_json::Value>, // worker parameters (if not exists, use default values)
-        job_args: Vec<u8>,                        // enqueue job args
-        job_timeout_sec: u32,                     // job timeout in seconds
+        runner_name: &str,           // runner(runner) name
+        mut worker_data: WorkerData, // worker parameters (if not exists, use default values)
+        job_args: Vec<u8>,           // enqueue job args
+        job_timeout_sec: u32,        // job timeout in seconds
     ) -> impl std::future::Future<Output = Result<serde_json::Value>> + Send {
         async move {
             // use memory cache?
@@ -467,15 +467,17 @@ pub trait UseJobExecutorHelper:
                 ..
             }) = self.find_runner_by_name(runner_name).await?
             {
+                // let mut worker = self
+                //     .create_worker_data_from(runner_name, worker_params, runner_settings)
+                //     .await?;
+
                 let descriptors = self.parse_proto_with_cache(&rid, &rdata).await?;
                 let result_descriptor = descriptors
                     .result_descriptor
-                    .flat_map(|d| d.get_messages().first().cloned());
+                    .and_then(|d| d.get_messages().first().cloned());
                 let output = self
                     .setup_worker_and_enqueue_with_raw_output(
-                        runner_name,
-                        runner_settings,
-                        worker_params,
+                        &mut worker_data,
                         job_args,
                         job_timeout_sec,
                     )
@@ -512,9 +514,9 @@ pub trait UseJobExecutorHelper:
         &self,
         runner_name: &str,                          // runner(runner) name
         runner_settings: Option<serde_json::Value>, // runner_settings data
-        worker_params: Option<serde_json::Value>, // worker parameters (if not exists, use default values)
-        job_args: serde_json::Value,              // enqueue job args
-        job_timeout_sec: u32,                     // job timeout in seconds
+        mut worker_data: WorkerData, // worker parameters (if not exists, use default values)
+        job_args: serde_json::Value, // enqueue job args
+        job_timeout_sec: u32,        // job timeout in seconds
     ) -> impl std::future::Future<Output = Result<serde_json::Value>> + Send {
         async move {
             if let Some(RunnerWithSchema {
@@ -524,13 +526,14 @@ pub trait UseJobExecutorHelper:
             }) = self.find_runner_by_name(runner_name).await?
             // TODO local cache? (2 times request in this function)
             {
+                worker_data.runner_id = Some(rid);
                 let descriptors = self.parse_proto_with_cache(&rid, &rdata).await?;
                 let runner_settings_descriptor = descriptors
                     .runner_settings_descriptor
-                    .flat_map(|d| d.get_messages().first().cloned());
+                    .and_then(|d| d.get_messages().first().cloned());
                 let args_descriptor = descriptors
                     .args_descriptor
-                    .flat_map(|d| d.get_messages().first().cloned());
+                    .and_then(|d| d.get_messages().first().cloned());
                 // let runner_settings_descriptor =
                 //     Self::parse_runner_settings_schema_descriptor(&rdata).map_err(|e| {
                 //         anyhow::anyhow!(
@@ -565,10 +568,10 @@ pub trait UseJobExecutorHelper:
                         .as_bytes()
                         .to_vec()
                 };
+                worker_data.runner_settings = runner_settings;
                 self.setup_worker_and_enqueue(
                     runner_name,     // runner(runner) name
-                    runner_settings, // runner_settings data
-                    worker_params,   // worker parameters (if not exists, use default values)
+                    worker_data,     // worker parameters (if not exists, use default values)
                     job_args,        // enqueue job args
                     job_timeout_sec, // job timeout in seconds
                 )

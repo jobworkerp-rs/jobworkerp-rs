@@ -1,6 +1,5 @@
 pub mod hybrid;
 pub mod rdb;
-pub mod redis;
 
 use anyhow::Result;
 use async_trait::async_trait;
