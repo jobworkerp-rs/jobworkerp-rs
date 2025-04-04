@@ -1,6 +1,6 @@
-FROM nvcr.io/nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+FROM nvcr.io/nvidia/cuda:12.8.1-runtime-ubuntu24.04
 
-RUN apt update && apt install -y libssl3 libcurl4 libgomp1 \
+RUN apt update && apt install -y libssl3 libcurl4 libgomp1 libcudnn9-cuda-12 \
     && apt-get clean -y && rm -rf /var/lib/apt/lists/*
 
 RUN adduser --system jobworkerp
