@@ -1,3 +1,6 @@
+#![allow(clippy::large_enum_variant)]
+#![allow(clippy::len_zero)]
+#![allow(clippy::derivable_impls)]
 #![allow(clippy::redundant_closure_call)]
 #![allow(clippy::needless_lifetimes)]
 #![allow(clippy::match_single_binding)]
@@ -1849,6 +1852,7 @@ impl ::std::convert::From<&Self> for ErrorInstance {
 impl ::std::str::FromStr for ErrorInstance {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        #[allow(irrefutable_let_patterns)] // auto generated code
         if let Ok(v) = value.parse() {
             Ok(Self::LiteralErrorInstance(v))
         } else if let Ok(v) = value.parse() {

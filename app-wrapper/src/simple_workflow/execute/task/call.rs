@@ -172,92 +172,86 @@ impl TaskExecutorTrait for CallTaskExecutor<'_> {
         workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
     ) -> Result<TaskContext> {
-        match self.task {
-            // add other call task types
-            workflow::CallTask {
-                call,
-                export: _export,
-                if_: _if_,
-                input: _input,
-                metadata: call_metadata,
-                output: call_output,
-                then: _then,
-                timeout: _timeout,
-                with, // TODO return as argument for return value
-            } => {
-                // TODO name reference (inner yaml, public catalog)
-                let fun = self
-                    .with_cache_if_some(call, None, || self.load_url_or_path(call.as_str()))
-                    .await?
-                    .ok_or(anyhow!("not found: {}", call.as_str()))?;
-                match fun {
-                    // TODO: add other task types
-                    RunTask {
-                        export,
-                        if_,
-                        input,
-                        metadata,
-                        output,
-                        run:
-                            RunTaskConfiguration {
-                                await_,
-                                function:
-                                    workflow::Function {
-                                        mut arguments,
-                                        options,
-                                        runner_name,
-                                        settings: loaded_settings,
-                                    },
-                                return_,
+        let workflow::CallTask {
+            // TODO: add other task types
+            call,
+            export: _export,
+            if_: _if_,
+            input: _input,
+            metadata: call_metadata,
+            output: call_output,
+            then: _then,
+            timeout: _timeout,
+            with, // TODO return as argument for return value
+        } = self.task;
+        {
+            // TODO name reference (inner yaml, public catalog)
+            let fun = self
+                .with_cache_if_some(call, None, || self.load_url_or_path(call.as_str()))
+                .await?
+                .ok_or(anyhow!("not found: {}", call.as_str()))?;
+            // TODO: add other task types
+            let RunTask {
+                export,
+                if_,
+                input,
+                metadata,
+                output,
+                run:
+                    RunTaskConfiguration {
+                        await_,
+                        function:
+                            workflow::Function {
+                                mut arguments,
+                                options,
+                                runner_name,
+                                settings: loaded_settings,
                             },
-                        then,
-                        timeout,
-                    } => {
-                        let (options, settings) =
-                            Self::extract_metadata(call_metadata, loaded_settings, options);
-                        let task = RunTask {
-                            export,
-                            if_,
-                            input,
-                            metadata,
-                            output: call_output.clone().or(output), // TODO merge output
-                            // XXX 1 pattern only
-                            run: RunTaskConfiguration {
-                                await_,
-                                function: workflow::Function {
-                                    arguments: {
-                                        command_utils::util::json::merge_obj(
-                                            &mut arguments,
-                                            with.clone(),
-                                        );
-                                        arguments
-                                    },
-                                    options,
-                                    runner_name,
-                                    settings,
-                                },
-                                return_,
+                        return_,
+                    },
+                then,
+                timeout,
+            } = fun;
+            {
+                let (options, settings) =
+                    Self::extract_metadata(call_metadata, loaded_settings, options);
+                let task = RunTask {
+                    export,
+                    if_,
+                    input,
+                    metadata,
+                    output: call_output.clone().or(output), // TODO merge output
+                    // XXX 1 pattern only
+                    run: RunTaskConfiguration {
+                        await_,
+                        function: workflow::Function {
+                            arguments: {
+                                command_utils::util::json::merge_obj(&mut arguments, with.clone());
+                                arguments
                             },
-                            then,
-                            timeout,
-                        };
-                        let executor =
-                            RunTaskExecutor::new(self.job_executor_wrapper.clone(), &task);
-                        executor
-                            .execute(task_name, workflow_context, task_context)
-                            .await
-                    } // _ => {
-                      //     tracing::error!("not supported the called function for now: {:?}", call);
-                      //     Err(anyhow!(
-                      //         "not supported the called function for now: {:?}",
-                      //         call
-                      //     ))
-                      // }
-                }
+                            options,
+                            runner_name,
+                            settings,
+                        },
+                        return_,
+                    },
+                    then,
+                    timeout,
+                };
+                let executor = RunTaskExecutor::new(self.job_executor_wrapper.clone(), &task);
+                executor
+                    .execute(task_name, workflow_context, task_context)
+                    .await
             } // _ => {
-              //     tracing::error!("not supported the call for now: {:?}", &self.task);
-              //     Err(anyhow!("not supported the call for now: {:?}", &self.task))
+              //     tracing::error!("not supported the called function for now: {:?}", call);
+              //     Err(anyhow!(
+              //         "not supported the called function for now: {:?}",
+              //         call
+              //     ))
               // }
-        }
+        } // _ => {
+          //     tracing::error!("not supported the call for now: {:?}", &self.task);
+          //     Err(anyhow!("not supported the call for now: {:?}", &self.task))
+          // }
     }
 }

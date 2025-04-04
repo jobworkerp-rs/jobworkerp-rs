@@ -20,41 +20,6 @@ where
 {
     const CACHE_KEY: &'static str = "RUNNER_DEF";
 
-    // async fn add_from_plugins(&self) -> Result<()> {
-    //     let metas = self.plugin_runner_factory().load_plugins_from(TEST_PLUGIN_DIR).await;
-    //     for meta in metas.iter() {
-    //         if let Some(p) = self
-    //             .plugin_runner_factory()
-    //             .create_plugin_by_name(&meta.name, false)
-    //             .await
-    //         {
-    //             let runner = RunnerRow {
-    //                 id: self.id_generator().generate_id()?,
-    //                 name: meta.name.clone(),
-    //                 description: meta.description.clone(),
-    //                 file_name: meta.filename.clone(),
-    //                 r#type: RunnerType::from_str_name(&meta.name)
-    //                     .map(|t| t as i32)
-    //                     .unwrap_or(0), // default: PLUGIN
-    //             }
-    //             .to_runner_with_schema(p);
-    //             if let Some(id) = runner.id {
-    //                 match self.create(&id, &runner).await {
-    //                     Ok(_) => {}
-    //                     Err(e) => {
-    //                         tracing::warn!("error in add_from_plugins: {:?}", e);
-    //                     }
-    //                 }
-    //             } else {
-    //                 tracing::error!("runner id not found: {}", &meta.name);
-    //             }
-    //         } else {
-    //             tracing::error!("loaded plugin not found: {}", &meta.name);
-    //         }
-    //     }
-    //     Ok(())
-    // }
-
     async fn create(&self, id: &RunnerId, runner: &RunnerWithSchema) -> Result<()> {
         let res: Result<bool> = self
             .redis_pool()

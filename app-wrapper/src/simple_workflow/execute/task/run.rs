@@ -35,12 +35,23 @@ impl<'a> RunTaskExecutor<'a> {
         name: &str,
     ) -> Option<WorkerData> {
         if let Some(options) = options {
-            let mut worker_data = WorkerData::default();
-            worker_data.name = name.to_string();
+            // Initialize with struct syntax instead of default() + field assignments
+            let mut worker_data = WorkerData {
+                name: name.to_string(),
+                description: String::new(),
+                broadcast_results: options.broadcast_results_to_listener.unwrap_or(false),
+                store_failure: options.store_failure.unwrap_or(false),
+                store_success: options.store_success.unwrap_or(false),
+                use_static: options.use_static.unwrap_or(false),
+                queue_type: if options.with_backup.unwrap_or(false) {
+                    proto::jobworkerp::data::QueueType::WithBackup as i32
+                } else {
+                    proto::jobworkerp::data::QueueType::Normal as i32
+                },
+                ..Default::default()
+            };
 
-            // Access the fields directly from FunctionOptions struct
-            worker_data.broadcast_results = options.broadcast_results_to_listener.unwrap_or(false);
-
+            // Handle optional fields that can't be set in the initial struct
             if let Some(channel) = options.channel {
                 worker_data.channel = Some(channel);
             }
@@ -50,14 +61,6 @@ impl<'a> RunTaskExecutor<'a> {
                 worker_data.retry_policy = Some(retry_opts);
             }
 
-            worker_data.store_failure = options.store_failure.unwrap_or(false);
-            worker_data.store_success = options.store_success.unwrap_or(false);
-            worker_data.use_static = options.use_static.unwrap_or(false);
-            worker_data.queue_type = if options.with_backup.unwrap_or(false) {
-                proto::jobworkerp::data::QueueType::WithBackup as i32
-            } else {
-                proto::jobworkerp::data::QueueType::Normal as i32
-            };
             Some(worker_data)
         } else {
             None
@@ -116,6 +119,7 @@ impl TaskExecutorTrait for RunTaskExecutor<'_> {
         workflow_context: Arc<RwLock<WorkflowContext>>,
         mut task_context: TaskContext,
     ) -> Result<TaskContext> {
+        // TODO: add other task types
         let workflow::RunTask {
             // TODO
             // export,   //: ::std::option::Option<Export>,
@@ -126,56 +130,52 @@ impl TaskExecutorTrait for RunTaskExecutor<'_> {
             run,
             ..
         } = self.task;
-        match run {
-            // TODO: add other task types
-            // currently support only RunTaskConfiguration
-            workflow::RunTaskConfiguration {
-                await_: _await_,   // TODO
-                return_: _return_, // TODO
-                function:
-                    workflow::Function {
-                        arguments,
-                        options,
-                        runner_name,
-                        settings,
-                    },
-            } => {
-                let expression = self
-                    .expression(
-                        &*(workflow_context.read().await),
-                        Arc::new(task_context.clone()),
-                    )
-                    .await?;
+        // TODO: add other task types
+        // currently support only RunTaskConfiguration
+        let workflow::RunTaskConfiguration {
+            await_: _await_,   // TODO
+            return_: _return_, // TODO
+            function:
+                workflow::Function {
+                    arguments,
+                    options,
+                    runner_name,
+                    settings,
+                },
+        } = run;
+        {
+            let expression = self
+                .expression(
+                    &*(workflow_context.read().await),
+                    Arc::new(task_context.clone()),
+                )
+                .await?;
 
-                tracing::debug!("raw arguments: {:#?}", arguments);
-                let args = Self::transform_map(
-                    task_context.input.clone(),
-                    arguments.clone(),
-                    &expression,
-                )?;
-                // let args = serde_json::Value::Object(arguments.clone());
-                tracing::debug!("transformed arguments: {:#?}", args);
+            tracing::debug!("raw arguments: {:#?}", arguments);
+            let args =
+                Self::transform_map(task_context.input.clone(), arguments.clone(), &expression)?;
+            // let args = serde_json::Value::Object(arguments.clone());
+            tracing::debug!("transformed arguments: {:#?}", args);
 
-                let transformed_settings =
-                    Self::transform_map(task_context.input.clone(), settings.clone(), &expression)?;
+            let transformed_settings =
+                Self::transform_map(task_context.input.clone(), settings.clone(), &expression)?;
 
-                let output = self
-                    .execute_by_jobworkerp(
-                        runner_name,
-                        Some(transformed_settings),
-                        options.clone(),
-                        args,
-                        task_name,
-                    )
-                    .await
-                    .inspect_err(|e| tracing::warn!("Failed to execute by jobworkerp: {:#?}", e))?;
-                task_context.set_raw_output(output);
+            let output = self
+                .execute_by_jobworkerp(
+                    runner_name,
+                    Some(transformed_settings),
+                    options.clone(),
+                    args,
+                    task_name,
+                )
+                .await
+                .inspect_err(|e| tracing::warn!("Failed to execute by jobworkerp: {:#?}", e))?;
+            task_context.set_raw_output(output);
 
-                Ok(task_context)
-            } // r => Err(anyhow::anyhow!(
-              //     "Not implemented now: RunTaskConfiguration: {:#?}",
-              //     r
-              // )),
-        }
+            Ok(task_context)
+        } // r => Err(anyhow::anyhow!(
+          //     "Not implemented now: RunTaskConfiguration: {:#?}",
+          //     r
+          // )),
     }
 }

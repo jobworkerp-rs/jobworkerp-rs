@@ -139,7 +139,7 @@ mod tests {
             seconds: Some(45),
             milliseconds: Some(500),
         };
-        let expected = 1 * 24 * 60 * 60 * 1000 + // 1 day
+        let expected = 24 * 60 * 60 * 1000 + // 1 day
             12 * 60 * 60 * 1000 +     // 12 hours
             30 * 60 * 1000 +          // 30 minutes
             45 * 1000 +               // 45 seconds
@@ -164,7 +164,7 @@ mod tests {
 
         // Test combined expressions
         let duration = Duration::Expression(DurationExpression("P1DT12H30M45S".to_string()));
-        let expected = 1 * 24 * 60 * 60 * 1000 + // 1 day
+        let expected = 24 * 60 * 60 * 1000 + // 1 day
             12 * 60 * 60 * 1000 +     // 12 hours
             30 * 60 * 1000 +          // 30 minutes
             45 * 1000; // 45 seconds

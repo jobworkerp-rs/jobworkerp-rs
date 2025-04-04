@@ -11,7 +11,7 @@ pub mod transform;
 pub mod workflow;
 
 pub const RUNNER_SETTINGS_METADATA_LABEL: &str = "settings";
-pub const WORKER_PARAMS_METADATA_LABEL: &str = "function";
+pub const WORKER_PARAMS_METADATA_LABEL: &str = "options";
 pub const WORKER_NAME_METADATA_LABEL: &str = "name";
 
 pub struct WorkflowLoader {
@@ -152,35 +152,37 @@ mod test {
                 }
             })));
         assert!(run_task.input.as_ref().is_none());
-        match run_task.run.clone() {
-            workflow::RunTaskConfiguration {
-                function:
-                    workflow::Function {
-                        arguments,
-                        options,
-                        runner_name,
-                        settings,
-                    },
-                await_,
-                ..
-            } => {
-                assert_eq!(runner_name, "COMMAND".to_string());
-                assert_eq!(
-                    serde_json::Value::Object(arguments),
-                    serde_json::json!({
-                        "command": "ls",
-                        "args": ["${.}"]
-                    })
-                );
-                assert_eq!(serde_json::Value::Object(settings), serde_json::json!({}));
-                let mut opts = FunctionOptions::default();
-                opts.channel = Some("workflow".to_string());
-                opts.store_failure = Some(true);
-                opts.store_success = Some(true);
-                opts.use_static = Some(false);
-                assert_eq!(options, Some(opts));
-                assert!(await_); // default true
-            } // _ => panic!("unexpected script variant"),
+        let workflow::RunTaskConfiguration {
+            function:
+                workflow::Function {
+                    arguments,
+                    options,
+                    runner_name,
+                    settings,
+                },
+            await_,
+            ..
+        } = run_task.run.clone();
+        {
+            assert_eq!(runner_name, "COMMAND".to_string());
+            assert_eq!(
+                serde_json::Value::Object(arguments),
+                serde_json::json!({
+                    "command": "ls",
+                    "args": ["${.}"]
+                })
+            );
+            assert_eq!(serde_json::Value::Object(settings), serde_json::json!({}));
+            let opts = FunctionOptions {
+                channel: Some("workflow".to_string()),
+                store_failure: Some(true),
+                store_success: Some(true),
+                use_static: Some(false),
+                ..Default::default()
+            };
+            assert_eq!(options, Some(opts));
+            assert!(await_); // default true
+                             // _ => panic!("unexpected script variant"),
         }
         let _for_task = match &flow.do_.0[1]["EachFileIteration"] {
             workflow::Task::ForTask(for_task) => for_task,

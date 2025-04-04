@@ -33,6 +33,9 @@ impl RunnerPluginLoader {
         if let Some((_name, _, lib)) = self.plugin_loaders.iter().find(|p| p.0.as_str() == name) {
             // XXX unsafe
             unsafe { lib.get(b"load_plugin") }
+                .inspect_err(|e| {
+                    tracing::warn!("error in loading runner plugin:{name}, error: {e:?}")
+                })
                 .ok()
                 .map(|lp: LoaderFunc<'_>| PluginRunnerWrapperImpl::new(Arc::new(RwLock::new(lp()))))
         } else {
