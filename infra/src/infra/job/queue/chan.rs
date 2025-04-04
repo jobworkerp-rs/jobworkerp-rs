@@ -3,7 +3,6 @@ use crate::infra::JobQueueConfig;
 use crate::infra::UseJobQueueConfig;
 use anyhow::Result;
 use async_trait::async_trait;
-use command_utils::util::option::FlatMap as _;
 use infra_utils::infra::chan::mpmc::{Chan, UseChanBuffer};
 use infra_utils::infra::chan::{ChanBuffer, ChanBufferItem};
 use jobworkerp_base::codec::UseProstCodec;
@@ -38,7 +37,7 @@ pub trait ChanJobQueueRepository:
             .send_to_chan(
                 &qn,
                 Self::serialize_job(job),
-                job.data.as_ref().flat_map(|d| d.uniq_key.clone()),
+                job.data.as_ref().and_then(|d| d.uniq_key.clone()),
                 None,
                 false,
             ) // expect for multiple value

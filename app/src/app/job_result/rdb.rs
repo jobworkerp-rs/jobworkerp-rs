@@ -4,7 +4,6 @@ use super::{JobResultApp, JobResultAppHelper};
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
-use command_utils::util::option::Exists;
 use futures::stream::BoxStream;
 use futures::Stream;
 use infra::infra::job::rows::UseJobqueueAndCodec;
@@ -76,6 +75,14 @@ impl RdbJobResultAppImpl {
         //     ))
         //     .into());
         // }
+        if !wd.broadcast_results {
+            return Err(JobWorkerError::InvalidParameter(format!(
+                "Cannot listen result not broadcast worker: {:?}",
+                &wd
+            ))
+            .into());
+        }
+
         // check job result (already finished or not)
         let res = self
             .rdb_job_result_repository()
@@ -253,6 +260,13 @@ impl JobResultApp for RdbJobResultAppImpl {
                 .listen_result_stream(job_id, worker_id, worker_name, timeout)
                 .await;
         }
+        if !wd.broadcast_results {
+            return Err(JobWorkerError::InvalidParameter(format!(
+                "Cannot listen result not broadcast worker: {:?}",
+                &wd
+            ))
+            .into());
+        }
         if !(wd.store_failure && wd.store_success) {
             return Err(JobWorkerError::InvalidParameter(format!(
                 "Cannot listen result not stored worker: {:?}",
@@ -272,10 +286,10 @@ impl JobResultApp for RdbJobResultAppImpl {
                 Ok(Some(v))
                     if v.data
                         .as_ref()
-                        .exists(|d| d.status == ResultStatus::ErrorAndRetry as i32) =>
+                        .is_some_and(|d| d.status == ResultStatus::ErrorAndRetry as i32) =>
                 {
                     // XXX setting?
-                    if timeout.exists(|t| {
+                    if timeout.is_some_and(|t| {
                         datetime::now()
                             .signed_duration_since(start)
                             .num_milliseconds() as u64
@@ -298,7 +312,7 @@ impl JobResultApp for RdbJobResultAppImpl {
                     return self._fill_worker_data(v).await.map(|r| (r, None));
                 }
                 Ok(None) => {
-                    if timeout.exists(|t| {
+                    if timeout.is_some_and(|t| {
                         datetime::now()
                             .signed_duration_since(start)
                             .num_milliseconds() as u64

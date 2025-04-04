@@ -85,30 +85,34 @@ CREATE TABLE `runner` (
 -- (file_name is not real file name(built-in runner), but just a name for identification)
 INSERT IGNORE INTO runner (id, name, description, file_name, type) VALUES (
   1, 'COMMAND', 
-  'Runner for command execution. It executes the shell command with the given arguments.',
+  'Executes shell commands with specified arguments in the operating system.',
   'builtin1', 1
 ), (
   2, 'HTTP_REQUEST',
-  'Runner for HTTP request. It sends the HTTP request to the given URL with the given method, header, and body.',
+  'Sends HTTP requests to specified URLs with configured method, headers, and body.',
   'builtin2', 2
 ), (
   3, 'GRPC_UNARY',
-  'Runner for gRPC unary request. It sends the gRPC unary request to the given URL with the given method, metadata, and body.',
+  'Makes gRPC unary calls to specified services with configured method, metadata, and request message.',
   'builtin3', 3
 ), (
   4, 'DOCKER',
-  'Runner for docker container execution. It executes the docker container with the given image and arguments.',
+  'Runs Docker containers with specified images, environment variables, and command arguments.',
   'builtin4', 4
 ), (
   5, 'SLACK_POST_MESSAGE',
-  'Runner for slack chat message posting. It posts the message to the given slack channel with the given token and message.',
+  'Posts messages to Slack channels using specified workspace tokens and message content.',
   'builtin5', 5
 ), (
   6, 'PYTHON_COMMAND',
-  'Runner for python command execution. It executes the python command with the given arguments.',
+  'Executes Python scripts or commands with specified arguments and environment.',
   'builtin6', 6
 ), (
   65535, 'SIMPLE_WORKFLOW',
-  'Runner for simple workflow execution. It executes the simple workflow with the given arguments.',
+  'Orchestrates simple sequential workflows by executing a series of configured tasks.',
   'builtin7', 65535
+), (
+  -1, 'SAVED_WORKFLOW',
+  'Executes pre-defined workflows stored in the system with provided input arguments.',
+  'builtin8', -1
 );

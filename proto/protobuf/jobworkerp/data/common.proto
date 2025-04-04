@@ -13,7 +13,7 @@ enum StorageType {
   // Uses memory channel and SQLite for job queue and result storage
   // Suitable for single-node deployments
   STANDALONE = 0;
-  
+
   // # Scalable Mode
   // Uses Redis and MySQL for job queue and result storage
   // Suitable for distributed deployments
@@ -26,38 +26,43 @@ enum RunnerType {
   // # Plugin Runner
   // Executes jobs through custom plugin modules
   PLUGIN = 0;
-  
+
   // # Command Runner
   // Executes shell commands
   COMMAND = 1;
-  
+
   // # HTTP Request Runner
   // Makes HTTP requests to specified endpoints
   HTTP_REQUEST = 2;
-  
+
   // # gRPC Unary Runner
   // Makes unary gRPC calls to specified services
   GRPC_UNARY = 3;
-  
+
   // # Docker Runner
   // Executes commands inside Docker containers
   DOCKER = 4;
-  
+
   // # Slack Message Runner
   // Posts messages to Slack channels
   SLACK_POST_MESSAGE = 5;
-  
+
   // # Python Command Runner
   // Executes Python scripts as commands
   PYTHON_COMMAND = 6;
-  
+
   // # LLM Runner
   // Interacts with Large Language Models
   LLM = 65534;
-  
+
   // # Simple Workflow Runner
   // Executes a sequence of jobs as a workflow
   SIMPLE_WORKFLOW = 65535;
+
+  // # Saved Simple Workflow Runner
+  // Executes a sequence of jobs as a workflow
+  // Specialized for functions api (create workflow as function)
+  SAVED_WORKFLOW = -1;
 }
 
 // # Priority Level
@@ -66,11 +71,11 @@ enum Priority {
   // # Medium Priority (Default)
   // Standard priority level for most jobs
   PRIORITY_MEDIUM = 0;
-  
+
   // # Low Priority
   // Lower priority, executed after medium priority jobs
   PRIORITY_LOW = -1;
-  
+
   // # High Priority
   // Higher priority, executed before medium priority jobs
   PRIORITY_HIGH = 1;
@@ -82,17 +87,17 @@ enum RetryType {
   // # No Retry
   // Failed jobs will not be retried
   NONE = 0;
-  
+
   // # Exponential Backoff
   // Retry interval increases exponentially with each attempt
   // Formula: interval * basis ^ (retry_count - 1)
   EXPONENTIAL = 1;
-  
+
   // # Linear Backoff
   // Retry interval increases linearly with each attempt
   // Formula: interval * retry_count
   LINEAR = 2;
-  
+
   // # Constant Interval
   // Same retry interval is used for all retry attempts
   CONSTANT = 3;
@@ -104,22 +109,22 @@ message RetryPolicy {
   // # Retry Type
   // Algorithm used for calculating retry intervals
   RetryType type = 1;
-  
+
   // # Base Interval
   // Basic retry interval in milliseconds
   uint32 interval = 2;
-  
+
   // # Maximum Interval
   // Maximum retry interval in milliseconds
   uint32 max_interval = 3;
-  
+
   // # Maximum Retry Count
   // Maximum number of retry attempts (0: unlimited)
   uint32 max_retry = 4;
-  
+
   // # Exponential Basis
   // Base for exponential backoff calculation
-  // Formula: wait_time = basis ^ (retry_count - 1) * interval
+  // Formula: interval * basis ^ (retry_count - 1)
   float basis = 5;
 }
 
@@ -129,17 +134,21 @@ enum ResponseType {
   // # No Result
   // Returns job ID immediately, but no result
   // Results may be available in database if stored by worker settings
+  // If broadcasting is enabled (worker.broadcast_result=true),
+  // the result will be broadcasted to all subscribers (use
+  // JobResultService/Listen)
   NO_RESULT = 0;
-  
+
   // # Direct Response
   // Gets result in the same response
   // May involve long wait (long polling with gRPC unary)
   DIRECT = 1;
-  
+
   // # Listen After
   // Returns job ID immediately, then client can listen for results
   // Results available via JobResultService with blocking for a short time
-  LISTEN_AFTER = 2;
+  // use worker.broadcast_result=true to enable job_result listen api
+  LISTEN_AFTER = 2 [ deprecated = true ];
 }
 
 // # Result Status
@@ -148,23 +157,23 @@ enum ResultStatus {
   // # Success
   // Job completed successfully
   SUCCESS = 0;
-  
+
   // # Error with Retry
   // Job failed but will be retried
   ERROR_AND_RETRY = 1;
-  
+
   // # Fatal Error
   // Job failed with a fatal error (cannot retry)
   FATAL_ERROR = 2;
-  
+
   // # Aborted
   // Job was manually aborted (cannot retry)
   ABORT = 3;
-  
+
   // # Maximum Retries Reached
   // Job failed and reached maximum retry count (cannot retry further)
   MAX_RETRY = 4;
-  
+
   // # Other Error
   // Unexpected system error occurred (cannot retry)
   OTHER_ERROR = 5;
@@ -176,11 +185,11 @@ enum JobStatus {
   // # Pending
   // Job is waiting to be processed
   PENDING = 0;
-  
+
   // # Running
   // Job is currently being executed
   RUNNING = 1;
-  
+
   // # Waiting for Result
   // Job has completed execution and is waiting for result processing
   WAIT_RESULT = 2;
@@ -192,11 +201,11 @@ enum QueueType {
   // # Normal Queue
   // Standard in-memory queue with no persistence
   NORMAL = 0;
-  
+
   // # Queue with Backup
   // In-memory queue with database backup for recovery (slower)
   WITH_BACKUP = 1;
-  
+
   // # Database-Only Queue
   // Forces all jobs to be stored in database (slowest)
   FORCED_RDB = 2;
@@ -209,7 +218,7 @@ message ResultOutputItem {
     // # Data Chunk
     // A piece of result data in a stream
     bytes data = 1;
-    
+
     // # End of Stream
     // Marker indicating the end of the stream
     Empty end = 2;
@@ -218,8 +227,8 @@ message ResultOutputItem {
 
 // # Result Output
 // Collection of result data items for non-streaming output
-message ResultOutput { 
+message ResultOutput {
   // # Result Items
   // List of binary data chunks representing the result
-  repeated bytes items = 1; 
+  repeated bytes items = 1;
 }

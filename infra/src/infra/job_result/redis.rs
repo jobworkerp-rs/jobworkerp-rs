@@ -225,7 +225,6 @@ pub trait UseRedisJobResultRepository {
 
 #[tokio::test]
 async fn redis_test() -> Result<()> {
-    use command_utils::util::option::FlatMap;
     use jobworkerp_base::codec::ProstMessageCodec;
     use proto::jobworkerp::data::{JobId, ResponseType, ResultOutput, WorkerId};
 
@@ -273,7 +272,7 @@ async fn redis_test() -> Result<()> {
     repo.create(&id, job_result).await?;
     assert!(repo.create(&id, job_result).await.err().is_some()); // already exists
     let res = repo.find(&id).await?;
-    assert_eq!(res.flat_map(|r| r.data).as_ref(), Some(job_result));
+    assert_eq!(res.and_then(|r| r.data).as_ref(), Some(job_result));
 
     let mut job_result2 = job_result.clone();
     job_result2.worker_id = Some(WorkerId { value: 3 });
@@ -301,7 +300,7 @@ async fn redis_test() -> Result<()> {
     // update and find
     assert!(!repo.upsert(&id, &job_result2).await?);
     let res2 = repo.find(&id).await?;
-    assert_eq!(res2.flat_map(|r| r.data).as_ref(), Some(&job_result2));
+    assert_eq!(res2.and_then(|r| r.data).as_ref(), Some(&job_result2));
 
     // delete and not found
     assert!(repo.delete(&id).await?);

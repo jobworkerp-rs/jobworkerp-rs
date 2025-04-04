@@ -2,6 +2,7 @@ use std::{str::FromStr, time::Duration};
 
 use super::{RunnerSpec, RunnerTrait};
 use crate::jobworkerp::runner::{HttpRequestArgs, HttpRequestRunnerSettings, HttpResponseResult};
+use crate::{schema_to_json_string, schema_to_json_string_option};
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -71,36 +72,13 @@ impl RunnerSpec for RequestRunner {
         StreamingOutputType::NonStreaming
     }
     fn settings_schema(&self) -> String {
-        // plain string with title
-        let schema = schemars::schema_for!(HttpRequestRunnerSettings);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+        schema_to_json_string!(HttpRequestRunnerSettings, "settings_schema")
     }
     fn arguments_schema(&self) -> String {
-        let schema = schemars::schema_for!(HttpRequestArgs);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+        schema_to_json_string!(HttpRequestArgs, "arguments_schema")
     }
     fn output_schema(&self) -> Option<String> {
-        // plain string with title
-        let schema = schemars::schema_for!(HttpResponseResult);
-        match serde_json::to_string(&schema) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::error!("error in output_json_schema: {:?}", e);
-                None
-            }
-        }
+        schema_to_json_string_option!(HttpResponseResult, "output_schema")
     }
 }
 // arg: {headers:{<headers map>}, queries:[<query string array>], body: <body string or struct>}

@@ -1,8 +1,5 @@
 use jobworkerp_runner::runner::RunnerSpec;
-use proto::jobworkerp::data::{
-    function_specs::FunctionId, FunctionInputSchema, FunctionSpecs, Runner, RunnerData, RunnerId,
-    StreamingOutputType,
-};
+use proto::jobworkerp::data::{Runner, RunnerData, RunnerId};
 
 // db row definitions
 #[derive(sqlx::FromRow, Debug, Clone)]
@@ -62,26 +59,6 @@ impl RunnerWithSchema {
         Runner {
             id: self.id,
             data: self.data,
-        }
-    }
-    pub fn to_function_proto(&self) -> FunctionSpecs {
-        FunctionSpecs {
-            function_id: self.id.as_ref().map(|i| FunctionId::RunnerId(*i)),
-            name: self.data.as_ref().map_or(String::new(), |d| d.name.clone()),
-            description: self
-                .data
-                .as_ref()
-                .map_or(String::new(), |d| d.description.clone()),
-            input_schema: Some(FunctionInputSchema {
-                settings: Some(self.settings_schema.clone()),
-                arguments: self.arguments_schema.clone(),
-            }),
-            result_output_schema: self.output_schema.clone(),
-            output_type: self
-                .data
-                .as_ref()
-                .map(|d| d.output_type)
-                .unwrap_or(StreamingOutputType::NonStreaming as i32),
         }
     }
 }

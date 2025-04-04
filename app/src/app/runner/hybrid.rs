@@ -17,6 +17,7 @@ use stretto::AsyncCache;
 // TODO use redis as cache ? (same implementation as rdb now)
 #[derive(Clone, DebugStub)]
 pub struct HybridRunnerAppImpl {
+    plugin_dir: String,
     storage_config: Arc<StorageConfig>,
     #[debug_stub = "AsyncCache<Arc<String>, Vec<Runner>>"]
     async_cache: AsyncCache<Arc<String>, Vec<RunnerWithSchema>>,
@@ -27,12 +28,14 @@ pub struct HybridRunnerAppImpl {
 
 impl HybridRunnerAppImpl {
     pub fn new(
+        plugin_dir: String,
         storage_config: Arc<StorageConfig>,
         memory_cache_config: &MemoryCacheConfig,
         repositories: Arc<HybridRepositoryModule>,
         descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     ) -> Self {
         Self {
+            plugin_dir,
             storage_config,
             async_cache: memory::new_memory_cache(memory_cache_config),
             descriptor_cache,
@@ -51,7 +54,9 @@ impl UseRunnerParserWithCache for HybridRunnerAppImpl {
 #[async_trait]
 impl RunnerApp for HybridRunnerAppImpl {
     async fn load_runner(&self) -> Result<bool> {
-        self.runner_repository().add_from_plugins().await?;
+        self.runner_repository()
+            .add_from_plugins_from(self.plugin_dir.as_str())
+            .await?;
         let _ = self
             .delete_cache_locked(&Self::find_all_list_cache_key())
             .await;
@@ -139,7 +144,7 @@ impl RunnerApp for HybridRunnerAppImpl {
         use proto::jobworkerp::data::RunnerType;
 
         let runner_data = test_runner_with_descriptor(name);
-        let _res = self
+        let res = self
             .runner_repository()
             .create(&RunnerRow {
                 id: runner_id.value,
@@ -149,6 +154,7 @@ impl RunnerApp for HybridRunnerAppImpl {
                 r#type: RunnerType::Plugin as i32,
             })
             .await?;
+        assert!(res);
         self.store_proto_cache(runner_id, &runner_data).await;
         // clear memory cache
         let _ = self
@@ -185,6 +191,7 @@ mod test {
     use crate::app::runner::hybrid::HybridRunnerAppImpl;
     use crate::app::runner::RunnerApp;
     use crate::app::{StorageConfig, StorageType};
+    use crate::module::test::TEST_PLUGIN_DIR;
     use anyhow::Result;
     use infra::infra::module::rdb::test::setup_test_rdb_module;
     use infra::infra::module::redis::test::setup_test_redis_module;
@@ -212,6 +219,7 @@ mod test {
             restore_at_startup: Some(false),
         });
         let runner_app = HybridRunnerAppImpl::new(
+            TEST_PLUGIN_DIR.to_string(),
             storage_config.clone(),
             &mc_config,
             repositories.clone(),

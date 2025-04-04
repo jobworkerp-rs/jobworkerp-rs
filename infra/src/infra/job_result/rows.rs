@@ -1,5 +1,4 @@
 use anyhow::Result;
-use command_utils::util::result::{TapErr, ToOption};
 use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
 use proto::jobworkerp::data::{
@@ -42,8 +41,8 @@ impl JobResultRow {
                 uniq_key: self.uniq_key.clone(),
                 status: self.status,
                 output: Self::deserialize_result_output(&self.output)
-                    .tap_err(|e| tracing::error!("deserialize_error: {:?}", e))
-                    .to_option(),
+                    .inspect_err(|e| tracing::error!("deserialize_error: {:?}", e))
+                    .ok(),
                 max_retry: 0,
                 retried: self.retried as u32,
                 priority: self.priority,

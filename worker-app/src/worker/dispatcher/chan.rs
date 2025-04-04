@@ -10,8 +10,6 @@ use app::app::{UseWorkerConfig, WorkerConfig};
 use app::module::AppModule;
 use app_wrapper::runner::{RunnerFactory, UseRunnerFactory};
 use async_trait::async_trait;
-use command_utils::util::option::ToResult;
-use command_utils::util::result::TapErr;
 use command_utils::util::shutdown::ShutdownLock;
 use infra::infra::job::queue::chan::{
     ChanJobQueueRepository, ChanJobQueueRepositoryImpl, UseChanJobQueueRepository,
@@ -65,7 +63,7 @@ pub trait ChanJobDispatcher:
             tokio::signal::ctrl_c().await.map(|_| {
                 tracing::debug!("got sigint signal....");
                 send.send(true)
-                    .tap_err(|e| tracing::error!("mpmc send error: {:?}", e))
+                    .inspect_err(|e| tracing::error!("mpmc send error: {:?}", e))
                     .unwrap();
             })
         });
@@ -205,7 +203,7 @@ pub trait ChanJobDispatcher:
         let runner_data = if let Some(RunnerWithSchema{id:_, data: runner_data,..}) =
              self.runner_app().find_runner(sid, None).await?
         {
-                runner_data.to_result(||JobWorkerError::NotFound(format!("runner data {:?} is not found.", &sid)))
+                runner_data.ok_or(JobWorkerError::NotFound(format!("runner data {:?} is not found.", &sid)))
         } else {
             // TODO cannot return result in this case. send result as error?
             let mes = format!(

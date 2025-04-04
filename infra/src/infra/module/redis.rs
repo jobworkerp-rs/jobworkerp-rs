@@ -142,6 +142,7 @@ pub mod test {
         job_result::{
             pubsub::redis::RedisJobResultPubSubRepositoryImpl, redis::RedisJobResultRepositoryImpl,
         },
+        module::test::TEST_PLUGIN_DIR,
         runner::redis::RedisRunnerRepositoryImpl,
         worker::redis::RedisWorkerRepositoryImpl,
         IdGeneratorWrapper,
@@ -154,8 +155,7 @@ pub mod test {
     // create RedsRepositoryModule for test
     pub async fn setup_test_redis_module() -> RedisRepositoryModule {
         // use normal redis
-        let job_queue_config =
-            Arc::new(crate::infra::load_job_queue_config_from_env().unwrap_or_default());
+        let job_queue_config = Arc::new(crate::infra::JobQueueConfig::default());
         let redis_pool = setup_test_redis_pool().await;
         let redis_client = setup_test_redis_client().unwrap();
 
@@ -174,7 +174,7 @@ pub mod test {
             .unwrap();
 
         let p = RunnerSpecFactory::new(Arc::new(Plugins::new()));
-        p.load_plugins().await;
+        p.load_plugins_from(TEST_PLUGIN_DIR).await;
         RedisRepositoryModule {
             redis_pool,
             redis_client: redis_client.clone(),

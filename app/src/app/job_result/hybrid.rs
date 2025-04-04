@@ -359,6 +359,7 @@ pub mod tests {
     use crate::app::runner::RunnerApp;
     use crate::app::worker::hybrid::HybridWorkerAppImpl;
     use crate::app::{StorageConfig, StorageType};
+    use crate::module::test::TEST_PLUGIN_DIR;
     use anyhow::Result;
     use infra::infra::module::rdb::test::setup_test_rdb_module;
     use infra::infra::module::redis::test::setup_test_redis_module;
@@ -443,6 +444,7 @@ pub mod tests {
             Some(Duration::from_secs(5 * 60)),
         ));
         let runner_app = Arc::new(HybridRunnerAppImpl::new(
+            TEST_PLUGIN_DIR.to_string(),
             storage_config.clone(),
             &mc_config,
             repositories.clone(),

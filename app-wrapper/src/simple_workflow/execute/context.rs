@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, fmt, ops::Deref, sync::Arc};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::simple_workflow::definition::workflow::{self, FlowDirective, ServerlessWorkflow, Task};
+use crate::simple_workflow::definition::workflow::{self, FlowDirective, Task, WorkflowSchema};
 
 pub trait UseExpression {
     fn expression(
@@ -63,7 +63,7 @@ pub trait UseExpression {
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct WorkflowContext {
     pub id: Uuid,
-    pub definition: Arc<workflow::ServerlessWorkflow>,
+    pub definition: Arc<workflow::WorkflowSchema>,
     pub input: Arc<serde_json::Value>,
     pub status: WorkflowStatus,
     pub started_at: DateTime<FixedOffset>,
@@ -72,7 +72,7 @@ pub struct WorkflowContext {
 }
 impl WorkflowContext {
     pub fn new(
-        workflow: &workflow::ServerlessWorkflow,
+        workflow: &workflow::WorkflowSchema,
         input: Arc<serde_json::Value>,
         context: Arc<serde_json::Value>,
     ) -> Self {
@@ -226,7 +226,7 @@ impl TaskContext {
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct WorkflowDescriptor {
     id: serde_json::Value,
-    definition: Arc<ServerlessWorkflow>,
+    definition: Arc<WorkflowSchema>,
     input: Arc<serde_json::Value>,
     started_at: serde_json::Value,
 }
@@ -258,17 +258,17 @@ impl From<FlowDirective> for Then {
                 subtype_0: Some(subtype_0),
                 subtype_1: Some(subtype_1),
             } => match subtype_0 {
-                workflow::FlowDirectiveSubtype0::Continue => Then::TaskName(subtype_1.clone()),
-                workflow::FlowDirectiveSubtype0::Exit => Then::Exit,
-                workflow::FlowDirectiveSubtype0::End => Then::End,
+                workflow::FlowDirectiveEnum::Continue => Then::TaskName(subtype_1.clone()),
+                workflow::FlowDirectiveEnum::Exit => Then::Exit,
+                workflow::FlowDirectiveEnum::End => Then::End,
             },
             FlowDirective {
                 subtype_0: Some(subtype_0),
                 subtype_1: None,
             } => match subtype_0 {
-                workflow::FlowDirectiveSubtype0::Continue => Then::Continue,
-                workflow::FlowDirectiveSubtype0::Exit => Then::Exit,
-                workflow::FlowDirectiveSubtype0::End => Then::End,
+                workflow::FlowDirectiveEnum::Continue => Then::Continue,
+                workflow::FlowDirectiveEnum::Exit => Then::Exit,
+                workflow::FlowDirectiveEnum::End => Then::End,
             },
             FlowDirective {
                 subtype_0: None,

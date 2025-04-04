@@ -16,6 +16,7 @@ use stretto::AsyncCache;
 
 #[derive(Clone, DebugStub)]
 pub struct RdbRunnerAppImpl {
+    plugin_dir: String,
     storage_config: Arc<StorageConfig>,
     #[debug_stub = "AsyncCache<Arc<String>, Vec<RunnerWithSchema>>"]
     async_cache: AsyncCache<Arc<String>, Vec<RunnerWithSchema>>,
@@ -28,12 +29,14 @@ pub struct RdbRunnerAppImpl {
 
 impl RdbRunnerAppImpl {
     pub fn new(
+        plugin_dir: String,
         storage_config: Arc<StorageConfig>,
         memory_cache_config: &MemoryCacheConfig,
         repositories: Arc<RdbChanRepositoryModule>,
         descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     ) -> Self {
         Self {
+            plugin_dir,
             storage_config,
             async_cache: memory::new_memory_cache(memory_cache_config),
             descriptor_cache,
@@ -43,7 +46,9 @@ impl RdbRunnerAppImpl {
         }
     }
     async fn add_runner(&self) -> Result<()> {
-        self.runner_repository().add_from_plugins().await?;
+        self.runner_repository()
+            .add_from_plugins_from(self.plugin_dir.as_str())
+            .await?;
         let _ = self
             .delete_cache_locked(&Self::find_all_list_cache_key())
             .await;

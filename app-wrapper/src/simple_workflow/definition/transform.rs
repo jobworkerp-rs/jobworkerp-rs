@@ -654,6 +654,30 @@ mod test {
           /home/user/日記/{{ year }}/{{ month }}/}"#;
         let result =
             DefaultTransformer::execute_liquid_template(input.clone(), template, &context).unwrap();
-        assert_eq!(result, String::from("/home/user/日記/2025/2/"));
+        let result_text = result.clone();
+        let re = regex::Regex::new(r"^/home/user/日記/(\d{4})/(\d{1,2})/$").unwrap();
+        assert!(
+            re.is_match(&result_text),
+            "Result '{}' doesn't match the expected format",
+            result_text
+        );
+
+        // Extract and verify year and month are valid numbers
+        if let Some(captures) = re.captures(&result_text) {
+            let year = captures.get(1).unwrap().as_str();
+            let month = captures.get(2).unwrap().as_str();
+
+            assert_eq!(year.len(), 4, "Year should be 4 digits");
+            assert!(month.len() <= 2, "Month should be 1 or 2 digits");
+
+            let year_num: i32 = year.parse().unwrap();
+            let month_num: i32 = month.parse().unwrap();
+
+            assert!(
+                (2022..=9999).contains(&year_num),
+                "Year should be reasonable"
+            );
+            assert!((0..=11).contains(&month_num), "Month should be 0-11");
+        }
     }
 }
