@@ -2,7 +2,6 @@ use super::event::UseWorkerPublish;
 use crate::infra::job::rows::UseJobqueueAndCodec;
 use anyhow::Result;
 use async_trait::async_trait;
-use command_utils::util::option::FlatMap;
 use command_utils::util::result::Exists;
 use deadpool_redis::redis::AsyncCommands;
 use debug_stub_derive::DebugStub;
@@ -98,7 +97,7 @@ where
 
     async fn delete(&self, id: &WorkerId) -> Result<bool> {
         let g = self.find(id).await?;
-        if let Some(wn) = g.as_ref().flat_map(|w| w.data.as_ref().map(|d| &d.name)) {
+        if let Some(wn) = g.as_ref().and_then(|w| w.data.as_ref().map(|d| &d.name)) {
             self.delete_by_name(wn).await?;
             self.delete_by_id(id).await
         } else {
@@ -245,7 +244,6 @@ pub trait UseRedisWorkerRepository {
 
 #[tokio::test]
 async fn redis_test() -> Result<()> {
-    use command_utils::util::option::FlatMap;
     use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
     use proto::jobworkerp::data::RetryPolicy;
     use proto::jobworkerp::data::{QueueType, ResponseType, RunnerId, WorkerData, WorkerId};
@@ -293,7 +291,7 @@ async fn redis_test() -> Result<()> {
     assert!(repo.upsert(&wk).await?); // newly created
     assert!(!(repo.upsert(&wk).await?)); // already exists (update)
     let res = repo.find(&id).await?;
-    assert_eq!(res.flat_map(|r| r.data).as_ref(), Some(worker));
+    assert_eq!(res.and_then(|r| r.data).as_ref(), Some(worker));
 
     let mut worker2 = worker.clone();
     worker2.name = "fuga1".to_string();
@@ -322,7 +320,7 @@ async fn redis_test() -> Result<()> {
     // update and find
     assert!(!repo.upsert(&wk2).await?);
     let res2 = repo.find(&id).await?;
-    assert_eq!(res2.flat_map(|r| r.data).as_ref(), Some(&worker2));
+    assert_eq!(res2.and_then(|r| r.data).as_ref(), Some(&worker2));
 
     // delete and not found
     assert!(repo.delete(&id).await?);

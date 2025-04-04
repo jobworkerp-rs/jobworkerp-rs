@@ -46,41 +46,8 @@ impl<'a> RunTaskExecutor<'a> {
             }
 
             // Handle retry options
-            if let Some(retry_opts) = options.retry_options {
-                let mut worker_retry_policy = proto::jobworkerp::data::RetryPolicy::default();
-
-                if let Some(basis) = retry_opts.basis {
-                    worker_retry_policy.basis = basis as f32;
-                }
-
-                if let Some(interval) = retry_opts.interval {
-                    worker_retry_policy.interval = interval as u32;
-                }
-
-                if let Some(max_count) = retry_opts.max_count {
-                    worker_retry_policy.max_retry = max_count as u32;
-                }
-
-                if let Some(max_interval) = retry_opts.max_interval {
-                    worker_retry_policy.max_interval = max_interval as u32;
-                }
-
-                if let Some(retry_type) = retry_opts.retry_type {
-                    worker_retry_policy.r#type = match retry_type {
-                        workflow::RetryType::Exponential => {
-                            proto::jobworkerp::data::RetryType::Exponential as i32
-                        }
-                        workflow::RetryType::Linear => {
-                            proto::jobworkerp::data::RetryType::Linear as i32
-                        }
-                        workflow::RetryType::Constant => {
-                            proto::jobworkerp::data::RetryType::Constant as i32
-                        }
-                        _ => proto::jobworkerp::data::RetryType::None as i32,
-                    };
-                }
-
-                worker_data.retry_policy = Some(worker_retry_policy);
+            if let Some(retry_opts) = options.retry.map(|r| r.to_jobworkerp()) {
+                worker_data.retry_policy = Some(retry_opts);
             }
 
             worker_data.store_failure = options.store_failure.unwrap_or(false);
@@ -159,7 +126,8 @@ impl TaskExecutorTrait for RunTaskExecutor<'_> {
             run,
             ..
         } = self.task;
-        match run { // TODO: add other task types
+        match run {
+            // TODO: add other task types
             // currently support only RunTaskConfiguration
             workflow::RunTaskConfiguration {
                 await_: _await_,   // TODO

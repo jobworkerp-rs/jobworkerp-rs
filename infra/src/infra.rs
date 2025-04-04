@@ -10,7 +10,7 @@ use anyhow::Result;
 use command_utils::util::{
     datetime,
     id_generator::{self, IDGenerator, MockIdGenerator},
-    result::{FlatMap, ToOption},
+    result::FlatMap,
 };
 use debug_stub_derive::DebugStub;
 use infra_utils::infra::{rdb::RdbConfig, redis::RedisConfig};
@@ -112,8 +112,8 @@ pub struct InfraConfigModule {
 impl InfraConfigModule {
     pub fn new_by_env() -> Self {
         Self {
-            redis_config: load_redis_config_from_env().to_option(),
-            rdb_config: load_db_config_from_env().to_option(),
+            redis_config: load_redis_config_from_env().ok(),
+            rdb_config: load_db_config_from_env().ok(),
             job_queue_config: Arc::new(load_job_queue_config_from_env().unwrap()),
         }
     }

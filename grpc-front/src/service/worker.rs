@@ -10,8 +10,6 @@ use app::app::worker::WorkerApp;
 use app::app::{StorageConfig, UseStorageConfig};
 use app::module::AppModule;
 use async_stream::stream;
-use command_utils::util::option::Exists;
-use command_utils::util::result::ToOption;
 use futures::stream::BoxStream;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::UseJobQueueConfig;
@@ -45,7 +43,7 @@ pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig {
             queue_type: self
                 .validate_queue_type(
                     QueueType::try_from(dat.queue_type)
-                        .to_option()
+                        .ok()
                         .unwrap_or(self.default_queue_type()),
                 )
                 .map(|r| r as i32)?,
@@ -140,7 +138,7 @@ pub trait ResponseProcessor: UseJobqueueAndCodec {
         if dat
             .channel
             .as_ref()
-            .exists(|c| c.as_str() == Self::DEFAULT_CHANNEL_NAME)
+            .is_some_and(|c| c.as_str() == Self::DEFAULT_CHANNEL_NAME)
         {
             let mut d = dat;
             d.channel = None;

@@ -13,7 +13,7 @@ use jobworkerp_runner::runner::{
 use proto::jobworkerp::data::RunnerType;
 use std::sync::Arc;
 
-use crate::simple_workflow::runner::SimpleWorkflowRunner;
+use crate::simple_workflow::runner::simple::SimpleWorkflowRunner;
 
 #[derive(Debug)]
 pub struct RunnerFactory {

@@ -193,7 +193,6 @@ mod test {
     use crate::infra::JobQueueConfig;
     use anyhow::Result;
     use command_utils::util::datetime;
-    use command_utils::util::option::FlatMap;
     use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::test::TEST_RUNTIME;
     use proto::jobworkerp::data::Job;
@@ -276,7 +275,7 @@ mod test {
                 job.data.as_ref().map(|d| d.timeout),
                 job.data
                     .as_ref()
-                    .flat_map(|d| d.grabbed_until_time)
+                    .and_then(|d| d.grabbed_until_time)
                     .unwrap_or(0),
             )
             .await?;
@@ -287,7 +286,7 @@ mod test {
                 job.data.as_ref().map(|d| d.timeout),
                 job.data
                     .as_ref()
-                    .flat_map(|d| d.grabbed_until_time)
+                    .and_then(|d| d.grabbed_until_time)
                     .unwrap_or(0),
             )
             .await?;
@@ -307,7 +306,7 @@ mod test {
                 jobs3[0]
                     .data
                     .as_ref()
-                    .flat_map(|d| d.grabbed_until_time)
+                    .and_then(|d| d.grabbed_until_time)
                     .unwrap_or(0),
             )
             .await?;

@@ -1,16 +1,17 @@
 use super::run::RunTaskExecutor;
 use super::TaskExecutorTrait;
-use crate::simple_workflow::definition::workflow::{self, RunTaskConfiguration};
+use crate::simple_workflow::definition::workflow::{
+    self, RetryLimit, RetryLimitAttempt, RunTaskConfiguration,
+};
 use crate::simple_workflow::definition::workflow::{FunctionOptions, RunTask};
-use crate::simple_workflow::definition::UseLoadYaml;
+use crate::simple_workflow::definition::UseLoadUrlOrPath;
 use crate::simple_workflow::execute::context::{TaskContext, WorkflowContext};
 use crate::simple_workflow::execute::job::JobExecutorWrapper;
 use anyhow::{anyhow, Result};
-use command_utils::util::result::ToOption;
 use infra_utils::infra::lock::RwLockWithKey;
 use infra_utils::infra::memory::{MemoryCacheConfig, UseMemoryCache};
 use infra_utils::infra::net::reqwest;
-use std::str::FromStr;
+use serde_json::Map;
 use std::sync::Arc;
 use std::time::Duration;
 use stretto::AsyncCache;
@@ -58,36 +59,49 @@ impl<'a> CallTaskExecutor<'a> {
 
         if let Some(serde_json::Value::Object(retry_options)) = options_map.get("retryPolicy") {
             // Clone existing retry_policy if present or create new one
-            let mut retry_opts = options.retry_options.clone().unwrap_or_default();
+            let mut retry = options.retry.clone().unwrap_or_default();
 
             // Update retry policy fields from metadata
-            if let Some(serde_json::Value::Number(basis)) = retry_options.get("basis") {
-                if let Some(basis_f64) = basis.as_f64() {
-                    retry_opts.basis = Some(basis_f64);
-                }
+            if let Some(serde_json::Value::String(interval)) = retry_options.get("backoff") {
+                match interval.as_str() {
+                    "exponential" => {
+                        retry.backoff = Some(workflow::RetryBackoff::Exponential(Map::default()));
+                    }
+                    "linear" => {
+                        retry.backoff = Some(workflow::RetryBackoff::Linear(Map::default()));
+                    }
+                    "constant" => {
+                        retry.backoff = Some(workflow::RetryBackoff::Constant(Map::default()));
+                    }
+                    _ => {
+                        retry.backoff = None;
+                    }
+                };
             }
 
-            if let Some(serde_json::Value::Number(interval)) = retry_options.get("interval") {
-                retry_opts.interval = interval.as_i64();
-            }
-
+            let mut retry_attempt = RetryLimitAttempt::default();
             if let Some(serde_json::Value::Number(max_count)) = retry_options.get("maxCount") {
-                if let Some(count) = max_count.as_u64() {
-                    retry_opts.max_count = Some(count as i64);
+                if let Some(count) = max_count.as_i64() {
+                    retry_attempt.count = Some(count);
                 }
             }
-
             if let Some(serde_json::Value::Number(max_interval)) = retry_options.get("maxInterval")
             {
-                retry_opts.max_interval = max_interval.as_i64();
+                if let Some(interval) = max_interval.as_i64() {
+                    retry_attempt.duration = Some(workflow::Duration::from_millis(interval as u64));
+                }
+            }
+            if retry_attempt != RetryLimitAttempt::default() {
+                retry.limit = Some(RetryLimit {
+                    attempt: Some(retry_attempt),
+                });
             }
 
-            if let Some(serde_json::Value::String(retry_type)) = retry_options.get("retryType") {
-                retry_opts.retry_type =
-                    workflow::RetryType::from_str(retry_type.as_str()).to_option();
+            if let Some(serde_json::Value::Number(delay)) = retry_options.get("delay") {
+                retry.delay = delay.as_u64().map(workflow::Duration::from_millis);
             }
 
-            options.retry_options = Some(retry_opts);
+            options.retry = Some(retry);
         }
 
         if let Some(serde_json::Value::Bool(store_failure)) = options_map.get("storeFailure") {
@@ -146,7 +160,7 @@ impl UseMemoryCache<String, workflow::RunTask> for CallTaskExecutor<'_> {
         self.memory_cache.key_lock()
     }
 }
-impl UseLoadYaml for CallTaskExecutor<'_> {
+impl UseLoadUrlOrPath for CallTaskExecutor<'_> {
     fn http_client(&self) -> &infra_utils::infra::net::reqwest::ReqwestClient {
         &self.http_client
     }
@@ -173,7 +187,7 @@ impl TaskExecutorTrait for CallTaskExecutor<'_> {
             } => {
                 // TODO name reference (inner yaml, public catalog)
                 let fun = self
-                    .with_cache_if_some(call, None, || self.load_yaml(call.as_str()))
+                    .with_cache_if_some(call, None, || self.load_url_or_path(call.as_str()))
                     .await?
                     .ok_or(anyhow!("not found: {}", call.as_str()))?;
                 match fun {
