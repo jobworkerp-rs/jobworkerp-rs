@@ -239,10 +239,9 @@ impl RunnerTrait for PythonCommandRunner {
                     }
 
                     response
-                        .bytes()
+                        .text()
                         .await
                         .context("Failed to read input data as bytes")?
-                        .to_vec()
                 }
             };
 
@@ -283,11 +282,11 @@ impl RunnerTrait for PythonCommandRunner {
         *self.current_process_id.lock().await = None;
 
         let result = PythonCommandResult {
-            output: output.stdout,
-            output_stderr: if job_args.with_stderr {
-                Some(output.stderr)
-            } else {
+            output: String::from_utf8_lossy(&output.stdout).to_string(),
+            output_stderr: if output.stderr.is_empty() {
                 None
+            } else {
+                Some(String::from_utf8_lossy(&output.stderr).to_string())
             },
             exit_code: output.status.code().unwrap_or(-1),
         };
@@ -391,7 +390,7 @@ print(f"Requests version: {requests.__version__}")
             assert!(!output.is_empty());
 
             let result = PythonCommandResult::decode(output[0].as_slice()).unwrap();
-            let stdout = String::from_utf8_lossy(&result.output);
+            let stdout = &result.output;
 
             assert!(stdout.contains("Hello from Python!"));
             assert!(stdout.contains("Version info:"));

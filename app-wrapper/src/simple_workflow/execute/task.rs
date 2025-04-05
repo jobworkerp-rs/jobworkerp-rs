@@ -186,12 +186,12 @@ impl TaskExecutor {
                     .execute(self.task_name.as_str(), workflow_context, task_context)
                     .await
             }
-            Task::EmitTask(task) => {
-                let task_executor = EmitTaskExecutor::new(task);
-                task_executor
-                    .execute(self.task_name.as_str(), workflow_context, task_context)
-                    .await
-            }
+            // Task::EmitTask(task) => {
+            //     let task_executor = EmitTaskExecutor::new(task);
+            //     task_executor
+            //         .execute(self.task_name.as_str(), workflow_context, task_context)
+            //         .await
+            // }
             Task::ForTask(task) => {
                 let task_executor = ForTaskExecutor::new(task, self.job_executor_wrapper.clone());
                 task_executor
@@ -268,25 +268,25 @@ impl TaskExecutorTrait for ForkTaskExecutor<'_> {
     }
 }
 
-pub struct EmitTaskExecutor<'a> {
-    task: &'a workflow::EmitTask,
-}
-impl<'a> EmitTaskExecutor<'a> {
-    pub fn new(task: &'a workflow::EmitTask) -> Self {
-        Self { task }
-    }
-}
-impl TaskExecutorTrait for EmitTaskExecutor<'_> {
-    async fn execute(
-        &self,
-        _task_name: &str,
-        _workflow_context: Arc<RwLock<WorkflowContext>>,
-        _task_context: TaskContext,
-    ) -> Result<TaskContext> {
-        tracing::error!("EmitTaskExecutor not implemented yet!: {:?}", self.task);
-        todo!()
-    }
-}
+// pub struct EmitTaskExecutor<'a> {
+//     task: &'a workflow::EmitTask,
+// }
+// impl<'a> EmitTaskExecutor<'a> {
+//     pub fn new(task: &'a workflow::EmitTask) -> Self {
+//         Self { task }
+//     }
+// }
+// impl TaskExecutorTrait for EmitTaskExecutor<'_> {
+//     async fn execute(
+//         &self,
+//         _task_name: &str,
+//         _workflow_context: Arc<RwLock<WorkflowContext>>,
+//         _task_context: TaskContext,
+//     ) -> Result<TaskContext> {
+//         tracing::error!("EmitTaskExecutor not implemented yet!: {:?}", self.task);
+//         todo!()
+//     }
+// }
 
 pub struct RaiseTaskExecutor<'a> {
     task: &'a workflow::RaiseTask,

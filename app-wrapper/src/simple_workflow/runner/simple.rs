@@ -101,6 +101,7 @@ impl RunnerTrait for SimpleWorkflowRunner {
     }
     async fn run(&mut self, args: &[u8]) -> Result<Vec<Vec<u8>>> {
         let arg = WorkflowArgs::decode(args)?;
+        tracing::debug!("workflow args: {:#?}", arg);
         if self.canceled {
             return Err(anyhow::anyhow!(
                 "canceled by user: {}, {:?}",
@@ -110,11 +111,22 @@ impl RunnerTrait for SimpleWorkflowRunner {
         }
         let input_json = serde_json::from_str(&arg.input)
             .unwrap_or_else(|_| serde_json::Value::String(arg.input.clone()));
+        tracing::debug!(
+            "workflow input_json: {}",
+            serde_json::to_string_pretty(&input_json).unwrap_or_default()
+        );
         let context_json = Arc::new(
             arg.workflow_context
                 .as_deref()
-                .map(serde_json::from_str)
-                .unwrap_or_else(|| Ok(serde_json::Value::Object(Default::default())))?,
+                .map(|c| {
+                    serde_json::from_str(c).unwrap_or(serde_json::Value::Object(Default::default()))
+                    // ignore error
+                })
+                .unwrap_or_else(|| serde_json::Value::Object(Default::default())),
+        );
+        tracing::debug!(
+            "workflow context_json: {}",
+            serde_json::to_string_pretty(&context_json).unwrap_or_default()
         );
         let http_client = ReqwestClient::new(
             Some(Self::DEFAULT_USER_AGENT),
@@ -123,14 +135,17 @@ impl RunnerTrait for SimpleWorkflowRunner {
             )),
             Some(2),
         )?;
-        let source = arg.workflow_source.as_ref().ok_or(anyhow::anyhow!(
-            "workflow_source is required in workflow args"
-        ))?;
+        let source = arg.workflow_source.as_ref().ok_or({
+            tracing::error!("workflow_source is required in workflow args");
+            anyhow::anyhow!("workflow_source is required in workflow args")
+        })?;
+        tracing::debug!("workflow source: {:?}", source);
         let workflow = WorkflowLoader::new(http_client.clone())
             .inspect_err(|e| tracing::error!("Failed to create WorkflowLoader: {:#?}", e))?
             .load_workflow_source(source)
             .await
             .inspect_err(|e| tracing::error!("Failed to load workflow: {:#?}", e))?;
+        tracing::debug!("workflow: {:#?}", workflow);
         let mut executor = WorkflowExecutor::new(
             self.app_module.clone(),
             http_client,

@@ -6,7 +6,20 @@
 $id: https://serverlessworkflow.io/schemas/1.0.0/workflow.yaml
 $schema: https://json-schema.org/draft/2020-12/schema
 title: WorkflowSchema
-description: Partial Serverless Workflow DSL (add function task) - Workflow Schema.
+description: >-
+  Partial Serverless Workflow DSL with function task support. 
+
+  Runtime expressions:
+  - jq expressions using ${..} syntax (e.g. ${.key.ckey}, ${$task.input})
+  - liquid templates using $${..} syntax
+  - Available only in fields marked in their descriptions
+
+  Context variables in expressions:
+  - Input mode: keys from input data
+  - Output mode: keys from output data
+  - Workflow info: workflow.id, workflow.definition, workflow.input, workflow.context_variables
+  - Current task info: task.definition, task.raw_input, task.raw_output, task.output, task.flow_directive
+  - Raw data: access pre-transformation data via raw_input and raw_output (e.g. ${$task.raw_input})
 type: object
 required: [document, input, do]
 properties:
@@ -129,7 +142,6 @@ $defs:
       - $ref: "#/$defs/callTask"
       - $ref: "#/$defs/doTask"
       - $ref: "#/$defs/forkTask"
-      - $ref: "#/$defs/emitTask"
       - $ref: "#/$defs/forTask"
       - $ref: "#/$defs/raiseTask"
       - $ref: "#/$defs/runTask"
@@ -194,32 +206,6 @@ $defs:
             description: The configuration of the tasks to perform sequentially.
       - not:
           required: [for]
-  emitTask:
-    type: object
-    $ref: "#/$defs/taskBase"
-    title: EmitTask
-    description: Allows workflows to publish events to event brokers or messaging systems, facilitating communication and coordination between different components and services.
-    required: [emit]
-    unevaluatedProperties: false
-    properties:
-      emit:
-        type: object
-        title: EmitTaskConfiguration
-        description: The configuration of an event's emission.
-        unevaluatedProperties: false
-        properties:
-          event:
-            type: object
-            title: EmitEventDefinition
-            description: The definition of the event to emit.
-            properties:
-              with:
-                $ref: "#/$defs/eventProperties"
-                title: EmitEventWith
-                description: Defines the properties of event to emit.
-                required: [source, type]
-            additionalProperties: true
-        required: [event]
   forTask:
     type: object
     $ref: "#/$defs/taskBase"
@@ -322,7 +308,7 @@ $defs:
                   settings:
                     type: object
                     title: InitializeSettings
-                    description: The initialization settings, if any. Jq expressions (${..}) or Liquid templates ($${..}) can be used to transform each value (not keys, no mixed plain text).
+                    description: The initialization settings, if any. Runtime expression can be used to transform each value (not keys, no mixed plain text).
                   options:
                     type: object
                     title: FunctionOptions
@@ -359,7 +345,7 @@ $defs:
                   arguments:
                     type: object
                     title: FunctionArguments
-                    description: A key/value mapping of arguments to use when running the function. Jq expression (${..}) or Liquid template ($${..}) is used to transform the arguments.
+                    description: A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation.
                     additionalProperties: true
                 required: [runnerName, arguments]
             required: [function]
@@ -480,277 +466,6 @@ $defs:
         enum: [continue, exit, end]
         default: continue
       - type: string
-  referenceableAuthenticationPolicy:
-    type: object
-    title: ReferenceableAuthenticationPolicy
-    description: Represents a referenceable authentication policy.
-    unevaluatedProperties: false
-    oneOf:
-      - title: AuthenticationPolicyReference
-        description: The reference of the authentication policy to use.
-        properties:
-          use:
-            type: string
-            minLength: 1
-            title: ReferenceableAuthenticationPolicyName
-            description: The name of the authentication policy to use.
-        required: [use]
-      - $ref: "#/$defs/authenticationPolicy"
-  secretBasedAuthenticationPolicy:
-    type: object
-    title: SecretBasedAuthenticationPolicy
-    description: Represents an authentication policy based on secrets.
-    unevaluatedProperties: false
-    properties:
-      use:
-        type: string
-        minLength: 1
-        title: SecretBasedAuthenticationPolicyName
-        description: The name of the authentication policy to use.
-    required: [use]
-  authenticationPolicy:
-    type: object
-    title: AuthenticationPolicy
-    description: Defines an authentication policy.
-    oneOf:
-      - title: BasicAuthenticationPolicy
-        description: Use basic authentication.
-        properties:
-          basic:
-            type: object
-            title: BasicAuthenticationPolicyConfiguration
-            description: The configuration of the basic authentication policy.
-            unevaluatedProperties: false
-            oneOf:
-              - title: BasicAuthenticationProperties
-                description: Inline configuration of the basic authentication policy.
-                properties:
-                  username:
-                    type: string
-                    description: The username to use.
-                  password:
-                    type: string
-                    description: The password to use.
-                required: [username, password]
-              - $ref: "#/$defs/secretBasedAuthenticationPolicy"
-                title: BasicAuthenticationPolicySecret
-                description: Secret based configuration of the basic authentication policy.
-        required: [basic]
-      - title: BearerAuthenticationPolicy
-        description: Use bearer authentication.
-        properties:
-          bearer:
-            type: object
-            title: BearerAuthenticationPolicyConfiguration
-            description: The configuration of the bearer authentication policy.
-            unevaluatedProperties: false
-            oneOf:
-              - title: BearerAuthenticationProperties
-                description: Inline configuration of the bearer authentication policy.
-                properties:
-                  token:
-                    type: string
-                    description: The bearer token to use.
-                required: [token]
-              - $ref: "#/$defs/secretBasedAuthenticationPolicy"
-                title: BearerAuthenticationPolicySecret
-                description: Secret based configuration of the bearer authentication policy.
-        required: [bearer]
-      - title: DigestAuthenticationPolicy
-        description: Use digest authentication.
-        properties:
-          digest:
-            type: object
-            title: DigestAuthenticationPolicyConfiguration
-            description: The configuration of the digest authentication policy.
-            unevaluatedProperties: false
-            oneOf:
-              - title: DigestAuthenticationProperties
-                description: Inline configuration of the digest authentication policy.
-                properties:
-                  username:
-                    type: string
-                    description: The username to use.
-                  password:
-                    type: string
-                    description: The password to use.
-                required: [username, password]
-              - $ref: "#/$defs/secretBasedAuthenticationPolicy"
-                title: DigestAuthenticationPolicySecret
-                description: Secret based configuration of the digest authentication policy.
-        required: [digest]
-      - title: OAuth2AuthenticationPolicy
-        description: Use OAuth2 authentication.
-        properties:
-          oauth2:
-            type: object
-            title: OAuth2AuthenticationPolicyConfiguration
-            description: The configuration of the OAuth2 authentication policy.
-            unevaluatedProperties: false
-            oneOf:
-              - type: object
-                title: OAuth2ConnectAuthenticationProperties
-                description: The inline configuration of the OAuth2 authentication policy.
-                unevaluatedProperties: false
-                allOf:
-                  - $ref: "#/$defs/oauth2AuthenticationProperties"
-                  - type: object
-                    properties:
-                      endpoints:
-                        type: object
-                        title: OAuth2AuthenticationPropertiesEndpoints
-                        description: The endpoint configurations for OAuth2.
-                        properties:
-                          token:
-                            type: string
-                            format: uri-template
-                            default: /oauth2/token
-                            title: OAuth2TokenEndpoint
-                            description: The relative path to the token endpoint. Defaults to `/oauth2/token`.
-                          revocation:
-                            type: string
-                            format: uri-template
-                            default: /oauth2/revoke
-                            title: OAuth2RevocationEndpoint
-                            description: The relative path to the revocation endpoint. Defaults to `/oauth2/revoke`.
-                          introspection:
-                            type: string
-                            format: uri-template
-                            default: /oauth2/introspect
-                            title: OAuth2IntrospectionEndpoint
-                            description: The relative path to the introspection endpoint. Defaults to `/oauth2/introspect`.
-              - $ref: "#/$defs/secretBasedAuthenticationPolicy"
-                title: OAuth2AuthenticationPolicySecret
-                description: Secret based configuration of the OAuth2 authentication policy.
-        required: [oauth2]
-      - title: OpenIdConnectAuthenticationPolicy
-        description: Use OpenIdConnect authentication.
-        properties:
-          oidc:
-            type: object
-            title: OpenIdConnectAuthenticationPolicyConfiguration
-            description: The configuration of the OpenIdConnect authentication policy.
-            unevaluatedProperties: false
-            oneOf:
-              - $ref: "#/$defs/oauth2AuthenticationProperties"
-                title: OpenIdConnectAuthenticationProperties
-                description: The inline configuration of the OpenIdConnect authentication policy.
-                unevaluatedProperties: false
-              - $ref: "#/$defs/secretBasedAuthenticationPolicy"
-                title: OpenIdConnectAuthenticationPolicySecret
-                description: Secret based configuration of the OpenIdConnect authentication policy.
-        required: [oidc]
-  oauth2AuthenticationProperties:
-    type: object
-    title: OAuth2AutenthicationData
-    description: Inline configuration of the OAuth2 authentication policy.
-    properties:
-      authority:
-        $ref: "#/$defs/uriTemplate"
-        title: OAuth2AutenthicationDataAuthority
-        description: The URI that references the OAuth2 authority to use.
-      grant:
-        type: string
-        enum:
-          [
-            authorization_code,
-            client_credentials,
-            password,
-            refresh_token,
-            "urn:ietf:params:oauth:grant-type:token-exchange",
-          ]
-        title: OAuth2AutenthicationDataGrant
-        description: The grant type to use.
-      client:
-        type: object
-        title: OAuth2AutenthicationDataClient
-        description: The definition of an OAuth2 client.
-        unevaluatedProperties: false
-        properties:
-          id:
-            type: string
-            title: ClientId
-            description: The client id to use.
-          secret:
-            type: string
-            title: ClientSecret
-            description: The client secret to use, if any.
-          assertion:
-            type: string
-            title: ClientAssertion
-            description: A JWT containing a signed assertion with your application credentials.
-          authentication:
-            type: string
-            enum:
-              [
-                client_secret_basic,
-                client_secret_post,
-                client_secret_jwt,
-                private_key_jwt,
-                none,
-              ]
-            default: client_secret_post
-            title: ClientAuthentication
-            description: The authentication method to use to authenticate the client.
-      request:
-        type: object
-        title: OAuth2TokenRequest
-        description: The configuration of an OAuth2 token request
-        properties:
-          encoding:
-            type: string
-            enum: ["application/x-www-form-urlencoded", "application/json"]
-            default: "application/x-www-form-urlencoded"
-            title: Oauth2TokenRequestEncoding
-      issuers:
-        type: array
-        title: OAuth2Issuers
-        description: A list that contains that contains valid issuers that will be used to check against the issuer of generated tokens.
-        items:
-          type: string
-      scopes:
-        type: array
-        title: OAuth2AutenthicationDataScopes
-        description: The scopes, if any, to request the token for.
-        items:
-          type: string
-      audiences:
-        type: array
-        title: OAuth2AutenthicationDataAudiences
-        description: The audiences, if any, to request the token for.
-        items:
-          type: string
-      username:
-        type: string
-        title: OAuth2AutenthicationDataUsername
-        description: The username to use. Used only if the grant type is Password.
-      password:
-        type: string
-        title: OAuth2AutenthicationDataPassword
-        description: The password to use. Used only if the grant type is Password.
-      subject:
-        $ref: "#/$defs/oauth2Token"
-        title: OAuth2AutenthicationDataSubject
-        description: The security token that represents the identity of the party on behalf of whom the request is being made.
-      actor:
-        $ref: "#/$defs/oauth2Token"
-        title: OAuth2AutenthicationDataActor
-        description: The security token that represents the identity of the acting party.
-  oauth2Token:
-    type: object
-    title: OAuth2TokenDefinition
-    description: Represents an OAuth2 token.
-    unevaluatedProperties: false
-    properties:
-      token:
-        type: string
-        title: OAuth2Token
-        description: The security token to use.
-      type:
-        type: string
-        title: OAuth2TokenType
-        description: The type of the security token to use.
-    required: [token, type]
   duration:
     oneOf:
       - type: object
@@ -883,63 +598,7 @@ $defs:
               - title: ExpressionEndpointURI
                 $ref: "#/$defs/runtimeExpression"
                 description: An expression based endpoint's URI.
-          authentication:
-            $ref: "#/$defs/referenceableAuthenticationPolicy"
-            title: EndpointAuthentication
-            description: The authentication policy to use.
         required: [uri]
-  eventProperties:
-    type: object
-    title: EventProperties
-    description: Describes the properties of an event.
-    properties:
-      id:
-        type: string
-        title: EventId
-        description: The event's unique identifier.
-      source:
-        title: EventSource
-        description: Identifies the context in which an event happened.
-        oneOf:
-          - $ref: "#/$defs/uriTemplate"
-          - $ref: "#/$defs/runtimeExpression"
-      type:
-        type: string
-        title: EventType
-        description: This attribute contains a value describing the type of event related to the originating occurrence.
-      time:
-        title: EventTime
-        description: When the event occured.
-        oneOf:
-          - title: LiteralTime
-            type: string
-            format: date-time
-          - $ref: "#/$defs/runtimeExpression"
-      subject:
-        type: string
-        title: EventSubject
-        description: The subject of the event.
-      datacontenttype:
-        type: string
-        title: EventDataContentType
-        description: Content type of data value. This attribute enables data to carry any type of content, whereby format and encoding might differ from that of the chosen event format.
-      dataschema:
-        title: EventDataschema
-        description: The schema describing the event format.
-        oneOf:
-          - title: LiteralDataSchema
-            $ref: "#/$defs/uriTemplate"
-            description: The literal event data schema.
-          - title: ExpressionDataSchema
-            $ref: "#/$defs/runtimeExpression"
-            description: An expression based event data schema.
-      data:
-        title: EventData
-        description: The event's payload data
-        anyOf:
-          - $ref: "#/$defs/runtimeExpression"
-          - {}
-    additionalProperties: true
   externalResource:
     type: object
     title: ExternalResource
@@ -1095,7 +754,13 @@ $defs:
     type: string
     title: RuntimeExpression
     description: A runtime expression.
-    pattern: "^\\s*\\$\\{.+\\}\\s*$"
+    oneof:
+      - pattern: "^\\$\\{.+\\}$"
+        title: JqExpression
+        description: A jq expression.
+      - pattern: "^\\$\\$\\{\\{[\\s\\S]+\\}\\}$"
+        title: LiquidTemplate
+        description: A liquid template expression.
   processResult:
     type: object
     title: ProcessResult
@@ -1115,16 +780,6 @@ $defs:
         title: ProcessStandardError
         description: The content of the process's STDERR.
     required: [code, stdout, stderr]
-  jqString:
-    type: string
-    title: JqString
-    description: A jq expression.
-    pattern: "^\\s*\\$\\{.+\\}\\s*$"
-  templateString:
-    type: string
-    title: TemplateString
-    description: A liquid template expression.
-    pattern: "^\\$\\$\\{\\{[\\s\\S]+\\}\\}\\s*$"
   plainString:
     type: string
     title: PlainString

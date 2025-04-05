@@ -115,37 +115,6 @@ impl TaskTrait for DoTask {
     }
 }
 
-impl TaskTrait for EmitTask {
-    fn export(&self) -> ::std::option::Option<&Export> {
-        self.export.as_ref()
-    }
-
-    fn if_(&self) -> ::std::option::Option<&::std::string::String> {
-        self.if_.as_ref()
-    }
-
-    fn input(&self) -> ::std::option::Option<&Input> {
-        self.input.as_ref()
-    }
-
-    fn metadata(&self) -> &::serde_json::Map<::std::string::String, ::serde_json::Value> {
-        &self.metadata
-    }
-
-    fn output(&self) -> ::std::option::Option<&Output> {
-        self.output.as_ref()
-    }
-
-    fn then(&self) -> ::std::option::Option<&FlowDirective> {
-        self.then.as_ref()
-    }
-
-    fn timeout(&self) -> ::std::option::Option<&TaskTimeout> {
-        // Convert TaskTimeout to CallTaskAsyncApiTimeout if needed
-        self.timeout.as_ref()
-    }
-}
-
 impl TaskTrait for ForTask {
     fn export(&self) -> ::std::option::Option<&Export> {
         self.export.as_ref()
@@ -392,7 +361,7 @@ impl TaskTrait for Task {
         match self {
             Task::CallTask(t) => t.export(),
             Task::ForkTask(t) => t.export(),
-            Task::EmitTask(t) => t.export(),
+            // Task::EmitTask(t) => t.export(),
             Task::ForTask(t) => t.export(), // Needs to be matched before DoTask
             Task::DoTask(t) => t.export(),
             Task::RaiseTask(t) => t.export(),
@@ -408,7 +377,7 @@ impl TaskTrait for Task {
         match self {
             Task::CallTask(t) => t.if_(),
             Task::ForkTask(t) => t.if_(),
-            Task::EmitTask(t) => t.if_(),
+            // Task::EmitTask(t) => t.if_(),
             Task::ForTask(t) => t.if_(), // Needs to be matched before DoTask
             Task::DoTask(t) => t.if_(),
             Task::RaiseTask(t) => t.if_(),
@@ -424,7 +393,7 @@ impl TaskTrait for Task {
         match self {
             Task::CallTask(t) => t.input(),
             Task::ForkTask(t) => t.input(),
-            Task::EmitTask(t) => t.input(),
+            // Task::EmitTask(t) => t.input(),
             Task::ForTask(t) => t.input(), // Needs to be matched before DoTask
             Task::DoTask(t) => t.input(),
             Task::RaiseTask(t) => t.input(),
@@ -440,7 +409,7 @@ impl TaskTrait for Task {
         match self {
             Task::CallTask(t) => t.metadata(),
             Task::ForkTask(t) => t.metadata(),
-            Task::EmitTask(t) => t.metadata(),
+            // Task::EmitTask(t) => t.metadata(),
             Task::ForTask(t) => t.metadata(),
             Task::DoTask(t) => t.metadata(),
             Task::RaiseTask(t) => t.metadata(),
@@ -456,7 +425,7 @@ impl TaskTrait for Task {
         match self {
             Task::CallTask(t) => t.output(),
             Task::ForkTask(t) => t.output(),
-            Task::EmitTask(t) => t.output(),
+            // Task::EmitTask(t) => t.output(),
             Task::ForTask(t) => t.output(),
             Task::DoTask(t) => t.output(),
             Task::RaiseTask(t) => t.output(),
@@ -472,7 +441,7 @@ impl TaskTrait for Task {
         match self {
             Task::CallTask(t) => t.then(),
             Task::ForkTask(t) => t.then(),
-            Task::EmitTask(t) => t.then(),
+            // Task::EmitTask(t) => t.then(),
             Task::ForTask(t) => t.then(),
             Task::DoTask(t) => t.then(),
             Task::RaiseTask(t) => t.then(),
@@ -488,7 +457,7 @@ impl TaskTrait for Task {
         match self {
             Task::CallTask(t) => t.timeout(),
             Task::ForkTask(t) => t.timeout(),
-            Task::EmitTask(t) => t.timeout(),
+            // Task::EmitTask(t) => t.timeout(),
             Task::ForTask(t) => t.timeout(),
             Task::DoTask(t) => t.timeout(),
             Task::RaiseTask(t) => t.timeout(),
