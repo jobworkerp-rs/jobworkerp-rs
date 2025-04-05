@@ -57,7 +57,7 @@ impl<'a> CallTaskExecutor<'a> {
             options.channel = Some(channel.clone());
         }
 
-        if let Some(serde_json::Value::Object(retry_options)) = options_map.get("retryPolicy") {
+        if let Some(serde_json::Value::Object(retry_options)) = options_map.get("retry") {
             // Clone existing retry_policy if present or create new one
             let mut retry = options.retry.clone().unwrap_or_default();
 
@@ -79,22 +79,34 @@ impl<'a> CallTaskExecutor<'a> {
                 };
             }
 
-            let mut retry_attempt = RetryLimitAttempt::default();
-            if let Some(serde_json::Value::Number(max_count)) = retry_options.get("maxCount") {
-                if let Some(count) = max_count.as_i64() {
-                    retry_attempt.count = Some(count);
+            // Handle limit.attempt fields
+            if let Some(serde_json::Value::Object(limit_options)) = retry_options.get("limit") {
+                if let Some(serde_json::Value::Object(attempt_options)) =
+                    limit_options.get("attempt")
+                {
+                    let mut retry_attempt = RetryLimitAttempt::default();
+
+                    if let Some(serde_json::Value::Number(count)) = attempt_options.get("count") {
+                        if let Some(count_val) = count.as_i64() {
+                            retry_attempt.count = Some(count_val);
+                        }
+                    }
+
+                    if let Some(serde_json::Value::Number(duration)) =
+                        attempt_options.get("duration")
+                    {
+                        if let Some(duration_val) = duration.as_i64() {
+                            retry_attempt.duration =
+                                Some(workflow::Duration::from_millis(duration_val as u64));
+                        }
+                    }
+
+                    if retry_attempt != RetryLimitAttempt::default() {
+                        retry.limit = Some(RetryLimit {
+                            attempt: Some(retry_attempt),
+                        });
+                    }
                 }
-            }
-            if let Some(serde_json::Value::Number(max_interval)) = retry_options.get("maxInterval")
-            {
-                if let Some(interval) = max_interval.as_i64() {
-                    retry_attempt.duration = Some(workflow::Duration::from_millis(interval as u64));
-                }
-            }
-            if retry_attempt != RetryLimitAttempt::default() {
-                retry.limit = Some(RetryLimit {
-                    attempt: Some(retry_attempt),
-                });
             }
 
             if let Some(serde_json::Value::Number(delay)) = retry_options.get("delay") {
@@ -253,5 +265,157 @@ impl TaskExecutorTrait for CallTaskExecutor<'_> {
           //     tracing::error!("not supported the call for now: {:?}", &self.task);
           //     Err(anyhow!("not supported the call for now: {:?}", &self.task))
           // }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_extract_metadata_with_settings_and_options() {
+        // Arrange
+        let metadata =
+            serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(json!({
+                "settings": {
+                    "setting1": "value1",
+                    "setting2": 42
+                },
+                "options": {
+                    "broadcastResultsToListener": true,
+                    "channel": "test-channel",
+                    "storeFailure": true,
+                    "storeSuccess": false,
+                    "useStatic": true,
+                    "withBackup": false,
+                    "retry": {
+                        "backoff": "exponential",
+                        "limit": {
+                            "attempt": {
+                                "count": 5,
+                                "duration": 1000
+                            }
+                        },
+                        "delay": 100
+                    }
+                }
+            }))
+            .unwrap();
+
+        let settings =
+            serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(json!({
+                "existingSetting": "value",
+                "setting1": "original" // This should be overwritten
+            }))
+            .unwrap();
+
+        let options = None; // Test creating new options
+
+        // Act
+        let (result_options, result_settings) =
+            CallTaskExecutor::extract_metadata(&metadata, settings, options);
+
+        // Assert
+        // Verify settings were merged properly
+        assert_eq!(
+            result_settings
+                .get("existingSetting")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "value"
+        );
+        assert_eq!(
+            result_settings.get("setting1").unwrap().as_str().unwrap(),
+            "value1"
+        ); // Overwritten
+        assert_eq!(
+            result_settings.get("setting2").unwrap().as_i64().unwrap(),
+            42
+        ); // Added
+
+        // Verify options were created and populated correctly
+        let options = result_options.unwrap();
+        assert_eq!(options.broadcast_results_to_listener, Some(true));
+        assert_eq!(options.channel, Some("test-channel".to_string()));
+        assert_eq!(options.store_failure, Some(true));
+        assert_eq!(options.store_success, Some(false));
+        assert_eq!(options.use_static, Some(true));
+        assert_eq!(options.with_backup, Some(false));
+
+        // Verify retry policy
+        let retry = options.retry.unwrap();
+        match retry.backoff.unwrap() {
+            workflow::RetryBackoff::Exponential(_) => {} // Success
+            _ => panic!("Expected exponential backoff"),
+        }
+        let limit = retry.limit.unwrap();
+        let attempt = limit.attempt.unwrap();
+        assert_eq!(attempt.count, Some(5));
+        assert_eq!(attempt.duration.unwrap().to_millis(), 1000);
+        assert_eq!(retry.delay.unwrap().to_millis(), 100);
+    }
+
+    #[test]
+    fn test_extract_metadata_with_existing_options() {
+        // Arrange
+        let metadata =
+            serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(json!({
+                "options": {
+                    "broadcastResultsToListener": true,
+                    "channel": "test-channel"
+                }
+            }))
+            .unwrap();
+
+        let settings = serde_json::Map::new();
+
+        let original_options = FunctionOptions {
+            store_success: Some(true),
+            store_failure: Some(false),
+            use_static: Some(false),
+            with_backup: Some(false),
+            ..Default::default()
+        };
+
+        // Act
+        let (result_options, _) =
+            CallTaskExecutor::extract_metadata(&metadata, settings, Some(original_options));
+
+        // Assert
+        let options = result_options.unwrap();
+        assert_eq!(options.broadcast_results_to_listener, Some(true)); // From metadata
+        assert_eq!(options.channel, Some("test-channel".to_string())); // From metadata
+        assert_eq!(options.store_success, Some(true)); // Preserved from original
+        assert_eq!(options.store_failure, Some(false)); // Preserved from original
+    }
+
+    #[test]
+    fn test_extract_metadata_no_metadata() {
+        // Arrange
+        let metadata = serde_json::Map::new();
+        let settings = serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(
+            json!({"setting1": "value1"}),
+        )
+        .unwrap();
+
+        let options = FunctionOptions {
+            store_success: Some(true),
+            ..Default::default()
+        };
+
+        // Act
+        let (result_options, result_settings) =
+            CallTaskExecutor::extract_metadata(&metadata, settings, Some(options));
+
+        // Assert
+        assert_eq!(
+            result_settings.get("setting1").unwrap().as_str().unwrap(),
+            "value1"
+        );
+        let options = result_options.unwrap();
+        assert_eq!(options.store_success, Some(true)); // Original value preserved
+        assert_eq!(options.broadcast_results_to_listener, None); // No metadata to apply
     }
 }
