@@ -241,7 +241,7 @@ impl RunnerTrait for PythonCommandRunner {
                     response
                         .text()
                         .await
-                        .context("Failed to read input data as bytes")?
+                        .context("Failed to read input data as text")?
                 }
             };
 
