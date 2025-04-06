@@ -1,3 +1,5 @@
+use crate::workflow::runner::inline::InlineWorkflowRunner;
+use crate::workflow::runner::reusable::ReusableWorkflowRunner;
 use anyhow::Result;
 use app::module::AppModule;
 use jobworkerp_runner::runner::{
@@ -12,8 +14,6 @@ use jobworkerp_runner::runner::{
 };
 use proto::jobworkerp::data::RunnerType;
 use std::sync::Arc;
-
-use crate::simple_workflow::runner::simple::SimpleWorkflowRunner;
 
 #[derive(Debug)]
 pub struct RunnerFactory {
@@ -63,11 +63,20 @@ impl RunnerFactory {
             Some(RunnerType::SlackPostMessage) => {
                 Some(Box::new(SlackPostMessageRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
             }
-            Some(RunnerType::SimpleWorkflow) => {
-                match SimpleWorkflowRunner::new(self.app_module.clone()) {
+            Some(RunnerType::InlineWorkflow) => {
+                match InlineWorkflowRunner::new(self.app_module.clone()) {
                     Ok(runner) => Some(Box::new(runner) as Box<dyn RunnerTrait + Send + Sync>),
                     Err(err) => {
-                        tracing::error!("Failed to create SimpleWorkflowRunner: {}", err);
+                        tracing::error!("Failed to create InlineWorkflowRunner: {}", err);
+                        None
+                    }
+                }
+            }
+            Some(RunnerType::ReusableWorkflow) => {
+                match ReusableWorkflowRunner::new(self.app_module.clone()) {
+                    Ok(runner) => Some(Box::new(runner) as Box<dyn RunnerTrait + Send + Sync>),
+                    Err(err) => {
+                        tracing::error!("Failed to create ReusableWorkflowRunner: {}", err);
                         None
                     }
                 }

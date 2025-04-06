@@ -1,12 +1,12 @@
-use crate::simple_workflow::{definition::WorkflowLoader, execute::workflow::WorkflowExecutor};
+use crate::workflow::{definition::WorkflowLoader, execute::workflow::WorkflowExecutor};
 use anyhow::Result;
 use app::module::AppModule;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use infra_utils::infra::net::reqwest::ReqwestClient;
-use jobworkerp_runner::jobworkerp::runner::{workflow_result::WorkflowStatus, WorkflowArgs};
-use jobworkerp_runner::jobworkerp::runner::{Empty, WorkflowResult};
-use jobworkerp_runner::runner::workflow::SimpleWorkflowRunnerSpec;
+use jobworkerp_runner::jobworkerp::runner::workflow_result::WorkflowStatus;
+use jobworkerp_runner::jobworkerp::runner::{Empty, InlineWorkflowArgs, WorkflowResult};
+use jobworkerp_runner::runner::workflow::InlineWorkflowRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use prost::Message;
 use proto::jobworkerp::data::StreamingOutputType;
@@ -15,50 +15,50 @@ use schemars::JsonSchema;
 use std::{sync::Arc, time::Duration};
 
 #[derive(Debug, Clone)]
-pub struct SimpleWorkflowRunner {
+pub struct InlineWorkflowRunner {
     app_module: Arc<AppModule>,
     workflow_executor: Option<WorkflowExecutor>,
     canceled: bool,
 }
-impl SimpleWorkflowRunner {
+impl InlineWorkflowRunner {
     // for workflow file reqwest
     const DEFAULT_REQUEST_TIMEOUT_SEC: u32 = 120; // 2 minutes
     const DEFAULT_USER_AGENT: &str = "simple-workflow/1.0";
 
     pub fn new(app_module: Arc<AppModule>) -> Result<Self> {
-        Ok(SimpleWorkflowRunner {
+        Ok(InlineWorkflowRunner {
             app_module,
             workflow_executor: None,
             canceled: false,
         })
     }
 }
-impl SimpleWorkflowRunnerSpec for SimpleWorkflowRunner {}
+impl InlineWorkflowRunnerSpec for InlineWorkflowRunner {}
 
 #[derive(Debug, JsonSchema, serde::Deserialize, serde::Serialize)]
 struct WorkflowRunnerInputSchema {
-    args: WorkflowArgs,
+    args: InlineWorkflowArgs,
 }
 
-impl RunnerSpec for SimpleWorkflowRunner {
+impl RunnerSpec for InlineWorkflowRunner {
     fn name(&self) -> String {
-        SimpleWorkflowRunnerSpec::name(self)
+        InlineWorkflowRunnerSpec::name(self)
     }
 
     fn runner_settings_proto(&self) -> String {
-        SimpleWorkflowRunnerSpec::runner_settings_proto(self)
+        InlineWorkflowRunnerSpec::runner_settings_proto(self)
     }
 
     fn job_args_proto(&self) -> String {
-        SimpleWorkflowRunnerSpec::job_args_proto(self)
+        InlineWorkflowRunnerSpec::job_args_proto(self)
     }
 
     fn result_output_proto(&self) -> Option<String> {
-        SimpleWorkflowRunnerSpec::result_output_proto(self)
+        InlineWorkflowRunnerSpec::result_output_proto(self)
     }
 
     fn output_type(&self) -> StreamingOutputType {
-        SimpleWorkflowRunnerSpec::output_type(self)
+        InlineWorkflowRunnerSpec::output_type(self)
     }
     fn settings_schema(&self) -> String {
         // plain string with title
@@ -95,17 +95,17 @@ impl RunnerSpec for SimpleWorkflowRunner {
 }
 
 #[async_trait]
-impl RunnerTrait for SimpleWorkflowRunner {
+impl RunnerTrait for InlineWorkflowRunner {
     async fn load(&mut self, _settings: Vec<u8>) -> Result<()> {
         Ok(())
     }
     async fn run(&mut self, args: &[u8]) -> Result<Vec<Vec<u8>>> {
-        let arg = WorkflowArgs::decode(args)?;
+        let arg = InlineWorkflowArgs::decode(args)?;
         tracing::debug!("workflow args: {:#?}", arg);
         if self.canceled {
             return Err(anyhow::anyhow!(
                 "canceled by user: {}, {:?}",
-                RunnerType::SimpleWorkflow.as_str_name(),
+                RunnerType::InlineWorkflow.as_str_name(),
                 arg
             ));
         }
@@ -149,14 +149,14 @@ impl RunnerTrait for SimpleWorkflowRunner {
         let mut executor = WorkflowExecutor::new(
             self.app_module.clone(),
             http_client,
-            workflow,
+            Arc::new(workflow),
             Arc::new(input_json),
             context_json,
         );
         if self.canceled {
             return Err(anyhow::anyhow!(
                 "canceled by user: {}, {:?}",
-                RunnerType::SimpleWorkflow.as_str_name(),
+                RunnerType::InlineWorkflow.as_str_name(),
                 arg
             ));
         }

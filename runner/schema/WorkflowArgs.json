@@ -1,0 +1,61 @@
+{
+    "$schema": "http://json-schema.org/draft-04/schema#",
+    "$ref": "#/definitions/WorkflowArgs",
+    "definitions": {
+        "WorkflowArgs": {
+            "properties": {
+                "workflow_url": {
+                    "type": "string",
+                    "description": "# Path or URL to the workflow definition file (JSON or YAML)"
+                },
+                "workflow_data": {
+                    "type": "string",
+                    "description": "# The workflow definition as a JSON or YAML string"
+                },
+                "input": {
+                    "type": "string",
+                    "description": "# Required data passed to the workflow execution Must conform to the schema defined in the workflow definition (Can be a plain string or JSON formatted string)"
+                },
+                "workflow_context": {
+                    "type": "string",
+                    "description": "# Additional context information for workflow execution (JSON formatted string)"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "allOf": [
+                {
+                    "oneOf": [
+                        {
+                            "not": {
+                                "anyOf": [
+                                    {
+                                        "required": [
+                                            "workflow_url"
+                                        ]
+                                    },
+                                    {
+                                        "required": [
+                                            "workflow_data"
+                                        ]
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            "required": [
+                                "workflow_url"
+                            ]
+                        },
+                        {
+                            "required": [
+                                "workflow_data"
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "title": "Workflow Args"
+        }
+    }
+}

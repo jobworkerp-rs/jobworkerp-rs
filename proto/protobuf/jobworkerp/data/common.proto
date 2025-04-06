@@ -55,14 +55,15 @@ enum RunnerType {
   // Interacts with Large Language Models
   LLM = 65534;
 
-  // # Simple Workflow Runner
-  // Executes a sequence of jobs as a workflow
-  SIMPLE_WORKFLOW = 65535;
+  // # Inline Workflow Runner
+  // Executes a sequence of jobs as a workflow defined inline with the request
+  // Jobs are executed in order and not preserved after execution completes
+  INLINE_WORKFLOW = 65535;
 
-  // # Saved Simple Workflow Runner
-  // Executes a sequence of jobs as a workflow
-  // Specialized for functions api (create workflow as function)
-  SAVED_WORKFLOW = -1;
+  // # Reusable Workflow Runner
+  // Allows users to define, save, and reuse workflow definitions across multiple executions
+  // Workflows are stored in the system and can be executed by reference
+  REUSABLE_WORKFLOW = -1;
 }
 
 // # Priority Level

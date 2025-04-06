@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, fmt, ops::Deref, sync::Arc};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::simple_workflow::definition::workflow::{self, FlowDirective, Task, WorkflowSchema};
+use crate::workflow::definition::workflow::{self, FlowDirective, Task, WorkflowSchema};
 
 pub trait UseExpression {
     fn expression(

@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package jobworkerp.runner;
 
-message SavedWorkflowRunnerSettings {
+message ReusableWorkflowRunnerSettings {
   // # WorkflowData
   // simplified version of the ServerlessWorkflow definition)
   // (schema TO BE defined)) the workflow JSON data string

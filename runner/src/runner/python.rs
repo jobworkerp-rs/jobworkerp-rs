@@ -75,7 +75,8 @@ impl RunnerSpec for PythonCommandRunner {
         StreamingOutputType::NonStreaming
     }
     fn settings_schema(&self) -> String {
-        schema_to_json_string!(PythonCommandRunnerSettings, "settings_schema")
+        // XXX for right oneof structure in json schema
+        include_str!("../../schema/PythonCommandRunnerSettings.json").to_string()
     }
     fn arguments_schema(&self) -> String {
         schema_to_json_string!(PythonCommandArgs, "arguments_schema")
