@@ -30,11 +30,11 @@ impl WorkflowLoader {
             WorkflowSource::WorkflowUrl(url) => self
                 .load_workflow(Some(url.as_str()), None)
                 .await
-                .map_err(|e| anyhow!("Failed to load workflow from url: {}", e)),
+                .map_err(|e| anyhow!("Failed to load workflow from url{}: {}", url, e)),
             WorkflowSource::WorkflowData(data) => self
                 .load_workflow(None, Some(data.as_str()))
                 .await
-                .map_err(|e| anyhow!("Failed to load workflow from json: {}", e)),
+                .map_err(|e| anyhow!("Failed to load workflow from json {}: {}", data, e)),
         }
     }
     pub async fn load_workflow(
