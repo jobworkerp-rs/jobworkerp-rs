@@ -1,9 +1,9 @@
 use super::{job::JobExecutorWrapper, task::TaskExecutor};
-use crate::simple_workflow::definition::{
+use crate::workflow::definition::{
     transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
     workflow::{Task, WorkflowSchema},
 };
-use crate::simple_workflow::execute::context::{
+use crate::workflow::execute::context::{
     self, TaskContext, Then, UseExpression, WorkflowContext, WorkflowStatus,
 };
 use anyhow::Result;
@@ -17,7 +17,7 @@ use tokio::sync::{Mutex, RwLock};
 pub struct WorkflowExecutor {
     pub job_executors: Arc<JobExecutorWrapper>,
     pub http_client: ReqwestClient,
-    pub workflow: WorkflowSchema,
+    pub workflow: Arc<WorkflowSchema>,
     pub workflow_context: Arc<RwLock<context::WorkflowContext>>,
 }
 impl UseJqAndTemplateTransformer for WorkflowExecutor {}
@@ -28,7 +28,7 @@ impl WorkflowExecutor {
     pub fn new(
         app_module: Arc<AppModule>,
         http_client: ReqwestClient,
-        workflow: WorkflowSchema,
+        workflow: Arc<WorkflowSchema>,
         input: Arc<serde_json::Value>,
         context: Arc<serde_json::Value>,
     ) -> Self {

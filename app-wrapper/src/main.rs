@@ -46,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runner_spec_factory = Arc::new(RunnerSpecFactory::new(plugins.clone()));
     let config_module = Arc::new(AppConfigModule::new_by_env(runner_spec_factory));
     let app_module = Arc::new(app::module::AppModule::new_by_env(config_module).await?);
-    match app_wrapper::simple_workflow::execute::execute_workflow(
+    match app_wrapper::workflow::execute::execute_workflow(
         app_module.clone(),
         args.workflow.as_str(),
         json,

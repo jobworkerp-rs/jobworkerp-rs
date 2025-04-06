@@ -34,7 +34,7 @@ pub async fn execute_workflow(
     let mut executor = WorkflowExecutor::new(
         app_module,
         http_client,
-        workflow,
+        Arc::new(workflow),
         Arc::new(input),
         Arc::new(serde_json::Value::Null),
     );

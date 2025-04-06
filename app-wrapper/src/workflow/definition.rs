@@ -2,7 +2,7 @@
 
 use anyhow::{anyhow, Result};
 use infra_utils::infra::net::reqwest::{self, ReqwestClient};
-use jobworkerp_runner::jobworkerp::runner::workflow_args::WorkflowSource;
+use jobworkerp_runner::jobworkerp::runner::inline_workflow_args::WorkflowSource;
 use serde::de::DeserializeOwned;
 use url::Url;
 
@@ -27,11 +27,11 @@ impl WorkflowLoader {
         source: &WorkflowSource,
     ) -> Result<workflow::WorkflowSchema> {
         match source {
-            WorkflowSource::Url(url) => self
+            WorkflowSource::WorkflowUrl(url) => self
                 .load_workflow(Some(url.as_str()), None)
                 .await
                 .map_err(|e| anyhow!("Failed to load workflow from url: {}", e)),
-            WorkflowSource::JsonData(data) => self
+            WorkflowSource::WorkflowData(data) => self
                 .load_workflow(None, Some(data.as_str()))
                 .await
                 .map_err(|e| anyhow!("Failed to load workflow from json: {}", e)),
@@ -115,7 +115,7 @@ mod test {
 
     use infra_utils::infra::net::reqwest::ReqwestClient;
 
-    use crate::simple_workflow::definition::workflow::{self, FunctionOptions};
+    use crate::workflow::definition::workflow::{self, FunctionOptions};
     // use tracing::Level;
 
     // parse example flow yaml

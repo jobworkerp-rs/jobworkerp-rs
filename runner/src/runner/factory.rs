@@ -8,7 +8,7 @@ use super::{
     python::PythonCommandRunner,
     request::RequestRunner,
     slack::SlackPostMessageRunner,
-    workflow::{SavedWorkflowRunnerSpecImpl, SimpleWorkflowRunnerSpecImpl},
+    workflow::{InlineWorkflowRunnerSpecImpl, ReusableWorkflowRunnerSpecImpl},
     RunnerSpec,
 };
 use anyhow::Result;
@@ -58,12 +58,12 @@ impl RunnerSpecFactory {
             Some(RunnerType::SlackPostMessage) => {
                 Some(Box::new(SlackPostMessageRunner::new()) as Box<dyn RunnerSpec + Send + Sync>)
             }
-            Some(RunnerType::SimpleWorkflow) => {
-                Some(Box::new(SimpleWorkflowRunnerSpecImpl::new())
+            Some(RunnerType::InlineWorkflow) => {
+                Some(Box::new(InlineWorkflowRunnerSpecImpl::new())
                     as Box<dyn RunnerSpec + Send + Sync>)
             }
-            Some(RunnerType::SavedWorkflow) => {
-                Some(Box::new(SavedWorkflowRunnerSpecImpl::new())
+            Some(RunnerType::ReusableWorkflow) => {
+                Some(Box::new(ReusableWorkflowRunnerSpecImpl::new())
                     as Box<dyn RunnerSpec + Send + Sync>)
             }
             _ => self
