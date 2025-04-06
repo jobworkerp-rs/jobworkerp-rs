@@ -15,7 +15,7 @@ use futures::stream::BoxStream;
 use infra::infra::runner::rows::RunnerWithSchema;
 use infra_utils::trace::Tracing;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
-use jobworkerp_runner::jobworkerp::runner::SavedWorkflowRunnerSettings;
+use jobworkerp_runner::jobworkerp::runner::ReusableWorkflowRunnerSettings;
 use proto::jobworkerp::data::{RunnerType, StreamingOutputType};
 use tonic::Response;
 
@@ -146,9 +146,9 @@ fn convert_worker_to_function_specs(
     if runner
         .data
         .as_ref()
-        .is_some_and(|d| d.runner_type == RunnerType::SavedWorkflow as i32)
+        .is_some_and(|d| d.runner_type == RunnerType::ReusableWorkflow as i32)
     {
-        let settings = ProstMessageCodec::deserialize_message::<SavedWorkflowRunnerSettings>(
+        let settings = ProstMessageCodec::deserialize_message::<ReusableWorkflowRunnerSettings>(
             data.runner_settings.as_slice(),
         )?;
         Ok(FunctionSpecs {

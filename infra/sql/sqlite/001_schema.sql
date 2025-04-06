@@ -87,14 +87,14 @@ INSERT OR IGNORE INTO runner (`id`, `name`, `description`,`file_name`, `type`) V
   'builtin5', 5
 ), (
   6, 'PYTHON_COMMAND',
-  'Executes Python scripts or commands with specified arguments and environment.',
+  'Executes Python scripts or commands with specified arguments and environment variables.',
   'builtin6', 6
 ), (
-  65535, 'SIMPLE_WORKFLOW',
-  'Orchestrates simple sequential workflows by executing a series of configured tasks.',
+  65535, 'INLINE_WORKFLOW',
+  'Executes a workflow defined directly within the job request. Workflow steps are run sequentially, and the definition is not stored for future reuse. Uses the same schema as REUSABLE_WORKFLOW.',
   'builtin7', 65535
 ), (
-  -1, 'SAVED_WORKFLOW',
-  'Executes pre-defined workflows stored in the system with provided input arguments.',
+  -1, 'REUSABLE_WORKFLOW',
+  'Allows users to define and save workflow definitions that can be executed multiple times using reference. Stored workflows can be reused across different job requests.',
   'builtin8', -1
 );

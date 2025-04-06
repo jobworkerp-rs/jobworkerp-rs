@@ -1,0 +1,74 @@
+{
+    "$schema": "http://json-schema.org/draft-04/schema#",
+    "$ref": "#/definitions/PythonCommandRunnerSettings",
+    "definitions": {
+        "PythonCommandRunnerSettings": {
+            "properties": {
+                "python_version": {
+                    "type": "string",
+                    "description": "# The version of Python interpreter to use for execution (e.g. \"3.9\", \"3.10\")"
+                },
+                "packages": {
+                    "$ref": "#/definitions/jobworkerp.runner.PythonCommandRunnerSettings.PackagesList",
+                    "additionalProperties": true,
+                    "description": "Direct list of package names to install"
+                },
+                "requirements_url": {
+                    "type": "string",
+                    "description": "URL pointing to a requirements.txt file to download and use"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "allOf": [
+                {
+                    "oneOf": [
+                        {
+                            "not": {
+                                "anyOf": [
+                                    {
+                                        "required": [
+                                            "packages"
+                                        ]
+                                    },
+                                    {
+                                        "required": [
+                                            "requirements_url"
+                                        ]
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            "required": [
+                                "packages"
+                            ]
+                        },
+                        {
+                            "required": [
+                                "requirements_url"
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "title": "Python Command Runner Settings",
+            "description": "Configuration settings for the Python environment used to execute scripts"
+        },
+        "jobworkerp.runner.PythonCommandRunnerSettings.PackagesList": {
+            "properties": {
+                "packages": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array",
+                    "description": "List of Python package names"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Packages List",
+            "description": "A collection of Python package names to be installed in the execution environment"
+        }
+    }
+}

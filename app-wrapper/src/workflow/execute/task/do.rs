@@ -1,4 +1,4 @@
-use crate::simple_workflow::{
+use crate::workflow::{
     definition::{
         transform::UseJqAndTemplateTransformer,
         workflow::{self},
@@ -9,7 +9,7 @@ use crate::simple_workflow::{
     },
 };
 use anyhow::Result;
-use jobworkerp_runner::jobworkerp::runner::{workflow_result::WorkflowStatus, WorkflowArgs};
+use jobworkerp_runner::jobworkerp::runner::{workflow_result::WorkflowStatus, InlineWorkflowArgs};
 use prost::Message;
 use proto::jobworkerp::data::RunnerType;
 use std::sync::Arc;
@@ -34,19 +34,18 @@ impl<'a> DoTaskExecutor<'a> {
     }
     async fn execute_by_jobworkerp(
         &self,
-        yaml: &str,
+        json_or_yaml: &str,
         // XXX runner settings and options in metadata
         metadata: &serde_json::Value,
         input: serde_json::Value,
         context: serde_json::Value,
     ) -> Result<serde_json::Value> {
         // XXX timeout_sec: None
-        let worker_params =
-            metadata.get(crate::simple_workflow::definition::WORKER_PARAMS_METADATA_LABEL);
-        let args = WorkflowArgs {
+        let worker_params = metadata.get(crate::workflow::definition::WORKER_PARAMS_METADATA_LABEL);
+        let args = InlineWorkflowArgs {
             workflow_source: Some(
-                jobworkerp_runner::jobworkerp::runner::workflow_args::WorkflowSource::JsonData(
-                    yaml.to_string(),
+                jobworkerp_runner::jobworkerp::runner::inline_workflow_args::WorkflowSource::WorkflowData(
+                    json_or_yaml.to_string(),
                 ),
             ),
             input: input.to_string(),
@@ -59,7 +58,7 @@ impl<'a> DoTaskExecutor<'a> {
         let worker_data = self
             .job_executor_wrapper
             .create_worker_data_from(
-                RunnerType::SimpleWorkflow.as_str_name(),
+                RunnerType::InlineWorkflow.as_str_name(),
                 worker_params.cloned(),
                 vec![],
             )
@@ -68,7 +67,7 @@ impl<'a> DoTaskExecutor<'a> {
         let result = self
             .job_executor_wrapper
             .setup_worker_and_enqueue(
-                RunnerType::SimpleWorkflow.as_str_name(),
+                RunnerType::InlineWorkflow.as_str_name(),
                 worker_data,
                 args.encode_to_vec(),
                 Self::TIMEOUT_SEC,
