@@ -108,7 +108,7 @@ impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
                             .inspect_err(|e| tracing::error!("get_payload:{:?}", e))?;
                         let result = Self::deserialize_job_result(&payload)
                             .inspect_err(|e| tracing::error!("deserialize_result:{:?}", e))?;
-                        tracing::debug!("subscribe_result_received: result={:?}", &result);
+                        tracing::debug!("subscribe_result_received: result={:?}", &result.id);
                         Ok(result)
                     } else {
                         tracing::debug!("message.next() is None");
