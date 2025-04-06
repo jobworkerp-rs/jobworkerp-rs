@@ -8,19 +8,24 @@ message PythonCommandRunnerSettings {
   // A collection of Python package names to be installed in the execution environment
   message PackagesList { 
     // List of Python package names
-    repeated string packages = 1; 
+    repeated string list = 1; 
   }
   
   // # Python Version
   // The version of Python interpreter to use for execution (e.g. "3.9", "3.10")
   string python_version = 1;
+
+  // # uv Path 
+  // The path to the uv executable, if applicable
+  // default: "/usr/bin/uv"
+  optional string uv_path = 2;
   
   // # Requirements Specification
   // One of the following must be provided to specify required Python packages
   oneof requirements_spec {
     // Direct list of package names to install
-    PackagesList packages = 2;
+    PackagesList packages = 3;
     // URL pointing to a requirements.txt file to download and use
-    string requirements_url = 3;
+    string requirements_url = 4;
   }
 }

@@ -97,7 +97,7 @@
                 }
             ],
             "title": "Python Command Args",
-            "description": "# Python Command Arguments Definition of arguments required to execute a Python script via the runner service"
+            "description": "Definition of arguments required to execute a Python script via the runner service"
         }
     }
 }

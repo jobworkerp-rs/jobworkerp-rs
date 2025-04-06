@@ -131,7 +131,7 @@ impl JobResultSubscriber for ChanJobResultPubSubRepositoryImpl {
             .inspect_err(|e| tracing::error!("receive_from_chan_err:{:?}", e))?;
         let res = Self::deserialize_job_result(&message)
             .inspect_err(|e| tracing::error!("deserialize_result:{:?}", e))?;
-        tracing::debug!("subscribe_result_received: result={:?}", &res);
+        tracing::debug!("subscribe_result_received: result={:?}", &res.id);
         Ok(res)
     }
     // subscribe job result of listen after by all listening client using broadcast_chan and return got result immediately
