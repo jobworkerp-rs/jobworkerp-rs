@@ -1,0 +1,103 @@
+{
+    "$schema": "http://json-schema.org/draft-04/schema#",
+    "$ref": "#/definitions/PythonCommandArgs",
+    "definitions": {
+        "PythonCommandArgs": {
+            "properties": {
+                "env_vars": {
+                    "additionalProperties": {
+                        "type": "string"
+                    },
+                    "type": "object",
+                    "description": "# Environment Variables Key-value pairs of environment variables to be set when executing the Python script"
+                },
+                "script_content": {
+                    "type": "string",
+                    "description": "Python script content as a string"
+                },
+                "script_url": {
+                    "type": "string",
+                    "description": "URL pointing to a Python script to be downloaded and executed"
+                },
+                "data_body": {
+                    "type": "string",
+                    "description": "string data to be passed to the script"
+                },
+                "data_url": {
+                    "type": "string",
+                    "description": "URL pointing to data to be downloaded and passed to the script"
+                },
+                "with_stderr": {
+                    "type": "boolean",
+                    "description": "# Stderr Capture Whether to capture and return standard error output in the response"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "allOf": [
+                {
+                    "oneOf": [
+                        {
+                            "not": {
+                                "anyOf": [
+                                    {
+                                        "required": [
+                                            "script_content"
+                                        ]
+                                    },
+                                    {
+                                        "required": [
+                                            "script_url"
+                                        ]
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            "required": [
+                                "script_content"
+                            ]
+                        },
+                        {
+                            "required": [
+                                "script_url"
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "oneOf": [
+                        {
+                            "not": {
+                                "anyOf": [
+                                    {
+                                        "required": [
+                                            "data_body"
+                                        ]
+                                    },
+                                    {
+                                        "required": [
+                                            "data_url"
+                                        ]
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            "required": [
+                                "data_body"
+                            ]
+                        },
+                        {
+                            "required": [
+                                "data_url"
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "title": "Python Command Args",
+            "description": "# Python Command Arguments Definition of arguments required to execute a Python script via the runner service"
+        }
+    }
+}
