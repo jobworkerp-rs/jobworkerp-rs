@@ -1,10 +1,10 @@
 use super::TaskExecutorTrait;
 use crate::{
-    simple_workflow::definition::{
+    workflow::definition::{
         transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
         workflow::{self},
     },
-    simple_workflow::execute::{
+    workflow::execute::{
         context::{TaskContext, UseExpression, WorkflowContext},
         job::{JobExecutorWrapper, UseJobExecutorHelper},
         DEFAULT_REQUEST_TIMEOUT_SEC,

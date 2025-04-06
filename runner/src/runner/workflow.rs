@@ -1,23 +1,23 @@
-use crate::jobworkerp::runner::{Empty, SavedWorkflowArgs, WorkflowArgs, WorkflowResult};
+use crate::jobworkerp::runner::{Empty, ReusableWorkflowArgs, WorkflowResult};
 use crate::{schema_to_json_string, schema_to_json_string_option};
 
 use super::RunnerSpec;
 use proto::jobworkerp::data::{RunnerType, StreamingOutputType};
 
-pub struct SimpleWorkflowRunnerSpecImpl {}
-impl SimpleWorkflowRunnerSpecImpl {
+pub struct InlineWorkflowRunnerSpecImpl {}
+impl InlineWorkflowRunnerSpecImpl {
     pub fn new() -> Self {
         Self {}
     }
 }
-impl Default for SimpleWorkflowRunnerSpecImpl {
+impl Default for InlineWorkflowRunnerSpecImpl {
     fn default() -> Self {
         Self::new()
     }
 }
-pub trait SimpleWorkflowRunnerSpec: RunnerSpec {
+pub trait InlineWorkflowRunnerSpec: RunnerSpec {
     fn name(&self) -> String {
-        RunnerType::SimpleWorkflow.as_str_name().to_string()
+        RunnerType::InlineWorkflow.as_str_name().to_string()
     }
 
     fn runner_settings_proto(&self) -> String {
@@ -35,27 +35,27 @@ pub trait SimpleWorkflowRunnerSpec: RunnerSpec {
         StreamingOutputType::NonStreaming
     }
 }
-impl SimpleWorkflowRunnerSpec for SimpleWorkflowRunnerSpecImpl {}
+impl InlineWorkflowRunnerSpec for InlineWorkflowRunnerSpecImpl {}
 
-impl RunnerSpec for SimpleWorkflowRunnerSpecImpl {
+impl RunnerSpec for InlineWorkflowRunnerSpecImpl {
     fn name(&self) -> String {
-        SimpleWorkflowRunnerSpec::name(self)
+        InlineWorkflowRunnerSpec::name(self)
     }
 
     fn runner_settings_proto(&self) -> String {
-        SimpleWorkflowRunnerSpec::runner_settings_proto(self)
+        InlineWorkflowRunnerSpec::runner_settings_proto(self)
     }
 
     fn job_args_proto(&self) -> String {
-        SimpleWorkflowRunnerSpec::job_args_proto(self)
+        InlineWorkflowRunnerSpec::job_args_proto(self)
     }
 
     fn result_output_proto(&self) -> Option<String> {
-        SimpleWorkflowRunnerSpec::result_output_proto(self)
+        InlineWorkflowRunnerSpec::result_output_proto(self)
     }
 
     fn output_type(&self) -> StreamingOutputType {
-        SimpleWorkflowRunnerSpec::output_type(self)
+        InlineWorkflowRunnerSpec::output_type(self)
     }
 
     fn settings_schema(&self) -> String {
@@ -64,7 +64,8 @@ impl RunnerSpec for SimpleWorkflowRunnerSpecImpl {
 
     // TODO add schema for workflow yaml as json schema
     fn arguments_schema(&self) -> String {
-        schema_to_json_string!(WorkflowArgs, "arguments_schema")
+        // XXX for right oneof structure in json schema
+        include_str!("../../schema/WorkflowArgs.json").to_string()
     }
 
     fn output_schema(&self) -> Option<String> {
@@ -76,28 +77,28 @@ impl RunnerSpec for SimpleWorkflowRunnerSpecImpl {
 // SavedWorkflowRunnerSpec
 ///////////////////////////////////////////////////////////////////////
 
-pub struct SavedWorkflowRunnerSpecImpl {}
-impl SavedWorkflowRunnerSpecImpl {
+pub struct ReusableWorkflowRunnerSpecImpl {}
+impl ReusableWorkflowRunnerSpecImpl {
     pub fn new() -> Self {
         Self {}
     }
 }
-impl Default for SavedWorkflowRunnerSpecImpl {
+impl Default for ReusableWorkflowRunnerSpecImpl {
     fn default() -> Self {
         Self::new()
     }
 }
-pub trait SavedWorkflowRunnerSpec: RunnerSpec {
+pub trait ReusableWorkflowRunnerSpec: RunnerSpec {
     fn name(&self) -> String {
-        RunnerType::SavedWorkflow.as_str_name().to_string()
+        RunnerType::ReusableWorkflow.as_str_name().to_string()
     }
 
     fn runner_settings_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/saved_workflow_runner.proto").to_string()
+        include_str!("../../protobuf/jobworkerp/runner/reusable_workflow_runner.proto").to_string()
     }
 
     fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/saved_workflow_args.proto").to_string()
+        include_str!("../../protobuf/jobworkerp/runner/reusable_workflow_args.proto").to_string()
     }
 
     fn result_output_proto(&self) -> Option<String> {
@@ -107,27 +108,27 @@ pub trait SavedWorkflowRunnerSpec: RunnerSpec {
         StreamingOutputType::NonStreaming
     }
 }
-impl SavedWorkflowRunnerSpec for SavedWorkflowRunnerSpecImpl {}
+impl ReusableWorkflowRunnerSpec for ReusableWorkflowRunnerSpecImpl {}
 
-impl RunnerSpec for SavedWorkflowRunnerSpecImpl {
+impl RunnerSpec for ReusableWorkflowRunnerSpecImpl {
     fn name(&self) -> String {
-        SavedWorkflowRunnerSpec::name(self)
+        ReusableWorkflowRunnerSpec::name(self)
     }
 
     fn runner_settings_proto(&self) -> String {
-        SavedWorkflowRunnerSpec::runner_settings_proto(self)
+        ReusableWorkflowRunnerSpec::runner_settings_proto(self)
     }
 
     fn job_args_proto(&self) -> String {
-        SavedWorkflowRunnerSpec::job_args_proto(self)
+        ReusableWorkflowRunnerSpec::job_args_proto(self)
     }
 
     fn result_output_proto(&self) -> Option<String> {
-        SavedWorkflowRunnerSpec::result_output_proto(self)
+        ReusableWorkflowRunnerSpec::result_output_proto(self)
     }
 
     fn output_type(&self) -> StreamingOutputType {
-        SavedWorkflowRunnerSpec::output_type(self)
+        ReusableWorkflowRunnerSpec::output_type(self)
     }
 
     fn settings_schema(&self) -> String {
@@ -136,7 +137,7 @@ impl RunnerSpec for SavedWorkflowRunnerSpecImpl {
 
     // TODO add schema for workflow yaml as json schema
     fn arguments_schema(&self) -> String {
-        schema_to_json_string!(SavedWorkflowArgs, "arguments_schema")
+        schema_to_json_string!(ReusableWorkflowArgs, "arguments_schema")
     }
 
     fn output_schema(&self) -> Option<String> {

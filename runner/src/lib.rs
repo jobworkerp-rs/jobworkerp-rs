@@ -10,7 +10,7 @@ pub mod jobworkerp {
     }
     pub mod runner {
         tonic::include_proto!("jobworkerp.runner");
-        impl SavedWorkflowRunnerSettings {
+        impl ReusableWorkflowRunnerSettings {
             pub fn input_schema(&self) -> Option<serde_json::Value> {
                 serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
                     self.json_data.as_str(),
