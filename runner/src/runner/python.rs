@@ -349,19 +349,19 @@ mod tests {
         // XXX use a real path or find a better way to get the path
         const UV_PATH: &str = if cfg!(windows) {
             "C:\\Program Files\\uv\\uv.exe"
-        } else{
+        } else {
             "uv" // from path
         };
         let mut runner = PythonCommandRunner::new();
 
         let settings = PythonCommandRunnerSettings {
             python_version: "3.12".to_string(),
-            uv_path: Some(UV_PATH.to_string()),
             requirements_spec: Some(python_command_runner_settings::RequirementsSpec::Packages(
                 python_command_runner_settings::PackagesList {
                     list: vec!["requests".to_string()],
                 },
             )),
+            ..Default::default()
         };
 
         let mut settings_bytes = Vec::new();
