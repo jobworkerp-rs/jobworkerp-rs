@@ -1590,6 +1590,7 @@ dependencies = [
  "jobworkerp-runner",
  "prost",
  "proto",
+ "serde_json",
  "sqlx",
  "tokio",
  "tokio-stream",
