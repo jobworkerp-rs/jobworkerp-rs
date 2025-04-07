@@ -1,5 +1,4 @@
 use anyhow::Result;
-use serde_json::value;
 use std::sync::Arc;
 use std::{fmt::Debug, time::Duration};
 
@@ -193,6 +192,7 @@ fn convert_worker_to_function_specs(
 
 // try value -> map -> map.remove(key) -> (json or string) or original
 // (for json schema extraction)
+#[allow(clippy::if_same_then_else)]
 pub fn parse_as_json_with_key_or_noop(key: &str, value: serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Object(mut value_map) => {
