@@ -100,7 +100,7 @@ impl RunnerTrait for PythonCommandRunner {
         } else if cfg!(windows) {
             "C:\\Program Files\\uv\\uv.exe"
         } else {
-            "/usr/bin/uv"
+            "uv" // from path
         };
         let output = Command::new(uv_path)
             .args(["venv", &venv_path.to_string_lossy()])
@@ -346,15 +346,11 @@ mod tests {
     async fn test_python_runner() {
         use tracing::Level;
         command_utils::util::tracing::tracing_init_test(Level::DEBUG);
-        // XXX use a real path
+        // XXX use a real path or find a better way to get the path
         const UV_PATH: &str = if cfg!(windows) {
             "C:\\Program Files\\uv\\uv.exe"
-        } else if cfg!(target_os = "linux") {
-            "/usr/bin/uv"
-        } else if cfg!(target_os = "macos") {
-            "/opt/homebrew/bin/uv"
-        } else {
-            panic!("Unsupported OS");
+        } else{
+            "uv" // from path
         };
         let mut runner = PythonCommandRunner::new();
 
