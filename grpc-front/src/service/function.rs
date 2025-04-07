@@ -151,12 +151,16 @@ fn convert_worker_to_function_specs(
         let settings = ProstMessageCodec::deserialize_message::<ReusableWorkflowRunnerSettings>(
             data.runner_settings.as_slice(),
         )?;
+        let input_schema = settings
+            .input_schema()
+            .map(|s| parse_as_json_with_key_or_noop("schema", s));
+        let input_schema = input_schema.map(|s| parse_as_json_with_key_or_noop("document", s));
         Ok(FunctionSpecs {
             runner_id: runner.id,
             worker_id: Some(id),
             name: data.name,
             description: data.description,
-            input_schema: settings.input_schema().map(|s| FunctionInputSchema {
+            input_schema: input_schema.map(|s| FunctionInputSchema {
                 settings: None, // Workers don't have config (already set)
                 arguments: s.to_string(),
             }),
@@ -186,6 +190,43 @@ fn convert_worker_to_function_specs(
     }
 }
 
+// try value -> map -> map.remove(key) -> (json or string) or original
+// (for json schema extraction)
+#[allow(clippy::if_same_then_else)]
+pub fn parse_as_json_with_key_or_noop(key: &str, value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(mut value_map) => {
+            if let Some(candidate_value) = value_map.remove(key) {
+                // try to remove key or noop
+                // not empty object
+                if candidate_value.is_object()
+                    && candidate_value.as_object().is_some_and(|o| !o.is_empty())
+                {
+                    candidate_value
+                } else if candidate_value.is_string()
+                    && candidate_value.as_str().is_some_and(|s| !s.is_empty())
+                {
+                    candidate_value
+                } else {
+                    tracing::warn!(
+                        "data key:{} is not a valid json or string: {:#?}",
+                        key,
+                        &candidate_value
+                    );
+                    // original value
+                    value_map.insert(key.to_string(), candidate_value.clone());
+                    serde_json::Value::Object(value_map)
+                }
+            } else {
+                serde_json::Value::Object(value_map)
+            }
+        }
+        _ => {
+            tracing::warn!("value is not json object: {:#?}", &value);
+            value
+        }
+    }
+}
 #[derive(DebugStub)]
 pub(crate) struct FunctionGrpcImpl {
     #[debug_stub = "AppModule"]

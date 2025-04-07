@@ -57,7 +57,7 @@
         },
         "jobworkerp.runner.PythonCommandRunnerSettings.PackagesList": {
             "properties": {
-                "packages": {
+                "list": {
                     "items": {
                         "type": "string"
                     },
