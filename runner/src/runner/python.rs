@@ -3,7 +3,7 @@ use crate::jobworkerp::runner::{
     PythonCommandRunnerSettings,
 };
 use crate::runner::RunnerTrait;
-use crate::{schema_to_json_string, schema_to_json_string_option};
+use crate::schema_to_json_string_option;
 use anyhow::{anyhow, Context, Result};
 use futures::stream::BoxStream;
 use prost::Message;
@@ -79,7 +79,7 @@ impl RunnerSpec for PythonCommandRunner {
         include_str!("../../schema/PythonCommandRunnerSettings.json").to_string()
     }
     fn arguments_schema(&self) -> String {
-        schema_to_json_string!(PythonCommandArgs, "arguments_schema")
+        include_str!("../../schema/PythonCommandArgs.json").to_string()
     }
     fn output_schema(&self) -> Option<String> {
         schema_to_json_string_option!(PythonCommandResult, "output_schema")
@@ -95,10 +95,12 @@ impl RunnerTrait for PythonCommandRunner {
         let temp_dir = TempDir::new().context("Failed to create temporary directory")?;
         let venv_path = temp_dir.path().join("venv");
 
-        let uv_path = if cfg!(windows) {
+        let uv_path = if let Some(uv_path) = &settings.uv_path {
+            uv_path.as_str()
+        } else if cfg!(windows) {
             "C:\\Program Files\\uv\\uv.exe"
         } else {
-            "/usr/bin/uv"
+            "uv" // from path
         };
         let output = Command::new(uv_path)
             .args(["venv", &venv_path.to_string_lossy()])
@@ -106,7 +108,10 @@ impl RunnerTrait for PythonCommandRunner {
             .arg(&settings.python_version)
             .output()
             .await
-            .context("Failed to create virtual environment with uv")?;
+            .context(format!(
+                "Failed to create virtual environment with uv: {:?}",
+                uv_path
+            ))?;
 
         if output.status.success() {
             tracing::debug!("output: {}", String::from_utf8_lossy(&output.stdout));
@@ -135,8 +140,8 @@ impl RunnerTrait for PythonCommandRunner {
 
             match req_spec {
                 python_command_runner_settings::RequirementsSpec::Packages(packages_list) => {
-                    if !packages_list.packages.is_empty() {
-                        pip_cmd.args(&packages_list.packages);
+                    if !packages_list.list.is_empty() {
+                        pip_cmd.args(&packages_list.list);
 
                         let output = pip_cmd
                             .output()
@@ -219,7 +224,7 @@ impl RunnerTrait for PythonCommandRunner {
                 .write_all(script_content.as_bytes())
                 .context("Failed to write script content")?;
         } else {
-            return Err(anyhow!("No script specified"));
+            return Err(anyhow!("No script specified: {:?}", job_args));
         }
 
         let input_path = if let Some(input_data_spec) = &job_args.input_data {
@@ -257,6 +262,11 @@ impl RunnerTrait for PythonCommandRunner {
         command.arg("-u");
         command.arg(&script_path);
 
+        // Add input file path as argument if available
+        if let Some(input_path) = &input_path {
+            command.arg(input_path);
+        }
+
         // capture stdout/stderr
         command.stdout(std::process::Stdio::piped());
         command.stderr(std::process::Stdio::piped());
@@ -264,11 +274,6 @@ impl RunnerTrait for PythonCommandRunner {
         // env
         for (key, value) in &job_args.env_vars {
             command.env(key, value);
-        }
-
-        // XXX built-in env vars
-        if let Some(input_path) = input_path {
-            command.env("JOBWORKERP_INPUT_FILE", input_path);
         }
 
         let child = command.spawn().context("Failed to execute Python script")?;
@@ -341,22 +346,28 @@ mod tests {
     async fn test_python_runner() {
         use tracing::Level;
         command_utils::util::tracing::tracing_init_test(Level::DEBUG);
-
+        // XXX use a real path or find a better way to get the path
+        const UV_PATH: &str = if cfg!(windows) {
+            "C:\\Program Files\\uv\\uv.exe"
+        } else {
+            "uv" // from path
+        };
         let mut runner = PythonCommandRunner::new();
 
         let settings = PythonCommandRunnerSettings {
             python_version: "3.12".to_string(),
             requirements_spec: Some(python_command_runner_settings::RequirementsSpec::Packages(
                 python_command_runner_settings::PackagesList {
-                    packages: vec!["requests".to_string()],
+                    list: vec!["requests".to_string()],
                 },
             )),
+            ..Default::default()
         };
 
         let mut settings_bytes = Vec::new();
         settings.encode(&mut settings_bytes).unwrap();
 
-        if Command::new("/usr/bin/uv").arg("--version").spawn().is_ok() {
+        if Command::new(UV_PATH).arg("--version").spawn().is_ok() {
             let load_result = runner.load(settings_bytes).await;
             assert!(
                 load_result.is_ok(),
@@ -396,6 +407,8 @@ print(f"Requests version: {requests.__version__}")
             assert!(stdout.contains("Hello from Python!"));
             assert!(stdout.contains("Version info:"));
             assert!(stdout.contains("Requests version:"));
+        } else {
+            panic!("uv not found");
         }
     }
 }
