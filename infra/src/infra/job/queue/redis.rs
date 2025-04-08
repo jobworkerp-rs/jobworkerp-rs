@@ -4,7 +4,6 @@ use crate::infra::job_result::pubsub::JobResultSubscriber;
 use crate::infra::UseJobQueueConfig;
 use anyhow::Result;
 use async_trait::async_trait;
-use command_utils::util::result::FlatMap;
 use futures::stream::BoxStream;
 use infra_utils::infra::redis::UseRedisPool;
 use jobworkerp_base::error::JobWorkerError;
@@ -78,16 +77,16 @@ where
         &self,
         job_id: &JobId,
         timeout: Option<u64>,
-        output_as_stream: bool,
+        request_streaming: bool,
     ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
         tracing::debug!(
             "wait_for_result_data_for_response: job_id: {:?} timeout:{}, mode: {}",
             job_id,
             timeout.unwrap_or(0),
-            if output_as_stream {
-                "stream"
+            if request_streaming {
+                "streaming"
             } else {
-                "non-stream"
+                "direct"
             }
         );
         let signal: Signals = Signals::new([SIGINT]).expect("cannot get signals");
@@ -107,7 +106,7 @@ where
                 val = th_p.blpop::<String, Vec<Vec<u8>>>(c, (timeout.unwrap_or(0)/1000) as f64) => {
                     let r: Result<JobResult> = val
                         .map_err(|e| JobWorkerError::RedisError(e).into())
-                        .flat_map(|v| {
+                        .and_then(|v| {
                             if v.is_empty() {
                                 Err(JobWorkerError::RuntimeError("timeout".to_string()).into())
                             } else {
@@ -120,7 +119,7 @@ where
         };
 
         let subscribe_future = async {
-            if output_as_stream {
+            if request_streaming {
                 self.job_result_pubsub_repository()
                     .subscribe_result_stream(job_id, timeout)
                     .await
@@ -328,6 +327,7 @@ mod test {
                 retried: 0,
                 priority: 1,
                 timeout: 1000,
+                request_streaming: false,
             }),
         };
         let r = repo.enqueue_job(None, &job).await?;

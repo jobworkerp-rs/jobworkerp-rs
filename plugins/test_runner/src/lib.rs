@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use jobworkerp_runner::runner::plugins::PluginRunner;
 use prost::Message;
 use std::alloc::System;
 use test::{TestArgs, TestRunnerSettings};
@@ -12,29 +13,14 @@ pub mod test {
 #[global_allocator]
 static ALLOCATOR: System = System;
 
-pub trait PluginRunner: Send + Sync {
-    fn name(&self) -> String;
-    fn load(&mut self, settings: Vec<u8>) -> Result<()>;
-    fn run(&mut self, arg: Vec<u8>) -> Result<Vec<Vec<u8>>>;
-    // REMOVE
-    fn begin_stream(&mut self, arg: Vec<u8>) -> Result<()>;
-    fn receive_stream(&mut self) -> Result<Option<Vec<u8>>>;
-    fn cancel(&self) -> bool;
-    fn is_canceled(&self) -> bool;
-    fn runner_settings_proto(&self) -> String;
-    fn job_args_proto(&self) -> String;
-    fn result_output_proto(&self) -> Option<String>;
-    fn output_as_stream(&self) -> bool;
-}
-
 // suppress warn improper_ctypes_definitions
 #[allow(improper_ctypes_definitions)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn load_plugin() -> Box<dyn PluginRunner + Send + Sync> {
     Box::new(TestPlugin::new())
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(improper_ctypes_definitions)]
 pub extern "C" fn free_plugin(ptr: Box<dyn PluginRunner + Send + Sync>) {
     drop(ptr);
@@ -69,6 +55,9 @@ impl PluginRunner for TestPlugin {
         // specify as same string as worker.runner
         String::from("Test")
     }
+    fn description(&self) -> String {
+        String::from("Test plugin description")
+    }
     fn load(&mut self, runner_settings: Vec<u8>) -> Result<()> {
         tracing::info!("Test plugin load!");
         TestRunnerSettings::decode(runner_settings.as_slice())?;
@@ -89,7 +78,7 @@ impl PluginRunner for TestPlugin {
         // default implementation (return empty)
         Err(anyhow::anyhow!("not implemented"))
     }
-    fn cancel(&self) -> bool {
+    fn cancel(&mut self) -> bool {
         tracing::warn!("Test plugin cancel: not implemented!");
         false
     }
@@ -106,7 +95,7 @@ impl PluginRunner for TestPlugin {
     fn result_output_proto(&self) -> Option<String> {
         None
     }
-    fn output_as_stream(&self) -> bool {
-        false
+    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
+        proto::jobworkerp::data::StreamingOutputType::NonStreaming
     }
 }

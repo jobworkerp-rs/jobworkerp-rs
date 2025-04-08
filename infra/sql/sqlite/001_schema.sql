@@ -5,6 +5,7 @@ PRAGMA encoding = 'UTF-8';
 CREATE TABLE IF NOT EXISTS `worker` (
     `id` INTEGER PRIMARY KEY AUTOINCREMENT,
     `name` TEXT NOT NULL UNIQUE,
+    `description` TEXT NOT NULL,
     `runner_id` BIGINT NOT NULL,
     `runner_settings` BLOB NOT NULL,
     `retry_type` INT NOT NULL,
@@ -19,7 +20,7 @@ CREATE TABLE IF NOT EXISTS `worker` (
     `store_success` BOOLEAN NOT NULL,
     `store_failure` BOOLEAN NOT NULL,
     `use_static` BOOLEAN NOT NULL,
-    `output_as_stream` BOOLEAN NOT NULL
+    `broadcast_results` BOOLEAN NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS `job` (
@@ -32,7 +33,8 @@ CREATE TABLE IF NOT EXISTS `job` (
     `run_after_time` BIGINT NOT NULL,
     `retried` INT NOT NULL,
     `priority` INT NOT NULL,
-    `timeout` BIGINT NOT NULL
+    `timeout` BIGINT NOT NULL,
+    `request_streaming` BOOLEAN NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS `job_result` (
@@ -49,31 +51,50 @@ CREATE TABLE IF NOT EXISTS `job_result` (
     `run_after_time` BIGINT NOT NULL,
     `start_time` BIGINT NOT NULL,
     `end_time` BIGINT NOT NULL,
-    `timeout` BIGINT NOT NULL DEFAULT 0
+    `timeout` BIGINT NOT NULL DEFAULT 0,
+    `request_streaming` BOOLEAN NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS `runner` (
     `id` INTEGER PRIMARY KEY,
     `name` TEXT NOT NULL UNIQUE,
+    `description` TEXT NOT NULL,
     `file_name` VARCHAR(512) NOT NULL UNIQUE, -- file name of the runner dynamic library
     `type` INT(10) NOT NULL -- runner type. enum: command, request, grpc_unary, plugin
 );
 
 -- builtin runner definitions (runner.type != 0 cannot edit or delete)
 -- (file_name is not real file name(built-in runner), but just a name for identification)
-INSERT OR IGNORE INTO runner (`id`, `name`, `file_name`, `type`) VALUES (
-  1, 'COMMAND', 'builtin1', 1
+INSERT OR IGNORE INTO runner (`id`, `name`, `description`,`file_name`, `type`) VALUES (
+  1, 'COMMAND', 
+  'Executes shell commands with specified arguments in the operating system.',
+  'builtin1', 1
 ), (
-  2, 'HTTP_REQUEST', 'builtin2', 2
+  2, 'HTTP_REQUEST',
+  'Sends HTTP requests to specified URLs with configured method, headers, and body.',
+  'builtin2', 2
 ), (
-  3, 'GRPC_UNARY', 'builtin3', 3
+  3, 'GRPC_UNARY',
+  'Makes gRPC unary calls to specified services with configured method, metadata, and request message.',
+  'builtin3', 3
 ), (
-  4, 'DOCKER', 'builtin4', 4
+  4, 'DOCKER',
+  'Runs Docker containers with specified images, environment variables, and command arguments.',
+  'builtin4', 4
 ), (
-  5, 'SLACK_POST_MESSAGE', 'builtin5', 5
+  5, 'SLACK_POST_MESSAGE',
+  'Posts messages to Slack channels using specified workspace tokens and message content.',
+  'builtin5', 5
 ), (
-  6, 'PYTHON_COMMAND', 'builtin6', 6
+  6, 'PYTHON_COMMAND',
+  'Executes Python scripts or commands with specified arguments and environment variables.',
+  'builtin6', 6
 ), (
-  65535, 'SIMPLE_WORKFLOW', 'builtin7', 65535
+  65535, 'INLINE_WORKFLOW',
+  'Executes a workflow defined directly within the job request. Workflow steps are run sequentially, and the definition is not stored for future reuse. Uses the same schema as REUSABLE_WORKFLOW.',
+  'builtin7', 65535
+), (
+  -1, 'REUSABLE_WORKFLOW',
+  'Allows users to define and save workflow definitions that can be executed multiple times using reference. Stored workflows can be reused across different job requests.',
+  'builtin8', -1
 );
-

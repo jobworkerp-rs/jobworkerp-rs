@@ -85,6 +85,7 @@ impl JobApp for RdbChanJobAppImpl {
         priority: i32,
         timeout: u64,
         reserved_job_id: Option<JobId>,
+        request_streaming: bool,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -105,6 +106,12 @@ impl JobApp for RdbChanJobAppImpl {
             data: Some(w),
         }) = worker_res.as_ref()
         {
+            // check if worker supports streaming mode
+            let _ = self
+                .worker_app()
+                .check_worker_streaming(wid, request_streaming)
+                .await?;
+
             let job_data = JobData {
                 worker_id: Some(*wid),
                 args,
@@ -115,6 +122,7 @@ impl JobApp for RdbChanJobAppImpl {
                 retried: 0u32,
                 priority,
                 timeout,
+                request_streaming,
             };
             // TODO validate argument types
             // self.validate_worker_and_job_args(w, job_data.args.as_ref())?;
@@ -225,7 +233,7 @@ impl JobApp for RdbChanJobAppImpl {
                     || w.queue_type == QueueType::WithBackup as i32
                 {
                     // XXX should compare grabbed_until_time and update if not changed or not (now not compared)
-                    self.rdb_job_repository().update(jid, data).await
+                    self.rdb_job_repository().upsert(jid, data).await
                 } else {
                     Ok(false)
                 };
@@ -273,17 +281,9 @@ impl JobApp for RdbChanJobAppImpl {
             self.job_status_repository().delete_status(jid).await?;
             match ResponseType::try_from(data.response_type) {
                 Ok(ResponseType::Direct) => {
-                    // send result for direct or listen after response
-                    tracing::debug!("==== complete_job(direct): enqueue result direct");
-                    // use direct chan for sending stream
-                    // let res = self
-                    //     .chan_job_queue_repository()
-                    //     .enqueue_result_direct(id, data, stream)
-                    //     .await;
-                    //
                     let res = self
                         .job_result_pubsub_repository()
-                        .publish_result(id, data, true)
+                        .publish_result(id, data, true) // XXX to_listen = worker.broadcast_result (if possible)
                         .await;
                     // stream data
                     if let Some(stream) = stream {
@@ -300,11 +300,11 @@ impl JobApp for RdbChanJobAppImpl {
                     }
                     res
                 }
-                Ok(res) => {
+                Ok(_res) => {
                     // publish for listening result client
                     let r = self
                         .job_result_pubsub_repository()
-                        .publish_result(id, data, res == ResponseType::ListenAfter)
+                        .publish_result(id, data, true) // XXX to_listen = worker.broadcast_result (if possible)
                         .await;
                     // broadcast stream data if exists
                     if let Some(stream) = stream {
@@ -366,6 +366,7 @@ impl JobApp for RdbChanJobAppImpl {
     where
         Self: Send + 'static,
     {
+        // TODO cache?
         // let k = Arc::new(Self::find_list_cache_key(limit, offset.unwrap_or(&0i64)));
         // self.memory_cache
         //     .with_cache(&k, ttl, || async {
@@ -583,7 +584,7 @@ where
                                 Some(d.timeout)
                             }
                         }),
-                        worker.output_as_stream,
+                        job.data.as_ref().is_some_and(|j| j.request_streaming),
                     )
                     .await
                     .map(|(r, st)| (job_id, Some(r), st))
@@ -601,7 +602,7 @@ where
         &self,
         job_id: &JobId,
         timeout: Option<u64>,
-        output_as_stream: bool,
+        request_streaming: bool,
     ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
         // wait for and return result (with channel)
         // self.chan_job_queue_repository()
@@ -610,7 +611,7 @@ where
         let fut = self
             .job_result_pubsub_repository()
             .subscribe_result(job_id, timeout);
-        if output_as_stream {
+        if request_streaming {
             let fut2 = self
                 .job_result_pubsub_repository()
                 .subscribe_result_stream(job_id, timeout);
@@ -637,9 +638,9 @@ mod tests {
     use crate::app::runner::RunnerApp;
     use crate::app::worker::rdb::RdbWorkerAppImpl;
     use crate::app::{StorageConfig, StorageType};
+    use crate::module::test::TEST_PLUGIN_DIR;
     use anyhow::Result;
     use command_utils::util::datetime;
-    use command_utils::util::option::FlatMap;
     use infra::infra::job::rows::JobqueueAndCodec;
     // use command_utils::util::tracing::tracing_init_test;
     use infra::infra::job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl;
@@ -693,6 +694,7 @@ mod tests {
             Some(Duration::from_secs(60)),
         ));
         let runner_app = Arc::new(RdbRunnerAppImpl::new(
+            TEST_PLUGIN_DIR.to_string(),
             storage_config.clone(),
             &mc_config,
             repositories.clone(),
@@ -711,7 +713,7 @@ mod tests {
             .await?;
 
         let runner_factory = RunnerSpecFactory::new(Arc::new(Plugins::new()));
-        runner_factory.load_plugins().await;
+        runner_factory.load_plugins_from(TEST_PLUGIN_DIR).await;
         let config_module = Arc::new(AppConfigModule {
             storage_config,
             worker_config,
@@ -742,6 +744,7 @@ mod tests {
             });
             let wd = WorkerData {
                 name: "testworker".to_string(),
+                description: "desc1".to_string(),
                 runner_id: Some(RunnerId { value: 1 }),
                 runner_settings,
                 channel: None,
@@ -752,7 +755,7 @@ mod tests {
                 store_failure: false,
                 store_success: false,
                 use_static: false,
-                output_as_stream: false,
+                broadcast_results: false,
             };
             let worker_id = app.worker_app().create(&wd).await?;
             let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
@@ -765,7 +768,7 @@ mod tests {
             // need waiting for direct response
             let jh = tokio::spawn(async move {
                 let res = app1
-                    .enqueue_job(Some(&worker_id1), None, jargs1, None, 0, 0, 0, None)
+                    .enqueue_job(Some(&worker_id1), None, jargs1, None, 0, 0, 0, None, false)
                     .await;
                 let (jid, job_res, _) = res.unwrap();
                 assert!(jid.value > 0);
@@ -775,7 +778,7 @@ mod tests {
                     .find_job(
                         &job_res
                             .clone()
-                            .flat_map(|j| j.data.flat_map(|d| d.job_id))
+                            .and_then(|j| j.data.and_then(|d| d.job_id))
                             .unwrap(),
                         Some(&Duration::from_millis(100)),
                     )
@@ -811,6 +814,7 @@ mod tests {
                     max_retry: 0,
                     priority: 0,
                     timeout: 0,
+                    request_streaming: false,
                     enqueue_time: datetime::now_millis(),
                     run_after_time: 0,
                     start_time: datetime::now_millis(),
@@ -849,6 +853,7 @@ mod tests {
             });
             let wd = WorkerData {
                 name: "testworker".to_string(),
+                description: "desc1".to_string(),
                 runner_id: Some(RunnerId { value: 1 }),
                 runner_settings,
                 channel: None,
@@ -859,7 +864,7 @@ mod tests {
                 store_failure: true,
                 store_success: true,
                 use_static: false,
-                output_as_stream: false,
+                broadcast_results: false,
             };
             let worker_id = app.worker_app().create(&wd).await?;
             let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
@@ -868,7 +873,17 @@ mod tests {
 
             // wait for direct response
             let job_id = app
-                .enqueue_job(Some(&worker_id), None, jargs.clone(), None, 0, 0, 0, None)
+                .enqueue_job(
+                    Some(&worker_id),
+                    None,
+                    jargs.clone(),
+                    None,
+                    0,
+                    0,
+                    0,
+                    None,
+                    false,
+                )
                 .await?
                 .0;
             let job = Job {
@@ -883,6 +898,7 @@ mod tests {
                     retried: 0,
                     priority: 0,
                     timeout: 0,
+                    request_streaming: false,
                 }),
             };
             assert_eq!(
@@ -909,6 +925,7 @@ mod tests {
                     max_retry: 0,
                     priority: 0,
                     timeout: 0,
+                    request_streaming: false,
                     enqueue_time: job.data.as_ref().unwrap().enqueue_time,
                     run_after_time: job.data.as_ref().unwrap().run_after_time,
                     start_time: datetime::now_millis(),
@@ -962,6 +979,7 @@ mod tests {
         });
         let wd = WorkerData {
             name: "testworker".to_string(),
+            description: "desc1".to_string(),
             runner_id: Some(RunnerId { value: 1 }),
             runner_settings,
             channel: None,
@@ -972,7 +990,7 @@ mod tests {
             store_success: true,
             store_failure: false,
             use_static: false,
-            output_as_stream: false,
+            broadcast_results: false,
         };
         TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
@@ -983,7 +1001,17 @@ mod tests {
 
             // wait for direct response
             let (job_id, res, _) = app
-                .enqueue_job(Some(&worker_id), None, jargs.clone(), None, 0, 0, 0, None)
+                .enqueue_job(
+                    Some(&worker_id),
+                    None,
+                    jargs.clone(),
+                    None,
+                    0,
+                    0,
+                    0,
+                    None,
+                    false,
+                )
                 .await?;
             assert!(job_id.value > 0);
             assert!(res.is_none());
@@ -1023,6 +1051,7 @@ mod tests {
                     max_retry: 0,
                     priority: 0,
                     timeout: 0,
+                    request_streaming: false,
                     enqueue_time: job.data.as_ref().unwrap().enqueue_time,
                     run_after_time: job.data.as_ref().unwrap().run_after_time,
                     start_time: datetime::now_millis(),
@@ -1068,6 +1097,7 @@ mod tests {
             });
             let wd = WorkerData {
                 name: "testworker".to_string(),
+                description: "desc1".to_string(),
                 runner_id: Some(RunnerId { value: 1 }),
                 runner_settings,
                 channel: channel.cloned(),
@@ -1078,7 +1108,7 @@ mod tests {
                 store_success: true,
                 store_failure: false,
                 use_static: false,
-                output_as_stream: false,
+                broadcast_results: false,
             };
             let worker_id = app.worker_app().create(&wd).await?;
 
@@ -1102,6 +1132,7 @@ mod tests {
                     priority as i32,
                     0,
                     None,
+                    false,
                 )
                 .await?;
             assert!(job_id.value > 0);
@@ -1117,6 +1148,7 @@ mod tests {
                     priority as i32,
                     0,
                     None,
+                    false,
                 )
                 .await?;
             assert!(job_id2.value > 0);

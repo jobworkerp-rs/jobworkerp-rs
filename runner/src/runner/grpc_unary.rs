@@ -1,75 +1,20 @@
-use crate::jobworkerp::runner::{GrpcUnaryArgs, GrpcUnaryRunnerSettings};
+use crate::jobworkerp::runner::{GrpcUnaryArgs, GrpcUnaryResult, GrpcUnaryRunnerSettings};
+use crate::schema_to_json_string;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use base64::Engine;
 use futures::stream::BoxStream;
-use jobworkerp_base::{
-    codec::{ProstMessageCodec, UseProstCodec},
-    error::JobWorkerError,
-};
-use prost::bytes::{Buf, BufMut};
-use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
-use schemars::JsonSchema;
+use infra_utils::infra::net::grpc::RawBytesCodec;
+use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
+use std::collections::HashMap;
 use std::time::Duration;
 use tonic::{
-    codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder},
     metadata::MetadataValue,
     transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity},
-    IntoRequest,
 };
 
 use super::{RunnerSpec, RunnerTrait};
-
-// Define a custom codec that passes through raw bytes without additional protobuf encoding
-#[derive(Debug, Clone)]
-struct RawBytesCodec;
-
-impl Default for RawBytesCodec {
-    fn default() -> Self {
-        RawBytesCodec
-    }
-}
-
-impl Encoder for RawBytesCodec {
-    type Item = Vec<u8>;
-    type Error = tonic::Status;
-
-    fn encode(&mut self, item: Self::Item, buf: &mut EncodeBuf<'_>) -> Result<(), Self::Error> {
-        // Simply write the raw bytes as-is
-        buf.reserve(item.len());
-        buf.put_slice(&item);
-        Ok(())
-    }
-}
-
-impl Decoder for RawBytesCodec {
-    type Item = Vec<u8>;
-    type Error = tonic::Status;
-
-    fn decode(&mut self, buf: &mut DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error> {
-        if !buf.has_remaining() {
-            return Ok(None);
-        }
-
-        // Just copy the entire buffer into a new Vec<u8>
-        let bytes = buf.copy_to_bytes(buf.remaining());
-        Ok(Some(bytes.to_vec()))
-    }
-}
-
-impl Codec for RawBytesCodec {
-    type Encode = Vec<u8>;
-    type Decode = Vec<u8>;
-    type Encoder = RawBytesCodec;
-    type Decoder = RawBytesCodec;
-
-    fn encoder(&mut self) -> Self::Encoder {
-        RawBytesCodec
-    }
-
-    fn decoder(&mut self) -> Self::Decoder {
-        RawBytesCodec
-    }
-}
 
 /// grpc unary request runner.
 /// specify protobuf payload as arg in enqueue.
@@ -96,7 +41,7 @@ impl GrpcUnaryRunner {
         let port = &settings.port;
 
         // Create the base endpoint
-        let mut endpoint = tonic::transport::Endpoint::new(format!("{}:{}", host, port))?;
+        let mut endpoint = Endpoint::new(format!("{}:{}", host, port))?;
 
         // Apply timeout if specified
         if let Some(timeout_ms) = settings.timeout_ms {
@@ -137,9 +82,9 @@ impl GrpcUnaryRunner {
                 }
 
                 // Apply skip verification if set
-                if tls_settings.skip_verification {
-                    // TODO
-                }
+                // if tls_settings.skip_verification {
+                //     // TODO
+                // }
             } else {
                 // Default to using system roots
                 // https://github.com/rustls/rustls/issues/1938
@@ -167,18 +112,39 @@ impl GrpcUnaryRunner {
 
         Ok(())
     }
+
+    // Helper function to convert MetadataMap to HashMap<String, String>
+    fn metadata_map_to_hashmap(metadata: &tonic::metadata::MetadataMap) -> HashMap<String, String> {
+        let mut result = HashMap::new();
+        for key_and_value in metadata.iter() {
+            match key_and_value {
+                tonic::metadata::KeyAndValueRef::Ascii(key, value) => {
+                    if let Ok(value_str) = value.to_str() {
+                        result.insert(key.to_string(), value_str.to_string());
+                    } else {
+                        tracing::warn!(
+                            "Failed to convert ASCII metadata value to string for key: {}",
+                            key
+                        );
+                    }
+                }
+                tonic::metadata::KeyAndValueRef::Binary(key, value) => {
+                    // For binary values, we could use base64 encoding
+                    let value_str =
+                        base64::engine::general_purpose::STANDARD.encode(value.as_encoded_bytes());
+
+                    result.insert(format!("{}-bin", key), value_str);
+                }
+            }
+        }
+        result
+    }
 }
 
 impl Default for GrpcUnaryRunner {
     fn default() -> Self {
         Self::new()
     }
-}
-
-#[derive(Debug, JsonSchema, serde::Deserialize, serde::Serialize)]
-struct GrpcUnaryRunnerInputSchema {
-    settings: GrpcUnaryRunnerSettings,
-    args: GrpcUnaryArgs,
 }
 
 impl RunnerSpec for GrpcUnaryRunner {
@@ -194,20 +160,16 @@ impl RunnerSpec for GrpcUnaryRunner {
     fn result_output_proto(&self) -> Option<String> {
         None
     }
-    fn output_as_stream(&self) -> Option<bool> {
-        Some(false)
+    fn output_type(&self) -> StreamingOutputType {
+        StreamingOutputType::NonStreaming
     }
-    fn input_json_schema(&self) -> String {
-        let schema = schemars::schema_for!(GrpcUnaryRunnerInputSchema);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+    fn settings_schema(&self) -> String {
+        schema_to_json_string!(GrpcUnaryRunnerSettings, "settings_schema")
     }
-    fn output_json_schema(&self) -> Option<String> {
+    fn arguments_schema(&self) -> String {
+        schema_to_json_string!(GrpcUnaryArgs, "arguments_schema")
+    }
+    fn output_schema(&self) -> Option<String> {
         // plain string with title
         let mut schema = schemars::schema_for!(String);
         schema.insert(
@@ -235,7 +197,7 @@ impl RunnerTrait for GrpcUnaryRunner {
         if let Some(mut client) = self.client.clone() {
             let req = ProstMessageCodec::deserialize_message::<GrpcUnaryArgs>(args)?;
             // Use our custom BytesCodec instead of ProstCodec to handle raw byte data correctly
-            let codec = RawBytesCodec::default();
+            let codec = RawBytesCodec;
 
             // Setup the message size limits if needed
             if let Some(size) = self.max_message_size {
@@ -298,27 +260,41 @@ impl RunnerTrait for GrpcUnaryRunner {
             // For better clarity, handle timeout differently
             let response = if req.timeout > 0 {
                 let timeout_duration = Duration::from_millis(req.timeout as u64);
-
                 // Use tokio timeout to wrap the entire gRPC call
-                match tokio::time::timeout(timeout_duration, client.unary(request, method, codec))
+                tokio::time::timeout(timeout_duration, client.unary(request, method, codec))
                     .await
-                {
-                    Ok(result) => result.map_err(|e| {
-                        tracing::warn!("grpc request error: status={:?}", e);
-                        anyhow::Error::from(JobWorkerError::TonicClientError(e))
-                    }),
-                    Err(_) => Err(anyhow!("Request timed out after {} ms", req.timeout)),
-                }
+                    .map(|r| {
+                        r.inspect_err(|e| tracing::warn!("grpc request error: status={:?}", e))
+                    })
+                    .map_err(|_| anyhow!("Request timed out after {} ms", req.timeout))?
             } else {
                 // Send the unary request without timeout
-                client.unary(request, method, codec).await.map_err(|e| {
+                client
+                    .unary(request, method, codec)
+                    .await
+                    .inspect_err(|e| tracing::warn!("grpc request error: status={:?}", e))
+            };
+            let res = match response {
+                Ok(response) => GrpcUnaryResult {
+                    metadata: Self::metadata_map_to_hashmap(response.metadata()),
+                    body: response.into_inner(),
+                    code: tonic::Code::Ok as i32,
+                    message: None,
+                },
+                Err(e) => {
                     tracing::warn!("grpc request error: status={:?}", e);
-                    anyhow::Error::from(JobWorkerError::TonicClientError(e))
-                })
-            }?;
+                    let res = GrpcUnaryResult {
+                        metadata: Self::metadata_map_to_hashmap(e.metadata()),
+                        body: e.details().to_vec(),
+                        code: e.code() as i32,
+                        message: Some(e.message().to_string()),
+                    };
+                    res
+                }
+            };
 
-            tracing::info!("grpc unary runner result: {:?}", &response);
-            Ok(vec![response.into_inner()])
+            tracing::info!("grpc unary runner result: {:?}", &res);
+            Ok(vec![ProstMessageCodec::serialize_message(&res)?])
         } else {
             Err(anyhow!("grpc client is not initialized"))
         }
@@ -335,61 +311,81 @@ impl RunnerTrait for GrpcUnaryRunner {
     }
 }
 
-#[tokio::test]
-#[ignore] // need to start front server and fix handling empty stream...
-async fn run_request() -> Result<()> {
-    use prost::Message;
-    // common::util::tracing::tracing_init_test(tracing::Level::INFO);
-    let mut runner = GrpcUnaryRunner::new();
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proto::jobworkerp::data::Runner;
 
-    let settings = GrpcUnaryRunnerSettings {
-        host: "http://localhost".to_string(),
-        port: 9000,
-        tls: false,
-        timeout_ms: None,
-        max_message_size: None,
-        auth_token: None,
-        tls_config: None,
-    };
+    #[tokio::test]
+    #[ignore] // need to start front server and fix handling empty stream...
+    async fn run_request() -> Result<()> {
+        use prost::Message;
+        // common::util::tracing::tracing_init_test(tracing::Level::INFO);
+        let mut runner = GrpcUnaryRunner::new();
 
-    runner
-        .load(ProstMessageCodec::serialize_message(&settings)?)
-        .await?;
+        let settings = GrpcUnaryRunnerSettings {
+            host: "http://localhost".to_string(),
+            port: 9000,
+            tls: false,
+            timeout_ms: None,
+            max_message_size: None,
+            auth_token: None,
+            tls_config: None,
+        };
 
-    // Create properly encoded protobuf message
-    let runner_id = proto::jobworkerp::data::RunnerId { value: 1 };
-    let mut buf = Vec::with_capacity(runner_id.encoded_len());
-    runner_id.encode(&mut buf)?;
+        runner
+            .load(ProstMessageCodec::serialize_message(&settings)?)
+            .await?;
 
-    let arg = crate::jobworkerp::runner::GrpcUnaryArgs {
-        method: "/jobworkerp.service.RunnerService/Find".to_string(),
-        request: buf,
-        metadata: Default::default(),
-        timeout: 0,
-    };
+        // Create properly encoded protobuf message
+        let runner_id = proto::jobworkerp::data::RunnerId { value: 1 };
+        let mut buf = Vec::with_capacity(runner_id.encoded_len());
+        runner_id.encode(&mut buf)?;
 
-    let arg = ProstMessageCodec::serialize_message(&arg)?;
-    let res = runner.run(&arg).await;
+        let arg = crate::jobworkerp::runner::GrpcUnaryArgs {
+            method: "/jobworkerp.service.RunnerService/Find".to_string(),
+            request: buf,
+            metadata: Default::default(),
+            timeout: 0,
+        };
 
-    match res {
-        Ok(data) => {
-            if !data.is_empty() {
-                // Try to deserialize the response as a Runner message
-                match proto::jobworkerp::data::Runner::decode(data[0].as_slice()) {
-                    Ok(runner) => {
-                        println!("Successfully received runner: {:?}", runner);
-                        assert!(runner.data.is_some());
+        let arg = ProstMessageCodec::serialize_message(&arg)?;
+        let res = runner.run(&arg).await;
+
+        match res {
+            Ok(data) => {
+                if !data.is_empty() {
+                    // Try to deserialize the response as a Runner message
+                    match GrpcUnaryResult::decode(data[0].as_slice()) {
+                        Ok(result) => {
+                            #[derive(Clone, PartialEq, prost::Message)]
+                            pub struct OptionRunner {
+                                #[prost(message, optional, tag = "1")]
+                                data: Option<Runner>,
+                            }
+                            println!("Successfully received runner: {:#?}", result);
+                            assert!(result.code == tonic::Code::Ok as i32);
+                            assert!(!result.body.is_empty());
+                            println!(
+                                "runner: {:#?}",
+                                ProstMessageCodec::deserialize_message::<OptionRunner>(
+                                    result.body.as_slice()
+                                )
+                                .unwrap()
+                            );
+                        }
+                        Err(e) => {
+                            println!("Failed to decode response as Runner: {:?}", e);
+                            println!("Raw response: {:?}", data[0]);
+                            unreachable!()
+                        }
                     }
-                    Err(e) => {
-                        println!("Failed to decode response as Runner: {:?}", e);
-                        println!("Raw response: {:?}", data[0]);
-                    }
+                } else {
+                    println!("Received empty response");
                 }
-            } else {
-                println!("Received empty response");
+                Ok(())
             }
-            Ok(())
+            Err(e) => Err(e),
         }
-        Err(e) => Err(e),
     }
 }

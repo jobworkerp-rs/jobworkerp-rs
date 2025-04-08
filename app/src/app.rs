@@ -142,6 +142,7 @@ pub trait JobBuilder {
                     run_after_time,
                     priority: dat.priority,
                     timeout: dat.timeout,
+                    request_streaming: dat.request_streaming,
                 }),
             })
         } else {
@@ -169,6 +170,7 @@ pub trait JobBuilder {
                 retried: dat.retried + 1,
                 priority: dat.priority,
                 timeout: dat.timeout,
+                request_streaming: dat.request_streaming,
             })
         }
     }

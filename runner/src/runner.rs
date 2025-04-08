@@ -35,7 +35,7 @@
 //! job cancellation.
 use anyhow::Result;
 use futures::stream::BoxStream;
-use proto::jobworkerp::data::ResultOutputItem;
+use proto::jobworkerp::data::{ResultOutputItem, StreamingOutputType};
 use tonic::async_trait;
 
 pub mod command;
@@ -47,8 +47,38 @@ pub mod llm;
 pub mod plugins;
 pub mod python;
 pub mod request;
-pub mod simple_workflow;
 pub mod slack;
+pub mod workflow;
+
+/// Macro to convert a Rust type to a JSON schema string
+#[macro_export]
+macro_rules! schema_to_json_string {
+    ($type:ty, $method_name:expr) => {{
+        let schema = schemars::schema_for!($type);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in {}: {:?}", $method_name, e);
+                "".to_string()
+            }
+        }
+    }};
+}
+
+/// Macro to convert a Rust type to an Option<String> JSON schema
+#[macro_export]
+macro_rules! schema_to_json_string_option {
+    ($type:ty, $method_name:expr) => {{
+        let schema = schemars::schema_for!($type);
+        match serde_json::to_string(&schema) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::error!("error in {}: {:?}", $method_name, e);
+                None
+            }
+        }
+    }};
+}
 
 pub trait RunnerSpec: Send + Sync {
     fn name(&self) -> String;
@@ -56,11 +86,12 @@ pub trait RunnerSpec: Send + Sync {
     fn runner_settings_proto(&self) -> String;
     fn job_args_proto(&self) -> String;
     fn result_output_proto(&self) -> Option<String>;
-    // run_stream() available if true
-    fn output_as_stream(&self) -> Option<bool>;
+    // run(), run_stream() availability
+    fn output_type(&self) -> StreamingOutputType;
     // for json schema validation in the workflow API
-    fn input_json_schema(&self) -> String;
-    fn output_json_schema(&self) -> Option<String>;
+    fn settings_schema(&self) -> String;
+    fn arguments_schema(&self) -> String;
+    fn output_schema(&self) -> Option<String>;
 }
 
 #[async_trait]

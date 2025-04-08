@@ -1,5 +1,4 @@
 use anyhow::Result;
-use command_utils::util::result::{TapErr, ToOption};
 use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
 use proto::jobworkerp::data::{
@@ -20,6 +19,7 @@ pub struct JobResultRow {
     pub retried: i64,    // u32
     pub priority: i32,
     pub timeout: i64,
+    pub request_streaming: bool,
     pub enqueue_time: i64,
     pub run_after_time: i64,
     pub start_time: i64,
@@ -41,12 +41,13 @@ impl JobResultRow {
                 uniq_key: self.uniq_key.clone(),
                 status: self.status,
                 output: Self::deserialize_result_output(&self.output)
-                    .tap_err(|e| tracing::error!("deserialize_error: {:?}", e))
-                    .to_option(),
+                    .inspect_err(|e| tracing::error!("deserialize_error: {:?}", e))
+                    .ok(),
                 max_retry: 0,
                 retried: self.retried as u32,
                 priority: self.priority,
                 timeout: self.timeout as u64,
+                request_streaming: self.request_streaming,
                 enqueue_time: self.enqueue_time,
                 run_after_time: self.run_after_time,
                 start_time: self.start_time,

@@ -2,19 +2,25 @@ pub mod impls;
 pub mod loader;
 
 use self::loader::RunnerPluginLoader;
+use crate::schema_to_json_string;
 use anyhow::Result;
-use command_utils::util::option::Exists;
 use itertools::Itertools;
+use proto::jobworkerp::data::StreamingOutputType;
 use std::{
-    env,
     fs::{self, ReadDir},
     path::Path,
     sync::Arc,
 };
 use tokio::sync::RwLock as TokioRwLock;
 
+pub struct PluginMetadata {
+    pub name: String,
+    pub description: String,
+    pub filename: String,
+}
+
 pub trait PluginLoader: Send + Sync {
-    fn load_path(&mut self, path: &Path) -> Result<String>;
+    fn load_path(&mut self, path: &Path) -> Result<(String, String)>;
     fn unload(&mut self, name: &str) -> Result<bool>;
     #[allow(dead_code)]
     fn clear(&mut self) -> Result<()>;
@@ -40,10 +46,8 @@ impl Plugins {
             runner_loader: Arc::new(TokioRwLock::new(RunnerPluginLoader::new())),
         }
     }
-
-    pub async fn load_plugin_files_from_env(&self) -> Vec<(String, String)> {
+    pub async fn load_plugin_files(&self, runner_dir_str: &str) -> Vec<PluginMetadata> {
         // default: current dir
-        let runner_dir_str = env::var("PLUGINS_RUNNER_DIR").unwrap_or("./".to_string());
         let runner_dirs: Vec<&str> = runner_dir_str.split(',').collect_vec();
         let mut loaded = Vec::new();
         for runner_dir in runner_dirs {
@@ -77,18 +81,14 @@ impl Plugins {
     }
 
     // return: (name, file_name)
-    async fn load_plugin_files_from(
-        &self,
-        dir: ReadDir,
-        ptype: PluginType,
-    ) -> Vec<(String, String)> {
+    async fn load_plugin_files_from(&self, dir: ReadDir, ptype: PluginType) -> Vec<PluginMetadata> {
         let mut loaded = Vec::new();
         for file in dir.flatten() {
             if file.path().is_file()
                 && file
                     .file_name()
                     .to_str()
-                    .exists(|n| n.ends_with(Self::get_library_extension()))
+                    .is_some_and(|n| n.ends_with(Self::get_library_extension()))
             {
                 tracing::info!("load {:?} plugin file: {}", ptype, file.path().display());
                 match ptype {
@@ -99,9 +99,13 @@ impl Plugins {
                             .await
                             .load_path(file.path().as_path())
                         {
-                            Ok(name) => {
+                            Ok((name, description)) => {
                                 tracing::info!("runner plugin loaded: {}", file.path().display());
-                                loaded.push((name, file.file_name().to_string_lossy().to_string()));
+                                loaded.push(PluginMetadata {
+                                    name,
+                                    description,
+                                    filename: file.file_name().to_string_lossy().to_string(),
+                                });
                             }
                             Err(e) => {
                                 tracing::warn!(
@@ -125,6 +129,7 @@ impl Plugins {
 //TODO function load, run, cancel to async
 pub trait PluginRunner: Send + Sync {
     fn name(&self) -> String;
+    fn description(&self) -> String;
     fn load(&mut self, settings: Vec<u8>) -> Result<()>;
     fn run(&mut self, args: Vec<u8>) -> Result<Vec<Vec<u8>>>;
     // run for generating stream
@@ -143,8 +148,17 @@ pub trait PluginRunner: Send + Sync {
     fn runner_settings_proto(&self) -> String;
     fn job_args_proto(&self) -> String;
     fn result_output_proto(&self) -> Option<String>;
-    fn output_as_stream(&self) -> Option<bool> {
-        Some(false)
+    fn output_type(&self) -> StreamingOutputType {
+        StreamingOutputType::NonStreaming
+    }
+    fn settings_schema(&self) -> String {
+        schema_to_json_string!(crate::jobworkerp::runner::Empty, "settings_schema")
+    }
+    fn arguments_schema(&self) -> String {
+        schema_to_json_string!(crate::jobworkerp::runner::Empty, "arguments_schema")
+    }
+    fn output_json_schema(&self) -> Option<String> {
+        None
     }
     fn input_json_schema(&self) -> String {
         "".to_string()

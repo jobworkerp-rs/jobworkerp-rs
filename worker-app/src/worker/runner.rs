@@ -124,7 +124,7 @@ pub trait JobRunner:
         let start = datetime::now_millis();
 
         let name = runner_impl.name();
-        if worker_data.output_as_stream {
+        if data.request_streaming {
             tracing::debug!("start runner(stream): {}", &name);
             let res = self
                 .run_and_stream(&job, runner_impl)
@@ -250,7 +250,7 @@ pub trait JobRunner:
         start_msec: i64,
         end_msec: i64,
     ) -> JobResultData {
-        let dat = job.data.unwrap(); // TODO unwrap
+        let dat = job.data.unwrap_or_default(); // XXX unwrap or default
         JobResultData {
             job_id: job.id,
             worker_id: dat.worker_id,
@@ -267,6 +267,7 @@ pub trait JobRunner:
                 .max_retry,
             priority: dat.priority,
             timeout: dat.timeout,
+            request_streaming: dat.request_streaming,
             enqueue_time: dat.enqueue_time,
             run_after_time: dat.run_after_time,
             start_time: start_msec,
@@ -284,8 +285,8 @@ mod tests {
     use anyhow::Result;
     use app::app::WorkerConfig;
     use app_wrapper::runner::RunnerFactory;
-    use infra::infra::job::rows::JobqueueAndCodec;
-    use jobworkerp_runner::jobworkerp::runner::{CommandArgs, CommandRunnerSettings};
+    use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+    use jobworkerp_runner::jobworkerp::runner::{CommandArgs, CommandResult};
     use proto::jobworkerp::data::{
         Job, JobData, JobId, ResponseType, RunnerType, WorkerData, WorkerId,
     };
@@ -335,9 +336,12 @@ mod tests {
                 .await;
 
             let run_after = datetime::now_millis() + 1000;
-            let jargs = JobqueueAndCodec::serialize_message(&CommandArgs {
+            let jargs = ProstMessageCodec::serialize_message(&CommandArgs {
+                command: "sleep".to_string(),
                 args: vec!["1".to_string()],
-            });
+                with_memory_monitoring: true,
+            })
+            .unwrap();
             let job = Job {
                 id: Some(JobId { value: 1 }),
                 data: Some(JobData {
@@ -350,12 +354,11 @@ mod tests {
                     enqueue_time: 0,
                     run_after_time: run_after,
                     grabbed_until_time: None,
+                    request_streaming: false,
                 }),
             };
             let worker_id = WorkerId { value: 1 };
-            let runner_settings = JobqueueAndCodec::serialize_message(&CommandRunnerSettings {
-                name: "sleep".to_string(),
-            });
+            let runner_settings = vec![];
 
             let worker = WorkerData {
                 name: "test".to_string(),
@@ -376,8 +379,12 @@ mod tests {
                 .unwrap()
                 .run_job(&runner_data, &worker_id, &worker, job.clone())
                 .await;
+            let output = ProstMessageCodec::deserialize_message::<CommandResult>(
+                &res.output.unwrap().items[0],
+            )
+            .unwrap();
             assert_eq!(res.status, ResultStatus::Success as i32);
-            assert_eq!(res.output.unwrap().items, vec![b""]);
+            assert_eq!(output.exit_code.unwrap(), 0);
             assert_eq!(res.retried, 0);
             assert_eq!(res.max_retry, 0);
             assert_eq!(res.priority, 0);
@@ -387,9 +394,12 @@ mod tests {
             assert!(res.start_time >= run_after); // wait until run_after (expect short time)
             assert!(res.end_time > res.start_time);
             assert!(res.end_time - res.start_time >= 1000); // sleep
-            let jargs = JobqueueAndCodec::serialize_message(&CommandArgs {
+            let jargs = ProstMessageCodec::serialize_message(&CommandArgs {
+                command: "sleep".to_string(),
                 args: vec!["2".to_string()],
-            });
+                with_memory_monitoring: true,
+            })
+            .unwrap();
 
             let timeout_job = Job {
                 id: Some(JobId { value: 2 }),

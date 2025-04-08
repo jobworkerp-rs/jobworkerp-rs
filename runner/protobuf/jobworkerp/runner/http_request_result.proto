@@ -1,13 +1,26 @@
 syntax = "proto3";
 package jobworkerp.runner;
 
-message HttpRequestResult {
+// # HTTP Response Result
+// Represents the result of an HTTP request execution
+message HttpResponseResult {
+  // # Status Code
+  // HTTP response status code (e.g., 200, 404, 500)
   uint32 status_code = 1;
+  
+  // # Key-Value Pair
+  // Represents a generic key-value pair for response headers
   message KeyValue {
-    string key = 1;
-    string value = 2;
+    string key = 1;    // Header name
+    string value = 2;  // Header value
   }
+  
+  // # Response Headers
+  // Collection of HTTP response header fields
   repeated KeyValue headers = 2;
+  
+  // # Response Content
+  // The body content of the HTTP response
   string content = 3;
 }
 

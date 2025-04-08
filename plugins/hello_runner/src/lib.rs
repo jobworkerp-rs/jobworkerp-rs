@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use futures::{stream::BoxStream, StreamExt};
 use hello::{HelloArgs, HelloRunnerResult, HelloRunnerSettings};
+use jobworkerp_runner::runner::plugins::PluginRunner;
 use prost::Message;
 use std::{alloc::System, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, Mutex};
@@ -14,24 +15,9 @@ pub mod hello {
 #[global_allocator]
 static ALLOCATOR: System = System;
 
-pub trait PluginRunner: Send + Sync {
-    fn name(&self) -> String;
-    fn load(&mut self, settings: Vec<u8>) -> Result<()>;
-    fn run(&mut self, arg: Vec<u8>) -> Result<Vec<Vec<u8>>>;
-    // REMOVE
-    fn begin_stream(&mut self, arg: Vec<u8>) -> Result<()>;
-    fn receive_stream(&mut self) -> Result<Option<Vec<u8>>>;
-    fn cancel(&mut self) -> bool;
-    fn is_canceled(&self) -> bool;
-    fn runner_settings_proto(&self) -> String;
-    fn job_args_proto(&self) -> String;
-    fn result_output_proto(&self) -> Option<String>;
-    fn output_as_stream(&self) -> bool;
-}
-
 // suppress warn improper_ctypes_definitions
 #[allow(improper_ctypes_definitions)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn load_plugin() -> Box<dyn PluginRunner + Send + Sync> {
     Box::new(HelloPlugin::new())
 }
@@ -41,7 +27,7 @@ pub extern "C" fn load_plugin() -> Box<dyn PluginRunner + Send + Sync> {
 /// must ensure that the pointer is valid and that it was created by the
 /// `load_plugin` function. The caller must also ensure that the `Box` created
 /// by `Box::from_raw` is not used after it has been dropped.
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(improper_ctypes_definitions)]
 pub extern "C" fn free_plugin(ptr: Box<dyn PluginRunner + Send + Sync>) {
     drop(ptr);
@@ -127,6 +113,9 @@ impl PluginRunner for HelloPlugin {
         // specify as same string as worker.runner_settings
         String::from("HelloPlugin")
     }
+    fn description(&self) -> String {
+        String::from("HelloPlugin: Hello world plugin version 0.1")
+    }
     fn load(&mut self, settings: Vec<u8>) -> Result<()> {
         tracing::info!("HelloPlugin load!");
         // setup with settings (if needed)
@@ -195,8 +184,38 @@ impl PluginRunner for HelloPlugin {
         Some(include_str!("../protobuf/hello_result.proto").to_string())
     }
     // use run_stream() if true, else use run()
-    fn output_as_stream(&self) -> bool {
-        true
+    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
+        proto::jobworkerp::data::StreamingOutputType::Both
+    }
+    fn settings_schema(&self) -> String {
+        let schema = schemars::schema_for!(HelloRunnerSettings);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn arguments_schema(&self) -> String {
+        let schema = schemars::schema_for!(HelloArgs);
+        match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                "".to_string()
+            }
+        }
+    }
+    fn output_json_schema(&self) -> Option<String> {
+        let schema = schemars::schema_for!(HelloRunnerResult);
+        match serde_json::to_string(&schema) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::error!("error in input_json_schema: {:?}", e);
+                None
+            }
+        }
     }
 }
 

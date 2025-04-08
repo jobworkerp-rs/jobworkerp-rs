@@ -1,10 +1,12 @@
+use crate::workflow::runner::inline::InlineWorkflowRunner;
+use crate::workflow::runner::reusable::ReusableWorkflowRunner;
 use anyhow::Result;
 use app::module::AppModule;
 use jobworkerp_runner::runner::{
     command::CommandRunnerImpl,
     docker::{DockerExecRunner, DockerRunner},
     grpc_unary::GrpcUnaryRunner,
-    plugins::{PluginLoader, Plugins},
+    plugins::{PluginLoader, PluginMetadata, Plugins},
     python::PythonCommandRunner,
     request::RequestRunner,
     slack::SlackPostMessageRunner,
@@ -29,8 +31,8 @@ impl RunnerFactory {
             plugins: app_module.config_module.runner_factory.plugins.clone(),
         }
     }
-    pub async fn load_plugins(&self) -> Vec<(String, String)> {
-        self.plugins.load_plugin_files_from_env().await
+    pub async fn load_plugins_from(&self, dir: &str) -> Vec<PluginMetadata> {
+        self.plugins.load_plugin_files(dir).await
     }
     pub async fn unload_plugins(&self, name: &str) -> Result<bool> {
         self.plugins.runner_plugins().write().await.unload(name)
@@ -63,11 +65,20 @@ impl RunnerFactory {
             Some(RunnerType::SlackPostMessage) => {
                 Some(Box::new(SlackPostMessageRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
             }
-            Some(RunnerType::SimpleWorkflow) => {
-                match SimpleWorkflowRunner::new(self.app_module.clone()) {
+            Some(RunnerType::InlineWorkflow) => {
+                match InlineWorkflowRunner::new(self.app_module.clone()) {
                     Ok(runner) => Some(Box::new(runner) as Box<dyn RunnerTrait + Send + Sync>),
                     Err(err) => {
-                        tracing::error!("Failed to create SimpleWorkflowRunner: {}", err);
+                        tracing::error!("Failed to create InlineWorkflowRunner: {}", err);
+                        None
+                    }
+                }
+            }
+            Some(RunnerType::ReusableWorkflow) => {
+                match ReusableWorkflowRunner::new(self.app_module.clone()) {
+                    Ok(runner) => Some(Box::new(runner) as Box<dyn RunnerTrait + Send + Sync>),
+                    Err(err) => {
+                        tracing::error!("Failed to create ReusableWorkflowRunner: {}", err);
                         None
                     }
                 }

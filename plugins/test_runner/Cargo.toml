@@ -2,13 +2,16 @@
 name = "plugin_runner_test"
 version.workspace = true
 authors.workspace = true
-edition = "2021"
+edition.workspace = true
 description = "jobworkerp runner plugin for test"
 
 [lib]
 crate-type = ["dylib"]
 
 [dependencies]
+proto = { path = "../../proto" }
+jobworkerp-runner = { path = "../../runner" }
+
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }

@@ -1,6 +1,5 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use command_utils::util::option::FlatMap;
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::worker::rdb::{RdbWorkerRepository, UseRdbWorkerRepository};
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
@@ -133,7 +132,7 @@ impl WorkerApp for RdbWorkerAppImpl {
     {
         self.find_by_name(name)
             .await
-            .map(|w| w.flat_map(|wd| wd.data))
+            .map(|w| w.and_then(|wd| wd.data))
     }
 
     async fn find_by_name(&self, name: &str) -> Result<Option<Worker>>

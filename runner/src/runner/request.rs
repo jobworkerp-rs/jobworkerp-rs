@@ -1,9 +1,8 @@
 use std::{str::FromStr, time::Duration};
 
 use super::{RunnerSpec, RunnerTrait};
-use crate::jobworkerp::runner::{
-    http_request_result::KeyValue, HttpRequestArgs, HttpRequestResult, HttpRequestRunnerSettings,
-};
+use crate::jobworkerp::runner::{HttpRequestArgs, HttpRequestRunnerSettings, HttpResponseResult};
+use crate::{schema_to_json_string, schema_to_json_string_option};
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -11,7 +10,7 @@ use jobworkerp_base::{
     codec::{ProstMessageCodec, UseProstCodec},
     error::JobWorkerError,
 };
-use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
+use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
 use reqwest::{
     header::{HeaderMap, HeaderName},
     Method, Url,
@@ -76,8 +75,17 @@ impl RunnerSpec for RequestRunner {
     fn result_output_proto(&self) -> Option<String> {
         Some(include_str!("../../protobuf/jobworkerp/runner/http_request_result.proto").to_string())
     }
-    fn output_as_stream(&self) -> Option<bool> {
-        Some(false)
+    fn output_type(&self) -> StreamingOutputType {
+        StreamingOutputType::NonStreaming
+    }
+    fn settings_schema(&self) -> String {
+        schema_to_json_string!(HttpRequestRunnerSettings, "settings_schema")
+    }
+    fn arguments_schema(&self) -> String {
+        schema_to_json_string!(HttpRequestArgs, "arguments_schema")
+    }
+    fn output_schema(&self) -> Option<String> {
+        schema_to_json_string_option!(HttpResponseResult, "output_schema")
     }
     fn input_json_schema(&self) -> String {
         let schema = schemars::schema_for!(HttpRequestRunnerInputSchema);
@@ -155,14 +163,16 @@ impl RunnerTrait for RequestRunner {
             let h = res.headers().clone();
             let s = res.status().as_u16();
             let t = res.text().await.map_err(JobWorkerError::ReqwestError)?;
-            let mes = HttpRequestResult {
+            let mes = HttpResponseResult {
                 status_code: s as u32,
                 headers: h
                     .iter()
-                    .map(|(k, v)| KeyValue {
-                        key: k.as_str().to_string(),
-                        value: v.to_str().unwrap().to_string(),
-                    })
+                    .map(
+                        |(k, v)| crate::jobworkerp::runner::http_response_result::KeyValue {
+                            key: k.as_str().to_string(),
+                            value: v.to_str().unwrap().to_string(),
+                        },
+                    )
                     .collect(),
                 content: t,
             };

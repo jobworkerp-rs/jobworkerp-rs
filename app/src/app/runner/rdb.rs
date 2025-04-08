@@ -6,18 +6,20 @@ use debug_stub_derive::DebugStub;
 use infra::infra::module::rdb::RdbChanRepositoryModule;
 use infra::infra::runner::rdb::RunnerRepository;
 use infra::infra::runner::rdb::{RdbRunnerRepositoryImpl, UseRdbRunnerRepository};
+use infra::infra::runner::rows::RunnerWithSchema;
 use infra_utils::infra::lock::RwLockWithKey;
 use infra_utils::infra::memory::{self, MemoryCacheConfig, MemoryCacheImpl, UseMemoryCache};
 use infra_utils::infra::rdb::UseRdbPool;
-use proto::jobworkerp::data::{Runner, RunnerId};
+use proto::jobworkerp::data::RunnerId;
 use std::{sync::Arc, time::Duration};
 use stretto::AsyncCache;
 
 #[derive(Clone, DebugStub)]
 pub struct RdbRunnerAppImpl {
+    plugin_dir: String,
     storage_config: Arc<StorageConfig>,
-    #[debug_stub = "AsyncCache<Arc<String>, Vec<Runner>>"]
-    async_cache: AsyncCache<Arc<String>, Vec<Runner>>,
+    #[debug_stub = "AsyncCache<Arc<String>, Vec<RunnerWithSchema>>"]
+    async_cache: AsyncCache<Arc<String>, Vec<RunnerWithSchema>>,
     descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     repositories: Arc<RdbChanRepositoryModule>,
     cache_ttl: Option<Duration>,
@@ -27,12 +29,14 @@ pub struct RdbRunnerAppImpl {
 
 impl RdbRunnerAppImpl {
     pub fn new(
+        plugin_dir: String,
         storage_config: Arc<StorageConfig>,
         memory_cache_config: &MemoryCacheConfig,
         repositories: Arc<RdbChanRepositoryModule>,
         descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     ) -> Self {
         Self {
+            plugin_dir,
             storage_config,
             async_cache: memory::new_memory_cache(memory_cache_config),
             descriptor_cache,
@@ -42,7 +46,9 @@ impl RdbRunnerAppImpl {
         }
     }
     async fn add_runner(&self) -> Result<()> {
-        self.runner_repository().add_from_plugins().await?;
+        self.runner_repository()
+            .add_from_plugins_from(self.plugin_dir.as_str())
+            .await?;
         let _ = self
             .delete_cache_locked(&Self::find_all_list_cache_key())
             .await;
@@ -101,7 +107,11 @@ impl RunnerApp for RdbRunnerAppImpl {
         Ok(res)
     }
 
-    async fn find_runner(&self, id: &RunnerId, ttl: Option<&Duration>) -> Result<Option<Runner>>
+    async fn find_runner(
+        &self,
+        id: &RunnerId,
+        ttl: Option<&Duration>,
+    ) -> Result<Option<RunnerWithSchema>>
     where
         Self: Send + 'static,
     {
@@ -126,7 +136,7 @@ impl RunnerApp for RdbRunnerAppImpl {
         limit: Option<&i32>,
         offset: Option<&i64>,
         _ttl: Option<&Duration>,
-    ) -> Result<Vec<Runner>>
+    ) -> Result<Vec<RunnerWithSchema>>
     where
         Self: Send + 'static,
     {
@@ -134,7 +144,7 @@ impl RunnerApp for RdbRunnerAppImpl {
         self.runner_repository().find_list(limit, offset).await
     }
 
-    async fn find_runner_all_list(&self, ttl: Option<&Duration>) -> Result<Vec<Runner>>
+    async fn find_runner_all_list(&self, ttl: Option<&Duration>) -> Result<Vec<RunnerWithSchema>>
     where
         Self: Send + 'static,
     {
@@ -172,6 +182,7 @@ impl RunnerApp for RdbRunnerAppImpl {
             .create(&RunnerRow {
                 id: runner_id.value,
                 name: name.to_string(),
+                description: runner_data.runner_data.description.clone(),
                 file_name: format!("lib{}.so", name),
                 r#type: RunnerType::Plugin as i32,
             })
@@ -191,8 +202,8 @@ impl UseRdbRunnerRepository for RdbRunnerAppImpl {
     }
 }
 
-impl UseMemoryCache<Arc<String>, Vec<Runner>> for RdbRunnerAppImpl {
-    fn cache(&self) -> &AsyncCache<Arc<String>, Vec<Runner>> {
+impl UseMemoryCache<Arc<String>, Vec<RunnerWithSchema>> for RdbRunnerAppImpl {
+    fn cache(&self) -> &AsyncCache<Arc<String>, Vec<RunnerWithSchema>> {
         &self.async_cache
     }
 

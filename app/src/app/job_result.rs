@@ -130,6 +130,7 @@ pub trait JobResultApp: fmt::Debug + Send + Sync + 'static {
         worker_id: Option<&WorkerId>,
         worker_name: Option<&String>,
         timeout: Option<u64>,
+        request_streaming: bool,
     ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)>
     where
         Self: Send + 'static;

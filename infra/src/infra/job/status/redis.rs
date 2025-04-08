@@ -1,7 +1,6 @@
 use super::JobStatusRepository;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use command_utils::util::result::FlatMap;
 use infra_utils::infra::redis::{RedisPool, UseRedisPool};
 use itertools::Itertools;
 use jobworkerp_base::error::JobWorkerError;
@@ -46,7 +45,7 @@ impl JobStatusRepository for RedisJobStatusRepository {
             .flat_map(|(k, v)| {
                 k.parse::<i64>()
                     .context("in parse job id of status")
-                    .flat_map(|id| {
+                    .and_then(|id| {
                         if v == JobStatus::Pending as i32 {
                             Ok((JobId { value: id }, JobStatus::Pending))
                         } else if v == JobStatus::Running as i32 {

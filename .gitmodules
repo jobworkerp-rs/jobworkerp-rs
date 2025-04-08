@@ -1,6 +1,6 @@
 [submodule "modules/infra-utils"]
 	path = modules/infra-utils
-	url = git@github.com:sutr-app/infra-utils.git
+	url = https://github.com/sutr-app/infra-utils.git
 [submodule "modules/command-utils"]
 	path = modules/command-utils
-	url = git@github.com:sutr-app/command-utils.git
+	url = https://github.com/sutr-app/command-utils.git

@@ -1,6 +1,5 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use command_utils::util::option::FlatMap;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::module::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
@@ -74,22 +73,13 @@ impl WorkerApp for HybridWorkerAppImpl {
         let wsid = worker
             .runner_id
             .ok_or_else(|| JobWorkerError::InvalidParameter("runner_id is required".to_string()))?;
-        let RunnerDataWithDescriptor {
-            runner_data,
-            runner_settings_descriptor: _,
-            args_descriptor: _,
-            result_descriptor: _,
-        } = self
+        let _ = self
             .validate_runner_settings_data(&wsid, worker.runner_settings.as_slice())
             .await?
             .ok_or_else(|| {
                 JobWorkerError::InvalidParameter("runner settings not provided".to_string())
             })?;
-        let mut wdata = worker.clone();
-        // overwrite output_as_stream only if data is provided from runner
-        if let Some(output_as_stream) = runner_data.output_as_stream {
-            wdata.output_as_stream = output_as_stream;
-        }
+        let wdata = worker.clone();
         let wid = {
             let db = self.rdb_worker_repository().db_pool();
             let mut tx = db.begin().await.map_err(JobWorkerError::DBError)?;
@@ -122,23 +112,13 @@ impl WorkerApp for HybridWorkerAppImpl {
                 let wsid = w.runner_id.or(owdat.runner_id).ok_or_else(|| {
                     JobWorkerError::InvalidParameter("runner_id is required".to_string())
                 })?;
-                let RunnerDataWithDescriptor {
-                    runner_data,
-                    runner_settings_descriptor: _,
-                    args_descriptor: _,
-                    result_descriptor: _,
-                } = self
+                let _ = self
                     .validate_runner_settings_data(&wsid, w.runner_settings.as_slice())
                     .await?
                     .ok_or_else(|| {
                         JobWorkerError::InvalidParameter("runner settings not provided".to_string())
                     })?;
-                let mut wdata = w.clone();
-                // overwrite output_as_stream only if data is provided from runner
-                if let Some(output_as_stream) = runner_data.output_as_stream {
-                    wdata.output_as_stream = output_as_stream;
-                }
-
+                let wdata = w.clone();
                 // use rdb
                 let pool = self.rdb_worker_repository().db_pool();
                 let mut tx = pool.begin().await.map_err(JobWorkerError::DBError)?;
@@ -232,7 +212,7 @@ impl WorkerApp for HybridWorkerAppImpl {
     {
         self.find_by_name(name)
             .await
-            .map(|w| w.flat_map(|wd| wd.data))
+            .map(|w| w.and_then(|wd| wd.data))
     }
 
     async fn find_by_name(&self, name: &str) -> Result<Option<Worker>>
@@ -432,8 +412,8 @@ mod tests {
     use crate::app::worker::hybrid::HybridWorkerAppImpl;
     use crate::app::worker::WorkerApp;
     use crate::app::StorageConfig;
+    use crate::module::test::TEST_PLUGIN_DIR;
     use anyhow::Result;
-    use command_utils::util::option::FlatMap;
     use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
     use infra::infra::module::rdb::test::setup_test_rdb_module;
     use infra::infra::module::redis::test::setup_test_redis_module;
@@ -469,6 +449,7 @@ mod tests {
             restore_at_startup: Some(false),
         });
         let runner_app = HybridRunnerAppImpl::new(
+            TEST_PLUGIN_DIR.to_string(),
             storage_config.clone(),
             &mc_config,
             repositories.clone(),
@@ -492,7 +473,7 @@ mod tests {
         TEST_RUNTIME.block_on(async {
             let app = create_test_app(false).await?;
             let runner_settings = JobqueueAndCodec::serialize_message(&TestRunnerSettings {
-                name: "ls".to_string(),
+                name: "testRunner1".to_string(),
             });
             let w1 = WorkerData {
                 name: "test1".to_string(),
@@ -534,7 +515,7 @@ mod tests {
 
             let f = app.find(&id1).await?;
             assert!(f.is_some());
-            let fd = f.flat_map(|w| w.data);
+            let fd = f.and_then(|w| w.data);
             assert!(fd.is_some());
             assert_eq!(fd.unwrap().name, w4.name);
             // find list

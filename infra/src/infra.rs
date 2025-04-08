@@ -10,7 +10,6 @@ use anyhow::Result;
 use command_utils::util::{
     datetime,
     id_generator::{self, IDGenerator, MockIdGenerator},
-    result::{FlatMap, ToOption},
 };
 use debug_stub_derive::DebugStub;
 use infra_utils::infra::{rdb::RdbConfig, redis::RedisConfig};
@@ -44,7 +43,7 @@ impl IdGeneratorWrapper {
         self.id_generator
             .lock()
             .map_err(|e| JobWorkerError::GenerateIdError(e.to_string()).into())
-            .flat_map(|mut g| g.generate())
+            .and_then(|mut g| g.generate())
     }
     pub fn get_id_generator(&mut self) -> Arc<Mutex<IDGenerator>> {
         self.id_generator.clone()
@@ -112,8 +111,8 @@ pub struct InfraConfigModule {
 impl InfraConfigModule {
     pub fn new_by_env() -> Self {
         Self {
-            redis_config: load_redis_config_from_env().to_option(),
-            rdb_config: load_db_config_from_env().to_option(),
+            redis_config: load_redis_config_from_env().ok(),
+            rdb_config: load_db_config_from_env().ok(),
             job_queue_config: Arc::new(load_job_queue_config_from_env().unwrap()),
         }
     }

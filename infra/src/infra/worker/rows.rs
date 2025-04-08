@@ -6,6 +6,7 @@ use proto::jobworkerp::data::{RetryPolicy, RunnerId, Worker, WorkerData, WorkerI
 pub struct WorkerRow {
     pub id: i64,
     pub name: String,
+    pub description: String,
     pub runner_id: i64,
     pub runner_settings: Vec<u8>,
     pub retry_type: i32,
@@ -23,7 +24,7 @@ pub struct WorkerRow {
     pub store_success: bool,
     pub store_failure: bool,
     pub use_static: bool,
-    pub output_as_stream: bool,
+    pub broadcast_results: bool,
 }
 
 impl WorkerRow {
@@ -32,6 +33,7 @@ impl WorkerRow {
             id: Some(WorkerId { value: self.id }),
             data: Some(WorkerData {
                 name: self.name.clone(),
+                description: self.description.clone(),
                 runner_id: Some(RunnerId {
                     value: self.runner_id,
                 }),
@@ -51,7 +53,7 @@ impl WorkerRow {
                 store_success: self.store_success,
                 store_failure: self.store_failure,
                 use_static: self.use_static,
-                output_as_stream: self.output_as_stream,
+                broadcast_results: self.broadcast_results,
             }),
         })
     }

@@ -31,7 +31,11 @@ pub async fn main() -> Result<()> {
     app_module.on_start_worker().await?;
 
     let runner_factory = Arc::new(RunnerFactory::new(app_module.clone()));
-    let jh = tokio::spawn(lib::start_worker(app_module, runner_factory, lock));
+    let jh = tokio::spawn(jobworkerp_main::start_worker(
+        app_module,
+        runner_factory,
+        lock,
+    ));
     // tokio::time::sleep(Duration::from_secs(10)).await;
 
     tracing::info!("wait for processing ...");

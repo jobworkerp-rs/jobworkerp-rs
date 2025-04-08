@@ -2,7 +2,6 @@ use super::pool::{RunnerFactoryWithPool, RunnerPoolManagerImpl};
 use anyhow::Result;
 use app::app::WorkerConfig;
 use app_wrapper::runner::RunnerFactory;
-use command_utils::util::result::TapErr;
 use deadpool::managed::{Object, Timeouts};
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::runner::RunnerTrait;
@@ -105,7 +104,7 @@ impl RunnerFactoryWithPoolMap {
                 };
                 p.timeout_get(&timeouts)
                     .await
-                    .tap_err(|e| tracing::error!("error in timeout_get: {:?}", e))
+                    .inspect_err(|e| tracing::error!("error in timeout_get: {:?}", e))
                     .map(Some)
             } else {
                 // release read guard

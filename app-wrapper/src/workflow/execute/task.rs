@@ -2,7 +2,7 @@ use super::{
     context::{TaskContext, UseExpression, WorkflowContext},
     job::JobExecutorWrapper,
 };
-use crate::simple_workflow::{
+use crate::workflow::{
     definition::{
         transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
         workflow::{self, supplement::TaskTrait, Task},
@@ -186,20 +186,14 @@ impl TaskExecutor {
                     .execute(self.task_name.as_str(), workflow_context, task_context)
                     .await
             }
-            Task::EmitTask(task) => {
-                let task_executor = EmitTaskExecutor::new(task);
-                task_executor
-                    .execute(self.task_name.as_str(), workflow_context, task_context)
-                    .await
-            }
+            // Task::EmitTask(task) => {
+            //     let task_executor = EmitTaskExecutor::new(task);
+            //     task_executor
+            //         .execute(self.task_name.as_str(), workflow_context, task_context)
+            //         .await
+            // }
             Task::ForTask(task) => {
                 let task_executor = ForTaskExecutor::new(task, self.job_executor_wrapper.clone());
-                task_executor
-                    .execute(self.task_name.as_str(), workflow_context, task_context)
-                    .await
-            }
-            Task::ListenTask(task) => {
-                let task_executor = ListenTaskExecutor::new(task);
                 task_executor
                     .execute(self.task_name.as_str(), workflow_context, task_context)
                     .await
@@ -274,45 +268,25 @@ impl TaskExecutorTrait for ForkTaskExecutor<'_> {
     }
 }
 
-pub struct EmitTaskExecutor<'a> {
-    task: &'a workflow::EmitTask,
-}
-impl<'a> EmitTaskExecutor<'a> {
-    pub fn new(task: &'a workflow::EmitTask) -> Self {
-        Self { task }
-    }
-}
-impl TaskExecutorTrait for EmitTaskExecutor<'_> {
-    async fn execute(
-        &self,
-        _task_name: &str,
-        _workflow_context: Arc<RwLock<WorkflowContext>>,
-        _task_context: TaskContext,
-    ) -> Result<TaskContext> {
-        tracing::error!("EmitTaskExecutor not implemented yet!: {:?}", self.task);
-        todo!()
-    }
-}
-
-pub struct ListenTaskExecutor<'a> {
-    task: &'a workflow::ListenTask,
-}
-impl<'a> ListenTaskExecutor<'a> {
-    pub fn new(task: &'a workflow::ListenTask) -> Self {
-        Self { task }
-    }
-}
-impl TaskExecutorTrait for ListenTaskExecutor<'_> {
-    async fn execute(
-        &self,
-        _task_name: &str,
-        _workflow_context: Arc<RwLock<WorkflowContext>>,
-        _task_context: TaskContext,
-    ) -> Result<TaskContext> {
-        tracing::error!("ListenTaskExecutor not implemented yet!: {:?}", self.task);
-        todo!()
-    }
-}
+// pub struct EmitTaskExecutor<'a> {
+//     task: &'a workflow::EmitTask,
+// }
+// impl<'a> EmitTaskExecutor<'a> {
+//     pub fn new(task: &'a workflow::EmitTask) -> Self {
+//         Self { task }
+//     }
+// }
+// impl TaskExecutorTrait for EmitTaskExecutor<'_> {
+//     async fn execute(
+//         &self,
+//         _task_name: &str,
+//         _workflow_context: Arc<RwLock<WorkflowContext>>,
+//         _task_context: TaskContext,
+//     ) -> Result<TaskContext> {
+//         tracing::error!("EmitTaskExecutor not implemented yet!: {:?}", self.task);
+//         todo!()
+//     }
+// }
 
 pub struct RaiseTaskExecutor<'a> {
     task: &'a workflow::RaiseTask,

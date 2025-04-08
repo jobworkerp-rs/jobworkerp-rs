@@ -225,7 +225,6 @@ pub trait UseRedisJobResultRepository {
 
 #[tokio::test]
 async fn redis_test() -> Result<()> {
-    use command_utils::util::option::FlatMap;
     use jobworkerp_base::codec::ProstMessageCodec;
     use proto::jobworkerp::data::{JobId, ResponseType, ResultOutput, WorkerId};
 
@@ -257,6 +256,7 @@ async fn redis_test() -> Result<()> {
         max_retry: 9,
         priority: 1,
         timeout: 1000,
+        request_streaming: true,
         enqueue_time: 9,
         run_after_time: 10,
         start_time: 11,
@@ -272,7 +272,7 @@ async fn redis_test() -> Result<()> {
     repo.create(&id, job_result).await?;
     assert!(repo.create(&id, job_result).await.err().is_some()); // already exists
     let res = repo.find(&id).await?;
-    assert_eq!(res.flat_map(|r| r.data).as_ref(), Some(job_result));
+    assert_eq!(res.and_then(|r| r.data).as_ref(), Some(job_result));
 
     let mut job_result2 = job_result.clone();
     job_result2.worker_id = Some(WorkerId { value: 3 });
@@ -289,6 +289,7 @@ async fn redis_test() -> Result<()> {
     job_result2.retried = 9;
     job_result2.priority = -1;
     job_result2.timeout = 2000;
+    job_result2.request_streaming = false;
     job_result2.enqueue_time = 10;
     job_result2.run_after_time = 11;
     job_result2.start_time = 12;
@@ -299,7 +300,7 @@ async fn redis_test() -> Result<()> {
     // update and find
     assert!(!repo.upsert(&id, &job_result2).await?);
     let res2 = repo.find(&id).await?;
-    assert_eq!(res2.flat_map(|r| r.data).as_ref(), Some(&job_result2));
+    assert_eq!(res2.and_then(|r| r.data).as_ref(), Some(&job_result2));
 
     // delete and not found
     assert!(repo.delete(&id).await?);

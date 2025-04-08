@@ -1,4 +1,4 @@
-use crate::simple_workflow::{
+use crate::workflow::{
     definition::{
         transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
         workflow::{self},

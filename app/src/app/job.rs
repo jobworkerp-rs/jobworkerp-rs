@@ -53,6 +53,7 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         priority: i32,
         timeout: u64,
         reserved_job_id: Option<JobId>,
+        request_streaming: bool,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -229,6 +230,7 @@ where
         &self,
         job: &Job,
         worker: &WorkerData,
+        request_streaming: bool,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -260,7 +262,7 @@ where
                     self._wait_job_for_direct_response(
                         &job_id,
                         job.data.as_ref().map(|d| d.timeout),
-                        worker.output_as_stream,
+                        request_streaming,
                     )
                     .await
                     .map(|(r, stream)| (job_id, Some(r), stream))
@@ -278,11 +280,11 @@ where
         &self,
         job_id: &JobId,
         timeout: Option<u64>,
-        output_as_stream: bool,
+        request_streaming: bool,
     ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
         // wait for and return result
         self.redis_job_repository()
-            .wait_for_result_queue_for_response(job_id, timeout, output_as_stream)
+            .wait_for_result_queue_for_response(job_id, timeout, request_streaming)
             .await
     }
 }

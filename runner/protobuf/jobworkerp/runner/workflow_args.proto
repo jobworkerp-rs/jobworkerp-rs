@@ -2,14 +2,26 @@ syntax = "proto3";
 
 package jobworkerp.runner;
 
-message WorkflowArgs {
-  // workflow yaml file url or file path (absolute path)
-  optional string workflow_url = 1;
-  // workflow yaml string (need 'do:' task list)
-  optional string workflow_yaml = 2;
-  // input string
-  // (use as input for the workflow context, plain string or json string)
+message InlineWorkflowArgs {
+  // # Workflow Definition
+  // Workflow can be specified either by URL or by direct data inclusion
+  oneof workflow_source {
+    // # Workflow URL
+    // Path or URL to the workflow definition file (JSON or YAML)
+    string workflow_url = 1;
+    // # Workflow Data
+    // The workflow definition as a JSON or YAML string
+    string workflow_data = 2;
+  }
+
+  // # Input
+  // Required data passed to the workflow execution
+  // Must conform to the schema defined in the workflow definition
+  // (Can be a plain string or JSON formatted string)
   string input = 3;
-  // context string (use as workflow context, plain string or json string)
+
+  // # Workflow Context
+  // Additional context information for workflow execution
+  // (JSON formatted string)
   optional string workflow_context = 4;
 }

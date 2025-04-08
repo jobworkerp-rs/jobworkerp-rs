@@ -2,14 +2,16 @@ pub mod client;
 pub mod repository;
 
 use self::repository::SlackRepository;
-use crate::jobworkerp::runner::{SlackChatPostMessageArgs, SlackChatPostMessageResult, SlackRunnerSettings};
+use crate::jobworkerp::runner::{
+    SlackChatPostMessageArgs, SlackChatPostMessageResult, SlackRunnerSettings,
+};
 use crate::runner::RunnerTrait;
+use crate::{schema_to_json_string, schema_to_json_string_option};
 use anyhow::{anyhow, Result};
 use futures::stream::BoxStream;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
-use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
-use schemars::JsonSchema;
+use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
 use tonic::async_trait;
 
 use super::RunnerSpec;
@@ -36,12 +38,6 @@ impl Default for SlackPostMessageRunner {
     }
 }
 
-#[derive(Debug, JsonSchema, serde::Deserialize, serde::Serialize)]
-struct SlackPostMessageRunnerInputSchema {
-    settings: SlackRunnerSettings,
-    args: SlackChatPostMessageArgs,
-}
-
 impl RunnerSpec for SlackPostMessageRunner {
     fn name(&self) -> String {
         RunnerType::SlackPostMessage.as_str_name().to_string()
@@ -56,29 +52,17 @@ impl RunnerSpec for SlackPostMessageRunner {
     fn result_output_proto(&self) -> Option<String> {
         Some(include_str!("../../protobuf/jobworkerp/runner/slack_result.proto").to_string())
     }
-    fn output_as_stream(&self) -> Option<bool> {
-        Some(false)
+    fn output_type(&self) -> StreamingOutputType {
+        StreamingOutputType::NonStreaming
     }
-    fn input_json_schema(&self) -> String {
-        let schema = schemars::schema_for!(SlackPostMessageRunnerInputSchema);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+    fn settings_schema(&self) -> String {
+        schema_to_json_string!(SlackRunnerSettings, "settings_schema")
     }
-    fn output_json_schema(&self) -> Option<String> {
-        // plain string with title
-        let schema = schemars::schema_for!(SlackChatPostMessageResult);
-        match serde_json::to_string(&schema) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::error!("error in output_json_schema: {:?}", e);
-                None
-            }
-        }
+    fn arguments_schema(&self) -> String {
+        schema_to_json_string!(SlackChatPostMessageArgs, "arguments_schema")
+    }
+    fn output_schema(&self) -> Option<String> {
+        schema_to_json_string_option!(SlackChatPostMessageResult, "output_schema")
     }
 }
 #[async_trait]

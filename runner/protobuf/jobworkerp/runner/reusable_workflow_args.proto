@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package jobworkerp.runner;
+
+message ReusableWorkflowArgs {
+  // # Input
+  // String input for the workflow context
+  // Must conform to the schema defined in the workflow definition
+  // (Can be a plain string or JSON formatted string, runtime expression available)
+  string input = 1;
+
+  // # Workflow Context
+  // Additional context information for workflow execution
+  // Can be a plain string or JSON formatted string
+  optional string workflow_context = 2;
+}

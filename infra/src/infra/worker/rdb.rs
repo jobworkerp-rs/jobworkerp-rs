@@ -2,7 +2,6 @@ use super::rows::WorkerRow;
 use crate::infra::job::rows::UseJobqueueAndCodec;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use command_utils::util::{option::FlatMap as _, result::ToOption as _};
 use infra_utils::infra::rdb::{query_result, Rdb, RdbPool, UseRdbPool};
 use itertools::Itertools;
 use jobworkerp_base::{codec::UseProstCodec, error::JobWorkerError};
@@ -20,6 +19,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         let res = sqlx::query::<Rdb>(
             "INSERT INTO worker (
             `name`,
+            `description`,
             `runner_id`,
             `use_static`,
             `runner_settings`,
@@ -34,10 +34,11 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
             `response_type`,
             `store_success`,
             `store_failure`,
-            `output_as_stream`
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            `broadcast_results`
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(&worker.name)
+        .bind(&worker.description)
         .bind(worker.runner_id.as_ref().map(|s| s.value).unwrap_or(0))
         .bind(worker.use_static)
         .bind(&worker.runner_settings)
@@ -57,7 +58,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         .bind(worker.response_type)
         .bind(worker.store_success)
         .bind(worker.store_failure)
-        .bind(worker.output_as_stream)
+        .bind(worker.broadcast_results)
         .execute(tx)
         .await
         .map_err(JobWorkerError::DBError)?;
@@ -76,6 +77,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         sqlx::query(
             "UPDATE `worker` SET
             `name` = ?,
+            `description` = ?,
             `runner_id` = ?,
             `use_static` = ?,
             `runner_settings` = ?,
@@ -90,10 +92,11 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
             `response_type` = ?,
             `store_success` = ?,
             `store_failure` = ?,
-            `output_as_stream` = ?
+            `broadcast_results` = ?
             WHERE `id` = ?;",
         )
         .bind(&worker.name)
+        .bind(&worker.description)
         .bind(worker.runner_id.map(|s| s.value).unwrap_or(0))
         .bind(worker.use_static)
         .bind(&worker.runner_settings)
@@ -113,7 +116,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         .bind(worker.response_type)
         .bind(worker.store_success)
         .bind(worker.store_failure)
-        .bind(worker.output_as_stream)
+        .bind(worker.broadcast_results)
         .bind(id.value)
         .execute(tx)
         .await
@@ -155,13 +158,13 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
             .await
             .map_err(JobWorkerError::DBError)
             .context(format!("error in find: name = {}", name))
-            .map(|r| r.flat_map(|r2| r2.to_proto().to_option()))
+            .map(|r| r.and_then(|r2| r2.to_proto().ok()))
     }
 
     async fn find(&self, id: &WorkerId) -> Result<Option<Worker>> {
         self.find_row_tx(self.db_pool(), id)
             .await
-            .map(|r| r.flat_map(|r2| r2.to_proto().to_option()))
+            .map(|r| r.and_then(|r2| r2.to_proto().ok()))
     }
 
     async fn find_row_tx<'c, E: Executor<'c, Database = Rdb>>(
@@ -180,11 +183,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
     async fn find_list(&self, limit: Option<i32>, offset: Option<i64>) -> Result<Vec<Worker>> {
         self.find_row_list_tx(self.db_pool(), limit, offset)
             .await
-            .map(|r| {
-                r.iter()
-                    .flat_map(|r2| r2.to_proto().to_option())
-                    .collect_vec()
-            })
+            .map(|r| r.iter().flat_map(|r2| r2.to_proto().ok()).collect_vec())
     }
 
     async fn find_row_list_tx<'c, E: Executor<'c, Database = Rdb>>(
@@ -269,6 +268,7 @@ mod test {
         let db = repository.db_pool();
         let data = Some(WorkerData {
             name: "hoge1".to_string(),
+            description: "hoge2".to_string(),
             runner_id: Some(RunnerId { value: 323 }),
             runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
                 name: "hoge".to_string(),
@@ -287,7 +287,7 @@ mod test {
             store_success: true,
             store_failure: true,
             use_static: false,
-            output_as_stream: false,
+            broadcast_results: false,
         });
 
         let mut tx = db.begin().await.context("error in test")?;
@@ -309,6 +309,7 @@ mod test {
         tx = db.begin().await.context("error in test")?;
         let update = WorkerData {
             name: "fuga1".to_string(),
+            description: "fuga2".to_string(),
             runner_id: Some(RunnerId { value: 324 }),
             runner_settings: RdbWorkerRepositoryImpl::serialize_message(&TestRunnerSettings {
                 name: "fuga".to_string(),
@@ -323,11 +324,11 @@ mod test {
             periodic_interval: 12,
             channel: Some("hoge11".to_string()),
             queue_type: QueueType::Normal as i32,
-            response_type: ResponseType::ListenAfter as i32,
+            response_type: ResponseType::Direct as i32,
             store_success: false,
             store_failure: false,
             use_static: false,
-            output_as_stream: false,
+            broadcast_results: false,
         };
         let updated = repository
             .update(&mut *tx, &expect.id.unwrap(), &update)

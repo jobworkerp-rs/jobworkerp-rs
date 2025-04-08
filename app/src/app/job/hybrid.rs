@@ -7,7 +7,6 @@ use super::{JobApp, JobCacheKeys, RedisJobAppHelper};
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
-use command_utils::util::option::{Exists, FlatMap};
 use futures::stream::BoxStream;
 use infra::infra::job::queue::redis::RedisJobQueueRepository;
 use infra::infra::job::rdb::{RdbJobRepository, UseRdbChanJobRepository};
@@ -94,7 +93,11 @@ impl HybridJobAppImpl {
                     .find_list_in(jids)
                     .await?
                     .into_iter()
-                    .filter(|j| j.data.as_ref().exists(|d| !self.is_run_after_job_data(d))),
+                    .filter(|j| {
+                        j.data
+                            .as_ref()
+                            .is_some_and(|d| !self.is_run_after_job_data(d))
+                    }),
             );
         }
         Ok(ret)
@@ -108,7 +111,7 @@ impl HybridJobAppImpl {
             // unwrap
             if let Ok(Some(w)) = self
                 .worker_app
-                .find_data_by_opt(job.data.as_ref().flat_map(|d| d.worker_id.as_ref()))
+                .find_data_by_opt(job.data.as_ref().and_then(|d| d.worker_id.as_ref()))
                 .await
             {
                 // not restore use rdb jobs (periodic worker or run after jobs)(should not exists in 'restores')
@@ -122,7 +125,7 @@ impl HybridJobAppImpl {
                     );
                 } else {
                     // need to store to redis
-                    self.enqueue_job_to_redis_with_wait_if_needed(job, &w)
+                    self.enqueue_job_to_redis_with_wait_if_needed(job, &w, false)
                         .await?;
                 }
             } else {
@@ -145,6 +148,7 @@ impl JobApp for HybridJobAppImpl {
         priority: i32,
         timeout: u64,
         reserved_job_id: Option<JobId>,
+        request_streaming: bool,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -165,6 +169,12 @@ impl JobApp for HybridJobAppImpl {
             data: Some(w),
         }) = worker_res.as_ref()
         {
+            // check if worker supports streaming mode
+            let _ = self
+                .worker_app()
+                .check_worker_streaming(wid, request_streaming)
+                .await?;
+
             let job_data = JobData {
                 worker_id: Some(*wid),
                 args,
@@ -175,7 +185,9 @@ impl JobApp for HybridJobAppImpl {
                 retried: 0u32,
                 priority,
                 timeout,
+                request_streaming,
             };
+
             // TODO validate argument types (using Runner)
             // self.validate_worker_and_job_arg(w, job_data.arg.as_ref())?;
             // cannot wait for direct response
@@ -209,7 +221,8 @@ impl JobApp for HybridJobAppImpl {
                     id: Some(jid),
                     data: Some(data.to_owned()),
                 };
-                self.enqueue_job_to_redis_with_wait_if_needed(&job, w).await
+                self.enqueue_job_to_redis_with_wait_if_needed(&job, w, request_streaming)
+                    .await
             } else if w.periodic_interval > 0 || self.is_run_after_job_data(&data) {
                 let job = Job {
                     id: Some(jid),
@@ -237,7 +250,14 @@ impl JobApp for HybridJobAppImpl {
                     // instant job (store rdb for failback, and enqueue to redis)
                     // TODO store async to rdb (not necessary to wait)
                     match self.rdb_job_repository().create(&job).await {
-                        Ok(_id) => self.enqueue_job_to_redis_with_wait_if_needed(&job, w).await,
+                        Ok(_id) => {
+                            self.enqueue_job_to_redis_with_wait_if_needed(
+                                &job,
+                                w,
+                                request_streaming,
+                            )
+                            .await
+                        }
                         Err(e) => Err(e),
                     }
                 } else if w.queue_type == QueueType::ForcedRdb as i32 {
@@ -255,7 +275,8 @@ impl JobApp for HybridJobAppImpl {
                     }
                 } else {
                     // instant job (enqueue to redis only)
-                    self.enqueue_job_to_redis_with_wait_if_needed(&job, w).await
+                    self.enqueue_job_to_redis_with_wait_if_needed(&job, w, request_streaming)
+                        .await
                 }
             }
         } else {
@@ -285,8 +306,13 @@ impl JobApp for HybridJobAppImpl {
                     || w.queue_type == QueueType::ForcedRdb as i32
                     || w.queue_type == QueueType::WithBackup as i32
                 {
+                    tracing::debug!(
+                        "re-enqueue job to rdb(upsert): {:?}, worker: {:?}",
+                        &job,
+                        &w.name
+                    );
                     // XXX should compare grabbed_until_time and update if not changed or not (now not compared)
-                    self.rdb_job_repository().update(jid, data).await
+                    self.rdb_job_repository().upsert(jid, data).await
                 } else {
                     Ok(false)
                 };
@@ -299,8 +325,9 @@ impl JobApp for HybridJobAppImpl {
                     && (w.queue_type == QueueType::Normal as i32
                         || w.queue_type == QueueType::WithBackup as i32)
                 {
+                    tracing::debug!("re-enqueue job to redis: {:?}, worker: {:?}", &job, &w.name);
                     // enqueue to redis for instant job
-                    self.enqueue_job_to_redis_with_wait_if_needed(job, &w)
+                    self.enqueue_job_to_redis_with_wait_if_needed(job, &w, data.request_streaming)
                         .await
                         .map(|_| true)
                 } else {
@@ -318,9 +345,15 @@ impl JobApp for HybridJobAppImpl {
                     Err(e) => Err(e),
                 }
             } else {
+                tracing::error!(
+                    "re-enqueue job: worker not found: {:?}, job: {:?}",
+                    &data.worker_id,
+                    &job,
+                );
                 Err(JobWorkerError::WorkerNotFound(format!("in re-enqueue job: {:?}", &job)).into())
             }
         } else {
+            tracing::error!("re-enqueue job: invalid job: {:?}", &job,);
             Err(JobWorkerError::NotFound(format!("illegal re-enqueue job: {:?}", &job)).into())
         }
     }
@@ -345,7 +378,7 @@ impl JobApp for HybridJobAppImpl {
                     // (XXX can receive response by listen_after, listen_by_worker for DIRECT response)
                     let _ = self
                         .job_result_pubsub_repository()
-                        .publish_result(id, data, true)
+                        .publish_result(id, data, true) // XXX to_listen must be set worker.broadcast_results
                         .await
                         .inspect_err(|e| {
                             tracing::warn!("complete_job: pubsub publish error: {:?}", e)
@@ -366,11 +399,11 @@ impl JobApp for HybridJobAppImpl {
                     // tokio::time::sleep(Duration::from_secs(3)).await;
                     res
                 }
-                Ok(rtype) => {
+                Ok(_rtype) => {
                     // publish for listening result client
                     let r = self
                         .job_result_pubsub_repository()
-                        .publish_result(id, data, rtype == ResponseType::ListenAfter)
+                        .publish_result(id, data, true) // XXX to_listen must be set worker.broadcast_results
                         .await;
                     // stream data
                     if let Some(stream) = stream {
@@ -651,6 +684,7 @@ pub mod tests {
     use crate::app::runner::RunnerApp;
     use crate::app::worker::hybrid::HybridWorkerAppImpl;
     use crate::app::{StorageConfig, StorageType};
+    use crate::module::test::TEST_PLUGIN_DIR;
     use anyhow::Result;
     use infra::infra::job_result::pubsub::redis::RedisJobResultPubSubRepositoryImpl;
     use infra::infra::module::rdb::test::setup_test_rdb_module;
@@ -704,6 +738,7 @@ pub mod tests {
             Some(Duration::from_secs(60 * 60)),
         ));
         let runner_app = Arc::new(HybridRunnerAppImpl::new(
+            TEST_PLUGIN_DIR.to_string(),
             storage_config.clone(),
             &mc_config,
             repositories.clone(),
@@ -727,7 +762,9 @@ pub mod tests {
             job_queue_config.clone(),
         );
         let runner_factory = RunnerSpecFactory::new(Arc::new(Plugins::new()));
-        runner_factory.load_plugins().await;
+        runner_factory
+            .load_plugins_from("./target/debug,../target/debug,./target/release,../target/release")
+            .await;
         let config_module = Arc::new(AppConfigModule {
             storage_config,
             worker_config,
@@ -763,6 +800,7 @@ pub mod tests {
             });
             let wd = proto::jobworkerp::data::WorkerData {
                 name: "testworker".to_string(),
+                description: "desc1".to_string(),
                 runner_id: Some(RunnerId { value: 10000 }),
                 runner_settings,
                 channel: None,
@@ -773,7 +811,7 @@ pub mod tests {
                 store_failure: false,
                 store_success: false,
                 use_static: false,
-                output_as_stream: false,
+                broadcast_results: false,
             };
             let worker_id = app.worker_app().create(&wd).await?;
             let jarg = JobqueueAndCodec::serialize_message(&proto::TestArgs {
@@ -787,7 +825,7 @@ pub mod tests {
             // need waiting for direct response
             let jh = tokio::spawn(async move {
                 let res = app1
-                    .enqueue_job(Some(&worker_id1), None, jarg1, None, 0, 0, 0, None)
+                    .enqueue_job(Some(&worker_id1), None, jarg1, None, 0, 0, 0, None, false)
                     .await;
                 let (jid, job_res, _) = res.unwrap();
                 assert!(jid.value > 0);
@@ -797,7 +835,7 @@ pub mod tests {
                     .find_job(
                         &job_res
                             .clone()
-                            .flat_map(|j| j.data.flat_map(|d| d.job_id))
+                            .and_then(|j| j.data.and_then(|d| d.job_id))
                             .unwrap(),
                         Some(&Duration::from_millis(100)),
                     )
@@ -834,6 +872,7 @@ pub mod tests {
                     max_retry: 0,
                     priority: 0,
                     timeout: 0,
+                    request_streaming: false,
                     enqueue_time: datetime::now_millis(),
                     run_after_time: 0,
                     start_time: datetime::now_millis(),
@@ -862,6 +901,54 @@ pub mod tests {
     }
 
     #[test]
+    fn test_create_job_not_streaming_error() -> Result<()> {
+        use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
+
+        // enqueue, find, complete, find, delete, find
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let (app, _subscriber) = create_test_app(true).await?;
+            let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
+                name: "ls".to_string(),
+            });
+            let wd = proto::jobworkerp::data::WorkerData {
+                name: "testworker".to_string(),
+                description: "desc1".to_string(),
+                runner_id: Some(RunnerId { value: 10000 }),
+                runner_settings,
+                channel: None,
+                response_type: ResponseType::ListenAfter as i32,
+                periodic_interval: 0,
+                retry_policy: None,
+                queue_type: QueueType::Normal as i32, // store to rdb for failback (can find job from rdb but not from redis)
+                store_failure: false,
+                store_success: false,
+                use_static: false,
+                broadcast_results: true,
+            };
+            let worker_id = app.worker_app().create(&wd).await?;
+            let jarg = JobqueueAndCodec::serialize_message(&proto::TestArgs {
+                args: vec!["/".to_string()],
+            });
+
+            // wait for direct response
+            let res = app
+                .enqueue_job(
+                    Some(&worker_id),
+                    None,
+                    jarg.clone(),
+                    None,
+                    0,
+                    0,
+                    0,
+                    None,
+                    true, // STREAMING NOT SUPPORTED by runner -> error
+                )
+                .await;
+            assert!(res.is_err());
+            Ok(())
+        })
+    }
+    #[test]
     fn test_create_listen_after_job_complete() -> Result<()> {
         use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
         use infra::infra::job_result::pubsub::JobResultSubscriber;
@@ -874,6 +961,7 @@ pub mod tests {
             });
             let wd = proto::jobworkerp::data::WorkerData {
                 name: "testworker".to_string(),
+                description: "desc1".to_string(),
                 runner_id: Some(RunnerId { value: 10000 }),
                 runner_settings,
                 channel: None,
@@ -884,7 +972,7 @@ pub mod tests {
                 store_failure: false,
                 store_success: false,
                 use_static: false,
-                output_as_stream: false,
+                broadcast_results: true,
             };
             let worker_id = app.worker_app().create(&wd).await?;
             let jarg = JobqueueAndCodec::serialize_message(&proto::TestArgs {
@@ -893,7 +981,17 @@ pub mod tests {
 
             // wait for direct response
             let job_id = app
-                .enqueue_job(Some(&worker_id), None, jarg.clone(), None, 0, 0, 0, None)
+                .enqueue_job(
+                    Some(&worker_id),
+                    None,
+                    jarg.clone(),
+                    None,
+                    0,
+                    0,
+                    0,
+                    None,
+                    false,
+                )
                 .await?
                 .0;
             let job = Job {
@@ -908,6 +1006,7 @@ pub mod tests {
                     retried: 0,
                     priority: 0,
                     timeout: 0,
+                    request_streaming: true,
                 }),
             };
             assert_eq!(
@@ -934,6 +1033,7 @@ pub mod tests {
                     max_retry: 0,
                     priority: 0,
                     timeout: 0,
+                    request_streaming: true,
                     enqueue_time: job.data.as_ref().unwrap().enqueue_time,
                     run_after_time: job.data.as_ref().unwrap().run_after_time,
                     start_time: datetime::now_millis(),
@@ -987,6 +1087,7 @@ pub mod tests {
         });
         let wd = proto::jobworkerp::data::WorkerData {
             name: "testworker".to_string(),
+            description: "desc1".to_string(),
             runner_id: Some(RunnerId { value: 10000 }),
             runner_settings,
             channel: None,
@@ -997,7 +1098,7 @@ pub mod tests {
             store_success: true,
             store_failure: false,
             use_static: false,
-            output_as_stream: false,
+            broadcast_results: false,
         };
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
@@ -1008,7 +1109,17 @@ pub mod tests {
 
             // wait for direct response
             let (job_id, res, _) = app
-                .enqueue_job(Some(&worker_id), None, jarg.clone(), None, 0, 0, 0, None)
+                .enqueue_job(
+                    Some(&worker_id),
+                    None,
+                    jarg.clone(),
+                    None,
+                    0,
+                    0,
+                    0,
+                    None,
+                    false,
+                )
                 .await?;
             assert!(job_id.value > 0);
             assert!(res.is_none());
@@ -1048,6 +1159,7 @@ pub mod tests {
                     max_retry: 0,
                     priority: 0,
                     timeout: 0,
+                    request_streaming: false,
                     enqueue_time: job.data.as_ref().unwrap().enqueue_time,
                     run_after_time: job.data.as_ref().unwrap().run_after_time,
                     start_time: datetime::now_millis(),
@@ -1093,6 +1205,7 @@ pub mod tests {
             });
             let wd = proto::jobworkerp::data::WorkerData {
                 name: "testworker".to_string(),
+                description: "desc1".to_string(),
                 runner_id: Some(RunnerId { value: 10000 }),
                 runner_settings,
                 channel: channel.cloned(),
@@ -1103,7 +1216,7 @@ pub mod tests {
                 store_success: true,
                 store_failure: false,
                 use_static: false,
-                output_as_stream: false,
+                broadcast_results: false,
             };
             let worker_id = app.worker_app().create(&wd).await?;
 
@@ -1127,6 +1240,7 @@ pub mod tests {
                     priority as i32,
                     0,
                     None,
+                    false,
                 )
                 .await?;
             assert!(job_id.value > 0);
@@ -1142,6 +1256,7 @@ pub mod tests {
                     priority as i32,
                     0,
                     None,
+                    false,
                 )
                 .await?;
             assert!(job_id2.value > 0);

@@ -1,7 +1,6 @@
 use super::PluginLoader;
 use crate::runner::plugins::{impls::PluginRunnerWrapperImpl, PluginRunner};
 use anyhow::{anyhow, Result};
-use command_utils::util::result::{TapErr as _, ToOption as _};
 use libloading::{Library, Symbol};
 use std::path::Path;
 use std::sync::Arc;
@@ -31,11 +30,13 @@ impl RunnerPluginLoader {
 
     // find plugin (not loaded. reference only. cannot run)
     pub fn find_plugin_runner_by_name(&self, name: &str) -> Option<PluginRunnerWrapperImpl> {
-        if let Some((name, _, lib)) = self.plugin_loaders.iter().find(|p| p.0.as_str() == name) {
+        if let Some((_name, _, lib)) = self.plugin_loaders.iter().find(|p| p.0.as_str() == name) {
             // XXX unsafe
             unsafe { lib.get(b"load_plugin") }
-                .tap_err(|e| tracing::error!("error in loading runner plugin:{name}, error: {e:?}"))
-                .to_option()
+                .inspect_err(|e| {
+                    tracing::warn!("error in loading runner plugin:{name}, error: {e:?}")
+                })
+                .ok()
                 .map(|lp: LoaderFunc<'_>| PluginRunnerWrapperImpl::new(Arc::new(RwLock::new(lp()))))
         } else {
             None
@@ -50,12 +51,13 @@ impl Default for RunnerPluginLoader {
 }
 
 impl PluginLoader for RunnerPluginLoader {
-    fn load_path(&mut self, path: &Path) -> Result<String> {
+    fn load_path(&mut self, path: &Path) -> Result<(String, String)> {
         // XXX load plugin only for getting name
         let lib = unsafe { Library::new(path) }?;
         let load_plugin: LoaderFunc = unsafe { lib.get(b"load_plugin") }?;
         let plugin = load_plugin();
         let name = plugin.name().clone();
+        let description = plugin.description().clone();
 
         let lib = unsafe { Library::new(path) }?;
         if self.plugin_loaders.iter().any(|p| p.0.as_str() == name) {
@@ -73,7 +75,7 @@ impl PluginLoader for RunnerPluginLoader {
                     .to_string(),
                 lib,
             ));
-            Ok(name)
+            Ok((name, description))
         }
     }
     fn unload(&mut self, name: &str) -> Result<bool> {

@@ -4,7 +4,6 @@ use super::{JobResultApp, JobResultAppHelper};
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
-use command_utils::util::option::Exists;
 use futures::stream::BoxStream;
 use futures::Stream;
 use infra::infra::job::rows::UseJobqueueAndCodec;
@@ -76,6 +75,14 @@ impl RdbJobResultAppImpl {
         //     ))
         //     .into());
         // }
+        if !wd.broadcast_results {
+            return Err(JobWorkerError::InvalidParameter(format!(
+                "Cannot listen result not broadcast worker: {:?}",
+                &wd
+            ))
+            .into());
+        }
+
         // check job result (already finished or not)
         let res = self
             .rdb_job_result_repository()
@@ -87,13 +94,13 @@ impl RdbJobResultAppImpl {
             // result in rdb (not finished by store_failure option)
             Some(_v) => {
                 // found not finished result: wait for result data
-                self.subscribe_result_with_check(job_id, &wd, timeout.as_ref())
+                self.subscribe_result_with_check(job_id, &wd, timeout.as_ref(), true)
                     .await
             }
             None => {
                 // not found result: wait for job
                 tracing::debug!("job result not found: find job: {:?}", job_id);
-                self.subscribe_result_with_check(job_id, &wd, timeout.as_ref())
+                self.subscribe_result_with_check(job_id, &wd, timeout.as_ref(), true)
                     .await
             }
         }
@@ -104,6 +111,7 @@ impl RdbJobResultAppImpl {
         job_id: &JobId,
         wdata: &WorkerData,
         timeout: Option<&u64>,
+        request_streaming: bool,
     ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
         if wdata.response_type != ResponseType::ListenAfter as i32 {
             Err(JobWorkerError::InvalidParameter(
@@ -115,7 +123,7 @@ impl RdbJobResultAppImpl {
                 .job_result_pubsub_repository()
                 .subscribe_result(job_id, timeout.copied())
                 .await?;
-            if wdata.output_as_stream {
+            if request_streaming {
                 let stream = self
                     .job_result_pubsub_repository()
                     .subscribe_result_stream(job_id, timeout.copied())
@@ -231,6 +239,7 @@ impl JobResultApp for RdbJobResultAppImpl {
         worker_id: Option<&WorkerId>,
         worker_name: Option<&String>,
         timeout: Option<u64>,
+        request_streaming: bool,
     ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)>
     where
         Self: Send + 'static,
@@ -244,11 +253,19 @@ impl JobResultApp for RdbJobResultAppImpl {
             "cannot listen job which worker is None: id={:?}",
             worker_id
         )))?;
-        if wd.output_as_stream {
+        if request_streaming {
+            tracing::debug!("listen_result_stream: worker_id={:?}", &worker_id);
             // stream
             return self
                 .listen_result_stream(job_id, worker_id, worker_name, timeout)
                 .await;
+        }
+        if !wd.broadcast_results {
+            return Err(JobWorkerError::InvalidParameter(format!(
+                "Cannot listen result not broadcast worker: {:?}",
+                &wd
+            ))
+            .into());
         }
         if !(wd.store_failure && wd.store_success) {
             return Err(JobWorkerError::InvalidParameter(format!(
@@ -269,10 +286,10 @@ impl JobResultApp for RdbJobResultAppImpl {
                 Ok(Some(v))
                     if v.data
                         .as_ref()
-                        .exists(|d| d.status == ResultStatus::ErrorAndRetry as i32) =>
+                        .is_some_and(|d| d.status == ResultStatus::ErrorAndRetry as i32) =>
                 {
                     // XXX setting?
-                    if timeout.exists(|t| {
+                    if timeout.is_some_and(|t| {
                         datetime::now()
                             .signed_duration_since(start)
                             .num_milliseconds() as u64
@@ -295,7 +312,7 @@ impl JobResultApp for RdbJobResultAppImpl {
                     return self._fill_worker_data(v).await.map(|r| (r, None));
                 }
                 Ok(None) => {
-                    if timeout.exists(|t| {
+                    if timeout.is_some_and(|t| {
                         datetime::now()
                             .signed_duration_since(start)
                             .num_milliseconds() as u64
@@ -356,7 +373,11 @@ impl JobResultApp for RdbJobResultAppImpl {
         // }
 
         let cn = Self::job_result_by_worker_pubsub_channel_name(&wid);
-        tracing::debug!("listen_result_stream: worker_id={}, ch={}", &wid.value, &cn);
+        tracing::debug!(
+            "listen_result_stream_by_worker: worker_id={}, ch={}",
+            &wid.value,
+            &cn
+        );
         self.job_result_pubsub_repository()
             .subscribe_result_stream_by_worker(wid)
             .await

@@ -127,12 +127,12 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
         let res = match (req.job_id.as_ref(), req.worker.as_ref()) {
             (Some(job_id), Some(Worker::WorkerId(worker_id))) => {
                 self.app()
-                    .listen_result(job_id, Some(worker_id), None, req.timeout)
+                    .listen_result(job_id, Some(worker_id), None, req.timeout, false)
                     .await
             }
             (Some(job_id), Some(Worker::WorkerName(name))) => {
                 self.app()
-                    .listen_result(job_id, None, Some(name), req.timeout)
+                    .listen_result(job_id, None, Some(name), req.timeout, false)
                     .await
             }
             _ => Err(JobWorkerError::InvalidParameter(
@@ -181,12 +181,12 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
         let res = match (req.job_id, req.worker) {
             (Some(job_id), Some(Worker::WorkerId(worker_id))) => {
                 self.app()
-                    .listen_result(&job_id, Some(&worker_id), None, None)
+                    .listen_result(&job_id, Some(&worker_id), None, None, true)
                     .await
             }
             (Some(job_id), Some(Worker::WorkerName(name))) => {
                 self.app()
-                    .listen_result(&job_id, None, Some(&name), None)
+                    .listen_result(&job_id, None, Some(&name), None, true)
                     .await
             }
             _ => Err(JobWorkerError::InvalidParameter(

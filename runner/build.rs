@@ -21,6 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "protobuf/jobworkerp/runner/docker_args.proto",
                 "protobuf/jobworkerp/runner/grpc_unary_runner.proto",
                 "protobuf/jobworkerp/runner/grpc_unary_args.proto",
+                "protobuf/jobworkerp/runner/grpc_unary_result.proto",
                 "protobuf/jobworkerp/runner/http_request_runner.proto",
                 "protobuf/jobworkerp/runner/http_request_args.proto",
                 "protobuf/jobworkerp/runner/http_request_result.proto",
@@ -35,6 +36,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "protobuf/jobworkerp/runner/llm_result.proto",
                 "protobuf/jobworkerp/runner/llm_runner.proto",
                 "protobuf/jobworkerp/runner/llm_args.proto",
+                "protobuf/jobworkerp/runner/reusable_workflow_args.proto",
+                "protobuf/jobworkerp/runner/reusable_workflow_runner.proto",
             ],
             &["../proto/protobuf/", "protobuf"],
         )
