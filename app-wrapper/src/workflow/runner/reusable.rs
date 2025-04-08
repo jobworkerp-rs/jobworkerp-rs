@@ -107,9 +107,10 @@ impl RunnerTrait for ReusableWorkflowRunner {
         Ok(())
     }
     async fn run(&mut self, args: &[u8]) -> Result<Vec<Vec<u8>>> {
-        let arg = ReusableWorkflowArgs::decode(args)?;
+        let arg = ProstMessageCodec::deserialize_message::<ReusableWorkflowArgs>(args)?;
+        tracing::debug!("Workflow args: {:#?}", &arg);
         if let Some(workflow) = self.workflow.as_ref() {
-            tracing::debug!("Workflow: {:?}", workflow);
+            tracing::debug!("Workflow: {:#?}", workflow);
             if self.canceled {
                 return Err(anyhow::anyhow!(
                     "canceled by user: {}, {:?}",
