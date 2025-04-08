@@ -10,7 +10,6 @@ use anyhow::Result;
 use command_utils::util::{
     datetime,
     id_generator::{self, IDGenerator, MockIdGenerator},
-    result::FlatMap,
 };
 use debug_stub_derive::DebugStub;
 use infra_utils::infra::{rdb::RdbConfig, redis::RedisConfig};
@@ -44,7 +43,7 @@ impl IdGeneratorWrapper {
         self.id_generator
             .lock()
             .map_err(|e| JobWorkerError::GenerateIdError(e.to_string()).into())
-            .flat_map(|mut g| g.generate())
+            .and_then(|mut g| g.generate())
     }
     pub fn get_id_generator(&mut self) -> Arc<Mutex<IDGenerator>> {
         self.id_generator.clone()

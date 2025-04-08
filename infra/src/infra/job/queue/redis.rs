@@ -4,7 +4,6 @@ use crate::infra::job_result::pubsub::JobResultSubscriber;
 use crate::infra::UseJobQueueConfig;
 use anyhow::Result;
 use async_trait::async_trait;
-use command_utils::util::result::FlatMap;
 use futures::stream::BoxStream;
 use infra_utils::infra::redis::UseRedisPool;
 use jobworkerp_base::error::JobWorkerError;
@@ -107,7 +106,7 @@ where
                 val = th_p.blpop::<String, Vec<Vec<u8>>>(c, (timeout.unwrap_or(0)/1000) as f64) => {
                     let r: Result<JobResult> = val
                         .map_err(|e| JobWorkerError::RedisError(e).into())
-                        .flat_map(|v| {
+                        .and_then(|v| {
                             if v.is_empty() {
                                 Err(JobWorkerError::RuntimeError("timeout".to_string()).into())
                             } else {

@@ -343,8 +343,6 @@ impl RunnerTrait for DockerExecRunner {
 #[tokio::test]
 #[ignore]
 async fn exec_test() -> Result<()> {
-    use command_utils::util::result::FlatMap;
-
     let mut runner1 = DockerExecRunner::new();
     runner1
         .create(&CreateRunnerOptions::new(Some(
@@ -364,7 +362,7 @@ async fn exec_test() -> Result<()> {
     let handle1 = tokio::spawn(async move {
         let res = runner1.run(&arg).await;
         tracing::info!("result:{:?}", &res);
-        runner1.stop(2, false).await.flat_map(|_| res)
+        runner1.stop(2, false).await.and(res)
     });
 
     let arg2 = ProstMessageCodec::serialize_message(&DockerArgs {
@@ -374,7 +372,7 @@ async fn exec_test() -> Result<()> {
     let handle2 = tokio::spawn(async move {
         let res = runner2.run(&arg2).await;
         tracing::info!("result:{:?}", &res);
-        runner2.stop(2, true).await.flat_map(|_| res)
+        runner2.stop(2, true).await.and(res)
     });
 
     let r = tokio::join!(handle1, handle2);
@@ -396,13 +394,17 @@ impl DockerRunner {
         DockerRunner { docker: None }
     }
     pub async fn create(&mut self, image_options: &CreateRunnerOptions<String>) -> Result<()> {
-        let docker = Docker::connect_with_socket_defaults().unwrap();
-        docker
-            .create_image(Some(image_options.to_docker()), None, None)
-            .try_collect::<Vec<_>>()
-            .await
-            .map_err(JobWorkerError::DockerError)?;
-        self.docker = Some(docker);
+        if image_options.from_image.is_some() || image_options.from_src.is_some() {
+            let docker = Docker::connect_with_socket_defaults().unwrap();
+            docker
+                .create_image(Some(image_options.to_docker()), None, None)
+                .try_collect::<Vec<_>>()
+                .await
+                .map_err(JobWorkerError::DockerError)?;
+            self.docker = Some(docker);
+        } else {
+            tracing::info!("docker image is not specified. should specify image in run() method");
+        }
         Ok(())
     }
     fn trans_docker_arg_to_config(&self, arg: &DockerArgs) -> Config<String> {
@@ -514,8 +516,19 @@ impl RunnerTrait for DockerRunner {
         self.create(&op.into()).await
     }
     async fn run(&mut self, args: &[u8]) -> Result<Vec<Vec<u8>>> {
+        let arg = ProstMessageCodec::deserialize_message::<DockerArgs>(args)?;
+        let create_option = CreateRunnerOptions::new(arg.image.clone());
+        if self.docker.is_none() {
+            self.create(&create_option).await?;
+        }
         if let Some(docker) = self.docker.as_ref() {
-            let arg = ProstMessageCodec::deserialize_message::<DockerArgs>(args)?;
+            // create image if not exist
+            docker
+                .create_image(Some(create_option.to_docker()), None, None)
+                .try_collect::<Vec<_>>()
+                .await
+                .map_err(JobWorkerError::DockerError)?;
+
             let mut config = self.trans_docker_arg_to_config(&arg);
             // to output log
             config.attach_stdout = Some(true);
@@ -587,7 +600,7 @@ impl RunnerTrait for DockerRunner {
 #[tokio::test]
 #[ignore]
 async fn run_test() -> Result<()> {
-    // common::util::tracing::tracing_init_test(tracing::Level::INFO);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
     let mut runner1 = DockerRunner::new();
     runner1

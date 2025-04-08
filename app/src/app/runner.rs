@@ -4,7 +4,6 @@ pub mod rdb;
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::protobuf::ProtobufDescriptor;
-use command_utils::util::result::FlatMap;
 use infra::infra::runner::rows::RunnerWithSchema;
 use infra_utils::infra::memory::{MemoryCacheImpl, UseMemoryCache};
 use jobworkerp_base::error::JobWorkerError;
@@ -261,7 +260,7 @@ impl RunnerDataWithDescriptor {
                     ))
                     .into(),
                 )
-                .flat_map(|m| {
+                .and_then(|m| {
                     op.get_message_by_name_from_bytes(m.full_name(), runner_settings)
                         .map(Some)
                         .map_err(|e| {
