@@ -825,7 +825,7 @@ dependencies = [
 [[package]]
 name = "command-utils"
 version = "0.1.0"
-source = "git+https://github.com/sutr-app/command-utils.git?branch=main#7952df825f70a3597da99e0acf931efba6ef6b87"
+source = "git+https://github.com/sutr-app/command-utils.git?branch=main#0c6906eedf81c1bc89343f33da5eb2980fb549f2"
 dependencies = [
  "anyhow",
  "chardet",
@@ -945,9 +945,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-channel"
-version = "0.5.14"
+version = "0.5.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06ba6d68e24814cb8de6bb986db8222d3a027d15872cabc0d18817bc3c0e4471"
+checksum = "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -2712,9 +2712,9 @@ checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
 name = "miniz_oxide"
-version = "0.8.7"
+version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff70ce3e48ae43fa075863cef62e8b43b71a4f2382229920e0df362592919430"
+checksum = "3be647b768db090acb35d5ec5db2b0e1f1de11133ca123b9eacf5137868f892a"
 dependencies = [
  "adler2",
 ]
@@ -4127,9 +4127,9 @@ dependencies = [
 
 [[package]]
 name = "reqwest-middleware"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64e8975513bd9a7a43aad01030e79b3498e05db14e9d945df6483e8cf9b8c4c4"
+checksum = "57f17d28a6e6acfe1733fe24bcd30774d13bffa4b8a22535b4c8c98423088d4e"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4164,9 +4164,9 @@ dependencies = [
 
 [[package]]
 name = "reqwest-tracing"
-version = "0.5.6"
+version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9c88a8d9cfe3319b5adc10f3ffc3db75c7346837a1f857f8269f6361f3b2744"
+checksum = "d75b0eee96990cfb4c09545847385e89b2d2d2e571143d55264a05d77c713780"
 dependencies = [
  "anyhow",
  "async-trait",
