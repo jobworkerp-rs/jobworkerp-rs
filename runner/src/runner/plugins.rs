@@ -163,7 +163,4 @@ pub trait PluginRunner: Send + Sync {
     fn input_json_schema(&self) -> String {
         "".to_string()
     }
-    fn output_json_schema(&self) -> Option<String> {
-        None
-    }
 }

@@ -15,8 +15,6 @@ use jobworkerp_runner::runner::{
 use proto::jobworkerp::data::RunnerType;
 use std::sync::Arc;
 
-use crate::{llm::LLMRunnerImpl, simple_workflow::runner::SimpleWorkflowRunner};
-
 #[derive(Debug)]
 pub struct RunnerFactory {
     app_module: Arc<AppModule>,

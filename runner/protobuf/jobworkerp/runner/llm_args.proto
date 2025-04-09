@@ -4,6 +4,7 @@ package jobworkerp.runner;
 // LLM runner settings
 message LLMArgs {
   // LLM request options for generation configuration
+  // To specify to change the default behavior of the LLM
   message LLMRequestOptions {
     optional uint32 max_tokens = 1;
     optional float presence_penalty = 2;

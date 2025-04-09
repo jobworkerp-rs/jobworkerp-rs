@@ -1,0 +1,593 @@
+{
+    "$schema": "http://json-schema.org/draft-04/schema#",
+    "$ref": "#/definitions/LLMResult",
+    "definitions": {
+        "LLMResult": {
+            "properties": {
+                "chat_completion": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMResult.ChatCompletionResponse",
+                    "additionalProperties": true,
+                    "description": "currently used response"
+                },
+                "chat_completion_chunk": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMResult.ChatCompletionChunkResponse",
+                    "additionalProperties": true,
+                    "description": "currently used streaming response"
+                },
+                "completion": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMResult.CompletionResponse",
+                    "additionalProperties": true,
+                    "description": "not used"
+                },
+                "completion_chunk": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMResult.CompletionChunkResponse",
+                    "additionalProperties": true,
+                    "description": "not used"
+                },
+                "image_generation": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMResult.ImageGenerationResponse",
+                    "additionalProperties": true,
+                    "description": "not used"
+                },
+                "raw": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMResult.RawResponse",
+                    "additionalProperties": true,
+                    "description": "not used"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "allOf": [
+                {
+                    "oneOf": [
+                        {
+                            "not": {
+                                "anyOf": [
+                                    {
+                                        "required": [
+                                            "chat_completion"
+                                        ]
+                                    },
+                                    {
+                                        "required": [
+                                            "chat_completion_chunk"
+                                        ]
+                                    },
+                                    {
+                                        "required": [
+                                            "completion"
+                                        ]
+                                    },
+                                    {
+                                        "required": [
+                                            "completion_chunk"
+                                        ]
+                                    },
+                                    {
+                                        "required": [
+                                            "image_generation"
+                                        ]
+                                    },
+                                    {
+                                        "required": [
+                                            "raw"
+                                        ]
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            "required": [
+                                "chat_completion"
+                            ]
+                        },
+                        {
+                            "required": [
+                                "chat_completion_chunk"
+                            ]
+                        },
+                        {
+                            "required": [
+                                "completion"
+                            ]
+                        },
+                        {
+                            "required": [
+                                "completion_chunk"
+                            ]
+                        },
+                        {
+                            "required": [
+                                "image_generation"
+                            ]
+                        },
+                        {
+                            "required": [
+                                "raw"
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "title": "LLM Result",
+            "description": "LLM chat result containing all possible response types"
+        },
+        "jobworkerp.runner.LLMResult.ChatCompletionChunkResponse": {
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "choices": {
+                    "items": {
+                        "$ref": "#/definitions/jobworkerp.runner.LLMResult.ChunkChoice"
+                    },
+                    "type": "array"
+                },
+                "created": {
+                    "type": "string"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "system_fingerprint": {
+                    "type": "string"
+                },
+                "object": {
+                    "type": "string"
+                },
+                "usage": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMResult.Usage",
+                    "additionalProperties": true
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Chat Completion Chunk Response",
+            "description": "Chat completion streaming request chunk"
+        },
+        "jobworkerp.runner.LLMResult.ChatCompletionResponse": {
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "choices": {
+                    "items": {
+                        "$ref": "#/definitions/jobworkerp.runner.LLMResult.Choice"
+                    },
+                    "type": "array"
+                },
+                "created": {
+                    "type": "string"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "system_fingerprint": {
+                    "type": "string"
+                },
+                "object": {
+                    "type": "string"
+                },
+                "usage": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMResult.Usage",
+                    "additionalProperties": true
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Chat Completion Response",
+            "description": "An OpenAI compatible chat completion response"
+        },
+        "jobworkerp.runner.LLMResult.Choice": {
+            "properties": {
+                "finish_reason": {
+                    "enum": [
+                        "UNKNOWN",
+                        0,
+                        "STOP",
+                        1,
+                        "LENGTH",
+                        2,
+                        "CANCELED",
+                        3,
+                        "GENERATED_IMAGE",
+                        4
+                    ],
+                    "oneOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "integer"
+                        }
+                    ],
+                    "title": "Finish Reason"
+                },
+                "index": {
+                    "type": "integer"
+                },
+                "message": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMResult.ResponseMessage",
+                    "additionalProperties": true
+                },
+                "logprobs": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMResult.Logprobs",
+                    "additionalProperties": true
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Choice",
+            "description": "Chat completion choice"
+        },
+        "jobworkerp.runner.LLMResult.ChunkChoice": {
+            "properties": {
+                "finish_reason": {
+                    "enum": [
+                        "UNKNOWN",
+                        0,
+                        "STOP",
+                        1,
+                        "LENGTH",
+                        2,
+                        "CANCELED",
+                        3,
+                        "GENERATED_IMAGE",
+                        4
+                    ],
+                    "oneOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "integer"
+                        }
+                    ],
+                    "title": "Finish Reason"
+                },
+                "index": {
+                    "type": "integer"
+                },
+                "delta": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMResult.Delta",
+                    "additionalProperties": true
+                },
+                "logprobs": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMResult.ResponseLogprob",
+                    "additionalProperties": true
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Chunk Choice",
+            "description": "Chat completion streaming chunk choice"
+        },
+        "jobworkerp.runner.LLMResult.CompletionChoice": {
+            "properties": {
+                "finish_reason": {
+                    "type": "string"
+                },
+                "index": {
+                    "type": "integer"
+                },
+                "text": {
+                    "type": "string"
+                },
+                "has_logprobs": {
+                    "type": "boolean"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Completion Choice",
+            "description": "Completion request choice"
+        },
+        "jobworkerp.runner.LLMResult.CompletionChunkChoice": {
+            "properties": {
+                "text": {
+                    "type": "string"
+                },
+                "index": {
+                    "type": "integer"
+                },
+                "logprobs": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMResult.ResponseLogprob",
+                    "additionalProperties": true
+                },
+                "finish_reason": {
+                    "enum": [
+                        "UNKNOWN",
+                        0,
+                        "STOP",
+                        1,
+                        "LENGTH",
+                        2,
+                        "CANCELED",
+                        3,
+                        "GENERATED_IMAGE",
+                        4
+                    ],
+                    "oneOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "integer"
+                        }
+                    ],
+                    "title": "Finish Reason"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Completion Chunk Choice",
+            "description": "Chat completion streaming chunk choice for completion"
+        },
+        "jobworkerp.runner.LLMResult.CompletionChunkResponse": {
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "choices": {
+                    "items": {
+                        "$ref": "#/definitions/jobworkerp.runner.LLMResult.CompletionChunkChoice"
+                    },
+                    "type": "array"
+                },
+                "created": {
+                    "type": "string"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "system_fingerprint": {
+                    "type": "string"
+                },
+                "object": {
+                    "type": "string"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Completion Chunk Response",
+            "description": "Completion chunk response"
+        },
+        "jobworkerp.runner.LLMResult.CompletionResponse": {
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "choices": {
+                    "items": {
+                        "$ref": "#/definitions/jobworkerp.runner.LLMResult.CompletionChoice"
+                    },
+                    "type": "array"
+                },
+                "created": {
+                    "type": "string"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "system_fingerprint": {
+                    "type": "string"
+                },
+                "object": {
+                    "type": "string"
+                },
+                "usage": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMResult.Usage",
+                    "additionalProperties": true
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Completion Response",
+            "description": "An OpenAI compatible completion response"
+        },
+        "jobworkerp.runner.LLMResult.Delta": {
+            "properties": {
+                "content": {
+                    "type": "string"
+                },
+                "role": {
+                    "type": "string"
+                },
+                "tool_calls": {
+                    "items": {
+                        "$ref": "#/definitions/jobworkerp.runner.LLMResult.ToolCallResponse"
+                    },
+                    "type": "array"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Delta",
+            "description": "Delta in content for streaming response"
+        },
+        "jobworkerp.runner.LLMResult.ImageChoice": {
+            "properties": {
+                "url": {
+                    "type": "string"
+                },
+                "b64_json": {
+                    "type": "string"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Image Choice",
+            "description": "Image choice"
+        },
+        "jobworkerp.runner.LLMResult.ImageGenerationResponse": {
+            "properties": {
+                "created": {
+                    "type": "string"
+                },
+                "data": {
+                    "items": {
+                        "$ref": "#/definitions/jobworkerp.runner.LLMResult.ImageChoice"
+                    },
+                    "type": "array"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Image Generation Response",
+            "description": "Image generation response"
+        },
+        "jobworkerp.runner.LLMResult.Logprobs": {
+            "properties": {
+                "content": {
+                    "items": {
+                        "$ref": "#/definitions/jobworkerp.runner.LLMResult.ResponseLogprob"
+                    },
+                    "type": "array"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Logprobs",
+            "description": "Logprobs per token"
+        },
+        "jobworkerp.runner.LLMResult.RawResponse": {
+            "properties": {
+                "logits_chunks": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array",
+                    "description": "Note: Tensor representation is simplified",
+                    "format": "binary",
+                    "binaryEncoding": "base64"
+                },
+                "tokens": {
+                    "items": {
+                        "type": "integer"
+                    },
+                    "type": "array"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Raw Response",
+            "description": "Raw response data (tensors and tokens)"
+        },
+        "jobworkerp.runner.LLMResult.ResponseLogprob": {
+            "properties": {
+                "token": {
+                    "type": "string"
+                },
+                "logprob": {
+                    "type": "number"
+                },
+                "bytes": {
+                    "type": "string",
+                    "format": "binary",
+                    "binaryEncoding": "base64"
+                },
+                "top_logprobs": {
+                    "items": {
+                        "$ref": "#/definitions/jobworkerp.runner.LLMResult.TopLogprob"
+                    },
+                    "type": "array"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Response Logprob",
+            "description": "A logprob with the top logprobs for this token"
+        },
+        "jobworkerp.runner.LLMResult.ResponseMessage": {
+            "properties": {
+                "content": {
+                    "type": "string"
+                },
+                "role": {
+                    "type": "string"
+                },
+                "tool_calls": {
+                    "items": {
+                        "$ref": "#/definitions/jobworkerp.runner.LLMResult.ToolCallResponse"
+                    },
+                    "type": "array"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Response Message",
+            "description": "Chat completion response message"
+        },
+        "jobworkerp.runner.LLMResult.ToolCallResponse": {
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                },
+                "function_name": {
+                    "type": "string"
+                },
+                "function_arguments": {
+                    "type": "string"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Tool Call Response"
+        },
+        "jobworkerp.runner.LLMResult.TopLogprob": {
+            "properties": {
+                "token": {
+                    "type": "integer"
+                },
+                "logprob": {
+                    "type": "number"
+                },
+                "bytes": {
+                    "type": "string"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Top Logprob",
+            "description": "TopLogprob - トークンの確率情報"
+        },
+        "jobworkerp.runner.LLMResult.Usage": {
+            "properties": {
+                "completion_tokens": {
+                    "type": "integer"
+                },
+                "prompt_tokens": {
+                    "type": "integer"
+                },
+                "total_tokens": {
+                    "type": "integer"
+                },
+                "avg_tok_per_sec": {
+                    "type": "number"
+                },
+                "avg_prompt_tok_per_sec": {
+                    "type": "number"
+                },
+                "avg_compl_tok_per_sec": {
+                    "type": "number"
+                },
+                "total_time_sec": {
+                    "type": "number"
+                },
+                "total_prompt_time_sec": {
+                    "type": "number"
+                },
+                "total_completion_time_sec": {
+                    "type": "number"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Usage",
+            "description": "OpenAI compatible usage during a request"
+        }
+    }
+}

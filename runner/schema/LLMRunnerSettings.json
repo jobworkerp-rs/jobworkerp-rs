@@ -1,0 +1,170 @@
+{
+    "$schema": "http://json-schema.org/draft-04/schema#",
+    "$ref": "#/definitions/LLMRunnerSettings",
+    "definitions": {
+        "LLMRunnerSettings": {
+            "properties": {
+                "text_model": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMRunnerSettings.TextModelSettings",
+                    "additionalProperties": true
+                },
+                "gguf_model": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMRunnerSettings.GgufModelSettings",
+                    "additionalProperties": true
+                },
+                "auto_device_map": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMRunnerSettings.AutoDeviceMapParams",
+                    "additionalProperties": true
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "allOf": [
+                {
+                    "oneOf": [
+                        {
+                            "not": {
+                                "anyOf": [
+                                    {
+                                        "required": [
+                                            "text_model"
+                                        ]
+                                    },
+                                    {
+                                        "required": [
+                                            "gguf_model"
+                                        ]
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            "required": [
+                                "text_model"
+                            ]
+                        },
+                        {
+                            "required": [
+                                "gguf_model"
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "title": "LLM Runner Settings",
+            "description": "settings for model initialization"
+        },
+        "jobworkerp.runner.LLMRunnerSettings.AutoDeviceMapParams": {
+            "properties": {
+                "max_seq_len": {
+                    "type": "integer"
+                },
+                "max_batch_size": {
+                    "type": "integer"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Auto Device Map Params"
+        },
+        "jobworkerp.runner.LLMRunnerSettings.GgufModelSettings": {
+            "properties": {
+                "model_name_or_path": {
+                    "type": "string",
+                    "description": "Directory containing GGUF files"
+                },
+                "gguf_files": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array",
+                    "description": "GGUF file names"
+                },
+                "tok_model_id": {
+                    "type": "string",
+                    "description": "tokenizer model ID"
+                },
+                "with_logging": {
+                    "type": "boolean",
+                    "description": "logging or not"
+                },
+                "chat_template": {
+                    "type": "string",
+                    "description": "chat template"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Gguf Model Settings",
+            "description": "ggufモデル特有の設定"
+        },
+        "jobworkerp.runner.LLMRunnerSettings.TextModelSettings": {
+            "properties": {
+                "model_name_or_path": {
+                    "type": "string",
+                    "description": "HF model ID or local path"
+                },
+                "isq_type": {
+                    "enum": [
+                        "ISQ_TYPE_UNSPECIFIED",
+                        0,
+                        "Q4_0",
+                        1,
+                        "Q4_1",
+                        2,
+                        "Q5_0",
+                        3,
+                        "Q5_1",
+                        4,
+                        "Q8_0",
+                        5,
+                        "Q8_1",
+                        6,
+                        "Q2K",
+                        7,
+                        "Q3K",
+                        8,
+                        "Q4K",
+                        9,
+                        "Q5K",
+                        10,
+                        "Q6K",
+                        11,
+                        "Q8K",
+                        12,
+                        "HQQ8",
+                        13,
+                        "HQQ4",
+                        14,
+                        "F8E4M3",
+                        15
+                    ],
+                    "oneOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "integer"
+                        }
+                    ],
+                    "title": "Isq Type"
+                },
+                "with_logging": {
+                    "type": "boolean",
+                    "description": "logging or not"
+                },
+                "with_paged_attn": {
+                    "type": "boolean",
+                    "description": "paged attention or not"
+                },
+                "chat_template": {
+                    "type": "string",
+                    "description": "chat template"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Text Model Settings"
+        }
+    }
+}

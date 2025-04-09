@@ -13,7 +13,10 @@ use jobworkerp_base::{
 };
 use jobworkerp_runner::{
     jobworkerp::runner::{LlmArgs, LlmResult, LlmRunnerSettings},
-    runner::{llm::LLMRunnerSpec, RunnerSpec, RunnerTrait},
+    runner::{
+        llm::{LLMRunnerSpec, LLMRunnerSpecImpl},
+        RunnerSpec, RunnerTrait,
+    },
 };
 use mistralrs::{IsqType as MistralIsqType, Model};
 use proto::jobworkerp::data::ResultOutputItem;
@@ -70,29 +73,17 @@ impl RunnerSpec for LLMRunnerImpl {
         LLMRunnerSpec::result_output_proto(self)
     }
 
-    fn output_as_stream(&self) -> Option<bool> {
-        LLMRunnerSpec::output_as_stream(self)
+    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
+        LLMRunnerSpec::output_type(self)
     }
-    fn input_json_schema(&self) -> String {
-        let schema = schemars::schema_for!(LlmRunnerInputSchema);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+    fn settings_schema(&self) -> String {
+        LLMRunnerSpec::settings_schema(self)
     }
-    fn output_json_schema(&self) -> Option<String> {
-        // plain string with title
-        let schema = schemars::schema_for!(LlmResult);
-        match serde_json::to_string(&schema) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::error!("error in output_json_schema: {:?}", e);
-                None
-            }
-        }
+    fn arguments_schema(&self) -> String {
+        LLMRunnerSpec::arguments_schema(self)
+    }
+    fn output_schema(&self) -> Option<String> {
+        LLMRunnerSpec::output_schema(self)
     }
 }
 

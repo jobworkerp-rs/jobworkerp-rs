@@ -1,7 +1,5 @@
 use super::RunnerSpec;
-use crate::jobworkerp::runner::{LlmArgs, LlmResult, LlmRunnerSettings};
 use proto::jobworkerp::data::RunnerType;
-use schemars::JsonSchema;
 
 pub struct LLMRunnerSpecImpl {}
 
@@ -30,18 +28,21 @@ pub trait LLMRunnerSpec {
     fn result_output_proto(&self) -> Option<String> {
         Some(include_str!("../../protobuf/jobworkerp/runner/llm_result.proto").to_string())
     }
-    fn output_as_stream(&self) -> Option<bool> {
-        Some(true)
+    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
+        proto::jobworkerp::data::StreamingOutputType::Both
+    }
+    fn settings_schema(&self) -> String {
+        include_str!("../../schema/LLMRunnerSettings.json").to_string()
+    }
+    fn arguments_schema(&self) -> String {
+        include_str!("../../schema/LLMArgs.json").to_string()
+    }
+    fn output_schema(&self) -> Option<String> {
+        Some(include_str!("../../schema/LLMResult.json").to_string())
     }
 }
 
 impl LLMRunnerSpec for LLMRunnerSpecImpl {}
-
-#[derive(Debug, JsonSchema, serde::Deserialize, serde::Serialize)]
-struct LLMRunnerInputSchema {
-    settings: LlmRunnerSettings,
-    args: LlmArgs,
-}
 
 impl RunnerSpec for LLMRunnerSpecImpl {
     fn name(&self) -> String {
@@ -60,28 +61,16 @@ impl RunnerSpec for LLMRunnerSpecImpl {
         LLMRunnerSpec::result_output_proto(self)
     }
 
-    fn output_as_stream(&self) -> Option<bool> {
-        LLMRunnerSpec::output_as_stream(self)
+    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
+        LLMRunnerSpec::output_type(self)
     }
-    fn input_json_schema(&self) -> String {
-        let schema = schemars::schema_for!(LLMRunnerInputSchema);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+    fn settings_schema(&self) -> String {
+        LLMRunnerSpec::settings_schema(self)
     }
-    fn output_json_schema(&self) -> Option<String> {
-        // plain string with title
-        let schema = schemars::schema_for!(LlmResult);
-        match serde_json::to_string(&schema) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::error!("error in output_json_schema: {:?}", e);
-                None
-            }
-        }
+    fn arguments_schema(&self) -> String {
+        LLMRunnerSpec::arguments_schema(self)
+    }
+    fn output_schema(&self) -> Option<String> {
+        LLMRunnerSpec::output_schema(self)
     }
 }

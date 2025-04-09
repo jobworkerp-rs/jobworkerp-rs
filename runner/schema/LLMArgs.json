@@ -1,0 +1,452 @@
+{
+    "$schema": "http://json-schema.org/draft-04/schema#",
+    "$ref": "#/definitions/LLMArgs",
+    "definitions": {
+        "LLMArgs": {
+            "properties": {
+                "completion": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMArgs.CompletionRequest",
+                    "additionalProperties": true
+                },
+                "chat_completion": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMArgs.ChatCompletionRequest",
+                    "additionalProperties": true
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "allOf": [
+                {
+                    "oneOf": [
+                        {
+                            "not": {
+                                "anyOf": [
+                                    {
+                                        "required": [
+                                            "completion"
+                                        ]
+                                    },
+                                    {
+                                        "required": [
+                                            "chat_completion"
+                                        ]
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            "required": [
+                                "completion"
+                            ]
+                        },
+                        {
+                            "required": [
+                                "chat_completion"
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "title": "LLM Args",
+            "description": "LLM runner settings"
+        },
+        "jobworkerp.runner.LLMArgs.ChatCompletionRequest": {
+            "properties": {
+                "prompt_string": {
+                    "type": "string"
+                },
+                "chat_messages": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMArgs.ChatMessages",
+                    "additionalProperties": true
+                },
+                "logprobs": {
+                    "type": "boolean"
+                },
+                "top_logprobs": {
+                    "type": "integer"
+                },
+                "stream": {
+                    "type": "boolean"
+                },
+                "options": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMArgs.LLMRequestOptions",
+                    "additionalProperties": true
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "allOf": [
+                {
+                    "oneOf": [
+                        {
+                            "not": {
+                                "anyOf": [
+                                    {
+                                        "required": [
+                                            "prompt_string"
+                                        ]
+                                    },
+                                    {
+                                        "required": [
+                                            "chat_messages"
+                                        ]
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            "required": [
+                                "prompt_string"
+                            ]
+                        },
+                        {
+                            "required": [
+                                "chat_messages"
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "title": "Chat Completion Request",
+            "description": "Chat completion request"
+        },
+        "jobworkerp.runner.LLMArgs.ChatMessage": {
+            "properties": {
+                "role": {
+                    "enum": [
+                        "USER",
+                        0,
+                        "ASSISTANT",
+                        1,
+                        "SYSTEM",
+                        2,
+                        "TOOL",
+                        3,
+                        "CUSTOM",
+                        4
+                    ],
+                    "oneOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "integer"
+                        }
+                    ],
+                    "title": "Role"
+                },
+                "text": {
+                    "type": "string"
+                },
+                "content_parts": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMArgs.MessageContentList",
+                    "additionalProperties": true
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "allOf": [
+                {
+                    "oneOf": [
+                        {
+                            "not": {
+                                "anyOf": [
+                                    {
+                                        "required": [
+                                            "text"
+                                        ]
+                                    },
+                                    {
+                                        "required": [
+                                            "content_parts"
+                                        ]
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            "required": [
+                                "text"
+                            ]
+                        },
+                        {
+                            "required": [
+                                "content_parts"
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "title": "Chat Message"
+        },
+        "jobworkerp.runner.LLMArgs.ChatMessages": {
+            "properties": {
+                "messages": {
+                    "items": {
+                        "$ref": "#/definitions/jobworkerp.runner.LLMArgs.ChatMessage"
+                    },
+                    "type": "array"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Chat Messages",
+            "description": "Chat message formats"
+        },
+        "jobworkerp.runner.LLMArgs.CompletionRequest": {
+            "properties": {
+                "prompt": {
+                    "type": "string"
+                },
+                "best_of": {
+                    "type": "integer"
+                },
+                "echo_prompt": {
+                    "type": "boolean"
+                },
+                "suffix": {
+                    "type": "string"
+                },
+                "stream": {
+                    "type": "boolean"
+                },
+                "options": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMArgs.LLMRequestOptions",
+                    "additionalProperties": true
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Completion Request",
+            "description": "Completion request (text completion)"
+        },
+        "jobworkerp.runner.LLMArgs.LLMRequestOptions": {
+            "properties": {
+                "max_tokens": {
+                    "type": "integer"
+                },
+                "presence_penalty": {
+                    "type": "number"
+                },
+                "frequency_penalty": {
+                    "type": "number"
+                },
+                "temperature": {
+                    "type": "number"
+                },
+                "top_p": {
+                    "type": "number"
+                },
+                "top_k": {
+                    "type": "integer"
+                },
+                "stop_seqs": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "logit_bias": {
+                    "additionalProperties": {
+                        "type": "number"
+                    },
+                    "type": "object"
+                },
+                "n_choices": {
+                    "type": "integer"
+                },
+                "json": {
+                    "type": "string",
+                    "description": "JSON schema for structured output"
+                },
+                "regex": {
+                    "type": "string",
+                    "description": "Regular expression pattern"
+                },
+                "lark": {
+                    "type": "string",
+                    "description": "Lark grammar specification"
+                },
+                "adapters": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "min_p": {
+                    "type": "number"
+                },
+                "tool_schemas": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "tool_choice": {
+                    "enum": [
+                        "NONE",
+                        0,
+                        "AUTO",
+                        1,
+                        "FORCED_TOOL",
+                        2
+                    ],
+                    "oneOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "integer"
+                        }
+                    ],
+                    "title": "Tool Choice Option",
+                    "description": "Tool choice options"
+                },
+                "forced_tool": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMArgs.ToolCall",
+                    "additionalProperties": true
+                },
+                "dry_multiplier": {
+                    "type": "number"
+                },
+                "dry_base": {
+                    "type": "number"
+                },
+                "dry_allowed_length": {
+                    "type": "integer"
+                },
+                "dry_sequence_breakers": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "allOf": [
+                {
+                    "oneOf": [
+                        {
+                            "not": {
+                                "anyOf": [
+                                    {
+                                        "required": [
+                                            "json"
+                                        ]
+                                    },
+                                    {
+                                        "required": [
+                                            "regex"
+                                        ]
+                                    },
+                                    {
+                                        "required": [
+                                            "lark"
+                                        ]
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            "required": [
+                                "json"
+                            ]
+                        },
+                        {
+                            "required": [
+                                "regex"
+                            ]
+                        },
+                        {
+                            "required": [
+                                "lark"
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "title": "LLM Request Options",
+            "description": "LLM request options for generation configuration To specify to change the default behavior of the LLM"
+        },
+        "jobworkerp.runner.LLMArgs.MessageContent": {
+            "properties": {
+                "text": {
+                    "type": "string"
+                },
+                "tool_call": {
+                    "$ref": "#/definitions/jobworkerp.runner.LLMArgs.ToolCall",
+                    "additionalProperties": true
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "allOf": [
+                {
+                    "oneOf": [
+                        {
+                            "not": {
+                                "anyOf": [
+                                    {
+                                        "required": [
+                                            "text"
+                                        ]
+                                    },
+                                    {
+                                        "required": [
+                                            "tool_call"
+                                        ]
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            "required": [
+                                "text"
+                            ]
+                        },
+                        {
+                            "required": [
+                                "tool_call"
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "title": "Message Content"
+        },
+        "jobworkerp.runner.LLMArgs.MessageContentList": {
+            "properties": {
+                "items": {
+                    "items": {
+                        "$ref": "#/definitions/jobworkerp.runner.LLMArgs.MessageContent"
+                    },
+                    "type": "array"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Message Content List",
+            "description": "MessageContentList to hold repeated MessageContent (workaround for oneof limitation)"
+        },
+        "jobworkerp.runner.LLMArgs.ToolCall": {
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "arguments": {
+                    "additionalProperties": {
+                        "type": "string"
+                    },
+                    "type": "object"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Tool Call"
+        }
+    }
+}

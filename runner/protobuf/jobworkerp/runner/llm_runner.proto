@@ -27,29 +27,43 @@ message LLMRunnerSettings {
     uint32 max_batch_size = 2;
   }
 
-  message TextModelSettings {
-    string model_name_or_path = 1;    // HF model ID or local path
-    optional IsqType isq_type = 2;    // quantitization type
-    bool with_logging = 3;            // logging or not
-    bool with_paged_attn = 4;         // paged attention or not
-    optional string chat_template = 5; // chat template
+  message LocalTextModelSettings {
+    string model_name_or_path = 1; // HF model ID or local path
+    optional IsqType isq_type = 2; // quantitization type
+    bool with_logging = 3;
+    bool with_paged_attn = 4;
+    optional string chat_template = 5;
   }
 
-  // ggufモデル特有の設定
-  message GgufModelSettings {
-    string model_name_or_path = 1;    // Directory containing GGUF files
-    repeated string gguf_files = 2;   // GGUF file names
+  // gguf model specific settings
+  message LocalGgufModelSettings {
+    string model_name_or_path = 1; // HF model ID or local directory containing GGUF files
+    repeated string gguf_files = 2;
     optional string tok_model_id = 3; // tokenizer model ID
-    bool with_logging = 4;            // logging or not
-    optional string chat_template = 5; // chat template
+    bool with_logging = 4;
+    optional string chat_template = 5;
   }
 
-  // main body
-  //model type specific settings 
+  // ollama model specific settings
+  message OllamaSettings {
+    // base_url (default: http://localhost:11434)
+    optional string base_url = 1;
+    // The name of the model
+    string model = 2;
+    // system prompt before the user prompt
+    optional string system_prompt = 3;
+    // pull the model from the server (set false if you want to use manually
+    // loaded model)
+    optional bool pull_model = 4;
+  }
+
+  // model type specific settings
   oneof model_settings {
-    TextModelSettings text_model = 1;
-    GgufModelSettings gguf_model = 2;
+    LocalTextModelSettings text_model = 1;
+    LocalGgufModelSettings gguf_model = 2;
+    OllamaSettings ollama_model = 3;
   }
 
-  optional AutoDeviceMapParams auto_device_map = 3;
+  // invalid for ollama
+  optional AutoDeviceMapParams auto_device_map = 4;
 }
