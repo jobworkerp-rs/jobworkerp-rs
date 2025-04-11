@@ -67,15 +67,15 @@ CREATE TABLE IF NOT EXISTS `runner` (
 -- (file_name is not real file name(built-in runner), but just a name for identification)
 INSERT OR IGNORE INTO runner (`id`, `name`, `description`,`file_name`, `type`) VALUES (
   1, 'COMMAND', 
-  'Executes shell commands with specified arguments in the operating system.',
+  'Executes shell commands with specified arguments in the operating system environment.',
   'builtin1', 1
 ), (
   2, 'HTTP_REQUEST',
-  'Sends HTTP requests to specified URLs with configured method, headers, and body.',
+  'Sends HTTP requests to specified URLs with configured methods, headers, and body content.',
   'builtin2', 2
 ), (
   3, 'GRPC_UNARY',
-  'Makes gRPC unary calls to specified services with configured method, metadata, and request message.',
+  'Makes gRPC unary calls to specified services with configured methods, metadata, and request messages.',
   'builtin3', 3
 ), (
   4, 'DOCKER',
@@ -83,18 +83,22 @@ INSERT OR IGNORE INTO runner (`id`, `name`, `description`,`file_name`, `type`) V
   'builtin4', 4
 ), (
   5, 'SLACK_POST_MESSAGE',
-  'Posts messages to Slack channels using specified workspace tokens and message content.',
+  'Posts messages to Slack channels using specified workspace tokens and customizable message content.',
   'builtin5', 5
 ), (
   6, 'PYTHON_COMMAND',
-  'Executes Python scripts or commands with specified arguments and environment variables.',
+  'Executes Python scripts or commands with specified arguments and environment.',
   'builtin6', 6
 ), (
+  65534, 'LLM_COMPLETION',
+  'Generates text completions using large language models with specified prompts and configuration parameters.',
+  'builtin65534', 65534
+), (
   65535, 'INLINE_WORKFLOW',
-  'Executes a workflow defined directly within the job request. Workflow steps are run sequentially, and the definition is not stored for future reuse. Uses the same schema as REUSABLE_WORKFLOW.',
-  'builtin7', 65535
+  'Executes a workflow defined directly within the job request. Steps are run sequentially and the definition is not stored for future reuse. Uses the same schema as REUSABLE_WORKFLOW for workflow definition.',
+  'builtin65535', 65535
 ), (
   -1, 'REUSABLE_WORKFLOW',
-  'Allows users to define and save workflow definitions that can be executed multiple times using reference. Stored workflows can be reused across different job requests.',
-  'builtin8', -1
+  'Defines and saves workflow definitions that can be executed multiple times using their ID reference. These workflows can be reused across different job requests.',
+  'builtin-1', -1
 );

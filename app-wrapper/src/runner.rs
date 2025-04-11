@@ -1,5 +1,5 @@
-use crate::workflow::runner::inline::InlineWorkflowRunner;
 use crate::workflow::runner::reusable::ReusableWorkflowRunner;
+use crate::{llm::LLMCompletionRunnerImpl, workflow::runner::inline::InlineWorkflowRunner};
 use anyhow::Result;
 use app::module::AppModule;
 use jobworkerp_runner::runner::{
@@ -81,7 +81,9 @@ impl RunnerFactory {
                     }
                 }
             }
-            // _ => self.runner_factory().create_plugin_by_name(name).await,
+            Some(RunnerType::LlmCompletion) => {
+                Some(Box::new(LLMCompletionRunnerImpl::new()) as Box<dyn RunnerTrait + Send + Sync>)
+            }
             _ => self
                 .plugins
                 .runner_plugins()

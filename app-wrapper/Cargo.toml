@@ -43,6 +43,7 @@ jsonschema = "0.29"
 libloading = { workspace = true }
 liquid = "0.26"
 nix = { workspace = true, features = ["signal"] }
+ollama-rs = { version = "0.3", features = ["stream"] }
 once_cell = { workspace = true }
 prost = { workspace = true }
 # redis = { workspace = true }

@@ -1,0 +1,64 @@
+{
+    "$schema": "http://json-schema.org/draft-04/schema#",
+    "$ref": "#/definitions/LLMRunnerSettings",
+    "definitions": {
+        "LLMRunnerSettings": {
+            "properties": {
+                "ollama_settings": {
+                    "$ref": "#/definitions/jobworkerp.runner.llm.LLMRunnerSettings.OllamaRunnerSettings",
+                    "additionalProperties": true
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "allOf": [
+                {
+                    "oneOf": [
+                        {
+                            "not": {
+                                "anyOf": [
+                                    {
+                                        "required": [
+                                            "ollama_settings"
+                                        ]
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            "required": [
+                                "ollama_settings"
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "title": "LLM Runner Settings",
+            "description": "settings for model initialization"
+        },
+        "jobworkerp.runner.llm.LLMRunnerSettings.OllamaRunnerSettings": {
+            "properties": {
+                "base_url": {
+                    "type": "string",
+                    "description": "base_url (default: http://localhost:11434)"
+                },
+                "model": {
+                    "type": "string",
+                    "description": "model name for runner default"
+                },
+                "system_prompt": {
+                    "type": "string",
+                    "description": "default system prompt before the user prompt"
+                },
+                "pull_model": {
+                    "type": "boolean",
+                    "description": "pull the model from the server (set false if you want to use manually loaded model)"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Ollama Runner Settings",
+            "description": "ollama model specific settings"
+        }
+    }
+}
