@@ -19,5 +19,8 @@ pub mod jobworkerp {
                 .and_then(|json_data| json_data.get("input").cloned())
             }
         }
+        pub mod llm {
+            tonic::include_proto!("jobworkerp.runner.llm");
+        }
     }
 }

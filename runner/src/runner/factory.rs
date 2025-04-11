@@ -1,9 +1,8 @@
-use std::sync::Arc;
-
 use super::{
     command::CommandRunnerImpl,
     docker::{DockerExecRunner, DockerRunner},
     grpc_unary::GrpcUnaryRunner,
+    llm::LLMCompletionRunnerSpecImpl,
     plugins::{PluginLoader, PluginMetadata, Plugins},
     python::PythonCommandRunner,
     request::RequestRunner,
@@ -13,6 +12,7 @@ use super::{
 };
 use anyhow::Result;
 use proto::jobworkerp::data::RunnerType;
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct RunnerSpecFactory {
@@ -64,6 +64,10 @@ impl RunnerSpecFactory {
             }
             Some(RunnerType::ReusableWorkflow) => {
                 Some(Box::new(ReusableWorkflowRunnerSpecImpl::new())
+                    as Box<dyn RunnerSpec + Send + Sync>)
+            }
+            Some(RunnerType::LlmCompletion) => {
+                Some(Box::new(LLMCompletionRunnerSpecImpl::new())
                     as Box<dyn RunnerSpec + Send + Sync>)
             }
             _ => self

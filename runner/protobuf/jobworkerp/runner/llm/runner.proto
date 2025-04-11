@@ -1,0 +1,21 @@
+syntax = "proto3";
+package jobworkerp.runner.llm;
+
+// settings for model initialization
+message LLMRunnerSettings {
+  // ollama model specific settings
+  message OllamaRunnerSettings {
+    // base_url (default: http://localhost:11434)
+    optional string base_url = 1;
+    // model name for runner default
+    string model = 2;
+    // default system prompt before the user prompt
+    optional string system_prompt = 3;
+    // pull the model from the server (set false if you want to use manually
+    // loaded model)
+    optional bool pull_model = 4;
+  }
+
+  // runner settings
+  oneof settings { OllamaRunnerSettings ollama_settings = 1; }
+}
