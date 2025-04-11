@@ -43,6 +43,7 @@ pub mod docker;
 pub mod factory;
 pub mod grpc_unary;
 pub mod k8s_job;
+pub mod llm;
 pub mod plugins;
 pub mod python;
 pub mod request;

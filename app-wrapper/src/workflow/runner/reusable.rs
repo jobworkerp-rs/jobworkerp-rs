@@ -15,7 +15,6 @@ use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use prost::Message;
 use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
-use schemars::JsonSchema;
 use std::{sync::Arc, time::Duration};
 
 #[derive(Debug, Clone)]
@@ -41,11 +40,6 @@ impl ReusableWorkflowRunner {
 }
 impl ReusableWorkflowRunnerSpec for ReusableWorkflowRunner {}
 
-#[derive(Debug, JsonSchema, serde::Deserialize, serde::Serialize)]
-struct ReusableWorkflowRunnerInputSchema {
-    args: ReusableWorkflowArgs,
-}
-
 impl RunnerSpec for ReusableWorkflowRunner {
     fn name(&self) -> String {
         ReusableWorkflowRunnerSpec::name(self)
@@ -70,7 +64,7 @@ impl RunnerSpec for ReusableWorkflowRunner {
         include_str!("../../../../runner/schema/workflow.json").to_string()
     }
     fn arguments_schema(&self) -> String {
-        let schema = schemars::schema_for!(ReusableWorkflowRunnerInputSchema);
+        let schema = schemars::schema_for!(ReusableWorkflowArgs);
         match serde_json::to_string(&schema) {
             Ok(s) => s,
             Err(e) => {

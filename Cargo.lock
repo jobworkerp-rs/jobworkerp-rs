@@ -181,6 +181,7 @@ dependencies = [
  "libloading",
  "liquid",
  "nix",
+ "ollama-rs",
  "once_cell",
  "prost",
  "proto",
@@ -188,7 +189,7 @@ dependencies = [
  "regex",
  "regress",
  "reqwest 0.12.15",
- "schemars",
+ "schemars 1.0.0-alpha.17",
  "serde",
  "serde_json",
  "serde_with",
@@ -652,9 +653,9 @@ checksum = "d71b6127be86fdcfddb610f7182ac57211d4b18a3e9c82eb2d17662f2227ad6a"
 
 [[package]]
 name = "cc"
-version = "1.2.18"
+version = "1.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "525046617d8376e3db1deffb079e91cef90a89fc3ca5c185bbf8c9ecdd15cd5c"
+checksum = "8e3a13707ac958681c13b39b458c073d0d9bc8a22cb1b2f4c8e55eb72c13f362"
 dependencies = [
  "jobserver",
  "libc",
@@ -716,9 +717,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.5.35"
+version = "4.5.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8aa86934b44c19c50f87cc2790e19f54f7a67aedb64101c2e1a2e5ecfb73944"
+checksum = "2df961d8c8a0d08aa9945718ccf584145eee3f3aa06cddbeac12933781102e04"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -726,9 +727,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.5.35"
+version = "4.5.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2414dbb2dd0695280da6ea9261e327479e9d37b0630f6b53ba2a11c60c679fd9"
+checksum = "132dbda40fb6753878316a489d5a1242a8ef2f0d9e47ba01c951ea8aa7d013a5"
 dependencies = [
  "anstream",
  "anstyle",
@@ -2428,7 +2429,7 @@ dependencies = [
  "redis",
  "reqwest 0.12.15",
  "rustls",
- "schemars",
+ "schemars 1.0.0-alpha.17",
  "serde",
  "serde_json",
  "serde_with",
@@ -2549,9 +2550,9 @@ checksum = "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab"
 
 [[package]]
 name = "linux-raw-sys"
-version = "0.9.3"
+version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe7db12097d22ec582439daf8618b8fdd1a7bef6270e9af3b1ebcd30893cf413"
+checksum = "cd945864f07fe9f5371a27ad7b52a172b4b499999f1d97574c9fa68373937e12"
 
 [[package]]
 name = "liquid"
@@ -2937,6 +2938,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "62948e14d923ea95ea2c7c86c71013138b66525b86bdc08d2dcc262bdb497b87"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "ollama-rs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a4b4750770584c8b4a643d0329e7bedacc4ecf68b7c7ac3e1fec2bafd6312f7"
+dependencies = [
+ "async-stream",
+ "log",
+ "reqwest 0.12.15",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "static_assertions",
+ "thiserror 2.0.12",
+ "tokio",
+ "tokio-stream",
+ "url",
 ]
 
 [[package]]
@@ -3429,7 +3449,7 @@ dependencies = [
  "jobworkerp-runner",
  "prost",
  "proto",
- "schemars",
+ "schemars 1.0.0-alpha.17",
  "serde",
  "serde_json",
  "tokio",
@@ -4115,11 +4135,13 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tokio-rustls",
+ "tokio-util",
  "tower 0.5.2",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
  "webpki-roots",
  "windows-registry",
@@ -4275,15 +4297,15 @@ dependencies = [
  "bitflags 2.9.0",
  "errno",
  "libc",
- "linux-raw-sys 0.9.3",
+ "linux-raw-sys 0.9.4",
  "windows-sys 0.59.0",
 ]
 
 [[package]]
 name = "rustls"
-version = "0.23.25"
+version = "0.23.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "822ee9188ac4ec04a2f0531e55d035fb2de73f18b41a63c70c2712503b6fb13c"
+checksum = "df51b5869f3a441595eac5e8ff14d486ff285f7b8c0df8770e49c3b56351f0f0"
 dependencies = [
  "aws-lc-rs",
  "log",
@@ -4382,6 +4404,19 @@ dependencies = [
 
 [[package]]
 name = "schemars"
+version = "0.8.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3fbf2ae1b8bc8e02df939598064d22402220cd5bbcca1c76f7d6a310974d5615"
+dependencies = [
+ "dyn-clone",
+ "indexmap 1.9.3",
+ "schemars_derive 0.8.22",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "schemars"
 version = "1.0.0-alpha.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88ef2a6523400a2228db974a8ddc9e1d3deaa04f51bddd7832ef8d7e531bafcc"
@@ -4389,9 +4424,21 @@ dependencies = [
  "chrono",
  "dyn-clone",
  "ref-cast",
- "schemars_derive",
+ "schemars_derive 1.0.0-alpha.17",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "schemars_derive"
+version = "0.8.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32e265784ad618884abaea0600a9adf15393368d840e0222d101a072f3f7534d"
+dependencies = [
+ "proc-macro2",
+ "quote 1.0.40",
+ "serde_derive_internals",
+ "syn 2.0.100",
 ]
 
 [[package]]
@@ -6022,6 +6069,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a05d73b933a847d6cccdda8f838a22ff101ad9bf93e33684f39c1f5f0eece3d"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "wasm-streams"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

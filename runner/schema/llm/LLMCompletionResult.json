@@ -1,0 +1,145 @@
+{
+    "$schema": "http://json-schema.org/draft-04/schema#",
+    "$ref": "#/definitions/LLMCompletionResult",
+    "definitions": {
+        "LLMCompletionResult": {
+            "properties": {
+                "content": {
+                    "$ref": "#/definitions/jobworkerp.runner.llm.LLMCompletionResult.MessageContent",
+                    "additionalProperties": true,
+                    "description": "The response of the completion. This can be the entire completion or only a token if the completion is streaming."
+                },
+                "reasoning_content": {
+                    "type": "string",
+                    "description": "The response of the reasoning content(think tag etc). This can be the entire completion or only"
+                },
+                "done": {
+                    "type": "boolean",
+                    "description": "Whether the completion is done. If the completion is streaming, this will be false until the last response."
+                },
+                "context": {
+                    "$ref": "#/definitions/jobworkerp.runner.llm.LLMCompletionResult.GenerationContext",
+                    "additionalProperties": true,
+                    "description": "An encoding of the conversation used in this response, this can be sent in the next request to keep a conversational memory"
+                },
+                "usage": {
+                    "$ref": "#/definitions/jobworkerp.runner.llm.LLMCompletionResult.Usage",
+                    "additionalProperties": true,
+                    "description": "information about the inferencing process"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "LLM Completion Result",
+            "description": "Container for various LLM response formats"
+        },
+        "jobworkerp.runner.llm.LLMCompletionResult.GenerationContext": {
+            "properties": {
+                "ollama_context": {
+                    "$ref": "#/definitions/jobworkerp.runner.llm.LLMCompletionResult.OllamaContext",
+                    "additionalProperties": true,
+                    "description": "The context returned by Ollama."
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "allOf": [
+                {
+                    "oneOf": [
+                        {
+                            "not": {
+                                "anyOf": [
+                                    {
+                                        "required": [
+                                            "ollama_context"
+                                        ]
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            "required": [
+                                "ollama_context"
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "title": "Generation Context"
+        },
+        "jobworkerp.runner.llm.LLMCompletionResult.MessageContent": {
+            "properties": {
+                "text": {
+                    "type": "string"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "allOf": [
+                {
+                    "oneOf": [
+                        {
+                            "not": {
+                                "anyOf": [
+                                    {
+                                        "required": [
+                                            "text"
+                                        ]
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            "required": [
+                                "text"
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "title": "Message Content"
+        },
+        "jobworkerp.runner.llm.LLMCompletionResult.OllamaContext": {
+            "properties": {
+                "data": {
+                    "items": {
+                        "type": "integer"
+                    },
+                    "type": "array"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Ollama Context",
+            "description": "An encoding of a conversation returned by Ollama after a completion request"
+        },
+        "jobworkerp.runner.llm.LLMCompletionResult.Usage": {
+            "properties": {
+                "model": {
+                    "type": "string",
+                    "description": "The name of the model used for the completion."
+                },
+                "prompt_tokens": {
+                    "type": "integer",
+                    "description": "The number of tokens used in the prompt."
+                },
+                "completion_tokens": {
+                    "type": "integer",
+                    "description": "The number of tokens used in the completion."
+                },
+                "total_prompt_time_sec": {
+                    "type": "number",
+                    "description": "The total seconds taken to process the request prompt."
+                },
+                "total_completion_time_sec": {
+                    "type": "number",
+                    "description": "The total seconds taken to process the completion."
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Usage",
+            "description": "Usage statistics for a request"
+        }
+    }
+}

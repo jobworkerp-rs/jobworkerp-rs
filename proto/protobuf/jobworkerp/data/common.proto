@@ -51,9 +51,13 @@ enum RunnerType {
   // Executes Python scripts as commands
   PYTHON_COMMAND = 6;
 
-  // # LLM Runner
+  // # LLM Chat Completion API Runner
   // Interacts with Large Language Models
-  LLM = 65534;
+  LLM_CHAT = 65533;
+
+  // # LLM Completion API Runner
+  // Interacts with Large Language Models
+  LLM_COMPLETION = 65534;
 
   // # Inline Workflow Runner
   // Executes a sequence of jobs as a workflow defined inline with the request
@@ -61,8 +65,9 @@ enum RunnerType {
   INLINE_WORKFLOW = 65535;
 
   // # Reusable Workflow Runner
-  // Allows users to define, save, and reuse workflow definitions across multiple executions
-  // Workflows are stored in the system and can be executed by reference
+  // Allows users to define, save, and reuse workflow definitions across
+  // multiple executions Workflows are stored in the system and can be executed
+  // by reference
   REUSABLE_WORKFLOW = -1;
 }
 
