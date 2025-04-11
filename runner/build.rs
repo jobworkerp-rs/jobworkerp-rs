@@ -35,6 +35,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "protobuf/jobworkerp/runner/workflow_args.proto",
                 "protobuf/jobworkerp/runner/reusable_workflow_args.proto",
                 "protobuf/jobworkerp/runner/reusable_workflow_runner.proto",
+                "protobuf/jobworkerp/runner/llm/runner.proto",
+                "protobuf/jobworkerp/runner/llm/completion_result.proto",
+                "protobuf/jobworkerp/runner/llm/completion_args.proto",
             ],
             &["../proto/protobuf/", "protobuf"],
         )

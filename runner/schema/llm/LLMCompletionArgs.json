@@ -1,0 +1,120 @@
+{
+    "$schema": "http://json-schema.org/draft-04/schema#",
+    "$ref": "#/definitions/LLMCompletionArgs",
+    "definitions": {
+        "LLMCompletionArgs": {
+            "properties": {
+                "model": {
+                    "type": "string",
+                    "description": "The name of the model (override default in runner settings)."
+                },
+                "system_prompt": {
+                    "type": "string",
+                    "description": "The system prompt to use for the system output. (override the default system prompt)"
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "The initial prompt (override runner settings)."
+                },
+                "options": {
+                    "$ref": "#/definitions/jobworkerp.runner.llm.LLMCompletionArgs.LLMOptions",
+                    "additionalProperties": true,
+                    "description": "The options to use for the model."
+                },
+                "context": {
+                    "$ref": "#/definitions/jobworkerp.runner.llm.LLMCompletionArgs.GenerationContext",
+                    "additionalProperties": true,
+                    "description": "An encoding of the conversation used in this response, this can be sent in the next request to keep a conversational memory"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "LLM Completion Args",
+            "description": "Completion request (text completion)"
+        },
+        "jobworkerp.runner.llm.LLMCompletionArgs.GenerationContext": {
+            "properties": {
+                "ollama_context": {
+                    "$ref": "#/definitions/jobworkerp.runner.llm.LLMCompletionArgs.OllamaContext",
+                    "additionalProperties": true,
+                    "description": "The context returned by Ollama."
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "allOf": [
+                {
+                    "oneOf": [
+                        {
+                            "not": {
+                                "anyOf": [
+                                    {
+                                        "required": [
+                                            "ollama_context"
+                                        ]
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            "required": [
+                                "ollama_context"
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "title": "Generation Context"
+        },
+        "jobworkerp.runner.llm.LLMCompletionArgs.LLMOptions": {
+            "properties": {
+                "max_tokens": {
+                    "type": "integer",
+                    "description": "The length of the sample to generate (in tokens) (default: context size)."
+                },
+                "temperature": {
+                    "type": "number",
+                    "description": "The temperature used to generate samples."
+                },
+                "top_p": {
+                    "type": "number",
+                    "description": "Nucleus sampling probability cutoff."
+                },
+                "repeat_penalty": {
+                    "type": "number",
+                    "description": "Penalty to be applied for repeating tokens, 1. means no penalty."
+                },
+                "repeat_last_n": {
+                    "type": "integer",
+                    "description": "The context size to consider for the repeat penalty."
+                },
+                "seed": {
+                    "type": "integer",
+                    "description": "The seed to use when generating random samples."
+                },
+                "extract_reasoning_content": {
+                    "type": "boolean",
+                    "description": "extract reasoning content from the response"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "LLM Options",
+            "description": "LLM request options for generation configuration To specify to change the default behavior of the LLM"
+        },
+        "jobworkerp.runner.llm.LLMCompletionArgs.OllamaContext": {
+            "properties": {
+                "data": {
+                    "items": {
+                        "type": "integer"
+                    },
+                    "type": "array"
+                }
+            },
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Ollama Context",
+            "description": "An encoding of a conversation returned by Ollama after a completion request, this can be sent in a new request to keep a conversational memory."
+        }
+    }
+}
