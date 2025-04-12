@@ -125,6 +125,9 @@ impl RunnerTrait for ReusableWorkflowRunner {
                 Some(Duration::from_secs(
                     Self::DEFAULT_REQUEST_TIMEOUT_SEC as u64,
                 )),
+                Some(Duration::from_secs(
+                    Self::DEFAULT_REQUEST_TIMEOUT_SEC as u64,
+                )),
                 Some(2),
             )?;
             let mut executor = WorkflowExecutor::new(
