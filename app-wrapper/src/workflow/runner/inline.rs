@@ -133,6 +133,9 @@ impl RunnerTrait for InlineWorkflowRunner {
             Some(Duration::from_secs(
                 Self::DEFAULT_REQUEST_TIMEOUT_SEC as u64,
             )),
+            Some(Duration::from_secs(
+                Self::DEFAULT_REQUEST_TIMEOUT_SEC as u64,
+            )),
             Some(2),
         )?;
         let source = arg.workflow_source.as_ref().ok_or({

@@ -25,6 +25,7 @@ pub async fn execute_workflow(
     let http_client = ReqwestClient::new(
         Some(DEFAULT_USER_AGENT),
         Some(Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SEC as u64)),
+        Some(Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SEC as u64)),
         Some(2),
     )?;
     let workflow = super::definition::WorkflowLoader::new(http_client.clone())?

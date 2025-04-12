@@ -122,8 +122,12 @@ mod test {
     #[tokio::test]
     async fn test_parse_example_flow_yaml() -> Result<(), Box<dyn std::error::Error>> {
         // command_utils::util::tracing::tracing_init_test(Level::DEBUG);
-        let http_client =
-            ReqwestClient::new(Some("test client"), Some(Duration::from_secs(30)), Some(2))?;
+        let http_client = ReqwestClient::new(
+            Some("test client"),
+            Some(Duration::from_secs(30)),
+            Some(Duration::from_secs(30)),
+            Some(2),
+        )?;
         let loader = super::WorkflowLoader::new(http_client)?;
         let flow = loader
             .load_workflow(Some("test-files/ls-test.yaml"), None)
