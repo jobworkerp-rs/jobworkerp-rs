@@ -21,6 +21,9 @@ use infra_utils::infra::net::grpc::enable_grpc_web;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tonic::transport::Server;
+use tonic_tracing_opentelemetry::middleware::filters;
+use tonic_tracing_opentelemetry::middleware::server;
+use tower::ServiceBuilder;
 
 pub async fn start_server(
     app_module: Arc<AppModule>,
@@ -52,8 +55,14 @@ pub async fn start_server(
     if use_web {
         Server::builder()
             .accept_http1(true) // for gRPC-web
+            // .layer(server::OtelGrpcLayer::default().filter(filters::reject_healthcheck))
             .max_frame_size(max_frame_size) // 16MB
             // .layer(GrpcWebLayer::new()) // for grpc-web // server type is changed if this line is added
+            .layer(
+                ServiceBuilder::new()
+                    .layer(server::OtelGrpcLayer::default().filter(filters::reject_healthcheck))
+                    .map_err(|err| Box::new(err) as Box<dyn std::error::Error + Send + Sync>),
+            )
             .add_service(enable_grpc_web(RunnerServiceServer::new(
                 RunnerGrpcImpl::new(app_module.clone()),
             )))
@@ -75,9 +84,24 @@ pub async fn start_server(
             .add_service(enable_grpc_web(JobResultServiceServer::new(
                 JobResultGrpcImpl::new(app_module.clone()),
             )))
+            .add_service(reflection)
+            .add_service(health_service)
+            // serve. shutdown if tokio::signal::ctrl_c() is called
+            .serve_with_shutdown(addr, async {
+                rx.await.ok();
+            })
+            .await
+            .map_err(|e| anyhow!("grpc web server error: {:?}", e))?;
     } else {
         Server::builder()
             .max_frame_size(max_frame_size) // 16MB
+            .layer(
+                ServiceBuilder::new()
+                    .layer(server::OtelGrpcLayer::default().filter(filters::reject_healthcheck))
+                    // .map_request(|req| req)
+                    .map_err(|err| Box::new(err) as Box<dyn std::error::Error + Send + Sync>),
+            )
+            // .layer(server::OtelGrpcLayer::default().filter(filters::reject_healthcheck))
             .add_service(RunnerServiceServer::new(RunnerGrpcImpl::new(
                 app_module.clone(),
             )))
@@ -97,15 +121,15 @@ pub async fn start_server(
             .add_service(JobResultServiceServer::new(JobResultGrpcImpl::new(
                 app_module,
             )))
+            .add_service(reflection)
+            .add_service(health_service)
+            // serve. shutdown if tokio::signal::ctrl_c() is called
+            .serve_with_shutdown(addr, async {
+                rx.await.ok();
+            })
+            .await
+            .map_err(|e| anyhow!("grpc web server error: {:?}", e))?;
     }
-    .add_service(reflection)
-    .add_service(health_service)
-    // serve. shutdown if tokio::signal::ctrl_c() is called
-    .serve_with_shutdown(addr, async {
-        rx.await.ok();
-    })
-    .await
-    .map_err(|e| anyhow!("grpc web server error: {:?}", e))?;
     lock.unlock();
     Ok(())
 }

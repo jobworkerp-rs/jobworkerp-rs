@@ -31,7 +31,9 @@ tokio-stream = { workspace = true }
 tonic = { workspace = true }
 tonic-health = { workspace = true }
 tonic-reflection = { workspace = true }
+tonic-tracing-opentelemetry = { version = "0.28" }
 tonic-web = { workspace = true }
+tower = { workspace = true }
 tracing = { workspace = true }
 
 [build-dependencies]
