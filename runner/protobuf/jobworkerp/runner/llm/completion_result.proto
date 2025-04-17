@@ -23,7 +23,7 @@ message LLMCompletionResult {
   message GenerationContext {
     oneof context {
       // The context returned by Ollama.
-      OllamaContext ollama_context = 1;
+      OllamaContext ollama = 1;
     }
   }
 

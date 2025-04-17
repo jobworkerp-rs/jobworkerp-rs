@@ -1,33 +1,43 @@
 use super::{
-    context::{TaskContext, UseExpression, WorkflowContext},
+    context::{TaskContext, WorkflowContext},
+    expression::UseExpression,
     job::JobExecutorWrapper,
 };
 use crate::workflow::{
     definition::{
         transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
-        workflow::{self, supplement::TaskTrait, Task},
+        workflow::{self, tasks::TaskTrait, Task},
     },
-    execute::context::Then,
+    execute::context::{Then, WorkflowStatus},
 };
 use anyhow::Result;
 use call::CallTaskExecutor;
 use debug_stub_derive::DebugStub;
 use do_::DoTaskExecutor;
 use for_::ForTaskExecutor;
+use fork::ForkTaskExecutor;
 use infra_utils::infra::net::reqwest;
 use run::RunTaskExecutor;
-use std::sync::Arc;
+use set::SetTaskExecutor;
+use std::{collections::BTreeMap, sync::Arc};
+use switch::SwitchTaskExecutor;
 use tokio::sync::RwLock;
-use tracing::Level;
+// use tracing::Level;
+use try_::TryTaskExecutor;
 
 pub mod call;
 #[path = "task/do.rs"]
 pub mod do_;
 #[path = "task/for.rs"]
 pub mod for_;
+pub mod fork;
 pub mod run;
+pub mod set;
+pub mod switch;
+#[path = "task/try_.rs"]
+pub mod try_;
 
-#[derive(DebugStub)]
+#[derive(DebugStub, Clone)]
 pub struct TaskExecutor {
     #[debug_stub = "AppModule"]
     pub job_executor_wrapper: Arc<JobExecutorWrapper>,
@@ -47,7 +57,7 @@ impl TaskExecutor {
         task_name: &str,
         task: Arc<Task>,
     ) -> Self {
-        command_utils::util::tracing::tracing_init_test(Level::DEBUG);
+        // command_utils::util::tracing::tracing_init_test(Level::DEBUG);
         Self {
             job_executor_wrapper,
             http_client,
@@ -57,76 +67,120 @@ impl TaskExecutor {
     }
     // input is the output of the previous task
     // return the output of the task, and next task("continue", "exit", "end", or taskName)
+    // TODO timeout implementation
     pub async fn execute(
         &self,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         parent_task: Arc<TaskContext>,
-    ) -> Result<Arc<TaskContext>> {
+    ) -> Result<TaskContext, workflow::Error> {
         let input = parent_task.output.clone();
         let mut task_context = TaskContext::new(
             Some(self.task.clone()),
             input.clone(),
             parent_task.context_variables.clone(),
         );
-        let expression = self
-            .expression(
+        task_context.position = parent_task.position.clone();
+        // enter task (add task name to position stack)
+        task_context.add_position_name(self.task_name.clone()).await;
+
+        let expression = Self::expression(
                 &*workflow_context.read().await,
                 Arc::new(task_context.clone()),
             )
-            .await?;
+            .await;
+        let expression = match expression {
+            Ok(expression) => expression,
+            Err(mut e) => {
+                tracing::error!("Failed to evaluate expression: {:#?}", e);
+                task_context.flow_directive = Then::Exit;
+                e.position(&task_context.position.lock().await.clone());
+                return Err(e);
+            }
+        };
+
         // Evaluate if condition
         if let Some(if_cond) = self.task.if_() {
             tracing::debug!("`If' condition: {:#?}", if_cond);
-            let eval_result =
-                Self::execute_transform(task_context.raw_input.clone(), if_cond, &expression);
-            // command_utils::util::jq::execute_jq(serde_json::Value::Null, if_cond, &expression);
+            let eval_result = Self::execute_transform_as_bool(
+                task_context.raw_input.clone(),
+                if_cond,
+                &expression,
+            );
             match eval_result {
                 Ok(v) => {
-                    if v.is_boolean() {
-                        if v.as_bool().unwrap_or(true) {
-                            // continue
-                            tracing::debug!(
-                                "`If' condition is true: {:#?}",
-                                &task_context.raw_input
-                            );
-                        } else {
-                            // skip to next task
-                            tracing::debug!(
-                                "`If' condition is false, skip: {:#?}",
-                                &task_context.raw_input
-                            );
-                            return Ok(Arc::new(task_context));
-                        }
-                    } else if Self::eval_as_bool(&v) {
-                        tracing::info!(
-                            "`If' condition value treated as true: {:#?}",
-                            &task_context.raw_input
-                        );
+                    if v {
+                        tracing::debug!("`If' condition is true: {:#?}", &task_context.raw_input);
                     } else {
-                        // skip to next task
                         tracing::debug!(
-                            "`If' condition is evaled as false, skip: {:#?}",
+                            "`If' condition is false, skip: {:#?}",
                             &task_context.raw_input
                         );
-                        return Ok(Arc::new(task_context));
+                        task_context.remove_position().await;
+                        return Ok(task_context);
                     }
                 }
-                Err(e) => {
+                Err(mut e) => {
                     tracing::error!("Failed to evaluate `if' condition: {:#?}", e);
-                    task_context.flow_directive = Then::Exit;
-                    return Ok(Arc::new(task_context));
+                    task_context.add_position_name("if".to_string()).await;
+                    e.position(&task_context.position.lock().await.clone());
+                    return Err(e);
                 }
             }
         }
 
+        // Transform input and update task context
+        let task_context = self
+            .update_context_by_input(&expression, task_context)
+            .await?;
+
+        // Execute task
+        let task_context = self
+            .execute_task(workflow_context.clone(), task_context)
+            .await?;
+
+        // Transform output and export
+        let mut task_context = self
+            .update_context_by_output(workflow_context, &expression, task_context)
+            .await?;
+
+        // Determine next task
+        task_context.flow_directive = match self.task.then() {
+            Some(flow) => Then::from(flow.clone()),
+            None => Then::Continue,
+        };
+        // go out of the task
+        task_context.remove_position().await;
+        Ok(task_context)
+    }
+
+    // Transform, validate, and update the task context with the input of a task
+    async fn update_context_by_input(
+        &self,
+        expression: &BTreeMap<String, Arc<serde_json::Value>>,
+        mut task_context: TaskContext,
+    ) -> Result<TaskContext, workflow::Error> {
         // XXX invalid by input transformation? (transform argument inner each task)
         // Validate input schema
-        // if let Some(schema) = self.task.input().and_then(|i| i.schema.as_ref()) {
-        //     if let Some(schema) = schema.json_schema() {
-        //         jsonschema::validate(schema, &task_context.input)
-        //             .map_err(|e| anyhow::anyhow!("Failed to validate input schema: {:#?}\n{:#?}\n{:#?}", schema, &task_context.raw_input, e))?;
-        //     }
-        // }
+        if let Some(schema) = self.task.input().and_then(|i| i.schema.as_ref()) {
+            if let Some(schema) = schema.json_schema() {
+                if let Err(e) = jsonschema::validate(schema, &task_context.input.clone()) {
+                    let m = format!(
+                        "Failed to validate input schema: {:#?}\n{:#?}\n{:#?}",
+                        schema, &task_context.raw_input, e
+                    );
+                    let mut pos = task_context.position.lock().await.clone();
+                    pos.push("input".to_string());
+                    return Err(workflow::errors::ErrorFactory::new().bad_argument(
+                        m,
+                        Some(&pos),
+                        Some(workflow::ErrorDetails {
+                            subtype_0: Some(workflow::RuntimeExpression(e.to_string())),
+                            subtype_1: None,
+                        }),
+                    ));
+                }
+            }
+        }
 
         // Transform input
         let transformed_input = if let Some(from) = self.task.input().and_then(|i| i.from.as_ref())
@@ -137,32 +191,73 @@ impl TaskExecutor {
         };
         tracing::debug!("Transformed input: {:#?}", transformed_input);
         task_context.set_input(transformed_input);
-        // Execute task
-        let mut task_context = self
-            .execute_task(workflow_context.clone(), task_context)
-            .await?;
+
+        Ok(task_context)
+    }
+
+    // Transform and update the task context with the output of a task
+    async fn update_context_by_output(
+        &self,
+        workflow_context: Arc<RwLock<WorkflowContext>>,
+        expression: &BTreeMap<String, Arc<serde_json::Value>>,
+        mut task_context: TaskContext,
+    ) -> Result<TaskContext, workflow::Error> {
+        // Transform output
         tracing::debug!("Task raw output: {:#?}", task_context.raw_output);
         if let Some(as_) = self.task.output().and_then(|o| o.as_.as_ref()) {
             task_context.output =
-                Self::transform_output(task_context.raw_output.clone(), as_, &expression)?;
+                match Self::transform_output(task_context.raw_output.clone(), as_, expression) {
+                    Ok(v) => v,
+                    Err(mut e) => {
+                        let mut pos = task_context.position.lock().await.clone();
+                        pos.push("output".to_string());
+                        e.position(&pos);
+                        return Err(e);
+                    }
+                };
             tracing::debug!("Transformed output: {:#?}", &task_context.output);
         } else {
             tracing::debug!("No output transformation: {:#?}", &task_context.raw_output);
+            task_context.output = task_context.raw_output.clone();
         }
+        // TODO output schema validation?
+
+        // export output to workflow context
+        if let Some(export) = self.task.export().and_then(|o| o.as_.as_ref()) {
+            let export = Self::transform_export(task_context.output.clone(), export, expression)?;
+            tracing::debug!("Transformed export: {:#?}", &export);
+            match export.as_ref() {
+                serde_json::Value::Object(map) => {
+                    for (key, value) in map.iter() {
+                        workflow_context
+                            .write()
+                            .await
+                            .add_context_value(key.clone(), value.clone())
+                            .await;
+                    }
+                }
+                _ => {
+                    tracing::warn!("Export is not a map: {:#?}", &export);
+                }
+            }
+        }
+
         // Determine next task
-        // TODO test (not used yet)
         task_context.flow_directive = match self.task.then() {
             Some(flow) => Then::from(flow.clone()),
             None => Then::Continue,
         };
-        Ok(Arc::new(task_context))
+        // go out of the task
+        task_context.remove_position().await;
+        Ok(task_context)
     }
+
     //
     async fn execute_task(
         &self,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
-    ) -> Result<TaskContext> {
+    ) -> Result<TaskContext, workflow::Error> {
         match self.task.as_ref() {
             Task::CallTask(task) => {
                 let task_executor = CallTaskExecutor::new(
@@ -175,13 +270,17 @@ impl TaskExecutor {
                     .await
             }
             Task::DoTask(task) => {
-                let task_executor = DoTaskExecutor::new(task, self.job_executor_wrapper.clone());
+                let task_executor = DoTaskExecutor::new(
+                    task,
+                    self.job_executor_wrapper.clone(),
+                    self.http_client.clone(),
+                );
                 task_executor
                     .execute(self.task_name.as_str(), workflow_context, task_context)
                     .await
             }
             Task::ForkTask(task) => {
-                let task_executor = ForkTaskExecutor::new(task);
+                let task_executor = ForkTaskExecutor::new(self, task);
                 task_executor
                     .execute(self.task_name.as_str(), workflow_context, task_context)
                     .await
@@ -193,7 +292,11 @@ impl TaskExecutor {
             //         .await
             // }
             Task::ForTask(task) => {
-                let task_executor = ForTaskExecutor::new(task, self.job_executor_wrapper.clone());
+                let task_executor = ForTaskExecutor::new(
+                    task,
+                    self.job_executor_wrapper.clone(),
+                    self.http_client.clone(),
+                );
                 task_executor
                     .execute(self.task_name.as_str(), workflow_context, task_context)
                     .await
@@ -224,7 +327,11 @@ impl TaskExecutor {
                     .await
             }
             Task::TryTask(task) => {
-                let task_executor = TryTaskExecutor::new(task);
+                let task_executor = TryTaskExecutor::new(
+                    task,
+                    self.job_executor_wrapper.clone(),
+                    self.http_client.clone(),
+                );
                 task_executor
                     .execute(self.task_name.as_str(), workflow_context, task_context)
                     .await
@@ -239,33 +346,13 @@ impl TaskExecutor {
     }
 }
 
-pub trait TaskExecutorTrait: Send + Sync {
+pub trait TaskExecutorTrait<'a>: Send + Sync {
     fn execute(
-        &self,
-        task_name: &str,
+        &'a self,
+        task_name: &'a str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
-    ) -> impl std::future::Future<Output = Result<TaskContext>> + Send;
-}
-
-pub struct ForkTaskExecutor<'a> {
-    task: &'a workflow::ForkTask,
-}
-impl<'a> ForkTaskExecutor<'a> {
-    pub fn new(task: &'a workflow::ForkTask) -> Self {
-        Self { task }
-    }
-}
-impl TaskExecutorTrait for ForkTaskExecutor<'_> {
-    async fn execute(
-        &self,
-        _task_name: &str,
-        _workflow_context: Arc<RwLock<WorkflowContext>>,
-        _task_context: TaskContext,
-    ) -> Result<TaskContext> {
-        tracing::error!("ForkTaskExecutor not implemented yet!: {:?}", self.task);
-        todo!()
-    }
+    ) -> impl std::future::Future<Output = Result<TaskContext, workflow::Error>> + Send;
 }
 
 // pub struct EmitTaskExecutor<'a> {
@@ -296,75 +383,24 @@ impl<'a> RaiseTaskExecutor<'a> {
         Self { task }
     }
 }
-impl TaskExecutorTrait for RaiseTaskExecutor<'_> {
+impl TaskExecutorTrait<'_> for RaiseTaskExecutor<'_> {
     async fn execute(
         &self,
         _task_name: &str,
-        _workflow_context: Arc<RwLock<WorkflowContext>>,
-        _task_context: TaskContext,
-    ) -> Result<TaskContext> {
-        tracing::error!("RaiseTaskExecutor not implemented yet!: {:?}", self.task);
-        todo!()
-    }
-}
-
-pub struct SetTaskExecutor<'a> {
-    task: &'a workflow::SetTask,
-}
-impl<'a> SetTaskExecutor<'a> {
-    pub fn new(task: &'a workflow::SetTask) -> Self {
-        Self { task }
-    }
-}
-impl TaskExecutorTrait for SetTaskExecutor<'_> {
-    async fn execute(
-        &self,
-        _task_name: &str,
-        _workflow_context: Arc<RwLock<WorkflowContext>>,
-        _task_context: TaskContext,
-    ) -> Result<TaskContext> {
-        tracing::error!("SetTaskExecutor not implemented yet!: {:?}", self.task);
-        todo!()
-    }
-}
-
-pub struct SwitchTaskExecutor<'a> {
-    task: &'a workflow::SwitchTask,
-}
-impl<'a> SwitchTaskExecutor<'a> {
-    pub fn new(task: &'a workflow::SwitchTask) -> Self {
-        Self { task }
-    }
-}
-impl TaskExecutorTrait for SwitchTaskExecutor<'_> {
-    async fn execute(
-        &self,
-        _task_name: &str,
-        _workflow_context: Arc<RwLock<WorkflowContext>>,
-        _task_context: TaskContext,
-    ) -> Result<TaskContext> {
-        tracing::error!("SwitchTaskExecutor not implemented yet!: {:?}", self.task);
-        todo!()
-    }
-}
-
-pub struct TryTaskExecutor<'a> {
-    task: &'a workflow::TryTask,
-}
-impl<'a> TryTaskExecutor<'a> {
-    pub fn new(task: &'a workflow::TryTask) -> Self {
-        Self { task }
-    }
-}
-impl TaskExecutorTrait for TryTaskExecutor<'_> {
-    async fn execute(
-        &self,
-        _task_name: &str,
-        _workflow_context: Arc<RwLock<WorkflowContext>>,
-        _task_context: TaskContext,
-    ) -> Result<TaskContext> {
-        tracing::error!("TryTaskExecutor not implemented yet!: {:?}", self.task);
-        todo!()
+        workflow_context: Arc<RwLock<WorkflowContext>>,
+        task_context: TaskContext,
+    ) -> Result<TaskContext, workflow::Error> {
+        tracing::error!("RaiseTaskExecutor raise error: {:?}", self.task.raise.error);
+        // TODO add error detail information to workflow_context
+        let mut pos = task_context.position.lock().await.clone();
+        pos.push("raise".to_string());
+        workflow_context.write().await.status = WorkflowStatus::Faulted;
+        Err(workflow::errors::ErrorFactory::create(
+            workflow::errors::ErrorCode::Locked,
+            Some(format!("Raise error!: {:?}", self.task.raise.error)),
+            Some(&pos),
+            None,
+        ))
     }
 }
 
@@ -376,14 +412,16 @@ impl<'a> WaitTaskExecutor<'a> {
         Self { task }
     }
 }
-impl TaskExecutorTrait for WaitTaskExecutor<'_> {
+impl TaskExecutorTrait<'_> for WaitTaskExecutor<'_> {
     async fn execute(
         &self,
-        _task_name: &str,
+        task_name: &str,
         _workflow_context: Arc<RwLock<WorkflowContext>>,
-        _task_context: TaskContext,
-    ) -> Result<TaskContext> {
-        tracing::error!("WaitTaskExecutor not implemented yet!: {:?}", self.task);
-        todo!()
+        mut task_context: TaskContext,
+    ) -> Result<TaskContext, workflow::Error> {
+        tracing::info!("WaitTask: {}: {:?}", task_name, self.task);
+        tokio::time::sleep(std::time::Duration::from_millis(self.task.wait.to_millis())).await;
+        task_context.set_output(task_context.input.clone());
+        Ok(task_context)
     }
 }

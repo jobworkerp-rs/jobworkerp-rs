@@ -2,7 +2,7 @@
   "$id": "https://serverlessworkflow.io/schemas/1.0.0/workflow.yaml",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "WorkflowSchema",
-  "description": "Partial Serverless Workflow DSL with function task support. \nRuntime expressions: - jq expressions using ${..} syntax (e.g. ${.key.ckey}, ${$workflow.input}) - liquid templates using $${..} syntax - Available only in fields marked in their descriptions\nContext variables in expressions: - Input mode: keys from input data - Output mode: keys from output data - Workflow info: workflow.id, workflow.definition, workflow.input, workflow.context_variables - Current task info: task.definition, task.raw_input, task.raw_output, task.output, task.flow_directive - Raw data: access pre-transformation data via raw_input and raw_output (e.g. ${$task.raw_input})",
+  "description": "Partial Serverless Workflow DSL with function task support. \nRuntime expressions: - jq expressions using ${..} syntax (e.g. ${.key.ckey}, ${$task.input}) - liquid templates using $${..} syntax - Available only in fields marked in their descriptions\nContext variables in expressions: - Input mode: keys from input data - Output mode: keys from output data - Workflow info: workflow.id, workflow.definition, workflow.input, workflow.context_variables - Current task info: task.definition, task.raw_input, task.raw_output, task.output, task.flow_directive - Raw data: access pre-transformation data via raw_input and raw_output (e.g. ${$task.raw_input})",
   "type": "object",
   "required": [
     "document",
@@ -818,12 +818,6 @@
           "title": "LiteralUriTemplate",
           "type": "string",
           "format": "uri-template",
-          "pattern": "^[A-Za-z][A-Za-z0-9+\\-.]*://.*"
-        },
-        {
-          "title": "LiteralUri",
-          "type": "string",
-          "format": "uri",
           "pattern": "^[A-Za-z][A-Za-z0-9+\\-.]*://.*"
         }
       ]

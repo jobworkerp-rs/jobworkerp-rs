@@ -1,11 +1,9 @@
-use super::{job::JobExecutorWrapper, task::TaskExecutor};
+use super::{expression::UseExpression, job::JobExecutorWrapper, task::TaskExecutor};
 use crate::workflow::definition::{
     transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
     workflow::{Task, WorkflowSchema},
 };
-use crate::workflow::execute::context::{
-    self, TaskContext, Then, UseExpression, WorkflowContext, WorkflowStatus,
-};
+use crate::workflow::execute::context::{self, TaskContext, Then, WorkflowContext, WorkflowStatus};
 use anyhow::Result;
 use app::module::AppModule;
 use indexmap::IndexMap;
@@ -75,12 +73,14 @@ impl WorkflowExecutor {
                 }
             }
         }
+        let mut idx = 0;
         let task_map = Arc::new(self.workflow.do_.0.iter().fold(
-            IndexMap::<String, Arc<Task>>::new(),
+            IndexMap::<String, (u32, Arc<Task>)>::new(),
             |mut acc, task| {
                 task.iter().for_each(|(name, t)| {
-                    acc.insert(name.clone(), Arc::new(t.clone()));
+                    acc.insert(name.clone(), (idx, Arc::new(t.clone())));
                 });
+                idx += 1;
                 acc
             },
         ));
@@ -91,7 +91,7 @@ impl WorkflowExecutor {
         );
 
         let wfr = self.workflow_context.read().await;
-        let expression = match self.expression(&wfr, Arc::new(task_context.clone())).await {
+        let expression = match Self::expression(&wfr, Arc::new(task_context.clone())).await {
             Ok(e) => {
                 drop(wfr);
                 e
@@ -124,6 +124,7 @@ impl WorkflowExecutor {
             input.clone()
         };
         task_context.set_input(transformed_input);
+        task_context.add_position_name("do".to_string()).await;
         // Execute tasks
         match self.execute_task_list(task_map.clone(), task_context).await {
             Ok(tc) => {
@@ -198,7 +199,7 @@ impl WorkflowExecutor {
 
     async fn execute_task_list(
         &self,
-        task_map: Arc<IndexMap<String, Arc<Task>>>,
+        task_map: Arc<IndexMap<String, (u32, Arc<Task>)>>,
         parent_task_context: TaskContext,
     ) -> Result<Arc<TaskContext>> {
         let mut prev_context = Arc::new(parent_task_context);
@@ -208,10 +209,12 @@ impl WorkflowExecutor {
         let lock = self.workflow_context.read().await;
         let mut status = lock.status.clone();
         drop(lock);
+
         while next_task_pair.is_some() && status == WorkflowStatus::Running {
-            if let Some((name, task)) = next_task_pair {
+            if let Some((name, (pos, task))) = next_task_pair {
                 // parent_task.position().addIndex(iter.previousIndex());
-                tracing::info!("Executing task: {}: input={:#}", name, &prev_context.output);
+                tracing::info!("Executing task: {}", name);
+                prev_context.add_position_index(pos.clone()).await;
                 let task_executor = TaskExecutor::new(
                     self.job_executors.clone(),
                     self.http_client.clone(),
@@ -219,13 +222,15 @@ impl WorkflowExecutor {
                     task.clone(),
                 );
                 let result_task_context = task_executor
-                    .execute(self.workflow_context.clone(), prev_context.clone())
+                    .execute(self.workflow_context.clone(), prev_context)
                     .await
                     .map_err(|e| anyhow::anyhow!("Failed to execute task: {:#?}", e))?;
-                let flow_directive = &result_task_context.flow_directive;
-                match &flow_directive {
+                let flow_directive = result_task_context.flow_directive.clone();
+                match flow_directive {
                     Then::Continue => {
-                        prev_context = result_task_context;
+                        result_task_context.remove_position().await;
+
+                        prev_context = Arc::new(result_task_context);
                         next_task_pair = task_iterator.next();
                         tracing::info!(
                             "Task Continue next: {}",
@@ -233,20 +238,22 @@ impl WorkflowExecutor {
                         );
                     }
                     Then::End => {
-                        prev_context = result_task_context;
+                        prev_context = Arc::new(result_task_context);
                         self.workflow_context.write().await.status = WorkflowStatus::Completed;
                         next_task_pair = None;
                     }
                     Then::Exit => {
-                        prev_context = result_task_context;
+                        prev_context = Arc::new(result_task_context);
                         next_task_pair = None;
                         tracing::info!("Exit Task: {}", name);
                     }
-                    // TODO test (not used yet)
                     Then::TaskName(tname) => {
+                        result_task_context.remove_position().await;
+
+                        prev_context = Arc::new(result_task_context);
                         let mut it = task_map.iter();
                         for (k, v) in it.by_ref() {
-                            if k == tname {
+                            if k == &tname {
                                 next_task_pair = Some((k, v));
                                 tracing::info!("Jump to Task: {}", k);
                                 break;
@@ -264,6 +271,7 @@ impl WorkflowExecutor {
         }
         Ok(prev_context)
     }
+
     /// Cancels the workflow if it is running, pending, or waiting.
     ///
     /// This function sets the workflow status to `Cancelled` and logs the cancellation.
@@ -280,5 +288,615 @@ impl WorkflowExecutor {
         {
             lock.status = WorkflowStatus::Cancelled;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workflow::definition::workflow::{
+        Document, FlowDirective, FlowDirectiveEnum, Input, Output, SetTask, Task, TaskList,
+        WorkflowName, WorkflowSchema, WorkflowVersion,
+    };
+    use crate::workflow::execute::context::TaskContext;
+    use app::module::test::create_hybrid_test_app;
+    use indexmap::indexmap;
+    use std::collections::HashMap;
+    use std::str::FromStr;
+    use std::sync::Arc;
+
+    fn create_test_workflow() -> WorkflowSchema {
+        let task_map_list = {
+            let mut map1 = HashMap::new();
+            map1.insert(
+                "task1".to_string(),
+                Task::SetTask(SetTask {
+                    set: serde_json::Map::new(),
+                    export: None,
+                    if_: None,
+                    input: None,
+                    metadata: serde_json::Map::new(),
+                    output: None,
+                    then: Some(FlowDirective {
+                        subtype_0: Some(FlowDirectiveEnum::Continue),
+                        subtype_1: None,
+                    }),
+                    timeout: None,
+                }),
+            );
+            let mut map2 = HashMap::new();
+            map2.insert(
+                "task2".to_string(),
+                Task::SetTask(SetTask {
+                    set: serde_json::Map::new(),
+                    export: None,
+                    if_: None,
+                    input: None,
+                    metadata: serde_json::Map::new(),
+                    output: None,
+                    then: Some(FlowDirective {
+                        subtype_0: Some(FlowDirectiveEnum::End),
+                        subtype_1: None,
+                    }),
+                    timeout: None,
+                }),
+            );
+            vec![map1, map2]
+        };
+        let task_list = TaskList(task_map_list);
+
+        WorkflowSchema {
+            document: Document {
+                name: WorkflowName::from_str("test-workflow").unwrap(),
+                version: WorkflowVersion::from_str("1.0.0").unwrap(),
+                metadata: serde_json::Map::new(),
+                ..Default::default()
+            },
+            input: Input {
+                schema: None,
+                from: None,
+            },
+            output: Some(Output {
+                as_: None,
+                schema: None,
+            }),
+            do_: task_list,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_task_list() {
+        let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+        let http_client = ReqwestClient::new(
+            Some("test"),
+            Some(std::time::Duration::from_secs(1)),
+            Some(std::time::Duration::from_secs(1)),
+            Some(1),
+        )
+        .unwrap();
+
+        let workflow = create_test_workflow();
+        let input = Arc::new(serde_json::json!({"test": "input"}));
+        let context = Arc::new(serde_json::json!({}));
+
+        let executor = WorkflowExecutor::new(
+            app_module,
+            http_client,
+            Arc::new(workflow.clone()),
+            input.clone(),
+            context.clone(),
+        );
+
+        let mut idx = 0;
+        let task_map = Arc::new(workflow.do_.0.iter().fold(
+            IndexMap::<String, (u32, Arc<Task>)>::new(),
+            |mut acc, task| {
+                task.iter().for_each(|(name, t)| {
+                    acc.insert(name.clone(), (idx, Arc::new(t.clone())));
+                });
+                idx += 1;
+                acc
+            },
+        ));
+
+        let task_context = TaskContext::new(
+            None,
+            input.clone(),
+            Arc::new(Mutex::new(serde_json::Map::new())),
+        );
+
+        // テスト実行
+        executor.workflow_context.write().await.status = WorkflowStatus::Running;
+        let result = executor.execute_task_list(task_map, task_context).await;
+
+        // 検証
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_cancel_workflow() {
+        let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+        let http_client = ReqwestClient::new(
+            Some("test"),
+            Some(std::time::Duration::from_secs(1)),
+            Some(std::time::Duration::from_secs(1)),
+            Some(1),
+        )
+        .unwrap();
+
+        let workflow = create_test_workflow();
+        let input = Arc::new(serde_json::json!({"test": "input"}));
+        let context = Arc::new(serde_json::json!({}));
+
+        let executor = WorkflowExecutor::new(
+            app_module,
+            http_client,
+            Arc::new(workflow.clone()),
+            input.clone(),
+            context.clone(),
+        );
+
+        // ステータスをRunningに設定
+        executor.workflow_context.write().await.status = WorkflowStatus::Running;
+
+        // キャンセル実行
+        executor.cancel().await;
+
+        // 検証
+        let status = executor.workflow_context.read().await.status.clone();
+        assert_eq!(status, WorkflowStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn test_execute_task_list_with_flow_directives() {
+        let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+        let http_client = ReqwestClient::new(
+            Some("test"),
+            Some(std::time::Duration::from_secs(1)),
+            Some(std::time::Duration::from_secs(1)),
+            Some(1),
+        )
+        .unwrap();
+
+        // Continue フロー指示のテスト用のワークフロー作成
+        let mut workflow = create_test_workflow();
+
+        // task1, task2, task3, task4という4つのタスクを持つタスクリストを作成
+        let task_list = TaskList(vec![
+            {
+                let mut map = HashMap::new();
+                map.insert(
+                    "task1".to_string(),
+                    Task::SetTask(SetTask {
+                        set: serde_json::Map::new(),
+                        export: None,
+                        if_: None,
+                        input: None,
+                        metadata: serde_json::Map::new(),
+                        output: None,
+                        then: Some(FlowDirective {
+                            subtype_0: Some(FlowDirectiveEnum::Continue),
+                            subtype_1: None,
+                        }),
+                        timeout: None,
+                    }),
+                );
+                map
+            },
+            {
+                let mut map = HashMap::new();
+                map.insert(
+                    "task2".to_string(),
+                    Task::SetTask(SetTask {
+                        set: serde_json::Map::new(),
+                        export: None,
+                        if_: None,
+                        input: None,
+                        metadata: serde_json::Map::new(),
+                        output: None,
+                        then: Some(FlowDirective {
+                            // remove flatten from subtype_1 (can only flatten structs and maps (got a string) )
+                            // (from auto-generated code)
+                            subtype_1: Some("task4".to_string()),
+                            subtype_0: None,
+                        }),
+                        timeout: None,
+                    }),
+                );
+                map
+            },
+            {
+                let mut map = HashMap::new();
+                map.insert(
+                    "task3".to_string(),
+                    Task::SetTask(SetTask {
+                        set: serde_json::Map::new(),
+                        export: None,
+                        if_: None,
+                        input: None,
+                        metadata: serde_json::Map::new(),
+                        output: None,
+                        then: Some(FlowDirective {
+                            subtype_0: Some(FlowDirectiveEnum::Exit),
+                            subtype_1: None,
+                        }),
+                        timeout: None,
+                    }),
+                );
+                map
+            },
+            {
+                let mut map = HashMap::new();
+                map.insert(
+                    "task4".to_string(),
+                    Task::SetTask(SetTask {
+                        set: serde_json::Map::new(),
+                        export: None,
+                        if_: None,
+                        input: None,
+                        metadata: serde_json::Map::new(),
+                        output: None,
+                        then: Some(FlowDirective {
+                            subtype_0: Some(FlowDirectiveEnum::End),
+                            subtype_1: None,
+                        }),
+                        timeout: None,
+                    }),
+                );
+                map
+            },
+        ]);
+
+        workflow.do_ = task_list;
+
+        let input = Arc::new(serde_json::json!({"test": "input"}));
+        let context = Arc::new(serde_json::json!({}));
+
+        let executor = WorkflowExecutor::new(
+            app_module,
+            http_client,
+            Arc::new(workflow.clone()),
+            input.clone(),
+            context.clone(),
+        );
+
+        let mut task_map = IndexMap::<String, (u32, Arc<Task>)>::new();
+        task_map.insert(
+            "task1".to_string(),
+            (
+                0,
+                Arc::new(Task::SetTask(SetTask {
+                    set: serde_json::Map::new(),
+                    export: None,
+                    if_: None,
+                    input: None,
+                    metadata: serde_json::Map::new(),
+                    output: None,
+                    then: Some(FlowDirective {
+                        subtype_0: Some(FlowDirectiveEnum::Continue),
+                        subtype_1: None,
+                    }),
+                    timeout: None,
+                })),
+            ),
+        );
+        task_map.insert(
+            "task2".to_string(),
+            (
+                1,
+                Arc::new(Task::SetTask(SetTask {
+                    set: serde_json::Map::new(),
+                    export: None,
+                    if_: None,
+                    input: None,
+                    metadata: serde_json::Map::new(),
+                    output: None,
+                    then: Some(FlowDirective {
+                        subtype_1: Some("task4".to_string()),
+                        subtype_0: None,
+                    }),
+                    timeout: None,
+                })),
+            ),
+        );
+        task_map.insert(
+            "task3".to_string(),
+            (
+                2,
+                Arc::new(Task::SetTask(SetTask {
+                    set: serde_json::Map::new(),
+                    export: None,
+                    if_: None,
+                    input: None,
+                    metadata: serde_json::Map::new(),
+                    output: None,
+                    then: Some(FlowDirective {
+                        subtype_0: Some(FlowDirectiveEnum::Exit),
+                        subtype_1: None,
+                    }),
+                    timeout: None,
+                })),
+            ),
+        );
+        task_map.insert(
+            "task4".to_string(),
+            (
+                3,
+                Arc::new(Task::SetTask(SetTask {
+                    set: serde_json::Map::new(),
+                    export: None,
+                    if_: None,
+                    input: None,
+                    metadata: serde_json::Map::new(),
+                    output: None,
+                    then: Some(FlowDirective {
+                        subtype_0: Some(FlowDirectiveEnum::End),
+                        subtype_1: None,
+                    }),
+                    timeout: None,
+                })),
+            ),
+        );
+
+        let task_context = TaskContext::new(
+            None,
+            input.clone(),
+            Arc::new(Mutex::new(serde_json::Map::new())),
+        );
+
+        executor.workflow_context.write().await.status = WorkflowStatus::Running;
+        let tc = executor
+            .execute_task_list(Arc::new(task_map), task_context)
+            .await
+            .unwrap();
+
+        // task4
+        assert_eq!(
+            tc.prev_position(2).await.last().unwrap().as_str().unwrap(),
+            "task4".to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_task_list_flow_exit_and_end() {
+        let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+        let http_client = ReqwestClient::new(
+            Some("test"),
+            Some(std::time::Duration::from_secs(1)),
+            Some(std::time::Duration::from_secs(1)),
+            Some(1),
+        )
+        .unwrap();
+
+        let workflow = create_test_workflow();
+        let input = Arc::new(serde_json::json!({"test": "input"}));
+        let context = Arc::new(serde_json::json!({}));
+
+        // exit test
+        {
+            let executor = WorkflowExecutor::new(
+                app_module.clone(),
+                http_client.clone(),
+                Arc::new(workflow.clone()),
+                input.clone(),
+                context.clone(),
+            );
+
+            let task_map = Arc::new(indexmap! {
+                "exit_task".to_string() => (0, Arc::new(Task::SetTask(SetTask {
+                    set: serde_json::Map::new(),
+                    export: None,
+                    if_: None,
+                    input: None,
+                    metadata: serde_json::Map::new(),
+                    output: None,
+                    then: Some(FlowDirective {
+                        subtype_0: Some(FlowDirectiveEnum::Exit),
+                        subtype_1: None,
+                    }),
+                    timeout: None,
+                }))),
+                "unreachable_task".to_string() => (1, Arc::new(Task::SetTask(SetTask {
+                    set: serde_json::Map::new(),
+                    export: None,
+                    if_: None,
+                    input: None,
+                    metadata: serde_json::Map::new(),
+                    output: None,
+                    then: Some(FlowDirective {
+                        subtype_0: Some(FlowDirectiveEnum::Continue),
+                        subtype_1: None,
+                    }),
+                    timeout: None,
+                })))
+            });
+
+            let task_context = TaskContext::new(
+                None,
+                input.clone(),
+                Arc::new(Mutex::new(serde_json::Map::new())),
+            );
+
+            // exit case
+            executor.workflow_context.write().await.status = WorkflowStatus::Running;
+            let result = executor
+                .execute_task_list(task_map, task_context)
+                .await
+                .unwrap();
+            assert_eq!(
+                result
+                    .prev_position(2)
+                    .await
+                    .last()
+                    .unwrap()
+                    .as_str()
+                    .unwrap(),
+                "exit_task".to_string()
+            );
+        }
+
+        // End test
+        {
+            let executor = WorkflowExecutor::new(
+                app_module.clone(),
+                http_client.clone(),
+                Arc::new(workflow.clone()),
+                input.clone(),
+                context.clone(),
+            );
+
+            let task_map = Arc::new(indexmap! {
+                "end_task".to_string() => (0, Arc::new(Task::SetTask(SetTask {
+                    set: serde_json::Map::new(),
+                    export: None,
+                    if_: None,
+                    input: None,
+                    metadata: serde_json::Map::new(),
+                    output: None,
+                    then: Some(FlowDirective {
+                        subtype_0: Some(FlowDirectiveEnum::End),
+                        subtype_1: None,
+                    }),
+                    timeout: None,
+                })))
+            });
+
+            let task_context = TaskContext::new(
+                None,
+                input.clone(),
+                Arc::new(Mutex::new(serde_json::Map::new())),
+            );
+            executor.workflow_context.write().await.status = WorkflowStatus::Running;
+            let result = executor
+                .execute_task_list(task_map, task_context)
+                .await
+                .unwrap();
+            assert_eq!(
+                // /0/end_task/set -> /
+                result
+                    .prev_position(2)
+                    .await
+                    .last()
+                    .unwrap()
+                    .as_str()
+                    .unwrap(),
+                "end_task".to_string()
+            );
+            assert_eq!(
+                executor.workflow_context.read().await.status,
+                WorkflowStatus::Completed
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_task_list_task_name_jump() {
+        let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+        let http_client = ReqwestClient::new(
+            Some("test"),
+            Some(std::time::Duration::from_secs(1)),
+            Some(std::time::Duration::from_secs(1)),
+            Some(1),
+        )
+        .unwrap();
+
+        // TaskName フロー指示のテスト
+        let input = Arc::new(serde_json::json!({"test": "input"}));
+        let context = Arc::new(serde_json::json!({}));
+
+        let workflow = Arc::new(WorkflowSchema {
+            document: Document {
+                name: WorkflowName::from_str("test-workflow").unwrap(),
+                version: WorkflowVersion::from_str("1.0.0").unwrap(),
+                metadata: serde_json::Map::new(),
+                ..Default::default()
+            },
+            input: Input {
+                schema: None,
+                from: None,
+            },
+            output: None,
+            do_: TaskList(vec![]),
+        });
+
+        let executor = WorkflowExecutor::new(
+            app_module.clone(),
+            http_client.clone(),
+            workflow.clone(),
+            input.clone(),
+            context.clone(),
+        );
+
+        let task_map = Arc::new(indexmap! {
+            "start_task".to_string() => (0, Arc::new(Task::SetTask(SetTask {
+                set: serde_json::Map::new(),
+                export: None,
+                if_: None,
+                input: None,
+                metadata: serde_json::Map::new(),
+                output: None,
+                then: Some(FlowDirective {
+                    // remove flatten from subtype_1 (can only flatten structs and maps (got a string) )
+                    // (from auto-generated code)
+                    subtype_1: Some("jump_target".to_string()),
+                    subtype_0: None,
+                }),
+                timeout: None,
+            }))),
+            "skipped_task".to_string() => (1, Arc::new(Task::SetTask(SetTask {
+                set: serde_json::Map::new(),
+                export: None,
+                if_: None,
+                input: None,
+                metadata: serde_json::Map::new(),
+                output: None,
+                then: Some(FlowDirective {
+                    subtype_0: Some(FlowDirectiveEnum::Exit),
+                    subtype_1: None,
+                }),
+                timeout: None,
+            }))),
+            "jump_target".to_string() => (2, Arc::new(Task::SetTask(SetTask {
+                set: serde_json::Map::new(),
+                export: None,
+                if_: None,
+                input: None,
+                metadata: serde_json::Map::new(),
+                output: None,
+                then: Some(FlowDirective {
+                    subtype_0: Some(FlowDirectiveEnum::End),
+                    subtype_1: None,
+                }),
+                timeout: None,
+            })))
+        });
+
+        let task_context = TaskContext::new(
+            None,
+            input.clone(),
+            Arc::new(Mutex::new(serde_json::Map::new())),
+        );
+        // タスク実行
+        executor.workflow_context.write().await.status = WorkflowStatus::Running;
+        let result = executor
+            .execute_task_list(task_map, task_context)
+            .await
+            .unwrap();
+
+        // TaskName指示によりstart_taskの次はskipped_taskではなくjump_targetが実行されたことを確認
+        assert_eq!(
+            result
+                .prev_position(2)
+                .await
+                .last()
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "jump_target".to_string()
+        );
+        assert_eq!(
+            executor.workflow_context.read().await.status,
+            WorkflowStatus::Completed
+        );
     }
 }
