@@ -48,6 +48,7 @@ once_cell = { workspace = true }
 prost = { workspace = true }
 # redis = { workspace = true }
 rand = { workspace = true }
+regex = { workspace = true }
 regress = "0.10"
 reqwest = { workspace = true }
 schemars = { workspace = true }
@@ -73,3 +74,6 @@ uuid = { version = "1", features = ["v7", "serde"] }
 
 [dev-dependencies]
 regex = { workspace = true }
+mockall = { workspace = true }
+app = { path = "../app", features = ["test-utils"] }
+infra = { path = "../infra", features = ["test-utils"] }

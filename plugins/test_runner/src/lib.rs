@@ -60,7 +60,9 @@ impl PluginRunner for TestPlugin {
     }
     fn load(&mut self, runner_settings: Vec<u8>) -> Result<()> {
         tracing::info!("Test plugin load!");
-        TestRunnerSettings::decode(runner_settings.as_slice())?;
+        TestRunnerSettings::decode(runner_settings.as_slice()).unwrap_or(TestRunnerSettings {
+            name: String::from("Test default"),
+        });
         Ok(())
     }
     fn run(&mut self, arg: Vec<u8>) -> Result<Vec<Vec<u8>>> {

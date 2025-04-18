@@ -140,7 +140,6 @@ $defs:
     unevaluatedProperties: false
     oneOf:
       - $ref: "#/$defs/callTask"
-      - $ref: "#/$defs/doTask"
       - $ref: "#/$defs/forkTask"
       - $ref: "#/$defs/forTask"
       - $ref: "#/$defs/raiseTask"
@@ -148,6 +147,7 @@ $defs:
       - $ref: "#/$defs/setTask"
       - $ref: "#/$defs/switchTask"
       - $ref: "#/$defs/tryTask"
+      - $ref: "#/$defs/doTask"
       - $ref: "#/$defs/waitTask"
   callTask:
     title: CallTask
@@ -573,10 +573,6 @@ $defs:
       - title: LiteralUriTemplate
         type: string
         format: uri-template
-        pattern: "^[A-Za-z][A-Za-z0-9+\\-.]*://.*"
-      - title: LiteralUri
-        type: string
-        format: uri
         pattern: "^[A-Za-z][A-Za-z0-9+\\-.]*://.*"
   endpoint:
     title: Endpoint

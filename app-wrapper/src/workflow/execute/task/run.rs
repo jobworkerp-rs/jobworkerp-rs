@@ -1,11 +1,12 @@
 use super::TaskExecutorTrait;
-use crate::{
-    workflow::definition::{
+use crate::workflow::{
+    definition::{
         transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
-        workflow::{self},
+        workflow,
     },
-    workflow::execute::{
-        context::{TaskContext, UseExpression, WorkflowContext},
+    execute::{
+        context::{TaskContext, WorkflowContext},
+        expression::UseExpression,
         job::{JobExecutorWrapper, UseJobExecutorHelper},
         DEFAULT_REQUEST_TIMEOUT_SEC,
     },
@@ -104,13 +105,13 @@ impl<'a> RunTaskExecutor<'a> {
         //     .await
     }
 }
-impl TaskExecutorTrait for RunTaskExecutor<'_> {
+impl TaskExecutorTrait<'_> for RunTaskExecutor<'_> {
     async fn execute(
         &self,
         task_name: &str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         mut task_context: TaskContext,
-    ) -> Result<TaskContext> {
+    ) -> Result<TaskContext, workflow::Error> {
         // TODO: add other task types
         let workflow::RunTask {
             // TODO
@@ -136,21 +137,57 @@ impl TaskExecutorTrait for RunTaskExecutor<'_> {
                 },
         } = run;
         {
-            let expression = self
-                .expression(
-                    &*(workflow_context.read().await),
-                    Arc::new(task_context.clone()),
-                )
-                .await?;
+            // enter run.function
+            task_context.add_position_name("run".to_string()).await;
+            task_context.add_position_name("function".to_string()).await;
+
+            let expression = Self::expression(
+                &*(workflow_context.read().await),
+                Arc::new(task_context.clone()),
+            )
+            .await;
+
+            tracing::debug!("expression: {:#?}", expression);
+
+            let expression = match expression {
+                Ok(e) => e,
+                Err(mut e) => {
+                    let pos = task_context.position.lock().await.clone();
+                    e.position(&pos);
+                    return Err(e);
+                }
+            };
 
             tracing::debug!("raw arguments: {:#?}", arguments);
-            let args =
-                Self::transform_map(task_context.input.clone(), arguments.clone(), &expression)?;
+            let args = match Self::transform_map(
+                task_context.input.clone(),
+                arguments.clone(),
+                &expression,
+            ) {
+                Ok(args) => args,
+                Err(mut e) => {
+                    let mut pos = task_context.position.lock().await.clone();
+                    pos.push("arguments".to_string());
+                    e.position(&pos);
+                    return Err(e);
+                }
+            };
             // let args = serde_json::Value::Object(arguments.clone());
             tracing::debug!("transformed arguments: {:#?}", args);
 
-            let transformed_settings =
-                Self::transform_map(task_context.input.clone(), settings.clone(), &expression)?;
+            let transformed_settings = match Self::transform_map(
+                task_context.input.clone(),
+                settings.clone(),
+                &expression,
+            ) {
+                Ok(settings) => settings,
+                Err(mut e) => {
+                    let mut pos = task_context.position.lock().await.clone();
+                    pos.push("settings".to_string());
+                    e.position(&pos);
+                    return Err(e);
+                }
+            };
 
             let output = self
                 .execute_by_jobworkerp(
@@ -160,9 +197,23 @@ impl TaskExecutorTrait for RunTaskExecutor<'_> {
                     args,
                     task_name,
                 )
-                .await
-                .inspect_err(|e| tracing::warn!("Failed to execute by jobworkerp: {:#?}", e))?;
+                .await;
+            let output = match output {
+                Ok(output) => output,
+                Err(e) => {
+                    let pos = task_context.position.lock().await.clone();
+                    return Err(workflow::errors::ErrorFactory::new().service_unavailable(
+                        "Failed to execute by jobworkerp".to_string(),
+                        Some(&pos),
+                        Some(e.into()),
+                    ));
+                }
+            };
             task_context.set_raw_output(output);
+
+            // out of run.function
+            task_context.remove_position().await;
+            task_context.remove_position().await;
 
             Ok(task_context)
         } // r => Err(anyhow::anyhow!(

@@ -6,13 +6,15 @@
 #![allow(clippy::derivable_impls)]
 #![allow(clippy::large_enum_variant)]
 
+pub mod errors;
 pub mod supplement;
 #[cfg(test)]
 pub mod supplement_test;
+pub mod tasks;
 
 #[doc = r" Error types."]
 pub mod error {
-    #[doc = r" Error from a TryFrom or FromStr implementation."]
+    #[doc = r" Error from a `TryFrom` or `FromStr` implementation."]
     pub struct ConversionError(::std::borrow::Cow<'static, str>);
     impl ::std::error::Error for ConversionError {}
     impl ::std::fmt::Display for ConversionError {
@@ -36,7 +38,7 @@ pub mod error {
         }
     }
 }
-#[doc = "CallTask"]
+#[doc = "`CallTask`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -188,7 +190,7 @@ impl CatchErrors {
         Default::default()
     }
 }
-#[doc = "DoTask"]
+#[doc = "`DoTask`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -398,7 +400,7 @@ impl Document {
         Default::default()
     }
 }
-#[doc = "Duration"]
+#[doc = "`Duration`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -658,6 +660,48 @@ impl ::std::convert::From<&Self> for EndpointUri {
         value.clone()
     }
 }
+impl ::std::str::FromStr for EndpointUri {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if let Ok(v) = value.parse() {
+            Ok(Self::UriTemplate(v))
+        } else if let Ok(v) = value.parse() {
+            Ok(Self::RuntimeExpression(v))
+        } else {
+            Err("string conversion failed for all variants".into())
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for EndpointUri {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for EndpointUri {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for EndpointUri {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::fmt::Display for EndpointUri {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match self {
+            Self::UriTemplate(x) => x.fmt(f),
+            Self::RuntimeExpression(x) => x.fmt(f),
+        }
+    }
+}
 impl ::std::convert::From<UriTemplate> for EndpointUri {
     fn from(value: UriTemplate) -> Self {
         Self::UriTemplate(value)
@@ -804,13 +848,11 @@ impl Error {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct ErrorDetails {
     #[serde(
-        flatten,
         default,
         skip_serializing_if = "::std::option::Option::is_none"
     )]
     pub subtype_0: ::std::option::Option<RuntimeExpression>,
     #[serde(
-        flatten,
         default,
         skip_serializing_if = "::std::option::Option::is_none"
     )]
@@ -1018,13 +1060,11 @@ impl ::std::convert::From<RuntimeExpression> for ErrorInstance {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct ErrorTitle {
     #[serde(
-        flatten,
         default,
         skip_serializing_if = "::std::option::Option::is_none"
     )]
     pub subtype_0: ::std::option::Option<RuntimeExpression>,
     #[serde(
-        flatten,
         default,
         skip_serializing_if = "::std::option::Option::is_none"
     )]
@@ -1080,6 +1120,48 @@ pub enum ErrorType {
 impl ::std::convert::From<&Self> for ErrorType {
     fn from(value: &ErrorType) -> Self {
         value.clone()
+    }
+}
+impl ::std::str::FromStr for ErrorType {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if let Ok(v) = value.parse() {
+            Ok(Self::UriTemplate(v))
+        } else if let Ok(v) = value.parse() {
+            Ok(Self::RuntimeExpression(v))
+        } else {
+            Err("string conversion failed for all variants".into())
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ErrorType {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ErrorType {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ErrorType {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::fmt::Display for ErrorType {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match self {
+            Self::UriTemplate(x) => x.fmt(f),
+            Self::RuntimeExpression(x) => x.fmt(f),
+        }
     }
 }
 impl ::std::convert::From<UriTemplate> for ErrorType {
@@ -1267,13 +1349,11 @@ impl ExternalResource {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct FlowDirective {
     #[serde(
-        flatten,
         default,
         skip_serializing_if = "::std::option::Option::is_none"
     )]
     pub subtype_0: ::std::option::Option<FlowDirectiveEnum>,
     #[serde(
-        flatten,
         default,
         skip_serializing_if = "::std::option::Option::is_none"
     )]
@@ -1297,7 +1377,7 @@ impl FlowDirective {
         Default::default()
     }
 }
-#[doc = "FlowDirectiveEnum"]
+#[doc = "`FlowDirectiveEnum`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -1386,7 +1466,7 @@ impl ::std::default::Default for FlowDirectiveEnum {
         FlowDirectiveEnum::Continue
     }
 }
-#[doc = "ForTask"]
+#[doc = "`ForTask`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -1590,7 +1670,7 @@ impl ForTaskConfiguration {
         Default::default()
     }
 }
-#[doc = "ForkTask"]
+#[doc = "`ForkTask`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -1832,7 +1912,7 @@ impl ForkTaskConfiguration {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct Function {
     #[doc = "A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation."]
     pub arguments: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
@@ -2400,7 +2480,7 @@ impl ::std::default::Default for ProcessReturnType {
         ProcessReturnType::Stdout
     }
 }
-#[doc = "RaiseTask"]
+#[doc = "`RaiseTask`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2572,7 +2652,7 @@ impl RaiseTaskConfiguration {
         Default::default()
     }
 }
-#[doc = "RaiseTaskError"]
+#[doc = "`RaiseTaskError`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2729,7 +2809,7 @@ impl RetryLimit {
         Default::default()
     }
 }
-#[doc = "RetryLimitAttempt"]
+#[doc = "`RetryLimitAttempt`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2899,7 +2979,7 @@ impl RetryPolicy {
         Default::default()
     }
 }
-#[doc = "RunTask"]
+#[doc = "`RunTask`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3380,7 +3460,7 @@ impl ::std::convert::From<&Self> for Schema {
         value.clone()
     }
 }
-#[doc = "SetTask"]
+#[doc = "`SetTask`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3533,7 +3613,7 @@ impl SwitchCase {
         Default::default()
     }
 }
-#[doc = "SwitchTask"]
+#[doc = "`SwitchTask`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3679,9 +3759,6 @@ impl SwitchTask {
 #[doc = "      \"$ref\": \"#/$defs/callTask\""]
 #[doc = "    },"]
 #[doc = "    {"]
-#[doc = "      \"$ref\": \"#/$defs/doTask\""]
-#[doc = "    },"]
-#[doc = "    {"]
 #[doc = "      \"$ref\": \"#/$defs/forkTask\""]
 #[doc = "    },"]
 #[doc = "    {"]
@@ -3701,6 +3778,9 @@ impl SwitchTask {
 #[doc = "    },"]
 #[doc = "    {"]
 #[doc = "      \"$ref\": \"#/$defs/tryTask\""]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"$ref\": \"#/$defs/doTask\""]
 #[doc = "    },"]
 #[doc = "    {"]
 #[doc = "      \"$ref\": \"#/$defs/waitTask\""]
@@ -3732,11 +3812,6 @@ impl ::std::convert::From<&Self> for Task {
 impl ::std::convert::From<CallTask> for Task {
     fn from(value: CallTask) -> Self {
         Self::CallTask(value)
-    }
-}
-impl ::std::convert::From<DoTask> for Task {
-    fn from(value: DoTask) -> Self {
-        Self::DoTask(value)
     }
 }
 impl ::std::convert::From<ForkTask> for Task {
@@ -3772,6 +3847,11 @@ impl ::std::convert::From<SwitchTask> for Task {
 impl ::std::convert::From<TryTask> for Task {
     fn from(value: TryTask) -> Self {
         Self::TryTask(value)
+    }
+}
+impl ::std::convert::From<DoTask> for Task {
+    fn from(value: DoTask) -> Self {
+        Self::DoTask(value)
     }
 }
 impl ::std::convert::From<WaitTask> for Task {
@@ -3940,7 +4020,7 @@ impl ::std::convert::From<::std::vec::Vec<::std::collections::HashMap<::std::str
         Self(value)
     }
 }
-#[doc = "TaskTimeout"]
+#[doc = "`TaskTimeout`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -4016,7 +4096,7 @@ impl Timeout {
         Default::default()
     }
 }
-#[doc = "TryTask"]
+#[doc = "`TryTask`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -4288,7 +4368,7 @@ impl TryTaskCatch {
         Default::default()
     }
 }
-#[doc = "TryTaskCatchRetry"]
+#[doc = "`TryTaskCatchRetry`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -4325,7 +4405,7 @@ impl ::std::convert::From<RetryPolicy> for TryTaskCatchRetry {
         Self::Variant0(value)
     }
 }
-#[doc = "UriTemplate"]
+#[doc = "`UriTemplate`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -4338,51 +4418,57 @@ impl ::std::convert::From<RetryPolicy> for TryTaskCatchRetry {
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"format\": \"uri-template\","]
 #[doc = "      \"pattern\": \"^[A-Za-z][A-Za-z0-9+\\\\-.]*://.*\""]
-#[doc = "    },"]
-#[doc = "    {"]
-#[doc = "      \"title\": \"LiteralUri\","]
-#[doc = "      \"type\": \"string\","]
-#[doc = "      \"format\": \"uri\","]
-#[doc = "      \"pattern\": \"^[A-Za-z][A-Za-z0-9+\\\\-.]*://.*\""]
 #[doc = "    }"]
 #[doc = "  ]"]
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
-pub struct UriTemplate {
-    #[serde(
-        flatten,
-        default,
-        skip_serializing_if = "::std::option::Option::is_none"
-    )]
-    pub subtype_0: ::std::option::Option<::std::string::String>,
-    #[serde(
-        flatten,
-        default,
-        skip_serializing_if = "::std::option::Option::is_none"
-    )]
-    pub subtype_1: ::std::option::Option<::std::string::String>,
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+#[serde(transparent)]
+pub struct UriTemplate(pub ::std::string::String);
+impl ::std::ops::Deref for UriTemplate {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<UriTemplate> for ::std::string::String {
+    fn from(value: UriTemplate) -> Self {
+        value.0
+    }
 }
 impl ::std::convert::From<&UriTemplate> for UriTemplate {
     fn from(value: &UriTemplate) -> Self {
         value.clone()
     }
 }
-impl ::std::default::Default for UriTemplate {
-    fn default() -> Self {
-        Self {
-            subtype_0: Default::default(),
-            subtype_1: Default::default(),
-        }
+impl ::std::convert::From<::std::string::String> for UriTemplate {
+    fn from(value: ::std::string::String) -> Self {
+        Self(value)
     }
 }
-impl UriTemplate {
-    pub fn builder() -> builder::UriTemplate {
-        Default::default()
+impl ::std::str::FromStr for UriTemplate {
+    type Err = ::std::convert::Infallible;
+    fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
+        Ok(Self(value.to_string()))
     }
 }
-#[doc = "WaitTask"]
+impl ::std::fmt::Display for UriTemplate {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+#[doc = "`WaitTask`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -8182,66 +8268,6 @@ pub mod builder {
                 except_when: Ok(value.except_when),
                 retry: Ok(value.retry),
                 when: Ok(value.when),
-            }
-        }
-    }
-    #[derive(Clone, Debug)]
-    pub struct UriTemplate {
-        subtype_0: ::std::result::Result<
-            ::std::option::Option<::std::string::String>,
-            ::std::string::String,
-        >,
-        subtype_1: ::std::result::Result<
-            ::std::option::Option<::std::string::String>,
-            ::std::string::String,
-        >,
-    }
-    impl ::std::default::Default for UriTemplate {
-        fn default() -> Self {
-            Self {
-                subtype_0: Ok(Default::default()),
-                subtype_1: Ok(Default::default()),
-            }
-        }
-    }
-    impl UriTemplate {
-        pub fn subtype_0<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.subtype_0 = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for subtype_0: {}", e));
-            self
-        }
-        pub fn subtype_1<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.subtype_1 = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for subtype_1: {}", e));
-            self
-        }
-    }
-    impl ::std::convert::TryFrom<UriTemplate> for super::UriTemplate {
-        type Error = super::error::ConversionError;
-        fn try_from(
-            value: UriTemplate,
-        ) -> ::std::result::Result<Self, super::error::ConversionError> {
-            Ok(Self {
-                subtype_0: value.subtype_0?,
-                subtype_1: value.subtype_1?,
-            })
-        }
-    }
-    impl ::std::convert::From<super::UriTemplate> for UriTemplate {
-        fn from(value: super::UriTemplate) -> Self {
-            Self {
-                subtype_0: Ok(value.subtype_0),
-                subtype_1: Ok(value.subtype_1),
             }
         }
     }
