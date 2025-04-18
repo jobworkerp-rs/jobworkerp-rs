@@ -103,7 +103,7 @@ impl TaskExecutorTrait<'_> for DoAsExtWorkflowTaskExecutor<'_> {
         task_name: &str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         mut task_context: TaskContext,
-    ) -> Result<TaskContext, workflow::Error> {
+    ) -> Result<TaskContext, Box<workflow::Error>> {
         tracing::debug!("DoTaskExecutor: {}", task_name);
         task_context.add_position_name("do".to_string()).await;
         let do_yaml = match serde_yaml::to_string(self.task) {

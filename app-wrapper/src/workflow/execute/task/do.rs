@@ -48,8 +48,11 @@ impl<'a> DoTaskExecutor<'a> {
         task_map: Arc<IndexMap<String, (u32, Arc<Task>)>>,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         parent_task_context: TaskContext,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<TaskContext, workflow::Error>> + Send + 'b>>
-    {
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<Output = Result<TaskContext, Box<workflow::Error>>> + Send + 'b,
+        >,
+    > {
         Box::pin(async move {
             let mut prev_context = parent_task_context;
 
@@ -63,7 +66,7 @@ impl<'a> DoTaskExecutor<'a> {
                 if let Some((name, (pos, task))) = next_task_pair {
                     // parent_task.position().addIndex(iter.previousIndex());
                     tracing::info!("Executing task: {}", name);
-                    prev_context.add_position_index(pos.clone()).await;
+                    prev_context.add_position_index(*pos).await;
                     let task_executor = TaskExecutor::new(
                         self.job_executor_wrapper.clone(),
                         self.http_client.clone(),
@@ -128,12 +131,13 @@ impl TaskExecutorTrait<'_> for DoTaskExecutor<'_> {
     ///
     /// # Returns
     /// The updated task context after executing all tasks.
+    #[allow(clippy::manual_async_fn)]
     fn execute(
         &self,
         task_name: &str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
-    ) -> impl std::future::Future<Output = Result<TaskContext, workflow::Error>> + Send {
+    ) -> impl std::future::Future<Output = Result<TaskContext, Box<workflow::Error>>> + Send {
         async move {
             tracing::debug!("DoTaskExecutor: {}", task_name);
             task_context.add_position_name("do".to_string()).await;

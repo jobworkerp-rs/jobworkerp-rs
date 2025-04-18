@@ -183,7 +183,7 @@ impl TaskExecutorTrait<'_> for CallTaskExecutor<'_> {
         task_name: &str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
-    ) -> Result<TaskContext, workflow::Error> {
+    ) -> Result<TaskContext, Box<workflow::Error>> {
         let workflow::CallTask {
             // TODO: add other task types
             call,
@@ -283,11 +283,9 @@ impl TaskExecutorTrait<'_> for CallTaskExecutor<'_> {
                     Ok(task_context) => {
                         // remove call position
                         task_context.remove_position().await;
-                        return Ok(task_context);
+                        Ok(task_context)
                     }
-                    Err(e) => {
-                        return Err(e);
-                    }
+                    Err(e) => Err(e),
                 }
             } // _ => {
               //     tracing::error!("not supported the called function for now: {:?}", call);

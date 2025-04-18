@@ -121,30 +121,31 @@ impl UriTemplate {
     }
 }
 
-// impl From<String> for ErrorType {
-//     fn from(s: String) -> Self {
-//         ErrorType::RuntimeExpression(super::RuntimeExpression(s))
-//     }
-// }
-
-impl ToString for ErrorTitle {
-    fn to_string(&self) -> String {
-        self.subtype_0
-            .as_ref()
-            .map(|s| s.0.as_str())
-            .or(self.subtype_1.as_deref())
-            .unwrap_or("")
-            .to_string()
+impl std::fmt::Display for ErrorTitle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            self.subtype_0
+                .as_ref()
+                .map(|s| s.0.as_str())
+                .or(self.subtype_1.as_deref())
+                .unwrap_or("")
+        )
     }
 }
-impl ToString for ErrorDetails {
-    fn to_string(&self) -> String {
-        self.subtype_0
-            .as_ref()
-            .map(|s| s.0.as_str())
-            .or(self.subtype_1.as_deref())
-            .unwrap_or("")
-            .to_string()
+
+impl std::fmt::Display for ErrorDetails {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            self.subtype_0
+                .as_ref()
+                .map(|s| s.0.as_str())
+                .or(self.subtype_1.as_deref())
+                .unwrap_or("")
+        )
     }
 }
 
@@ -199,6 +200,7 @@ static ERROR_CODE_MAP: Lazy<HashMap<ErrorCode, u16>> = Lazy::new(|| {
     map
 });
 
+#[derive(Debug, Clone, Default)]
 pub struct ErrorFactory {}
 impl ErrorFactory {
     pub fn new() -> Self {
@@ -209,9 +211,9 @@ impl ErrorFactory {
         message: Option<String>,
         position: Option<&WorkflowPosition>,
         err: Option<&anyhow::Error>,
-    ) -> super::Error {
+    ) -> Box<super::Error> {
         let status_code = ERROR_CODE_MAP.get(&status).copied().unwrap_or(500);
-        Error {
+        Box::new(Error {
             title: message.map(|d| ErrorTitle {
                 subtype_0: Some(super::RuntimeExpression(d)),
                 subtype_1: None,
@@ -223,18 +225,18 @@ impl ErrorFactory {
                 "http-error://{}",
                 status.to_string().to_lowercase().replace('_', "-")
             ))),
-        }
+        })
     }
     pub fn create_from_serde_json(
         err: &serde_json::error::Error,
         message: Option<&str>,
         code: Option<ErrorCode>,
         position: Option<&WorkflowPosition>,
-    ) -> super::Error {
+    ) -> Box<super::Error> {
         let status_code = code
             .and_then(|c| ERROR_CODE_MAP.get(&c).copied())
             .unwrap_or(400);
-        Error {
+        Box::new(Error {
             title: message.map(|d| ErrorTitle {
                 subtype_0: Some(super::RuntimeExpression(d.to_string())),
                 subtype_1: None,
@@ -252,18 +254,18 @@ impl ErrorFactory {
                     .to_lowercase()
                     .replace('_', "-")
             ))),
-        }
+        })
     }
     pub fn create_from_liquid(
         err: &liquid::Error,
         message: Option<&str>,
         status: Option<ErrorCode>,
         position: Option<&WorkflowPosition>,
-    ) -> super::Error {
+    ) -> Box<super::Error> {
         let status_code = status
             .and_then(|c| ERROR_CODE_MAP.get(&c).copied())
             .unwrap_or(400);
-        Error {
+        Box::new(Error {
             title: message.map(|d| ErrorTitle {
                 subtype_0: Some(super::RuntimeExpression(d.to_string())),
                 subtype_1: None,
@@ -282,7 +284,7 @@ impl ErrorFactory {
                     .to_lowercase()
                     .replace('_', "-")
             ))),
-        }
+        })
     }
 
     // エラーコードを使用する共通ヘルパーメソッド
@@ -292,9 +294,9 @@ impl ErrorFactory {
         message: String,
         position: Option<&WorkflowPosition>,
         detail: Option<ErrorDetails>,
-    ) -> Error {
+    ) -> Box<super::Error> {
         let status_code = ERROR_CODE_MAP.get(&code).copied().unwrap_or(500);
-        Error {
+        Box::new(Error {
             title: Some(ErrorTitle {
                 subtype_0: Some(RuntimeExpression(message)),
                 subtype_1: None,
@@ -306,7 +308,7 @@ impl ErrorFactory {
                 "http-error://{}",
                 code.to_string().to_lowercase().replace('_', "-")
             ))),
-        }
+        })
     }
 
     // エラーメソッドをErrorCodeを使って簡潔に実装
@@ -315,7 +317,7 @@ impl ErrorFactory {
         message: String,
         position: Option<&WorkflowPosition>,
         detail: Option<ErrorDetails>,
-    ) -> Error {
+    ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::BadArgument, message, position, detail)
     }
 
@@ -324,7 +326,7 @@ impl ErrorFactory {
         message: String,
         position: Option<&WorkflowPosition>,
         detail: Option<ErrorDetails>,
-    ) -> Error {
+    ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::Unauthorized, message, position, detail)
     }
 
@@ -333,7 +335,7 @@ impl ErrorFactory {
         message: String,
         position: Option<&WorkflowPosition>,
         detail: Option<ErrorDetails>,
-    ) -> Error {
+    ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::PaymentRequired, message, position, detail)
     }
 
@@ -342,7 +344,7 @@ impl ErrorFactory {
         message: String,
         position: Option<&WorkflowPosition>,
         detail: Option<ErrorDetails>,
-    ) -> Error {
+    ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::PermissionDenied, message, position, detail)
     }
 
@@ -351,7 +353,7 @@ impl ErrorFactory {
         message: String,
         position: Option<&WorkflowPosition>,
         detail: Option<ErrorDetails>,
-    ) -> Error {
+    ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::NotFound, message, position, detail)
     }
 
@@ -360,7 +362,7 @@ impl ErrorFactory {
         message: String,
         position: Option<&WorkflowPosition>,
         detail: Option<ErrorDetails>,
-    ) -> Error {
+    ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::MethodNotAllowed, message, position, detail)
     }
 
@@ -369,7 +371,7 @@ impl ErrorFactory {
         message: String,
         position: Option<&WorkflowPosition>,
         detail: Option<ErrorDetails>,
-    ) -> Error {
+    ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::NotAcceptable, message, position, detail)
     }
 
@@ -378,7 +380,7 @@ impl ErrorFactory {
         message: String,
         position: Option<&WorkflowPosition>,
         detail: Option<ErrorDetails>,
-    ) -> Error {
+    ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::RequestTimeout, message, position, detail)
     }
 
@@ -387,7 +389,7 @@ impl ErrorFactory {
         message: String,
         position: Option<&WorkflowPosition>,
         detail: Option<ErrorDetails>,
-    ) -> Error {
+    ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::Conflict, message, position, detail)
     }
 
@@ -396,7 +398,7 @@ impl ErrorFactory {
         message: String,
         position: Option<&WorkflowPosition>,
         detail: Option<ErrorDetails>,
-    ) -> Error {
+    ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::Gone, message, position, detail)
     }
 
@@ -405,7 +407,7 @@ impl ErrorFactory {
         message: String,
         position: Option<&WorkflowPosition>,
         detail: Option<ErrorDetails>,
-    ) -> Error {
+    ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::PreconditionFailed, message, position, detail)
     }
 
@@ -414,7 +416,7 @@ impl ErrorFactory {
         message: String,
         position: Option<&WorkflowPosition>,
         detail: Option<ErrorDetails>,
-    ) -> Error {
+    ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::UnsupportedMediaType, message, position, detail)
     }
 
@@ -423,7 +425,7 @@ impl ErrorFactory {
         message: String,
         position: Option<&WorkflowPosition>,
         detail: Option<ErrorDetails>,
-    ) -> Error {
+    ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::InternalError, message, position, detail)
     }
 
@@ -432,7 +434,7 @@ impl ErrorFactory {
         message: String,
         position: Option<&WorkflowPosition>,
         detail: Option<ErrorDetails>,
-    ) -> Error {
+    ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::NotImplemented, message, position, detail)
     }
 
@@ -441,7 +443,7 @@ impl ErrorFactory {
         message: String,
         position: Option<&WorkflowPosition>,
         detail: Option<ErrorDetails>,
-    ) -> Error {
+    ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::TooManyRequests, message, position, detail)
     }
 
@@ -450,7 +452,7 @@ impl ErrorFactory {
         message: String,
         position: Option<&WorkflowPosition>,
         detail: Option<ErrorDetails>,
-    ) -> Error {
+    ) -> Box<super::Error> {
         self.create_error_with_code(
             ErrorCode::UnavailableForLegalReasons,
             message,
@@ -464,7 +466,7 @@ impl ErrorFactory {
         message: String,
         position: Option<&WorkflowPosition>,
         detail: Option<ErrorDetails>,
-    ) -> Error {
+    ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::BadGateway, message, position, detail)
     }
 
@@ -473,7 +475,7 @@ impl ErrorFactory {
         message: String,
         position: Option<&WorkflowPosition>,
         detail: Option<ErrorDetails>,
-    ) -> Error {
+    ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::ServiceUnavailable, message, position, detail)
     }
 
@@ -482,7 +484,7 @@ impl ErrorFactory {
         message: String,
         position: Option<&WorkflowPosition>,
         detail: Option<ErrorDetails>,
-    ) -> Error {
+    ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::GatewayTimeout, message, position, detail)
     }
 
@@ -492,14 +494,14 @@ impl ErrorFactory {
         detail: Option<ErrorDetails>,
         instance: Option<ErrorInstance>,
         status: i64,
-    ) -> Error {
-        Error {
+    ) -> Box<super::Error> {
+        Box::new(Error {
             title,
             detail,
             instance,
             status,
             type_: ErrorType::UriTemplate(super::UriTemplate("http-error://custom".to_string())),
-        }
+        })
     }
 }
 
