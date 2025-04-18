@@ -39,7 +39,7 @@ impl TaskExecutorTrait<'_> for SwitchTaskExecutor {
         _task_id: &str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         mut task_context: TaskContext,
-    ) -> Result<TaskContext, workflow::Error> {
+    ) -> Result<TaskContext, Box<workflow::Error>> {
         tracing::debug!("SwitchTaskExecutor: {}", _task_id);
         task_context.output = task_context.input.clone();
         task_context.add_position_name("switch".to_string()).await;

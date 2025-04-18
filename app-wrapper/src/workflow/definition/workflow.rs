@@ -847,15 +847,9 @@ impl Error {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct ErrorDetails {
-    #[serde(
-        default,
-        skip_serializing_if = "::std::option::Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub subtype_0: ::std::option::Option<RuntimeExpression>,
-    #[serde(
-        default,
-        skip_serializing_if = "::std::option::Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub subtype_1: ::std::option::Option<::std::string::String>,
 }
 impl ::std::convert::From<&ErrorDetails> for ErrorDetails {
@@ -1059,15 +1053,9 @@ impl ::std::convert::From<RuntimeExpression> for ErrorInstance {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct ErrorTitle {
-    #[serde(
-        default,
-        skip_serializing_if = "::std::option::Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub subtype_0: ::std::option::Option<RuntimeExpression>,
-    #[serde(
-        default,
-        skip_serializing_if = "::std::option::Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub subtype_1: ::std::option::Option<::std::string::String>,
 }
 impl ::std::convert::From<&ErrorTitle> for ErrorTitle {
@@ -1348,15 +1336,9 @@ impl ExternalResource {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct FlowDirective {
-    #[serde(
-        default,
-        skip_serializing_if = "::std::option::Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub subtype_0: ::std::option::Option<FlowDirectiveEnum>,
-    #[serde(
-        default,
-        skip_serializing_if = "::std::option::Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub subtype_1: ::std::option::Option<::std::string::String>,
 }
 impl ::std::convert::From<&FlowDirective> for FlowDirective {

@@ -31,7 +31,7 @@ impl TaskExecutorTrait<'_> for SetTaskExecutor<'_> {
         task_name: &str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         mut task_context: TaskContext,
-    ) -> Result<TaskContext, workflow::Error> {
+    ) -> Result<TaskContext, Box<workflow::Error>> {
         tracing::debug!("SetTaskExecutor: {}", task_name);
         task_context.add_position_name("set".to_string()).await;
         let expression = Self::expression(

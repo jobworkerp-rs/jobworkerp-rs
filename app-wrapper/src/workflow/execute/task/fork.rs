@@ -38,7 +38,7 @@ impl<'a> ForkTaskExecutor<'a> {
         workflow_context: Arc<RwLock<WorkflowContext>>,
         prev_context: Arc<TaskContext>,
         task: Arc<Task>,
-    ) -> Result<TaskContext, workflow::Error> {
+    ) -> Result<TaskContext, Box<workflow::Error>> {
         let task_executor = TaskExecutor::new(
             parent_executor.job_executor_wrapper.clone(),
             parent_executor.http_client.clone(),
@@ -56,12 +56,13 @@ impl UseExpressionTransformer for ForkTaskExecutor<'_> {}
 impl UseJqAndTemplateTransformer for ForkTaskExecutor<'_> {}
 
 impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor<'a> {
+    #[allow(clippy::manual_async_fn)]
     fn execute(
         &'a self,
         task_name: &'a str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
-    ) -> impl Future<Output = Result<TaskContext, workflow::Error>> + Send {
+    ) -> impl Future<Output = Result<TaskContext, Box<workflow::Error>>> + Send {
         async move {
             tracing::debug!("ForkTaskExecutor: {}", task_name);
 
@@ -70,7 +71,7 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor<'a> {
             let branches = &self.task.fork.branches;
             let compete = self.task.fork.compete;
 
-            let mut tasks: Vec<BoxFuture<Result<TaskContext, workflow::Error>>> = Vec::new();
+            let mut tasks: Vec<BoxFuture<Result<TaskContext, Box<workflow::Error>>>> = Vec::new();
             let mut original_task_context = task_context.clone();
             let task_context_ref = Arc::new(task_context);
 
@@ -104,13 +105,11 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor<'a> {
                 loop {
                     if tasks.is_empty() {
                         // all tasks failed
-                        return Err(
-                            workflow::errors::ErrorFactory::new().service_unavailable(
-                                "All tasks failed in compete mode".to_string(),
-                                Some(&position),
-                                Some(anyhow::anyhow!("{:#?}", all_errors).into()),
-                            ),
-                        );
+                        return Err(workflow::errors::ErrorFactory::new().service_unavailable(
+                            "All tasks failed in compete mode".to_string(),
+                            Some(&position),
+                            Some(anyhow::anyhow!("{:#?}", all_errors).into()),
+                        ));
                     }
 
                     let (result, _index, remaining) = future::select_all(tasks).await;

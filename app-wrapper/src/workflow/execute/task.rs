@@ -72,7 +72,7 @@ impl TaskExecutor {
         &self,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         parent_task: Arc<TaskContext>,
-    ) -> Result<TaskContext, workflow::Error> {
+    ) -> Result<TaskContext, Box<workflow::Error>> {
         let input = parent_task.output.clone();
         let mut task_context = TaskContext::new(
             Some(self.task.clone()),
@@ -84,10 +84,10 @@ impl TaskExecutor {
         task_context.add_position_name(self.task_name.clone()).await;
 
         let expression = Self::expression(
-                &*workflow_context.read().await,
-                Arc::new(task_context.clone()),
-            )
-            .await;
+            &*workflow_context.read().await,
+            Arc::new(task_context.clone()),
+        )
+        .await;
         let expression = match expression {
             Ok(expression) => expression,
             Err(mut e) => {
@@ -158,7 +158,7 @@ impl TaskExecutor {
         &self,
         expression: &BTreeMap<String, Arc<serde_json::Value>>,
         mut task_context: TaskContext,
-    ) -> Result<TaskContext, workflow::Error> {
+    ) -> Result<TaskContext, Box<workflow::Error>> {
         // XXX invalid by input transformation? (transform argument inner each task)
         // Validate input schema
         if let Some(schema) = self.task.input().and_then(|i| i.schema.as_ref()) {
@@ -185,7 +185,7 @@ impl TaskExecutor {
         // Transform input
         let transformed_input = if let Some(from) = self.task.input().and_then(|i| i.from.as_ref())
         {
-            Self::transform_input(task_context.raw_input.clone(), from, &expression)?
+            Self::transform_input(task_context.raw_input.clone(), from, expression)?
         } else {
             task_context.raw_input.clone()
         };
@@ -201,7 +201,7 @@ impl TaskExecutor {
         workflow_context: Arc<RwLock<WorkflowContext>>,
         expression: &BTreeMap<String, Arc<serde_json::Value>>,
         mut task_context: TaskContext,
-    ) -> Result<TaskContext, workflow::Error> {
+    ) -> Result<TaskContext, Box<workflow::Error>> {
         // Transform output
         tracing::debug!("Task raw output: {:#?}", task_context.raw_output);
         if let Some(as_) = self.task.output().and_then(|o| o.as_.as_ref()) {
@@ -257,7 +257,7 @@ impl TaskExecutor {
         &self,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
-    ) -> Result<TaskContext, workflow::Error> {
+    ) -> Result<TaskContext, Box<workflow::Error>> {
         match self.task.as_ref() {
             Task::CallTask(task) => {
                 let task_executor = CallTaskExecutor::new(
@@ -352,7 +352,7 @@ pub trait TaskExecutorTrait<'a>: Send + Sync {
         task_name: &'a str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
-    ) -> impl std::future::Future<Output = Result<TaskContext, workflow::Error>> + Send;
+    ) -> impl std::future::Future<Output = Result<TaskContext, Box<workflow::Error>>> + Send;
 }
 
 // pub struct EmitTaskExecutor<'a> {
@@ -389,7 +389,7 @@ impl TaskExecutorTrait<'_> for RaiseTaskExecutor<'_> {
         _task_name: &str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
-    ) -> Result<TaskContext, workflow::Error> {
+    ) -> Result<TaskContext, Box<workflow::Error>> {
         tracing::error!("RaiseTaskExecutor raise error: {:?}", self.task.raise.error);
         // TODO add error detail information to workflow_context
         let mut pos = task_context.position.lock().await.clone();
@@ -418,7 +418,7 @@ impl TaskExecutorTrait<'_> for WaitTaskExecutor<'_> {
         task_name: &str,
         _workflow_context: Arc<RwLock<WorkflowContext>>,
         mut task_context: TaskContext,
-    ) -> Result<TaskContext, workflow::Error> {
+    ) -> Result<TaskContext, Box<workflow::Error>> {
         tracing::info!("WaitTask: {}: {:?}", task_name, self.task);
         tokio::time::sleep(std::time::Duration::from_millis(self.task.wait.to_millis())).await;
         task_context.set_output(task_context.input.clone());

@@ -214,7 +214,7 @@ impl WorkflowExecutor {
             if let Some((name, (pos, task))) = next_task_pair {
                 // parent_task.position().addIndex(iter.previousIndex());
                 tracing::info!("Executing task: {}", name);
-                prev_context.add_position_index(pos.clone()).await;
+                prev_context.add_position_index(*pos).await;
                 let task_executor = TaskExecutor::new(
                     self.job_executors.clone(),
                     self.http_client.clone(),

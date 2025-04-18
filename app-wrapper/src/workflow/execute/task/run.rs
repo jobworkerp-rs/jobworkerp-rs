@@ -111,7 +111,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor<'_> {
         task_name: &str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         mut task_context: TaskContext,
-    ) -> Result<TaskContext, workflow::Error> {
+    ) -> Result<TaskContext, Box<workflow::Error>> {
         // TODO: add other task types
         let workflow::RunTask {
             // TODO

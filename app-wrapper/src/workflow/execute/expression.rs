@@ -8,7 +8,7 @@ pub trait UseExpression {
         workflow_context: &WorkflowContext,
         task_context: Arc<TaskContext>,
     ) -> impl std::future::Future<
-        Output = Result<BTreeMap<String, Arc<serde_json::Value>>, workflow::Error>,
+        Output = Result<BTreeMap<String, Arc<serde_json::Value>>, Box<workflow::Error>>,
     > + Send {
         async move {
             let mut expression = BTreeMap::<String, Arc<serde_json::Value>>::new();

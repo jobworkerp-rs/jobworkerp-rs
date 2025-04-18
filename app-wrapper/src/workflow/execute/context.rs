@@ -359,16 +359,9 @@ impl From<jobworkerp_runner::jobworkerp::runner::workflow_result::WorkflowStatus
     }
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 pub struct WorkflowPosition {
     pub path: StackWithHistory<serde_json::Value>,
-}
-impl Default for WorkflowPosition {
-    fn default() -> Self {
-        Self {
-            path: Default::default(),
-        }
-    }
 }
 
 impl WorkflowPosition {
@@ -380,9 +373,10 @@ impl WorkflowPosition {
     pub fn push(&mut self, name: String) {
         self.path.push(serde_json::Value::String(name));
     }
-    pub fn push_idx(&mut self, idx: u32) {
+    pub fn push_idx(&mut self, idx: u32) -> bool {
         serde_json::Number::from_u128(idx as u128)
-            .map(|n| self.path.push(serde_json::Value::Number(n)));
+            .map(|n| self.path.push(serde_json::Value::Number(n)))
+            .is_some()
     }
     pub fn pop(&mut self) -> Option<serde_json::Value> {
         self.path.pop()
