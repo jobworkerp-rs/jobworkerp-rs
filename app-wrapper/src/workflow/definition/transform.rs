@@ -1,21 +1,21 @@
-use super::workflow::{InputFrom, OutputAs};
+use super::workflow::{self, ExportAs, InputFrom, OutputAs};
 use anyhow::Result;
 use liquid::Parser;
 use once_cell::sync::OnceCell;
 use std::{collections::BTreeMap, sync::Arc};
 
 static LIQUID_PARSER: OnceCell<Parser> = OnceCell::new();
-pub trait UseJqAndTemplateTransformer {
-    const FILTER_START: &'static str = "${";
-    const FILTER_END: &'static str = "}";
-    const TEMPLATE_START: &'static str = "$${";
-    const TEMPLATE_END: &'static str = "}";
+const FILTER_START: &str = "${";
+const FILTER_END: &str = "}";
+const TEMPLATE_START: &str = "$${";
+const TEMPLATE_END: &str = "}";
 
+pub trait UseJqAndTemplateTransformer {
     fn execute_transform(
         raw_input: Arc<serde_json::Value>,
         filter: &str,
         context: &BTreeMap<String, Arc<serde_json::Value>>,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<serde_json::Value, Box<workflow::Error>> {
         if Self::is_transform_template(filter) {
             Self::execute_liquid_template(raw_input, filter, context).map(|r| {
                 match serde_json::from_str(r.as_str()) {
@@ -36,17 +36,15 @@ pub trait UseJqAndTemplateTransformer {
         raw_input: Arc<serde_json::Value>,
         filter: &str,
         context: &BTreeMap<String, Arc<serde_json::Value>>,
-    ) -> Result<Arc<serde_json::Value>> {
+    ) -> Result<Arc<serde_json::Value>, Box<workflow::Error>> {
         Self::execute_transform(raw_input, filter, context).map(Arc::new)
     }
 
     fn is_transform_filter(filter: &str) -> bool {
-        filter.trim_start().starts_with(Self::FILTER_START)
-            && filter.trim_end().ends_with(Self::FILTER_END)
+        filter.trim_start().starts_with(FILTER_START) && filter.trim_end().ends_with(FILTER_END)
     }
     fn is_transform_template(filter: &str) -> bool {
-        filter.trim_start().starts_with(Self::TEMPLATE_START)
-            && filter.trim_end().ends_with(Self::TEMPLATE_END)
+        filter.trim_start().starts_with(TEMPLATE_START) && filter.trim_end().ends_with(TEMPLATE_END)
     }
     fn eval_as_bool(value: &serde_json::Value) -> bool {
         match value {
@@ -58,6 +56,14 @@ pub trait UseJqAndTemplateTransformer {
             serde_json::Value::Null => false,
         }
     }
+    fn execute_transform_as_bool(
+        raw_input: Arc<serde_json::Value>,
+        if_cond: &str,
+        expression: &BTreeMap<String, Arc<serde_json::Value>>,
+    ) -> Result<bool, Box<workflow::Error>> {
+        Self::execute_transform(raw_input.clone(), if_cond, expression)
+            .map(|v| Self::eval_as_bool(&v))
+    }
 
     //
     // internal functions
@@ -66,20 +72,29 @@ pub trait UseJqAndTemplateTransformer {
         raw_input: Arc<serde_json::Value>,
         filter: &str,
         context: &BTreeMap<String, Arc<serde_json::Value>>,
-    ) -> Result<Arc<serde_json::Value>> {
+    ) -> Result<Arc<serde_json::Value>, Box<workflow::Error>> {
         Self::execute_jq_filter(raw_input, filter, context).map(Arc::new)
     }
     fn execute_jq_filter(
         raw_input: Arc<serde_json::Value>,
         filter: &str,
         context: &BTreeMap<String, Arc<serde_json::Value>>,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<serde_json::Value, Box<workflow::Error>> {
         if Self::is_transform_filter(filter) {
             let filter = filter
                 .trim()
-                .trim_start_matches(Self::FILTER_START)
-                .trim_end_matches(Self::FILTER_END);
-            command_utils::util::jq::execute_jq((*raw_input).clone(), filter, context)
+                .trim_start_matches(FILTER_START)
+                .trim_end_matches(FILTER_END);
+            command_utils::util::jq::execute_jq((*raw_input).clone(), filter, context).map_err(
+                |e| {
+                    workflow::errors::ErrorFactory::create(
+                        workflow::errors::ErrorCode::BadArgument,
+                        Some("failed to parse jq filter".to_string()),
+                        None,
+                        Some(&e),
+                    )
+                },
+            )
         } else {
             // treat as value(no transform)
             Ok(serde_json::Value::String(filter.to_owned()))
@@ -89,39 +104,58 @@ pub trait UseJqAndTemplateTransformer {
         raw_input: Arc<serde_json::Value>,
         template: &str,
         context: &BTreeMap<String, Arc<serde_json::Value>>,
-    ) -> Result<String> {
+    ) -> Result<String, Box<workflow::Error>> {
         if Self::is_transform_template(template) {
-            let mut template = template
-                .trim()
-                .trim_start_matches(Self::TEMPLATE_START)
-                .trim_end() // remove last spacing
-                .to_string();
-            template.pop(); // remove last '}'
-            let liquid_parser =
-                LIQUID_PARSER.get_or_init(|| liquid::ParserBuilder::with_stdlib().build().unwrap());
-            let template = liquid_parser.parse(template.as_str())?;
+            // for error transformation
+            fn transform_inner(
+                raw_in: &serde_json::Value,
+                con: &BTreeMap<String, Arc<serde_json::Value>>,
+                templ: &str,
+            ) -> Result<String, liquid::Error> {
+                let mut templ = templ
+                    .trim()
+                    .trim_start_matches(TEMPLATE_START)
+                    // .trim_end_matches(TEMPLATE_END) // remove last all '}' but only one
+                    .trim_end()
+                    .to_string();
+                templ.pop(); // remove last one '}'
+                let liquid_parser = LIQUID_PARSER
+                    .get_or_init(|| liquid::ParserBuilder::with_stdlib().build().unwrap());
+                let templ = liquid_parser.parse(templ.as_str())?;
 
-            let mut globals = liquid::to_object(context)?;
-            // overwrite with raw_input if key is duplicated
-            match &*raw_input {
-                serde_json::Value::Object(map) => {
-                    globals.extend(liquid::to_object(&map)?);
+                let mut globals = liquid::to_object(con)?;
+                // overwrite with raw_input if key is duplicated
+                match raw_in {
+                    serde_json::Value::Object(map) => {
+                        globals.extend(liquid::to_object(&map)?);
+                    }
+                    _ => {
+                        // Convert serde_json::Value to liquid::model::Value
+                        globals.extend(liquid::to_object(
+                            &serde_json::json!({"raw_input":(*raw_in).clone()}),
+                        )?);
+                    }
                 }
-                _ => {
-                    // Convert serde_json::Value to liquid::model::Value
-                    globals.extend(liquid::to_object(
-                        &serde_json::json!({"raw_input":(*raw_input).clone()}),
-                    )?);
-                }
+                let output = templ.render(&globals)?;
+                Ok(output)
             }
-            let output = template.render(&globals)?;
-            Ok(output)
+            transform_inner(&raw_input, context, template).map_err(|e| {
+                workflow::errors::ErrorFactory::create_from_liquid(
+                    &e,
+                    Some("failed to parse liquid template"),
+                    None,
+                    None,
+                )
+            })
         } else {
             // treat as value(no transform)
             Ok(template.to_owned())
         }
     }
 }
+
+pub trait UseBoolTransformer: UseJqAndTemplateTransformer {}
+
 #[cfg(test)]
 mod test_use_jq_and_template_transformer {
     use super::*;
@@ -192,18 +226,18 @@ mod test_use_jq_and_template_transformer {
             "key": 1,
             "key2": 2,
         }));
-        let template = "$${{{key}}}";
+        let template = "$${{{ key }}}";
         let context = BTreeMap::new();
         let result =
             DefaultTransformer::execute_liquid_template(input.clone(), template, &context).unwrap();
         assert_eq!(result, "1");
 
-        let template = "$${{{key2}}}";
+        let template = "$${{{ key2 }}}";
         let result =
             DefaultTransformer::execute_liquid_template(input.clone(), template, &context).unwrap();
         assert_eq!(result, "2");
 
-        let template = "$${{{key | append: 'hoge'}}}";
+        let template = "$${{{ key | append: 'hoge' }}}";
         let result =
             DefaultTransformer::execute_liquid_template(input.clone(), template, &context).unwrap();
         assert_eq!(result, "1hoge");
@@ -221,7 +255,7 @@ mod test_use_jq_and_template_transformer {
             DefaultTransformer::execute_transform(input.clone(), filter, &context).unwrap();
         assert_eq!(result, json!(1));
 
-        let filter = "$${{{key}}}";
+        let filter = "$${{{ key }}}";
         let result =
             DefaultTransformer::execute_transform(input.clone(), filter, &context).unwrap();
         assert_eq!(result, serde_json::Value::Number(1.into()));
@@ -239,7 +273,7 @@ pub trait UseExpressionTransformer: UseJqAndTemplateTransformer {
         raw_input: Arc<serde_json::Value>,
         transform_filter: &InputFrom,
         context: &BTreeMap<String, Arc<serde_json::Value>>,
-    ) -> Result<Arc<serde_json::Value>> {
+    ) -> Result<Arc<serde_json::Value>, Box<workflow::Error>> {
         match transform_filter {
             InputFrom::Variant0(filter) => Self::execute_transform_ref(raw_input, filter, context),
             InputFrom::Variant1(value) => Self::transform_ref_map(raw_input, value, context),
@@ -250,17 +284,27 @@ pub trait UseExpressionTransformer: UseJqAndTemplateTransformer {
         raw_input: Arc<serde_json::Value>,
         transform_filter: &OutputAs,
         context: &BTreeMap<String, Arc<serde_json::Value>>,
-    ) -> Result<Arc<serde_json::Value>> {
+    ) -> Result<Arc<serde_json::Value>, Box<workflow::Error>> {
         match transform_filter {
             OutputAs::Variant0(filter) => Self::execute_transform_ref(raw_input, filter, context),
             OutputAs::Variant1(value) => Self::transform_ref_map(raw_input, value, context),
+        }
+    }
+    fn transform_export(
+        raw_input: Arc<serde_json::Value>,
+        transform_filter: &ExportAs,
+        context: &BTreeMap<String, Arc<serde_json::Value>>,
+    ) -> Result<Arc<serde_json::Value>, Box<workflow::Error>> {
+        match transform_filter {
+            ExportAs::Variant0(filter) => Self::execute_transform_ref(raw_input, filter, context),
+            ExportAs::Variant1(value) => Self::transform_ref_map(raw_input, value, context),
         }
     }
     fn transform_value(
         raw_input: Arc<serde_json::Value>,
         value: serde_json::Value,
         context: &BTreeMap<String, Arc<serde_json::Value>>,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<serde_json::Value, Box<workflow::Error>> {
         match value {
             serde_json::Value::Object(map) => {
                 // recursive
@@ -288,7 +332,7 @@ pub trait UseExpressionTransformer: UseJqAndTemplateTransformer {
         raw_input: Arc<serde_json::Value>,
         map_filter_or_value: serde_json::Map<String, serde_json::Value>,
         context: &BTreeMap<String, Arc<serde_json::Value>>,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<serde_json::Value, Box<workflow::Error>> {
         let mut result = serde_json::Map::new();
         for (key, value) in map_filter_or_value {
             match value {
@@ -328,7 +372,7 @@ pub trait UseExpressionTransformer: UseJqAndTemplateTransformer {
         raw_input: Arc<serde_json::Value>,
         value_filter: &serde_json::Value,
         context: &BTreeMap<String, Arc<serde_json::Value>>,
-    ) -> Result<Arc<serde_json::Value>> {
+    ) -> Result<Arc<serde_json::Value>, Box<workflow::Error>> {
         match value_filter {
             serde_json::Value::String(filter) => {
                 Self::execute_transform_ref(raw_input, filter, context)
@@ -342,7 +386,7 @@ pub trait UseExpressionTransformer: UseJqAndTemplateTransformer {
                         Self::transform_ref_value(raw_input.clone(), value, context)
                             .map(|v| (*v).clone()) // XXX clone all twice(jq and map)
                     })
-                    .collect::<Result<Vec<_>>>()?;
+                    .collect::<Result<Vec<_>, Box<workflow::Error>>>()?;
                 Ok(Arc::new(serde_json::Value::Array(arr)))
             }
             // no transform (low cost)
@@ -354,7 +398,7 @@ pub trait UseExpressionTransformer: UseJqAndTemplateTransformer {
         raw_input: Arc<serde_json::Value>,
         map_filter_or_value: &serde_json::Map<String, serde_json::Value>,
         context: &BTreeMap<String, Arc<serde_json::Value>>,
-    ) -> Result<Arc<serde_json::Value>> {
+    ) -> Result<Arc<serde_json::Value>, Box<workflow::Error>> {
         let mut result = serde_json::Map::new();
         for (key, value) in map_filter_or_value {
             match value {

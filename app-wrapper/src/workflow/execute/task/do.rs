@@ -1,126 +1,172 @@
 use crate::workflow::{
     definition::{
         transform::UseJqAndTemplateTransformer,
-        workflow::{self},
+        workflow::{self, Task},
     },
     execute::{
-        context::{TaskContext, UseExpression, WorkflowContext},
-        job::{JobExecutorWrapper, UseJobExecutorHelper},
+        context::{TaskContext, Then, WorkflowContext, WorkflowStatus},
+        expression::UseExpression,
+        job::JobExecutorWrapper,
+        task::TaskExecutor,
     },
 };
 use anyhow::Result;
-use jobworkerp_runner::jobworkerp::runner::{workflow_result::WorkflowStatus, InlineWorkflowArgs};
-use prost::Message;
-use proto::jobworkerp::data::RunnerType;
-use std::sync::Arc;
+use debug_stub_derive::DebugStub;
+use indexmap::IndexMap;
+use infra_utils::infra::net::reqwest;
+use std::{pin::Pin, sync::Arc};
 use tokio::sync::RwLock;
 
 use super::TaskExecutorTrait;
 
+#[derive(DebugStub, Clone)]
 pub struct DoTaskExecutor<'a> {
     task: &'a workflow::DoTask,
-    job_executor_wrapper: Arc<JobExecutorWrapper>,
+    #[debug_stub = "AppModule"]
+    pub job_executor_wrapper: Arc<JobExecutorWrapper>,
+    #[debug_stub = "reqwest::HttpClient"]
+    pub http_client: reqwest::ReqwestClient,
 }
 impl UseJqAndTemplateTransformer for DoTaskExecutor<'_> {}
 impl UseExpression for DoTaskExecutor<'_> {}
 
 impl<'a> DoTaskExecutor<'a> {
-    const TIMEOUT_SEC: u32 = 1800; // 30 minutes
-    pub fn new(task: &'a workflow::DoTask, job_executor_wrapper: Arc<JobExecutorWrapper>) -> Self {
+    pub fn new(
+        task: &'a workflow::DoTask,
+        job_executor_wrapper: Arc<JobExecutorWrapper>,
+        http_client: reqwest::ReqwestClient,
+    ) -> Self {
         Self {
             task,
             job_executor_wrapper,
+            http_client,
         }
     }
-    async fn execute_by_jobworkerp(
-        &self,
-        json_or_yaml: &str,
-        // XXX runner settings and options in metadata
-        metadata: &serde_json::Value,
-        input: serde_json::Value,
-        context: serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        // XXX timeout_sec: None
-        let worker_params = metadata.get(crate::workflow::definition::WORKER_PARAMS_METADATA_LABEL);
-        let args = InlineWorkflowArgs {
-            workflow_source: Some(
-                jobworkerp_runner::jobworkerp::runner::inline_workflow_args::WorkflowSource::WorkflowData(
-                    json_or_yaml.to_string(),
-                ),
-            ),
-            input: input.to_string(),
-            workflow_context: if context.is_null() {
-                None
-            } else {
-                Some(context.to_string())
-            },
-        };
-        let worker_data = self
-            .job_executor_wrapper
-            .create_worker_data_from(
-                RunnerType::InlineWorkflow.as_str_name(),
-                worker_params.cloned(),
-                vec![],
-            )
-            .await?;
-        // workflow result
-        let result = self
-            .job_executor_wrapper
-            .setup_worker_and_enqueue(
-                RunnerType::InlineWorkflow.as_str_name(),
-                worker_data,
-                args.encode_to_vec(),
-                Self::TIMEOUT_SEC,
-            )
-            .await?;
-        match result {
-            serde_json::Value::Object(mut map) => {
-                let status = map.remove("status");
-                if status.is_none_or(|s| s == WorkflowStatus::Completed.as_str_name()) {
-                    Ok(map.remove("output").unwrap_or_default())
+
+    fn execute_task_list<'b>(
+        &'b self,
+        task_map: Arc<IndexMap<String, (u32, Arc<Task>)>>,
+        workflow_context: Arc<RwLock<WorkflowContext>>,
+        parent_task_context: TaskContext,
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<Output = Result<TaskContext, Box<workflow::Error>>> + Send + 'b,
+        >,
+    > {
+        Box::pin(async move {
+            let mut prev_context = parent_task_context;
+
+            let mut task_iterator = task_map.iter();
+            let mut next_task_pair = task_iterator.next();
+            let lock = workflow_context.read().await;
+            let status = lock.status.clone();
+            drop(lock);
+
+            while next_task_pair.is_some() && status == WorkflowStatus::Running {
+                if let Some((name, (pos, task))) = next_task_pair {
+                    // parent_task.position().addIndex(iter.previousIndex());
+                    tracing::info!("Executing task: {}", name);
+                    prev_context.add_position_index(*pos).await;
+                    let task_executor = TaskExecutor::new(
+                        self.job_executor_wrapper.clone(),
+                        self.http_client.clone(),
+                        name,
+                        task.clone(),
+                    );
+                    let result_task_context = task_executor
+                        .execute(workflow_context.clone(), Arc::new(prev_context))
+                        .await?;
+                    let flow_directive = result_task_context.flow_directive.clone();
+                    match flow_directive {
+                        Then::Continue => {
+                            result_task_context.remove_position().await;
+
+                            prev_context = result_task_context;
+                            next_task_pair = task_iterator.next();
+                            tracing::info!(
+                                "Task Continue next: {}",
+                                next_task_pair.map(|p| p.0).unwrap_or(&"".to_string()),
+                            );
+                        }
+                        Then::End => {
+                            prev_context = result_task_context;
+                            workflow_context.write().await.status = WorkflowStatus::Completed;
+                            next_task_pair = None;
+                        }
+                        Then::Exit => {
+                            prev_context = result_task_context;
+                            next_task_pair = None;
+                            tracing::info!("Exit Task: {}", name);
+                        }
+                        Then::TaskName(tname) => {
+                            result_task_context.remove_position().await;
+
+                            prev_context = result_task_context;
+                            let mut it = task_map.iter();
+                            for (k, v) in it.by_ref() {
+                                if k == &tname {
+                                    next_task_pair = Some((k, v));
+                                    tracing::info!("Jump to Task: {}", k);
+                                    break;
+                                }
+                            }
+                            task_iterator = it;
+                        }
+                    }
                 } else {
-                    Err(anyhow::anyhow!(
-                        "Failed to execute by WORKFLOW runner: {:#?}",
-                        map
-                    ))
+                    break;
                 }
             }
-            _ => Err(anyhow::anyhow!(
-                "Illegal WORKFLOW runner result: {:#?}",
-                result
-            )),
-        }
+            Ok(prev_context)
+        })
     }
 }
 
 // XXX runner settings and options in metadata
-impl TaskExecutorTrait for DoTaskExecutor<'_> {
-    async fn execute(
+impl TaskExecutorTrait<'_> for DoTaskExecutor<'_> {
+    /// Executes the task list sequentially.
+    ///
+    /// This function processes each task in the task list, updating the task context
+    /// with the output of each task as it progresses.
+    ///
+    /// # Returns
+    /// The updated task context after executing all tasks.
+    #[allow(clippy::manual_async_fn)]
+    fn execute(
         &self,
         task_name: &str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
-        mut task_context: TaskContext,
-    ) -> Result<TaskContext> {
-        tracing::debug!("DoTaskExecutor: {}", task_name);
-        let do_yaml = serde_yaml::to_string(self.task)?;
-        let expression = self
-            .expression(
-                &*(workflow_context.read().await),
-                Arc::new(task_context.clone()),
-            )
-            .await?;
+        task_context: TaskContext,
+    ) -> impl std::future::Future<Output = Result<TaskContext, Box<workflow::Error>>> + Send {
+        async move {
+            tracing::debug!("DoTaskExecutor: {}", task_name);
+            task_context.add_position_name("do".to_string()).await;
 
-        let output = self
-            .execute_by_jobworkerp(
-                &do_yaml,
-                &serde_json::to_value(&self.task.metadata)?,
-                task_context.input.as_ref().clone(),
-                serde_json::to_value(expression)?,
-            )
-            .await
-            .inspect_err(|e| tracing::warn!("Failed to execute by jobworkerp: {:#?}", e))?;
-        task_context.set_raw_output(output);
-
-        Ok(task_context)
+            let mut idx = 0;
+            let task_map = Arc::new(self.task.do_.0.iter().fold(
+                IndexMap::<String, (u32, Arc<Task>)>::new(),
+                |mut acc, task| {
+                    task.iter().for_each(|(name, t)| {
+                        acc.insert(name.clone(), (idx, Arc::new(t.clone())));
+                    });
+                    idx += 1;
+                    acc
+                },
+            ));
+            // Execute tasks
+            match self
+                .execute_task_list(task_map.clone(), workflow_context, task_context)
+                .await
+            {
+                Ok(tc) => {
+                    tc.remove_position().await;
+                    Ok(tc)
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to execute task list: {:#?}", e);
+                    Err(e)
+                }
+            }
+        }
     }
 }

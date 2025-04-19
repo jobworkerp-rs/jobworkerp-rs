@@ -115,7 +115,7 @@ impl OllamaService {
                             reasoning_content: None,
                             done: chunk.done,
                             context: chunk.context.map(|c| llm::llm_completion_result::GenerationContext {
-                                context: Some(llm::llm_completion_result::generation_context::Context::OllamaContext(llm::llm_completion_result::OllamaContext {
+                                context: Some(llm::llm_completion_result::generation_context::Context::Ollama(llm::llm_completion_result::OllamaContext {
                                     data: c.0,
                                 })),
                             }),
@@ -217,7 +217,7 @@ impl OllamaService {
                 .context
                 .map(|c| llm::llm_completion_result::GenerationContext {
                     context: Some(
-                        llm::llm_completion_result::generation_context::Context::OllamaContext(
+                        llm::llm_completion_result::generation_context::Context::Ollama(
                             llm::llm_completion_result::OllamaContext { data: c.0 },
                         ),
                     ),
@@ -269,11 +269,11 @@ mod test {
 
     use super::*;
     use jobworkerp_runner::jobworkerp::runner::llm::llm_completion_args::LlmOptions;
-    use tracing::Level;
+    // use tracing::Level;
     #[ignore = "need to run with local server"]
     #[tokio::test]
     async fn test_run() {
-        command_utils::util::tracing::tracing_init_test(Level::DEBUG);
+        // command_utils::util::tracing::tracing_init_test(Level::DEBUG);
 
         let settings = OllamaRunnerSettings {
             base_url: Some("http://localhost:11434".to_string()),
@@ -325,7 +325,7 @@ The test checks that the response contains the expected content and meets our qu
     #[ignore = "need to run with local server"]
     #[tokio::test]
     async fn test_run_stream() {
-        command_utils::util::tracing::tracing_init_test(Level::DEBUG);
+        // command_utils::util::tracing::tracing_init_test(Level::DEBUG);
 
         let settings = OllamaRunnerSettings {
             base_url: Some("http://ollama.ollama.svc.cluster.local:11434".to_string()),

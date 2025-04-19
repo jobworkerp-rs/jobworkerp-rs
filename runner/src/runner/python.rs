@@ -344,8 +344,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_python_runner() {
-        use tracing::Level;
-        command_utils::util::tracing::tracing_init_test(Level::DEBUG);
+        // use tracing::Level;
+        // command_utils::util::tracing::tracing_init_test(Level::DEBUG);
         // XXX use a real path or find a better way to get the path
         const UV_PATH: &str = if cfg!(windows) {
             "C:\\Program Files\\uv\\uv.exe"
