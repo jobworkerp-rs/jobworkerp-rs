@@ -206,8 +206,7 @@ mod tests {
 
     #[test]
     fn test_error_type_uri_template_is_match() {
-        let template =
-            ErrorType::UriTemplate(UriTemplate("http://example.com/{user}/profile".to_string()));
+        let template = UriTemplate("http://example.com/{user}/profile".to_string());
 
         assert!(template.is_match("http://example.com/john/profile"));
         assert!(template.is_match("http://example.com/jane123/profile"));
@@ -215,9 +214,9 @@ mod tests {
         assert!(!template.is_match("http://example.com/john/settings"));
         assert!(!template.is_match("https://example.com/john/profile")); // scheme mismatch
 
-        let multi_param_template = ErrorType::UriTemplate(UriTemplate(
+        let multi_param_template = UriTemplate(
             "http://api.example.com/{version}/users/{user_id}/posts/{post_id}".to_string(),
-        ));
+        );
 
         assert!(multi_param_template.is_match("http://api.example.com/v1/users/123/posts/456"));
         assert!(multi_param_template
@@ -225,8 +224,7 @@ mod tests {
 
         assert!(!multi_param_template.is_match("http://api.example.com/v1/users/123/comments/456"));
 
-        let error_template =
-            ErrorType::UriTemplate(UriTemplate("http-error://{error-type}".to_string()));
+        let error_template = UriTemplate("http-error://{error-type}".to_string());
 
         assert!(error_template.is_match("http-error://not-found"));
         assert!(error_template.is_match("http-error://unauthorized"));
@@ -234,7 +232,7 @@ mod tests {
         // not match
         assert!(!error_template.is_match("https-error://not-found"));
 
-        let none_template = ErrorType::UriTemplate(UriTemplate("".to_string()));
+        let none_template = UriTemplate("".to_string());
 
         // not match to empty
         assert!(!none_template.is_match("any-string"));

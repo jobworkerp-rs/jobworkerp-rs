@@ -358,9 +358,8 @@ mod tests {
     use crate::workflow::{
         definition::{
             workflow::{
-                self, Error, ErrorDetails, ErrorFilter, ErrorTitle, ErrorType, RetryLimit,
-                RetryLimitAttempt, RetryPolicy, TaskList, TryTaskCatch, TryTaskCatchRetry,
-                UriTemplate,
+                self, Error, ErrorFilter, RetryLimit, RetryLimitAttempt, RetryPolicy, TaskList,
+                TryTaskCatch, TryTaskCatchRetry, UriTemplate,
             },
             WorkflowLoader,
         },
@@ -437,19 +436,10 @@ mod tests {
         title: Option<&str>,
     ) -> Box<Error> {
         Box::new(Error {
-            type_: ErrorType::UriTemplate(UriTemplate(format!(
-                "http-error://{}",
-                error_type.to_lowercase()
-            ))),
+            type_: UriTemplate(format!("http-error://{}", error_type.to_lowercase())),
             status: status.parse().unwrap_or(500),
-            detail: detail.map(|d| ErrorDetails {
-                subtype_0: Some(workflow::RuntimeExpression(d.to_string())),
-                subtype_1: None,
-            }),
-            title: title.map(|t| ErrorTitle {
-                subtype_0: Some(workflow::RuntimeExpression(t.to_string())),
-                subtype_1: None,
-            }),
+            detail: detail.map(|d| d.to_string()),
+            title: title.map(|t| t.to_string()),
             instance: None,
         })
     }

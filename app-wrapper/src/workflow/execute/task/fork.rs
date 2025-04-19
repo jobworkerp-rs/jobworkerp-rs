@@ -108,7 +108,7 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor<'a> {
                         return Err(workflow::errors::ErrorFactory::new().service_unavailable(
                             "All tasks failed in compete mode".to_string(),
                             Some(&position),
-                            Some(anyhow::anyhow!("{:#?}", all_errors).into()),
+                            Some(format!("{:#?}", all_errors)),
                         ));
                     }
 

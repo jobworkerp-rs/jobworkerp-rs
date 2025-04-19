@@ -63,7 +63,7 @@ impl Default for Error {
             instance: Default::default(),
             status: Default::default(),
             title: Default::default(),
-            type_: ErrorType::RuntimeExpression(RuntimeExpression("default".to_string())),
+            type_: super::UriTemplate("default".to_string()),
         }
     }
 }

@@ -1,7 +1,7 @@
 use crate::workflow::{
     definition::{
         transform::UseJqAndTemplateTransformer,
-        workflow::{self, RuntimeExpression},
+        workflow::{self},
     },
     execute::{
         context::{TaskContext, WorkflowContext},
@@ -113,10 +113,7 @@ impl TaskExecutorTrait<'_> for DoAsExtWorkflowTaskExecutor<'_> {
                 return Err(workflow::errors::ErrorFactory::new().bad_argument(
                     format!("Failed to serialize do task: {:#?}", self.task),
                     Some(&pos),
-                    Some(workflow::ErrorDetails {
-                        subtype_0: Some(RuntimeExpression(e.to_string())),
-                        subtype_1: None,
-                    }),
+                    Some(e.to_string()),
                 ));
             }
         };
@@ -182,7 +179,7 @@ impl TaskExecutorTrait<'_> for DoAsExtWorkflowTaskExecutor<'_> {
                 return Err(workflow::errors::ErrorFactory::new().service_unavailable(
                     format!("Failed to execute do task: {:#?}", e),
                     Some(&pos),
-                    Some(e.into()),
+                    Some(format!("{:?}", e)),
                 ));
             }
         };
