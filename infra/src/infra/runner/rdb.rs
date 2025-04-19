@@ -30,17 +30,13 @@ pub trait RunnerRepository:
                 file_name: meta.filename.clone(),
                 r#type: RunnerType::Plugin as i32, // PLUGIN
             };
-            let db = self.db_pool();
-            let mut tx = db.begin().await.map_err(JobWorkerError::DBError)?;
-            match self.create_tx(&mut *tx, &data, false).await {
-                Ok(_) => {
-                    tx.commit().await.map_err(JobWorkerError::DBError)?;
-                }
-                Err(e) => {
-                    tracing::warn!("error in create_runner: {:?}", e);
-                    tx.rollback().await.map_err(JobWorkerError::DBError)?;
-                }
-            }
+            self.create(&data).await.inspect_err(|e| {
+                tracing::error!(
+                    "Failed to create runner for plugins {}: {:?}",
+                    &data.name,
+                    e
+                );
+            })?;
         }
         Ok(())
     }
