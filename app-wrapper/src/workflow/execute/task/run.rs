@@ -205,7 +205,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor<'_> {
                     Err(workflow::errors::ErrorFactory::new().service_unavailable(
                         "Failed to execute by jobworkerp".to_string(),
                         Some(&pos),
-                        Some(e.into()),
+                        Some(format!("{:?}", e)),
                     ))
                 }
             }?;

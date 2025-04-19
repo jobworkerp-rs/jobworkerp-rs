@@ -173,10 +173,7 @@ impl TaskExecutor {
                     return Err(workflow::errors::ErrorFactory::new().bad_argument(
                         m,
                         Some(&pos),
-                        Some(workflow::ErrorDetails {
-                            subtype_0: Some(workflow::RuntimeExpression(e.to_string())),
-                            subtype_1: None,
-                        }),
+                        Some(format!("{:?}", e.to_string())),
                     ));
                 }
             }

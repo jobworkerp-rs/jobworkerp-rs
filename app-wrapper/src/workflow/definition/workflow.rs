@@ -566,9 +566,6 @@ impl<'de> ::serde::Deserialize<'de> for DurationExpression {
 #[doc = "  \"description\": \"Represents an endpoint.\","]
 #[doc = "  \"oneOf\": ["]
 #[doc = "    {"]
-#[doc = "      \"$ref\": \"#/$defs/runtimeExpression\""]
-#[doc = "    },"]
-#[doc = "    {"]
 #[doc = "      \"$ref\": \"#/$defs/uriTemplate\""]
 #[doc = "    },"]
 #[doc = "    {"]
@@ -581,18 +578,7 @@ impl<'de> ::serde::Deserialize<'de> for DurationExpression {
 #[doc = "        \"uri\": {"]
 #[doc = "          \"title\": \"EndpointUri\","]
 #[doc = "          \"description\": \"The endpoint's URI.\","]
-#[doc = "          \"oneOf\": ["]
-#[doc = "            {"]
-#[doc = "              \"title\": \"LiteralEndpointURI\","]
-#[doc = "              \"description\": \"The literal endpoint's URI.\","]
-#[doc = "              \"$ref\": \"#/$defs/uriTemplate\""]
-#[doc = "            },"]
-#[doc = "            {"]
-#[doc = "              \"title\": \"ExpressionEndpointURI\","]
-#[doc = "              \"description\": \"An expression based endpoint's URI.\","]
-#[doc = "              \"$ref\": \"#/$defs/runtimeExpression\""]
-#[doc = "            }"]
-#[doc = "          ]"]
+#[doc = "          \"$ref\": \"#/$defs/uriTemplate\""]
 #[doc = "        }"]
 #[doc = "      },"]
 #[doc = "      \"unevaluatedProperties\": false"]
@@ -604,11 +590,10 @@ impl<'de> ::serde::Deserialize<'de> for DurationExpression {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 #[serde(untagged)]
 pub enum Endpoint {
-    RuntimeExpression(RuntimeExpression),
     UriTemplate(UriTemplate),
     EndpointConfiguration {
         #[doc = "The endpoint's URI."]
-        uri: EndpointUri,
+        uri: UriTemplate,
     },
 }
 impl ::std::convert::From<&Self> for Endpoint {
@@ -616,100 +601,9 @@ impl ::std::convert::From<&Self> for Endpoint {
         value.clone()
     }
 }
-impl ::std::convert::From<RuntimeExpression> for Endpoint {
-    fn from(value: RuntimeExpression) -> Self {
-        Self::RuntimeExpression(value)
-    }
-}
 impl ::std::convert::From<UriTemplate> for Endpoint {
     fn from(value: UriTemplate) -> Self {
         Self::UriTemplate(value)
-    }
-}
-#[doc = "The endpoint's URI."]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"title\": \"EndpointUri\","]
-#[doc = "  \"description\": \"The endpoint's URI.\","]
-#[doc = "  \"oneOf\": ["]
-#[doc = "    {"]
-#[doc = "      \"title\": \"LiteralEndpointURI\","]
-#[doc = "      \"description\": \"The literal endpoint's URI.\","]
-#[doc = "      \"$ref\": \"#/$defs/uriTemplate\""]
-#[doc = "    },"]
-#[doc = "    {"]
-#[doc = "      \"title\": \"ExpressionEndpointURI\","]
-#[doc = "      \"description\": \"An expression based endpoint's URI.\","]
-#[doc = "      \"$ref\": \"#/$defs/runtimeExpression\""]
-#[doc = "    }"]
-#[doc = "  ]"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
-#[serde(untagged)]
-pub enum EndpointUri {
-    UriTemplate(UriTemplate),
-    RuntimeExpression(RuntimeExpression),
-}
-impl ::std::convert::From<&Self> for EndpointUri {
-    fn from(value: &EndpointUri) -> Self {
-        value.clone()
-    }
-}
-impl ::std::str::FromStr for EndpointUri {
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        if let Ok(v) = value.parse() {
-            Ok(Self::UriTemplate(v))
-        } else if let Ok(v) = value.parse() {
-            Ok(Self::RuntimeExpression(v))
-        } else {
-            Err("string conversion failed for all variants".into())
-        }
-    }
-}
-impl ::std::convert::TryFrom<&str> for EndpointUri {
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String> for EndpointUri {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String> for EndpointUri {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::fmt::Display for EndpointUri {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-        match self {
-            Self::UriTemplate(x) => x.fmt(f),
-            Self::RuntimeExpression(x) => x.fmt(f),
-        }
-    }
-}
-impl ::std::convert::From<UriTemplate> for EndpointUri {
-    fn from(value: UriTemplate) -> Self {
-        Self::UriTemplate(value)
-    }
-}
-impl ::std::convert::From<RuntimeExpression> for EndpointUri {
-    fn from(value: RuntimeExpression) -> Self {
-        Self::RuntimeExpression(value)
     }
 }
 #[doc = "Represents an error."]
@@ -729,33 +623,13 @@ impl ::std::convert::From<RuntimeExpression> for EndpointUri {
 #[doc = "    \"detail\": {"]
 #[doc = "      \"title\": \"ErrorDetails\","]
 #[doc = "      \"description\": \"A human-readable explanation specific to this occurrence of the error.\","]
-#[doc = "      \"anyOf\": ["]
-#[doc = "        {"]
-#[doc = "          \"title\": \"ExpressionErrorDetails\","]
-#[doc = "          \"$ref\": \"#/$defs/runtimeExpression\""]
-#[doc = "        },"]
-#[doc = "        {"]
-#[doc = "          \"title\": \"LiteralErrorDetails\","]
-#[doc = "          \"type\": \"string\""]
-#[doc = "        }"]
-#[doc = "      ]"]
+#[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"instance\": {"]
 #[doc = "      \"title\": \"ErrorInstance\","]
 #[doc = "      \"description\": \"A JSON Pointer used to reference the component the error originates from.\","]
-#[doc = "      \"oneOf\": ["]
-#[doc = "        {"]
-#[doc = "          \"title\": \"LiteralErrorInstance\","]
-#[doc = "          \"description\": \"The literal error instance.\","]
-#[doc = "          \"type\": \"string\","]
-#[doc = "          \"format\": \"json-pointer\""]
-#[doc = "        },"]
-#[doc = "        {"]
-#[doc = "          \"title\": \"ExpressionErrorInstance\","]
-#[doc = "          \"description\": \"An expression based error instance.\","]
-#[doc = "          \"$ref\": \"#/$defs/runtimeExpression\""]
-#[doc = "        }"]
-#[doc = "      ]"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"format\": \"json-pointer\""]
 #[doc = "    },"]
 #[doc = "    \"status\": {"]
 #[doc = "      \"title\": \"ErrorStatus\","]
@@ -765,32 +639,12 @@ impl ::std::convert::From<RuntimeExpression> for EndpointUri {
 #[doc = "    \"title\": {"]
 #[doc = "      \"title\": \"ErrorTitle\","]
 #[doc = "      \"description\": \"A short, human-readable summary of the error.\","]
-#[doc = "      \"anyOf\": ["]
-#[doc = "        {"]
-#[doc = "          \"title\": \"ExpressionErrorTitle\","]
-#[doc = "          \"$ref\": \"#/$defs/runtimeExpression\""]
-#[doc = "        },"]
-#[doc = "        {"]
-#[doc = "          \"title\": \"LiteralErrorTitle\","]
-#[doc = "          \"type\": \"string\""]
-#[doc = "        }"]
-#[doc = "      ]"]
+#[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"type\": {"]
 #[doc = "      \"title\": \"ErrorType\","]
 #[doc = "      \"description\": \"A URI reference that identifies the error type.\","]
-#[doc = "      \"oneOf\": ["]
-#[doc = "        {"]
-#[doc = "          \"title\": \"LiteralErrorType\","]
-#[doc = "          \"description\": \"The literal error type.\","]
-#[doc = "          \"$ref\": \"#/$defs/uriTemplate\""]
-#[doc = "        },"]
-#[doc = "        {"]
-#[doc = "          \"title\": \"ExpressionErrorType\","]
-#[doc = "          \"description\": \"An expression based error type.\","]
-#[doc = "          \"$ref\": \"#/$defs/runtimeExpression\""]
-#[doc = "        }"]
-#[doc = "      ]"]
+#[doc = "      \"$ref\": \"#/$defs/uriTemplate\""]
 #[doc = "    }"]
 #[doc = "  },"]
 #[doc = "  \"unevaluatedProperties\": false"]
@@ -801,18 +655,18 @@ impl ::std::convert::From<RuntimeExpression> for EndpointUri {
 pub struct Error {
     #[doc = "A human-readable explanation specific to this occurrence of the error."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub detail: ::std::option::Option<ErrorDetails>,
+    pub detail: ::std::option::Option<::std::string::String>,
     #[doc = "A JSON Pointer used to reference the component the error originates from."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub instance: ::std::option::Option<ErrorInstance>,
+    pub instance: ::std::option::Option<::std::string::String>,
     #[doc = "The status code generated by the origin for this occurrence of the error."]
     pub status: i64,
     #[doc = "A short, human-readable summary of the error."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub title: ::std::option::Option<ErrorTitle>,
+    pub title: ::std::option::Option<::std::string::String>,
     #[doc = "A URI reference that identifies the error type."]
     #[serde(rename = "type")]
-    pub type_: ErrorType,
+    pub type_: UriTemplate,
 }
 impl ::std::convert::From<&Error> for Error {
     fn from(value: &Error) -> Self {
@@ -821,52 +675,6 @@ impl ::std::convert::From<&Error> for Error {
 }
 impl Error {
     pub fn builder() -> builder::Error {
-        Default::default()
-    }
-}
-#[doc = "A human-readable explanation specific to this occurrence of the error."]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"title\": \"ErrorDetails\","]
-#[doc = "  \"description\": \"A human-readable explanation specific to this occurrence of the error.\","]
-#[doc = "  \"anyOf\": ["]
-#[doc = "    {"]
-#[doc = "      \"title\": \"ExpressionErrorDetails\","]
-#[doc = "      \"$ref\": \"#/$defs/runtimeExpression\""]
-#[doc = "    },"]
-#[doc = "    {"]
-#[doc = "      \"title\": \"LiteralErrorDetails\","]
-#[doc = "      \"type\": \"string\""]
-#[doc = "    }"]
-#[doc = "  ]"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
-pub struct ErrorDetails {
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub subtype_0: ::std::option::Option<RuntimeExpression>,
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub subtype_1: ::std::option::Option<::std::string::String>,
-}
-impl ::std::convert::From<&ErrorDetails> for ErrorDetails {
-    fn from(value: &ErrorDetails) -> Self {
-        value.clone()
-    }
-}
-impl ::std::default::Default for ErrorDetails {
-    fn default() -> Self {
-        Self {
-            subtype_0: Default::default(),
-            subtype_1: Default::default(),
-        }
-    }
-}
-impl ErrorDetails {
-    pub fn builder() -> builder::ErrorDetails {
         Default::default()
     }
 }
@@ -946,220 +754,6 @@ impl ::std::default::Default for ErrorFilter {
 impl ErrorFilter {
     pub fn builder() -> builder::ErrorFilter {
         Default::default()
-    }
-}
-#[doc = "A JSON Pointer used to reference the component the error originates from."]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"title\": \"ErrorInstance\","]
-#[doc = "  \"description\": \"A JSON Pointer used to reference the component the error originates from.\","]
-#[doc = "  \"oneOf\": ["]
-#[doc = "    {"]
-#[doc = "      \"title\": \"LiteralErrorInstance\","]
-#[doc = "      \"description\": \"The literal error instance.\","]
-#[doc = "      \"type\": \"string\","]
-#[doc = "      \"format\": \"json-pointer\""]
-#[doc = "    },"]
-#[doc = "    {"]
-#[doc = "      \"title\": \"ExpressionErrorInstance\","]
-#[doc = "      \"description\": \"An expression based error instance.\","]
-#[doc = "      \"$ref\": \"#/$defs/runtimeExpression\""]
-#[doc = "    }"]
-#[doc = "  ]"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
-#[serde(untagged)]
-pub enum ErrorInstance {
-    LiteralErrorInstance(::std::string::String),
-    RuntimeExpression(RuntimeExpression),
-}
-impl ::std::convert::From<&Self> for ErrorInstance {
-    fn from(value: &ErrorInstance) -> Self {
-        value.clone()
-    }
-}
-impl ::std::str::FromStr for ErrorInstance {
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        if let Ok(v) = value.parse() {
-            Ok(Self::LiteralErrorInstance(v))
-        } else if let Ok(v) = value.parse() {
-            Ok(Self::RuntimeExpression(v))
-        } else {
-            Err("string conversion failed for all variants".into())
-        }
-    }
-}
-impl ::std::convert::TryFrom<&str> for ErrorInstance {
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String> for ErrorInstance {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String> for ErrorInstance {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::fmt::Display for ErrorInstance {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-        match self {
-            Self::LiteralErrorInstance(x) => x.fmt(f),
-            Self::RuntimeExpression(x) => x.fmt(f),
-        }
-    }
-}
-impl ::std::convert::From<RuntimeExpression> for ErrorInstance {
-    fn from(value: RuntimeExpression) -> Self {
-        Self::RuntimeExpression(value)
-    }
-}
-#[doc = "A short, human-readable summary of the error."]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"title\": \"ErrorTitle\","]
-#[doc = "  \"description\": \"A short, human-readable summary of the error.\","]
-#[doc = "  \"anyOf\": ["]
-#[doc = "    {"]
-#[doc = "      \"title\": \"ExpressionErrorTitle\","]
-#[doc = "      \"$ref\": \"#/$defs/runtimeExpression\""]
-#[doc = "    },"]
-#[doc = "    {"]
-#[doc = "      \"title\": \"LiteralErrorTitle\","]
-#[doc = "      \"type\": \"string\""]
-#[doc = "    }"]
-#[doc = "  ]"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
-pub struct ErrorTitle {
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub subtype_0: ::std::option::Option<RuntimeExpression>,
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub subtype_1: ::std::option::Option<::std::string::String>,
-}
-impl ::std::convert::From<&ErrorTitle> for ErrorTitle {
-    fn from(value: &ErrorTitle) -> Self {
-        value.clone()
-    }
-}
-impl ::std::default::Default for ErrorTitle {
-    fn default() -> Self {
-        Self {
-            subtype_0: Default::default(),
-            subtype_1: Default::default(),
-        }
-    }
-}
-impl ErrorTitle {
-    pub fn builder() -> builder::ErrorTitle {
-        Default::default()
-    }
-}
-#[doc = "A URI reference that identifies the error type."]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"title\": \"ErrorType\","]
-#[doc = "  \"description\": \"A URI reference that identifies the error type.\","]
-#[doc = "  \"oneOf\": ["]
-#[doc = "    {"]
-#[doc = "      \"title\": \"LiteralErrorType\","]
-#[doc = "      \"description\": \"The literal error type.\","]
-#[doc = "      \"$ref\": \"#/$defs/uriTemplate\""]
-#[doc = "    },"]
-#[doc = "    {"]
-#[doc = "      \"title\": \"ExpressionErrorType\","]
-#[doc = "      \"description\": \"An expression based error type.\","]
-#[doc = "      \"$ref\": \"#/$defs/runtimeExpression\""]
-#[doc = "    }"]
-#[doc = "  ]"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
-#[serde(untagged)]
-pub enum ErrorType {
-    UriTemplate(UriTemplate),
-    RuntimeExpression(RuntimeExpression),
-}
-impl ::std::convert::From<&Self> for ErrorType {
-    fn from(value: &ErrorType) -> Self {
-        value.clone()
-    }
-}
-impl ::std::str::FromStr for ErrorType {
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        if let Ok(v) = value.parse() {
-            Ok(Self::UriTemplate(v))
-        } else if let Ok(v) = value.parse() {
-            Ok(Self::RuntimeExpression(v))
-        } else {
-            Err("string conversion failed for all variants".into())
-        }
-    }
-}
-impl ::std::convert::TryFrom<&str> for ErrorType {
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String> for ErrorType {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String> for ErrorType {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::fmt::Display for ErrorType {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-        match self {
-            Self::UriTemplate(x) => x.fmt(f),
-            Self::RuntimeExpression(x) => x.fmt(f),
-        }
-    }
-}
-impl ::std::convert::From<UriTemplate> for ErrorType {
-    fn from(value: UriTemplate) -> Self {
-        Self::UriTemplate(value)
-    }
-}
-impl ::std::convert::From<RuntimeExpression> for ErrorType {
-    fn from(value: RuntimeExpression) -> Self {
-        Self::RuntimeExpression(value)
     }
 }
 #[doc = "Set the content of the context. ."]
@@ -3303,75 +2897,6 @@ impl RunTaskConfiguration {
         Default::default()
     }
 }
-#[doc = "A runtime expression."]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"title\": \"RuntimeExpression\","]
-#[doc = "  \"description\": \"A runtime expression.\","]
-#[doc = "  \"type\": \"string\","]
-#[doc = "  \"oneof\": ["]
-#[doc = "    {"]
-#[doc = "      \"description\": \"A jq expression.\","]
-#[doc = "      \"pattern\": \"^\\\\$\\\\{.+\\\\}$\","]
-#[doc = "      \"title\": \"JqExpression\""]
-#[doc = "    },"]
-#[doc = "    {"]
-#[doc = "      \"description\": \"A liquid template expression.\","]
-#[doc = "      \"pattern\": \"^\\\\$\\\\$\\\\{\\\\{[\\\\s\\\\S]+\\\\}\\\\}$\","]
-#[doc = "      \"title\": \"LiquidTemplate\""]
-#[doc = "    }"]
-#[doc = "  ]"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(
-    :: serde :: Deserialize,
-    :: serde :: Serialize,
-    Clone,
-    Debug,
-    Eq,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-)]
-#[serde(transparent)]
-pub struct RuntimeExpression(pub ::std::string::String);
-impl ::std::ops::Deref for RuntimeExpression {
-    type Target = ::std::string::String;
-    fn deref(&self) -> &::std::string::String {
-        &self.0
-    }
-}
-impl ::std::convert::From<RuntimeExpression> for ::std::string::String {
-    fn from(value: RuntimeExpression) -> Self {
-        value.0
-    }
-}
-impl ::std::convert::From<&RuntimeExpression> for RuntimeExpression {
-    fn from(value: &RuntimeExpression) -> Self {
-        value.clone()
-    }
-}
-impl ::std::convert::From<::std::string::String> for RuntimeExpression {
-    fn from(value: ::std::string::String) -> Self {
-        Self(value)
-    }
-}
-impl ::std::str::FromStr for RuntimeExpression {
-    type Err = ::std::convert::Infallible;
-    fn from_str(value: &str) -> ::std::result::Result<Self, Self::Err> {
-        Ok(Self(value.to_string()))
-    }
-}
-impl ::std::fmt::Display for RuntimeExpression {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
 #[doc = "Represents the definition of a schema."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -4802,7 +4327,7 @@ impl<'de> ::serde::Deserialize<'de> for WorkflowNamespace {
             })
     }
 }
-#[doc = "Partial Serverless Workflow DSL with function task support. \nRuntime expressions: - jq expressions using ${..} syntax (e.g. ${.key.ckey}, ${$task.input}) - liquid templates using $${..} syntax - Available only in fields marked in their descriptions\nContext variables in expressions: - Input mode: keys from input data - Output mode: keys from output data - Workflow info: workflow.id, workflow.definition, workflow.input, workflow.context_variables - Current task info: task.definition, task.raw_input, task.raw_output, task.output, task.flow_directive - Raw data: access pre-transformation data via raw_input and raw_output (e.g. ${$task.raw_input})"]
+#[doc = "Partial Serverless Workflow DSL with function(tool) upport. \nRuntime expressions: - jq expressions using ${..} syntax (e.g. ${.key.ckey}, ${$task.input}) - liquid templates using $${..} syntax - Available only in fields marked in their descriptions\nContext variables in expressions: - Input mode: keys from input data - Output mode: keys from output data - Workflow info: workflow.id, workflow.definition, workflow.input, workflow.context_variables - Current task info: task.definition, task.raw_input, task.raw_output, task.output, task.flow_directive - Raw data: access pre-transformation data via raw_input and raw_output (e.g. ${$task.raw_input})"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -4810,7 +4335,7 @@ impl<'de> ::serde::Deserialize<'de> for WorkflowNamespace {
 #[doc = "{"]
 #[doc = "  \"$id\": \"https://serverlessworkflow.io/schemas/1.0.0/workflow.yaml\","]
 #[doc = "  \"title\": \"WorkflowSchema\","]
-#[doc = "  \"description\": \"Partial Serverless Workflow DSL with function task support. \\nRuntime expressions: - jq expressions using ${..} syntax (e.g. ${.key.ckey}, ${$task.input}) - liquid templates using $${..} syntax - Available only in fields marked in their descriptions\\nContext variables in expressions: - Input mode: keys from input data - Output mode: keys from output data - Workflow info: workflow.id, workflow.definition, workflow.input, workflow.context_variables - Current task info: task.definition, task.raw_input, task.raw_output, task.output, task.flow_directive - Raw data: access pre-transformation data via raw_input and raw_output (e.g. ${$task.raw_input})\","]
+#[doc = "  \"description\": \"Partial Serverless Workflow DSL with function(tool) upport. \\nRuntime expressions: - jq expressions using ${..} syntax (e.g. ${.key.ckey}, ${$task.input}) - liquid templates using $${..} syntax - Available only in fields marked in their descriptions\\nContext variables in expressions: - Input mode: keys from input data - Output mode: keys from output data - Workflow info: workflow.id, workflow.definition, workflow.input, workflow.context_variables - Current task info: task.definition, task.raw_input, task.raw_output, task.output, task.flow_directive - Raw data: access pre-transformation data via raw_input and raw_output (e.g. ${$task.raw_input})\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"do\","]
@@ -5512,17 +5037,19 @@ pub mod builder {
     #[derive(Clone, Debug)]
     pub struct Error {
         detail: ::std::result::Result<
-            ::std::option::Option<super::ErrorDetails>,
+            ::std::option::Option<::std::string::String>,
             ::std::string::String,
         >,
         instance: ::std::result::Result<
-            ::std::option::Option<super::ErrorInstance>,
+            ::std::option::Option<::std::string::String>,
             ::std::string::String,
         >,
         status: ::std::result::Result<i64, ::std::string::String>,
-        title:
-            ::std::result::Result<::std::option::Option<super::ErrorTitle>, ::std::string::String>,
-        type_: ::std::result::Result<super::ErrorType, ::std::string::String>,
+        title: ::std::result::Result<
+            ::std::option::Option<::std::string::String>,
+            ::std::string::String,
+        >,
+        type_: ::std::result::Result<super::UriTemplate, ::std::string::String>,
     }
     impl ::std::default::Default for Error {
         fn default() -> Self {
@@ -5538,7 +5065,7 @@ pub mod builder {
     impl Error {
         pub fn detail<T>(mut self, value: T) -> Self
         where
-            T: ::std::convert::TryInto<::std::option::Option<super::ErrorDetails>>,
+            T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
             T::Error: ::std::fmt::Display,
         {
             self.detail = value
@@ -5548,7 +5075,7 @@ pub mod builder {
         }
         pub fn instance<T>(mut self, value: T) -> Self
         where
-            T: ::std::convert::TryInto<::std::option::Option<super::ErrorInstance>>,
+            T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
             T::Error: ::std::fmt::Display,
         {
             self.instance = value
@@ -5568,7 +5095,7 @@ pub mod builder {
         }
         pub fn title<T>(mut self, value: T) -> Self
         where
-            T: ::std::convert::TryInto<::std::option::Option<super::ErrorTitle>>,
+            T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
             T::Error: ::std::fmt::Display,
         {
             self.title = value
@@ -5578,7 +5105,7 @@ pub mod builder {
         }
         pub fn type_<T>(mut self, value: T) -> Self
         where
-            T: ::std::convert::TryInto<super::ErrorType>,
+            T: ::std::convert::TryInto<super::UriTemplate>,
             T::Error: ::std::fmt::Display,
         {
             self.type_ = value
@@ -5607,66 +5134,6 @@ pub mod builder {
                 status: Ok(value.status),
                 title: Ok(value.title),
                 type_: Ok(value.type_),
-            }
-        }
-    }
-    #[derive(Clone, Debug)]
-    pub struct ErrorDetails {
-        subtype_0: ::std::result::Result<
-            ::std::option::Option<super::RuntimeExpression>,
-            ::std::string::String,
-        >,
-        subtype_1: ::std::result::Result<
-            ::std::option::Option<::std::string::String>,
-            ::std::string::String,
-        >,
-    }
-    impl ::std::default::Default for ErrorDetails {
-        fn default() -> Self {
-            Self {
-                subtype_0: Ok(Default::default()),
-                subtype_1: Ok(Default::default()),
-            }
-        }
-    }
-    impl ErrorDetails {
-        pub fn subtype_0<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<super::RuntimeExpression>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.subtype_0 = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for subtype_0: {}", e));
-            self
-        }
-        pub fn subtype_1<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.subtype_1 = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for subtype_1: {}", e));
-            self
-        }
-    }
-    impl ::std::convert::TryFrom<ErrorDetails> for super::ErrorDetails {
-        type Error = super::error::ConversionError;
-        fn try_from(
-            value: ErrorDetails,
-        ) -> ::std::result::Result<Self, super::error::ConversionError> {
-            Ok(Self {
-                subtype_0: value.subtype_0?,
-                subtype_1: value.subtype_1?,
-            })
-        }
-    }
-    impl ::std::convert::From<super::ErrorDetails> for ErrorDetails {
-        fn from(value: super::ErrorDetails) -> Self {
-            Self {
-                subtype_0: Ok(value.subtype_0),
-                subtype_1: Ok(value.subtype_1),
             }
         }
     }
@@ -5775,66 +5242,6 @@ pub mod builder {
                 status: Ok(value.status),
                 title: Ok(value.title),
                 type_: Ok(value.type_),
-            }
-        }
-    }
-    #[derive(Clone, Debug)]
-    pub struct ErrorTitle {
-        subtype_0: ::std::result::Result<
-            ::std::option::Option<super::RuntimeExpression>,
-            ::std::string::String,
-        >,
-        subtype_1: ::std::result::Result<
-            ::std::option::Option<::std::string::String>,
-            ::std::string::String,
-        >,
-    }
-    impl ::std::default::Default for ErrorTitle {
-        fn default() -> Self {
-            Self {
-                subtype_0: Ok(Default::default()),
-                subtype_1: Ok(Default::default()),
-            }
-        }
-    }
-    impl ErrorTitle {
-        pub fn subtype_0<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<super::RuntimeExpression>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.subtype_0 = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for subtype_0: {}", e));
-            self
-        }
-        pub fn subtype_1<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.subtype_1 = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for subtype_1: {}", e));
-            self
-        }
-    }
-    impl ::std::convert::TryFrom<ErrorTitle> for super::ErrorTitle {
-        type Error = super::error::ConversionError;
-        fn try_from(
-            value: ErrorTitle,
-        ) -> ::std::result::Result<Self, super::error::ConversionError> {
-            Ok(Self {
-                subtype_0: value.subtype_0?,
-                subtype_1: value.subtype_1?,
-            })
-        }
-    }
-    impl ::std::convert::From<super::ErrorTitle> for ErrorTitle {
-        fn from(value: super::ErrorTitle) -> Self {
-            Self {
-                subtype_0: Ok(value.subtype_0),
-                subtype_1: Ok(value.subtype_1),
             }
         }
     }

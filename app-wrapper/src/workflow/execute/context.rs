@@ -391,15 +391,8 @@ impl WorkflowPosition {
     pub fn as_json_pointer(&self) -> String {
         self.path.json_pointer()
     }
-    pub fn as_error_instance(&self) -> workflow::ErrorInstance {
-        workflow::ErrorInstance::RuntimeExpression(workflow::RuntimeExpression(
-            self.as_json_pointer(),
-        ))
-    }
-    pub fn as_error_detail(&self) -> workflow::ErrorDetails {
-        workflow::ErrorDetails {
-            subtype_0: Some(workflow::RuntimeExpression(self.as_json_pointer())),
-            subtype_1: None,
-        }
+    // alias
+    pub fn as_error_instance(&self) -> String {
+        self.as_json_pointer()
     }
 }
