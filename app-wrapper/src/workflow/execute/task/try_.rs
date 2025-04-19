@@ -377,7 +377,6 @@ mod tests {
         TryTaskExecutor<'static>,
         Arc<RwLock<WorkflowContext>>,
         TaskContext,
-        Arc<JobExecutorWrapper>,
     ) {
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
         let job_executors = Arc::new(JobExecutorWrapper::new(app_module));
@@ -427,7 +426,7 @@ mod tests {
 
         let try_executor = TryTaskExecutor::new(try_task, job_executors.clone(), http_client);
 
-        (try_executor, workflow_context, task_context, job_executors)
+        (try_executor, workflow_context, task_context)
     }
 
     // Helper function to create test errors
@@ -549,108 +548,112 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_eval_error_filter() {
-        let try_task = workflow::TryTask {
-            try_: TaskList::default(),
-            catch: TryTaskCatch {
-                errors: Some(workflow::CatchErrors {
-                    with: Some(ErrorFilter {
-                        status: Some(404),
-                        type_: Some("NotFound".to_string()),
-                        details: None,
-                        title: None,
-                        instance: None,
+    #[test]
+    fn test_eval_error_filter() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let try_task = workflow::TryTask {
+                try_: TaskList::default(),
+                catch: TryTaskCatch {
+                    errors: Some(workflow::CatchErrors {
+                        with: Some(ErrorFilter {
+                            status: Some(404),
+                            type_: Some("NotFound".to_string()),
+                            details: None,
+                            title: None,
+                            instance: None,
+                        }),
                     }),
-                }),
-                as_: Some("error".to_string()),
-                when: None,
-                except_when: None,
-                retry: None,
-                do_: None,
-            },
-            ..Default::default()
-        };
+                    as_: Some("error".to_string()),
+                    when: None,
+                    except_when: None,
+                    retry: None,
+                    do_: None,
+                },
+                ..Default::default()
+            };
 
-        let (executor, _, _, _) = setup_test(Some(try_task)).await;
+            let (executor, _, _) = setup_test(Some(try_task)).await;
 
-        // Matching error
-        let matching_error = create_test_error("404", "notfound", None, None);
+            // Matching error
+            let matching_error = create_test_error("404", "notfound", None, None);
 
-        let catch_config = executor.task.catch.clone();
-        assert!(
-            TryTaskExecutor::eval_error_filter(&catch_config, &matching_error),
-            "Should return true when error matches filter conditions"
-        );
+            let catch_config = executor.task.catch.clone();
+            assert!(
+                TryTaskExecutor::eval_error_filter(&catch_config, &matching_error),
+                "Should return true when error matches filter conditions"
+            );
 
-        // Non-matching error (different status)
-        let non_matching_error1 = create_test_error("500", "notfound", None, None);
+            // Non-matching error (different status)
+            let non_matching_error1 = create_test_error("500", "notfound", None, None);
 
-        assert!(
-            !TryTaskExecutor::eval_error_filter(&catch_config, &non_matching_error1),
-            "Should return false when error doesn't match filter conditions"
-        );
+            assert!(
+                !TryTaskExecutor::eval_error_filter(&catch_config, &non_matching_error1),
+                "Should return false when error doesn't match filter conditions"
+            );
 
-        // Non-matching error (different type)
-        let non_matching_error2 = create_test_error("404", "servererror", None, None);
+            // Non-matching error (different type)
+            let non_matching_error2 = create_test_error("404", "servererror", None, None);
 
-        assert!(
-            !TryTaskExecutor::eval_error_filter(&catch_config, &non_matching_error2),
-            "Should return false when error doesn't match filter conditions"
-        );
+            assert!(
+                !TryTaskExecutor::eval_error_filter(&catch_config, &non_matching_error2),
+                "Should return false when error doesn't match filter conditions"
+            );
+        })
     }
 
-    #[tokio::test]
-    async fn test_execute_catch_block() {
-        let try_task = workflow::TryTask {
-            try_: TaskList::default(),
-            catch: TryTaskCatch {
-                errors: None,
-                as_: Some("custom_error".to_string()),
-                when: None,
-                except_when: None,
-                retry: None,
-                do_: None,
-            },
-            ..Default::default()
-        };
+    #[test]
+    fn test_execute_catch_block() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let try_task = workflow::TryTask {
+                try_: TaskList::default(),
+                catch: TryTaskCatch {
+                    errors: None,
+                    as_: Some("custom_error".to_string()),
+                    when: None,
+                    except_when: None,
+                    retry: None,
+                    do_: None,
+                },
+                ..Default::default()
+            };
 
-        let (executor, workflow_context, task_context, _) = setup_test(Some(try_task)).await;
+            let (executor, workflow_context, task_context) = setup_test(Some(try_task)).await;
 
-        let error = create_test_error(
-            "500",
-            "testerror",
-            Some("Test error detail"),
-            Some("Test Error Title"),
-        );
+            let error = create_test_error(
+                "500",
+                "testerror",
+                Some("Test error detail"),
+                Some("Test Error Title"),
+            );
 
-        // catch
-        let result = TryTaskExecutor::execute_catch_block(
-            &executor.task.catch,
-            workflow_context,
-            task_context.clone(),
-            error.clone(),
-        )
-        .await;
+            // catch
+            let result = TryTaskExecutor::execute_catch_block(
+                &executor.task.catch,
+                workflow_context,
+                task_context.clone(),
+                error.clone(),
+            )
+            .await;
 
-        assert!(
-            result.is_ok(),
-            "When error matches filter, catch block should succeed"
-        );
+            assert!(
+                result.is_ok(),
+                "When error matches filter, catch block should succeed"
+            );
 
-        // Verify error information is added to context
-        let context = result.unwrap();
-        let error_value = context.get_context_value("custom_error").await;
-        assert!(
-            error_value.is_some(),
-            "Error information should be added to context"
-        );
-        println!("context: {:?}", context);
-        println!("error_value: {:?}", error_value);
+            // Verify error information is added to context
+            let context = result.unwrap();
+            let error_value = context.get_context_value("custom_error").await;
+            assert!(
+                error_value.is_some(),
+                "Error information should be added to context"
+            );
+            println!("context: {:?}", context);
+            println!("error_value: {:?}", error_value);
 
-        // Verify error information content
-        let error_json = error_value.unwrap();
-        let error_status = error_json["status"].as_i64().unwrap();
-        assert_eq!(error_status, 500, "Error status should be correctly stored");
+            // Verify error information content
+            let error_json = error_value.unwrap();
+            let error_status = error_json["status"].as_i64().unwrap();
+            assert_eq!(error_status, 500, "Error status should be correctly stored");
+        })
     }
 }

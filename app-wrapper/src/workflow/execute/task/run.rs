@@ -189,7 +189,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor<'_> {
                 }
             };
 
-            let output = self
+            let output = match self
                 .execute_by_jobworkerp(
                     runner_name,
                     Some(transformed_settings),
@@ -197,18 +197,18 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor<'_> {
                     args,
                     task_name,
                 )
-                .await;
-            let output = match output {
-                Ok(output) => output,
+                .await
+            {
+                Ok(output) => Ok(output),
                 Err(e) => {
                     let pos = task_context.position.lock().await.clone();
-                    return Err(workflow::errors::ErrorFactory::new().service_unavailable(
+                    Err(workflow::errors::ErrorFactory::new().service_unavailable(
                         "Failed to execute by jobworkerp".to_string(),
                         Some(&pos),
                         Some(e.into()),
-                    ));
+                    ))
                 }
-            };
+            }?;
             task_context.set_raw_output(output);
 
             // out of run.function

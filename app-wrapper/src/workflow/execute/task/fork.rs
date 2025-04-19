@@ -192,218 +192,246 @@ mod tests {
         })
     }
 
-    #[tokio::test]
-    async fn test_fork_task_executor_normal_mode() {
-        let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
-        let job_executor_wrapper = Arc::new(JobExecutorWrapper::new(app_module));
-        let http_client = reqwest::ReqwestClient::new(None, None, None, None).unwrap();
+    #[test]
+    fn test_fork_task_executor_normal_mode() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let job_executor_wrapper = Arc::new(JobExecutorWrapper::new(app_module));
+            let http_client = reqwest::ReqwestClient::new(
+                Some("test"),
+                Some(std::time::Duration::from_secs(1)),
+                Some(std::time::Duration::from_secs(1)),
+                Some(1),
+            )
+            .unwrap();
 
-        let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
-            &crate::workflow::definition::workflow::WorkflowSchema::default(),
-            Arc::new(json!({"winput": "test"})),
-            Arc::new(json!({})),
-        )));
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                &crate::workflow::definition::workflow::WorkflowSchema::default(),
+                Arc::new(json!({"winput": "test"})),
+                Arc::new(json!({})),
+            )));
 
-        // create branches
-        let mut branches_map = Vec::new();
+            // create branches
+            let mut branches_map = Vec::new();
 
-        let mut task_map1 = HashMap::new();
-        task_map1.insert(
-            "branch1".to_string(),
-            create_success_task(
-                serde_json::json!({"key1": "${$workflow.input.winput}"})
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-            ),
-        );
-        branches_map.push(task_map1);
+            let mut task_map1 = HashMap::new();
+            task_map1.insert(
+                "branch1".to_string(),
+                create_success_task(
+                    serde_json::json!({"key1": "${$workflow.input.winput}"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+            );
+            branches_map.push(task_map1);
 
-        let mut task_map2 = HashMap::new();
-        task_map2.insert(
-            "branch2".to_string(),
-            create_success_task(
-                serde_json::json!({"key2": "${$input.initial}"})
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-            ),
-        );
-        branches_map.push(task_map2);
+            let mut task_map2 = HashMap::new();
+            task_map2.insert(
+                "branch2".to_string(),
+                create_success_task(
+                    serde_json::json!({"key2": "${$input.initial}"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+            );
+            branches_map.push(task_map2);
 
-        // normal mode
-        let fork_task = workflow::ForkTask {
-            fork: workflow::ForkTaskConfiguration {
-                branches: workflow::TaskList(branches_map),
-                compete: false,
-            },
-            export: None,
-            if_: None,
-            input: None,
-            metadata: serde_json::Map::new(),
-            output: None,
-            then: None,
-            timeout: None,
-        };
+            // normal mode
+            let fork_task = workflow::ForkTask {
+                fork: workflow::ForkTaskConfiguration {
+                    branches: workflow::TaskList(branches_map),
+                    compete: false,
+                },
+                export: None,
+                if_: None,
+                input: None,
+                metadata: serde_json::Map::new(),
+                output: None,
+                then: None,
+                timeout: None,
+            };
 
-        // TaskExecutor, ForkTaskExecutor
-        let task = Arc::new(WorkflowTask::SetTask(
-            crate::workflow::definition::workflow::SetTask::default(),
-        ));
-        let task_executor = TaskExecutor::new(job_executor_wrapper, http_client, "test_task", task);
+            // TaskExecutor, ForkTaskExecutor
+            let task = Arc::new(WorkflowTask::SetTask(
+                crate::workflow::definition::workflow::SetTask::default(),
+            ));
+            let task_executor =
+                TaskExecutor::new(job_executor_wrapper, http_client, "test_task", task);
 
-        let fork_task_executor = ForkTaskExecutor::new(&task_executor, &fork_task);
+            let fork_task_executor = ForkTaskExecutor::new(&task_executor, &fork_task);
 
-        let input = json!({"initial": "value"});
-        let task_context = MockTaskContext::create(input.clone());
-        let result = fork_task_executor
-            .execute("fork_test", workflow_context, task_context)
-            .await;
+            let input = json!({"initial": "value"});
+            let task_context = MockTaskContext::create(input.clone());
+            let result = fork_task_executor
+                .execute("fork_test", workflow_context, task_context)
+                .await;
 
-        assert!(result.is_ok());
-        let output = result.unwrap();
+            assert!(result.is_ok());
+            let output = result.unwrap();
 
-        // array output
-        if let serde_json::Value::Array(array) = output.raw_output.as_ref() {
-            assert_eq!(array.len(), 2);
-            assert_eq!(array[0], json!({"key1": "test"}));
-            assert_eq!(array[1], json!({"key2": "value"}));
-        } else {
-            panic!("Output is not an array");
-        }
+            // array output
+            if let serde_json::Value::Array(array) = output.raw_output.as_ref() {
+                assert_eq!(array.len(), 2);
+                assert_eq!(array[0], json!({"key1": "test"}));
+                assert_eq!(array[1], json!({"key2": "value"}));
+            } else {
+                panic!("Output is not an array");
+            }
+        })
     }
 
-    #[tokio::test]
-    async fn test_fork_task_executor_compete_mode() {
-        let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
-        let job_executor_wrapper = Arc::new(JobExecutorWrapper::new(app_module));
-        let http_client = reqwest::ReqwestClient::new(None, None, None, None).unwrap();
+    #[test]
+    fn test_fork_task_executor_compete_mode() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let job_executor_wrapper = Arc::new(JobExecutorWrapper::new(app_module));
+            let http_client = reqwest::ReqwestClient::new(
+                Some("test"),
+                Some(std::time::Duration::from_secs(1)),
+                Some(std::time::Duration::from_secs(1)),
+                Some(1),
+            )
+            .unwrap();
 
-        let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
-            &crate::workflow::definition::workflow::WorkflowSchema::default(),
-            Arc::new(json!({})),
-            Arc::new(json!({})),
-        )));
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                &crate::workflow::definition::workflow::WorkflowSchema::default(),
+                Arc::new(json!({})),
+                Arc::new(json!({})),
+            )));
 
-        let mut branches_map = Vec::new();
+            let mut branches_map = Vec::new();
 
-        let mut task_map1 = HashMap::new();
-        task_map1.insert(
-            "branch1".to_string(),
-            create_success_task(serde_json::Map::new()),
-        );
-        branches_map.push(task_map1);
+            let mut task_map1 = HashMap::new();
+            task_map1.insert(
+                "branch1".to_string(),
+                create_success_task(serde_json::Map::new()),
+            );
+            branches_map.push(task_map1);
 
-        let mut task_map2 = HashMap::new();
-        task_map2.insert(
-            "branch2".to_string(),
-            create_success_task(serde_json::Map::new()),
-        );
-        branches_map.push(task_map2);
+            let mut task_map2 = HashMap::new();
+            task_map2.insert(
+                "branch2".to_string(),
+                create_success_task(serde_json::Map::new()),
+            );
+            branches_map.push(task_map2);
 
-        // compete
-        let fork_task = workflow::ForkTask {
-            fork: workflow::ForkTaskConfiguration {
-                branches: workflow::TaskList(branches_map),
-                compete: true,
-            },
-            export: None,
-            if_: None,
-            input: None,
-            metadata: serde_json::Map::new(),
-            output: None,
-            then: None,
-            timeout: None,
-        };
+            // compete
+            let fork_task = workflow::ForkTask {
+                fork: workflow::ForkTaskConfiguration {
+                    branches: workflow::TaskList(branches_map),
+                    compete: true,
+                },
+                export: None,
+                if_: None,
+                input: None,
+                metadata: serde_json::Map::new(),
+                output: None,
+                then: None,
+                timeout: None,
+            };
 
-        let task = Arc::new(WorkflowTask::SetTask(
-            crate::workflow::definition::workflow::SetTask::default(),
-        ));
-        let task_executor = TaskExecutor::new(job_executor_wrapper, http_client, "test_task", task);
+            let task = Arc::new(WorkflowTask::SetTask(
+                crate::workflow::definition::workflow::SetTask::default(),
+            ));
+            let task_executor =
+                TaskExecutor::new(job_executor_wrapper, http_client, "test_task", task);
 
-        let fork_task_executor = ForkTaskExecutor::new(&task_executor, &fork_task);
+            let fork_task_executor = ForkTaskExecutor::new(&task_executor, &fork_task);
 
-        // execute
-        let task_context = MockTaskContext::create(json!({"initial": "value"}));
-        let result = fork_task_executor
-            .execute("fork_test", workflow_context, task_context)
-            .await;
+            // execute
+            let task_context = MockTaskContext::create(json!({"initial": "value"}));
+            let result = fork_task_executor
+                .execute("fork_test", workflow_context, task_context)
+                .await;
 
-        assert!(result.is_ok());
+            assert!(result.is_ok());
+        })
     }
 
-    #[tokio::test]
-    async fn test_fork_task_executor_compete_mode_all_fail() {
-        let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
-        let job_executor_wrapper = Arc::new(JobExecutorWrapper::new(app_module));
-        let http_client = reqwest::ReqwestClient::new(None, None, None, None).unwrap();
+    #[test]
+    fn test_fork_task_executor_compete_mode_all_fail() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let job_executor_wrapper = Arc::new(JobExecutorWrapper::new(app_module));
+            let http_client = reqwest::ReqwestClient::new(
+                Some("test"),
+                Some(std::time::Duration::from_secs(1)),
+                Some(std::time::Duration::from_secs(1)),
+                Some(1),
+            )
+            .unwrap();
 
-        let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
-            &crate::workflow::definition::workflow::WorkflowSchema::default(),
-            Arc::new(json!({})),
-            Arc::new(json!({})),
-        )));
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                &crate::workflow::definition::workflow::WorkflowSchema::default(),
+                Arc::new(json!({})),
+                Arc::new(json!({})),
+            )));
 
-        let mut branches_map = Vec::new();
+            let mut branches_map = Vec::new();
 
-        // raise error task
-        let fail_task = WorkflowTask::RaiseTask(crate::workflow::definition::workflow::RaiseTask {
-            raise: workflow::RaiseTaskConfiguration {
-                error: workflow::RaiseTaskError::Error(workflow::Error {
-                    status: 1,
-                    ..Default::default()
-                }),
-            },
-            export: None,
-            if_: None,
-            input: None,
-            metadata: serde_json::Map::new(),
-            output: None,
-            then: None,
-            timeout: None,
-        });
+            // raise error task
+            let fail_task =
+                WorkflowTask::RaiseTask(crate::workflow::definition::workflow::RaiseTask {
+                    raise: workflow::RaiseTaskConfiguration {
+                        error: workflow::RaiseTaskError::Error(workflow::Error {
+                            status: 1,
+                            ..Default::default()
+                        }),
+                    },
+                    export: None,
+                    if_: None,
+                    input: None,
+                    metadata: serde_json::Map::new(),
+                    output: None,
+                    then: None,
+                    timeout: None,
+                });
 
-        let mut task_map1 = HashMap::new();
-        task_map1.insert("fail_branch1".to_string(), fail_task.clone());
-        branches_map.push(task_map1);
+            let mut task_map1 = HashMap::new();
+            task_map1.insert("fail_branch1".to_string(), fail_task.clone());
+            branches_map.push(task_map1);
 
-        let mut task_map2 = HashMap::new();
-        task_map2.insert("fail_branch2".to_string(), fail_task.clone());
-        branches_map.push(task_map2);
+            let mut task_map2 = HashMap::new();
+            task_map2.insert("fail_branch2".to_string(), fail_task.clone());
+            branches_map.push(task_map2);
 
-        // compete
-        let fork_task = workflow::ForkTask {
-            fork: workflow::ForkTaskConfiguration {
-                branches: workflow::TaskList(branches_map),
-                compete: true,
-            },
-            export: None,
-            if_: None,
-            input: None,
-            metadata: serde_json::Map::new(),
-            output: None,
-            then: None,
-            timeout: None,
-        };
+            // compete
+            let fork_task = workflow::ForkTask {
+                fork: workflow::ForkTaskConfiguration {
+                    branches: workflow::TaskList(branches_map),
+                    compete: true,
+                },
+                export: None,
+                if_: None,
+                input: None,
+                metadata: serde_json::Map::new(),
+                output: None,
+                then: None,
+                timeout: None,
+            };
 
-        let task = Arc::new(WorkflowTask::SetTask(
-            crate::workflow::definition::workflow::SetTask::default(),
-        ));
-        let task_executor = TaskExecutor::new(job_executor_wrapper, http_client, "test_task", task);
+            let task = Arc::new(WorkflowTask::SetTask(
+                crate::workflow::definition::workflow::SetTask::default(),
+            ));
+            let task_executor =
+                TaskExecutor::new(job_executor_wrapper, http_client, "test_task", task);
 
-        let fork_task_executor = ForkTaskExecutor::new(&task_executor, &fork_task);
+            let fork_task_executor = ForkTaskExecutor::new(&task_executor, &fork_task);
 
-        // execute
-        let task_context = MockTaskContext::create(json!({"initial": "value"}));
-        let result = fork_task_executor
-            .execute("fork_test", workflow_context, task_context)
-            .await;
+            // execute
+            let task_context = MockTaskContext::create(json!({"initial": "value"}));
+            let result = fork_task_executor
+                .execute("fork_test", workflow_context, task_context)
+                .await;
 
-        // all tasks failed
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("All tasks failed in compete mode"));
+            // all tasks failed
+            assert!(result.is_err());
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("All tasks failed in compete mode"));
+        })
     }
 }
