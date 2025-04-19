@@ -7,7 +7,7 @@ use crate::workflow::definition::workflow::{FunctionOptions, RunTask};
 use crate::workflow::definition::UseLoadUrlOrPath;
 use crate::workflow::execute::context::{TaskContext, WorkflowContext};
 use crate::workflow::execute::job::JobExecutorWrapper;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use infra_utils::infra::lock::RwLockWithKey;
 use infra_utils::infra::memory::{MemoryCacheConfig, UseMemoryCache};
 use infra_utils::infra::net::reqwest;
@@ -177,13 +177,13 @@ impl UseLoadUrlOrPath for CallTaskExecutor<'_> {
         &self.http_client
     }
 }
-impl TaskExecutorTrait for CallTaskExecutor<'_> {
+impl TaskExecutorTrait<'_> for CallTaskExecutor<'_> {
     async fn execute(
         &self,
         task_name: &str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
-    ) -> Result<TaskContext> {
+    ) -> Result<TaskContext, Box<workflow::Error>> {
         let workflow::CallTask {
             // TODO: add other task types
             call,
@@ -197,11 +197,36 @@ impl TaskExecutorTrait for CallTaskExecutor<'_> {
             with, // TODO return as argument for return value
         } = self.task;
         {
+            // enter call position
+            task_context.add_position_name("call".to_string()).await;
+
             // TODO name reference (inner yaml, public catalog)
-            let fun = self
+            let fun = match self
                 .with_cache_if_some(call, None, || self.load_url_or_path(call.as_str()))
-                .await?
-                .ok_or(anyhow!("not found: {}", call.as_str()))?;
+                .await
+            {
+                Ok(Some(fun)) => fun,
+                Ok(None) => {
+                    let title = format!("Call task not found: {}", call.as_str());
+                    tracing::error!("{}", title);
+                    let pos = task_context.position.lock().await.clone();
+                    return Err(workflow::errors::ErrorFactory::new().not_found(
+                        title,
+                        Some(&pos),
+                        None,
+                    ));
+                }
+                Err(e) => {
+                    let title = format!("Failed to load call task: {}", e);
+                    tracing::error!("{}", title);
+                    let pos = task_context.position.lock().await.clone();
+                    return Err(workflow::errors::ErrorFactory::new().not_found(
+                        title,
+                        Some(&pos),
+                        None,
+                    ));
+                }
+            };
             // TODO: add other task types
             let RunTask {
                 export,
@@ -251,9 +276,17 @@ impl TaskExecutorTrait for CallTaskExecutor<'_> {
                     timeout,
                 };
                 let executor = RunTaskExecutor::new(self.job_executor_wrapper.clone(), &task);
-                executor
+                let res = executor
                     .execute(task_name, workflow_context, task_context)
-                    .await
+                    .await;
+                match res {
+                    Ok(task_context) => {
+                        // remove call position
+                        task_context.remove_position().await;
+                        Ok(task_context)
+                    }
+                    Err(e) => Err(e),
+                }
             } // _ => {
               //     tracing::error!("not supported the called function for now: {:?}", call);
               //     Err(anyhow!(

@@ -2,7 +2,7 @@
   "$id": "https://serverlessworkflow.io/schemas/1.0.0/workflow.yaml",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "WorkflowSchema",
-  "description": "Partial Serverless Workflow DSL with function task support. \nRuntime expressions: - jq expressions using ${..} syntax (e.g. ${.key.ckey}, ${$workflow.input}) - liquid templates using $${..} syntax - Available only in fields marked in their descriptions\nContext variables in expressions: - Input mode: keys from input data - Output mode: keys from output data - Workflow info: workflow.id, workflow.definition, workflow.input, workflow.context_variables - Current task info: task.definition, task.raw_input, task.raw_output, task.output, task.flow_directive - Raw data: access pre-transformation data via raw_input and raw_output (e.g. ${$task.raw_input})",
+  "description": "Partial Serverless Workflow DSL with function(tool) upport. \nRuntime expressions: - jq expressions using ${..} syntax (e.g. ${.key.ckey}, ${$task.input}) - liquid templates using $${..} syntax - Available only in fields marked in their descriptions\nContext variables in expressions: - Input mode: keys from input data - Output mode: keys from output data - Workflow info: workflow.id, workflow.definition, workflow.input, workflow.context_variables - Current task info: task.definition, task.raw_input, task.raw_output, task.output, task.flow_directive - Raw data: access pre-transformation data via raw_input and raw_output (e.g. ${$task.raw_input})",
   "type": "object",
   "required": [
     "document",
@@ -714,18 +714,7 @@
         "type": {
           "title": "ErrorType",
           "description": "A URI reference that identifies the error type.",
-          "oneOf": [
-            {
-              "title": "LiteralErrorType",
-              "$ref": "#/$defs/uriTemplate",
-              "description": "The literal error type."
-            },
-            {
-              "title": "ExpressionErrorType",
-              "$ref": "#/$defs/runtimeExpression",
-              "description": "An expression based error type."
-            }
-          ]
+          "$ref": "#/$defs/uriTemplate"
         },
         "status": {
           "type": "integer",
@@ -735,47 +724,18 @@
         "instance": {
           "title": "ErrorInstance",
           "description": "A JSON Pointer used to reference the component the error originates from.",
-          "oneOf": [
-            {
-              "title": "LiteralErrorInstance",
-              "description": "The literal error instance.",
-              "type": "string",
-              "format": "json-pointer"
-            },
-            {
-              "$ref": "#/$defs/runtimeExpression",
-              "title": "ExpressionErrorInstance",
-              "description": "An expression based error instance."
-            }
-          ]
+          "type": "string",
+          "format": "json-pointer"
         },
         "title": {
           "description": "A short, human-readable summary of the error.",
           "title": "ErrorTitle",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/runtimeExpression",
-              "title": "ExpressionErrorTitle"
-            },
-            {
-              "type": "string",
-              "title": "LiteralErrorTitle"
-            }
-          ]
+          "type": "string"
         },
         "detail": {
           "title": "ErrorDetails",
           "description": "A human-readable explanation specific to this occurrence of the error.",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/runtimeExpression",
-              "title": "ExpressionErrorDetails"
-            },
-            {
-              "type": "string",
-              "title": "LiteralErrorDetails"
-            }
-          ]
+          "type": "string"
         }
       },
       "required": [
@@ -819,12 +779,6 @@
           "type": "string",
           "format": "uri-template",
           "pattern": "^[A-Za-z][A-Za-z0-9+\\-.]*://.*"
-        },
-        {
-          "title": "LiteralUri",
-          "type": "string",
-          "format": "uri",
-          "pattern": "^[A-Za-z][A-Za-z0-9+\\-.]*://.*"
         }
       ]
     },
@@ -832,9 +786,6 @@
       "title": "Endpoint",
       "description": "Represents an endpoint.",
       "oneOf": [
-        {
-          "$ref": "#/$defs/runtimeExpression"
-        },
         {
           "$ref": "#/$defs/uriTemplate"
         },
@@ -846,18 +797,7 @@
             "uri": {
               "title": "EndpointUri",
               "description": "The endpoint's URI.",
-              "oneOf": [
-                {
-                  "title": "LiteralEndpointURI",
-                  "description": "The literal endpoint's URI.",
-                  "$ref": "#/$defs/uriTemplate"
-                },
-                {
-                  "title": "ExpressionEndpointURI",
-                  "$ref": "#/$defs/runtimeExpression",
-                  "description": "An expression based endpoint's URI."
-                }
-              ]
+              "$ref": "#/$defs/uriTemplate"
             }
           },
           "required": [
@@ -1098,23 +1038,6 @@
       },
       "required": [
         "after"
-      ]
-    },
-    "runtimeExpression": {
-      "type": "string",
-      "title": "RuntimeExpression",
-      "description": "A runtime expression.",
-      "oneof": [
-        {
-          "pattern": "^\\$\\{.+\\}$",
-          "title": "JqExpression",
-          "description": "A jq expression."
-        },
-        {
-          "pattern": "^\\$\\$\\{\\{[\\s\\S]+\\}\\}$",
-          "title": "LiquidTemplate",
-          "description": "A liquid template expression."
-        }
       ]
     },
     "processResult": {
