@@ -322,6 +322,8 @@ pub trait RunnerCacheHelper {
 // #[cfg(test)]
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test {
+    use std::vec;
+
     use super::RunnerDataWithDescriptor;
     use infra::infra::runner::rows::RunnerWithSchema;
     use proto::jobworkerp::data::{RunnerData, RunnerId, RunnerType, StreamingOutputType};
@@ -344,6 +346,7 @@ pub mod test {
             settings_schema: "settings_schema".to_string(),
             arguments_schema: "arguments_schema".to_string(),
             output_schema: Some("output_schema".to_string()),
+            tools: vec![],
         }
     }
 

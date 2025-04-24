@@ -112,6 +112,8 @@ mod test {
     #[cfg(test)]
     #[test]
     fn subscribe_worker_changed_test() -> Result<()> {
+        use jobworkerp_runner::runner::mcp::client::McpServerFactory;
+
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let redis_client = setup_test_redis_client()?;
             let worker_config = Arc::new(load_worker_config());
@@ -119,7 +121,10 @@ mod test {
             let worker_app2 = app_module.worker_app.clone();
             worker_app2.delete_all().await?;
 
-            let runner_factory = Arc::new(RunnerFactory::new(app_module.clone()));
+            let runner_factory = Arc::new(RunnerFactory::new(
+                app_module.clone(),
+                Arc::new(McpServerFactory::default()),
+            ));
             // XXX empty runner map (must confirm deletion: use mock?)
             let runner_map = RunnerFactoryWithPoolMap::new(runner_factory.clone(), worker_config);
 

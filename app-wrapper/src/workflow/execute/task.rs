@@ -88,7 +88,7 @@ impl TaskExecutor {
             Arc::new(task_context.clone()),
         )
         .await;
-        let expression = match expression {
+        let mut expression = match expression {
             Ok(expression) => expression,
             Err(mut e) => {
                 tracing::error!("Failed to evaluate expression: {:#?}", e);
@@ -139,15 +139,10 @@ impl TaskExecutor {
             .await?;
 
         // Transform output and export
-        let mut task_context = self
-            .update_context_by_output(workflow_context, &expression, task_context)
+        let task_context = self
+            .update_context_by_output(workflow_context, &mut expression, task_context)
             .await?;
 
-        // Determine next task
-        task_context.flow_directive = match self.task.then() {
-            Some(flow) => Then::from(flow.clone()),
-            None => Then::Continue,
-        };
         // go out of the task
         task_context.remove_position().await;
         Ok(task_context)
@@ -196,7 +191,7 @@ impl TaskExecutor {
     async fn update_context_by_output(
         &self,
         workflow_context: Arc<RwLock<WorkflowContext>>,
-        expression: &BTreeMap<String, Arc<serde_json::Value>>,
+        expression: &mut BTreeMap<String, Arc<serde_json::Value>>,
         mut task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
         // Transform output
@@ -206,6 +201,7 @@ impl TaskExecutor {
                 match Self::transform_output(task_context.raw_output.clone(), as_, expression) {
                     Ok(v) => v,
                     Err(mut e) => {
+                        tracing::error!("Failed to transform output: {:#?}", e);
                         let mut pos = task_context.position.lock().await.clone();
                         pos.push("output".to_string());
                         e.position(&pos);
@@ -218,6 +214,9 @@ impl TaskExecutor {
             task_context.output = task_context.raw_output.clone();
         }
         // TODO output schema validation?
+
+        // set transformed output to expression (for export and then)
+        expression.insert("output".to_string(), task_context.output.clone());
 
         // export output to workflow context
         if let Some(export) = self.task.export().and_then(|o| o.as_.as_ref()) {
@@ -241,9 +240,18 @@ impl TaskExecutor {
 
         // Determine next task
         task_context.flow_directive = match self.task.then() {
-            Some(flow) => Then::from(flow.clone()),
+            Some(flow) => match Then::create(task_context.output.clone(), flow, expression) {
+                Ok(v) => v,
+                Err(mut e) => {
+                    tracing::error!("Failed to evaluate `then' condition: {:#?}", e);
+                    task_context.add_position_name("then".to_string()).await;
+                    e.position(&task_context.position.lock().await.clone());
+                    return Err(e);
+                }
+            },
             None => Then::Continue,
         };
+
         // go out of the task
         task_context.remove_position().await;
         Ok(task_context)

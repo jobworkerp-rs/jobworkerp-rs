@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::{fmt::Debug, time::Duration};
 
 use crate::proto::jobworkerp::data::WorkerData;
-use crate::proto::jobworkerp::data::{FunctionInputSchema, FunctionSpecs, Worker, WorkerId};
+use crate::proto::jobworkerp::data::{FunctionSchema, FunctionSpecs, Worker, WorkerId};
 use crate::proto::jobworkerp::service::function_service_server::FunctionService;
 use crate::proto::jobworkerp::service::FindFunctionRequest;
 use crate::service::error_handle::handle_error;
@@ -16,7 +16,7 @@ use infra::infra::runner::rows::RunnerWithSchema;
 use infra_utils::trace::Tracing;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_runner::jobworkerp::runner::ReusableWorkflowRunnerSettings;
-use proto::jobworkerp::data::{RunnerType, StreamingOutputType};
+use proto::jobworkerp::data::{function_specs, McpToolList, RunnerType, StreamingOutputType};
 use tonic::Response;
 
 pub trait FunctionGrpc {
@@ -112,27 +112,55 @@ impl<T: FunctionGrpc + Tracing + Send + Debug + Sync + 'static> FunctionService 
 
 // Helper function to convert Runner to FunctionSpecs
 fn convert_runner_to_function_specs(runner: RunnerWithSchema) -> FunctionSpecs {
-    FunctionSpecs {
-        runner_id: runner.id,
-        worker_id: None,
-        name: runner
-            .data
-            .as_ref()
-            .map_or(String::new(), |data| data.name.clone()),
-        description: runner
-            .data
-            .as_ref()
-            .map_or(String::new(), |data| data.description.clone()),
-        input_schema: Some(FunctionInputSchema {
-            settings: Some(runner.settings_schema),
-            arguments: runner.arguments_schema,
-        }),
-        result_output_schema: runner.output_schema,
-        output_type: runner
-            .data
-            .as_ref()
-            .map(|data| data.output_type)
-            .unwrap_or(StreamingOutputType::NonStreaming as i32),
+    if runner
+        .data
+        .as_ref()
+        .is_some_and(|r| r.runner_type == RunnerType::McpServer as i32)
+    {
+        FunctionSpecs {
+            runner_id: runner.id,
+            worker_id: None,
+            name: runner
+                .data
+                .as_ref()
+                .map_or(String::new(), |data| data.name.clone()),
+            description: runner
+                .data
+                .as_ref()
+                .map_or(String::new(), |data| data.description.clone()),
+            // TODO divide and extract settings for each tool
+            schema: Some(function_specs::Schema::McpTools(McpToolList {
+                list: runner.tools,
+            })),
+            output_type: runner
+                .data
+                .as_ref()
+                .map(|data| data.output_type)
+                .unwrap_or(StreamingOutputType::NonStreaming as i32),
+        }
+    } else {
+        FunctionSpecs {
+            runner_id: runner.id,
+            worker_id: None,
+            name: runner
+                .data
+                .as_ref()
+                .map_or(String::new(), |data| data.name.clone()),
+            description: runner
+                .data
+                .as_ref()
+                .map_or(String::new(), |data| data.description.clone()),
+            schema: Some(function_specs::Schema::SingleSchema(FunctionSchema {
+                settings: Some(runner.settings_schema),
+                arguments: runner.arguments_schema,
+                result_output_schema: runner.output_schema,
+            })),
+            output_type: runner
+                .data
+                .as_ref()
+                .map(|data| data.output_type)
+                .unwrap_or(StreamingOutputType::NonStreaming as i32),
+        }
     }
 }
 
@@ -160,27 +188,48 @@ fn convert_worker_to_function_specs(
             worker_id: Some(id),
             name: data.name,
             description: data.description,
-            input_schema: input_schema.map(|s| FunctionInputSchema {
+            schema: Some(function_specs::Schema::SingleSchema(FunctionSchema {
                 settings: None, // Workers don't have config (already set)
-                arguments: s.to_string(),
-            }),
-            result_output_schema: runner.output_schema,
+                arguments: input_schema.map(|s| s.to_string()).unwrap_or_default(),
+                result_output_schema: runner.output_schema,
+            })),
             output_type: runner
                 .data
                 .map(|data| data.output_type)
                 .unwrap_or(StreamingOutputType::NonStreaming as i32),
         })
-    } else {
+    } else if runner
+        .data
+        .as_ref()
+        .is_some_and(|r| r.runner_type == RunnerType::McpServer as i32)
+    {
         Ok(FunctionSpecs {
             runner_id: runner.id,
             worker_id: Some(id),
             name: data.name,
             description: data.description,
-            input_schema: Some(FunctionInputSchema {
+            // TODO divide and extract settings for each tool
+            schema: Some(function_specs::Schema::McpTools(McpToolList {
+                list: runner.tools,
+            })),
+            output_type: runner
+                .data
+                .as_ref()
+                .map(|data| data.output_type)
+                .unwrap_or(StreamingOutputType::NonStreaming as i32),
+        })
+    } else {
+        // TODO mcp server schema
+        Ok(FunctionSpecs {
+            runner_id: runner.id,
+            worker_id: Some(id),
+            name: data.name,
+            description: data.description,
+            schema: Some(function_specs::Schema::SingleSchema(FunctionSchema {
                 settings: None, // Workers don't have config (already set)
                 arguments: runner.arguments_schema,
-            }),
-            result_output_schema: runner.output_schema,
+                result_output_schema: runner.output_schema,
+            })),
             output_type: runner
                 .data
                 .as_ref()

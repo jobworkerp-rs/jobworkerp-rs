@@ -301,10 +301,15 @@ mod tests {
     impl MockJobRunner {
         async fn new() -> Self {
             let app_module = Arc::new(app::module::test::create_hybrid_test_app().await.unwrap());
+            let mcp_clients =
+                Arc::new(jobworkerp_runner::runner::mcp::client::McpServerFactory::default());
             MockJobRunner {
-                runner_factory: Arc::new(RunnerFactory::new(app_module.clone())),
+                runner_factory: Arc::new(RunnerFactory::new(
+                    app_module.clone(),
+                    mcp_clients.clone(),
+                )),
                 runner_pool: RunnerFactoryWithPoolMap::new(
-                    Arc::new(RunnerFactory::new(app_module)),
+                    Arc::new(RunnerFactory::new(app_module, mcp_clients)),
                     Arc::new(WorkerConfig::default()),
                 ),
             }

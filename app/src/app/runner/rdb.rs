@@ -49,6 +49,7 @@ impl RdbRunnerAppImpl {
         self.runner_repository()
             .add_from_plugins_from(self.plugin_dir.as_str())
             .await?;
+        self.runner_repository().add_from_mcp_server().await?;
         let _ = self
             .delete_cache_locked(&Self::find_all_list_cache_key())
             .await;

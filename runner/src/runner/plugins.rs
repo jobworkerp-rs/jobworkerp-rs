@@ -68,11 +68,7 @@ impl Plugins {
             ".dll"
         } else if cfg!(target_os = "macos") {
             ".dylib"
-        } else if cfg!(target_os = "linux")
-            || cfg!(target_os = "freebsd")
-            || cfg!(target_os = "openbsd")
-            || cfg!(target_os = "netbsd")
-        {
+        } else if cfg!(target_os = "linux") {
             ".so"
         } else {
             tracing::error!("Unsupported operating system");

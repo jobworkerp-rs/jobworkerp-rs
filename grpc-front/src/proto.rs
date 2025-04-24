@@ -23,7 +23,9 @@ pub mod jobworkerp {
         pub type ResultOutputItem = data::ResultOutputItem;
         pub type JobStatus = data::JobStatus;
         pub type FunctionSpecs = data::FunctionSpecs;
-        pub type FunctionInputSchema = data::FunctionInputSchema;
+        pub type FunctionSchema = data::FunctionSchema;
+        pub type McpToolList = data::McpToolList;
+        pub type McpTool = data::McpTool;
         pub type Empty = data::Empty;
     }
     pub mod service {
