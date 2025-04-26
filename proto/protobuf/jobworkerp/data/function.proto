@@ -10,34 +10,37 @@ import "jobworkerp/data/worker.proto";
 // Metadata that describes function capabilities and interface for clients
 // Represents either a runner or worker as a function
 message FunctionSpecs {
+  // # Runner Type
+  jobworkerp.data.RunnerType runner_type = 1;
+
   // # Runner ID
   // Runner Id for the function
-  jobworkerp.data.RunnerId runner_id = 1;
+  jobworkerp.data.RunnerId runner_id = 2;
 
   // # Worker ID
   // Worker Id for the function. present if created as a worker
-  optional jobworkerp.data.WorkerId worker_id = 2;
+  optional jobworkerp.data.WorkerId worker_id = 3;
 
   // # Function Name
   // Unique identifier for the function (e.g. "command", "image-processor")
-  string name = 3;
+  string name = 4;
   // # Function Description
   // Human-readable explanation of what the function does
-  string description = 4;
+  string description = 5;
   // # Stream Output Flag
   // When true, the function supports streaming output mode
   // Enables JobService/EnqueueForStream and JobResultService/ListenStream
   // If not specified, the function should support both streaming and
   // non-streaming modes
-  jobworkerp.data.StreamingOutputType output_type = 5;
+  jobworkerp.data.StreamingOutputType output_type = 6;
 
   // # Function Input/Output Definition
   // JSON schema defining the function's input, output parameters
   oneof schema {
     // # normal function spec
-    FunctionSchema single_schema = 6;
+    FunctionSchema single_schema = 7;
     // # mcp function spec (multiple tools in a Mcp server)
-    McpToolList mcp_tools = 7;
+    McpToolList mcp_tools = 8;
   }
 }
 
