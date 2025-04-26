@@ -24,22 +24,24 @@ message FunctionSpecs {
   // # Function Description
   // Human-readable explanation of what the function does
   string description = 4;
-  // # Function Input Definition
-  // JSON schema defining the function's input parameters
-  FunctionInputSchema input_schema = 5;
-  // # Result Output Definition
-  // JSON schema defining the structure of job execution results
-  optional string result_output_schema = 6;
-
   // # Stream Output Flag
   // When true, the function supports streaming output mode
   // Enables JobService/EnqueueForStream and JobResultService/ListenStream
   // If not specified, the function should support both streaming and
   // non-streaming modes
-  jobworkerp.data.StreamingOutputType output_type = 7;
+  jobworkerp.data.StreamingOutputType output_type = 5;
+
+  // # Function Input/Output Definition
+  // JSON schema defining the function's input, output parameters
+  oneof schema {
+    // # normal function spec
+    FunctionSchema single_schema = 6;
+    // # mcp function spec (multiple tools in a Mcp server)
+    McpToolList mcp_tools = 7;
+  }
 }
 
-message FunctionInputSchema {
+message FunctionSchema {
   // # Function Settings Definition
   // JSON schema for function setting parameters
   // If empty, the function requires no settings
@@ -48,4 +50,63 @@ message FunctionInputSchema {
   // # Job Arguments Definition
   // JSON schema defining the parameters required for job execution
   string arguments = 2;
+  // # Result Output Definition
+  // JSON schema defining the structure of job execution results
+  optional string result_output_schema = 3;
+}
+
+message McpToolList {
+  // # Tool List
+  // A list of tools that can be used by the model.
+  repeated McpTool list = 1;
+}
+
+// # mcp tool
+// A tool that can be used by a model.
+message McpTool {
+  // # Tool Name
+  string name = 1;
+  // # Tool Description
+  // A description of what the tool does
+  optional string description = 2;
+  // # Input schema
+  // A JSON Schema object defining the expected parameters for the tool
+  string input_schema = 3;
+  // # Additional tool information.
+  optional ToolAnnotations annotations = 4;
+}
+
+// # Additional properties describing a Tool to clients.
+//
+// NOTE: all properties in ToolAnnotations are **hints**.
+// They are not guaranteed to provide a faithful description of
+// tool behavior (including descriptive properties like `title`).
+//
+// Clients should never make tool use decisions based on ToolAnnotations
+// received from untrusted servers.
+message ToolAnnotations {
+  // # A human-readable title for the tool.
+  optional string title = 1;
+
+  // If true, the tool does not modify its environment.
+  optional bool read_only_hint = 2;
+
+  // # A human-readable description of the tool's purpose.
+  // If true, the tool may perform destructive updates to its environment.
+  // If false, the tool performs only additive updates.
+  // (This property is meaningful only when `readOnlyHint == false`)
+  // Default: true
+  optional bool destructive_hint = 3;
+
+  // If true, calling the tool repeatedly with the same arguments
+  // will have no additional effect on the its environment.
+  // (This property is meaningful only when `readOnlyHint == false`)
+  optional bool idempotent_hint = 4;
+
+  // If true, this tool may interact with an "open world" of external
+  // entities. If false, the tool's domain of interaction is closed.
+  // For example, the world of a web search tool is open, whereas that
+  // of a memory tool is not.
+  // Default: true
+  optional bool open_world_hint = 5;
 }

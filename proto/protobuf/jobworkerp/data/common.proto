@@ -51,6 +51,10 @@ enum RunnerType {
   // Executes Python scripts as commands
   PYTHON_COMMAND = 6;
 
+  // # Mcp Server Runner
+  // Executes tools of MCP servers
+  MCP_SERVER = 7;
+
   // # LLM Chat Completion API Runner
   // Interacts with Large Language Models
   LLM_CHAT = 65533;

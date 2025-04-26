@@ -459,13 +459,14 @@ $defs:
         description: The amount of time to wait.
   flowDirective:
     title: FlowDirective
-    description: Represents different transition options for a workflow.
+    description: Represents different transition options that determine the next execution path within a workflow.
     anyOf:
       - title: FlowDirectiveEnum
         type: string
         enum: [continue, exit, end]
         default: continue
       - type: string
+        description: A runtime expression that evaluates to a task name, determining which task to execute next in the workflow.
   duration:
     oneOf:
       - type: object

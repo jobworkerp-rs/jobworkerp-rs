@@ -1,0 +1,95 @@
+syntax = "proto3";
+package jobworkerp.runner;
+
+// # McpServerResult
+// represents the result of a tool executed by the MCP server.
+message McpServerResult {
+  // # TextContent
+  // Represents text content in the server response
+  message TextContent { string text = 1; }
+
+  // # ImageContent
+  // Represents image data in the server response
+  message ImageContent {
+    /// The base64-encoded image
+    string data = 1;
+    // MIME type of the image (e.g., image/png, image/jpeg)
+    string mime_type = 2;
+  }
+
+  // # TextResourceContents
+  // Represents a resource with a URI identifier
+  message TextResourceContents {
+    // URI identifier for the resource
+    string uri = 1;
+    // Optional MIME type of the content
+    optional string mime_type = 2;
+    // The actual content
+    string text = 3;
+  }
+
+  // # BlobResourceContents
+  // Represents a binary blob resource with a URI identifier
+  message BlobResourceContents {
+    // URI identifier for the blob resource
+    string uri = 1;
+    // Optional MIME type of the blob content
+    optional string mime_type = 2;
+    // The binary blob data encoded as a string
+    string blob = 3;
+  }
+
+  // # EmbeddedResource
+  // Resources MAY be embedded, to provide additional context or data, behind a
+  // URI that can be subscribed to or fetched again by the client later:
+  message EmbeddedResource {
+    // Only one resource type can be set at a time
+    oneof resource {
+      // Text-based embedded resource
+      TextResourceContents text = 1;
+      // Binary blob embedded resource
+      BlobResourceContents blob = 2;
+    }
+  }
+
+  // # AudioContent
+  // Represents audio data in the server response
+  message AudioContent {
+    // The audio data, typically base64-encoded
+    string data = 1;
+    // MIME type of the audio (e.g., audio/mp3, audio/wav)
+    string mime_type = 2;
+  }
+
+  // # Content
+  // Container for different types of content that can be included in the
+  // response
+  message Content {
+    // Only one content type can be set at a time
+    oneof raw_content {
+      // Text content
+      TextContent text = 1;
+      // Image content
+      ImageContent image = 2;
+      // Audio content
+      AudioContent audio = 3;
+      // Embedded resource
+      EmbeddedResource resource = 4;
+    }
+  }
+
+  // # The content of the result
+  // This can be a text, image, audio, or external resources
+  repeated Content content = 1;
+
+  // Indicates whether the operation resulted in an error
+  bool is_error = 2;
+
+  // exists for future use?
+  // message Annotation {
+  //   repeated string audience = 1;
+  //   optional float priority = 2;
+  //   optional int64 timestamp = 3;
+  // }
+  // optional Annotation annotations = 3;
+}

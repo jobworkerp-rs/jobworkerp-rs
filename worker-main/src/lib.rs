@@ -4,6 +4,7 @@ use app_wrapper::runner::RunnerFactory;
 use command_utils::util::shutdown;
 use command_utils::util::shutdown::ShutdownLock;
 use infra::infra::IdGeneratorWrapper;
+use jobworkerp_runner::runner::mcp::client::{McpConfig, McpServerFactory};
 use jobworkerp_runner::runner::{factory::RunnerSpecFactory, plugins::Plugins};
 use std::sync::Arc;
 use tokio::sync::OnceCell;
@@ -41,13 +42,27 @@ pub async fn boot_all_in_one() -> Result<()> {
     let (lock, mut wait) = shutdown::create_lock_and_wait();
 
     let plugins = Arc::new(Plugins::new());
-    let runner_spec_factory = Arc::new(RunnerSpecFactory::new(plugins.clone()));
+    // load mcp config
+    let mcp_clients = match McpConfig::load(&jobworkerp_base::MCP_CONFIG_PATH.clone()).await {
+        Ok(mcp_clients) => {
+            let c = Arc::new(McpServerFactory::new(mcp_clients));
+            c.test_all().await?;
+            c
+        }
+        Err(e) => {
+            tracing::info!("mcp config not loaded: {:#?}", e);
+            Arc::new(McpServerFactory::default())
+        }
+    };
+
+    let runner_spec_factory =
+        Arc::new(RunnerSpecFactory::new(plugins.clone(), mcp_clients.clone()));
     let app_config_module = Arc::new(AppConfigModule::new_by_env(runner_spec_factory.clone()));
 
     let app_module = Arc::new(AppModule::new_by_env(app_config_module).await?);
     app_module.on_start_all_in_one().await?;
 
-    let runner_factory = Arc::new(RunnerFactory::new(app_module.clone()));
+    let runner_factory = Arc::new(RunnerFactory::new(app_module.clone(), mcp_clients));
 
     tracing::info!("start worker");
     let jh = tokio::spawn(start_worker(

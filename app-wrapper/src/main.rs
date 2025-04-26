@@ -3,7 +3,11 @@ use std::sync::Arc;
 use app::module::AppConfigModule;
 use clap::{arg, command, Parser};
 use command_utils::util::tracing::LoggingConfig;
-use jobworkerp_runner::runner::{factory::RunnerSpecFactory, plugins::Plugins};
+use jobworkerp_runner::runner::{
+    factory::RunnerSpecFactory,
+    mcp::client::{McpConfig, McpServerFactory},
+    plugins::Plugins,
+};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -33,6 +37,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     command_utils::util::tracing::tracing_init(conf).await?;
 
+    // load mcp config
+    let mcp_clients = match McpConfig::load(&jobworkerp_base::MCP_CONFIG_PATH.clone()).await {
+        Ok(mcp_clients) => {
+            let c = Arc::new(McpServerFactory::new(mcp_clients));
+            c.test_all().await?;
+            c
+        }
+        Err(e) => {
+            tracing::info!("mcp config not loaded: {:#?}", e);
+            Arc::new(McpServerFactory::default())
+        }
+    };
+
     // args.input: filepath or json string
     // try to read file first, if failed, then parse as json string, otherwise, treat as string
     let json = match std::fs::read_to_string(&args.input) {
@@ -43,7 +60,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     tracing::info!("Input: {:#?}", json);
     let plugins = Arc::new(Plugins::new());
-    let runner_spec_factory = Arc::new(RunnerSpecFactory::new(plugins.clone()));
+    let runner_spec_factory =
+        Arc::new(RunnerSpecFactory::new(plugins.clone(), mcp_clients.clone()));
     let config_module = Arc::new(AppConfigModule::new_by_env(runner_spec_factory));
     let app_module = Arc::new(app::module::AppModule::new_by_env(config_module).await?);
     match app_wrapper::workflow::execute::execute_workflow(

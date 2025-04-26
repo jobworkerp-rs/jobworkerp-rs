@@ -57,6 +57,7 @@ impl RunnerApp for HybridRunnerAppImpl {
         self.runner_repository()
             .add_from_plugins_from(self.plugin_dir.as_str())
             .await?;
+        self.runner_repository().add_from_mcp_server().await?;
         let _ = self
             .delete_cache_locked(&Self::find_all_list_cache_key())
             .await;
@@ -144,7 +145,7 @@ impl RunnerApp for HybridRunnerAppImpl {
         use proto::jobworkerp::data::RunnerType;
 
         let runner_data = test_runner_with_descriptor(name);
-        let res = self
+        let _ = self
             .runner_repository()
             .create(&RunnerRow {
                 id: runner_id.value,
@@ -154,7 +155,6 @@ impl RunnerApp for HybridRunnerAppImpl {
                 r#type: RunnerType::Plugin as i32,
             })
             .await?;
-        assert!(res);
         self.store_proto_cache(runner_id, &runner_data).await;
         // clear memory cache
         let _ = self

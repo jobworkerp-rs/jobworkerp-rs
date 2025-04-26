@@ -12,6 +12,7 @@ license.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 bollard = { workspace = true }
+once_cell = { workspace = true }
 prost = { workspace = true }
 redis = { workspace = true }
 reqwest = { workspace = true }

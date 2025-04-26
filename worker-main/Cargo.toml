@@ -18,6 +18,7 @@ proto = { path = "../proto" }
 command-utils = { path = "../modules/command-utils" }
 infra-utils = { path = "../modules/infra-utils" }
 jobworkerp-runner = { path = "../runner" }
+jobworkerp-base = { path = "../base" }
 infra = { path = "../infra" }
 app = { path = "../app" }
 app-wrapper = { path = "../app-wrapper" }

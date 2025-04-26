@@ -15,11 +15,13 @@
 //! * [`docker`] - Executes jobs in Docker containers
 //! * [`grpc_unary`] - Runs jobs via gRPC unary calls
 //! * [`k8s_job`] - Manages Kubernetes jobs
+//! * [`llm`] - Integrates with LLM (Large Language Model) APIs
+//! * [`mcp`] - Manages jobs in a multi-cluster environment
 //! * [`plugins`] - Support for plugin-based runners
 //! * [`python`] - Python script execution
 //! * [`request`] - HTTP request-based jobs
-//! * [`simple_workflow`] - simple workflow runner
 //! * [`slack`] - Slack integration
+//! * [`workflow`] - Reusable and inline workflow runners
 //!
 //! # Trait Documentation
 //!
@@ -33,6 +35,8 @@
 //! Defines the core execution interface for job runners, including methods
 //! for initialization, job execution (both streaming and non-streaming), and
 //! job cancellation.
+use std::any::Any;
+
 use anyhow::Result;
 use futures::stream::BoxStream;
 use proto::jobworkerp::data::{ResultOutputItem, StreamingOutputType};
@@ -44,6 +48,7 @@ pub mod factory;
 pub mod grpc_unary;
 pub mod k8s_job;
 pub mod llm;
+pub mod mcp;
 pub mod plugins;
 pub mod python;
 pub mod request;
@@ -80,7 +85,7 @@ macro_rules! schema_to_json_string_option {
     }};
 }
 
-pub trait RunnerSpec: Send + Sync {
+pub trait RunnerSpec: Send + Sync + Any {
     fn name(&self) -> String;
     // only implement for stream runner (output_as_stream() == true)
     fn runner_settings_proto(&self) -> String;

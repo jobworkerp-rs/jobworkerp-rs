@@ -76,11 +76,7 @@ where
             ..
         }) = rem
         {
-            if let Err(e) = self
-                .plugin_runner_factory()
-                .unload_plugins(&data.name)
-                .await
-            {
+            if let Err(e) = self.runner_spec_factory().unload_plugins(&data.name).await {
                 tracing::warn!("Failed to remove runner: {:?}", e);
             }
         }
@@ -179,7 +175,7 @@ impl UseIdGenerator for RedisRunnerRepositoryImpl {
     }
 }
 impl UseRunnerSpecFactory for RedisRunnerRepositoryImpl {
-    fn plugin_runner_factory(&self) -> &RunnerSpecFactory {
+    fn runner_spec_factory(&self) -> &RunnerSpecFactory {
         &self.runner_spec_factory
     }
 }
@@ -191,12 +187,16 @@ pub trait UseRedisRunnerRepository {
 #[tokio::test]
 async fn redis_test() -> Result<()> {
     use crate::infra::module::test::TEST_PLUGIN_DIR;
+    use jobworkerp_runner::runner::mcp::client::McpServerFactory;
     use jobworkerp_runner::runner::plugins::Plugins;
     use proto::jobworkerp::data::{RunnerData, RunnerId, StreamingOutputType};
 
     let pool = infra_utils::infra::test::setup_test_redis_pool().await;
     let cli = infra_utils::infra::test::setup_test_redis_client()?;
-    let runner_spec_factory = Arc::new(RunnerSpecFactory::new(Arc::new(Plugins::new())));
+    let runner_spec_factory = Arc::new(RunnerSpecFactory::new(
+        Arc::new(Plugins::new()),
+        Arc::new(McpServerFactory::default()),
+    ));
     runner_spec_factory.load_plugins_from(TEST_PLUGIN_DIR).await;
 
     let repo = RedisRunnerRepositoryImpl {
@@ -223,6 +223,7 @@ async fn redis_test() -> Result<()> {
         settings_schema: "hoge4".to_string(),
         arguments_schema: "hoge6".to_string(),
         output_schema: Some("hoge8".to_string()),
+        tools: Vec::default(),
     };
 
     // create and find
@@ -240,6 +241,7 @@ async fn redis_test() -> Result<()> {
         settings_schema: "fuga4".to_string(),
         arguments_schema: "fuga6".to_string(),
         output_schema: Some("fuga8".to_string()),
+        tools: vec![],
     };
     // update and find
     assert!(!repo.upsert(&id, &runner_with_schema2).await?);
