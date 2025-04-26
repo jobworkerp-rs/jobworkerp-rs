@@ -20,7 +20,6 @@ pub struct SwitchTaskExecutor {
 }
 
 impl SwitchTaskExecutor {
-    /// 新しいSwitchTaskExecutorを作成する
     pub fn new(switch_task: &SwitchTask) -> Self {
         Self {
             switch_task: switch_task.clone(),
@@ -33,7 +32,6 @@ impl UseExpressionTransformer for SwitchTaskExecutor {}
 impl UseJqAndTemplateTransformer for SwitchTaskExecutor {}
 
 impl TaskExecutorTrait<'_> for SwitchTaskExecutor {
-    /// Switchタスクを実行する
     async fn execute(
         &self,
         _task_id: &str,
@@ -61,7 +59,7 @@ impl TaskExecutorTrait<'_> for SwitchTaskExecutor {
         };
 
         for switch_item in &self.switch_task.switch {
-            // 各ケースは HashMap<String, SwitchCase> の形式で1つの要素のみ含む
+            // Each case contains only one element in the format of HashMap<String, SwitchCase>
             for (case_name, switch_case) in switch_item.iter() {
                 // when condition
                 let matched_case = if let Some(when) = &switch_case.when {
@@ -86,7 +84,19 @@ impl TaskExecutorTrait<'_> for SwitchTaskExecutor {
                     tracing::debug!("Switch case matched: {}", case_name);
                     matched = true;
 
-                    task_context.flow_directive = Then::from(switch_case.then.clone());
+                    task_context.flow_directive = match Then::create(
+                        task_context.output.clone(),
+                        &switch_case.then,
+                        &expression,
+                    ) {
+                        Ok(v) => v,
+                        Err(mut e) => {
+                            tracing::error!("Failed to evaluate switch `then' condition: {:#?}", e);
+                            task_context.add_position_name("then".to_string()).await;
+                            e.position(&task_context.position.lock().await.clone());
+                            return Err(e);
+                        }
+                    };
                     break;
                 }
             }
@@ -146,7 +156,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_switch_match_first_case() {
-        // 3つのcaseがあり、最初のcaseがマッチする場合
+        // When there are 3 cases and the first case matches
         let switch_task = create_switch_task(vec![
             (
                 "case1".to_string(),
@@ -176,7 +186,7 @@ mod tests {
             .await
             .unwrap();
 
-        // flow_directiveがcase1-routeに変更されたことを検証する
+        // Verify that flow_directive has been changed to case1-route
         assert_eq!(
             result.flow_directive,
             Then::TaskName("case1-route".to_string())
@@ -185,7 +195,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_switch_match_second_case() {
-        // 3つのcaseがあり、2番目のcaseがマッチする場合
+        // When there are 3 cases and the second case matches
         let switch_task = create_switch_task(vec![
             (
                 "case1".to_string(),
@@ -215,7 +225,7 @@ mod tests {
             .await
             .unwrap();
 
-        // flow_directiveがcase2-routeに変更されたことを検証する
+        // Verify that flow_directive has been changed to case2-route
         assert_eq!(
             result.flow_directive,
             Then::TaskName("case2-route".to_string())
@@ -224,7 +234,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_switch_default_case() {
-        // どのcaseもマッチしない場合、デフォルトケースが選択される
+        // When no case matches, the default case is selected
         let switch_task = create_switch_task(vec![
             (
                 "case1".to_string(),
@@ -254,7 +264,7 @@ mod tests {
             .await
             .unwrap();
 
-        // flow_directiveがdefault-routeに変更されたことを検証する
+        // Verify that flow_directive has been changed to default-route
         assert_eq!(
             result.flow_directive,
             Then::TaskName("default-route".to_string())
@@ -263,7 +273,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_switch_with_if_condition_true() {
-        // ifが指定されている場合で条件がtrueの場合は通常通り評価される
+        // When an if condition is specified and the condition is true, evaluation proceeds normally
         let mut switch_task = create_switch_task(vec![
             (
                 "case1".to_string(),
@@ -290,7 +300,7 @@ mod tests {
             .await
             .unwrap();
 
-        // 条件がマッチしてcase1-routeに変更されたことを検証
+        // Verify that the condition matches and flow_directive has been changed to case1-route
         assert_eq!(
             result.flow_directive,
             Then::TaskName("case1-route".to_string())
@@ -299,7 +309,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_switch_no_matches() {
-        // どのケースもマッチせず、デフォルトケースもない場合
+        // When no case matches and there is no default case
         let switch_task = create_switch_task(vec![
             (
                 "case1".to_string(),
@@ -328,7 +338,7 @@ mod tests {
             .await
             .unwrap();
 
-        // どのケースもマッチしないため、flow_directiveは変更されない
+        // Since no case matches, flow_directive remains unchanged
         assert_eq!(result.flow_directive, Then::Continue);
     }
 }

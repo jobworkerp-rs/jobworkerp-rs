@@ -32,6 +32,11 @@ once_cell = { workspace = true }
 prost = { workspace = true }
 redis = { workspace = true }
 reqwest = { workspace = true }
+rmcp = { workspace = true, features = [
+    "client",
+    "transport-child-process",
+    "transport-sse",
+] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
@@ -54,6 +59,7 @@ tonic-build = { workspace = true }
 
 [dev-dependencies]
 infra = { path = ".", features = ["test-utils"] }
+jobworkerp-runner = { path = "../runner", features = ["test-utils"] }
 
 [features]
 default = []

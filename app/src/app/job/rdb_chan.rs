@@ -649,6 +649,7 @@ mod tests {
     use infra::infra::IdGeneratorWrapper;
     use infra_utils::infra::test::TEST_RUNTIME;
     use jobworkerp_runner::runner::factory::RunnerSpecFactory;
+    use jobworkerp_runner::runner::mcp::client::McpServerFactory;
     use jobworkerp_runner::runner::plugins::Plugins;
     use proto::jobworkerp::data::{
         JobResult, JobResultId, Priority, QueueType, ResponseType, ResultOutput, ResultStatus,
@@ -712,7 +713,10 @@ mod tests {
             .create_test_runner(&RunnerId { value: 1 }, "Test")
             .await?;
 
-        let runner_factory = RunnerSpecFactory::new(Arc::new(Plugins::new()));
+        let runner_factory = RunnerSpecFactory::new(
+            Arc::new(Plugins::new()),
+            Arc::new(McpServerFactory::default()),
+        );
         runner_factory.load_plugins_from(TEST_PLUGIN_DIR).await;
         let config_module = Arc::new(AppConfigModule {
             storage_config,

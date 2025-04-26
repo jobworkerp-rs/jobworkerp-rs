@@ -149,7 +149,9 @@ pub mod test {
     };
     use anyhow::Context;
     use infra_utils::infra::test::{setup_test_redis_client, setup_test_redis_pool};
-    use jobworkerp_runner::runner::{factory::RunnerSpecFactory, plugins::Plugins};
+    use jobworkerp_runner::runner::{
+        factory::RunnerSpecFactory, mcp::client::McpServerFactory, plugins::Plugins,
+    };
     use std::sync::Arc;
 
     // create RedsRepositoryModule for test
@@ -173,7 +175,10 @@ pub mod test {
             .await
             .unwrap();
 
-        let p = RunnerSpecFactory::new(Arc::new(Plugins::new()));
+        let p = RunnerSpecFactory::new(
+            Arc::new(Plugins::new()),
+            Arc::new(McpServerFactory::default()),
+        );
         p.load_plugins_from(TEST_PLUGIN_DIR).await;
         RedisRepositoryModule {
             redis_pool,

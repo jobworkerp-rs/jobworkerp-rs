@@ -143,13 +143,15 @@ mod tests {
     use super::*;
     use anyhow::Result;
     use app::module::test::TEST_PLUGIN_DIR;
+    use jobworkerp_runner::runner::mcp::client::McpServerFactory;
     use proto::jobworkerp::data::{RunnerType, WorkerData};
 
     #[test]
     fn test_runner_pool() -> Result<()> {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let app_module = app::module::test::create_hybrid_test_app().await.unwrap();
-            let runner_factory = RunnerFactory::new(Arc::new(app_module));
+            let runner_factory =
+                RunnerFactory::new(Arc::new(app_module), Arc::new(McpServerFactory::default()));
             runner_factory.load_plugins_from(TEST_PLUGIN_DIR).await;
             let factory = RunnerFactoryWithPool::new(
                 Arc::new(RunnerData {
@@ -192,7 +194,8 @@ mod tests {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             // dotenvy::dotenv()?;
             let app_module = app::module::test::create_hybrid_test_app().await.unwrap();
-            let runner_factory = RunnerFactory::new(Arc::new(app_module));
+            let runner_factory =
+                RunnerFactory::new(Arc::new(app_module), Arc::new(McpServerFactory::default()));
             runner_factory.load_plugins_from(TEST_PLUGIN_DIR).await;
             assert!(RunnerFactoryWithPool::new(
                 Arc::new(RunnerData {

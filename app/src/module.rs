@@ -307,7 +307,9 @@ pub mod test {
         module::RedisRdbOptionalRepositoryModule, test::new_for_test_config_rdb, IdGeneratorWrapper,
     };
     use infra_utils::infra::memory::MemoryCacheImpl;
-    use jobworkerp_runner::runner::{factory::RunnerSpecFactory, plugins::Plugins};
+    use jobworkerp_runner::runner::{
+        factory::RunnerSpecFactory, mcp::client::McpServerFactory, plugins::Plugins,
+    };
     use proto::jobworkerp::data::StorageType;
     use std::sync::Arc;
     use tokio::time::Duration;
@@ -322,7 +324,10 @@ pub mod test {
         let id_generator = Arc::new(IdGeneratorWrapper::new());
         let module = new_for_test_config_rdb();
         let plugins = Arc::new(Plugins::new());
-        let runner_factory = Arc::new(RunnerSpecFactory::new(plugins));
+        let runner_factory = Arc::new(RunnerSpecFactory::new(
+            plugins,
+            Arc::new(McpServerFactory::default()),
+        ));
         let repositories = Arc::new(
             infra::infra::module::HybridRepositoryModule::new(
                 &module,

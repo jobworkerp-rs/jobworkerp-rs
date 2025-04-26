@@ -1,7 +1,10 @@
-use crate::workflow::definition::workflow::{self, FlowDirective, Task, WorkflowSchema};
+use crate::workflow::definition::{
+    transform::UseJqAndTemplateTransformer,
+    workflow::{self, FlowDirective, Task, WorkflowSchema},
+};
 use chrono::{DateTime, FixedOffset};
 use command_utils::util::stack::StackWithHistory;
-use std::{fmt, ops::Deref, sync::Arc};
+use std::{collections::BTreeMap, fmt, ops::Deref, sync::Arc};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -279,30 +282,55 @@ pub enum Then {
     End,
     TaskName(String),
 }
-impl From<FlowDirective> for Then {
-    fn from(directive: FlowDirective) -> Self {
+
+impl UseJqAndTemplateTransformer for Then {}
+impl Then {
+    pub fn create(
+        output: Arc<serde_json::Value>,
+        directive: &FlowDirective,
+        expression: &BTreeMap<String, Arc<serde_json::Value>>,
+    ) -> Result<Self, Box<workflow::Error>> {
         match directive {
             FlowDirective {
                 subtype_0: Some(subtype_0),
                 subtype_1: Some(subtype_1),
-            } => match subtype_0 {
-                workflow::FlowDirectiveEnum::Continue => Then::TaskName(subtype_1.clone()),
-                workflow::FlowDirectiveEnum::Exit => Then::Exit,
-                workflow::FlowDirectiveEnum::End => Then::End,
-            },
+            } => {
+                match subtype_0 {
+                    workflow::FlowDirectiveEnum::Continue => {
+                        match Self::execute_transform(output, subtype_1, expression)? {
+                            serde_json::Value::String(s) => Ok(Then::TaskName(s)),
+                            r => {
+                                tracing::warn!("Transformed Flow directive is not a string: {:#?}, no translation", r);
+                                Ok(Then::TaskName(subtype_1.clone()))
+                            }
+                        }
+                    }
+                    workflow::FlowDirectiveEnum::Exit => Ok(Then::Exit),
+                    workflow::FlowDirectiveEnum::End => Ok(Then::End),
+                }
+            }
             FlowDirective {
                 subtype_0: Some(subtype_0),
                 subtype_1: None,
             } => match subtype_0 {
-                workflow::FlowDirectiveEnum::Continue => Then::Continue,
-                workflow::FlowDirectiveEnum::Exit => Then::Exit,
-                workflow::FlowDirectiveEnum::End => Then::End,
+                workflow::FlowDirectiveEnum::Continue => Ok(Then::Continue),
+                workflow::FlowDirectiveEnum::Exit => Ok(Then::Exit),
+                workflow::FlowDirectiveEnum::End => Ok(Then::End),
             },
             FlowDirective {
                 subtype_0: None,
-                subtype_1: Some(label),
-            } => Then::TaskName(label.clone()),
-            _ => Then::Continue,
+                subtype_1: Some(subtype_1),
+            } => match Self::execute_transform(output, subtype_1, expression)? {
+                serde_json::Value::String(s) => Ok(Then::TaskName(s)),
+                r => {
+                    tracing::warn!(
+                        "Transformed Flow directive is not a string: {:#?}, no translation",
+                        r
+                    );
+                    Ok(Then::TaskName(subtype_1.clone()))
+                }
+            },
+            _ => Ok(Then::Continue),
         }
     }
 }
