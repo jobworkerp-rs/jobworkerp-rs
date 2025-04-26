@@ -15,6 +15,18 @@ impl super::Error {
 }
 impl std::error::Error for super::Error {}
 
+impl Default for Error {
+    fn default() -> Self {
+        Self {
+            detail: Default::default(),
+            instance: Default::default(),
+            status: Default::default(),
+            title: Default::default(),
+            type_: super::UriTemplate("default".to_string()),
+        }
+    }
+}
+
 impl std::fmt::Display for super::Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(

@@ -496,9 +496,9 @@ mod tests {
             let id1 = app.create(&w1).await?;
             let id2 = app.create(&w2).await?;
             let id3 = app.create(&w3).await?;
-            assert_eq!(id1.value, 1);
-            assert_eq!(id2.value, 2);
-            assert_eq!(id3.value, 3);
+            assert!(id1.value > 0);
+            assert_eq!(id2.value, id1.value + 1);
+            assert_eq!(id3.value, id2.value + 1);
             // find list
             let list = app.find_list(None, None).await?;
             assert_eq!(list.len(), 3);

@@ -4,3 +4,6 @@
 [submodule "modules/command-utils"]
 	path = modules/command-utils
 	url = https://github.com/sutr-app/command-utils.git
+[submodule "modules/mcp-servers"]
+	path = modules/mcp-servers
+	url = https://github.com/modelcontextprotocol/servers.git

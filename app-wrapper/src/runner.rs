@@ -2,6 +2,8 @@ use crate::workflow::runner::reusable::ReusableWorkflowRunner;
 use crate::{llm::LLMCompletionRunnerImpl, workflow::runner::inline::InlineWorkflowRunner};
 use anyhow::Result;
 use app::module::AppModule;
+use jobworkerp_runner::runner::mcp::client::McpServerFactory;
+use jobworkerp_runner::runner::mcp::McpServerRunnerImpl;
 use jobworkerp_runner::runner::{
     command::CommandRunnerImpl,
     docker::{DockerExecRunner, DockerRunner},
@@ -19,14 +21,16 @@ use std::sync::Arc;
 pub struct RunnerFactory {
     app_module: Arc<AppModule>,
     plugins: Arc<Plugins>,
+    pub mcp_clients: Arc<McpServerFactory>,
 }
 
 // same as RunnerSpecFactory
 impl RunnerFactory {
-    pub fn new(app_module: Arc<AppModule>) -> Self {
+    pub fn new(app_module: Arc<AppModule>, mcp_clients: Arc<McpServerFactory>) -> Self {
         Self {
             app_module: app_module.clone(),
             plugins: app_module.config_module.runner_factory.plugins.clone(),
+            mcp_clients,
         }
     }
     pub async fn load_plugins_from(&self, dir: &str) -> Vec<PluginMetadata> {
@@ -84,13 +88,19 @@ impl RunnerFactory {
             Some(RunnerType::LlmCompletion) => {
                 Some(Box::new(LLMCompletionRunnerImpl::new()) as Box<dyn RunnerTrait + Send + Sync>)
             }
-            _ => self
-                .plugins
-                .runner_plugins()
-                .write()
-                .await
-                .find_plugin_runner_by_name(name)
-                .map(|r| Box::new(r) as Box<dyn RunnerTrait + Send + Sync>),
+            _ => {
+                if let Ok(server) = self.mcp_clients.create_server(name).await {
+                    Some(Box::new(McpServerRunnerImpl::new(server))
+                        as Box<dyn RunnerTrait + Send + Sync>)
+                } else {
+                    self.plugins
+                        .runner_plugins()
+                        .write()
+                        .await
+                        .find_plugin_runner_by_name(name)
+                        .map(|r| Box::new(r) as Box<dyn RunnerTrait + Send + Sync>)
+                }
+            }
         }
     }
 }

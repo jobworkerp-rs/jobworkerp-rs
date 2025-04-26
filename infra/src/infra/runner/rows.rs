@@ -1,5 +1,6 @@
-use jobworkerp_runner::runner::RunnerSpec;
-use proto::jobworkerp::data::{Runner, RunnerData, RunnerId};
+use jobworkerp_runner::runner::{mcp::McpServerRunnerImpl, RunnerSpec};
+use proto::jobworkerp::data::{McpTool, Runner, RunnerData, RunnerId};
+use std::any::Any;
 
 // db row definitions
 #[derive(sqlx::FromRow, Debug, Clone)]
@@ -12,24 +13,46 @@ pub struct RunnerRow {
 }
 
 impl RunnerRow {
-    pub fn to_runner_with_schema(
+    pub async fn to_runner_with_schema(
         &self,
         runner: Box<dyn RunnerSpec + Send + Sync>,
     ) -> RunnerWithSchema {
-        RunnerWithSchema {
-            id: Some(RunnerId { value: self.id }),
-            data: Some(RunnerData {
-                name: self.name.clone(),
-                description: self.description.clone(),
-                runner_type: self.r#type,
-                runner_settings_proto: runner.runner_settings_proto(),
-                job_args_proto: runner.job_args_proto(),
-                result_output_proto: runner.result_output_proto(),
-                output_type: runner.output_type() as i32,
-            }),
-            settings_schema: runner.settings_schema(),
-            arguments_schema: runner.arguments_schema(),
-            output_schema: runner.output_schema(),
+        if let Some(mcp_runner) =
+            (runner.as_ref() as &dyn Any).downcast_ref::<McpServerRunnerImpl>()
+        {
+            RunnerWithSchema {
+                id: Some(RunnerId { value: self.id }),
+                data: Some(RunnerData {
+                    name: self.name.clone(),
+                    description: self.description.clone(),
+                    runner_type: self.r#type,
+                    runner_settings_proto: runner.runner_settings_proto(),
+                    job_args_proto: runner.job_args_proto(),
+                    result_output_proto: runner.result_output_proto(),
+                    output_type: runner.output_type() as i32,
+                }),
+                settings_schema: runner.settings_schema(),
+                arguments_schema: runner.arguments_schema(),
+                output_schema: runner.output_schema(),
+                tools: mcp_runner.tools().await.unwrap_or_default(),
+            }
+        } else {
+            RunnerWithSchema {
+                id: Some(RunnerId { value: self.id }),
+                data: Some(RunnerData {
+                    name: self.name.clone(),
+                    description: self.description.clone(),
+                    runner_type: self.r#type,
+                    runner_settings_proto: runner.runner_settings_proto(),
+                    job_args_proto: runner.job_args_proto(),
+                    result_output_proto: runner.result_output_proto(),
+                    output_type: runner.output_type() as i32,
+                }),
+                settings_schema: runner.settings_schema(),
+                arguments_schema: runner.arguments_schema(),
+                output_schema: runner.output_schema(),
+                tools: Vec::default(),
+            }
         }
     }
 }
@@ -46,6 +69,8 @@ pub struct RunnerWithSchema {
     pub arguments_schema: String,
     #[prost(string, optional, tag = "5")]
     pub output_schema: Option<String>,
+    #[prost(message, repeated, tag = "6")]
+    pub tools: Vec<McpTool>,
 }
 
 impl RunnerWithSchema {

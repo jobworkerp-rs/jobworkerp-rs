@@ -115,6 +115,7 @@ pub mod test {
     };
     use infra_utils::infra::test::setup_test_rdb_from;
     use jobworkerp_runner::runner::factory::RunnerSpecFactory;
+    use jobworkerp_runner::runner::mcp::client::McpServerFactory;
     use jobworkerp_runner::runner::plugins::Plugins;
     use sqlx::Executor;
     use std::sync::Arc;
@@ -134,7 +135,10 @@ pub mod test {
         pool.execute("DELETE FROM runner WHERE id > 100;")
             .await
             .expect("test connection");
-        let runner_factory = RunnerSpecFactory::new(Arc::new(Plugins::new()));
+        let runner_factory = RunnerSpecFactory::new(
+            Arc::new(Plugins::new()),
+            Arc::new(McpServerFactory::default()),
+        );
         runner_factory.load_plugins_from(TEST_PLUGIN_DIR).await;
         let id_generator = Arc::new(IdGeneratorWrapper::new());
         RdbChanRepositoryModule {

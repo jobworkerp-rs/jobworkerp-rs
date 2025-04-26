@@ -3,6 +3,7 @@ use super::{
     docker::{DockerExecRunner, DockerRunner},
     grpc_unary::GrpcUnaryRunner,
     llm::LLMCompletionRunnerSpecImpl,
+    mcp::{client::McpServerFactory, McpServerRunnerImpl},
     plugins::{PluginLoader, PluginMetadata, Plugins},
     python::PythonCommandRunner,
     request::RequestRunner,
@@ -14,15 +15,19 @@ use anyhow::Result;
 use proto::jobworkerp::data::RunnerType;
 use std::sync::Arc;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RunnerSpecFactory {
     // TODO to map?
     pub plugins: Arc<Plugins>,
+    pub mcp_clients: Arc<McpServerFactory>,
 }
 
 impl RunnerSpecFactory {
-    pub fn new(plugins: Arc<Plugins>) -> Self {
-        Self { plugins }
+    pub fn new(plugins: Arc<Plugins>, mcp_clients: Arc<McpServerFactory>) -> Self {
+        Self {
+            plugins,
+            mcp_clients,
+        }
     }
     pub async fn load_plugins_from(&self, dir: &str) -> Vec<PluginMetadata> {
         self.plugins.load_plugin_files(dir).await
@@ -30,8 +35,8 @@ impl RunnerSpecFactory {
     pub async fn unload_plugins(&self, name: &str) -> Result<bool> {
         self.plugins.runner_plugins().write().await.unload(name)
     }
-    // use_static: need to specify correctly to create for running
-    pub async fn create_plugin_by_name(
+    // use_static: need to specify correctly to create for running (now unused here)
+    pub async fn create_runner_spec_by_name(
         &self,
         name: &str,
         use_static: bool,
@@ -70,19 +75,26 @@ impl RunnerSpecFactory {
                 Some(Box::new(LLMCompletionRunnerSpecImpl::new())
                     as Box<dyn RunnerSpec + Send + Sync>)
             }
-            _ => self
-                .plugins
-                .runner_plugins()
-                .write()
-                .await
-                .find_plugin_runner_by_name(name)
-                .map(|r| Box::new(r) as Box<dyn RunnerSpec + Send + Sync>),
+            _ => {
+                if let Ok(server) = self.mcp_clients.as_ref().create_server(name).await {
+                    tracing::debug!("MCP server found: {}", &name);
+                    Some(Box::new(McpServerRunnerImpl::new(server))
+                        as Box<dyn RunnerSpec + Send + Sync>)
+                } else {
+                    self.plugins
+                        .runner_plugins()
+                        .write()
+                        .await
+                        .find_plugin_runner_by_name(name)
+                        .map(|r| Box::new(r) as Box<dyn RunnerSpec + Send + Sync>)
+                }
+            }
         }
     }
 }
 
 pub trait UseRunnerSpecFactory {
-    fn plugin_runner_factory(&self) -> &RunnerSpecFactory;
+    fn runner_spec_factory(&self) -> &RunnerSpecFactory;
 }
 
 #[cfg(test)]
@@ -93,7 +105,10 @@ mod test {
 
     #[tokio::test]
     async fn test_new() {
-        let runner_factory = RunnerSpecFactory::new(Arc::new(Plugins::new()));
+        let runner_factory = RunnerSpecFactory::new(
+            Arc::new(Plugins::new()),
+            Arc::new(McpServerFactory::default()),
+        );
         runner_factory.load_plugins_from(TEST_PLUGIN_DIR).await;
         assert_eq!(
             runner_factory
@@ -108,7 +123,7 @@ mod test {
         // from builtins
         assert_eq!(
             runner_factory
-                .create_plugin_by_name(RunnerType::GrpcUnary.as_str_name(), false)
+                .create_runner_spec_by_name(RunnerType::GrpcUnary.as_str_name(), false)
                 .await
                 .unwrap()
                 .name(),
@@ -117,7 +132,7 @@ mod test {
         // from plugins
         assert_eq!(
             runner_factory
-                .create_plugin_by_name("Test", false)
+                .create_runner_spec_by_name("Test", false)
                 .await
                 .unwrap()
                 .name(),
@@ -127,10 +142,13 @@ mod test {
 
     #[tokio::test]
     async fn test_create_by_name() {
-        let runner_factory = RunnerSpecFactory::new(Arc::new(Plugins::new()));
+        let runner_factory = RunnerSpecFactory::new(
+            Arc::new(Plugins::new()),
+            Arc::new(McpServerFactory::default()),
+        );
         runner_factory.load_plugins_from(TEST_PLUGIN_DIR).await;
         let runner = runner_factory
-            .create_plugin_by_name(RunnerType::Command.as_str_name(), false)
+            .create_runner_spec_by_name(RunnerType::Command.as_str_name(), false)
             .await
             .unwrap();
         assert_eq!(runner.name(), "COMMAND");

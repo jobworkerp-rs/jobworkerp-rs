@@ -3,7 +3,10 @@ use app::module::{AppConfigModule, AppModule};
 use app_wrapper::runner::RunnerFactory;
 use command_utils::util::{self, tracing::LoggingConfig};
 use dotenvy::dotenv;
-use jobworkerp_runner::runner::factory::RunnerSpecFactory;
+use jobworkerp_runner::runner::{
+    factory::RunnerSpecFactory,
+    mcp::client::{McpConfig, McpServerFactory},
+};
 use std::sync::Arc;
 
 // #[tokio::main]
@@ -20,8 +23,22 @@ pub async fn main() -> Result<()> {
     })
     .await?;
 
+    // load mcp config
+    let mcp_clients = match McpConfig::load(&jobworkerp_base::MCP_CONFIG_PATH.clone()).await {
+        Ok(mcp_clients) => {
+            let c = Arc::new(McpServerFactory::new(mcp_clients));
+            c.test_all().await?;
+            c
+        }
+        Err(e) => {
+            tracing::info!("mcp config not loaded: {:#?}", e);
+            Arc::new(McpServerFactory::default())
+        }
+    };
+
     let plugins = Arc::new(jobworkerp_runner::runner::plugins::Plugins::new());
-    let runner_spec_factory = Arc::new(RunnerSpecFactory::new(plugins.clone()));
+    let runner_spec_factory =
+        Arc::new(RunnerSpecFactory::new(plugins.clone(), mcp_clients.clone()));
 
     let (lock, mut wait) = util::shutdown::create_lock_and_wait();
 
@@ -30,7 +47,7 @@ pub async fn main() -> Result<()> {
     // reload jobs from rdb (if necessary) on start worker
     app_module.on_start_worker().await?;
 
-    let runner_factory = Arc::new(RunnerFactory::new(app_module.clone()));
+    let runner_factory = Arc::new(RunnerFactory::new(app_module.clone(), mcp_clients));
     let jh = tokio::spawn(jobworkerp_main::start_worker(
         app_module,
         runner_factory,
