@@ -118,6 +118,7 @@ fn convert_runner_to_function_specs(runner: RunnerWithSchema) -> FunctionSpecs {
         .is_some_and(|r| r.runner_type == RunnerType::McpServer as i32)
     {
         FunctionSpecs {
+            runner_type: RunnerType::McpServer as i32,
             runner_id: runner.id,
             worker_id: None,
             name: runner
@@ -140,6 +141,11 @@ fn convert_runner_to_function_specs(runner: RunnerWithSchema) -> FunctionSpecs {
         }
     } else {
         FunctionSpecs {
+            runner_type: runner
+                .data
+                .as_ref()
+                .map(|data| data.runner_type)
+                .unwrap_or(RunnerType::Plugin as i32),
             runner_id: runner.id,
             worker_id: None,
             name: runner
@@ -184,6 +190,7 @@ fn convert_worker_to_function_specs(
             .map(|s| parse_as_json_with_key_or_noop("schema", s));
         let input_schema = input_schema.map(|s| parse_as_json_with_key_or_noop("document", s));
         Ok(FunctionSpecs {
+            runner_type: RunnerType::ReusableWorkflow as i32,
             runner_id: runner.id,
             worker_id: Some(id),
             name: data.name,
@@ -204,6 +211,7 @@ fn convert_worker_to_function_specs(
         .is_some_and(|r| r.runner_type == RunnerType::McpServer as i32)
     {
         Ok(FunctionSpecs {
+            runner_type: RunnerType::McpServer as i32,
             runner_id: runner.id,
             worker_id: Some(id),
             name: data.name,
@@ -221,6 +229,11 @@ fn convert_worker_to_function_specs(
     } else {
         // TODO mcp server schema
         Ok(FunctionSpecs {
+            runner_type: runner
+                .data
+                .as_ref()
+                .map(|data| data.runner_type)
+                .unwrap_or(RunnerType::Plugin as i32),
             runner_id: runner.id,
             worker_id: Some(id),
             name: data.name,
