@@ -143,7 +143,7 @@ mod tests {
     use super::*;
     use anyhow::Result;
     use app::module::test::TEST_PLUGIN_DIR;
-    use jobworkerp_runner::runner::mcp::client::McpServerFactory;
+    use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
     use proto::jobworkerp::data::{RunnerType, WorkerData};
 
     #[test]

@@ -115,7 +115,7 @@ pub mod test {
     };
     use infra_utils::infra::test::setup_test_rdb_from;
     use jobworkerp_runner::runner::factory::RunnerSpecFactory;
-    use jobworkerp_runner::runner::mcp::client::McpServerFactory;
+    use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
     use jobworkerp_runner::runner::plugins::Plugins;
     use sqlx::Executor;
     use std::sync::Arc;

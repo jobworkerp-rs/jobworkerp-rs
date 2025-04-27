@@ -4,7 +4,8 @@ use app_wrapper::runner::RunnerFactory;
 use command_utils::util::shutdown;
 use command_utils::util::shutdown::ShutdownLock;
 use infra::infra::IdGeneratorWrapper;
-use jobworkerp_runner::runner::mcp::client::{McpConfig, McpServerFactory};
+use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
+use jobworkerp_runner::runner::mcp::config::McpConfig;
 use jobworkerp_runner::runner::{factory::RunnerSpecFactory, plugins::Plugins};
 use std::sync::Arc;
 use tokio::sync::OnceCell;
@@ -78,12 +79,12 @@ pub async fn boot_all_in_one() -> Result<()> {
     wait.wait().await;
 
     tracing::debug!("shutdown telemetry");
-    command_utils::util::tracing::shutdown_tracer_provider();
 
     tracing::debug!("worker handler");
     let _ret = jh.await?;
     let _ret2 = jh2.await?;
 
+    command_utils::util::tracing::shutdown_tracer_provider();
     tracing::info!("shutdown normally");
     // ret
     Ok(())

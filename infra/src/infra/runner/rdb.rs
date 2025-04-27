@@ -167,6 +167,38 @@ pub trait RunnerRepository:
             .context(format!("error in find: id = {}", id.value))
     }
 
+    async fn find_by_name(&self, name: &str) -> Result<Option<RunnerWithSchema>> {
+        let row = self.find_row_by_name_tx(self.db_pool(), name).await?;
+        if let Some(r2) = row {
+            if let Some(r3) = self
+                .runner_spec_factory()
+                .create_runner_spec_by_name(&r2.name, false)
+                .await
+            {
+                Ok(Some(r2.to_runner_with_schema(r3).await))
+            } else {
+                tracing::debug!("runner not found from runners: name={:?}", name);
+                Ok(None)
+            }
+        } else {
+            tracing::debug!("runner not found from db: name={:?}", name);
+            Ok(None)
+        }
+    }
+
+    async fn find_row_by_name_tx<'c, E: Executor<'c, Database = Rdb>>(
+        &self,
+        tx: E,
+        name: &str,
+    ) -> Result<Option<RunnerRow>> {
+        sqlx::query_as::<Rdb, RunnerRow>("SELECT * FROM `runner` WHERE `name` = ?;")
+            .bind(name)
+            .fetch_optional(tx)
+            .await
+            .map_err(JobWorkerError::DBError)
+            .context(format!("error in find: name = {}", name))
+    }
+
     async fn find_list(
         &self,
         limit: Option<&i32>,
@@ -272,9 +304,9 @@ mod test {
     use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::rdb::UseRdbPool;
     use jobworkerp_runner::runner::factory::RunnerSpecFactory;
-    use jobworkerp_runner::runner::mcp::client::McpConfig;
-    use jobworkerp_runner::runner::mcp::client::McpServerConfig;
-    use jobworkerp_runner::runner::mcp::client::McpServerFactory;
+    use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
+    use jobworkerp_runner::runner::mcp::config::McpConfig;
+    use jobworkerp_runner::runner::mcp::config::McpServerConfig;
     use jobworkerp_runner::runner::plugins::Plugins;
     use proto::jobworkerp::data::RunnerData;
     use proto::jobworkerp::data::RunnerId;

@@ -5,7 +5,7 @@ use clap::{arg, command, Parser};
 use command_utils::util::tracing::LoggingConfig;
 use jobworkerp_runner::runner::{
     factory::RunnerSpecFactory,
-    mcp::client::{McpConfig, McpServerFactory},
+    mcp::{proxy::McpServerFactory, config::McpConfig},
     plugins::Plugins,
 };
 

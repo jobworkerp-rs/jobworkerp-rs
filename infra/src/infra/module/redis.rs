@@ -150,7 +150,7 @@ pub mod test {
     use anyhow::Context;
     use infra_utils::infra::test::{setup_test_redis_client, setup_test_redis_pool};
     use jobworkerp_runner::runner::{
-        factory::RunnerSpecFactory, mcp::client::McpServerFactory, plugins::Plugins,
+        factory::RunnerSpecFactory, mcp::proxy::McpServerFactory, plugins::Plugins,
     };
     use std::sync::Arc;
 

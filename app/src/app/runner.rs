@@ -26,6 +26,14 @@ pub trait RunnerApp: fmt::Debug + Send + Sync {
     where
         Self: Send + 'static;
 
+    async fn find_runner_by_name(
+        &self,
+        name: &str,
+        ttl: Option<&Duration>,
+    ) -> Result<Option<RunnerWithSchema>>
+    where
+        Self: Send + 'static;
+
     async fn find_runner_list(
         &self,
         limit: Option<&i32>,
@@ -298,6 +306,10 @@ impl RunnerDataWithDescriptor {
 pub trait RunnerCacheHelper {
     fn find_cache_key(id: &i64) -> Arc<String> {
         Arc::new(["runner_id:", &id.to_string()].join(""))
+    }
+
+    fn find_name_cache_key(name: &str) -> Arc<String> {
+        Arc::new(["runner_name:", name].join(""))
     }
 
     // XXX lifetime issue

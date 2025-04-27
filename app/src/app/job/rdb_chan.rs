@@ -649,7 +649,7 @@ mod tests {
     use infra::infra::IdGeneratorWrapper;
     use infra_utils::infra::test::TEST_RUNTIME;
     use jobworkerp_runner::runner::factory::RunnerSpecFactory;
-    use jobworkerp_runner::runner::mcp::client::McpServerFactory;
+    use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
     use jobworkerp_runner::runner::plugins::Plugins;
     use proto::jobworkerp::data::{
         JobResult, JobResultId, Priority, QueueType, ResponseType, ResultOutput, ResultStatus,

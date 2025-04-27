@@ -4,7 +4,8 @@ use std::{fmt::Debug, time::Duration};
 use crate::proto::jobworkerp::data::{Runner, RunnerId};
 use crate::proto::jobworkerp::service::runner_service_server::RunnerService;
 use crate::proto::jobworkerp::service::{
-    CountCondition, CountResponse, FindListRequest, OptionalRunnerResponse, SuccessResponse,
+    CountCondition, CountResponse, FindListRequest, OptionalRunnerResponse, RunnerNameRequest,
+    SuccessResponse,
 };
 use crate::service::error_handle::handle_error;
 use app::app::runner::RunnerApp;
@@ -62,7 +63,25 @@ impl<T: RunnerGrpc + Tracing + Send + Debug + Sync + 'static> RunnerService for 
             Err(e) => Err(handle_error(&e)),
         }
     }
-
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "find_by_name"))]
+    async fn find_by_name(
+        &self,
+        request: tonic::Request<RunnerNameRequest>,
+    ) -> std::result::Result<tonic::Response<OptionalRunnerResponse>, tonic::Status> {
+        let _s = Self::trace_request("runner", "find", &request);
+        let req = request.get_ref();
+        match self
+            .app()
+            .find_runner_by_name(req.name.as_str(), Some(&DEFAULT_TTL))
+            .await
+        {
+            Ok(Some(res)) => Ok(Response::new(OptionalRunnerResponse {
+                data: Some(res.into_proto()),
+            })),
+            Ok(None) => Ok(Response::new(OptionalRunnerResponse { data: None })),
+            Err(e) => Err(handle_error(&e)),
+        }
+    }
     type FindListStream = BoxStream<'static, Result<Runner, tonic::Status>>;
     #[tracing::instrument(level = "info", skip(self, request), fields(method = "find_list"))]
     async fn find_list(
