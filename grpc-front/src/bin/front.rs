@@ -6,7 +6,7 @@ use command_utils::util::shutdown;
 use dotenvy::dotenv;
 use jobworkerp_runner::runner::{
     factory::RunnerSpecFactory,
-    mcp::client::{McpConfig, McpServerFactory},
+    mcp::{proxy::McpServerFactory, config::McpConfig},
     plugins::Plugins,
 };
 
@@ -45,8 +45,9 @@ async fn main() -> Result<()> {
 
     tracing::info!("waiting shutdown");
     wait.wait().await;
-    tracing::info!("shutdown");
+
     command_utils::util::tracing::shutdown_tracer_provider();
+    tracing::info!("shutdown");
 
     ret
 }

@@ -8,7 +8,7 @@ use crate::runner::RunnerTrait;
 use crate::{schema_to_json_string, schema_to_json_string_option};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use client::McpServer;
+use proxy::McpServerProxy;
 use futures::stream::BoxStream;
 use jobworkerp_base::codec::ProstMessageCodec;
 use jobworkerp_base::codec::UseProstCodec;
@@ -18,7 +18,8 @@ use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::data::ToolAnnotations;
 use rmcp::model::CallToolRequestParam;
 
-pub mod client;
+pub mod proxy;
+pub mod config;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod integration_tests;
 
@@ -28,11 +29,11 @@ pub mod integration_tests;
  */
 #[derive(Debug)]
 pub struct McpServerRunnerImpl {
-    mcp_server: McpServer,
+    mcp_server: McpServerProxy,
 }
 
 impl McpServerRunnerImpl {
-    pub fn new(server: McpServer) -> Self {
+    pub fn new(server: McpServerProxy) -> Self {
         Self { mcp_server: server }
     }
     pub async fn tools(&self) -> Result<Vec<McpTool>> {
