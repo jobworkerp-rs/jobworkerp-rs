@@ -6,7 +6,7 @@ use command_utils::util::shutdown;
 use dotenvy::dotenv;
 use jobworkerp_runner::runner::{
     factory::RunnerSpecFactory,
-    mcp::{proxy::McpServerFactory, config::McpConfig},
+    mcp::{config::McpConfig, proxy::McpServerFactory},
     plugins::Plugins,
 };
 

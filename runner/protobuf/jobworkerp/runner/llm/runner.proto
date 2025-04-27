@@ -16,6 +16,24 @@ message LLMRunnerSettings {
     optional bool pull_model = 4;
   }
 
+  // ollama model specific settings
+  // NEED to SET env for auth token of the model
+  // (OPENAI_API_KEY, ANTHROPIC_API_KEY, COHERE_API_KEY, GEMINI_API_KEY,
+  // GROQ_API_KEY, XAI_API_KEY, DEEPSEEK_API_KEY)
+  message GenaiRunnerSettings {
+    // # model name
+    // use api depending on the model name (of openai, anthropic, etc.)
+    string model = 1;
+    // default system prompt before the user prompt
+    optional string system_prompt = 2;
+    // # base url
+    // base url to use for the api (optional, not set usually)
+    optional string base_url = 3;
+  }
+
   // runner settings
-  oneof settings { OllamaRunnerSettings ollama_settings = 1; }
+  oneof settings {
+    OllamaRunnerSettings ollama = 1;
+    GenaiRunnerSettings genai = 2;
+  }
 }

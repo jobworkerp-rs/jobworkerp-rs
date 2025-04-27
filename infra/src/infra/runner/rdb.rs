@@ -304,9 +304,9 @@ mod test {
     use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::rdb::UseRdbPool;
     use jobworkerp_runner::runner::factory::RunnerSpecFactory;
-    use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
     use jobworkerp_runner::runner::mcp::config::McpConfig;
     use jobworkerp_runner::runner::mcp::config::McpServerConfig;
+    use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
     use jobworkerp_runner::runner::plugins::Plugins;
     use proto::jobworkerp::data::RunnerData;
     use proto::jobworkerp::data::RunnerId;
