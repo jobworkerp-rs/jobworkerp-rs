@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::stream::{BoxStream, StreamExt};
+use genai::GenaiService;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_runner::jobworkerp::runner::llm::{LlmCompletionArgs, LlmRunnerSettings};
 use jobworkerp_runner::runner::llm::LLMCompletionRunnerSpec;
@@ -11,15 +12,20 @@ use proto::jobworkerp::data::{result_output_item, ResultOutputItem, RunnerType};
 use std::io::Cursor;
 use std::vec;
 
+pub mod genai;
 pub mod ollama;
 
 pub struct LLMCompletionRunnerImpl {
     pub ollama: Option<OllamaService>,
+    pub genai: Option<GenaiService>,
 }
 
 impl LLMCompletionRunnerImpl {
     pub fn new() -> Self {
-        Self { ollama: None }
+        Self {
+            ollama: None,
+            genai: None,
+        }
     }
 }
 
@@ -70,10 +76,24 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         let settings = LlmRunnerSettings::decode(&mut Cursor::new(settings))
             .map_err(|e| anyhow!("decode error: {}", e))?;
         match settings.settings {
-            Some(jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::Settings::OllamaSettings(settings)) => {
+            Some(
+                jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::Settings::Ollama(
+                    settings,
+                ),
+            ) => {
                 let ollama = OllamaService::new(settings).await?;
-                tracing::info!("{} loaded", RunnerType::LlmCompletion.as_str_name());
+                tracing::info!("{} loaded(ollama)", RunnerType::LlmCompletion.as_str_name());
                 self.ollama = Some(ollama);
+                Ok(())
+            }
+            Some(
+                jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::Settings::Genai(
+                    settings,
+                ),
+            ) => {
+                let genai = GenaiService::new(settings).await?;
+                tracing::info!("{} loaded(genai)", RunnerType::LlmCompletion.as_str_name());
+                self.genai = Some(genai);
                 Ok(())
             }
             _ => Err(anyhow!("model_settings is not set")),
@@ -85,6 +105,13 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
             .map_err(|e| anyhow!("decode error: {}", e))?;
         if let Some(ollama) = self.ollama.as_mut() {
             let res = ollama.request_generation(args).await?;
+            let mut buf = Vec::with_capacity(res.encoded_len());
+            res.encode(&mut buf)
+                .map_err(|e| anyhow!("encode error: {}", e))?;
+            Ok(vec![buf])
+        } else if let Some(genai) = self.genai.as_mut() {
+            //XXX chat only
+            let res = genai.request_chat(args).await?;
             let mut buf = Vec::with_capacity(res.encoded_len());
             res.encode(&mut buf)
                 .map_err(|e| anyhow!("encode error: {}", e))?;
@@ -137,6 +164,10 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                 .boxed();
 
             Ok(output_stream)
+        } else if let Some(genai) = self.genai.as_mut() {
+            // Get streaming responses from genai service
+            let stream = genai.request_chat_stream(args).await?;
+            Ok(stream)
         } else {
             Err(anyhow!("llm is not initialized"))
         }

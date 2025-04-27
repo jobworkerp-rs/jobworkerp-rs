@@ -137,6 +137,7 @@ impl ClientHandler for McpServerProxy {
         Some(self.transport.peer().clone())
     }
 
+    #[allow(clippy::manual_async_fn)]
     fn on_tool_list_changed(
         &self,
     ) -> impl std::prelude::rust_2024::Future<Output = ()> + Send + '_ {
@@ -146,6 +147,7 @@ impl ClientHandler for McpServerProxy {
             });
         }
     }
+    #[allow(clippy::manual_async_fn)]
     fn on_logging_message(
         &self,
         params: rmcp::model::LoggingMessageNotificationParam,
@@ -186,6 +188,7 @@ impl ClientHandler for McpServerProxy {
             }
         }
     }
+    #[allow(clippy::manual_async_fn)]
     fn on_progress(
         &self,
         params: rmcp::model::ProgressNotificationParam,
