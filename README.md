@@ -33,6 +33,7 @@ Processing capabilities can be extended through plugins.
   - [Result Storage (worker.store_success, worker.store_failure)](#result-storage-workerstore_success-workerstore_failure)
   - [Result Retrieval Methods (worker.response_type)](#result-retrieval-methods-workerresponse_type)
   - [MCP Proxy Functionality](#mcp-proxy-functionality)
+  - [Workflow Runners](#workflow-runners)
 - [Other Details](#other-details)
   - [Worker Definition](#worker-definition)
   - [RDB Definition](#rdb-definition)
@@ -149,6 +150,10 @@ Each feature requires setting necessary values in protobuf format for worker.run
 - DOCKER: Docker run execution ([DockerRunner](infra/src/infra/runner/docker.rs)): Specify FromImage (image to pull), Repo (repository), Tag, Platform(`os[/arch[/variant]]`) in worker.runner_settings, and Image (execution image name) and Cmd (command line array) in job.args
   - Environment variable `DOCKER_GID`: Specify GID with permission to connect to /var/run/docker.sock. The jobworkerp execution process needs to have permission to use this GID.
   - Running on k8s pod is currently untested. (Due to the above restriction, it's expected to require Docker Outside of Docker or Docker in Docker configuration in the docker image)
+- LLM_COMPLETION: Text generation using LLMs ([LLMCompletionRunner](infra/src/infra/runner/llm_completion.rs)): Specify LLM settings in worker.runner_settings and prompts/options in job.args. Supports two LLM connection methods:
+  - Ollama: Locally run LLM server. Specify base_url (default: http://localhost:11434) and model name in worker.runner_settings
+  - GenAI: External LLM services (OpenAI, Anthropic, Google Gemini, Cohere, Groq, xAI, DeepSeek, etc.). Specify model name in worker.runner_settings. The API used is automatically determined based on the model name
+    - API keys must be set as environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY, COHERE_API_KEY, GEMINI_API_KEY, GROQ_API_KEY, XAI_API_KEY, DEEPSEEK_API_KEY) for each respective service
 
 ### Job Queue Types
 
@@ -212,7 +217,7 @@ args = ["mcp-server-fetch"]
 
 Place the configuration file at the path specified by the `MCP_CONFIG` environment variable. If the environment variable is not set, the default path `mcp-settings.toml` will be used.
 
-#### Using MCP Proxy
+#### Using MCP Proxy()
 
 1. Prepare the MCP server configuration file
 2. Specify the MCP runner's numeric ID as runner_id when creating a worker (check with `jobworkerp-client worker-runner list` command)
@@ -241,6 +246,101 @@ Responses from MCP servers can be retrieved as job results and processed directl
 > ```shell
 > $ ./target/release/jobworkerp-client worker create --name "TimeInfo" --runner-id 3 --response-type DIRECT --use-static
 > ```
+
+### Workflow Runners
+
+Workflow runners enable the execution of multiple jobs in a predefined sequence or reusable workflows. The workflow functionality is based on [Serverless Workflow](https://serverlessworkflow.io/) standard with jobworkerp-rs specific extensions.
+
+- INLINE_WORKFLOW: Execute a workflow defined in the job arguments ([InlineWorkflowRunner](infra/src/infra/runner/inline_workflow.rs))
+  - Allows one-time execution of a workflow by passing the entire workflow definition in the job arguments
+  - The workflow can be specified either as a URL to a workflow definition file or as the complete workflow data in YAML/JSON format
+  - Uses dynamic variable expansion using both jq syntax (${}) and Liquid template syntax ($${})
+
+- REUSABLE_WORKFLOW: Execute reusable workflows ([ReusableWorkflowRunner](infra/src/infra/runner/reusable_workflow.rs))
+  - Store workflow definitions as workers for repeated execution
+  - Define the workflow in worker.runner_settings and provide only input data in job arguments for execution
+  - Same templating capabilities as INLINE_WORKFLOW using both jq and Liquid template syntax
+
+#### Workflow Example
+
+Here's an example of a workflow that lists files and then processes directories further:
+
+```yaml
+document:
+  id: 1
+  name: ls-test
+  namespace: default
+  title: Workflow test (ls)
+  version: 0.0.1
+  dsl: 0.0.1
+input:
+  schema:
+    document:
+      type: string
+      description: file name
+      default: /
+do:
+  - ListWorker:
+      run:
+        function:
+          runnerName: COMMAND
+          arguments:
+            command: ls
+            args: ["${.}"]
+          options: 
+            channel: workflow
+            useStatic: false
+            storeSuccess: true
+            storeFailure: true
+      output:
+        as: |- 
+          $${
+          {%- assign files = stdout | newline_to_br | split: '<br />' -%}
+          {"files": [
+          {%- for file in files -%}
+          "{{- file |strip_newlines -}}"{% unless forloop.last %},{% endunless -%}
+          {%- endfor -%}
+          ] }
+          }
+  - EachFileIteration:
+      for:
+        each: file
+        in: ${.files}
+        at: ind
+      do:
+        - ListWorkerInner:
+            if: |-
+              $${{%- assign head_char = file | slice: 0, 1 -%}{%- if head_char == "d" %}true{% else %}false{% endif -%}}
+            run:
+              function:
+                runnerName: COMMAND
+                arguments:
+                  command: ls
+                  args: ["$${/{{file}}}"]
+                options:
+                  channel: workflow
+                  useStatic: false
+                  storeSuccess: true
+                  storeFailure: true
+```
+
+#### Using Workflow Runners
+
+To use the workflow runners with jobworkerp-client:
+
+```shell
+# For INLINE_WORKFLOW - one-time execution of a workflow
+$ ./target/release/jobworkerp-client worker create --name "OneTimeFlow" --runner-id <INLINE_WORKFLOW_ID> --response-type DIRECT
+$ ./target/release/jobworkerp-client job enqueue --worker "OneTimeFlow" --args '{"workflow_data":"<YAML or JSON workflow definition>", "input":"directory/to/list"}'
+
+# For REUSABLE_WORKFLOW - create a reusable workflow
+$ ./target/release/jobworkerp-client worker create --name "ReusableFlow" --runner-id <REUSABLE_WORKFLOW_ID> --settings '{"json_data":"<YAML or JSON workflow definition>"}' --response-type DIRECT
+$ ./target/release/jobworkerp-client job enqueue --worker "ReusableFlow" --args '{"input":"directory/to/list"}'
+
+# Direct workflow execution without creating a worker (shortcut method)
+$ ./target/release/jobworkerp-client job enqueue-workflow -i '{"directory":"/path/to/list"}' -w ./workflows/my-workflow.yml
+# This command automatically creates a temporary worker and executes the workflow in one step
+```
 
 ## Other Details
 
@@ -277,7 +377,7 @@ Responses from MCP servers can be retrieved as job results and processed directl
   - `LOG_FILE_DIR`: Log output directory
   - `LOG_USE_JSON`: Whether to output logs in JSON format (boolean)
   - `LOG_USE_STDOUT`: Whether to output logs to standard output (boolean)
-  - `OTLP_ADDR` (in testing): Request metrics collection via otlp (ZIPKIN_ADDR)
+  - `OTLP_ADDR` (in testing): Request metrics collection via otlp 
 - Job queue settings
   - `STRAGE_TYPE`
     - `Standalone`: Uses RDB and memory (mpmc channel). Operates assuming single instance execution. (Build without mysql specification and use SQLite)
