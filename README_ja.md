@@ -31,10 +31,11 @@ GRPCをつかって処理内容となる[Worker](proto/protobuf/jobworkerp/servi
   - [結果の格納 (worker.store_success、worker.store_failure)](#%E7%B5%90%E6%9E%9C%E3%81%AE%E6%A0%BC%E7%B4%8D-workerstore_successworkerstore_failure)
   - [結果の取得方法 (worker.response_type)](#%E7%B5%90%E6%9E%9C%E3%81%AE%E5%8F%96%E5%BE%97%E6%96%B9%E6%B3%95-workerresponse_type)
   - [MCPプロキシ機能](#mcp%E3%83%97%E3%83%AD%E3%82%AD%E3%82%B7%E6%A9%9F%E8%83%BD)
+  - [ワークフローランナー](#%E3%83%AF%E3%83%BC%E3%82%AF%E3%83%95%E3%83%AD%E3%83%BC%E3%83%A9%E3%83%B3%E3%83%8A%E3%83%BC)
 - [その他詳細](#%E3%81%9D%E3%81%AE%E4%BB%96%E8%A9%B3%E7%B4%B0)
   - [worker定義](#worker%E5%AE%9A%E7%BE%A9)
   - [RDBの定義](#rdb%E3%81%AE%E5%AE%9A%E7%BE%A9)
-  - [その他の環境変数](#%E3%81%9D%E3%81%AE%E4%BB%96%E3%81%AE%E7%92%B0%E5%A2%83%E5%A4%89%E6%95%B0)
+  - [その他の環境変数](#%E3%81%9D%E3%81%AE%E4%BB%96%E7%92%B0%E5%A2%83%E5%A4%89%E6%95%B0)
 - [プラグインについて](#%E3%83%97%E3%83%A9%E3%82%B0%E3%82%A4%E3%83%B3%E3%81%AB%E3%81%A4%E3%81%84%E3%81%A6)
   - [各種エラーコードについて](#%E5%90%84%E7%A8%AE%E3%82%A8%E3%83%A9%E3%83%BC%E3%82%B3%E3%83%BC%E3%83%89%E3%81%AB%E3%81%A4%E3%81%84%E3%81%A6)
 - [その他](#%E3%81%9D%E3%81%AE%E4%BB%96)
@@ -154,6 +155,10 @@ worker_runnerに組み込み定義されている機能を以下に記載する�
 - DOCKER: docker run実行 ([DockerRunner](infra/src/infra/runner/docker.rs)): worker.runner_settingsにFromImage (pullするイメージ)、Repo (レポジトリ)、Tag、Platform(`os[/arch[/variant]]`)などを指定、job.argsにImage(実行するイメージ名)とCmd(実行コマンドラインの配列)を指定する
   - 環境変数 `DOCKER_GID`：/var/run/docker.sock に接続する権限をもったGIDを指定する。jobworkerpの実行プロセスはこのGIDを利用可能な権限が必要。
   - k8s pod上での起動は現在未テスト。(上記の制限からおそらくDockerOutsideOfDockerあるいはDockerInDockerが可能なdocker imageの設定が必要になる想定)。
+- LLM_COMPLETION: LLMによる文章生成 ([LLMCompletionRunner](infra/src/infra/runner/llm_completion.rs)): worker.runner_settingsでLLM設定を指定し、job.argsでプロンプトやオプションを指定する。以下の2つのLLM接続方式をサポート:
+  - Ollama: ローカルで実行するLLMサーバー。worker.runner_settingsにbase_url (デフォルト: http://localhost:11434)とmodel名を指定する
+  - GenAI: 外部LLMサービス（OpenAI, Anthropic, Google Gemini, Cohere, Groq, xAI, DeepSeekなど）。worker.runner_settingsにmodel名を指定する。モデル名によって使用するAPIが自動的に決定される
+    - 各サービスのAPIキーを環境変数（OPENAI_API_KEY, ANTHROPIC_API_KEY, COHERE_API_KEY, GEMINI_API_KEY, GROQ_API_KEY, XAI_API_KEY, DEEPSEEK_API_KEY）に設定する必要がある
 
 ### ジョブキュー種別
 
@@ -247,6 +252,101 @@ MCPサーバーからの応答はジョブ結果として取得でき、response
 > $ ./target/release/jobworkerp-client worker create --name "TimeInfo" --runner-id 3 --response-type DIRECT --use-static
 > ```
 
+### ワークフローランナー
+
+ワークフローランナーは、定義された順序で複数のジョブを実行したり、再利用可能なワークフローを実行したりするための機能です。この機能は[Serverless Workflow](https://serverlessworkflow.io/)標準をベースにしており、jobworkerp-rs独自の拡張機能が追加されています。
+
+- INLINE_WORKFLOW: ジョブの引数で定義されたワークフローを実行する ([InlineWorkflowRunner](infra/src/infra/runner/inline_workflow.rs))
+  - ワークフロー定義全体をジョブ引数として渡して一度だけ実行することができる
+  - ワークフローは、ワークフロー定義ファイルへのURLかYAML/JSON形式のワークフロー定義データとして指定可能
+  - jq構文（${}）とLiquidテンプレート構文（$${}）の両方を使用した動的変数展開をサポート
+
+- REUSABLE_WORKFLOW: 再利用可能なワークフローを実行する ([ReusableWorkflowRunner](infra/src/infra/runner/reusable_workflow.rs))
+  - ワークフロー定義をworkerとして保存し、繰り返し実行することができる
+  - worker.runner_settingsにワークフロー定義を設定し、実行時にはjob引数として入力データのみを提供
+  - INLINE_WORKFLOWと同様に、jqとLiquidテンプレート構文を使用した変数展開が可能
+
+#### ワークフロー例
+
+以下は、ファイルをリストアップし、ディレクトリをさらに処理するワークフローの例です：
+($${...}: Liquid テンプレート、${...} jq)
+```yaml
+document:
+  id: 1
+  name: ls-test
+  namespace: default
+  title: Workflow test (ls)
+  version: 0.0.1
+  dsl: 0.0.1
+input:
+  schema:
+    document:
+      type: string
+      description: file name
+      default: /
+do:
+  - ListWorker:
+      run:
+        function:
+          runnerName: COMMAND
+          arguments:
+            command: ls
+            args: ["${.}"]
+          options: 
+            channel: workflow
+            useStatic: false
+            storeSuccess: true
+            storeFailure: true
+      output:
+        as: |- 
+          $${
+          {%- assign files = stdout | newline_to_br | split: '<br />' -%}
+          {"files": [
+          {%- for file in files -%}
+          "{{- file |strip_newlines -}}"{% unless forloop.last %},{% endunless -%}
+          {%- endfor -%}
+          ] }
+          }
+  - EachFileIteration:
+      for:
+        each: file
+        in: ${.files}
+        at: ind
+      do:
+        - ListWorkerInner:
+            if: |-
+              $${{%- assign head_char = file | slice: 0, 1 -%}{%- if head_char == "d" %}true{% else %}false{% endif -%}}
+            run:
+              function:
+                runnerName: COMMAND
+                arguments:
+                  command: ls
+                  args: ["$${/{{file}}}"]
+                options:
+                  channel: workflow
+                  useStatic: false
+                  storeSuccess: true
+                  storeFailure: true
+```
+
+#### ワークフローランナーの利用方法
+
+jobworkerp-clientを使用してワークフローランナーを利用する方法：
+
+```shell
+# INLINE_WORKFLOW - ワークフローの一度限りの実行
+$ ./target/release/jobworkerp-client worker create --name "OneTimeFlow" --runner-id 65535 --response-type DIRECT
+$ ./target/release/jobworkerp-client job enqueue --worker "OneTimeFlow" --args '{"workflow_data":"<YAML または JSON ワークフロー定義>", "input":"{入力json obj or string}"}'
+
+# REUSABLE_WORKFLOW - 再利用可能なワークフローの作成
+$ ./target/release/jobworkerp-client worker create --name "ReusableFlow" --runner-id <REUSABLE_WORKFLOW_ID> --settings '{"json_data":"<YAML または JSON ワークフロー定義>"}' --response-type DIRECT
+$ ./target/release/jobworkerp-client job enqueue --worker "ReusableFlow" --args '{"input":"..."}'
+
+# ワーカーを作成せずに直接ワークフローを実行する方法（ショートカット）
+$ ./target/release/jobworkerp-client job enqueue-workflow -i '{"directory":"/path/to/list"}' -w ./workflows/my-workflow.yml
+# このコマンドは一時的なワーカーを自動的に作成し、ワークフローを一度で実行します
+```
+
 ## その他詳細
 
 - 特に単位を明記していない時間の項目の単位はミリ秒
@@ -282,7 +382,7 @@ MCPサーバーからの応答はジョブ結果として取得でき、response
   - `LOG_FILE_DIR`: ログ出力ディレクトリ
   - `LOG_USE_JSON`: ログ出力をJSON形式で実施するか(boolean)
   - `LOG_USE_STDOUT`: ログ出力を標準出力するか(boolean)
-  - `OTLP_ADDR`(テスト中): otlpによるリクエストメトリクスの取得 (ZIPKIN_ADDR)
+  - `OTLP_ADDR`(テスト中): otlpによるリクエストメトリクスの取得 
 - ジョブキュー設定
   - `STRAGE_TYPE`
     - `Standalone` RDBとメモリ(mpmcチャンネル)を利用する。単一インスタンスでの実行を想定した動作をする。(ビルド時にmysql指定をせずにSQLiteを利用すること)
