@@ -16,6 +16,7 @@ GRPCをつかって処理内容となる[Worker](proto/protobuf/jobworkerp/servi
 - 指定時刻実行、一定間隔での定期実行
 - ジョブ実行失敗時のリトライ機能: リトライ回数や間隔の設定（Exponential backoff 他）
 - プラグインによる実行ジョブ内容（Runner）の拡張
+- Model Context Protocol (MCP) プロキシ機能: MCPサーバーで提供されるLLMや各種ツールをRunner経由で利用可能
 
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
@@ -29,6 +30,7 @@ GRPCをつかって処理内容となる[Worker](proto/protobuf/jobworkerp/servi
   - [ジョブキュー種別](#%E3%82%B8%E3%83%A7%E3%83%96%E3%82%AD%E3%83%A5%E3%83%BC%E7%A8%AE%E5%88%A5)
   - [結果の格納 (worker.store_success、worker.store_failure)](#%E7%B5%90%E6%9E%9C%E3%81%AE%E6%A0%BC%E7%B4%8D-workerstore_successworkerstore_failure)
   - [結果の取得方法 (worker.response_type)](#%E7%B5%90%E6%9E%9C%E3%81%AE%E5%8F%96%E5%BE%97%E6%96%B9%E6%B3%95-workerresponse_type)
+  - [MCPプロキシ機能](#mcp%E3%83%97%E3%83%AD%E3%82%AD%E3%82%B7%E6%A9%9F%E8%83%BD)
 - [その他詳細](#%E3%81%9D%E3%81%AE%E4%BB%96%E8%A9%B3%E7%B4%B0)
   - [worker定義](#worker%E5%AE%9A%E7%BE%A9)
   - [RDBの定義](#rdb%E3%81%AE%E5%AE%9A%E7%BE%A9)
@@ -178,6 +180,72 @@ worker.queue_type
 - 後で取得(LISTEN_AFTER): enqueue後、[job_result](proto/protobuf/jobworkerp/service/job_result.proto)サービスのListenを使って実行終了後すぐに結果を取得できる。(ロングポーリング)
   - 複数のクライアントがListenして全クライアントが同じ結果を得ることができます (Redis pubsubでの伝達)
 - 直接取得(DIRECT): enqueueリクエストで実行完了まで待ち、そのレスポンスとして直接結果が得られる。(結果を格納していない場合はリクエストしたクライアントのみ結果を取得可能)
+
+### MCPプロキシ機能
+
+Model Context Protocol (MCP) は、LLMアプリケーションとツール間の標準通信プロトコルです。jobworkerp-rsのMCPプロキシ機能を使用することで、以下のことが可能になります：
+
+- 各種MCPサーバーが提供する機能（LLM、時間情報取得、Webページ取得など）をRunnerとして実行
+- 非同期ジョブとしてMCPツールを実行し、結果を取得
+- 複数のMCPサーバーを設定し、異なるツールを組み合わせて利用
+
+#### MCPサーバー設定
+
+MCPサーバーの設定はTOMLファイルで行います。以下は設定例です：
+
+```toml
+[[server]]
+name = "time"
+description = "timezone"
+protocol = "stdio"
+command = "uvx"
+args = ["mcp-server-time", "--local-timezone=Asia/Tokyo"]
+
+[[server]]
+name = "fetch"
+description = "fetch web page as markdown from web"
+protocol = "stdio"
+command = "uvx"
+args = ["mcp-server-fetch"]
+
+# SSEプロトコルの例
+#[[server]]
+#name = "test-server"
+#protocol = "sse"
+#url = "http://localhost:8080"
+```
+
+設定ファイルは環境変数 `MCP_CONFIG` に指定したパスに配置します。環境変数を設定していない場合は、デフォルトで `mcp-settings.toml` が使用されます。
+
+#### MCPプロキシの使用例
+
+1. MCPサーバー設定ファイルを準備する
+2. worker作成時にrunner_idにMCPランナーの数値IDを指定（`jobworkerp-client worker-runner list` コマンドで確認できます）
+3. ジョブ実行時の引数にtool_nameとarg_jsonを指定する
+
+```shell
+# まず利用可能なrunner-idを確認する
+$ ./target/release/jobworkerp-client worker-runner list
+# ここでMCPランナーのIDを確認（例: 3）
+
+# MCPサーバーを使用するワーカーを作成（例：時間情報取得）
+# runner-idには上記で確認したMCPランナーのID番号を指定
+$ ./target/release/jobworkerp-client worker create --name "TimeInfo" --runner-id 3 --response-type DIRECT
+
+# ジョブを実行して現在の時間情報を取得
+$ ./target/release/jobworkerp-client job enqueue --worker "TimeInfo" --args '{"tool_name":"get_current_time","arg_json":"{\"timezone\":\"Asia/Tokyo\"}"}'
+
+# Webページ取得の例
+$ ./target/release/jobworkerp-client worker create --name "WebFetch" --runner-id 3 --response-type DIRECT
+$ ./target/release/jobworkerp-client job enqueue --worker "WebFetch" --args '{"tool_name":"fetch","arg_json":"{\"url\":\"https://example.com\"}"}'
+```
+
+MCPサーバーからの応答はジョブ結果として取得でき、response_typeの設定に従って直接または非同期に処理できます。
+
+> **注意**: MCPサーバプロキシによるMCPサーバツールの実行に時間がかかる場合は、worker作成時に`use_static`オプションを`true`に設定することで、ツール実行ごとにMCPサーバプロセスを初期化せずに再利用できます。これによりメモリ使用量は増加しますが、実行速度が向上します。
+> ```shell
+> $ ./target/release/jobworkerp-client worker create --name "TimeInfo" --runner-id 3 --response-type DIRECT --use-static
+> ```
 
 ## その他詳細
 
