@@ -18,6 +18,7 @@ Processing capabilities can be extended through plugins.
 - Scheduled execution at specific times and periodic execution at fixed intervals
 - Retry functionality for failed jobs: Configure retry count and intervals (Exponential backoff and others)
 - Extensible job execution content (Runner) through plugins
+- Model Context Protocol (MCP) proxy functionality: Access LLMs and various tools provided by MCP servers through Runners
 
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
@@ -31,6 +32,7 @@ Processing capabilities can be extended through plugins.
   - [Job Queue Types](#job-queue-types)
   - [Result Storage (worker.store_success, worker.store_failure)](#result-storage-workerstore_success-workerstore_failure)
   - [Result Retrieval Methods (worker.response_type)](#result-retrieval-methods-workerresponse_type)
+  - [MCP Proxy Functionality](#mcp-proxy-functionality)
 - [Other Details](#other-details)
   - [Worker Definition](#worker-definition)
   - [RDB Definition](#rdb-definition)
@@ -174,6 +176,72 @@ worker.queue_type
   - Multiple clients can Listen and receive the same results (delivered via Redis pubsub)
 - Direct retrieval (DIRECT): Waits for execution completion in the enqueue request and returns results directly in the response (If results are not stored, only the requesting client can obtain results)
 
+### MCP Proxy Functionality
+
+Model Context Protocol (MCP) is a standard communication protocol between LLM applications and tools. jobworkerp-rs's MCP proxy functionality enables you to:
+
+- Execute functions (LLMs, time information retrieval, web page fetching, etc.) provided by various MCP servers as Runners
+- Run MCP tools as asynchronous jobs and retrieve their results
+- Configure multiple MCP servers and combine different tools
+
+#### MCP Server Configuration
+
+MCP server configurations are defined in a TOML file. Here's an example configuration:
+
+```toml
+[[server]]
+name = "time"
+description = "timezone"
+protocol = "stdio"
+command = "uvx"
+args = ["mcp-server-time", "--local-timezone=Asia/Tokyo"]
+
+[[server]]
+name = "fetch"
+description = "fetch web page as markdown from web"
+protocol = "stdio"
+command = "uvx"
+args = ["mcp-server-fetch"]
+
+# SSE protocol example
+#[[server]]
+#name = "test-server"
+#protocol = "sse"
+#url = "http://localhost:8080"
+```
+
+Place the configuration file at the path specified by the `MCP_CONFIG` environment variable. If the environment variable is not set, the default path `mcp-settings.toml` will be used.
+
+#### Using MCP Proxy
+
+1. Prepare the MCP server configuration file
+2. Specify the MCP runner's numeric ID as runner_id when creating a worker (check with `jobworkerp-client worker-runner list` command)
+3. Specify tool_name and arg_json in the job execution arguments
+
+```shell
+# First, check available runner-ids
+$ ./target/release/jobworkerp-client worker-runner list
+# Note the MCP runner ID (e.g., 3)
+
+# Create a worker using MCP server (example: time information retrieval)
+# Specify the MCP runner's ID number checked above as runner-id
+$ ./target/release/jobworkerp-client worker create --name "TimeInfo" --runner-id 3 --response-type DIRECT
+
+# Execute a job to get current time information
+$ ./target/release/jobworkerp-client job enqueue --worker "TimeInfo" --args '{"tool_name":"get_current_time","arg_json":"{\"timezone\":\"Asia/Tokyo\"}"}'
+
+# Web page fetching example
+$ ./target/release/jobworkerp-client worker create --name "WebFetch" --runner-id 3 --response-type DIRECT
+$ ./target/release/jobworkerp-client job enqueue --worker "WebFetch" --args '{"tool_name":"fetch","arg_json":"{\"url\":\"https://example.com\"}"}'
+```
+
+Responses from MCP servers can be retrieved as job results and processed directly or asynchronously according to the response_type setting.
+
+> **Note**: If MCP proxy's initialization and execution of MCP server tools takes time, you can set the `use_static` option to `true` when creating a worker. This allows MCP server processes to be reused instead of initializing them for each tool execution. This increases memory usage but improves execution speed.
+> ```shell
+> $ ./target/release/jobworkerp-client worker create --name "TimeInfo" --runner-id 3 --response-type DIRECT --use-static
+> ```
+
 ## Other Details
 
 - Time units are in milliseconds unless otherwise specified
@@ -186,7 +254,7 @@ worker.queue_type
 - worker.retry_policy: Specify retry method for job execution failures (RetryType: CONSTANT, LINEAR, EXPONENTIAL), maximum attempts (max_retry), maximum time interval (max_interval), etc.
 - worker.next_workers: Execute different workers using the result as arguments after job completion (specify worker.ids with comma separation)
   - Must specify workers that can process the result value directly as job_arg
-- worker.use_static (in testing): Ability to statically allocate runner processes according to parallelism degree (avoid initialization each time by pooling execution runners)
+- worker.use_static: Ability to statically allocate runner processes according to parallelism degree (avoid initialization each time by pooling execution runners)
 
 ### RDB Definition
 
