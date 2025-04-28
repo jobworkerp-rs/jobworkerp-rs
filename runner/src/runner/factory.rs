@@ -3,7 +3,7 @@ use super::{
     docker::{DockerExecRunner, DockerRunner},
     grpc_unary::GrpcUnaryRunner,
     llm::LLMCompletionRunnerSpecImpl,
-    mcp::{client::McpServerFactory, McpServerRunnerImpl},
+    mcp::{proxy::McpServerFactory, McpServerRunnerImpl},
     plugins::{PluginLoader, PluginMetadata, Plugins},
     python::PythonCommandRunner,
     request::RequestRunner,

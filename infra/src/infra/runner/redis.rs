@@ -187,7 +187,7 @@ pub trait UseRedisRunnerRepository {
 #[tokio::test]
 async fn redis_test() -> Result<()> {
     use crate::infra::module::test::TEST_PLUGIN_DIR;
-    use jobworkerp_runner::runner::mcp::client::McpServerFactory;
+    use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
     use jobworkerp_runner::runner::plugins::Plugins;
     use proto::jobworkerp::data::{RunnerData, RunnerId, StreamingOutputType};
 

@@ -51,6 +51,7 @@ serde_with = { workspace = true }
 signal-hook = { workspace = true }
 signal-hook-tokio = { workspace = true }
 # sqlx = { workspace = true }
+stretto = { workspace = true }
 rustls = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }

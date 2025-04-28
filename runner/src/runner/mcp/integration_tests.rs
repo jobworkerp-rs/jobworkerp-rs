@@ -1,4 +1,4 @@
-use crate::runner::mcp::client::{McpServerConfig, McpServerTransportConfig};
+use crate::runner::mcp::config::{McpServerConfig, McpServerTransportConfig};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -119,14 +119,14 @@ pub async fn create_time_mcp_server() -> Result<McpServerConfig> {
 
 #[tokio::test]
 async fn test_time_mcp_server() -> Result<()> {
-    use crate::runner::mcp::client::McpConfig;
+    use crate::runner::mcp::config::McpConfig;
 
     let config = McpConfig {
         server: vec![create_time_mcp_server().await?],
     };
 
     // Create McpClients
-    let factory = crate::runner::mcp::client::McpServerFactory::new(config);
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let mut clients = factory.test_all().await?;
     assert_eq!(clients.len(), 1);
     let client = clients.pop().unwrap();

@@ -5,7 +5,7 @@ use command_utils::util::{self, tracing::LoggingConfig};
 use dotenvy::dotenv;
 use jobworkerp_runner::runner::{
     factory::RunnerSpecFactory,
-    mcp::client::{McpConfig, McpServerFactory},
+    mcp::{config::McpConfig, proxy::McpServerFactory},
 };
 use std::sync::Arc;
 

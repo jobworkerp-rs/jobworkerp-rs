@@ -692,7 +692,7 @@ pub mod tests {
     use infra::infra::module::HybridRepositoryModule;
     use infra::infra::IdGeneratorWrapper;
     use jobworkerp_runner::runner::factory::RunnerSpecFactory;
-    use jobworkerp_runner::runner::mcp::client::McpServerFactory;
+    use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
     use jobworkerp_runner::runner::plugins::Plugins;
     use proto::jobworkerp::data::RunnerId;
     use std::sync::Arc;
