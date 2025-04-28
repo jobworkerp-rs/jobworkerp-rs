@@ -112,7 +112,7 @@ mod test {
     #[cfg(test)]
     #[test]
     fn subscribe_worker_changed_test() -> Result<()> {
-        use jobworkerp_runner::runner::mcp::client::McpServerFactory;
+        use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
 
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let redis_client = setup_test_redis_client()?;

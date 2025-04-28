@@ -2,6 +2,7 @@ use super::{RunnerApp, RunnerCacheHelper, RunnerDataWithDescriptor, UseRunnerPar
 use crate::app::StorageConfig;
 use anyhow::Result;
 use async_trait::async_trait;
+use command_utils::util::option::ToVec;
 use debug_stub_derive::DebugStub;
 use infra::infra::module::HybridRepositoryModule;
 use infra::infra::runner::rdb::RunnerRepository;
@@ -91,6 +92,26 @@ impl RunnerApp for HybridRunnerAppImpl {
                     Some(v) => vec![v],
                     None => Vec::new(),
                 }),
+                Err(e) => Err(e),
+            }
+        })
+        .await
+        .map(|r| r.first().map(|o| (*o).clone()))
+    }
+
+    async fn find_runner_by_name(
+        &self,
+        name: &str,
+        ttl: Option<&Duration>,
+    ) -> Result<Option<RunnerWithSchema>>
+    where
+        Self: Send + 'static,
+    {
+        let k = Self::find_name_cache_key(name);
+        self.with_cache_locked(&k, ttl, || async {
+            let v = self.runner_repository().find_by_name(name).await;
+            match v {
+                Ok(opt) => Ok(opt.to_vec()),
                 Err(e) => Err(e),
             }
         })

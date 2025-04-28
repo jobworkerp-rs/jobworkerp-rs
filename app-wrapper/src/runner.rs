@@ -2,7 +2,7 @@ use crate::workflow::runner::reusable::ReusableWorkflowRunner;
 use crate::{llm::LLMCompletionRunnerImpl, workflow::runner::inline::InlineWorkflowRunner};
 use anyhow::Result;
 use app::module::AppModule;
-use jobworkerp_runner::runner::mcp::client::McpServerFactory;
+use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
 use jobworkerp_runner::runner::mcp::McpServerRunnerImpl;
 use jobworkerp_runner::runner::{
     command::CommandRunnerImpl,

@@ -308,7 +308,7 @@ pub mod test {
     };
     use infra_utils::infra::memory::MemoryCacheImpl;
     use jobworkerp_runner::runner::{
-        factory::RunnerSpecFactory, mcp::client::McpServerFactory, plugins::Plugins,
+        factory::RunnerSpecFactory, mcp::proxy::McpServerFactory, plugins::Plugins,
     };
     use proto::jobworkerp::data::StorageType;
     use std::sync::Arc;
