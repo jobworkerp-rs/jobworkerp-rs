@@ -89,14 +89,6 @@ pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig {
                 "can't use db queue in direct_response.",
             ));
         }
-        // rdb listen_after response type need to store result to rdb
-        if req.response_type == ResponseType::ListenAfter as i32
-            && (!req.store_success || !req.store_failure)
-        {
-            return Err(tonic::Status::invalid_argument(
-                "must specify store_success and store_failure TRUE for response_type 'ListenAfter'.",
-            ));
-        }
         //        // runner_settings should not be empty (depends on worker, not checked here)
         //        if req.runner_settings.is_empty() {
         //            return Err(tonic::Status::invalid_argument("runner_settings should not be empty"));
@@ -413,17 +405,6 @@ mod tests {
         // in ResponseType::Direct cannot be used by storage_type: RDB
         assert!(v.validate_worker(&w).is_err());
 
-        // in ResponseType::ListenAfter, store_success and store_failure must be set to true for storage_type: RDB
-        w.response_type = ResponseType::ListenAfter as i32;
-        assert!(v.validate_worker(&w).is_ok());
-        w.store_success = false;
-        assert!(v.validate_worker(&w).is_err());
-        w.store_success = true;
-        w.store_failure = false;
-        assert!(v.validate_worker(&w).is_err());
-        w.store_failure = true;
-        assert!(v.validate_worker(&w).is_ok());
-
         let v = Validator {
             storage_type: StorageType::Scalable,
         };
@@ -468,14 +449,11 @@ mod tests {
         assert!(v.validate_worker(&w).is_ok());
         w.periodic_interval = 1000;
         assert!(v.validate_worker(&w).is_err());
-        w.periodic_interval = 1001;
-        w.response_type = ResponseType::ListenAfter as i32;
-        assert!(v.validate_worker(&w).is_ok());
+
         w.periodic_interval = 0;
-        assert!(v.validate_worker(&w).is_ok());
-        w.periodic_interval = 1001;
-        assert!(v.validate_worker(&w).is_ok());
-        w.periodic_interval = 500;
+
+        // in ResponseType::Direct cannot be used by storage_type: RDB
+        w.response_type = ResponseType::Direct as i32;
         assert!(v.validate_worker(&w).is_err());
     }
 }

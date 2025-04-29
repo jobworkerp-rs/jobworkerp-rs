@@ -129,10 +129,10 @@ impl JobApp for RdbChanJobAppImpl {
             // cannot wait for direct response
             if run_after_time > 0 && w.response_type == ResponseType::Direct as i32 {
                 return Err(JobWorkerError::InvalidParameter(format!(
-                        "run_after_time must be 0 for worker response_type=Direct, must use ListenAfter: {:?}",
-                        &job_data
-                    ))
-                    .into());
+                    "run_after_time must be 0 for worker response_type=Direct: {:?}",
+                    &job_data
+                ))
+                .into());
             }
             let jid = reserved_job_id.unwrap_or(JobId {
                 value: self.id_generator().generate_id()?,
@@ -847,7 +847,7 @@ mod tests {
     }
 
     #[test]
-    fn test_create_listen_after_job_complete() -> Result<()> {
+    fn test_create_broadcast_result_job_complete() -> Result<()> {
         // tracing_init_test(tracing::Level::DEBUG);
         // enqueue, find, complete, find, delete, find
         TEST_RUNTIME.block_on(async {
@@ -861,14 +861,14 @@ mod tests {
                 runner_id: Some(RunnerId { value: 1 }),
                 runner_settings,
                 channel: None,
-                response_type: ResponseType::ListenAfter as i32,
+                response_type: ResponseType::NoResult as i32,
                 periodic_interval: 0,
                 retry_policy: None,
                 queue_type: QueueType::WithBackup as i32,
                 store_failure: true,
                 store_success: true,
                 use_static: false,
-                broadcast_results: false,
+                broadcast_results: true,
             };
             let worker_id = app.worker_app().create(&wd).await?;
             let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
@@ -934,7 +934,7 @@ mod tests {
                     run_after_time: job.data.as_ref().unwrap().run_after_time,
                     start_time: datetime::now_millis(),
                     end_time: datetime::now_millis(),
-                    response_type: ResponseType::ListenAfter as i32,
+                    response_type: ResponseType::NoResult as i32,
                     store_success: true,
                     store_failure: true,
                 }),

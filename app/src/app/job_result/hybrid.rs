@@ -17,8 +17,7 @@ use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
-    JobId, JobResult, JobResultData, JobResultId, ResponseType, ResultOutputItem, ResultStatus,
-    Worker, WorkerData, WorkerId,
+    JobId, JobResult, JobResultData, JobResultId, ResultOutputItem, ResultStatus, Worker, WorkerId,
 };
 use std::pin::Pin;
 use std::sync::Arc;
@@ -74,33 +73,25 @@ impl HybridJobResultAppImpl {
         }
     }
 
-    pub async fn subscribe_result_with_check(
+    async fn subscribe_result_with_check(
         &self,
         job_id: &JobId,
-        wdata: &WorkerData,
         timeout: Option<&u64>,
         request_streaming: bool,
     ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
-        if wdata.response_type != ResponseType::ListenAfter as i32 {
-            Err(JobWorkerError::InvalidParameter(
-                "cannot listen job which response_type isnot ListenAfter".to_string(),
-            )
-            .into())
-        } else {
-            let res = self
+        let res = self
+            .job_result_pubsub_repository()
+            .subscribe_result(job_id, timeout.copied())
+            .await?;
+        if request_streaming {
+            let stream = self
                 .job_result_pubsub_repository()
-                .subscribe_result(job_id, timeout.copied())
+                .subscribe_result_stream(job_id, timeout.copied())
                 .await?;
-            if request_streaming {
-                let stream = self
-                    .job_result_pubsub_repository()
-                    .subscribe_result_stream(job_id, timeout.copied())
-                    .await?;
-                Ok((res, Some(stream)))
-            } else {
-                // wait for result data (long polling with grpc (keep connection)))
-                Ok((res, None))
-            }
+            Ok((res, Some(stream)))
+        } else {
+            // wait for result data (long polling with grpc (keep connection)))
+            Ok((res, None))
         }
     }
 }
@@ -111,6 +102,7 @@ impl JobResultApp for HybridJobResultAppImpl {
         &self,
         id: &JobResultId,
         data: &JobResultData,
+        broadcast_results: bool,
     ) -> Result<bool> {
         // store result to rdb
         let in_db = if Self::_should_store(data) {
@@ -120,9 +112,7 @@ impl JobResultApp for HybridJobResultAppImpl {
         };
         // always store cache for ended job result in success or failure
         //     : cache for listen_after
-        if data.status != ResultStatus::ErrorAndRetry as i32
-            && data.response_type == ResponseType::ListenAfter as i32
-        {
+        if data.status != ResultStatus::ErrorAndRetry as i32 && broadcast_results {
             self.redis_job_result_repository()
                 .upsert_only_by_job_id(id, data)
                 .await
@@ -208,13 +198,6 @@ impl JobResultApp for HybridJobResultAppImpl {
             .find_by_id_or_name(worker_id, worker_name)
             .await?
         {
-            if wd.response_type != ResponseType::ListenAfter as i32 {
-                return Err(JobWorkerError::InvalidParameter(format!(
-                    "Cannot listen result not stored worker: {:?}",
-                    &wd
-                ))
-                .into());
-            }
             if !wd.broadcast_results {
                 return Err(JobWorkerError::InvalidParameter(format!(
                     "Cannot listen result not broadcast worker: {:?}",
@@ -236,7 +219,6 @@ impl JobResultApp for HybridJobResultAppImpl {
                     // found not finished result: wait for result data
                     self.subscribe_result_with_check(
                         job_id,
-                        &wd,
                         timeout.as_ref(),
                         v.data
                             .map(|r| r.request_streaming)
@@ -247,13 +229,8 @@ impl JobResultApp for HybridJobResultAppImpl {
                 None => {
                     // not found result: wait for job
                     tracing::debug!("job result not found: find job: {:?}", job_id);
-                    self.subscribe_result_with_check(
-                        job_id,
-                        &wd,
-                        timeout.as_ref(),
-                        request_streaming,
-                    )
-                    .await
+                    self.subscribe_result_with_check(job_id, timeout.as_ref(), request_streaming)
+                        .await
                 }
             }
         } else {
@@ -474,6 +451,7 @@ pub mod tests {
         use infra::infra::job::rows::UseJobqueueAndCodec;
         use infra_utils::infra::test::TEST_RUNTIME;
         use jobworkerp_runner::jobworkerp::runner::CommandArgs;
+        use proto::jobworkerp::data::{ResponseType, WorkerData};
 
         let runner_settings = vec![];
         let worker_data = WorkerData {
@@ -536,7 +514,10 @@ pub mod tests {
                 id: Some(id),
                 data: Some(data.clone()),
             };
-            assert!(app.create_job_result_if_necessary(&id, &data).await?);
+            assert!(
+                app.create_job_result_if_necessary(&id, &data, worker_data.broadcast_results)
+                    .await?
+            );
             assert_eq!(app.find_job_result_from_db(&id).await?.unwrap(), result);
             assert_eq!(
                 app.find_job_result_by_job_id(&job_id).await?.unwrap(),
@@ -553,7 +534,10 @@ pub mod tests {
                 id: Some(id),
                 data: Some(data.clone()),
             };
-            assert!(app.create_job_result_if_necessary(&id, &data).await?);
+            assert!(
+                app.create_job_result_if_necessary(&id, &data, worker_data.broadcast_results)
+                    .await?
+            );
             assert_eq!(app.find_job_result_from_db(&id).await?.unwrap(), result);
             // found from db
             assert_eq!(
@@ -570,20 +554,20 @@ pub mod tests {
             // no store to db
             data.store_failure = false;
             data.job_id = Some(job_id);
-            data.response_type = ResponseType::ListenAfter as i32;
+            data.response_type = ResponseType::NoResult as i32;
             let result = JobResult {
                 id: Some(id),
                 data: Some(data.clone()),
             };
-            // store only to redis for listen after
-            assert!(app.create_job_result_if_necessary(&id, &data).await?);
+            // store only to redis for listen after (broadcast_results = true)
+            assert!(app.create_job_result_if_necessary(&id, &data, true).await?);
             assert_eq!(app.find_job_result_from_db(&id).await?, None);
             // store ended result in cache for listen_after
             let mut res = app.find_job_result_by_job_id(&job_id).await?.unwrap();
             // restore store_failure by worker data, rewrite for skip in test
             let mut d = res.data.unwrap().clone();
             d.store_failure = false;
-            d.response_type = ResponseType::ListenAfter as i32;
+            d.response_type = ResponseType::NoResult as i32;
             res.data = Some(d);
             assert_eq!(res, result);
 
@@ -595,7 +579,9 @@ pub mod tests {
             data.status = ResultStatus::ErrorAndRetry as i32;
             data.job_id = Some(job_id);
             assert!(
-                !(app.create_job_result_if_necessary(&id, &data).await?),
+                !(app
+                    .create_job_result_if_necessary(&id, &data, worker_data.broadcast_results)
+                    .await?),
                 "no store"
             );
             assert_eq!(app.find_job_result_from_db(&id).await?, None);
@@ -610,6 +596,7 @@ pub mod tests {
     fn test_error_listen_result() -> Result<()> {
         use super::*;
         use infra_utils::infra::test::TEST_RUNTIME;
+        use proto::jobworkerp::data::{ResponseType, WorkerData};
 
         let runner_settings = vec![];
         let worker_data = WorkerData {
