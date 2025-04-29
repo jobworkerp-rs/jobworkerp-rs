@@ -1,38 +1,38 @@
 services:
-    #  jobworkerp-grpc:
-    #    image: ghcr.io/jobworkerp-rs/grpc-front:latest
-    #    env_file:
-    #      # Ensure that the variables in .env match your environment
-    #      - compose-scalable.env
-    #    security_opt:
-    #      - seccomp:unconfined
-    #    cap_add:
-    #      - SYS_PTRACE
-    #    volumes:
-    #      - ./log:/home/jobworkerp/log
-    #      - ./plugins:/home/jobworkerp/plugins
-    #      - /var/run/docker.sock:/var/run/docker.sock
-    #    user: jobworkerp
-    #    ports:
-    #      - 9000:9000
-    #    restart: on-failure
-    #
-    #  jobworkerp-worker:
-    #    image: ghcr.io/jobworkerp-rs/worker:latest
-    #    env_file:
-    #      # Ensure that the variables in .env match your environment
-    #      - compose-scalable.env
-    #    security_opt:
-    #      - seccomp:unconfined
-    #    cap_add:
-    #      - SYS_PTRACE
-    #    volumes:
-    #      - ./log:/home/jobworkerp/log
-    #      - ./plugins:/home/jobworkerp/plugins
-    #      - /var/run/docker.sock:/var/run/docker.sock
-    #    user: jobworkerp
-    #    restart: on-failure
-
+  jobworkerp-grpc:
+    image: ghcr.io/jobworkerp-rs/grpc-front:latest
+    platform: linux/amd64
+    env_file:
+      # Ensure that the variables in .env match your environment
+      - compose-scalable.env
+    security_opt:
+      - seccomp:unconfined
+    cap_add:
+      - SYS_PTRACE
+    volumes:
+      - ./log:/home/jobworkerp/log
+      - ./plugins:/home/jobworkerp/plugins
+      - /var/run/docker.sock:/var/run/docker.sock
+    user: jobworkerp
+    ports:
+      - 9000:9000
+    restart: on-failure
+  jobworkerp-worker:
+    image: ghcr.io/jobworkerp-rs/worker:latest
+    platform: linux/amd64
+    env_file:
+      # Ensure that the variables in .env match your environment
+      - compose-scalable.env
+    security_opt:
+      - seccomp:unconfined
+    cap_add:
+      - SYS_PTRACE
+    volumes:
+      - ./log:/home/jobworkerp/log
+      - ./plugins:/home/jobworkerp/plugins
+      - /var/run/docker.sock:/var/run/docker.sock
+    user: jobworkerp
+    restart: on-failure
   redis:
     hostname: 127.0.0.1
     image: redis:7
