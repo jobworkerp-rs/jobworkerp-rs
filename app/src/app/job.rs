@@ -235,7 +235,10 @@ where
         JobId,
         Option<JobResult>,
         Option<BoxStream<'static, ResultOutputItem>>,
-    )> {
+    )>
+    where
+        Self: Send + 'static,
+    {
         let job_id = job.id.unwrap();
         // job in the future(need to wait) (use for redis only mode in future)
         let res = match if self.is_run_after_job(job) {

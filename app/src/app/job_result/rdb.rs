@@ -17,8 +17,7 @@ use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
-    JobId, JobResult, JobResultData, JobResultId, ResponseType, ResultOutputItem, ResultStatus,
-    Worker, WorkerData, WorkerId,
+    JobId, JobResult, JobResultData, JobResultId, ResultOutputItem, ResultStatus, Worker, WorkerId,
 };
 use std::pin::Pin;
 use std::sync::Arc;
@@ -60,21 +59,10 @@ impl RdbJobResultAppImpl {
             .worker_app
             .find_by_id_or_name(worker_id, worker_name)
             .await?;
-        // let wid = wid.ok_or(JobWorkerError::WorkerNotFound(format!(
-        //     "cannot listen job which worker is None: id={:?} or name={:?}",
-        //     worker_id, worker_name
-        // )))?;
         let wd = wd.ok_or(JobWorkerError::WorkerNotFound(format!(
             "cannot listen job which worker is None: id={:?} or name={:?}",
             worker_id, worker_name
         )))?;
-        // if wd.response_type == ResponseType::Direct as i32 {
-        //     return Err(JobWorkerError::InvalidParameter(format!(
-        //         "Cannot listen result for direct response: {:?}",
-        //         &wd
-        //     ))
-        //     .into());
-        // }
         if !wd.broadcast_results {
             return Err(JobWorkerError::InvalidParameter(format!(
                 "Cannot listen result not broadcast worker: {:?}",
@@ -94,13 +82,13 @@ impl RdbJobResultAppImpl {
             // result in rdb (not finished by store_failure option)
             Some(_v) => {
                 // found not finished result: wait for result data
-                self.subscribe_result_with_check(job_id, &wd, timeout.as_ref(), true)
+                self.subscribe_result_with_check(job_id, timeout.as_ref(), true)
                     .await
             }
             None => {
                 // not found result: wait for job
                 tracing::debug!("job result not found: find job: {:?}", job_id);
-                self.subscribe_result_with_check(job_id, &wd, timeout.as_ref(), true)
+                self.subscribe_result_with_check(job_id, timeout.as_ref(), true)
                     .await
             }
         }
@@ -109,30 +97,22 @@ impl RdbJobResultAppImpl {
     async fn subscribe_result_with_check(
         &self,
         job_id: &JobId,
-        wdata: &WorkerData,
         timeout: Option<&u64>,
         request_streaming: bool,
     ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
-        if wdata.response_type != ResponseType::ListenAfter as i32 {
-            Err(JobWorkerError::InvalidParameter(
-                "cannot listen job which response_type isnot ListenAfter".to_string(),
-            )
-            .into())
-        } else {
-            let res = self
+        let res = self
+            .job_result_pubsub_repository()
+            .subscribe_result(job_id, timeout.copied())
+            .await?;
+        if request_streaming {
+            let stream = self
                 .job_result_pubsub_repository()
-                .subscribe_result(job_id, timeout.copied())
+                .subscribe_result_stream(job_id, timeout.copied())
                 .await?;
-            if request_streaming {
-                let stream = self
-                    .job_result_pubsub_repository()
-                    .subscribe_result_stream(job_id, timeout.copied())
-                    .await?;
-                Ok((res, Some(stream)))
-            } else {
-                // wait for result data (long polling with grpc (keep connection)))
-                Ok((res, None))
-            }
+            Ok((res, Some(stream)))
+        } else {
+            // wait for result data (long polling with grpc (keep connection)))
+            Ok((res, None))
         }
     }
 }
@@ -144,6 +124,7 @@ impl JobResultApp for RdbJobResultAppImpl {
         &self,
         id: &JobResultId,
         data: &JobResultData,
+        _broadcast_results: bool,
     ) -> Result<bool> {
         // need to record
         if Self::_should_store(data) {

@@ -103,6 +103,7 @@ pub trait JobResultApp: fmt::Debug + Send + Sync + 'static {
         &self,
         id: &JobResultId,
         data: &JobResultData,
+        broadcast_result: bool,
     ) -> Result<bool>; // record result and create retry job if needed
                        // return
 
