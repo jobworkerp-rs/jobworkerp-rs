@@ -11,8 +11,6 @@ Processing capabilities can be extended through plugins.
 
 ## Architecture Overview
 
-![jobworkerp-rs Architecture](docs/images/architecture.png)
-
 jobworkerp-rs consists of the following main components:
 
 - **gRPC Frontend**: An interface that accepts requests from clients and handles job registration/retrieval
