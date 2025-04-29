@@ -9,8 +9,6 @@ GRPCをつかって処理内容となる[Worker](proto/protobuf/jobworkerp/servi
 
 ## アーキテクチャ概要
 
-![jobworkerp-rs アーキテクチャ](docs/images/architecture.png)
-
 jobworkerp-rsは以下の主要コンポーネントで構成されています：
 
 - **gRPC フロントエンド**: クライアントからのリクエストを受け付け、ジョブの登録・取得を行うインターフェース
