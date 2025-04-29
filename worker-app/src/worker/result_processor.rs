@@ -57,7 +57,7 @@ impl ResultProcessorImpl {
         // store result if necessary by result status and worker setting
         match self
             .job_result_app()
-            .create_job_result_if_necessary(&id, &data.0)
+            .create_job_result_if_necessary(&id, &data.0, w.broadcast_results)
             .await
         {
             Ok(_r) => {

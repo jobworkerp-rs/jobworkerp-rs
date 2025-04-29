@@ -153,12 +153,6 @@ enum ResponseType {
   // Gets result in the same response
   // May involve long wait (long polling with gRPC unary)
   DIRECT = 1;
-
-  // # Listen After
-  // Returns job ID immediately, then client can listen for results
-  // Results available via JobResultService with blocking for a short time
-  // use worker.broadcast_result=true to enable job_result listen api
-  LISTEN_AFTER = 2 [ deprecated = true ];
 }
 
 // # Result Status

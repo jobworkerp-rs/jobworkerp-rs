@@ -37,8 +37,8 @@ where
             .map_err(|e| JobWorkerError::RedisError(e).into());
 
         if let Some(jid) = job_id {
-            // set cache for job_id
-            if job_result.response_type == ResponseType::ListenAfter as i32 {
+            // set cache for job_id for not direct response
+            if job_result.response_type != ResponseType::Direct as i32 {
                 let _jr: Result<bool> = con
                     .set_ex(
                         Self::job_id_cache_key(jid),
@@ -77,7 +77,7 @@ where
 
         if let Some(jid) = job_id {
             // set cache for job_id
-            if job_result.response_type == ResponseType::ListenAfter as i32 {
+            if job_result.response_type != ResponseType::Direct as i32 {
                 let _jr: Result<bool> = con
                     .set_ex(
                         Self::job_id_cache_key(jid),
@@ -92,7 +92,7 @@ where
         res
     }
 
-    // only use for cache by job_id (response_type=ListenAfter)
+    // only use for cache by job_id (response_type!=Direct)
     async fn upsert_only_by_job_id(
         &self,
         id: &JobResultId,
