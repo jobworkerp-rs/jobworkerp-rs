@@ -193,10 +193,10 @@ impl JobApp for HybridJobAppImpl {
             // cannot wait for direct response
             if run_after_time > 0 && w.response_type == ResponseType::Direct as i32 {
                 return Err(JobWorkerError::InvalidParameter(format!(
-                        "run_after_time must be 0 for worker response_type=Direct, must use ListenAfter. job: {:?}",
-                        &job_data
-                    ))
-                    .into());
+                    "run_after_time must be 0 for worker response_type=Direct. job: {:?}",
+                    &job_data
+                ))
+                .into());
             }
             let jid = reserved_job_id.unwrap_or(JobId {
                 value: self.id_generator().generate_id()?,
@@ -922,7 +922,7 @@ pub mod tests {
                 runner_id: Some(TEST_RUNNER_ID),
                 runner_settings,
                 channel: None,
-                response_type: ResponseType::ListenAfter as i32,
+                response_type: ResponseType::NoResult as i32,
                 periodic_interval: 0,
                 retry_policy: None,
                 queue_type: QueueType::Normal as i32, // store to rdb for failback (can find job from rdb but not from redis)
@@ -971,7 +971,7 @@ pub mod tests {
                 runner_id: Some(TEST_RUNNER_ID),
                 runner_settings,
                 channel: None,
-                response_type: ResponseType::ListenAfter as i32,
+                response_type: ResponseType::NoResult as i32,
                 periodic_interval: 0,
                 retry_policy: None,
                 queue_type: QueueType::Normal as i32, // store to rdb for failback (can find job from rdb but not from redis)
@@ -1044,7 +1044,7 @@ pub mod tests {
                     run_after_time: job.data.as_ref().unwrap().run_after_time,
                     start_time: datetime::now_millis(),
                     end_time: datetime::now_millis(),
-                    response_type: ResponseType::ListenAfter as i32,
+                    response_type: ResponseType::NoResult as i32,
                     store_success: false,
                     store_failure: false,
                 }),

@@ -7,7 +7,7 @@ $id: https://serverlessworkflow.io/schemas/1.0.0/workflow.yaml
 $schema: https://json-schema.org/draft/2020-12/schema
 title: WorkflowSchema
 description: >-
-  Partial Serverless Workflow DSL with function(tool) upport. 
+  Partial Serverless Workflow DSL with function(tool) support. 
 
   Runtime expressions:
   - jq expressions using ${..} syntax (e.g. ${.key.ckey}, ${$task.input})
