@@ -7,13 +7,16 @@ use infra::infra::module::rdb::RdbChanRepositoryModule;
 use infra::infra::runner::rdb::RunnerRepository;
 use infra::infra::runner::rdb::{RdbRunnerRepositoryImpl, UseRdbRunnerRepository};
 use infra::infra::runner::rows::RunnerWithSchema;
+use infra::infra::IdGeneratorWrapper;
 use infra_utils::infra::lock::RwLockWithKey;
 use infra_utils::infra::memory::{self, MemoryCacheConfig, MemoryCacheImpl, UseMemoryCache};
 use infra_utils::infra::rdb::UseRdbPool;
-use proto::jobworkerp::data::RunnerId;
+use jobworkerp_base::error::JobWorkerError;
+use proto::jobworkerp::data::{RunnerId, RunnerType};
 use std::{sync::Arc, time::Duration};
 use stretto::AsyncCache;
 
+// TODO merge with hybrid implementation
 #[derive(Clone, DebugStub)]
 pub struct RdbRunnerAppImpl {
     plugin_dir: String,
@@ -25,6 +28,7 @@ pub struct RdbRunnerAppImpl {
     cache_ttl: Option<Duration>,
     #[debug_stub = "Arc<RwLockWithKey<Arc<String>>>"]
     key_lock: Arc<RwLockWithKey<Arc<String>>>,
+    id_generator: Arc<IdGeneratorWrapper>,
 }
 
 impl RdbRunnerAppImpl {
@@ -34,6 +38,7 @@ impl RdbRunnerAppImpl {
         memory_cache_config: &MemoryCacheConfig,
         repositories: Arc<RdbChanRepositoryModule>,
         descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
+        id_generator: Arc<IdGeneratorWrapper>,
     ) -> Self {
         Self {
             plugin_dir,
@@ -43,13 +48,43 @@ impl RdbRunnerAppImpl {
             repositories,
             cache_ttl: Some(Duration::from_secs(60)), // TODO from setting
             key_lock: Arc::new(RwLockWithKey::new(memory_cache_config.num_counters)),
+            id_generator,
         }
     }
+    // load runners from db in initialization
+    async fn load_runners_from_db(&self) -> Result<()> {
+        let runners = self.runner_repository().find_list(None, None).await?;
+        for data in runners.into_iter().flat_map(|r| r.data) {
+            if let Err(e) = match data.runner_type {
+                val if val == RunnerType::McpServer as i32 => self
+                    .runner_repository()
+                    .load_mcp_server(
+                        data.name.as_str(),
+                        data.description.as_str(),
+                        data.definition.as_str(),
+                    )
+                    .await
+                    .map(|_| ()),
+                val if val == RunnerType::Plugin as i32 => self
+                    .runner_repository()
+                    .load_plugin(Some(data.name.as_str()), &data.definition)
+                    .await
+                    .map(|_| ()),
+                _ => Ok(()), // skip other types
+            } {
+                tracing::error!("load runner error: {:?}", e);
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
     async fn add_runner(&self) -> Result<()> {
+        self.load_runners_from_db().await?;
         self.runner_repository()
             .add_from_plugins_from(self.plugin_dir.as_str())
             .await?;
-        self.runner_repository().add_from_mcp_server().await?;
+        self.runner_repository().add_from_mcp_config_file().await?;
         let _ = self
             .delete_cache_locked(&Self::find_all_list_cache_key())
             .await;
@@ -96,8 +131,69 @@ impl RunnerApp for RdbRunnerAppImpl {
         Ok(true)
     }
 
+    async fn create_runner(
+        &self,
+        name: &str,
+        description: &str,
+        runner_type: i32,
+        definition: &str,
+    ) -> Result<RunnerId> {
+        let runner_id = self.id_generator.generate_id()?;
+        match runner_type {
+            val if val == RunnerType::McpServer as i32 => {
+                let _ = self
+                    .runner_repository()
+                    .create_mcp_server(name, description, definition)
+                    .await?;
+            }
+            val if val == RunnerType::Plugin as i32 => {
+                let _ = self
+                    .runner_repository()
+                    .create_plugin(name, description, definition)
+                    .await?;
+            }
+            _ => {}
+        }
+        let res = match runner_type {
+            val if val == RunnerType::McpServer as i32 => self
+                .runner_repository()
+                .load_mcp_server(name, description, definition)
+                .await
+                .map(|_| true),
+            val if val == RunnerType::Plugin as i32 => self
+                .runner_repository()
+                .load_plugin(Some(name), definition)
+                .await
+                .map(|_| true),
+            _ => Err(JobWorkerError::InvalidParameter(format!(
+                "Invalid runner type: {}",
+                runner_type
+            ))
+            .into()),
+        }?;
+        // let res = self
+        //     .runner_repository()
+        //     .create(&RunnerRow {
+        //         id: runner_id,
+        //         name: name.to_string(),
+        //         description: description.to_string(),
+        //         definition: definition.to_string(),
+        //         r#type: runner_type,
+        //     })
+        //     .await?;
+        if res {
+            // clear memory cache
+            let _ = self
+                .delete_cache_locked(&Self::find_all_list_cache_key())
+                .await;
+            Ok(RunnerId { value: runner_id })
+        } else {
+            Err(JobWorkerError::AlreadyExists(format!("Runner already exists: {}", name)).into())
+        }
+    }
+
     async fn delete_runner(&self, id: &RunnerId) -> Result<bool> {
-        let res = self.runner_repository().delete(id).await?;
+        let res = self.runner_repository().remove(id).await?;
         // clear memory cache
         let _ = self
             .delete_cache_locked(&Self::find_cache_key(&id.value))
@@ -203,11 +299,11 @@ impl RunnerApp for RdbRunnerAppImpl {
         let runner_data = test_runner_with_descriptor(name);
         let _res = self
             .runner_repository()
-            .create(&RunnerRow {
+            ._create(&RunnerRow {
                 id: runner_id.value,
                 name: name.to_string(),
                 description: runner_data.runner_data.description.clone(),
-                file_name: format!("lib{}.so", name),
+                definition: format!("./target/debug/lib{}.so", name),
                 r#type: RunnerType::Plugin as i32,
             })
             .await?;
