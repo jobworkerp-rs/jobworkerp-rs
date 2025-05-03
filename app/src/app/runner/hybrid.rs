@@ -8,10 +8,11 @@ use infra::infra::module::HybridRepositoryModule;
 use infra::infra::runner::rdb::RunnerRepository;
 use infra::infra::runner::rdb::{RdbRunnerRepositoryImpl, UseRdbRunnerRepository};
 use infra::infra::runner::rows::RunnerWithSchema;
+use infra::infra::IdGeneratorWrapper;
 use infra_utils::infra::lock::RwLockWithKey;
 use infra_utils::infra::memory::{self, MemoryCacheConfig, MemoryCacheImpl, UseMemoryCache};
 use infra_utils::infra::rdb::UseRdbPool;
-use proto::jobworkerp::data::RunnerId;
+use proto::jobworkerp::data::{RunnerId, RunnerType};
 use std::{sync::Arc, time::Duration};
 use stretto::AsyncCache;
 
@@ -25,6 +26,7 @@ pub struct HybridRunnerAppImpl {
     descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     repositories: Arc<HybridRepositoryModule>,
     key_lock: Arc<RwLockWithKey<Arc<String>>>,
+    id_generator: Arc<IdGeneratorWrapper>,
 }
 
 impl HybridRunnerAppImpl {
@@ -34,6 +36,7 @@ impl HybridRunnerAppImpl {
         memory_cache_config: &MemoryCacheConfig,
         repositories: Arc<HybridRepositoryModule>,
         descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
+        id_generator: Arc<IdGeneratorWrapper>,
     ) -> Self {
         Self {
             plugin_dir,
@@ -42,7 +45,35 @@ impl HybridRunnerAppImpl {
             descriptor_cache,
             repositories,
             key_lock: Arc::new(RwLockWithKey::new(memory_cache_config.max_cost as usize)),
+            id_generator,
         }
+    }
+    // load runners from db in initialization
+    async fn load_runners_from_db(&self) -> Result<()> {
+        let runners = self.runner_repository().find_list(None, None).await?;
+        for data in runners.into_iter().flat_map(|r| r.data) {
+            if let Err(e) = match data.runner_type {
+                val if val == RunnerType::McpServer as i32 => self
+                    .runner_repository()
+                    .load_mcp_server(
+                        data.name.as_str(),
+                        data.description.as_str(),
+                        data.definition.as_str(),
+                    )
+                    .await
+                    .map(|_| ()),
+                val if val == RunnerType::Plugin as i32 => self
+                    .runner_repository()
+                    .load_plugin(Some(data.name.as_str()), &data.definition)
+                    .await
+                    .map(|_| ()),
+                _ => Ok(()), // skip other types
+            } {
+                tracing::error!("load runner error: {:?}", e);
+                return Err(e);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -55,17 +86,47 @@ impl UseRunnerParserWithCache for HybridRunnerAppImpl {
 #[async_trait]
 impl RunnerApp for HybridRunnerAppImpl {
     async fn load_runner(&self) -> Result<bool> {
+        self.load_runners_from_db().await?;
         self.runner_repository()
             .add_from_plugins_from(self.plugin_dir.as_str())
             .await?;
-        self.runner_repository().add_from_mcp_server().await?;
+        self.runner_repository().add_from_mcp_config_file().await?;
         let _ = self
             .delete_cache_locked(&Self::find_all_list_cache_key())
             .await;
         Ok(true)
     }
+
+    async fn create_runner(
+        &self,
+        name: &str,
+        description: &str,
+        runner_type: i32,
+        definition: &str,
+    ) -> Result<RunnerId> {
+        let runner_id = self.id_generator.generate_id()?;
+        let _ = match runner_type {
+            val if val == RunnerType::McpServer as i32 => self
+                .runner_repository()
+                .create_mcp_server(name, description, definition)
+                .await
+                .map(|_| ()),
+            val if val == RunnerType::Plugin as i32 => self
+                .runner_repository()
+                .create_plugin(name, description, definition)
+                .await
+                .map(|_| ()),
+            _ => Ok(()),
+        }?;
+        // clear memory cache
+        let _ = self
+            .delete_cache_locked(&Self::find_all_list_cache_key())
+            .await;
+        Ok(RunnerId { value: runner_id })
+    }
+
     async fn delete_runner(&self, id: &RunnerId) -> Result<bool> {
-        let res = self.runner_repository().delete(id).await?;
+        let res = self.runner_repository().remove(id).await?;
         // clear memory cache
         let _ = self
             .delete_cache_locked(&Self::find_cache_key(&id.value))
@@ -168,11 +229,11 @@ impl RunnerApp for HybridRunnerAppImpl {
         let runner_data = test_runner_with_descriptor(name);
         let _ = self
             .runner_repository()
-            .create(&RunnerRow {
+            ._create(&RunnerRow {
                 id: runner_id.value,
                 name: name.to_string(),
                 description: runner_data.runner_data.description.clone(),
-                file_name: format!("lib{}.so", name),
+                definition: format!("./target/debug/lib{}.so", name),
                 r#type: RunnerType::Plugin as i32,
             })
             .await?;
@@ -217,6 +278,7 @@ mod test {
     use infra::infra::module::rdb::test::setup_test_rdb_module;
     use infra::infra::module::redis::test::setup_test_redis_module;
     use infra::infra::module::HybridRepositoryModule;
+    use infra::infra::IdGeneratorWrapper;
     use infra_utils::infra::memory::MemoryCacheImpl;
     use infra_utils::infra::test::TEST_RUNTIME;
     use proto::jobworkerp::data::RunnerId;
@@ -245,6 +307,7 @@ mod test {
             &mc_config,
             repositories.clone(),
             descriptor_cache.clone(),
+            Arc::new(IdGeneratorWrapper::new()),
         );
         runner_app.load_runner().await?;
         // let _ = runner_app

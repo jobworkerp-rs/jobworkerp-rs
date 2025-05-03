@@ -426,6 +426,7 @@ pub mod tests {
             &mc_config,
             repositories.clone(),
             descriptor_cache.clone(),
+            id_generator.clone(),
         ));
         runner_app.load_runner().await.unwrap();
         let worker_app = Arc::new(HybridWorkerAppImpl::new(

@@ -102,6 +102,9 @@ jobs:
     - uses: actions-rs/toolchain@v1
       with:
         toolchain: stable
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 18
     - name: Cache Rust artifacts
       uses: Swatinem/rust-cache@v2
     - uses: actions-rs/cargo@v1
@@ -112,7 +115,6 @@ jobs:
       run: |
         cargo build --release
         cargo test --release -- --test-threads=1
-        cargo clean
       env:
         PLUGINS_RUNNER_DIR: "../target/release/"
         TEST_REDIS_URL: "redis://redis:6379"
@@ -126,5 +128,3 @@ jobs:
         PLUGINS_RUNNER_DIR: "../target/release/"
         TEST_REDIS_URL: "redis://redis:6379"
         TEST_MYSQL_URL: "mysql://maria:maria@db:3306/test"
-
-

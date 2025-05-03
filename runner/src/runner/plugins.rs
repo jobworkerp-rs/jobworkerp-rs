@@ -5,6 +5,7 @@ use self::loader::RunnerPluginLoader;
 use crate::schema_to_json_string;
 use anyhow::Result;
 use itertools::Itertools;
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::StreamingOutputType;
 use std::{
     fs::{self, ReadDir},
@@ -20,7 +21,7 @@ pub struct PluginMetadata {
 }
 
 pub trait PluginLoader: Send + Sync {
-    fn load_path(&mut self, path: &Path) -> Result<(String, String)>;
+    fn load_path(&mut self, name: Option<&str>, path: &Path) -> Result<(String, String)>;
     fn unload(&mut self, name: &str) -> Result<bool>;
     #[allow(dead_code)]
     fn clear(&mut self) -> Result<()>;
@@ -62,6 +63,11 @@ impl Plugins {
         }
         loaded
     }
+    pub async fn load_plugin_file(&self, name: Option<&str>, file: &str) -> Result<PluginMetadata> {
+        let path = Path::new(file);
+        self.load_plugin_from_path(name, path, &PluginType::Runner)
+            .await
+    }
 
     fn get_library_extension() -> &'static str {
         if cfg!(target_os = "windows") {
@@ -86,36 +92,53 @@ impl Plugins {
                     .to_str()
                     .is_some_and(|n| n.ends_with(Self::get_library_extension()))
             {
-                tracing::info!("load {:?} plugin file: {}", ptype, file.path().display());
-                match ptype {
-                    PluginType::Runner => {
-                        match self
-                            .runner_loader
-                            .write()
-                            .await
-                            .load_path(file.path().as_path())
-                        {
-                            Ok((name, description)) => {
-                                tracing::info!("runner plugin loaded: {}", file.path().display());
-                                loaded.push(PluginMetadata {
-                                    name,
-                                    description,
-                                    filename: file.file_name().to_string_lossy().to_string(),
-                                });
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "cannot load runner plugin: {}: {:?}",
-                                    file.path().display(),
-                                    e
-                                );
-                            }
+                // use plugin name defined in plugin as plugin name
+                if let Ok(plugin) = self.load_plugin_from_path(None, &file.path(), &ptype).await {
+                    loaded.push(plugin);
+                } else {
+                    tracing::warn!("cannot load plugin: {:?}", file.path());
+                }
+            } else {
+                tracing::warn!("not a file: {:?}", file.path());
+            }
+        }
+        loaded
+    }
+    async fn load_plugin_from_path(
+        &self,
+        name: Option<&str>,
+        path: &Path,
+        ptype: &PluginType,
+    ) -> Result<PluginMetadata> {
+        if path.is_file()
+            && path
+                .file_name()
+                .and_then(|f| f.to_str())
+                .is_some_and(|n| n.ends_with(Self::get_library_extension()))
+        {
+            tracing::info!("load {:?} plugin file: {}", ptype, path.display());
+            match ptype {
+                PluginType::Runner => {
+                    match self.runner_loader.write().await.load_path(name, path) {
+                        Ok((name, description)) => Ok(PluginMetadata {
+                            name,
+                            description,
+                            filename: path.file_name().unwrap().to_string_lossy().to_string(),
+                        }),
+                        Err(e) => {
+                            tracing::warn!("cannot load runner plugin: {:?} {:?}", path, e);
+                            Err(
+                                JobWorkerError::NotFound(format!("cannot load plugin: {:?}", path))
+                                    .into(),
+                            )
                         }
                     }
                 }
             }
+        } else {
+            tracing::warn!("not a file: {:?}", path);
+            Err(JobWorkerError::InvalidParameter(format!("not a file: {:?}", path)).into())
         }
-        loaded
     }
     pub fn runner_plugins(&self) -> Arc<TokioRwLock<RunnerPluginLoader>> {
         self.runner_loader.clone()

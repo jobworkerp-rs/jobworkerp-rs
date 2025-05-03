@@ -1,18 +1,14 @@
+use super::config::{McpConfig, McpServerConfig, McpServerTransportConfig};
 use anyhow::Result;
 use debug_stub_derive::DebugStub;
-use infra_utils::infra::{
-    lock::RwLockWithKey,
-    memory::{self, MemoryCacheConfig, UseMemoryCache},
-};
+use infra_utils::infra::cache::{MokaCache, MokaCacheConfig, MokaCacheImpl, UseMokaCache};
 use rmcp::{
     model::{CallToolRequestParam, CallToolResult, LoggingLevel, Tool},
     service::{QuitReason, RunningService},
     ClientHandler, Peer, RoleClient, ServiceExt,
 };
 use std::{borrow::Cow, collections::HashMap, process::Stdio, sync::Arc, time::Duration};
-use stretto::AsyncCache;
-
-use super::config::{McpConfig, McpServerConfig, McpServerTransportConfig};
+use tokio::sync::RwLock;
 
 #[derive(DebugStub)]
 pub struct McpServerProxy {
@@ -20,16 +16,14 @@ pub struct McpServerProxy {
     pub description: Option<String>,
     pub transport: RunningService<RoleClient, ()>,
     #[debug_stub = "AsyncCache<Arc<String>, Vec<String>>"]
-    async_cache: AsyncCache<Arc<String>, Vec<Tool>>,
-    key_lock: Arc<RwLockWithKey<Arc<String>>>,
+    async_cache: MokaCacheImpl<Arc<String>, Vec<Tool>>,
 }
 impl McpServerProxy {
     // TODO env?
     const DURATION: Duration = Duration::from_secs(3 * 60);
-    const MEMORY_CACHE_CONFIG: MemoryCacheConfig = MemoryCacheConfig {
+    const MEMORY_CACHE_CONFIG: MokaCacheConfig = MokaCacheConfig {
+        ttl: Some(Self::DURATION),
         num_counters: 10000,
-        max_cost: 10000,
-        use_metrics: false,
     };
 
     fn find_all_list_cache_key() -> Arc<String> {
@@ -42,10 +36,7 @@ impl McpServerProxy {
             name: config.name.clone(),
             description: config.description.clone(),
             transport: Self::start(&transport_config).await?,
-            async_cache: memory::new_memory_cache(&Self::MEMORY_CACHE_CONFIG),
-            key_lock: Arc::new(RwLockWithKey::new(
-                Self::MEMORY_CACHE_CONFIG.max_cost as usize,
-            )),
+            async_cache: MokaCacheImpl::new(&Self::MEMORY_CACHE_CONFIG),
         })
     }
     // start connection to mcp server
@@ -79,7 +70,7 @@ impl McpServerProxy {
         tracing::debug!("loading mcp tools from: {}", &self.name);
         let k = Arc::new(Self::find_all_list_cache_key());
         let tools = self
-            .with_cache_locked(&k, None, || async {
+            .with_cache(&k, || async {
                 self.transport.peer().list_all_tools().await.map_err(|e| {
                     let mes = format!("Failed to load tools: {}", e);
                     tracing::error!(mes);
@@ -121,11 +112,7 @@ impl ClientHandler for McpServerProxy {
     async fn on_resource_updated(&self, params: rmcp::model::ResourceUpdatedNotificationParam) {
         let uri = params.uri;
         tracing::info!("Resource updated: {}", uri);
-        let _ = self
-            .async_cache
-            .clear()
-            .await
-            .inspect_err(|e| tracing::error!("Failed to clear cache: {}", e));
+        let _ = self.async_cache.clear().await;
     }
 
     fn set_peer(&mut self, peer: Peer<RoleClient>) {
@@ -142,9 +129,7 @@ impl ClientHandler for McpServerProxy {
         &self,
     ) -> impl std::prelude::rust_2024::Future<Output = ()> + Send + '_ {
         async {
-            let _ = self.async_cache.clear().await.inspect_err(|e| {
-                tracing::error!("on_tool_list_changed: Failed to clear cache: {}", e)
-            });
+            let _ = self.async_cache.clear().await;
         }
     }
     #[allow(clippy::manual_async_fn)]
@@ -206,12 +191,12 @@ impl ClientHandler for McpServerProxy {
 
 #[derive(Debug, Clone)]
 pub struct McpServerFactory {
-    mcp_configs: Arc<HashMap<String, McpServerConfig>>,
+    mcp_configs: Arc<RwLock<HashMap<String, McpServerConfig>>>,
 }
 impl Default for McpServerFactory {
     fn default() -> Self {
         Self {
-            mcp_configs: Arc::new(HashMap::new()),
+            mcp_configs: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
@@ -225,11 +210,29 @@ impl McpServerFactory {
         }
 
         Self {
-            mcp_configs: Arc::new(mcp_configs),
+            mcp_configs: Arc::new(RwLock::new(mcp_configs)),
         }
     }
-    pub fn find_all(&self) -> Vec<McpServerConfig> {
+    pub async fn add_server(&self, config: McpServerConfig) -> Result<McpServerProxy> {
+        let mut mcp_configs = self.mcp_configs.write().await;
+        mcp_configs.insert(config.name.clone(), config.clone());
+        // test connection
+        let server = McpServerProxy::new(&config).await?;
+        Ok(server)
+    }
+    pub async fn remove_server(&self, name: &str) -> Result<bool> {
+        // TODO shutdown?(runner pool?)
+        let mut mcp_configs = self.mcp_configs.write().await;
+        if mcp_configs.remove(name).is_some() {
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+    pub async fn find_all(&self) -> Vec<McpServerConfig> {
         self.mcp_configs
+            .read()
+            .await
             .iter()
             .map(|(_, client)| client.clone())
             .collect()
@@ -237,7 +240,7 @@ impl McpServerFactory {
     // boot up and connection test for all mcp servers
     pub async fn test_all(&self) -> Result<Vec<McpServerProxy>> {
         let mut mcp_clients = Vec::new();
-        for (_, client) in self.mcp_configs.iter() {
+        for (_, client) in self.mcp_configs.read().await.iter() {
             match McpServerProxy::new(client).await {
                 Ok(s) => {
                     tracing::info!("MCP server {} can be connected", client.name);
@@ -251,9 +254,11 @@ impl McpServerFactory {
         }
         Ok(mcp_clients)
     }
-    pub async fn create_server(&self, name: &str) -> Result<McpServerProxy> {
+    pub async fn connect_server(&self, name: &str) -> Result<McpServerProxy> {
         let conf = self
             .mcp_configs
+            .read()
+            .await
             .get(name)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("MCP client not found: {}", name))?;
@@ -262,17 +267,8 @@ impl McpServerFactory {
     }
 }
 
-impl UseMemoryCache<Arc<String>, Vec<Tool>> for McpServerProxy {
-    fn cache(&self) -> &AsyncCache<Arc<String>, Vec<Tool>> {
-        &self.async_cache
-    }
-
-    #[doc = " default cache ttl"]
-    fn default_ttl(&self) -> Option<&Duration> {
-        Some(&Self::DURATION)
-    }
-
-    fn key_lock(&self) -> &RwLockWithKey<Arc<String>> {
-        &self.key_lock
+impl UseMokaCache<Arc<String>, Vec<Tool>> for McpServerProxy {
+    fn cache(&self) -> &MokaCache<Arc<String>, Vec<Tool>> {
+        self.async_cache.cache()
     }
 }

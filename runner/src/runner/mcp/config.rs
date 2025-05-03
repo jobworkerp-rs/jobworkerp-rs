@@ -10,7 +10,9 @@ pub struct McpConfig {
 impl McpConfig {
     pub async fn load(path: impl AsRef<Path>) -> Result<Self> {
         let content = tokio::fs::read_to_string(path).await?;
-        let config: Self = toml::from_str(&content)?;
+        let config: Self = toml::from_str(&content).or_else(|_| {
+            serde_json::from_str(&content).or_else(|_| serde_yaml::from_str(&content))
+        })?;
         Ok(config)
     }
 }
@@ -28,7 +30,7 @@ pub trait UseMcpServerConfigs {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(tag = "protocol", rename_all = "lowercase")]
+#[serde(tag = "transport", rename_all = "lowercase")]
 pub enum McpServerTransportConfig {
     Sse {
         url: String,
@@ -56,12 +58,12 @@ mod tests {
             [[server]]
             name = "test-server"
             description = "test server"
-            protocol = "sse"
+            transport = "sse"
             url = "http://localhost:8080"
 
             [[server]]
             name = "test-stdio"
-            protocol = "stdio"
+            transport = "stdio"
             command = "echo"
             args = ["hello", "world"]
             envs = { TEST_ENV = "test_value" }
@@ -96,6 +98,71 @@ mod tests {
                 assert_eq!(command, "echo");
                 assert_eq!(args, &["hello", "world"]);
                 assert_eq!(envs.get("TEST_ENV"), Some(&"test_value".to_string()));
+            }
+            _ => panic!("Expected Stdio transport"),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_mcp_config_load_json() -> Result<()> {
+        // create temp file for test
+        let mut temp_file = NamedTempFile::new()?;
+        let config_content = r#"
+{
+  "server": [
+    {
+      "name": "test-server-json",
+      "description": "test server json",
+      "transport": "sse",
+      "url": "http://localhost:8080"
+    },
+    {
+      "name": "test-stdio-json",
+      "transport": "stdio",
+      "command": "cat",
+      "args": ["file.txt"],
+      "envs": {
+        "TEST_ENV": "json_value"
+      }
+    }
+  ]
+}
+"#;
+
+        write!(temp_file, "{}", config_content)?;
+        temp_file.flush()?;
+
+        // load
+        let config = McpConfig::load(temp_file.path()).await?;
+        assert_eq!(config.server.len(), 2);
+
+        let first_server = &config.server[0];
+        assert_eq!(first_server.name, "test-server-json");
+        assert_eq!(
+            first_server.description,
+            Some("test server json".to_string())
+        );
+        match &first_server.transport {
+            McpServerTransportConfig::Sse { url } => {
+                assert_eq!(url, "http://localhost:8080");
+            }
+            _ => panic!("Expected Sse transport"),
+        }
+
+        let second_server = &config.server[1];
+        assert_eq!(second_server.name, "test-stdio-json");
+        assert_eq!(second_server.description, None);
+        match &second_server.transport {
+            McpServerTransportConfig::Stdio {
+                command,
+                args,
+                envs,
+            } => {
+                assert_eq!(command, "cat");
+                assert_eq!(args, &["file.txt"]);
+                assert_eq!(envs.get("TEST_ENV"), Some(&"json_value".to_string()));
             }
             _ => panic!("Expected Stdio transport"),
         }

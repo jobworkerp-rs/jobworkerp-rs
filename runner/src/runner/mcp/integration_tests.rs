@@ -135,7 +135,7 @@ async fn test_time_mcp_server() -> Result<()> {
     client.cancel().await?;
 
     // create server by the name
-    let client = factory.create_server("time").await?;
+    let client = factory.connect_server("time").await?;
 
     // Call the get_current_time tool
     let result = client
