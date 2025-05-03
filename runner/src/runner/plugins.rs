@@ -21,7 +21,12 @@ pub struct PluginMetadata {
 }
 
 pub trait PluginLoader: Send + Sync {
-    fn load_path(&mut self, name: Option<&str>, path: &Path) -> Result<(String, String)>;
+    fn load_path(
+        &mut self,
+        name: Option<&str>,
+        path: &Path,
+        overwrite: bool,
+    ) -> Result<(String, String)>;
     fn unload(&mut self, name: &str) -> Result<bool>;
     #[allow(dead_code)]
     fn clear(&mut self) -> Result<()>;
@@ -63,9 +68,14 @@ impl Plugins {
         }
         loaded
     }
-    pub async fn load_plugin_file(&self, name: Option<&str>, file: &str) -> Result<PluginMetadata> {
+    pub async fn load_plugin_file(
+        &self,
+        name: Option<&str>,
+        file: &str,
+        overwrite: bool,
+    ) -> Result<PluginMetadata> {
         let path = Path::new(file);
-        self.load_plugin_from_path(name, path, &PluginType::Runner)
+        self.load_plugin_from_path(name, path, &PluginType::Runner, overwrite)
             .await
     }
 
@@ -93,11 +103,31 @@ impl Plugins {
                     .is_some_and(|n| n.ends_with(Self::get_library_extension()))
             {
                 // use plugin name defined in plugin as plugin name
-                if let Ok(plugin) = self.load_plugin_from_path(None, &file.path(), &ptype).await {
+                if let Ok(plugin) = self
+                    .load_plugin_from_path(None, &file.path(), &ptype, false)
+                    .await
+                {
                     loaded.push(plugin);
                 } else {
                     tracing::warn!("cannot load plugin: {:?}", file.path());
                 }
+            } else if !file.path().exists() {
+                tracing::warn!("file not found: {:?}", file.path());
+            } else if !file.path().is_file() {
+                tracing::warn!("not a file: {:?}", file.path());
+            } else if file.file_name().to_str().is_none() {
+                tracing::warn!("cannot convert file name to str: {:?}", file.path());
+            } else if !file
+                .file_name()
+                .to_str()
+                .unwrap()
+                .ends_with(Self::get_library_extension())
+            {
+                tracing::warn!(
+                    "not a plugin file (wrong extension): expect: {}, real:{:?}",
+                    Self::get_library_extension(),
+                    file.path()
+                );
             } else {
                 tracing::warn!("not a file: {:?}", file.path());
             }
@@ -109,6 +139,7 @@ impl Plugins {
         name: Option<&str>,
         path: &Path,
         ptype: &PluginType,
+        overwrite: bool,
     ) -> Result<PluginMetadata> {
         if path.is_file()
             && path
@@ -118,25 +149,18 @@ impl Plugins {
         {
             tracing::info!("load {:?} plugin file: {}", ptype, path.display());
             match ptype {
-                PluginType::Runner => {
-                    match self.runner_loader.write().await.load_path(name, path) {
-                        Ok((name, description)) => Ok(PluginMetadata {
-                            name,
-                            description,
-                            filename: path.file_name().unwrap().to_string_lossy().to_string(),
-                        }),
-                        Err(e) => {
-                            tracing::warn!("cannot load runner plugin: {:?} {:?}", path, e);
-                            Err(
-                                JobWorkerError::NotFound(format!("cannot load plugin: {:?}", path))
-                                    .into(),
-                            )
-                        }
-                    }
-                }
+                PluginType::Runner => self
+                    .runner_loader
+                    .write()
+                    .await
+                    .load_path(name, path, overwrite)
+                    .map(|(name, description)| PluginMetadata {
+                        name,
+                        description,
+                        filename: path.to_string_lossy().to_string(),
+                    }),
             }
         } else {
-            tracing::warn!("not a file: {:?}", path);
             Err(JobWorkerError::InvalidParameter(format!("not a file: {:?}", path)).into())
         }
     }

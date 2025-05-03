@@ -22,9 +22,14 @@ pub trait RunnerRepository:
     UseRdbPool + UseRunnerSpecFactory + UseIdGenerator + Sync + Send
 {
     // delegate
-    async fn load_plugin(&self, name: Option<&str>, file_path: &str) -> Result<PluginMetadata> {
+    async fn load_plugin(
+        &self,
+        name: Option<&str>,
+        file_path: &str,
+        overwrite: bool,
+    ) -> Result<PluginMetadata> {
         self.runner_spec_factory()
-            .load_plugin(name, file_path)
+            .load_plugin(name, file_path, overwrite)
             .await
     }
     async fn load_mcp_server(
@@ -92,13 +97,16 @@ pub trait RunnerRepository:
         name: &str,
         description: &str,
         file_path: &str,
-    ) -> Result<PluginMetadata> {
+    ) -> Result<RunnerId> {
         let meta = self
             .runner_spec_factory()
-            .load_plugin(Some(name), file_path)
+            .load_plugin(Some(name), file_path, false)
             .await?;
+        let id = RunnerId {
+            value: self.id_generator().generate_id()?,
+        };
         let data = RunnerRow {
-            id: self.id_generator().generate_id()?,
+            id: id.value,
             name: name.to_string(),
             description: description.to_string(),
             definition: meta.filename.clone(),
@@ -112,7 +120,7 @@ pub trait RunnerRepository:
             );
         })? {
             tracing::info!("Plugin runner {} created", name);
-            Ok(meta)
+            Ok(id)
         } else {
             tracing::warn!("Plugin runner {} already exists", name);
             Err(
@@ -127,14 +135,18 @@ pub trait RunnerRepository:
         name: &str,
         description: &str,
         definition: &str, // transport
-    ) -> Result<McpServerProxy> {
-        let proxy = self
+    ) -> Result<RunnerId> {
+        // for test
+        let _proxy = self
             .runner_spec_factory()
             .load_mcp_server(name, description, definition)
             .await?;
+        let id = RunnerId {
+            value: self.id_generator().generate_id()?,
+        };
         // create runner
         let data = RunnerRow {
-            id: self.id_generator().generate_id()?,
+            id: id.value,
             name: name.to_string(),
             description: description.to_string(),
             definition: definition.to_string(),
@@ -148,7 +160,7 @@ pub trait RunnerRepository:
             );
         })? {
             tracing::info!("MCP server {} created", name);
-            Ok(proxy)
+            Ok(id)
         } else {
             tracing::warn!("MCP server {} already exists", name);
             Err(JobWorkerError::AlreadyExists(format!("MCP server {} already exists", name)).into())
@@ -202,6 +214,49 @@ pub trait RunnerRepository:
         } else {
             // sqlite
             "INSERT OR IGNORE INTO `runner` (
+                `id`,
+                `name`,
+                `description`,
+                `definition`,
+                `type`
+                ) VALUES (?,?,?,?,?)"
+        })
+        .bind(runner_row.id)
+        .bind(&runner_row.name)
+        .bind(&runner_row.description)
+        .bind(&runner_row.definition)
+        .bind(runner_row.r#type)
+        .execute(tx)
+        .await
+        .map_err(JobWorkerError::DBError)?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    async fn _upsert(&self, runner_row: &RunnerRow) -> Result<bool> {
+        self._upsert_tx(self.db_pool(), runner_row).await
+    }
+
+    async fn _upsert_tx<'c, E: Executor<'c, Database = Rdb>>(
+        &self,
+        tx: E,
+        runner_row: &RunnerRow,
+    ) -> Result<bool> {
+        let res = sqlx::query::<Rdb>(if cfg!(feature = "mysql") {
+            "INSERT INTO `runner` (
+                `id`,
+                `name`,
+                `description`,
+                `definition`,
+                `type`
+                ) VALUES (?,?,?,?,?)
+                 ON DUPLICATE KEY UPDATE 
+                 `name` = VALUES(`name`),
+                 `description` = VALUES(`description`),
+                 `definition` = VALUES(`definition`),
+                 `type` = VALUES(`type`)"
+        } else {
+            // sqlite
+            "REPLACE INTO `runner` (
                 `id`,
                 `name`,
                 `description`,
@@ -450,7 +505,7 @@ mod test {
             definition: "./target/debug/libplugin_runner_hello.dylib".to_string(),
             r#type: RunnerType::Plugin as i32,
         });
-        let data = Some(RunnerData {
+        let data = RunnerData {
             name: row.clone().unwrap().name.clone(),
             description: row.clone().unwrap().description.clone(),
             runner_settings_proto: include_str!(
@@ -468,27 +523,51 @@ mod test {
             runner_type: 0,
             output_type: StreamingOutputType::Both as i32, // hello
             definition: "./target/debug/libplugin_runner_hello.dylib".to_string(),
-        });
+        };
         let plugin = p
-            .create_runner_spec_by_name(&data.as_ref().unwrap().name, false)
+            .create_runner_spec_by_name(&data.name, false)
             .await
             .unwrap();
 
         let org_count = repository.count_list_tx(repository.db_pool()).await?;
 
         let mut tx = db.begin().await.context("error in test")?;
-        let updated = repository
+        let inserted = repository
             ._create_tx(&mut *tx, &row.clone().unwrap())
             .await?;
-        assert!(updated);
+        assert!(inserted);
+        let found = repository
+            .find_row_tx(
+                &mut *tx,
+                &RunnerId {
+                    value: row.clone().unwrap().id,
+                },
+            )
+            .await?;
+        assert_eq!(row, found);
+        let row = RunnerRow {
+            id: row.clone().unwrap().id,
+            name: row.clone().unwrap().name,
+            description: "Hello! Plugin2".to_string(),
+            definition: row.clone().unwrap().definition,
+            r#type: RunnerType::Plugin as i32,
+        };
+        let upserted = repository._upsert_tx(&mut *tx, &row).await?;
+        assert!(upserted);
+        let found = repository
+            .find_row_tx(&mut *tx, &RunnerId { value: row.id })
+            .await?;
+        assert_eq!(row, found.unwrap());
         tx.commit().await.context("error in test delete commit")?;
 
-        let id1 = RunnerId {
-            value: row.clone().unwrap().id,
-        };
+        let id1 = RunnerId { value: row.id };
         let expect = RunnerWithSchema {
             id: Some(id1),
-            data,
+            data: Some(RunnerData {
+                name: row.name.clone(),
+                description: row.description.clone(),
+                ..data
+            }),
             settings_schema: plugin.settings_schema(),
             arguments_schema: plugin.arguments_schema(),
             output_schema: plugin.output_schema(),
@@ -663,7 +742,6 @@ mod test {
                 "../target/debug/libplugin_runner_test.so"
             };
 
-            // テスト用のプラグインを作成
             repository
                 .create_plugin("TestPlugin", "Test Plugin Description", plugin_path)
                 .await?;
@@ -671,7 +749,6 @@ mod test {
             let after_count = repository.count_list_tx(repository.db_pool()).await?;
             assert_eq!(after_count - before_count, 1, "Plugin should be created");
 
-            // 名前で検索して確認
             let found = repository.find_by_name("TestPlugin").await?;
             assert!(found.is_some(), "Plugin should be found by name");
 
@@ -682,7 +759,6 @@ mod test {
                 "Test Plugin Description"
             );
 
-            // クリーンアップ
             let runner_id = plugin.id.unwrap();
             let mut tx = repository
                 .db_pool()
@@ -737,12 +813,11 @@ mod test {
             })
             .to_string();
 
-            let proxy = repository
+            let runner_id = repository
                 .create_mcp_server("TestMcpServer", "Test MCP Server Description", &definition)
                 .await?;
 
-            // MCPサーバープロキシが正しく作成されたことを確認
-            assert_eq!(proxy.name.as_str(), "TestMcpServer");
+            assert!(runner_id.value > 0);
 
             let after_count = repository.count_list_tx(repository.db_pool()).await?;
             assert_eq!(

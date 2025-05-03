@@ -37,8 +37,15 @@ impl RunnerSpecFactory {
     pub async fn load_plugins_from(&self, dir: &str) -> Vec<PluginMetadata> {
         self.plugins.load_plugin_files(dir).await
     }
-    pub async fn load_plugin(&self, name: Option<&str>, filepath: &str) -> Result<PluginMetadata> {
-        self.plugins.load_plugin_file(name, filepath).await
+    pub async fn load_plugin(
+        &self,
+        name: Option<&str>,
+        filepath: &str,
+        overwrite: bool,
+    ) -> Result<PluginMetadata> {
+        self.plugins
+            .load_plugin_file(name, filepath, overwrite)
+            .await
     }
     pub async fn unload_plugins(&self, name: &str) -> Result<bool> {
         self.plugins.runner_plugins().write().await.unload(name)
@@ -50,34 +57,51 @@ impl RunnerSpecFactory {
         description: &str,
         definition: &str, // transport
     ) -> Result<McpServerProxy> {
-        let config = McpServerConfig {
-            name: name.to_string(),
-            description: Some(description.to_string()),
-            transport: toml::from_str(definition)
-                .or_else(|e| {
-                    tracing::debug!("Failed to parse as toml definition as mcp transport: {}", e);
-                    serde_json::from_str(definition)
-                })
-                .or_else(|e| {
-                    tracing::debug!("Failed to parse as json definition as mcp transport: {}", e);
-                    serde_yaml::from_str(definition)
-                })
-                .map_err(|e| {
-                    tracing::debug!("Failed to parse as yaml definition as mcp transport: {}", e);
-                    JobWorkerError::InvalidParameter(
-                        "Failed to parse definition as mcp transport.".to_string(),
-                    )
-                })?,
-        };
-        // load mcp server for test (setup connection)
-        match self.mcp_clients.add_server(config).await {
-            Ok(p) => {
-                tracing::info!("MCP server {} can be connected", name);
-                Ok(p)
-            }
-            Err(e) => {
-                tracing::error!("Failed to connect to {}: {:#?}", &name, e);
-                Err(e)
+        if self.mcp_clients.find_server_config(name).await.is_some() {
+            tracing::debug!("MCP server {} already exists", name);
+            Err(
+                JobWorkerError::AlreadyExists(format!("MCP server {} already exists.", name))
+                    .into(),
+            )
+        } else {
+            let config = McpServerConfig {
+                name: name.to_string(),
+                description: Some(description.to_string()),
+                transport: toml::from_str(definition)
+                    .or_else(|e| {
+                        tracing::debug!(
+                            "Failed to parse as toml definition as mcp transport: {}",
+                            e
+                        );
+                        serde_json::from_str(definition)
+                    })
+                    .or_else(|e| {
+                        tracing::debug!(
+                            "Failed to parse as json definition as mcp transport: {}",
+                            e
+                        );
+                        serde_yaml::from_str(definition)
+                    })
+                    .map_err(|e| {
+                        tracing::debug!(
+                            "Failed to parse as yaml definition as mcp transport: {}",
+                            e
+                        );
+                        JobWorkerError::InvalidParameter(
+                            "Failed to parse definition as mcp transport.".to_string(),
+                        )
+                    })?,
+            };
+            // load mcp server for test (setup connection)
+            match self.mcp_clients.add_server(config).await {
+                Ok(p) => {
+                    tracing::info!("MCP server {} can be connected", name);
+                    Ok(p)
+                }
+                Err(e) => {
+                    tracing::error!("Failed to connect to {}: {:#?}", &name, e);
+                    Err(e)
+                }
             }
         }
     }
