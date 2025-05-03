@@ -33,12 +33,15 @@ message RunnerData {
   // Proto file definition for job execution results
   // If empty, UTF-8 string will be used as bytes array for result output
   optional string result_output_proto = 6;
-
- 
   // # Output Type Configuration
   // Specifies the streaming capability of this runner
   // This determines how job results can be retrieved from this runner
   StreamingOutputType output_type = 7;
+  // # definition
+  // runner definition
+  // mcp: mcp_server toml
+  // plugin: plugin filepath
+  string definition = 8;
 }
 
 message RunnerId { int64 value = 1; }

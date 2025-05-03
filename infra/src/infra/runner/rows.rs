@@ -8,7 +8,7 @@ pub struct RunnerRow {
     pub id: i64,
     pub name: String,
     pub description: String,
-    pub file_name: String,
+    pub definition: String,
     pub r#type: i32,
 }
 
@@ -30,6 +30,7 @@ impl RunnerRow {
                     job_args_proto: runner.job_args_proto(),
                     result_output_proto: runner.result_output_proto(),
                     output_type: runner.output_type() as i32,
+                    definition: self.definition.clone(),
                 }),
                 settings_schema: runner.settings_schema(),
                 arguments_schema: runner.arguments_schema(),
@@ -47,6 +48,7 @@ impl RunnerRow {
                     job_args_proto: runner.job_args_proto(),
                     result_output_proto: runner.result_output_proto(),
                     output_type: runner.output_type() as i32,
+                    definition: self.definition.clone(),
                 }),
                 settings_schema: runner.settings_schema(),
                 arguments_schema: runner.arguments_schema(),

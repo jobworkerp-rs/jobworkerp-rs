@@ -120,6 +120,7 @@ impl AppModule {
                     &mc_config,
                     repositories.clone(),
                     descriptor_cache.clone(),
+                    id_generator.clone(),
                 ));
                 let worker_app = Arc::new(RdbWorkerAppImpl::new(
                     config_module.storage_config.clone(),
@@ -220,6 +221,7 @@ impl AppModule {
                     &mc_config,
                     repositories.clone(),
                     descriptor_cache.clone(),
+                    id_generator.clone(),
                 ));
                 let worker_app = Arc::new(HybridWorkerAppImpl::new(
                     config_module.storage_config.clone(),
@@ -363,6 +365,7 @@ pub mod test {
             },
             repositories.clone(),
             descriptor_cache.clone(),
+            id_generator.clone(),
         ));
         runner_app.load_runner().await?;
 

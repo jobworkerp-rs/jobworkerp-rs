@@ -3,7 +3,11 @@ use super::{
     docker::{DockerExecRunner, DockerRunner},
     grpc_unary::GrpcUnaryRunner,
     llm::LLMCompletionRunnerSpecImpl,
-    mcp::{proxy::McpServerFactory, McpServerRunnerImpl},
+    mcp::{
+        config::McpServerConfig,
+        proxy::{McpServerFactory, McpServerProxy},
+        McpServerRunnerImpl,
+    },
     plugins::{PluginLoader, PluginMetadata, Plugins},
     python::PythonCommandRunner,
     request::RequestRunner,
@@ -12,6 +16,7 @@ use super::{
     RunnerSpec,
 };
 use anyhow::Result;
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::RunnerType;
 use std::sync::Arc;
 
@@ -32,9 +37,54 @@ impl RunnerSpecFactory {
     pub async fn load_plugins_from(&self, dir: &str) -> Vec<PluginMetadata> {
         self.plugins.load_plugin_files(dir).await
     }
+    pub async fn load_plugin(&self, name: Option<&str>, filepath: &str) -> Result<PluginMetadata> {
+        self.plugins.load_plugin_file(name, filepath).await
+    }
     pub async fn unload_plugins(&self, name: &str) -> Result<bool> {
         self.plugins.runner_plugins().write().await.unload(name)
     }
+
+    pub async fn load_mcp_server(
+        &self,
+        name: &str,
+        description: &str,
+        definition: &str, // transport
+    ) -> Result<McpServerProxy> {
+        let config = McpServerConfig {
+            name: name.to_string(),
+            description: Some(description.to_string()),
+            transport: toml::from_str(definition)
+                .or_else(|e| {
+                    tracing::debug!("Failed to parse as toml definition as mcp transport: {}", e);
+                    serde_json::from_str(definition)
+                })
+                .or_else(|e| {
+                    tracing::debug!("Failed to parse as json definition as mcp transport: {}", e);
+                    serde_yaml::from_str(definition)
+                })
+                .map_err(|e| {
+                    tracing::debug!("Failed to parse as yaml definition as mcp transport: {}", e);
+                    JobWorkerError::InvalidParameter(
+                        "Failed to parse definition as mcp transport.".to_string(),
+                    )
+                })?,
+        };
+        // load mcp server for test (setup connection)
+        match self.mcp_clients.add_server(config).await {
+            Ok(p) => {
+                tracing::info!("MCP server {} can be connected", name);
+                Ok(p)
+            }
+            Err(e) => {
+                tracing::error!("Failed to connect to {}: {:#?}", &name, e);
+                Err(e)
+            }
+        }
+    }
+    pub async fn unload_mcp_server(&self, name: &str) -> Result<bool> {
+        self.mcp_clients.remove_server(name).await
+    }
+
     // use_static: need to specify correctly to create for running (now unused here)
     pub async fn create_runner_spec_by_name(
         &self,
@@ -76,7 +126,7 @@ impl RunnerSpecFactory {
                     as Box<dyn RunnerSpec + Send + Sync>)
             }
             _ => {
-                if let Ok(server) = self.mcp_clients.as_ref().create_server(name).await {
+                if let Ok(server) = self.mcp_clients.as_ref().connect_server(name).await {
                     tracing::debug!("MCP server found: {}", &name);
                     Some(Box::new(McpServerRunnerImpl::new(server))
                         as Box<dyn RunnerSpec + Send + Sync>)

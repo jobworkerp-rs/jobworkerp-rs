@@ -59,13 +59,12 @@ CREATE TABLE IF NOT EXISTS `runner` (
     `id` INTEGER PRIMARY KEY,
     `name` TEXT NOT NULL UNIQUE,
     `description` TEXT NOT NULL,
-    `file_name` VARCHAR(512) NOT NULL UNIQUE, -- file name of the runner dynamic library
+    `definition` TEXT NOT NULL, -- runner definition (mcp definition or plugin file name)
     `type` INT(10) NOT NULL -- runner type. enum: command, request, grpc_unary, plugin
 );
 
 -- builtin runner definitions (runner.type != 0 cannot edit or delete)
--- (file_name is not real file name(built-in runner), but just a name for identification)
-INSERT OR IGNORE INTO runner (`id`, `name`, `description`,`file_name`, `type`) VALUES (
+INSERT OR IGNORE INTO runner (`id`, `name`, `description`,`definition`, `type`) VALUES (
   1, 'COMMAND', 
   'Executes shell commands with specified arguments in the operating system environment.',
   'builtin1', 1

@@ -75,15 +75,13 @@ CREATE TABLE `runner` (
   `id` BIGINT(10) PRIMARY KEY,
   `name` VARCHAR(128) NOT NULL, -- name for identification
   `description` TEXT NOT NULL, -- runner description
-  `file_name` VARCHAR(512) NOT NULL, -- file name of the runner dynamic library
+  `definition` TEXT NOT NULL, -- runner definition (mcp definition or plugin file name)
   `type` INT(10) NOT NULL, -- runner type. enum: command, request, grpc_unary, plugin
-  UNIQUE KEY `name` (`name`),
-  UNIQUE KEY `file_name` (`file_name`)
+  UNIQUE KEY `name` (`name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- builtin runner definitions (runner.type != 0 cannot edit or delete)
--- (file_name is not real file name(built-in runner), but just a name for identification)
-INSERT IGNORE INTO runner (id, name, description, file_name, type) VALUES (
+INSERT IGNORE INTO runner (id, name, description, definition, type) VALUES (
   1, 'COMMAND', 
   'Executes shell commands with specified arguments in the operating system environment.',
   'builtin1', 1

@@ -1,12 +1,12 @@
 #[[server]]
 #name = "test-server"
-#protocol = "sse"
+#transport = "sse"
 #url = "http://localhost:8080"
 #
 #[[server]]
 #name = "time"
 #description = "timezone"
-#protocol = "stdio"
+#transport = "stdio"
 #command = "uvx"
 #args = ["mcp-server-time",  "--local-timezone=Asia/Tokyo"]
 ##envs = { TEST_ENV = "test_value" }
@@ -14,7 +14,7 @@
 #[[server]]
 #name = "fetch"
 #description = "fetch web page as markdown from web"
-#protocol = "stdio"
+#transport = "stdio"
 #command = "uvx"
 #args = ["mcp-server-fetch"]
 ##envs = { TEST_ENV = "test_value" }

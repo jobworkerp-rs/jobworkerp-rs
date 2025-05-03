@@ -89,7 +89,7 @@ impl RunnerFactory {
                 Some(Box::new(LLMCompletionRunnerImpl::new()) as Box<dyn RunnerTrait + Send + Sync>)
             }
             _ => {
-                if let Ok(server) = self.mcp_clients.create_server(name).await {
+                if let Ok(server) = self.mcp_clients.connect_server(name).await {
                     Some(Box::new(McpServerRunnerImpl::new(server))
                         as Box<dyn RunnerTrait + Send + Sync>)
                 } else {
