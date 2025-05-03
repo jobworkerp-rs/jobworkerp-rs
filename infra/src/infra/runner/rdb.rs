@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use super::rows::RunnerRow;
 use super::rows::RunnerWithSchema;
 use crate::infra::IdGeneratorWrapper;
@@ -12,14 +10,61 @@ use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::runner::factory::RunnerSpecFactory;
 use jobworkerp_runner::runner::factory::UseRunnerSpecFactory;
+use jobworkerp_runner::runner::mcp::proxy::McpServerProxy;
+use jobworkerp_runner::runner::plugins::PluginMetadata;
 use proto::jobworkerp::data::RunnerId;
 use proto::jobworkerp::data::RunnerType;
 use sqlx::{Executor, Pool};
+use std::sync::Arc;
 
 #[async_trait]
 pub trait RunnerRepository:
     UseRdbPool + UseRunnerSpecFactory + UseIdGenerator + Sync + Send
 {
+    // delegate
+    async fn load_plugin(&self, name: Option<&str>, file_path: &str) -> Result<PluginMetadata> {
+        self.runner_spec_factory()
+            .load_plugin(name, file_path)
+            .await
+    }
+    async fn load_mcp_server(
+        &self,
+        name: &str,
+        description: &str,
+        definition: &str, // transport
+    ) -> Result<McpServerProxy> {
+        self.runner_spec_factory()
+            .load_mcp_server(name, description, definition)
+            .await
+    }
+
+    // load mcp servers from config file
+    async fn add_from_mcp_config_file(&self) -> Result<()> {
+        for server in self
+            .runner_spec_factory()
+            .mcp_clients
+            .find_all()
+            .await
+            .iter()
+        {
+            let data = RunnerRow {
+                id: self.id_generator().generate_id()?,
+                name: server.name.clone(),
+                description: server.description.clone().unwrap_or_default(),
+                definition: serde_json::to_string(&server.transport).unwrap(),
+                r#type: RunnerType::McpServer as i32,
+            };
+            self._create(&data).await.inspect_err(|e| {
+                tracing::error!(
+                    "Failed to create runner for plugins {}: {:?}",
+                    &data.name,
+                    e
+                );
+            })?;
+        }
+        Ok(())
+    }
+    // auto-load plugins from plugin directory
     async fn add_from_plugins_from(&self, dir: &str) -> Result<()> {
         let metas = self.runner_spec_factory().load_plugins_from(dir).await;
         for meta in metas.iter() {
@@ -27,10 +72,10 @@ pub trait RunnerRepository:
                 id: self.id_generator().generate_id()?,
                 name: meta.name.clone(),
                 description: meta.description.clone(),
-                file_name: meta.filename.clone(),
+                definition: meta.filename.clone(),
                 r#type: RunnerType::Plugin as i32, // PLUGIN
             };
-            self.create(&data).await.inspect_err(|e| {
+            self._create(&data).await.inspect_err(|e| {
                 tracing::error!(
                     "Failed to create runner for plugins {}: {:?}",
                     &data.name,
@@ -41,67 +86,133 @@ pub trait RunnerRepository:
         Ok(())
     }
 
-    async fn add_from_mcp_server(&self) -> Result<()> {
-        for server in self.runner_spec_factory().mcp_clients.find_all().iter() {
-            let data = RunnerRow {
-                id: self.id_generator().generate_id()?,
-                name: server.name.clone(),
-                description: server.description.clone().unwrap_or_default(),
-                file_name: format!("{}.mcp_server", server.name),
-                r#type: RunnerType::McpServer as i32,
-            };
-            self.create(&data).await.inspect_err(|e| {
-                tracing::error!(
-                    "Failed to create runner for plugins {}: {:?}",
-                    &data.name,
-                    e
-                );
-            })?;
+    /// load and create plugin from path
+    async fn create_plugin(
+        &self,
+        name: &str,
+        description: &str,
+        file_path: &str,
+    ) -> Result<PluginMetadata> {
+        let meta = self
+            .runner_spec_factory()
+            .load_plugin(Some(name), file_path)
+            .await?;
+        let data = RunnerRow {
+            id: self.id_generator().generate_id()?,
+            name: name.to_string(),
+            description: description.to_string(),
+            definition: meta.filename.clone(),
+            r#type: RunnerType::Plugin as i32, // PLUGIN
+        };
+        if self._create(&data).await.inspect_err(|e| {
+            tracing::error!(
+                "Failed to create runner for plugins {}: {:?}",
+                &data.name,
+                e
+            );
+        })? {
+            tracing::info!("Plugin runner {} created", name);
+            Ok(meta)
+        } else {
+            tracing::warn!("Plugin runner {} already exists", name);
+            Err(
+                JobWorkerError::AlreadyExists(format!("Plugin runner {} already exists", name))
+                    .into(),
+            )
         }
-        Ok(())
+    }
+    // test and create mcp server
+    async fn create_mcp_server(
+        &self,
+        name: &str,
+        description: &str,
+        definition: &str, // transport
+    ) -> Result<McpServerProxy> {
+        let proxy = self
+            .runner_spec_factory()
+            .load_mcp_server(name, description, definition)
+            .await?;
+        // create runner
+        let data = RunnerRow {
+            id: self.id_generator().generate_id()?,
+            name: name.to_string(),
+            description: description.to_string(),
+            definition: definition.to_string(),
+            r#type: RunnerType::McpServer as i32,
+        };
+        if self._create(&data).await.inspect_err(|e| {
+            tracing::error!(
+                "Failed to create runner for mcp server {}: {:?}",
+                &data.name,
+                e
+            );
+        })? {
+            tracing::info!("MCP server {} created", name);
+            Ok(proxy)
+        } else {
+            tracing::warn!("MCP server {} already exists", name);
+            Err(JobWorkerError::AlreadyExists(format!("MCP server {} already exists", name)).into())
+        }
     }
 
-    async fn create(&self, runner_row: &RunnerRow) -> Result<bool> {
-        self.create_tx(self.db_pool(), runner_row, false).await
+    async fn remove_by_name(&self, name: &str) -> Result<bool> {
+        self.runner_spec_factory().unload_plugins(name).await?;
+        self._delete_by_name_tx(self.db_pool(), name).await
     }
-    async fn create_tx<'c, E: Executor<'c, Database = Rdb>>(
+    async fn remove(&self, id: &RunnerId) -> Result<bool> {
+        let mut tx = self.db_pool().begin().await?;
+        let rem = self.find_row_tx(&mut *tx, id).await.unwrap_or(None);
+        let del = self._delete_tx(&mut *tx, id).await?;
+        if let Some(rem) = rem {
+            if let Err(e) = self.runner_spec_factory().unload_plugins(&rem.name).await {
+                tracing::warn!("Failed to remove runner: {:?}", e);
+            }
+            if let Err(e) = self
+                .runner_spec_factory()
+                .unload_mcp_server(&rem.name)
+                .await
+            {
+                tracing::warn!("Failed to remove runner: {:?}", e);
+            }
+        }
+        tx.commit().await?;
+        Ok(del)
+    }
+
+    /////////
+    // rdb operations
+    ////////
+
+    async fn _create(&self, runner_row: &RunnerRow) -> Result<bool> {
+        self._create_tx(self.db_pool(), runner_row).await
+    }
+    async fn _create_tx<'c, E: Executor<'c, Database = Rdb>>(
         &self,
         tx: E,
         runner_row: &RunnerRow,
-        ignore: bool,
     ) -> Result<bool> {
-        let res = sqlx::query::<Rdb>(
-            if ignore {
-                "INSERT IGNORE INTO `runner` (
+        let res = sqlx::query::<Rdb>(if cfg!(feature = "mysql") {
+            "INSERT IGNORE INTO `runner` (
                 `id`,
                 `name`,
                 `description`,
-                `file_name`,
+                `definition`,
                 `type`
                 ) VALUES (?,?,?,?,?)"
-            } else if cfg!(feature = "mysql") {
-                "INSERT INTO `runner` (
+        } else {
+            // sqlite
+            "INSERT OR IGNORE INTO `runner` (
                 `id`,
                 `name`,
                 `description`,
-                `file_name`,
-                `type`
-                ) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE
-                  `name` = VALUES(`name`), `description` = VALUES(`description`), `file_name` = VALUES(`file_name`)"
-            } else { // XXX sqlite does not support ON DUPLICATE KEY UPDATE (ignore only)
-                "INSERT OR IGNORE INTO `runner` (
-                `id`,
-                `name`,
-                `description`,
-                `file_name`,
+                `definition`,
                 `type`
                 ) VALUES (?,?,?,?,?)"
-            }
-        )
+        })
         .bind(runner_row.id)
         .bind(&runner_row.name)
         .bind(&runner_row.description)
-        .bind(&runner_row.file_name)
+        .bind(&runner_row.definition)
         .bind(runner_row.r#type)
         .execute(tx)
         .await
@@ -109,29 +220,38 @@ pub trait RunnerRepository:
         Ok(res.rows_affected() > 0)
     }
 
-    async fn delete(&self, id: &RunnerId) -> Result<bool> {
+    async fn _delete(&self, id: &RunnerId) -> Result<bool> {
         let db_pool = self.db_pool().clone();
-        self.delete_tx(&db_pool, id).await
+        self._delete_tx(&db_pool, id).await
     }
 
-    async fn delete_tx<'c, E: Executor<'c, Database = Rdb>>(
+    async fn _delete_tx<'c, E: Executor<'c, Database = Rdb>>(
         &self,
         tx: E,
         id: &RunnerId,
     ) -> Result<bool> {
         // TODO transaction
-        let rem = self.find_row_tx(self.db_pool(), id).await.unwrap_or(None);
         let del = sqlx::query::<Rdb>("DELETE FROM `runner` WHERE `id` = ?;")
             .bind(id.value)
             .execute(tx)
             .await
             .map(|r| r.rows_affected() > 0)
             .map_err(JobWorkerError::DBError)?;
-        if let Some(rem) = rem {
-            if let Err(e) = self.runner_spec_factory().unload_plugins(&rem.name).await {
-                tracing::warn!("Failed to remove runner: {:?}", e);
-            }
-        }
+        Ok(del)
+    }
+
+    async fn _delete_by_name_tx<'c, E: Executor<'c, Database = Rdb>>(
+        &self,
+        tx: E,
+        name: &str,
+    ) -> Result<bool> {
+        // TODO transaction
+        let del = sqlx::query::<Rdb>("DELETE FROM `runner` WHERE `name` = ?;")
+            .bind(name)
+            .execute(tx)
+            .await
+            .map(|r| r.rows_affected() > 0)
+            .map_err(JobWorkerError::DBError)?;
         Ok(del)
     }
 
@@ -327,7 +447,7 @@ mod test {
             id: 123456, // XXX generated
             name: "HelloPlugin".to_string(),
             description: "Hello! Plugin".to_string(),
-            file_name: "libplugin_runner_hello.dylib".to_string(),
+            definition: "./target/debug/libplugin_runner_hello.dylib".to_string(),
             r#type: RunnerType::Plugin as i32,
         });
         let data = Some(RunnerData {
@@ -347,6 +467,7 @@ mod test {
             ),
             runner_type: 0,
             output_type: StreamingOutputType::Both as i32, // hello
+            definition: "./target/debug/libplugin_runner_hello.dylib".to_string(),
         });
         let plugin = p
             .create_runner_spec_by_name(&data.as_ref().unwrap().name, false)
@@ -357,7 +478,7 @@ mod test {
 
         let mut tx = db.begin().await.context("error in test")?;
         let updated = repository
-            .create_tx(&mut *tx, &row.clone().unwrap(), false)
+            ._create_tx(&mut *tx, &row.clone().unwrap())
             .await?;
         assert!(updated);
         tx.commit().await.context("error in test delete commit")?;
@@ -386,9 +507,10 @@ mod test {
 
         // delete record
         tx = db.begin().await.context("error in test")?;
-        let del = repository.delete_tx(&mut *tx, &expect.id.unwrap()).await?;
+        let del = repository.remove_by_name("HelloPlugin").await?;
         tx.commit().await.context("error in test delete commit")?;
         assert!(del, "delete error");
+        assert!(repository.find(&id1).await?.is_none(), "record not deleted");
         Ok(())
     }
 
@@ -421,7 +543,6 @@ mod test {
         use infra_utils::infra::test::setup_test_rdb_from;
         use infra_utils::infra::test::TEST_RUNTIME;
         use jobworkerp_runner::runner::mcp::integration_tests;
-        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
         TEST_RUNTIME.block_on(async {
             let rdb_pool = if cfg!(feature = "mysql") {
@@ -465,7 +586,7 @@ mod test {
 
             let before_count = repository.count_list_tx(repository.db_pool()).await?;
 
-            repository.add_from_mcp_server().await?;
+            repository.add_from_mcp_config_file().await?;
 
             let after_count = repository.count_list_tx(repository.db_pool()).await?;
             assert_eq!(after_count - before_count, 2,);
@@ -495,14 +616,176 @@ mod test {
 
             for row in mcp_servers.iter() {
                 let id = RunnerId { value: row.id };
-                let mut tx = repository
-                    .db_pool()
-                    .begin()
-                    .await
-                    .context("error in test cleanup")?;
-                repository.delete_tx(&mut *tx, &id).await?;
-                tx.commit().await.context("error in test cleanup commit")?;
+                repository.remove(&id).await?;
+                assert!(repository.find(&id).await?.is_none());
             }
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_plugin() -> Result<()> {
+        use infra_utils::infra::test::setup_test_rdb_from;
+        use infra_utils::infra::test::TEST_RUNTIME;
+
+        TEST_RUNTIME.block_on(async {
+            let rdb_pool = if cfg!(feature = "mysql") {
+                let pool = setup_test_rdb_from("sql/mysql").await;
+                // delete only not built-in records
+                sqlx::query("DELETE FROM runner WHERE id > 10000 AND type = ?;")
+                    .bind(RunnerType::Plugin as i32)
+                    .execute(pool)
+                    .await?;
+                pool
+            } else {
+                let pool = setup_test_rdb_from("sql/sqlite").await;
+                // delete only not built-in records
+                sqlx::query("DELETE FROM runner WHERE id > 10000 AND type = ?;")
+                    .bind(RunnerType::Plugin as i32)
+                    .execute(pool)
+                    .await?;
+                pool
+            };
+
+            let plugins = Arc::new(Plugins::new());
+            let mcp_clients = McpServerFactory::default();
+            let p = Arc::new(RunnerSpecFactory::new(plugins, Arc::new(mcp_clients)));
+
+            let id_generator = Arc::new(crate::infra::IdGeneratorWrapper::new());
+            let repository = RdbRunnerRepositoryImpl::new(rdb_pool, p.clone(), id_generator);
+
+            let before_count = repository.count_list_tx(repository.db_pool()).await?;
+
+            let plugin_path = if cfg!(target_os = "macos") {
+                "../target/debug/libplugin_runner_test.dylib"
+            } else {
+                "../target/debug/libplugin_runner_test.so"
+            };
+
+            // テスト用のプラグインを作成
+            repository
+                .create_plugin("TestPlugin", "Test Plugin Description", plugin_path)
+                .await?;
+
+            let after_count = repository.count_list_tx(repository.db_pool()).await?;
+            assert_eq!(after_count - before_count, 1, "Plugin should be created");
+
+            // 名前で検索して確認
+            let found = repository.find_by_name("TestPlugin").await?;
+            assert!(found.is_some(), "Plugin should be found by name");
+
+            let plugin = found.unwrap();
+            assert_eq!(plugin.data.as_ref().unwrap().name, "TestPlugin");
+            assert_eq!(
+                plugin.data.as_ref().unwrap().description,
+                "Test Plugin Description"
+            );
+
+            // クリーンアップ
+            let runner_id = plugin.id.unwrap();
+            let mut tx = repository
+                .db_pool()
+                .begin()
+                .await
+                .context("error in test cleanup")?;
+            repository._delete_tx(&mut *tx, &runner_id).await?;
+            tx.commit().await.context("error in test cleanup commit")?;
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_mcp_server() -> Result<()> {
+        use infra_utils::infra::test::setup_test_rdb_from;
+        use infra_utils::infra::test::TEST_RUNTIME;
+        use serde_json::json;
+
+        TEST_RUNTIME.block_on(async {
+            let rdb_pool = if cfg!(feature = "mysql") {
+                let pool = setup_test_rdb_from("sql/mysql").await;
+                // delete only not built-in records
+                sqlx::query("DELETE FROM runner WHERE id > 10000 AND type = ?;")
+                    .bind(RunnerType::McpServer as i32)
+                    .execute(pool)
+                    .await?;
+                pool
+            } else {
+                let pool = setup_test_rdb_from("sql/sqlite").await;
+                // delete only not built-in records
+                sqlx::query("DELETE FROM runner WHERE id > 10000 AND type = ?;")
+                    .bind(RunnerType::McpServer as i32)
+                    .execute(pool)
+                    .await?;
+                pool
+            };
+
+            let plugins = Arc::new(Plugins::new());
+            let mcp_clients = McpServerFactory::default();
+            let p = Arc::new(RunnerSpecFactory::new(plugins, Arc::new(mcp_clients)));
+
+            let id_generator = Arc::new(crate::infra::IdGeneratorWrapper::new());
+            let repository = RdbRunnerRepositoryImpl::new(rdb_pool, p.clone(), id_generator);
+
+            let before_count = repository.count_list_tx(repository.db_pool()).await?;
+
+            let definition = json!({
+                "transport": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-everything"]
+            })
+            .to_string();
+
+            let proxy = repository
+                .create_mcp_server("TestMcpServer", "Test MCP Server Description", &definition)
+                .await?;
+
+            // MCPサーバープロキシが正しく作成されたことを確認
+            assert_eq!(proxy.name.as_str(), "TestMcpServer");
+
+            let after_count = repository.count_list_tx(repository.db_pool()).await?;
+            assert_eq!(
+                after_count - before_count,
+                1,
+                "MCP Server should be created"
+            );
+
+            // find by name
+            let found = repository.find_by_name("TestMcpServer").await?;
+            assert!(found.is_some(), "MCP Server should be found by name");
+
+            let server = found.unwrap();
+            assert_eq!(server.data.as_ref().unwrap().name, "TestMcpServer");
+            assert_eq!(
+                server.data.as_ref().unwrap().description,
+                "Test MCP Server Description"
+            );
+            assert_eq!(server.data.as_ref().unwrap().definition, definition);
+            assert_eq!(
+                server.data.as_ref().unwrap().runner_type,
+                RunnerType::McpServer as i32
+            );
+
+            // already exists
+            let result = repository
+                .create_mcp_server("TestMcpServer", "Duplicate Server", &definition)
+                .await;
+            assert!(
+                result.is_err(),
+                "Should fail when creating a server with an existing name"
+            );
+
+            // clean up
+            let runner_id = server.id.unwrap();
+            repository
+                .remove(&runner_id)
+                .await
+                .context("error in test cleanup")?;
+            assert!(
+                repository.find(&runner_id).await?.is_none(),
+                "record not deleted"
+            );
 
             Ok(())
         })

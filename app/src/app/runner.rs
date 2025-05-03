@@ -16,6 +16,14 @@ pub trait RunnerApp: fmt::Debug + Send + Sync {
     // load new runner from plugin files and store it
     async fn load_runner(&self) -> Result<bool>;
 
+    async fn create_runner(
+        &self,
+        name: &str,
+        description: &str,
+        runner_type: i32,
+        definition: &str,
+    ) -> Result<RunnerId>;
+
     async fn delete_runner(&self, id: &RunnerId) -> Result<bool>;
 
     async fn find_runner(
@@ -349,6 +357,7 @@ pub mod test {
             runner_type: RunnerType::Plugin as i32,
             result_output_proto: None,
             output_type: StreamingOutputType::NonStreaming as i32,
+            definition: "./target/debug/libTest.so".to_string(),
         }
     }
     pub fn test_runner_with_schema(id: &RunnerId, name: &str) -> RunnerWithSchema {

@@ -4,8 +4,8 @@ use std::{fmt::Debug, time::Duration};
 use crate::proto::jobworkerp::data::{Runner, RunnerId};
 use crate::proto::jobworkerp::service::runner_service_server::RunnerService;
 use crate::proto::jobworkerp::service::{
-    CountCondition, CountResponse, FindListRequest, OptionalRunnerResponse, RunnerNameRequest,
-    SuccessResponse,
+    CountCondition, CountResponse, CreateRunnerRequest, CreateRunnerResponse, FindListRequest,
+    OptionalRunnerResponse, RunnerNameRequest, SuccessResponse,
 };
 use crate::service::error_handle::handle_error;
 use app::app::runner::RunnerApp;
@@ -22,10 +22,31 @@ pub trait RunnerGrpc {
 
 const DEFAULT_TTL: Duration = Duration::from_secs(30);
 const LIST_TTL: Duration = Duration::from_secs(5);
-const MAX_RESERVED_RUNNER_ID: i64 = 1024;
+const MAX_RESERVED_RUNNER_ID: i64 = 65535;
 
 #[tonic::async_trait]
 impl<T: RunnerGrpc + Tracing + Send + Debug + Sync + 'static> RunnerService for T {
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "create"))]
+    async fn create(
+        &self,
+        request: tonic::Request<CreateRunnerRequest>,
+    ) -> std::result::Result<tonic::Response<CreateRunnerResponse>, tonic::Status> {
+        let _s = Self::trace_request("runner", "create", &request);
+        let req = request.get_ref();
+        match self
+            .app()
+            .create_runner(
+                req.name.as_str(),
+                req.description.as_str(),
+                req.runner_type,
+                req.definition.as_str(),
+            )
+            .await
+        {
+            Ok(r) => Ok(Response::new(CreateRunnerResponse { id: Some(r) })),
+            Err(e) => Err(handle_error(&e)),
+        }
+    }
     #[tracing::instrument(level = "info", skip(self, request), fields(method = "delete"))]
     async fn delete(
         &self,

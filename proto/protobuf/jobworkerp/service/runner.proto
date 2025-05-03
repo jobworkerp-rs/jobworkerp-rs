@@ -2,24 +2,39 @@ syntax = "proto3";
 
 package jobworkerp.service;
 
-import "jobworkerp/service/common.proto";
+import "jobworkerp/data/common.proto";
 import "jobworkerp/data/runner.proto";
+import "jobworkerp/service/common.proto";
 
+message CreateRunnerRequest {
+  // # Runner Name
+  // Unique key and proto message prefix (e.g. name: "command",
+  // runner_settings_proto: "CommandRunnerSettings", job_args_proto:
+  // "CommandArg")
+  string name = 1;
+  // # Runner Description
+  // Description of runner implementation
+  string description = 2;
+  // # Runner Type
+  // can create runner type only: MCP, Plugin
+  jobworkerp.data.RunnerType runner_type = 3;
+  // # definition
+  // runner definition
+  // mcp: mcp_server toml
+  // plugin: plugin filepath
+  string definition = 4;
+}
 
 message CreateRunnerResponse {
-    jobworkerp.data.RunnerId id = 1; // generated id
+  jobworkerp.data.RunnerId id = 1; // generated id
 }
 
-message OptionalRunnerResponse {
-    optional jobworkerp.data.Runner data = 1;
-}
+message OptionalRunnerResponse { optional jobworkerp.data.Runner data = 1; }
 
-message RunnerNameRequest {
-    string name = 1;
-}
-
+message RunnerNameRequest { string name = 1; }
 
 service RunnerService {
+  rpc Create(CreateRunnerRequest) returns (CreateRunnerResponse);
   rpc Delete(jobworkerp.data.RunnerId) returns (SuccessResponse);
   rpc Find(jobworkerp.data.RunnerId) returns (OptionalRunnerResponse);
   rpc FindByName(RunnerNameRequest) returns (OptionalRunnerResponse);

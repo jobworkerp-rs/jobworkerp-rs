@@ -454,6 +454,7 @@ mod tests {
             &mc_config,
             repositories.clone(),
             descriptor_cache.clone(),
+            id_generator.clone(),
         );
         runner_app.load_runner().await?;
         let worker_app = HybridWorkerAppImpl::new(

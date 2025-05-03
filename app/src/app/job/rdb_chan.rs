@@ -700,6 +700,7 @@ mod tests {
             &mc_config,
             repositories.clone(),
             descriptor_cache.clone(),
+            id_generator.clone(),
         ));
         let worker_app = RdbWorkerAppImpl::new(
             storage_config.clone(),

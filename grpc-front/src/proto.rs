@@ -6,6 +6,7 @@ pub mod jobworkerp {
         pub type Priority = data::Priority;
         pub type RunnerId = data::RunnerId;
         pub type RunnerData = data::RunnerData;
+        pub type RunnerType = data::RunnerType;
         pub type Runner = data::Runner;
         pub type WorkerId = data::WorkerId;
         pub type WorkerData = data::WorkerData;
