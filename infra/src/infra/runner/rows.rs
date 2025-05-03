@@ -3,7 +3,7 @@ use proto::jobworkerp::data::{McpTool, Runner, RunnerData, RunnerId};
 use std::any::Any;
 
 // db row definitions
-#[derive(sqlx::FromRow, Debug, Clone)]
+#[derive(sqlx::FromRow, Debug, Clone, PartialEq)]
 pub struct RunnerRow {
     pub id: i64,
     pub name: String,

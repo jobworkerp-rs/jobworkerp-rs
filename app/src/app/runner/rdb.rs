@@ -52,70 +52,51 @@ impl RdbRunnerAppImpl {
         }
     }
     // load runners from db in initialization
-    async fn load_runners_from_db(&self) -> Result<()> {
-        let runners = self.runner_repository().find_list(None, None).await?;
-        for data in runners.into_iter().flat_map(|r| r.data) {
-            if let Err(e) = match data.runner_type {
-                val if val == RunnerType::McpServer as i32 => self
-                    .runner_repository()
-                    .load_mcp_server(
-                        data.name.as_str(),
-                        data.description.as_str(),
-                        data.definition.as_str(),
-                    )
-                    .await
-                    .map(|_| ()),
-                val if val == RunnerType::Plugin as i32 => self
-                    .runner_repository()
-                    .load_plugin(Some(data.name.as_str()), &data.definition)
-                    .await
-                    .map(|_| ()),
-                _ => Ok(()), // skip other types
-            } {
-                tracing::error!("load runner error: {:?}", e);
-                return Err(e);
+    async fn load_runners_from_db(&self) {
+        if let Ok(runners) = self.runner_repository().find_list(None, None).await {
+            for data in runners.into_iter().flat_map(|r| r.data) {
+                if let Err(e) = match data.runner_type {
+                    val if val == RunnerType::McpServer as i32 => self
+                        .runner_repository()
+                        .load_mcp_server(
+                            data.name.as_str(),
+                            data.description.as_str(),
+                            data.definition.as_str(),
+                        )
+                        .await
+                        .map(|_| ()),
+                    val if val == RunnerType::Plugin as i32 => self
+                        .runner_repository()
+                        .load_plugin(Some(data.name.as_str()), &data.definition, false)
+                        .await
+                        .map(|_| ()),
+                    _ => Ok(()), // skip other types
+                } {
+                    if let Some(JobWorkerError::AlreadyExists(_)) =
+                        e.downcast_ref::<JobWorkerError>()
+                    {
+                        tracing::debug!("load runner is already exists: {:?}", e);
+                    } else {
+                        tracing::warn!("load runner error: {:?}", e);
+                    }
+                }
             }
+        } else {
+            tracing::warn!("load runners from db error");
         }
-        Ok(())
     }
 
     async fn add_runner(&self) -> Result<()> {
-        self.load_runners_from_db().await?;
         self.runner_repository()
             .add_from_plugins_from(self.plugin_dir.as_str())
             .await?;
         self.runner_repository().add_from_mcp_config_file().await?;
+        self.load_runners_from_db().await;
         let _ = self
             .delete_cache_locked(&Self::find_all_list_cache_key())
             .await;
         Ok(())
     }
-    // TODO update by reloading plugin files
-    // async fn update_runner(
-    //     &self,
-    //     id: &RunnerId,
-    //     runner: &Option<RunnerData>,
-    // ) -> Result<bool> {
-    //     if let Some(w) = runner {
-    //         let pool = self.runner_repository().db_pool();
-    //         let mut tx = pool.begin().await.map_err(JobWorkerError::DBError)?;
-    //         self.runner_repository()
-    //             .update(&mut *tx, id, w)
-    //             .await?;
-    //         tx.commit().await.map_err(JobWorkerError::DBError)?;
-    //         // clear memory cache
-    //         let _ = self
-    //             .delete_cache_locked(&Self::find_cache_key(&id.value))
-    //             .await;
-    //         let _ = self
-    //             .delete_cache_locked(&Self::find_all_list_cache_key())
-    //             .await;
-    //         Ok(true)
-    //     } else {
-    //         // all empty, no update
-    //         Ok(false)
-    //     }
-    // }
 }
 
 impl UseRunnerParserWithCache for RdbRunnerAppImpl {
@@ -138,58 +119,27 @@ impl RunnerApp for RdbRunnerAppImpl {
         runner_type: i32,
         definition: &str,
     ) -> Result<RunnerId> {
-        let runner_id = self.id_generator.generate_id()?;
-        match runner_type {
+        let id = match runner_type {
             val if val == RunnerType::McpServer as i32 => {
-                let _ = self
-                    .runner_repository()
+                self.runner_repository()
                     .create_mcp_server(name, description, definition)
-                    .await?;
+                    .await
             }
             val if val == RunnerType::Plugin as i32 => {
-                let _ = self
-                    .runner_repository()
+                self.runner_repository()
                     .create_plugin(name, description, definition)
-                    .await?;
+                    .await
             }
-            _ => {}
-        }
-        let res = match runner_type {
-            val if val == RunnerType::McpServer as i32 => self
-                .runner_repository()
-                .load_mcp_server(name, description, definition)
-                .await
-                .map(|_| true),
-            val if val == RunnerType::Plugin as i32 => self
-                .runner_repository()
-                .load_plugin(Some(name), definition)
-                .await
-                .map(|_| true),
             _ => Err(JobWorkerError::InvalidParameter(format!(
-                "Invalid runner type: {}",
+                "invalid runner type: {}",
                 runner_type
             ))
             .into()),
         }?;
-        // let res = self
-        //     .runner_repository()
-        //     .create(&RunnerRow {
-        //         id: runner_id,
-        //         name: name.to_string(),
-        //         description: description.to_string(),
-        //         definition: definition.to_string(),
-        //         r#type: runner_type,
-        //     })
-        //     .await?;
-        if res {
-            // clear memory cache
-            let _ = self
-                .delete_cache_locked(&Self::find_all_list_cache_key())
-                .await;
-            Ok(RunnerId { value: runner_id })
-        } else {
-            Err(JobWorkerError::AlreadyExists(format!("Runner already exists: {}", name)).into())
-        }
+        let _ = self
+            .delete_cache_locked(&Self::find_all_list_cache_key())
+            .await;
+        Ok(id)
     }
 
     async fn delete_runner(&self, id: &RunnerId) -> Result<bool> {
