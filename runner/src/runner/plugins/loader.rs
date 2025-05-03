@@ -1,6 +1,7 @@
 use super::PluginLoader;
 use crate::runner::plugins::{impls::PluginRunnerWrapperImpl, PluginRunner};
-use anyhow::{anyhow, Result};
+use anyhow::Result;
+use jobworkerp_base::error::JobWorkerError;
 use libloading::{Library, Symbol};
 use std::path::Path;
 use std::sync::Arc;
@@ -51,31 +52,47 @@ impl Default for RunnerPluginLoader {
 }
 
 impl PluginLoader for RunnerPluginLoader {
-    fn load_path(&mut self, name: Option<&str>, path: &Path) -> Result<(String, String)> {
+    fn load_path(
+        &mut self,
+        name: Option<&str>,
+        path: &Path,
+        overwrite: bool,
+    ) -> Result<(String, String)> {
         // XXX load plugin only for getting name
         let lib = unsafe { Library::new(path) }?;
         let load_plugin: LoaderFunc = unsafe { lib.get(b"load_plugin") }?;
         let plugin = load_plugin();
-        let pname = plugin.name().clone();
+        let name = name
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| plugin.name().clone());
         let description = plugin.description().clone();
 
         let lib = unsafe { Library::new(path) }?;
-        if self.plugin_loaders.iter().any(|p| p.0.as_str() == pname) {
-            Err(anyhow!(
+        if self
+            .plugin_loaders
+            .iter()
+            .any(|p| p.0.as_str() == name.as_str())
+            && !overwrite
+        {
+            Err(JobWorkerError::AlreadyExists(format!(
                 "plugin already loaded: {} ({})",
-                pname,
+                &name,
                 path.display()
             ))
+            .into())
         } else {
+            if overwrite {
+                self.unload(name.as_str())?;
+            }
             self.plugin_loaders.push((
-                name.map(|s| s.to_string()).unwrap_or_else(|| pname.clone()),
+                name.clone(),
                 path.file_name()
                     .unwrap_or_default()
                     .to_string_lossy()
                     .to_string(),
                 lib,
             ));
-            Ok((pname, description))
+            Ok((name, description))
         }
     }
     fn unload(&mut self, name: &str) -> Result<bool> {
@@ -86,7 +103,9 @@ impl PluginLoader for RunnerPluginLoader {
             .rev() // unload latest loaded plugin
             .position(|p| p.0.as_str() == name);
         if let Some(i) = idx {
-            self.plugin_loaders.remove(i);
+            self.plugin_loaders.remove(i).2.close().inspect_err(|e| {
+                tracing::warn!("error in unloading runner plugin:{name}, error: {e:?}")
+            })?;
             Ok(true)
         } else {
             Ok(false)
