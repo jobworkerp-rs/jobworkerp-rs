@@ -18,12 +18,19 @@ pub trait UseJqAndTemplateTransformer {
     ) -> Result<serde_json::Value, Box<workflow::Error>> {
         if Self::is_transform_template(filter) {
             Self::execute_liquid_template(raw_input, filter, context).map(|r| {
-                match serde_json::from_str(r.as_str()) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::debug!("failed to parse as json: {}", e);
-                        serde_json::Value::String(r)
+                // parse as primitive types (not obj, arr)
+                if let Ok(v) = r.parse::<i64>() {
+                    serde_json::Value::Number(v.into())
+                } else if let Ok(v) = r.parse::<f64>() {
+                    match serde_json::Number::from_f64(v) {
+                        Some(n) => serde_json::Value::Number(n),
+                        None => serde_json::Value::String(r), // inf or nan
                     }
+                } else if let Ok(v) = r.parse::<bool>() {
+                    // "true" or "false" only
+                    serde_json::Value::Bool(v)
+                } else {
+                    serde_json::Value::String(r)
                 }
             })
         } else if Self::is_transform_filter(filter) {
@@ -247,7 +254,7 @@ mod test_use_jq_and_template_transformer {
     fn test_execute_transform() {
         let input = Arc::new(json!({
             "key": 1,
-            "key2": 2,
+            "key2": 2.55,
         }));
         let filter = "${.key}";
         let context = BTreeMap::new();
@@ -260,10 +267,26 @@ mod test_use_jq_and_template_transformer {
             DefaultTransformer::execute_transform(input.clone(), filter, &context).unwrap();
         assert_eq!(result, serde_json::Value::Number(1.into()));
 
+        let filter = "$${{{ key2 }}}";
+        let result =
+            DefaultTransformer::execute_transform(input.clone(), filter, &context).unwrap();
+        assert_eq!(
+            result,
+            serde_json::Value::Number(serde_json::Number::from_f64(2.55).unwrap())
+        );
+
         let filter = "key";
         let result =
             DefaultTransformer::execute_transform(input.clone(), filter, &context).unwrap();
         assert_eq!(result, serde_json::Value::String("key".to_string()));
+
+        let filter = "$${{\"hoge\": {{ key2 }}}}";
+        let result =
+            DefaultTransformer::execute_transform(input.clone(), filter, &context).unwrap();
+        assert_eq!(
+            result,
+            serde_json::Value::String("{\"hoge\": 2.55}".to_string())
+        ); // not object
     }
 }
 
