@@ -338,7 +338,7 @@ $defs:
                         $ref: "#/$defs/retryPolicy"
                         title: RetryPolicyDefinition
                         description: The retry policy to use, if any, when catching errors.
-                      broadcastResultsToListener:
+                      broadcastResults:
                         type: boolean
                         title: BroadcastResultsToListener
                         description: Whether to broadcast results to listeners.

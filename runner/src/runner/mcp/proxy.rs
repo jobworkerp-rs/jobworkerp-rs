@@ -215,10 +215,10 @@ impl McpServerFactory {
     }
     // overwrite config if exists
     pub async fn add_server(&self, config: McpServerConfig) -> Result<McpServerProxy> {
+        let server = McpServerProxy::new(&config).await?;
         let mut mcp_configs = self.mcp_configs.write().await;
         mcp_configs.insert(config.name.clone(), config.clone());
         // test connection
-        let server = McpServerProxy::new(&config).await?;
         Ok(server)
     }
     pub async fn remove_server(&self, name: &str) -> Result<bool> {
