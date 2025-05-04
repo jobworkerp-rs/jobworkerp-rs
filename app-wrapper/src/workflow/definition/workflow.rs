@@ -14,7 +14,7 @@ pub mod tasks;
 
 #[doc = r" Error types."]
 pub mod error {
-    #[doc = r" Error from a `TryFrom` or `FromStr` implementation."]
+    #[doc = r" Error from a TryFrom or FromStr implementation."]
     pub struct ConversionError(::std::borrow::Cow<'static, str>);
     impl ::std::error::Error for ConversionError {}
     impl ::std::fmt::Display for ConversionError {
@@ -38,7 +38,7 @@ pub mod error {
         }
     }
 }
-#[doc = "`CallTask`"]
+#[doc = "CallTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -190,7 +190,7 @@ impl CatchErrors {
         Default::default()
     }
 }
-#[doc = "`DoTask`"]
+#[doc = "DoTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -400,7 +400,7 @@ impl Document {
         Default::default()
     }
 }
-#[doc = "`Duration`"]
+#[doc = "Duration"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -902,7 +902,7 @@ impl ExternalResource {
         Default::default()
     }
 }
-#[doc = "Represents different transition options for a workflow."]
+#[doc = "Represents different transition options that determine the next execution path within a workflow."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -922,8 +922,8 @@ impl ExternalResource {
 #[doc = "      ]"]
 #[doc = "    },"]
 #[doc = "    {"]
-#[doc = "      \"type\": \"string\""]
 #[doc = "      \"description\": \"A runtime expression that evaluates to a task name, determining which task to execute next in the workflow.\","]
+#[doc = "      \"type\": \"string\""]
 #[doc = "    }"]
 #[doc = "  ]"]
 #[doc = "}"]
@@ -954,7 +954,7 @@ impl FlowDirective {
         Default::default()
     }
 }
-#[doc = "`FlowDirectiveEnum`"]
+#[doc = "FlowDirectiveEnum"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -1043,7 +1043,7 @@ impl ::std::default::Default for FlowDirectiveEnum {
         FlowDirectiveEnum::Continue
     }
 }
-#[doc = "`ForTask`"]
+#[doc = "ForTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -1247,7 +1247,7 @@ impl ForTaskConfiguration {
         Default::default()
     }
 }
-#[doc = "`ForkTask`"]
+#[doc = "ForkTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -1437,7 +1437,7 @@ impl ForkTaskConfiguration {
 #[doc = "      \"description\": \"The options to use when running the configured function.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"properties\": {"]
-#[doc = "        \"broadcastResultsToListener\": {"]
+#[doc = "        \"broadcastResults\": {"]
 #[doc = "          \"title\": \"BroadcastResultsToListener\","]
 #[doc = "          \"description\": \"Whether to broadcast results to listeners.\","]
 #[doc = "          \"type\": \"boolean\""]
@@ -1522,7 +1522,7 @@ impl Function {
 #[doc = "  \"description\": \"The options to use when running the configured function.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"properties\": {"]
-#[doc = "    \"broadcastResultsToListener\": {"]
+#[doc = "    \"broadcastResults\": {"]
 #[doc = "      \"title\": \"BroadcastResultsToListener\","]
 #[doc = "      \"description\": \"Whether to broadcast results to listeners.\","]
 #[doc = "      \"type\": \"boolean\""]
@@ -1565,11 +1565,11 @@ impl Function {
 pub struct FunctionOptions {
     #[doc = "Whether to broadcast results to listeners."]
     #[serde(
-        rename = "broadcastResultsToListener",
+        rename = "broadcastResults",
         default,
         skip_serializing_if = "::std::option::Option::is_none"
     )]
-    pub broadcast_results_to_listener: ::std::option::Option<bool>,
+    pub broadcast_results: ::std::option::Option<bool>,
     #[doc = "The channel to use when running the function. (Channel controls execution concurrency)"]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub channel: ::std::option::Option<::std::string::String>,
@@ -1613,7 +1613,7 @@ impl ::std::convert::From<&FunctionOptions> for FunctionOptions {
 impl ::std::default::Default for FunctionOptions {
     fn default() -> Self {
         Self {
-            broadcast_results_to_listener: Default::default(),
+            broadcast_results: Default::default(),
             channel: Default::default(),
             retry: Default::default(),
             store_failure: Default::default(),
@@ -2057,7 +2057,7 @@ impl ::std::default::Default for ProcessReturnType {
         ProcessReturnType::Stdout
     }
 }
-#[doc = "`RaiseTask`"]
+#[doc = "RaiseTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2229,7 +2229,7 @@ impl RaiseTaskConfiguration {
         Default::default()
     }
 }
-#[doc = "`RaiseTaskError`"]
+#[doc = "RaiseTaskError"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2386,7 +2386,7 @@ impl RetryLimit {
         Default::default()
     }
 }
-#[doc = "`RetryLimitAttempt`"]
+#[doc = "RetryLimitAttempt"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2556,7 +2556,7 @@ impl RetryPolicy {
         Default::default()
     }
 }
-#[doc = "`RunTask`"]
+#[doc = "RunTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2625,7 +2625,7 @@ impl RetryPolicy {
 #[doc = "                  \"description\": \"The options to use when running the configured function.\","]
 #[doc = "                  \"type\": \"object\","]
 #[doc = "                  \"properties\": {"]
-#[doc = "                    \"broadcastResultsToListener\": {"]
+#[doc = "                    \"broadcastResults\": {"]
 #[doc = "                      \"title\": \"BroadcastResultsToListener\","]
 #[doc = "                      \"description\": \"Whether to broadcast results to listeners.\","]
 #[doc = "                      \"type\": \"boolean\""]
@@ -2800,7 +2800,7 @@ impl RunTask {
 #[doc = "              \"description\": \"The options to use when running the configured function.\","]
 #[doc = "              \"type\": \"object\","]
 #[doc = "              \"properties\": {"]
-#[doc = "                \"broadcastResultsToListener\": {"]
+#[doc = "                \"broadcastResults\": {"]
 #[doc = "                  \"title\": \"BroadcastResultsToListener\","]
 #[doc = "                  \"description\": \"Whether to broadcast results to listeners.\","]
 #[doc = "                  \"type\": \"boolean\""]
@@ -2968,7 +2968,7 @@ impl ::std::convert::From<&Self> for Schema {
         value.clone()
     }
 }
-#[doc = "`SetTask`"]
+#[doc = "SetTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3121,7 +3121,7 @@ impl SwitchCase {
         Default::default()
     }
 }
-#[doc = "`SwitchTask`"]
+#[doc = "SwitchTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3528,7 +3528,7 @@ impl ::std::convert::From<::std::vec::Vec<::std::collections::HashMap<::std::str
         Self(value)
     }
 }
-#[doc = "`TaskTimeout`"]
+#[doc = "TaskTimeout"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3604,7 +3604,7 @@ impl Timeout {
         Default::default()
     }
 }
-#[doc = "`TryTask`"]
+#[doc = "TryTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3876,7 +3876,7 @@ impl TryTaskCatch {
         Default::default()
     }
 }
-#[doc = "`TryTaskCatchRetry`"]
+#[doc = "TryTaskCatchRetry"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3913,7 +3913,7 @@ impl ::std::convert::From<RetryPolicy> for TryTaskCatchRetry {
         Self::Variant0(value)
     }
 }
-#[doc = "`UriTemplate`"]
+#[doc = "UriTemplate"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3976,7 +3976,7 @@ impl ::std::fmt::Display for UriTemplate {
         self.0.fmt(f)
     }
 }
-#[doc = "`WaitTask`"]
+#[doc = "WaitTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -4328,7 +4328,7 @@ impl<'de> ::serde::Deserialize<'de> for WorkflowNamespace {
             })
     }
 }
-#[doc = "Partial Serverless Workflow DSL with function(tool) upport. \nRuntime expressions: - jq expressions using ${..} syntax (e.g. ${.key.ckey}, ${$task.input}) - liquid templates using $${..} syntax - Available only in fields marked in their descriptions\nContext variables in expressions: - Input mode: keys from input data - Output mode: keys from output data - Workflow info: workflow.id, workflow.definition, workflow.input, workflow.context_variables - Current task info: task.definition, task.raw_input, task.raw_output, task.output, task.flow_directive - Raw data: access pre-transformation data via raw_input and raw_output (e.g. ${$task.raw_input})"]
+#[doc = "Partial Serverless Workflow DSL with function(tool) support. \nRuntime expressions: - jq expressions using ${..} syntax (e.g. ${.key.ckey}, ${$task.input}) - liquid templates using $${..} syntax - Available only in fields marked in their descriptions\nContext variables in expressions: - Input mode: keys from input data - Output mode: keys from output data - Workflow info: workflow.id, workflow.definition, workflow.input, workflow.context_variables - Current task info: task.definition, task.raw_input, task.raw_output, task.output, task.flow_directive - Raw data: access pre-transformation data via raw_input and raw_output (e.g. ${$task.raw_input})"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -4336,7 +4336,7 @@ impl<'de> ::serde::Deserialize<'de> for WorkflowNamespace {
 #[doc = "{"]
 #[doc = "  \"$id\": \"https://serverlessworkflow.io/schemas/1.0.0/workflow.yaml\","]
 #[doc = "  \"title\": \"WorkflowSchema\","]
-#[doc = "  \"description\": \"Partial Serverless Workflow DSL with function(tool) upport. \\nRuntime expressions: - jq expressions using ${..} syntax (e.g. ${.key.ckey}, ${$task.input}) - liquid templates using $${..} syntax - Available only in fields marked in their descriptions\\nContext variables in expressions: - Input mode: keys from input data - Output mode: keys from output data - Workflow info: workflow.id, workflow.definition, workflow.input, workflow.context_variables - Current task info: task.definition, task.raw_input, task.raw_output, task.output, task.flow_directive - Raw data: access pre-transformation data via raw_input and raw_output (e.g. ${$task.raw_input})\","]
+#[doc = "  \"description\": \"Partial Serverless Workflow DSL with function(tool) support. \\nRuntime expressions: - jq expressions using ${..} syntax (e.g. ${.key.ckey}, ${$task.input}) - liquid templates using $${..} syntax - Available only in fields marked in their descriptions\\nContext variables in expressions: - Input mode: keys from input data - Output mode: keys from output data - Workflow info: workflow.id, workflow.definition, workflow.input, workflow.context_variables - Current task info: task.definition, task.raw_input, task.raw_output, task.output, task.flow_directive - Raw data: access pre-transformation data via raw_input and raw_output (e.g. ${$task.raw_input})\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"do\","]
@@ -5959,7 +5959,7 @@ pub mod builder {
     }
     #[derive(Clone, Debug)]
     pub struct FunctionOptions {
-        broadcast_results_to_listener:
+        broadcast_results:
             ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
         channel: ::std::result::Result<
             ::std::option::Option<::std::string::String>,
@@ -5975,7 +5975,7 @@ pub mod builder {
     impl ::std::default::Default for FunctionOptions {
         fn default() -> Self {
             Self {
-                broadcast_results_to_listener: Ok(Default::default()),
+                broadcast_results: Ok(Default::default()),
                 channel: Ok(Default::default()),
                 retry: Ok(Default::default()),
                 store_failure: Ok(Default::default()),
@@ -5986,14 +5986,14 @@ pub mod builder {
         }
     }
     impl FunctionOptions {
-        pub fn broadcast_results_to_listener<T>(mut self, value: T) -> Self
+        pub fn broadcast_results<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<::std::option::Option<bool>>,
             T::Error: ::std::fmt::Display,
         {
-            self.broadcast_results_to_listener = value.try_into().map_err(|e| {
+            self.broadcast_results = value.try_into().map_err(|e| {
                 format!(
-                    "error converting supplied value for broadcast_results_to_listener: {}",
+                    "error converting supplied value for broadcast_results: {}",
                     e
                 )
             });
@@ -6066,7 +6066,7 @@ pub mod builder {
             value: FunctionOptions,
         ) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
-                broadcast_results_to_listener: value.broadcast_results_to_listener?,
+                broadcast_results: value.broadcast_results?,
                 channel: value.channel?,
                 retry: value.retry?,
                 store_failure: value.store_failure?,
@@ -6079,7 +6079,7 @@ pub mod builder {
     impl ::std::convert::From<super::FunctionOptions> for FunctionOptions {
         fn from(value: super::FunctionOptions) -> Self {
             Self {
-                broadcast_results_to_listener: Ok(value.broadcast_results_to_listener),
+                broadcast_results: Ok(value.broadcast_results),
                 channel: Ok(value.channel),
                 retry: Ok(value.retry),
                 store_failure: Ok(value.store_failure),

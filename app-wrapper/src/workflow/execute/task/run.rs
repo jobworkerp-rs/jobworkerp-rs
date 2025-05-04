@@ -40,7 +40,7 @@ impl<'a> RunTaskExecutor<'a> {
             let worker_data = WorkerData {
                 name: name.to_string(),
                 description: String::new(),
-                broadcast_results: options.broadcast_results_to_listener.unwrap_or(false),
+                broadcast_results: options.broadcast_results.unwrap_or(false),
                 store_failure: options.store_failure.unwrap_or(false),
                 store_success: options.store_success.unwrap_or(false),
                 use_static: options.use_static.unwrap_or(false),
