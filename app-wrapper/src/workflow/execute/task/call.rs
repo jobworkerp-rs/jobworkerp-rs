@@ -47,10 +47,8 @@ impl<'a> CallTaskExecutor<'a> {
         options: &mut FunctionOptions,
         options_map: &serde_json::Map<String, serde_json::Value>,
     ) {
-        if let Some(serde_json::Value::Bool(broadcast)) =
-            options_map.get("broadcastResultsToListener")
-        {
-            options.broadcast_results_to_listener = Some(*broadcast);
+        if let Some(serde_json::Value::Bool(broadcast)) = options_map.get("broadcastResults") {
+            options.broadcast_results = Some(*broadcast);
         }
 
         if let Some(serde_json::Value::String(channel)) = options_map.get("channel") {
@@ -316,7 +314,7 @@ mod tests {
                     "setting2": 42
                 },
                 "options": {
-                    "broadcastResultsToListener": true,
+                    "broadcastResults": true,
                     "channel": "test-channel",
                     "storeFailure": true,
                     "storeSuccess": false,
@@ -370,7 +368,7 @@ mod tests {
 
         // Verify options were created and populated correctly
         let options = result_options.unwrap();
-        assert_eq!(options.broadcast_results_to_listener, Some(true));
+        assert_eq!(options.broadcast_results, Some(true));
         assert_eq!(options.channel, Some("test-channel".to_string()));
         assert_eq!(options.store_failure, Some(true));
         assert_eq!(options.store_success, Some(false));
@@ -396,7 +394,7 @@ mod tests {
         let metadata =
             serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(json!({
                 "options": {
-                    "broadcastResultsToListener": true,
+                    "broadcastResults": true,
                     "channel": "test-channel"
                 }
             }))
@@ -418,7 +416,7 @@ mod tests {
 
         // Assert
         let options = result_options.unwrap();
-        assert_eq!(options.broadcast_results_to_listener, Some(true)); // From metadata
+        assert_eq!(options.broadcast_results, Some(true)); // From metadata
         assert_eq!(options.channel, Some("test-channel".to_string())); // From metadata
         assert_eq!(options.store_success, Some(true)); // Preserved from original
         assert_eq!(options.store_failure, Some(false)); // Preserved from original
@@ -449,6 +447,6 @@ mod tests {
         );
         let options = result_options.unwrap();
         assert_eq!(options.store_success, Some(true)); // Original value preserved
-        assert_eq!(options.broadcast_results_to_listener, None); // No metadata to apply
+        assert_eq!(options.broadcast_results, None); // No metadata to apply
     }
 }
