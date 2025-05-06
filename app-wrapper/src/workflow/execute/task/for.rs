@@ -72,7 +72,7 @@ impl TaskExecutorTrait<'_> for ForTaskExecutor<'_> {
                 return Err(e);
             }
         };
-        tracing::debug!("expression: {:#?}", &expression);
+        // tracing::debug!("expression: {:#?}", &expression);
         let transformed_in_items = Self::transform_value(
             task_context.input.clone(),
             serde_json::Value::String(for_.in_.clone()), // XXX clone loop items
@@ -83,12 +83,10 @@ impl TaskExecutorTrait<'_> for ForTaskExecutor<'_> {
             metadata: metadata.clone(),
             ..Default::default()
         });
-        tracing::debug!("do task: {:#?}", &do_task);
+        // tracing::debug!("do task: {:#?}", &do_task);
         tracing::debug!("for in items: {:#?}", transformed_in_items);
         let mut out_vec = Vec::new();
         if transformed_in_items.is_array() {
-            // enter do task
-            task_context.add_position_name("do".to_string()).await;
             let mut i = 0;
             let item_name = if for_.each.is_empty() {
                 "item".to_string()
@@ -168,8 +166,6 @@ impl TaskExecutorTrait<'_> for ForTaskExecutor<'_> {
             }
             task_context.remove_context_value(&item_name).await;
             task_context.remove_context_value(&index_name).await;
-            // go out of do task
-            task_context.remove_position().await;
         } else {
             tracing::warn!(
                 "Invalid for 'in' items(not array): {:#?}",

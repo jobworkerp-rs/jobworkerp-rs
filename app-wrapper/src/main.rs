@@ -1,8 +1,9 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use app::module::AppConfigModule;
 use clap::{arg, command, Parser};
 use command_utils::util::tracing::LoggingConfig;
+use infra_utils::infra::net::reqwest::ReqwestClient;
 use jobworkerp_runner::runner::{
     factory::RunnerSpecFactory,
     mcp::{config::McpConfig, proxy::McpServerFactory},
@@ -22,6 +23,8 @@ struct Args {
     #[arg(long, short, default_value = "")]
     input: String,
 }
+const DEFAULT_REQUEST_TIMEOUT_SEC: u32 = 1200; // 20 minutes
+const DEFAULT_USER_AGENT: &str = "simple-workflow";
 
 // create embedding for all articles
 #[tokio::main]
@@ -64,10 +67,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(RunnerSpecFactory::new(plugins.clone(), mcp_clients.clone()));
     let config_module = Arc::new(AppConfigModule::new_by_env(runner_spec_factory));
     let app_module = Arc::new(app::module::AppModule::new_by_env(config_module).await?);
-    match app_wrapper::workflow::execute::execute_workflow(
+    let http_client = ReqwestClient::new(
+        Some(DEFAULT_USER_AGENT),
+        Some(Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SEC as u64)),
+        Some(Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SEC as u64)),
+        Some(2),
+    )?;
+
+    match app_wrapper::workflow::execute::execute(
         app_module.clone(),
-        args.workflow.as_str(),
-        json,
+        http_client,
+        serde_json::from_str(args.workflow.as_str())?,
+        Arc::new(json),
+        Arc::new(serde_json::Value::Object(Default::default())),
     )
     .await
     {

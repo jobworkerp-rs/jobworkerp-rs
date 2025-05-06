@@ -94,6 +94,7 @@ impl TaskExecutor {
                 tracing::error!("Failed to evaluate expression: {:#?}", e);
                 task_context.flow_directive = Then::Exit;
                 e.position(&task_context.position.lock().await.clone());
+                task_context.set_completed_at();
                 return Err(e);
             }
         };
@@ -116,6 +117,7 @@ impl TaskExecutor {
                             &task_context.raw_input
                         );
                         task_context.remove_position().await;
+                        task_context.set_completed_at();
                         return Ok(task_context);
                     }
                 }
@@ -123,6 +125,7 @@ impl TaskExecutor {
                     tracing::error!("Failed to evaluate `if' condition: {:#?}", e);
                     task_context.add_position_name("if".to_string()).await;
                     e.position(&task_context.position.lock().await.clone());
+                    task_context.set_completed_at();
                     return Err(e);
                 }
             }
@@ -139,12 +142,13 @@ impl TaskExecutor {
             .await?;
 
         // Transform output and export
-        let task_context = self
+        let mut task_context = self
             .update_context_by_output(workflow_context, &mut expression, task_context)
             .await?;
 
         // go out of the task
         task_context.remove_position().await;
+        task_context.set_completed_at();
         Ok(task_context)
     }
 

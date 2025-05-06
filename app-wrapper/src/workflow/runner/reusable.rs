@@ -4,6 +4,7 @@ use anyhow::Result;
 use app::module::AppModule;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use futures::StreamExt;
 use infra_utils::infra::net::reqwest::ReqwestClient;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_runner::jobworkerp::runner::{
@@ -130,22 +131,36 @@ impl RunnerTrait for ReusableWorkflowRunner {
                 )),
                 Some(2),
             )?;
-            let mut executor = WorkflowExecutor::new(
+            let executor = WorkflowExecutor::new(
                 self.app_module.clone(),
                 http_client,
                 workflow.clone(),
                 Arc::new(input_json),
                 context_json,
             );
-            if self.canceled {
-                return Err(anyhow::anyhow!(
-                    "canceled by user: {}, {:?}",
-                    RunnerType::ReusableWorkflow.as_str_name(),
-                    arg
-                ));
+
+            // Get the stream of workflow context updates
+            let mut workflow_stream = executor.execute_workflow();
+
+            // Store the final workflow context
+            let mut final_context = None;
+
+            // Process the stream of workflow context results
+            while let Some(result) = workflow_stream.next().await {
+                match result {
+                    Ok(context) => {
+                        final_context = Some(context);
+                    }
+                    Err(e) => {
+                        return Err(e.context("Failed to execute workflow"));
+                    }
+                }
             }
-            let res = executor.execute_workflow().await;
-            // tracing::debug!("Workflow result: {:#?}", &res);
+
+            // Return the final workflow context or an error if none was received
+            let res =
+                final_context.ok_or_else(|| anyhow::anyhow!("No workflow context was returned"))?;
+
             tracing::info!("Workflow result: {}", res.read().await.output_string());
 
             let res = res.read().await;
