@@ -3,6 +3,7 @@ use crate::workflow::execute::workflow::WorkflowExecutor;
 use anyhow::Result;
 use app::module::AppModule;
 use async_trait::async_trait;
+use futures::executor::block_on;
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use infra_utils::infra::net::reqwest::ReqwestClient;
@@ -21,7 +22,8 @@ use std::{sync::Arc, time::Duration};
 #[derive(Debug, Clone)]
 pub struct ReusableWorkflowRunner {
     app_module: Arc<AppModule>,
-    workflow_executor: Option<WorkflowExecutor>,
+    http_client: ReqwestClient,
+    workflow_executor: Option<Arc<WorkflowExecutor>>,
     workflow: Option<Arc<WorkflowSchema>>,
     canceled: bool,
 }
@@ -31,8 +33,20 @@ impl ReusableWorkflowRunner {
     const DEFAULT_USER_AGENT: &str = "simple-workflow/1.0";
 
     pub fn new(app_module: Arc<AppModule>) -> Result<Self> {
+        let http_client = ReqwestClient::new(
+            Some(Self::DEFAULT_USER_AGENT),
+            Some(Duration::from_secs(
+                Self::DEFAULT_REQUEST_TIMEOUT_SEC as u64,
+            )),
+            Some(Duration::from_secs(
+                Self::DEFAULT_REQUEST_TIMEOUT_SEC as u64,
+            )),
+            Some(2),
+        )?;
+
         Ok(ReusableWorkflowRunner {
             app_module,
+            http_client,
             workflow_executor: None,
             workflow: None,
             canceled: false,
@@ -121,19 +135,9 @@ impl RunnerTrait for ReusableWorkflowRunner {
                     .map(serde_json::from_str)
                     .unwrap_or_else(|| Ok(serde_json::Value::Object(Default::default())))?,
             );
-            let http_client = ReqwestClient::new(
-                Some(Self::DEFAULT_USER_AGENT),
-                Some(Duration::from_secs(
-                    Self::DEFAULT_REQUEST_TIMEOUT_SEC as u64,
-                )),
-                Some(Duration::from_secs(
-                    Self::DEFAULT_REQUEST_TIMEOUT_SEC as u64,
-                )),
-                Some(2),
-            )?;
             let executor = WorkflowExecutor::new(
                 self.app_module.clone(),
-                http_client,
+                self.http_client.clone(),
                 workflow.clone(),
                 Arc::new(input_json),
                 context_json,
@@ -182,10 +186,99 @@ impl RunnerTrait for ReusableWorkflowRunner {
         }
     }
 
-    async fn run_stream(&mut self, arg: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>> {
-        // default implementation (return empty)
-        let _ = arg;
-        Err(anyhow::anyhow!("not implemented"))
+    async fn run_stream(&mut self, args: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>> {
+        let arg = ProstMessageCodec::deserialize_message::<ReusableWorkflowArgs>(args)?;
+        tracing::debug!("workflow args: {:#?}", arg);
+
+        if self.canceled {
+            return Err(anyhow::anyhow!(
+                "canceled by user: {}, {:?}",
+                RunnerType::ReusableWorkflow.as_str_name(),
+                arg
+            ));
+        }
+
+        let input_json = serde_json::from_str(&arg.input)
+            .unwrap_or_else(|_| serde_json::Value::String(arg.input.clone()));
+        tracing::debug!(
+            "workflow input_json: {}",
+            serde_json::to_string_pretty(&input_json).unwrap_or_default()
+        );
+
+        let context_json = Arc::new(
+            arg.workflow_context
+                .as_deref()
+                .map(|c| {
+                    serde_json::from_str(c).unwrap_or(serde_json::Value::Object(Default::default()))
+                })
+                .unwrap_or_else(|| serde_json::Value::Object(Default::default())),
+        );
+        tracing::debug!(
+            "workflow context_json: {}",
+            serde_json::to_string_pretty(&context_json).unwrap_or_default()
+        );
+
+        let workflow = self.workflow.clone().ok_or_else(|| {
+            tracing::error!("workflow is not loaded");
+            anyhow::anyhow!("workflow is not loaded")
+        })?;
+        let executor = Arc::new(WorkflowExecutor::new(
+            self.app_module.clone(),
+            self.http_client.clone(),
+            workflow,
+            Arc::new(input_json),
+            context_json.clone(),
+        ));
+        let workflow_stream = executor.execute_workflow();
+        self.workflow_executor = Some(executor.clone());
+
+        let output_stream = workflow_stream
+            .map(|result| match result {
+                Ok(context) => {
+                    let context = block_on(context.read_owned());
+                    let workflow_result = WorkflowResult {
+                        id: context.id.to_string(),
+                        output: serde_json::to_string(&context.output).unwrap_or_default(),
+                        status: WorkflowStatus::from_str_name(context.status.to_string().as_str())
+                            .unwrap_or(WorkflowStatus::Faulted)
+                            as i32,
+                        error_message: if context.status != WorkflowStatus::Faulted.into() {
+                            None
+                        } else {
+                            context.output.as_ref().map(|o| o.to_string())
+                        },
+                    };
+
+                    let buf = workflow_result.encode_to_vec();
+                    ResultOutputItem {
+                        item: Some(proto::jobworkerp::data::result_output_item::Item::Data(buf)),
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Error in workflow execution: {:?}", e);
+                    let workflow_result = WorkflowResult {
+                        id: "error".to_string(),
+                        output: "".to_string(),
+                        status: WorkflowStatus::Faulted as i32,
+                        error_message: Some(format!("Failed to execute workflow: {}", e)),
+                    };
+
+                    let buf = workflow_result.encode_to_vec();
+                    ResultOutputItem {
+                        item: Some(proto::jobworkerp::data::result_output_item::Item::Data(buf)),
+                    }
+                }
+            })
+            .chain(futures::stream::once(async {
+                ResultOutputItem {
+                    item: Some(proto::jobworkerp::data::result_output_item::Item::End(
+                        proto::jobworkerp::data::Empty {},
+                    )),
+                }
+            }))
+            .boxed();
+
+        Ok(output_stream)
     }
 
     async fn cancel(&mut self) {
