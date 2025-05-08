@@ -239,6 +239,11 @@ $defs:
         type: string
         title: While
         description: A runtime expression that represents the condition, if any, that must be met for the iteration to continue.
+      inParallel:
+        type: boolean
+        title: ForInParallel
+        description: Indicates whether or not the subtasks should be executed in parallel.
+        default: false
       do:
         $ref: "#/$defs/taskList"
         title: ForTaskDo

@@ -147,8 +147,8 @@ dependencies = [
  "serde",
  "sqlx",
  "stretto",
- "strum 0.27.1",
- "strum_macros 0.27.1",
+ "strum",
+ "strum_macros",
  "tokio",
  "tokio-stream",
  "tracing",
@@ -199,8 +199,8 @@ dependencies = [
  "signal-hook",
  "signal-hook-tokio",
  "stretto",
- "strum 0.27.1",
- "strum_macros 0.27.1",
+ "strum",
+ "strum_macros",
  "tempfile",
  "thiserror 2.0.12",
  "tokio",
@@ -801,6 +801,10 @@ dependencies = [
  "jaq-core",
  "jaq-json",
  "jaq-std",
+ "liquid",
+ "liquid-core",
+ "liquid-derive",
+ "liquid-lib",
  "once_cell",
  "opentelemetry",
  "opentelemetry-appender-tracing",
@@ -882,6 +886,26 @@ name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
+
+[[package]]
+name = "const_format"
+version = "0.2.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "126f97965c8ad46d6d9163268ff28432e8f6a1196a55578867832e3049df63dd"
+dependencies = [
+ "const_format_proc_macros",
+]
+
+[[package]]
+name = "const_format_proc_macros"
+version = "0.2.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d57c2eccfb16dbac1f4e61e206105db5820c9d26c3c472bc17c774259ef7744"
+dependencies = [
+ "proc-macro2",
+ "quote 1.0.40",
+ "unicode-xid 0.2.6",
+]
 
 [[package]]
 name = "core-foundation"
@@ -2294,8 +2318,8 @@ dependencies = [
  "signal-hook",
  "signal-hook-tokio",
  "sqlx",
- "strum 0.27.1",
- "strum_macros 0.27.1",
+ "strum",
+ "strum_macros",
  "tempfile",
  "thiserror 2.0.12",
  "tokio",
@@ -2346,8 +2370,8 @@ dependencies = [
  "serde_with",
  "sqlx",
  "stretto",
- "strum 0.27.1",
- "strum_macros 0.27.1",
+ "strum",
+ "strum_macros",
  "thirtyfour",
  "tokio",
  "tokio-stream",
@@ -2544,8 +2568,8 @@ dependencies = [
  "signal-hook",
  "signal-hook-tokio",
  "stretto",
- "strum 0.27.1",
- "strum_macros 0.27.1",
+ "strum",
+ "strum_macros",
  "sysinfo",
  "tempfile",
  "thiserror 2.0.12",
@@ -2571,9 +2595,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema"
-version = "0.29.1"
+version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "161c33c3ec738cfea3288c5c53dfcdb32fd4fc2954de86ea06f71b5a1a40bfcd"
+checksum = "f1b46a0365a611fbf1d2143104dcf910aada96fafd295bab16c60b802bf6fa1d"
 dependencies = [
  "ahash",
  "base64 0.22.1",
@@ -2584,9 +2608,11 @@ dependencies = [
  "idna",
  "itoa",
  "num-cmp",
+ "num-traits",
  "once_cell",
  "percent-encoding",
  "referencing",
+ "regex",
  "regex-syntax 0.8.5",
  "reqwest 0.12.15",
  "serde",
@@ -4142,9 +4168,9 @@ dependencies = [
 
 [[package]]
 name = "referencing"
-version = "0.29.1"
+version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40a64b3a635fad9000648b4d8a59c8710c523ab61a23d392a7d91d47683f5adc"
+checksum = "c8eff4fa778b5c2a57e85c5f2fe3a709c52f0e60d23146e2151cbef5893f420e"
 dependencies = [
  "ahash",
  "fluent-uri",
@@ -5292,31 +5318,9 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "strum"
-version = "0.26.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fec0f0aef304996cf250b31b5a10dee7980c85da9d759361292b8bca5a18f06"
-dependencies = [
- "strum_macros 0.26.4",
-]
-
-[[package]]
-name = "strum"
 version = "0.27.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f64def088c51c9510a8579e3c5d67c65349dcf755e5479ad3d010aa6454e2c32"
-
-[[package]]
-name = "strum_macros"
-version = "0.26.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c6bee85a5a24955dc440386795aa378cd9cf82acd5f764469152d2270e581be"
-dependencies = [
- "heck",
- "proc-macro2",
- "quote 1.0.40",
- "rustversion",
- "syn 2.0.101",
-]
 
 [[package]]
 name = "strum_macros"
@@ -5499,26 +5503,24 @@ checksum = "8f50febec83f5ee1df3015341d8bd429f2d1cc62bcba7ea2076759d315084683"
 
 [[package]]
 name = "thirtyfour"
-version = "0.34.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "940c3778665cf311d848d8fa4207377c2ee8e5ddbb8c6fb4cff3f33072b2eb26"
+version = "0.35.0"
+source = "git+https://github.com/sutr-app/thirtyfour.git?branch=main#8a7c864a23057c1bc6946af47d08323af2446abf"
 dependencies = [
  "arc-swap",
  "async-trait",
  "base64 0.22.1",
  "bytes",
  "cfg-if",
- "futures",
+ "const_format",
+ "futures-util",
  "http 1.3.1",
  "indexmap 2.9.0",
- "parking_lot 0.12.3",
  "paste",
  "reqwest 0.12.15",
  "serde",
  "serde_json",
  "serde_repr",
  "stringmatch",
- "strum 0.26.3",
  "thirtyfour-macros",
  "thiserror 1.0.69",
  "tokio",
@@ -5528,9 +5530,8 @@ dependencies = [
 
 [[package]]
 name = "thirtyfour-macros"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b72d056365e368fc57a56d0cec9e41b02fb4a3474a61c8735262b1cfebe67425"
+version = "0.2.0"
+source = "git+https://github.com/sutr-app/thirtyfour.git?branch=main#8a7c864a23057c1bc6946af47d08323af2446abf"
 dependencies = [
  "proc-macro2",
  "quote 1.0.40",
@@ -6971,7 +6972,7 @@ dependencies = [
  "signal-hook",
  "signal-hook-tokio",
  "stretto",
- "strum 0.27.1",
+ "strum",
  "tokio",
  "tokio-stream",
  "tonic 0.13.0",

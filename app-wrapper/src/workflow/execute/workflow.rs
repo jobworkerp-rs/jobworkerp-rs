@@ -950,8 +950,8 @@ mod tests {
                     "end_task".to_string()
                 );
                 assert_eq!(
-                    executor.workflow_context.read()await.
-                        .flowStatus::Completed
+                    executor.workflow_context.read().await.status,
+                    WorkflowStatus::Completed
                 );
             }
         })

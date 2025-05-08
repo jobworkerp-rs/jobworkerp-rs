@@ -252,9 +252,9 @@ impl RunnerTrait for InlineWorkflowRunner {
         );
         let source = arg.workflow_source.as_ref().ok_or({
             tracing::error!("workflow_source is required in workflow args");
-            JobWorkerError::InvalidParameter(format!(
-                "workflow_source is required in workflow args"
-            ))
+            JobWorkerError::InvalidParameter(
+                "workflow_source is required in workflow args".to_string(),
+            )
         })?;
         tracing::debug!("workflow source: {:?}", source);
         let http_client = self.http_client.clone();
