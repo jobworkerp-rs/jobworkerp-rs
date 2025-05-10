@@ -25,6 +25,14 @@ do:
             useStatic: false
             storeSuccess: true
             storeFailure: true
+            retry:
+              delay:
+                seconds: 2
+              backoff:
+                exponential: {}
+              limit:
+                attempt:
+                  count: 3
       output:
         as: |- # transform definition ($${} is used for variable substitution by liquid template, not mixed with plain string)
           $${
@@ -45,6 +53,14 @@ do:
         options:
           channel: workflow
       do: # run as workflow job
+        - TestSwitch:
+            switch:
+              - test:
+                  when: |-
+                    $${{%- assign head_char = file | slice: 0, 1 -%}{%- if head_char == "d" %}true{% else %}false{% endif -%}}
+                  then: "exit"
+              - default: 
+                  then: "continue"
         - ListWorkerInner:
             if: |-
               $${{%- assign head_char = file | slice: 0, 1 -%}{%- if head_char == "d" %}true{% else %}false{% endif -%}}
@@ -60,3 +76,4 @@ do:
                   useStatic: false
                   storeSuccess: true
                   storeFailure: true
+            then: continue

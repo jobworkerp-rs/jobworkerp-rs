@@ -36,7 +36,7 @@ pub trait JobRunner:
         worker_data: &WorkerData,
         job: Job,
     ) -> (JobResultData, Option<BoxStream<'static, ResultOutputItem>>) {
-        tracing::debug!("run_job: {:?}", job);
+        tracing::debug!("run_job: {:?}", &job.id);
         // XXX for keeping pool object
         if worker_data.use_static {
             let to = if let Some(data) = job.data.as_ref() {

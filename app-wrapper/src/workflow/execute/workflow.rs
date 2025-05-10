@@ -435,10 +435,7 @@ mod tests {
                     input: None,
                     metadata: serde_json::Map::new(),
                     output: None,
-                    then: Some(FlowDirective {
-                        subtype_0: Some(FlowDirectiveEnum::Continue),
-                        subtype_1: None,
-                    }),
+                    then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Continue)),
                     timeout: None,
                 }),
             );
@@ -452,10 +449,7 @@ mod tests {
                     input: None,
                     metadata: serde_json::Map::new(),
                     output: None,
-                    then: Some(FlowDirective {
-                        subtype_0: Some(FlowDirectiveEnum::End),
-                        subtype_1: None,
-                    }),
+                    then: Some(FlowDirective::Variant0(FlowDirectiveEnum::End)),
                     timeout: None,
                 }),
             );
@@ -601,10 +595,7 @@ mod tests {
                             input: None,
                             metadata: serde_json::Map::new(),
                             output: None,
-                            then: Some(FlowDirective {
-                                subtype_0: Some(FlowDirectiveEnum::Continue),
-                                subtype_1: None,
-                            }),
+                            then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Continue)),
                             timeout: None,
                         }),
                     );
@@ -621,10 +612,7 @@ mod tests {
                             input: None,
                             metadata: serde_json::Map::new(),
                             output: None,
-                            then: Some(FlowDirective {
-                                subtype_1: Some("task4".to_string()),
-                                subtype_0: None,
-                            }),
+                            then: Some(FlowDirective::Variant1("task4".to_string())),
                             timeout: None,
                         }),
                     );
@@ -641,10 +629,7 @@ mod tests {
                             input: None,
                             metadata: serde_json::Map::new(),
                             output: None,
-                            then: Some(FlowDirective {
-                                subtype_0: Some(FlowDirectiveEnum::Exit),
-                                subtype_1: None,
-                            }),
+                            then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Exit)),
                             timeout: None,
                         }),
                     );
@@ -661,10 +646,7 @@ mod tests {
                             input: None,
                             metadata: serde_json::Map::new(),
                             output: None,
-                            then: Some(FlowDirective {
-                                subtype_0: Some(FlowDirectiveEnum::End),
-                                subtype_1: None,
-                            }),
+                            then: Some(FlowDirective::Variant0(FlowDirectiveEnum::End)),
                             timeout: None,
                         }),
                     );
@@ -698,10 +680,7 @@ mod tests {
                         input: None,
                         metadata: serde_json::Map::new(),
                         output: None,
-                        then: Some(FlowDirective {
-                            subtype_0: Some(FlowDirectiveEnum::Continue),
-                            subtype_1: None,
-                        }),
+                        then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Continue)),
                         timeout: None,
                     })),
                 ),
@@ -717,10 +696,7 @@ mod tests {
                         input: None,
                         metadata: serde_json::Map::new(),
                         output: None,
-                        then: Some(FlowDirective {
-                            subtype_1: Some("task4".to_string()),
-                            subtype_0: None,
-                        }),
+                        then: Some(FlowDirective::Variant1("task4".to_string())),
                         timeout: None,
                     })),
                 ),
@@ -736,10 +712,7 @@ mod tests {
                         input: None,
                         metadata: serde_json::Map::new(),
                         output: None,
-                        then: Some(FlowDirective {
-                            subtype_0: Some(FlowDirectiveEnum::Exit),
-                            subtype_1: None,
-                        }),
+                        then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Exit)),
                         timeout: None,
                     })),
                 ),
@@ -755,10 +728,7 @@ mod tests {
                         input: None,
                         metadata: serde_json::Map::new(),
                         output: None,
-                        then: Some(FlowDirective {
-                            subtype_0: Some(FlowDirectiveEnum::End),
-                            subtype_1: None,
-                        }),
+                        then: Some(FlowDirective::Variant0(FlowDirectiveEnum::End)),
                         timeout: None,
                     })),
                 ),
@@ -834,10 +804,7 @@ mod tests {
                         input: None,
                         metadata: serde_json::Map::new(),
                         output: None,
-                        then: Some(FlowDirective {
-                            subtype_0: Some(FlowDirectiveEnum::Exit),
-                            subtype_1: None,
-                        }),
+                        then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Exit)),
                         timeout: None,
                     }))),
                     "unreachable_task".to_string() => (1, Arc::new(Task::SetTask(SetTask {
@@ -847,10 +814,7 @@ mod tests {
                         input: None,
                         metadata: serde_json::Map::new(),
                         output: None,
-                        then: Some(FlowDirective {
-                            subtype_0: Some(FlowDirectiveEnum::Continue),
-                            subtype_1: None,
-                        }),
+                        then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Continue)),
                         timeout: None,
                     })))
                 });
@@ -909,10 +873,7 @@ mod tests {
                         input: None,
                         metadata: serde_json::Map::new(),
                         output: None,
-                        then: Some(FlowDirective {
-                            subtype_0: Some(FlowDirectiveEnum::End),
-                            subtype_1: None,
-                        }),
+                        then: Some(FlowDirective::Variant0(FlowDirectiveEnum::End)),
                         timeout: None,
                     })))
                 });
@@ -1004,10 +965,7 @@ mod tests {
                     input: None,
                     metadata: serde_json::Map::new(),
                     output: None,
-                    then: Some(FlowDirective {
-                        subtype_1: Some("jump_target".to_string()),
-                        subtype_0: None,
-                    }),
+                    then: Some(FlowDirective::Variant1("jump_target".to_string())),
                     timeout: None,
                 }))),
                 "skipped_task".to_string() => (1, Arc::new(Task::SetTask(SetTask {
@@ -1017,10 +975,7 @@ mod tests {
                     input: None,
                     metadata: serde_json::Map::new(),
                     output: None,
-                    then: Some(FlowDirective {
-                        subtype_0: Some(FlowDirectiveEnum::Exit),
-                        subtype_1: None,
-                    }),
+                    then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Exit)),
                     timeout: None,
                 }))),
                 "jump_target".to_string() => (2, Arc::new(Task::SetTask(SetTask {
@@ -1030,10 +985,7 @@ mod tests {
                     input: None,
                     metadata: serde_json::Map::new(),
                     output: None,
-                    then: Some(FlowDirective {
-                        subtype_0: Some(FlowDirectiveEnum::End),
-                        subtype_1: None,
-                    }),
+                    then: Some(FlowDirective::Variant0(FlowDirectiveEnum::End)),
                     timeout: None,
                 })))
             });

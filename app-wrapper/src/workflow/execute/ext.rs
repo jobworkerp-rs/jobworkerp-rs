@@ -15,7 +15,6 @@ use prost::Message;
 use proto::jobworkerp::data::RunnerType;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-
 use super::task::TaskExecutorTrait;
 
 // unused

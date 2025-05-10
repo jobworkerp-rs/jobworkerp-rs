@@ -13,12 +13,12 @@ const TEMPLATE_END: &str = "}";
 
 pub trait UseJqAndTemplateTransformer {
     fn execute_transform(
-        raw_input: Arc<serde_json::Value>,
+        input: Arc<serde_json::Value>,
         filter: &str,
         context: &BTreeMap<String, Arc<serde_json::Value>>,
     ) -> Result<serde_json::Value, Box<workflow::Error>> {
         if Self::is_transform_template(filter) {
-            Self::execute_liquid_template(raw_input, filter, context).map(|r| {
+            Self::execute_liquid_template(input, filter, context).map(|r| {
                 // parse as primitive types (not obj, arr)
                 if let Ok(v) = r.parse::<i64>() {
                     serde_json::Value::Number(v.into())
@@ -35,7 +35,7 @@ pub trait UseJqAndTemplateTransformer {
                 }
             })
         } else if Self::is_transform_filter(filter) {
-            Self::execute_jq_filter(raw_input, filter, context)
+            Self::execute_jq_filter(input, filter, context)
         } else {
             Ok(serde_json::Value::String(filter.to_owned()))
         }
@@ -65,11 +65,11 @@ pub trait UseJqAndTemplateTransformer {
         }
     }
     fn execute_transform_as_bool(
-        raw_input: Arc<serde_json::Value>,
-        if_cond: &str,
+        input: Arc<serde_json::Value>,
+        if_cond_filter: &str,
         expression: &BTreeMap<String, Arc<serde_json::Value>>,
     ) -> Result<bool, Box<workflow::Error>> {
-        Self::execute_transform(raw_input.clone(), if_cond, expression)
+        Self::execute_transform(input.clone(), if_cond_filter, expression)
             .map(|v| Self::eval_as_bool(&v))
     }
 
@@ -109,7 +109,7 @@ pub trait UseJqAndTemplateTransformer {
         }
     }
     fn execute_liquid_template(
-        raw_input: Arc<serde_json::Value>,
+        input: Arc<serde_json::Value>,
         template: &str,
         context: &BTreeMap<String, Arc<serde_json::Value>>,
     ) -> Result<String, Box<workflow::Error>> {
@@ -152,7 +152,7 @@ pub trait UseJqAndTemplateTransformer {
                 let output = templ.render(&globals)?;
                 Ok(output)
             }
-            transform_inner(&raw_input, context, template).map_err(|e| {
+            transform_inner(&input, context, template).map_err(|e| {
                 workflow::errors::ErrorFactory::create_from_liquid(
                     &e,
                     Some("failed to parse liquid template"),

@@ -147,7 +147,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor<'_> {
             )
             .await;
 
-            tracing::debug!("expression: {:#?}", expression);
+            // tracing::debug!("expression: {:#?}", expression);
 
             let expression = match expression {
                 Ok(e) => e,

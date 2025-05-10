@@ -48,8 +48,7 @@ impl TaskExecutorTrait<'_> for SetTaskExecutor<'_> {
         ) {
             Ok(v) => v,
             Err(mut e) => {
-                let mut pos = task_context.position.lock().await.clone();
-                pos.push("set".to_string());
+                let pos = task_context.position.lock().await.clone();
                 e.position(&pos);
                 return Err(e);
             }
