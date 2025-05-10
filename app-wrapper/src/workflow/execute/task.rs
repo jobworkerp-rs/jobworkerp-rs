@@ -33,6 +33,7 @@ pub mod for_;
 pub mod fork;
 pub mod run;
 pub mod set;
+pub mod stream;
 pub mod switch;
 #[path = "task/try_.rs"]
 pub mod try_;
@@ -362,6 +363,15 @@ pub trait TaskExecutorTrait<'a>: Send + Sync {
         workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
     ) -> impl std::future::Future<Output = Result<TaskContext, Box<workflow::Error>>> + Send;
+}
+
+pub trait StreamTaskExecutorTrait<'a>: Send + Sync {
+    fn execute_stream(
+        &'a self,
+        task_name: &'a str,
+        workflow_context: Arc<RwLock<WorkflowContext>>,
+        task_context: TaskContext,
+    ) -> impl futures::Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send;
 }
 
 // pub struct EmitTaskExecutor<'a> {

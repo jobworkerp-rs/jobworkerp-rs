@@ -111,12 +111,43 @@ impl UseLoadUrlOrPath for WorkflowLoader {
 
 #[cfg(test)]
 mod test {
-    use std::time::Duration;
+    use std::{str::FromStr, time::Duration};
 
     use infra_utils::infra::net::reqwest::ReqwestClient;
 
-    use crate::workflow::definition::workflow::{self, FunctionOptions};
+    use crate::workflow::definition::workflow::{self, FunctionOptions, RetryPolicy};
     // use tracing::Level;
+
+    // parse example flow yaml
+    #[tokio::test]
+    async fn test_parse_example_switch_yaml() -> Result<(), Box<dyn std::error::Error>> {
+        // command_utils::util::tracing::tracing_init_test(Level::DEBUG);
+        let http_client = ReqwestClient::new(
+            Some("test client"),
+            Some(Duration::from_secs(30)),
+            Some(Duration::from_secs(30)),
+            Some(2),
+        )
+        .unwrap();
+        let loader = super::WorkflowLoader::new(http_client).unwrap();
+        let flow = loader
+            .load_workflow(Some("test-files/switch.yaml"), None)
+            .await
+            .unwrap();
+        println!("{:#?}", flow);
+        assert_eq!(
+            flow.document.title,
+            Some("Workflow test (switch)".to_string())
+        );
+        assert_eq!(flow.document.name.as_str(), "switch-test");
+        assert!(flow
+            .input
+            .schema
+            .as_ref()
+            .is_some_and(|s| { s.json_schema().is_some() }));
+
+        Ok(())
+    }
 
     // parse example flow yaml
     #[tokio::test]
@@ -177,11 +208,23 @@ mod test {
                 })
             );
             assert_eq!(serde_json::Value::Object(settings), serde_json::json!({}));
-            let opts = FunctionOptions {
+            let opts = workflow::FunctionOptions {
                 channel: Some("workflow".to_string()),
                 store_failure: Some(true),
                 store_success: Some(true),
                 use_static: Some(false),
+                retry: Some(RetryPolicy {
+                    backoff: Some(workflow::RetryBackoff::Exponential(serde_json::Map::new())),
+                    delay: Some(workflow::Duration::Expression(
+                        workflow::DurationExpression::from_str("2s").unwrap(),
+                    )),
+                    limit: Some(workflow::RetryLimit {
+                        attempt: Some(workflow::RetryLimitAttempt {
+                            count: Some(3),
+                            duration: None,
+                        }),
+                    }),
+                }),
                 ..Default::default()
             };
             assert_eq!(options, Some(opts));

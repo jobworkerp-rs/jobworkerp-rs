@@ -651,7 +651,7 @@
     "flowDirective": {
       "title": "FlowDirective",
       "description": "Represents different transition options that determine the next execution path within a workflow.",
-      "anyOf": [
+      "oneOf": [
         {
           "title": "FlowDirectiveEnum",
           "type": "string",

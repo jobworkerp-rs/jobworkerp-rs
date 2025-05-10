@@ -293,46 +293,23 @@ impl Then {
         expression: &BTreeMap<String, Arc<serde_json::Value>>,
     ) -> Result<Self, Box<workflow::Error>> {
         match directive {
-            FlowDirective {
-                subtype_0: Some(subtype_0),
-                subtype_1: Some(subtype_1),
-            } => {
-                match subtype_0 {
-                    workflow::FlowDirectiveEnum::Continue => {
-                        match Self::execute_transform(output, subtype_1, expression)? {
-                            serde_json::Value::String(s) => Ok(Then::TaskName(s)),
-                            r => {
-                                tracing::warn!("Transformed Flow directive is not a string: {:#?}, no translation", r);
-                                Ok(Then::TaskName(subtype_1.clone()))
-                            }
-                        }
-                    }
-                    workflow::FlowDirectiveEnum::Exit => Ok(Then::Exit),
-                    workflow::FlowDirectiveEnum::End => Ok(Then::End),
-                }
-            }
-            FlowDirective {
-                subtype_0: Some(subtype_0),
-                subtype_1: None,
-            } => match subtype_0 {
+            FlowDirective::Variant0(subtype_0) => match subtype_0 {
                 workflow::FlowDirectiveEnum::Continue => Ok(Then::Continue),
                 workflow::FlowDirectiveEnum::Exit => Ok(Then::Exit),
                 workflow::FlowDirectiveEnum::End => Ok(Then::End),
             },
-            FlowDirective {
-                subtype_0: None,
-                subtype_1: Some(subtype_1),
-            } => match Self::execute_transform(output, subtype_1, expression)? {
-                serde_json::Value::String(s) => Ok(Then::TaskName(s)),
-                r => {
-                    tracing::warn!(
-                        "Transformed Flow directive is not a string: {:#?}, no translation",
-                        r
-                    );
-                    Ok(Then::TaskName(subtype_1.clone()))
+            FlowDirective::Variant1(subtype_1) => {
+                match Self::execute_transform(output, subtype_1, expression)? {
+                    serde_json::Value::String(s) => Ok(Then::TaskName(s)),
+                    r => {
+                        tracing::warn!(
+                            "Transformed Flow directive is not a string: {:#?}, no translation",
+                            r
+                        );
+                        Ok(Then::TaskName(subtype_1.clone()))
+                    }
                 }
-            },
-            _ => Ok(Then::Continue),
+            }
         }
     }
 }

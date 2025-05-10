@@ -149,11 +149,6 @@ impl TaskExecutorTrait<'_> for ForTaskExecutor<'_> {
             };
             let mut tasks = Vec::new();
             if *in_parallel {
-                let do_executor = Arc::new(DoTaskExecutor::new(
-                    &do_task,
-                    self.job_executor_wrapper.clone(),
-                    self.http_client.clone(),
-                ));
                 for item in transformed_in_items.as_array().unwrap() {
                     let (prepared_context, while_cond) = self
                         .prepare_for_item(
@@ -168,26 +163,63 @@ impl TaskExecutorTrait<'_> for ForTaskExecutor<'_> {
                         .await?;
                     i += 1;
                     if !Self::eval_as_bool(&while_cond) {
-                        break;
+                        tracing::debug!("for: while condition is false, skipping item {}", i - 1);
+                        continue;
                     }
-                    let do_executor = do_executor.clone();
+                    // Clone Arc to be owned by each task
+                    let do_task_cloned = do_task.clone();
+                    let job_executor_wrapper = self.job_executor_wrapper.clone();
+                    let http_client = self.http_client.clone();
                     let workflow_context = workflow_context.clone();
-                    let task_name_formatted = format!("{}_{}", task_name, &(i - 1));
-                    tasks.push(Box::pin(async move {
-                        do_executor
+                    let task_index = i - 1;
+                    let task_name_formatted = format!("{}_{}", task_name, &task_index);
+                    tasks.push(async move {
+                        let start = std::time::Instant::now();
+                        tracing::debug!("Task {}: Starting execution", task_name_formatted);
+                        // Create DoTaskExecutor inside the task to ensure ownership
+                        // Convert Arc<DoTask> to Box<DoTask> with 'static lifetime to satisfy the lifetime requirement
+                        let owned_do_task = Box::leak(Box::new((*do_task_cloned).clone()));
+                        let do_executor =
+                            DoTaskExecutor::new(owned_do_task, job_executor_wrapper, http_client);
+                        let result = do_executor
                             .execute(&task_name_formatted, workflow_context, prepared_context)
-                            .await
-                    }));
+                            .await;
+                        let elapsed = start.elapsed();
+                        tracing::debug!(
+                            "Task {}: Finished execution in {:?}",
+                            task_name_formatted,
+                            elapsed
+                        );
+                        result
+                    });
                 }
+                // Execute all tasks in parallel
                 let results = join_all(tasks).await;
+                // Variable to collect errors
+                let mut errors = Vec::new();
+
+                // Process all results
                 for result in results {
                     match result {
                         Ok(r) => {
                             tracing::debug!("do result: {:#?}", &r.raw_output);
                             out_vec.push((*r.raw_output).clone());
                         }
-                        Err(e) => return Err(e),
+                        Err(e) => {
+                            tracing::error!("Task execution failed: {:?}", e);
+                            errors.push(format!("{:?}", e));
+                        }
                     }
+                }
+
+                // Report errors if any
+                if !errors.is_empty() {
+                    let pos = task_context.position.lock().await.clone();
+                    return Err(workflow::errors::ErrorFactory::new().service_unavailable(
+                        "Failed to execute task(s) in for".to_string(),
+                        Some(&pos),
+                        Some(format!("Errors: {}", errors.join("; "))),
+                    ));
                 }
             } else {
                 for item in transformed_in_items.as_array().unwrap() {
@@ -204,7 +236,8 @@ impl TaskExecutorTrait<'_> for ForTaskExecutor<'_> {
                         .await?;
                     i += 1;
                     if !Self::eval_as_bool(&while_cond) {
-                        break;
+                        tracing::debug!("for: while condition is false, skipping item {}", i - 1);
+                        continue;
                     }
                     let do_executor = Arc::new(DoTaskExecutor::new(
                         &do_task,

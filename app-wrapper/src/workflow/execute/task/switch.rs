@@ -64,7 +64,7 @@ impl TaskExecutorTrait<'_> for SwitchTaskExecutor {
                 // when condition
                 let matched_case = if let Some(when) = &switch_case.when {
                     match Self::execute_transform_as_bool(
-                        task_context.raw_input.clone(),
+                        task_context.input.clone(),
                         when,
                         &expression,
                     ) {
@@ -113,9 +113,7 @@ impl TaskExecutorTrait<'_> for SwitchTaskExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::definition::workflow::{
-        FlowDirective, FlowDirectiveEnum, SwitchCase, SwitchTask,
-    };
+    use crate::workflow::definition::workflow::{FlowDirective, SwitchCase, SwitchTask};
     use crate::workflow::execute::context::{TaskContext, WorkflowContext};
     use crate::workflow::execute::task::TaskExecutorTrait;
     use serde_json::{json, Map};
@@ -128,10 +126,7 @@ mod tests {
 
         for (case_name, when_expr, then_value) in cases {
             let mut case_map = HashMap::new();
-            let flow_directive = FlowDirective {
-                subtype_0: Some(FlowDirectiveEnum::Continue),
-                subtype_1: Some(then_value),
-            };
+            let flow_directive = FlowDirective::Variant1(then_value);
 
             let switch_case = SwitchCase {
                 when: when_expr,
