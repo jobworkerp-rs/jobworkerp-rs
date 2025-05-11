@@ -40,7 +40,7 @@ impl TaskExecutorTrait<'_> for SwitchTaskExecutor {
     ) -> Result<TaskContext, Box<workflow::Error>> {
         tracing::debug!("SwitchTaskExecutor: {}", _task_id);
         task_context.output = task_context.input.clone();
-        task_context.add_position_name("switch".to_string()).await;
+        task_context.add_position_name("switch".to_string());
 
         // find match case
         let mut matched = false;
@@ -52,7 +52,7 @@ impl TaskExecutorTrait<'_> for SwitchTaskExecutor {
         {
             Ok(e) => e,
             Err(mut e) => {
-                let pos = task_context.position.lock().await.clone();
+                let pos = task_context.position.clone();
                 e.position(&pos);
                 return Err(e);
             }
@@ -70,7 +70,7 @@ impl TaskExecutorTrait<'_> for SwitchTaskExecutor {
                     ) {
                         Ok(matched) => matched,
                         Err(mut e) => {
-                            let mut pos = task_context.position.lock().await.clone();
+                            let mut pos = task_context.position.clone();
                             pos.push("when".to_string());
                             e.position(&pos);
                             return Err(e);
@@ -92,8 +92,8 @@ impl TaskExecutorTrait<'_> for SwitchTaskExecutor {
                         Ok(v) => v,
                         Err(mut e) => {
                             tracing::error!("Failed to evaluate switch `then' condition: {:#?}", e);
-                            task_context.add_position_name("then".to_string()).await;
-                            e.position(&task_context.position.lock().await.clone());
+                            task_context.add_position_name("then".to_string());
+                            e.position(&task_context.position.clone());
                             return Err(e);
                         }
                     };
@@ -105,7 +105,7 @@ impl TaskExecutorTrait<'_> for SwitchTaskExecutor {
                 break;
             }
         }
-        task_context.remove_position().await;
+        task_context.remove_position();
         Ok(task_context)
     }
 }

@@ -67,7 +67,7 @@ impl ForTaskStreamExecutor {
         {
             Ok(e) => e,
             Err(mut e) => {
-                let pos = task_context.position.lock().await.clone();
+                let pos = task_context.position.clone();
                 e.position(&pos);
                 return Err(e);
             }
@@ -82,7 +82,7 @@ impl ForTaskStreamExecutor {
         {
             Ok(cond) => cond,
             Err(mut e) => {
-                let mut pos = task_context.position.lock().await.clone();
+                let mut pos = task_context.position.clone();
                 pos.push("while".to_string());
                 e.position(&pos);
                 return Err(e);
@@ -95,7 +95,7 @@ impl ForTaskStreamExecutor {
         &self,
         task_name: &str,
         workflow_context: &Arc<RwLock<WorkflowContext>>,
-        task_context: TaskContext,
+        mut task_context: TaskContext,
     ) -> Result<(TaskContext, serde_json::Value, workflow::DoTask), Box<workflow::Error>> {
         tracing::debug!("ForStreamTaskExecutor: {}", task_name);
         let workflow::ForTask {
@@ -105,7 +105,7 @@ impl ForTaskStreamExecutor {
             ..
         } = &self.task;
 
-        task_context.add_position_name("for".to_string()).await;
+        task_context.add_position_name("for".to_string());
 
         let expression = match Self::expression(
             &*(workflow_context.read().await),
@@ -115,7 +115,7 @@ impl ForTaskStreamExecutor {
         {
             Ok(e) => e,
             Err(mut e) => {
-                let pos = task_context.position.lock().await.clone();
+                let pos = task_context.position.clone();
                 e.position(&pos);
                 return Err(e);
             }
@@ -231,7 +231,7 @@ impl ForTaskStreamExecutor {
             original_context.set_raw_output(serde_json::Value::Array(vec![]));
             original_context.remove_context_value(item_name).await;
             original_context.remove_context_value(index_name).await;
-            original_context.remove_position().await;
+            original_context.remove_position();
             return Ok(stream::once(async move { Ok(original_context) }).boxed());
         }
 
@@ -265,10 +265,10 @@ impl ForTaskStreamExecutor {
 
                 // Create final result that just cleans up the context
                 // This doesn't override or replace any of the previous results that were streamed
-                let final_ctx = original_context;
+                let mut final_ctx = original_context;
                 final_ctx.remove_context_value(&item_name).await;
                 final_ctx.remove_context_value(&index_name).await;
-                final_ctx.remove_position().await;
+                final_ctx.remove_position();
 
                 Ok(final_ctx)
             }))
@@ -301,7 +301,7 @@ impl ForTaskStreamExecutor {
             final_ctx.set_raw_output(serde_json::Value::Array(vec![]));
             final_ctx.remove_context_value(&item_name).await;
             final_ctx.remove_context_value(&index_name).await;
-            final_ctx.remove_position().await;
+            final_ctx.remove_position();
             return Ok(Box::pin(stream::once(async move { Ok(final_ctx) })));
         }
 
@@ -376,7 +376,7 @@ impl ForTaskStreamExecutor {
             final_ctx.set_raw_output(serde_json::Value::Array(vec![]));
             final_ctx.remove_context_value(&item_name).await;
             final_ctx.remove_context_value(&index_name).await;
-            final_ctx.remove_position().await;
+            final_ctx.remove_position();
             return Ok(Box::pin(stream::once(async move { Ok(final_ctx) })));
         }
 
@@ -388,14 +388,14 @@ impl ForTaskStreamExecutor {
             .flatten()
             .chain(stream::once(async move {
                 // Final cleanup context - just clean up variables and context
-                let final_ctx = original_context;
+                let mut final_ctx = original_context;
                 let _exec = keeps;
 
                 // No need to set any array output - we're streaming results as they come
                 // We'll just clean up our context variables
                 final_ctx.remove_context_value(&item_name).await;
                 final_ctx.remove_context_value(&index_name).await;
-                final_ctx.remove_position().await;
+                final_ctx.remove_position();
 
                 Ok(final_ctx)
             }));
@@ -433,7 +433,7 @@ impl StreamTaskExecutorTrait<'_> for ForTaskStreamExecutor {
                         );
                         let mut final_ctx = task_context;
                         final_ctx.set_raw_output(serde_json::Value::Array(vec![]));
-                        final_ctx.remove_position().await;
+                        final_ctx.remove_position();
 
                         // Return a single-item stream with empty result
                         return stream::once(async move { Ok(final_ctx) }).boxed();

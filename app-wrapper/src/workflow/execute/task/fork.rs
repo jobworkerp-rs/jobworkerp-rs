@@ -67,13 +67,13 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
         &'a self,
         task_name: &'a str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
-        task_context: TaskContext,
+        mut task_context: TaskContext,
     ) -> impl Future<Output = Result<TaskContext, Box<workflow::Error>>> + Send {
         async move {
             tracing::debug!("ForkTaskExecutor: {}", task_name);
 
-            task_context.add_position_name("fork".to_string()).await;
-            let position = task_context.position.lock().await.clone();
+            task_context.add_position_name("fork".to_string());
+            let position = task_context.position.clone();
             let branches = &self.task.fork.branches;
             let compete = self.task.fork.compete;
 
@@ -182,8 +182,8 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
             };
 
             match res {
-                Ok(context) => {
-                    context.remove_position().await;
+                Ok(mut context) => {
+                    context.remove_position();
                     Ok(context)
                 }
                 Err(e) => Err(e),

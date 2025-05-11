@@ -33,7 +33,7 @@ impl TaskExecutorTrait<'_> for SetTaskExecutor {
         mut task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
         tracing::debug!("SetTaskExecutor: {}", task_name);
-        task_context.add_position_name("set".to_string()).await;
+        task_context.add_position_name("set".to_string());
         let expression = Self::expression(
             &*workflow_context.read().await,
             Arc::new(task_context.clone()),
@@ -48,7 +48,7 @@ impl TaskExecutorTrait<'_> for SetTaskExecutor {
         ) {
             Ok(v) => v,
             Err(mut e) => {
-                let pos = task_context.position.lock().await.clone();
+                let pos = task_context.position.clone();
                 e.position(&pos);
                 return Err(e);
             }
@@ -69,7 +69,7 @@ impl TaskExecutorTrait<'_> for SetTaskExecutor {
             }
         }
         task_context.raw_output = set_values;
-        task_context.remove_position().await;
+        task_context.remove_position();
         Ok(task_context)
     }
 }
