@@ -3,7 +3,6 @@ use crate::workflow::execute::workflow::WorkflowExecutor;
 use anyhow::Result;
 use app::module::AppModule;
 use async_trait::async_trait;
-use futures::executor::block_on;
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use infra_utils::infra::net::reqwest::ReqwestClient;
@@ -233,39 +232,47 @@ impl RunnerTrait for ReusableWorkflowRunner {
         self.workflow_executor = Some(executor.clone());
 
         let output_stream = workflow_stream
-            .map(|result| match result {
-                Ok(context) => {
-                    let context = block_on(context.read_owned());
-                    let workflow_result = WorkflowResult {
-                        id: context.id.to_string(),
-                        output: serde_json::to_string(&context.output).unwrap_or_default(),
-                        status: WorkflowStatus::from_str_name(context.status.to_string().as_str())
+            .then(|result| async move {
+                match result {
+                    Ok(context) => {
+                        let context = context.read_owned().await;
+                        let workflow_result = WorkflowResult {
+                            id: context.id.to_string(),
+                            output: serde_json::to_string(&context.output).unwrap_or_default(),
+                            status: WorkflowStatus::from_str_name(
+                                context.status.to_string().as_str(),
+                            )
                             .unwrap_or(WorkflowStatus::Faulted)
-                            as i32,
-                        error_message: if context.status != WorkflowStatus::Faulted.into() {
-                            None
-                        } else {
-                            context.output.as_ref().map(|o| o.to_string())
-                        },
-                    };
+                                as i32,
+                            error_message: if context.status != WorkflowStatus::Faulted.into() {
+                                None
+                            } else {
+                                context.output.as_ref().map(|o| o.to_string())
+                            },
+                        };
 
-                    let buf = workflow_result.encode_to_vec();
-                    ResultOutputItem {
-                        item: Some(proto::jobworkerp::data::result_output_item::Item::Data(buf)),
+                        let buf = workflow_result.encode_to_vec();
+                        ResultOutputItem {
+                            item: Some(proto::jobworkerp::data::result_output_item::Item::Data(
+                                buf,
+                            )),
+                        }
                     }
-                }
-                Err(e) => {
-                    tracing::error!("Error in workflow execution: {:?}", e);
-                    let workflow_result = WorkflowResult {
-                        id: "error".to_string(),
-                        output: "".to_string(),
-                        status: WorkflowStatus::Faulted as i32,
-                        error_message: Some(format!("Failed to execute workflow: {}", e)),
-                    };
+                    Err(e) => {
+                        tracing::error!("Error in workflow execution: {:?}", e);
+                        let workflow_result = WorkflowResult {
+                            id: "error".to_string(),
+                            output: "".to_string(),
+                            status: WorkflowStatus::Faulted as i32,
+                            error_message: Some(format!("Failed to execute workflow: {}", e)),
+                        };
 
-                    let buf = workflow_result.encode_to_vec();
-                    ResultOutputItem {
-                        item: Some(proto::jobworkerp::data::result_output_item::Item::Data(buf)),
+                        let buf = workflow_result.encode_to_vec();
+                        ResultOutputItem {
+                            item: Some(proto::jobworkerp::data::result_output_item::Item::Data(
+                                buf,
+                            )),
+                        }
                     }
                 }
             })

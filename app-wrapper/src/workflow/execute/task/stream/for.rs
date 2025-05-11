@@ -142,6 +142,7 @@ impl ForTaskStreamExecutor {
     }
 
     // Process items in parallel and return a real-time stream of results
+    #[allow(clippy::too_many_arguments)]
     async fn process_items_in_parallel_stream(
         &self,
         items: &[serde_json::Value],
@@ -280,6 +281,7 @@ impl ForTaskStreamExecutor {
     // Process items sequentially and return a real-time stream of results
     // This function streams each result in real-time as it becomes available
     // and processes items in sequential order (unlike parallel processing)
+    #[allow(clippy::too_many_arguments)]
     async fn process_items_sequentially_stream(
         &self,
         items: Vec<serde_json::Value>,
@@ -338,7 +340,7 @@ impl ForTaskStreamExecutor {
             // Create a do task executor for this item
             let task_name_formatted = Arc::new(format!("{}_{}", task_name, i));
             let do_stream_executor = Arc::new(DoTaskStreamExecutor::new(
-                do_task.clone(),
+                do_task.clone(), //XXX clone
                 self.job_executor_wrapper.clone(),
                 self.http_client.clone(),
             ));
@@ -354,7 +356,7 @@ impl ForTaskStreamExecutor {
             // );
             let tnf_clone = tnf.clone();
             let workflow_context_clone = workflow_context.clone();
-            let prepared_context_clone = prepared_context.clone();
+            let prepared_context_clone = prepared_context.clone(); // XXX clone
             let stream = Box::pin(async_stream::stream! {
                 let mut inner_stream = do_stream_executor.execute_stream(
                     tnf_clone.as_str(),
