@@ -71,8 +71,8 @@ impl WorkflowExecutor {
                 lock.status = WorkflowStatus::Running;
             }
 
-            // Send the initial workflow context
-            let _ = tx.send(Ok(initial_wfc.clone())).await;
+            // // Send the initial workflow context
+            // let _ = tx.send(Ok(initial_wfc.clone())).await;
 
             let input = {
                 let lock = initial_wfc.read().await;
@@ -156,7 +156,7 @@ impl WorkflowExecutor {
             task_context.set_input(transformed_input);
             task_context.add_position_name("do".to_string());
 
-            // Create a new workflow executor for task execution
+            // XXX Create a new workflow executor for task execution
             let task_executor = WorkflowExecutor {
                 job_executors,
                 http_client,
@@ -195,7 +195,6 @@ impl WorkflowExecutor {
                 drop(lock);
 
                 // Get the final task context
-                let mut lock = initial_wfc.write().await;
 
                 // Transform output if specified
                 if let Some(output) = workflow.output.as_ref() {
@@ -213,6 +212,7 @@ impl WorkflowExecutor {
                         drop(wfr);
 
                         if let Ok(expression) = expression_result {
+                            let mut lock = initial_wfc.write().await;
                             if let Some(output_value) = lock.output.clone() {
                                 match WorkflowExecutor::transform_output(
                                     output_value,
@@ -235,6 +235,7 @@ impl WorkflowExecutor {
                     }
                 }
 
+                let mut lock = initial_wfc.write().await;
                 // Mark workflow as completed if it's still running
                 if lock.status == WorkflowStatus::Running {
                     lock.status = WorkflowStatus::Completed;

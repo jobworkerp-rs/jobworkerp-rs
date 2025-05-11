@@ -152,7 +152,7 @@ impl TryTaskExecutor {
                 }
             }
         }
-        Ok(last_context.unwrap_or_else(|| task_context))
+        Ok(last_context.unwrap_or(task_context))
     }
 
     // return need retry or not

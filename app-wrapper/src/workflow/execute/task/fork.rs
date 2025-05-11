@@ -291,9 +291,6 @@ mod tests {
             };
 
             // TaskExecutor, ForkTaskExecutor
-            let task = Arc::new(WorkflowTask::SetTask(
-                crate::workflow::definition::workflow::SetTask::default(),
-            ));
             let fork_task_executor =
                 ForkTaskExecutor::new(fork_task, job_executor_wrapper, http_client);
 
@@ -367,9 +364,6 @@ mod tests {
                 timeout: None,
             };
 
-            let task = Arc::new(WorkflowTask::SetTask(
-                crate::workflow::definition::workflow::SetTask::default(),
-            ));
             let fork_task_executor =
                 ForkTaskExecutor::new(fork_task, job_executor_wrapper, http_client);
 
@@ -444,10 +438,6 @@ mod tests {
                 then: None,
                 timeout: None,
             };
-
-            let task = Arc::new(WorkflowTask::SetTask(
-                crate::workflow::definition::workflow::SetTask::default(),
-            ));
 
             let fork_task_executor =
                 ForkTaskExecutor::new(fork_task, job_executor_wrapper, http_client);
