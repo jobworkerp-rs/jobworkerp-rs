@@ -149,191 +149,201 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_switch_match_first_case() {
-        // When there are 3 cases and the first case matches
-        let switch_task = create_switch_task(vec![
-            (
-                "case1".to_string(),
-                Some("${.number > 10}".to_string()),
-                "case1-route".to_string(),
-            ),
-            (
-                "case2".to_string(),
-                Some("${.number > 20}".to_string()),
-                "case2-route".to_string(),
-            ),
-            ("default".to_string(), None, "default-route".to_string()),
-        ]);
+    #[test]
+    fn test_switch_match_first_case() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            // When there are 3 cases and the first case matches
+            let switch_task = create_switch_task(vec![
+                (
+                    "case1".to_string(),
+                    Some("${.number > 10}".to_string()),
+                    "case1-route".to_string(),
+                ),
+                (
+                    "case2".to_string(),
+                    Some("${.number > 20}".to_string()),
+                    "case2-route".to_string(),
+                ),
+                ("default".to_string(), None, "default-route".to_string()),
+            ]);
 
-        let executor = SwitchTaskExecutor::new(&switch_task);
-        let workflow_context = Arc::new(RwLock::new(WorkflowContext::new_empty()));
+            let executor = SwitchTaskExecutor::new(&switch_task);
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new_empty()));
 
-        let input = json!({ "number": 15 });
-        let task_context = TaskContext::new(
-            None,
-            Arc::new(input),
-            Arc::new(tokio::sync::Mutex::new(serde_json::Map::new())),
-        );
+            let input = json!({ "number": 15 });
+            let task_context = TaskContext::new(
+                None,
+                Arc::new(input),
+                Arc::new(tokio::sync::Mutex::new(serde_json::Map::new())),
+            );
 
-        let result = executor
-            .execute("test_switch", workflow_context, task_context)
-            .await
-            .unwrap();
+            let result = executor
+                .execute("test_switch", workflow_context, task_context)
+                .await
+                .unwrap();
 
-        // Verify that flow_directive has been changed to case1-route
-        assert_eq!(
-            result.flow_directive,
-            Then::TaskName("case1-route".to_string())
-        );
+            // Verify that flow_directive has been changed to case1-route
+            assert_eq!(
+                result.flow_directive,
+                Then::TaskName("case1-route".to_string())
+            );
+        })
     }
 
-    #[tokio::test]
-    async fn test_switch_match_second_case() {
-        // When there are 3 cases and the second case matches
-        let switch_task = create_switch_task(vec![
-            (
-                "case1".to_string(),
-                Some("${.number > 30}".to_string()),
-                "case1-route".to_string(),
-            ),
-            (
-                "case2".to_string(),
-                Some("${.number > 10}".to_string()),
-                "case2-route".to_string(),
-            ),
-            ("default".to_string(), None, "default-route".to_string()),
-        ]);
+    #[test]
+    fn test_switch_match_second_case() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            // When there are 3 cases and the second case matches
+            let switch_task = create_switch_task(vec![
+                (
+                    "case1".to_string(),
+                    Some("${.number > 30}".to_string()),
+                    "case1-route".to_string(),
+                ),
+                (
+                    "case2".to_string(),
+                    Some("${.number > 10}".to_string()),
+                    "case2-route".to_string(),
+                ),
+                ("default".to_string(), None, "default-route".to_string()),
+            ]);
 
-        let executor = SwitchTaskExecutor::new(&switch_task);
-        let workflow_context = Arc::new(RwLock::new(WorkflowContext::new_empty()));
+            let executor = SwitchTaskExecutor::new(&switch_task);
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new_empty()));
 
-        let input = json!({ "number": 20 });
-        let task_context = TaskContext::new(
-            None,
-            Arc::new(input),
-            Arc::new(tokio::sync::Mutex::new(serde_json::Map::new())),
-        );
+            let input = json!({ "number": 20 });
+            let task_context = TaskContext::new(
+                None,
+                Arc::new(input),
+                Arc::new(tokio::sync::Mutex::new(serde_json::Map::new())),
+            );
 
-        let result = executor
-            .execute("test_switch", workflow_context, task_context)
-            .await
-            .unwrap();
+            let result = executor
+                .execute("test_switch", workflow_context, task_context)
+                .await
+                .unwrap();
 
-        // Verify that flow_directive has been changed to case2-route
-        assert_eq!(
-            result.flow_directive,
-            Then::TaskName("case2-route".to_string())
-        );
+            // Verify that flow_directive has been changed to case2-route
+            assert_eq!(
+                result.flow_directive,
+                Then::TaskName("case2-route".to_string())
+            );
+        })
     }
 
-    #[tokio::test]
-    async fn test_switch_default_case() {
-        // When no case matches, the default case is selected
-        let switch_task = create_switch_task(vec![
-            (
-                "case1".to_string(),
-                Some("${.number > 30}".to_string()),
-                "case1-route".to_string(),
-            ),
-            (
-                "case2".to_string(),
-                Some("${.number > 20}".to_string()),
-                "case2-route".to_string(),
-            ),
-            ("default".to_string(), None, "default-route".to_string()),
-        ]);
+    #[test]
+    fn test_switch_default_case() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            // When no case matches, the default case is selected
+            let switch_task = create_switch_task(vec![
+                (
+                    "case1".to_string(),
+                    Some("${.number > 30}".to_string()),
+                    "case1-route".to_string(),
+                ),
+                (
+                    "case2".to_string(),
+                    Some("${.number > 20}".to_string()),
+                    "case2-route".to_string(),
+                ),
+                ("default".to_string(), None, "default-route".to_string()),
+            ]);
 
-        let executor = SwitchTaskExecutor::new(&switch_task);
-        let workflow_context = Arc::new(RwLock::new(WorkflowContext::new_empty()));
+            let executor = SwitchTaskExecutor::new(&switch_task);
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new_empty()));
 
-        let input = json!({ "number": 10 });
-        let task_context = TaskContext::new(
-            None,
-            Arc::new(input),
-            Arc::new(tokio::sync::Mutex::new(serde_json::Map::new())),
-        );
+            let input = json!({ "number": 10 });
+            let task_context = TaskContext::new(
+                None,
+                Arc::new(input),
+                Arc::new(tokio::sync::Mutex::new(serde_json::Map::new())),
+            );
 
-        let result = executor
-            .execute("test_switch", workflow_context, task_context)
-            .await
-            .unwrap();
+            let result = executor
+                .execute("test_switch", workflow_context, task_context)
+                .await
+                .unwrap();
 
-        // Verify that flow_directive has been changed to default-route
-        assert_eq!(
-            result.flow_directive,
-            Then::TaskName("default-route".to_string())
-        );
+            // Verify that flow_directive has been changed to default-route
+            assert_eq!(
+                result.flow_directive,
+                Then::TaskName("default-route".to_string())
+            );
+        })
     }
 
-    #[tokio::test]
-    async fn test_switch_with_if_condition_true() {
-        // When an if condition is specified and the condition is true, evaluation proceeds normally
-        let mut switch_task = create_switch_task(vec![
-            (
-                "case1".to_string(),
-                Some("${.number > 10}".to_string()),
-                "case1-route".to_string(),
-            ),
-            ("default".to_string(), None, "default-route".to_string()),
-        ]);
+    #[test]
+    fn test_switch_with_if_condition_true() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            // When an if condition is specified and the condition is true, evaluation proceeds normally
+            let mut switch_task = create_switch_task(vec![
+                (
+                    "case1".to_string(),
+                    Some("${.number > 10}".to_string()),
+                    "case1-route".to_string(),
+                ),
+                ("default".to_string(), None, "default-route".to_string()),
+            ]);
 
-        switch_task.if_ = Some("${.enabled}".to_string());
+            switch_task.if_ = Some("${.enabled}".to_string());
 
-        let executor = SwitchTaskExecutor::new(&switch_task);
-        let workflow_context = Arc::new(RwLock::new(WorkflowContext::new_empty()));
+            let executor = SwitchTaskExecutor::new(&switch_task);
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new_empty()));
 
-        let input = json!({ "number": 15, "enabled": true });
-        let task_context = TaskContext::new(
-            None,
-            Arc::new(input),
-            Arc::new(tokio::sync::Mutex::new(serde_json::Map::new())),
-        );
+            let input = json!({ "number": 15, "enabled": true });
+            let task_context = TaskContext::new(
+                None,
+                Arc::new(input),
+                Arc::new(tokio::sync::Mutex::new(serde_json::Map::new())),
+            );
 
-        let result = executor
-            .execute("test_switch", workflow_context, task_context)
-            .await
-            .unwrap();
+            let result = executor
+                .execute("test_switch", workflow_context, task_context)
+                .await
+                .unwrap();
 
-        // Verify that the condition matches and flow_directive has been changed to case1-route
-        assert_eq!(
-            result.flow_directive,
-            Then::TaskName("case1-route".to_string())
-        );
+            // Verify that the condition matches and flow_directive has been changed to case1-route
+            assert_eq!(
+                result.flow_directive,
+                Then::TaskName("case1-route".to_string())
+            );
+        })
     }
 
-    #[tokio::test]
-    async fn test_switch_no_matches() {
-        // When no case matches and there is no default case
-        let switch_task = create_switch_task(vec![
-            (
-                "case1".to_string(),
-                Some("${.number > 30}".to_string()),
-                "case1-route".to_string(),
-            ),
-            (
-                "case2".to_string(),
-                Some("${.number > 20}".to_string()),
-                "case2-route".to_string(),
-            ),
-        ]);
+    #[test]
+    fn test_switch_no_matches() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            // When no case matches and there is no default case
+            let switch_task = create_switch_task(vec![
+                (
+                    "case1".to_string(),
+                    Some("${.number > 30}".to_string()),
+                    "case1-route".to_string(),
+                ),
+                (
+                    "case2".to_string(),
+                    Some("${.number > 20}".to_string()),
+                    "case2-route".to_string(),
+                ),
+            ]);
 
-        let executor = SwitchTaskExecutor::new(&switch_task);
-        let workflow_context = Arc::new(RwLock::new(WorkflowContext::new_empty()));
+            let executor = SwitchTaskExecutor::new(&switch_task);
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new_empty()));
 
-        let input = json!({ "number": 10 });
-        let task_context = TaskContext::new(
-            None,
-            Arc::new(input),
-            Arc::new(tokio::sync::Mutex::new(serde_json::Map::new())),
-        );
+            let input = json!({ "number": 10 });
+            let task_context = TaskContext::new(
+                None,
+                Arc::new(input),
+                Arc::new(tokio::sync::Mutex::new(serde_json::Map::new())),
+            );
 
-        let result = executor
-            .execute("test_switch", workflow_context, task_context)
-            .await
-            .unwrap();
+            let result = executor
+                .execute("test_switch", workflow_context, task_context)
+                .await
+                .unwrap();
 
-        // Since no case matches, flow_directive remains unchanged
-        assert_eq!(result.flow_directive, Then::Continue);
+            // Since no case matches, flow_directive remains unchanged
+            assert_eq!(result.flow_directive, Then::Continue);
+        })
     }
 }

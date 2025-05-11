@@ -3,6 +3,7 @@ use crate::workflow::{
     definition::workflow::Task,
     execute::{
         context::{TaskContext, WorkflowContext},
+        job::JobExecutorWrapper,
         task::{Result, TaskExecutorTrait},
     },
 };
@@ -13,49 +14,54 @@ use crate::workflow::{
     },
     execute::expression::UseExpression,
 };
-use futures::{
-    future::{self, BoxFuture},
-    Future,
-};
+use debug_stub_derive::DebugStub;
+use futures::{future, Future, StreamExt};
+use infra_utils::infra::net::reqwest;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tokio_stream::StreamMap;
 
-pub struct ForkTaskExecutor<'a> {
-    parent_executor: &'a TaskExecutor,
-    task: &'a workflow::ForkTask,
+#[derive(DebugStub, Clone)]
+pub struct ForkTaskExecutor {
+    #[debug_stub = "AppModule"]
+    pub job_executor_wrapper: Arc<JobExecutorWrapper>,
+    #[debug_stub = "reqwest::HttpClient"]
+    pub http_client: reqwest::ReqwestClient,
+    task: workflow::ForkTask,
 }
 
-impl<'a> ForkTaskExecutor<'a> {
-    pub fn new(executor: &'a TaskExecutor, task: &'a workflow::ForkTask) -> Self {
+impl ForkTaskExecutor {
+    pub fn new(
+        task: workflow::ForkTask,
+        job_executor_wrapper: Arc<JobExecutorWrapper>,
+        http_client: reqwest::ReqwestClient,
+    ) -> Self {
         Self {
-            parent_executor: executor,
+            job_executor_wrapper,
+            http_client,
             task,
         }
     }
     pub async fn execute_task(
-        parent_executor: &TaskExecutor,
         name: &str,
+        job_executor_wrapper: Arc<JobExecutorWrapper>,
+        http_client: reqwest::ReqwestClient,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         prev_context: Arc<TaskContext>,
         task: Arc<Task>,
-    ) -> Result<TaskContext, Box<workflow::Error>> {
-        let task_executor = TaskExecutor::new(
-            parent_executor.job_executor_wrapper.clone(),
-            parent_executor.http_client.clone(),
-            name,
-            task,
-        );
+    ) -> futures::stream::BoxStream<'static, Result<TaskContext, Box<workflow::Error>>> {
+        let task_executor = TaskExecutor::new(job_executor_wrapper, http_client, name, task);
         task_executor
             .execute(workflow_context, prev_context.clone())
             .await
     }
 }
 
-impl UseExpression for ForkTaskExecutor<'_> {}
-impl UseExpressionTransformer for ForkTaskExecutor<'_> {}
-impl UseJqAndTemplateTransformer for ForkTaskExecutor<'_> {}
+impl UseExpression for ForkTaskExecutor {}
+impl UseExpressionTransformer for ForkTaskExecutor {}
+impl UseJqAndTemplateTransformer for ForkTaskExecutor {}
 
-impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor<'a> {
+impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
     #[allow(clippy::manual_async_fn)]
     fn execute(
         &'a self,
@@ -71,7 +77,7 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor<'a> {
             let branches = &self.task.fork.branches;
             let compete = self.task.fork.compete;
 
-            let mut tasks: Vec<BoxFuture<Result<TaskContext, Box<workflow::Error>>>> = Vec::new();
+            let mut tasks = Vec::new();
             let mut original_task_context = task_context.clone();
             let task_context_ref = Arc::new(task_context);
 
@@ -81,19 +87,18 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor<'a> {
                     let task_context_clone = Arc::clone(&task_context_ref);
                     let name = branch_name.to_string();
                     let task_clone = Arc::new(task.clone());
-                    let parent_executor = self.parent_executor;
 
                     let future = Box::pin(async move {
                         Self::execute_task(
-                            parent_executor,
                             &name,
+                            self.job_executor_wrapper.clone(),
+                            self.http_client.clone(),
                             workflow_context_clone,
                             task_context_clone,
                             task_clone,
                         )
                         .await
                     });
-
                     tasks.push(future);
                 }
             }
@@ -101,41 +106,72 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor<'a> {
             let res = if compete {
                 // compete mode: only one task will succeed (others will be abandoned)
                 let mut all_errors = Vec::new();
+                let mut streams = Vec::new();
 
-                loop {
-                    if tasks.is_empty() {
-                        // all tasks failed
-                        return Err(workflow::errors::ErrorFactory::new().service_unavailable(
-                            "All tasks failed in compete mode".to_string(),
-                            Some(&position),
-                            Some(format!("{:#?}", all_errors)),
-                        ));
-                    }
+                // Convert all stream futures into actual streams
+                for stream_fut in tasks {
+                    streams.push(stream_fut.await);
+                }
 
-                    let (result, _index, remaining) = future::select_all(tasks).await;
-                    tasks = remaining;
+                // Create a StreamMap to manage all streams
+                let mut stream_map = StreamMap::new();
+                for (i, stream) in streams.into_iter().enumerate() {
+                    stream_map.insert(i, stream);
+                }
 
+                // Poll streams until we get a success or all fail
+                while let Some((_, result)) = stream_map.next().await {
                     match result {
-                        Ok(context) => return Ok(context),
+                        Ok(context) => {
+                            // Found a successful task, return it immediately
+                            // (abandoning all other tasks)
+                            return Ok(context);
+                        }
                         Err(e) => {
+                            // Stream returned an error, log and continue with others
                             tracing::warn!("Task failed in compete mode: {:#?}", e);
                             all_errors.push(e);
+
+                            // If this was the last stream, we're done with errors
+                            if stream_map.is_empty() {
+                                return Err(workflow::errors::ErrorFactory::new()
+                                    .service_unavailable(
+                                        "All tasks failed in compete mode".to_string(),
+                                        Some(&position),
+                                        Some(format!("{:#?}", all_errors)),
+                                    ));
+                            }
                         }
                     }
                 }
-            } else {
-                let results = future::join_all(tasks).await;
 
+                // If we get here, all streams ended without success
+                Err(workflow::errors::ErrorFactory::new().service_unavailable(
+                    "All tasks failed in compete mode".to_string(),
+                    Some(&position),
+                    Some(format!("{:#?}", all_errors)),
+                ))
+            } else {
+                // Normal mode: collect results from all tasks
+                let streams_futures = future::join_all(tasks).await;
+
+                // Get all results from the streams
                 let mut output = Vec::new();
-                for result in results {
-                    match result {
-                        Ok(context) => {
-                            if !context.output.is_null() {
-                                output.push((*context.output).clone()); // XXX clone output
+
+                for stream in streams_futures {
+                    // Collect all items from this stream
+                    let results = stream.collect::<Vec<_>>().await;
+
+                    for result in results {
+                        match result {
+                            Ok(context) => {
+                                if !context.output.is_null() {
+                                    output.push((*context.output).clone());
+                                }
                             }
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to execute task: {:#?}", e);
+                            Err(e) => {
+                                tracing::warn!("Failed to execute task: {:#?}", e);
+                            }
                         }
                     }
                 }
@@ -144,6 +180,7 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor<'a> {
                 original_task_context.raw_output = Arc::new(serde_json::Value::Array(output));
                 Ok(original_task_context)
             };
+
             match res {
                 Ok(context) => {
                     context.remove_position().await;
@@ -257,10 +294,8 @@ mod tests {
             let task = Arc::new(WorkflowTask::SetTask(
                 crate::workflow::definition::workflow::SetTask::default(),
             ));
-            let task_executor =
-                TaskExecutor::new(job_executor_wrapper, http_client, "test_task", task);
-
-            let fork_task_executor = ForkTaskExecutor::new(&task_executor, &fork_task);
+            let fork_task_executor =
+                ForkTaskExecutor::new(fork_task, job_executor_wrapper, http_client);
 
             let input = json!({"initial": "value"});
             let task_context = MockTaskContext::create(input.clone());
@@ -335,10 +370,8 @@ mod tests {
             let task = Arc::new(WorkflowTask::SetTask(
                 crate::workflow::definition::workflow::SetTask::default(),
             ));
-            let task_executor =
-                TaskExecutor::new(job_executor_wrapper, http_client, "test_task", task);
-
-            let fork_task_executor = ForkTaskExecutor::new(&task_executor, &fork_task);
+            let fork_task_executor =
+                ForkTaskExecutor::new(fork_task, job_executor_wrapper, http_client);
 
             // execute
             let task_context = MockTaskContext::create(json!({"initial": "value"}));
@@ -415,10 +448,9 @@ mod tests {
             let task = Arc::new(WorkflowTask::SetTask(
                 crate::workflow::definition::workflow::SetTask::default(),
             ));
-            let task_executor =
-                TaskExecutor::new(job_executor_wrapper, http_client, "test_task", task);
 
-            let fork_task_executor = ForkTaskExecutor::new(&task_executor, &fork_task);
+            let fork_task_executor =
+                ForkTaskExecutor::new(fork_task, job_executor_wrapper, http_client);
 
             // execute
             let task_context = MockTaskContext::create(json!({"initial": "value"}));

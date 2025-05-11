@@ -16,16 +16,16 @@ use proto::jobworkerp::data::{QueueType, ResponseType, WorkerData};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-pub struct RunTaskExecutor<'a> {
-    task: &'a workflow::RunTask,
+pub struct RunTaskExecutor {
+    task: workflow::RunTask,
     job_executor_wrapper: Arc<JobExecutorWrapper>,
 }
-impl UseExpression for RunTaskExecutor<'_> {}
-impl UseJqAndTemplateTransformer for RunTaskExecutor<'_> {}
-impl UseExpressionTransformer for RunTaskExecutor<'_> {}
+impl UseExpression for RunTaskExecutor {}
+impl UseJqAndTemplateTransformer for RunTaskExecutor {}
+impl UseExpressionTransformer for RunTaskExecutor {}
 
-impl<'a> RunTaskExecutor<'a> {
-    pub fn new(job_executor_wrapper: Arc<JobExecutorWrapper>, task: &'a workflow::RunTask) -> Self {
+impl RunTaskExecutor {
+    pub fn new(job_executor_wrapper: Arc<JobExecutorWrapper>, task: workflow::RunTask) -> Self {
         Self {
             task,
             job_executor_wrapper,
@@ -105,7 +105,7 @@ impl<'a> RunTaskExecutor<'a> {
         //     .await
     }
 }
-impl TaskExecutorTrait<'_> for RunTaskExecutor<'_> {
+impl TaskExecutorTrait<'_> for RunTaskExecutor {
     async fn execute(
         &self,
         task_name: &str,
@@ -122,7 +122,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor<'_> {
             // then, //  ::std::option::Option<FlowDirective>
             run,
             ..
-        } = self.task;
+        } = &self.task;
         // TODO: add other task types
         // currently support only RunTaskConfiguration
         let workflow::RunTaskConfiguration {

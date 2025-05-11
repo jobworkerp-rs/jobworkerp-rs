@@ -18,6 +18,7 @@ use indexmap::IndexMap;
 use infra_utils::infra::net::reqwest;
 use std::{pin::Pin, sync::Arc};
 use tokio::sync::RwLock;
+use tokio_stream::wrappers::ReceiverStream;
 
 #[derive(DebugStub, Clone)]
 pub struct DoTaskStreamExecutor {
@@ -50,115 +51,76 @@ impl DoTaskStreamExecutor {
         parent_task_context: TaskContext,
     ) -> Pin<Box<dyn futures::Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send + '_>>
     {
-        Box::pin(futures::stream::unfold(
-            (
-                parent_task_context,
-                task_map.clone(),
-                workflow_context.clone(),
-                task_map.iter().next().map(|(k, v)| (k.clone(), v.clone())),
-            ),
-            move |(prev_context, task_map, workflow_context, next_task_pair)| async move {
-                if next_task_pair.is_none() {
-                    return None;
+        let job_exec = self.job_executor_wrapper.clone();
+        let http_client = self.http_client.clone();
+        let task_map = task_map.clone();
+        let workflow_context = workflow_context.clone();
+        let parent_ctx = parent_task_context.clone();
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<TaskContext, Box<workflow::Error>>>(32);
+        tokio::spawn(async move {
+            let mut prev = parent_ctx;
+            let mut iter = task_map.iter();
+            let mut next_pair = iter.next().map(|(k, v)| (k.clone(), v.clone()));
+            while let Some((name, (pos, task))) = next_pair {
+                // stop if not running
+                if workflow_context.read().await.status != WorkflowStatus::Running {
+                    break;
                 }
-
-                let lock = workflow_context.read().await;
-                let status = lock.status.clone();
-                drop(lock);
-
-                if status != WorkflowStatus::Running {
-                    return None;
-                }
-
-                let (name, (pos, task)) = next_task_pair.unwrap();
                 tracing::info!("Executing task: {}", name);
-                prev_context.add_position_index(pos).await;
-                let task_executor = TaskExecutor::new(
-                    self.job_executor_wrapper.clone(),
-                    self.http_client.clone(),
-                    &name,
-                    task.clone(),
-                );
-
-                let result = match task_executor
-                    .execute(workflow_context.clone(), Arc::new(prev_context.clone()))
-                    .await
-                {
-                    Ok(result_task_context) => {
-                        let flow_directive = result_task_context.flow_directive.clone();
-                        let next_pair = match flow_directive {
-                            Then::Continue => {
-                                let result_context = result_task_context.clone();
-                                result_context.remove_position().await;
-
-                                // Get the next task in sequence
-                                let mut found = false;
-
-                                // Find the next task after the current one
-                                let next_pair = task_map
-                                    .iter()
-                                    .skip_while(|(k, _)| {
-                                        if *k == &name {
-                                            found = true;
-                                            return false;
-                                        }
-                                        !found
-                                    })
-                                    .next()
-                                    .map(|(k, v)| (k.clone(), v.clone()));
-
-                                tracing::info!(
-                                    "Task Continue next: {}",
-                                    next_pair.as_ref().map(|p| p.0.as_str()).unwrap_or(""),
-                                );
-                                (result_context, next_pair)
+                prev.add_position_index(pos).await;
+                let mut stream =
+                    TaskExecutor::new(job_exec.clone(), http_client.clone(), &name, task.clone())
+                        .execute(workflow_context.clone(), Arc::new(prev.clone()))
+                        .await;
+                let mut last_ctx = None;
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(ctx) => {
+                            last_ctx = Some(ctx.clone());
+                            if tx.send(Ok(ctx)).await.is_err() {
+                                return;
                             }
-                            Then::End => {
-                                workflow_context.write().await.status = WorkflowStatus::Completed;
-                                (result_task_context.clone(), None)
-                            }
-                            Then::Exit => {
-                                tracing::info!("Exit Task: {}", name);
-                                (result_task_context.clone(), None)
-                            }
-                            Then::TaskName(tname) => {
-                                let result_context = result_task_context.clone();
-                                result_context.remove_position().await;
-
-                                let next_pair = task_map
-                                    .iter()
-                                    .find(|(k, _)| *k == &tname)
-                                    .map(|(k, v)| (k.clone(), v.clone()));
-
-                                if let Some((k, _)) = &next_pair {
-                                    tracing::info!("Jump to Task: {}", k);
-                                }
-
-                                (result_context, next_pair)
-                            }
-                        };
-                        Ok((result_task_context, next_pair))
+                        }
+                        Err(e) => {
+                            workflow_context.write().await.status = WorkflowStatus::Faulted;
+                            let _ = tx.send(Err(e)).await;
+                            return;
+                        }
                     }
-                    Err(e) => Err(e),
-                };
-
-                match result {
-                    Ok((current_context, (next_context, next_pair))) => Some((
-                        Ok(current_context),
-                        (
-                            next_context,
-                            task_map.clone(),
-                            workflow_context.clone(),
-                            next_pair,
-                        ),
-                    )),
-                    Err(e) => Some((
-                        Err(e),
-                        (prev_context, task_map.clone(), workflow_context, None),
-                    )),
                 }
-            },
-        ))
+                let result = match last_ctx {
+                    Some(c) => c,
+                    None => break,
+                };
+                // determine next task
+                next_pair = match result.flow_directive.clone() {
+                    Then::Continue => {
+                        result.remove_position().await;
+                        iter.next().map(|(k, v)| (k.clone(), v.clone()))
+                    }
+                    Then::End => {
+                        // end of workflow
+                        workflow_context.write().await.status = WorkflowStatus::Completed;
+                        None
+                    }
+                    Then::Exit => {
+                        result.remove_position().await;
+                        // end of task list
+                        tracing::info!("Exit Task: {}", name);
+                        None
+                    }
+                    Then::TaskName(ref tname) => {
+                        result.remove_position().await;
+                        task_map
+                            .iter()
+                            .find(|(k, _)| *k == tname)
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                    }
+                };
+                prev = result;
+            }
+        });
+        Box::pin(ReceiverStream::new(rx))
     }
 }
 

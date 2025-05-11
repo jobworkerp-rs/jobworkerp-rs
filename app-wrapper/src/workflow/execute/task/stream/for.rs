@@ -16,16 +16,16 @@ use infra_utils::infra::net::reqwest;
 use std::{pin::Pin, sync::Arc};
 use tokio::sync::{mpsc, RwLock};
 
-pub struct ForStreamTaskExecutor {
+pub struct ForTaskStreamExecutor {
     task: workflow::ForTask,
     job_executor_wrapper: Arc<JobExecutorWrapper>,
     http_client: reqwest::ReqwestClient,
 }
-impl UseExpression for ForStreamTaskExecutor {}
-impl UseJqAndTemplateTransformer for ForStreamTaskExecutor {}
-impl UseExpressionTransformer for ForStreamTaskExecutor {}
+impl UseExpression for ForTaskStreamExecutor {}
+impl UseJqAndTemplateTransformer for ForTaskStreamExecutor {}
+impl UseExpressionTransformer for ForTaskStreamExecutor {}
 
-impl ForStreamTaskExecutor {
+impl ForTaskStreamExecutor {
     pub fn new(
         task: workflow::ForTask,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
@@ -405,7 +405,7 @@ impl ForStreamTaskExecutor {
     }
 }
 
-impl StreamTaskExecutorTrait<'_> for ForStreamTaskExecutor {
+impl StreamTaskExecutorTrait<'_> for ForTaskStreamExecutor {
     fn execute_stream(
         &self,
         task_name: &str,

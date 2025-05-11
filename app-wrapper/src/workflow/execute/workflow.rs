@@ -318,63 +318,77 @@ impl WorkflowExecutor {
                         task.clone(),
                     );
 
-                    match task_executor
+                    // Get stream from task executor
+                    let mut task_stream = task_executor
                         .execute(workflow_context.clone(), prev_context)
-                        .await
-                    {
-                        Ok(result_task_context) => {
-                            let flow_directive = result_task_context.flow_directive.clone();
+                        .await;
 
-                            // Create a clone to send through the channel
-                            let context_to_send = Arc::new(result_task_context.clone());
-                            if tx.send(Ok(context_to_send)).await.is_err() {
-                                break; // Channel closed, receiver dropped
+                    let mut last_context = None;
+
+                    // Process each item in the stream from the task
+                    while let Some(result) = task_stream.next().await {
+                        match result {
+                            Ok(result_task_context) => {
+                                // Save the last context for flow control after the stream completes
+                                last_context = Some(result_task_context.clone());
+
+                                // Create a clone to send through the channel
+                                let context_to_send = Arc::new(result_task_context);
+                                if tx.send(Ok(context_to_send.clone())).await.is_err() {
+                                    break; // Channel closed, receiver dropped
+                                }
                             }
+                            Err(e) => {
+                                let error = anyhow::anyhow!("Failed to execute task: {:#?}", e);
+                                let _ = tx.send(Err(error)).await;
+                                workflow_context.write().await.status = WorkflowStatus::Faulted;
+                                break;
+                            }
+                        }
+                    }
 
-                            match flow_directive {
-                                Then::Continue => {
-                                    result_task_context.remove_position().await;
-                                    prev_context = Arc::new(result_task_context);
-                                    next_task_pair = task_iterator.next();
-                                    tracing::info!(
-                                        "Task Continue next: {}",
-                                        next_task_pair.map(|p| p.0).unwrap_or(&"".to_string()),
-                                    );
-                                }
-                                Then::End => {
-                                    prev_context = Arc::new(result_task_context);
-                                    workflow_context.write().await.status =
-                                        WorkflowStatus::Completed;
-                                    next_task_pair = None;
-                                }
-                                Then::Exit => {
-                                    prev_context = Arc::new(result_task_context);
-                                    next_task_pair = None;
-                                    workflow_context.write().await.status =
-                                        WorkflowStatus::Completed;
-                                    tracing::info!("Exit Task (main): {}", name);
-                                }
-                                Then::TaskName(tname) => {
-                                    result_task_context.remove_position().await;
-                                    prev_context = Arc::new(result_task_context);
-                                    let mut it = task_map.iter();
-                                    for (k, v) in it.by_ref() {
-                                        if k == &tname {
-                                            next_task_pair = Some((k, v));
-                                            tracing::info!("Jump to Task: {}", k);
-                                            break;
-                                        }
+                    // Continue with flow control based on the last context received
+                    if let Some(result_task_context) = last_context {
+                        let flow_directive = result_task_context.flow_directive.clone();
+
+                        match flow_directive {
+                            Then::Continue => {
+                                result_task_context.remove_position().await;
+                                prev_context = Arc::new(result_task_context);
+                                next_task_pair = task_iterator.next();
+                                tracing::info!(
+                                    "Task Continue next: {}",
+                                    next_task_pair.map(|p| p.0).unwrap_or(&"".to_string()),
+                                );
+                            }
+                            Then::End => {
+                                prev_context = Arc::new(result_task_context);
+                                workflow_context.write().await.status = WorkflowStatus::Completed;
+                                next_task_pair = None;
+                            }
+                            Then::Exit => {
+                                prev_context = Arc::new(result_task_context);
+                                next_task_pair = None;
+                                workflow_context.write().await.status = WorkflowStatus::Completed;
+                                tracing::info!("Exit Task (main): {}", name);
+                            }
+                            Then::TaskName(tname) => {
+                                result_task_context.remove_position().await;
+                                prev_context = Arc::new(result_task_context);
+                                let mut it = task_map.iter();
+                                for (k, v) in it.by_ref() {
+                                    if k == &tname {
+                                        next_task_pair = Some((k, v));
+                                        tracing::info!("Jump to Task: {}", k);
+                                        break;
                                     }
-                                    task_iterator = it;
                                 }
+                                task_iterator = it;
                             }
                         }
-                        Err(e) => {
-                            let error = anyhow::anyhow!("Failed to execute task: {:#?}", e);
-                            let _ = tx.send(Err(error)).await;
-                            workflow_context.write().await.status = WorkflowStatus::Faulted;
-                            break;
-                        }
+                    } else {
+                        // No context was received from the task execution
+                        break;
                     }
 
                     let lock = workflow_context.read().await;

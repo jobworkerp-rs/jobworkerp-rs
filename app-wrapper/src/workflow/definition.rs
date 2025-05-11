@@ -111,11 +111,11 @@ impl UseLoadUrlOrPath for WorkflowLoader {
 
 #[cfg(test)]
 mod test {
-    use std::{str::FromStr, time::Duration};
+    use std::time::Duration;
 
     use infra_utils::infra::net::reqwest::ReqwestClient;
 
-    use crate::workflow::definition::workflow::{self, FunctionOptions, RetryPolicy};
+    use crate::workflow::definition::workflow::{self, RetryPolicy};
     // use tracing::Level;
 
     // parse example flow yaml
@@ -215,9 +215,13 @@ mod test {
                 use_static: Some(false),
                 retry: Some(RetryPolicy {
                     backoff: Some(workflow::RetryBackoff::Exponential(serde_json::Map::new())),
-                    delay: Some(workflow::Duration::Expression(
-                        workflow::DurationExpression::from_str("2s").unwrap(),
-                    )),
+                    delay: Some(workflow::Duration::Inline {
+                        seconds: Some(2),
+                        days: None,
+                        hours: None,
+                        milliseconds: None,
+                        minutes: None,
+                    }),
                     limit: Some(workflow::RetryLimit {
                         attempt: Some(workflow::RetryLimitAttempt {
                             count: Some(3),
