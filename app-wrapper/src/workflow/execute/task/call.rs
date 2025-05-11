@@ -180,7 +180,7 @@ impl TaskExecutorTrait<'_> for CallTaskExecutor {
         &self,
         task_name: &str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
-        task_context: TaskContext,
+        mut task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
         let workflow::CallTask {
             // TODO: add other task types
@@ -196,7 +196,7 @@ impl TaskExecutorTrait<'_> for CallTaskExecutor {
         } = &self.task;
         {
             // enter call position
-            task_context.add_position_name("call".to_string()).await;
+            task_context.add_position_name("call".to_string());
 
             // TODO name reference (inner yaml, public catalog)
             let fun = match self
@@ -207,7 +207,7 @@ impl TaskExecutorTrait<'_> for CallTaskExecutor {
                 Ok(None) => {
                     let title = format!("Call task not found: {}", call.as_str());
                     tracing::error!("{}", title);
-                    let pos = task_context.position.lock().await.clone();
+                    let pos = task_context.position.clone();
                     return Err(workflow::errors::ErrorFactory::new().not_found(
                         title,
                         Some(&pos),
@@ -217,7 +217,7 @@ impl TaskExecutorTrait<'_> for CallTaskExecutor {
                 Err(e) => {
                     let title = format!("Failed to load call task: {}", e);
                     tracing::error!("{}", title);
-                    let pos = task_context.position.lock().await.clone();
+                    let pos = task_context.position.clone();
                     return Err(workflow::errors::ErrorFactory::new().not_found(
                         title,
                         Some(&pos),
@@ -278,9 +278,9 @@ impl TaskExecutorTrait<'_> for CallTaskExecutor {
                     .execute(task_name, workflow_context, task_context)
                     .await;
                 match res {
-                    Ok(task_context) => {
+                    Ok(mut task_context) => {
                         // remove call position
-                        task_context.remove_position().await;
+                        task_context.remove_position();
                         Ok(task_context)
                     }
                     Err(e) => Err(e),

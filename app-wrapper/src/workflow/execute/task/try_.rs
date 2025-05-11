@@ -50,12 +50,12 @@ impl TaskExecutorTrait<'_> for TryTaskExecutor {
     ) -> impl std::future::Future<Output = Result<TaskContext, Box<workflow::Error>>> + Send {
         async move {
             let mut task_context = task_context;
-            task_context.add_position_name("try".to_string()).await;
+            task_context.add_position_name("try".to_string());
             let retry = self.task.catch.retry.as_ref();
             let start_time = Instant::now();
 
             let mut retry_count: i64 = 0;
-            let res = loop {
+            let mut res = loop {
                 match self
                     .execute_task_list(
                         task_name,
@@ -111,7 +111,7 @@ impl TaskExecutorTrait<'_> for TryTaskExecutor {
                     .await?;
             }
             // go out of 'try'
-            res.remove_position().await;
+            res.remove_position();
             Ok(res)
         }
     }
@@ -248,7 +248,7 @@ impl TryTaskExecutor {
             Ok(expression) => expression,
             Err(mut e) => {
                 tracing::error!("Failed to evaluate expression: {:#?}", e);
-                e.position(&task_context.position.lock().await.clone());
+                e.position(&task_context.position.clone());
                 return Err(e);
             }
         };
@@ -263,7 +263,7 @@ impl TryTaskExecutor {
                 Ok(value) => value,
                 Err(mut e) => {
                     tracing::error!("Failed to evaluate when condition: {:#?}", e);
-                    let mut pos = task_context.position.lock().await.clone();
+                    let mut pos = task_context.position.clone();
                     pos.push("when".to_string());
                     e.position(&pos);
                     return Err(e);
@@ -284,7 +284,7 @@ impl TryTaskExecutor {
                 Ok(value) => value,
                 Err(mut e) => {
                     tracing::error!("Failed to evaluate except_when condition: {:#?}", e);
-                    let mut pos = task_context.position.lock().await.clone();
+                    let mut pos = task_context.position.clone();
                     pos.push("except_when".to_string());
                     e.position(&pos);
                     return Err(e);

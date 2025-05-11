@@ -154,7 +154,7 @@ impl WorkflowExecutor {
                 input.clone()
             };
             task_context.set_input(transformed_input);
-            task_context.add_position_name("do".to_string()).await;
+            task_context.add_position_name("do".to_string());
 
             // Create a new workflow executor for task execution
             let task_executor = WorkflowExecutor {
@@ -173,7 +173,7 @@ impl WorkflowExecutor {
                         // Send updated workflow context through the channel
                         let mut wf = initial_wfc.write().await;
                         wf.output = Some(tc.output.clone());
-                        wf.position = tc.position.lock().await.clone();
+                        wf.position = tc.position.clone();
                         drop(wf);
                         let _ = tx.send(Ok(initial_wfc.clone())).await;
                     }
@@ -299,7 +299,7 @@ impl WorkflowExecutor {
         let http_client = self.http_client.clone();
 
         tokio::spawn(async move {
-            let mut prev_context = Arc::new(parent_task_context);
+            let mut prev_context = parent_task_context;
 
             let mut task_iterator = task_map.iter();
             let mut next_task_pair = task_iterator.next();
@@ -310,7 +310,7 @@ impl WorkflowExecutor {
             while next_task_pair.is_some() && status == WorkflowStatus::Running {
                 if let Some((name, (pos, task))) = next_task_pair {
                     tracing::info!("Executing task: {}", name);
-                    prev_context.add_position_index(*pos).await;
+                    prev_context.add_position_index(*pos);
                     let task_executor = TaskExecutor::new(
                         job_executors.clone(),
                         http_client.clone(),
@@ -320,7 +320,7 @@ impl WorkflowExecutor {
 
                     // Get stream from task executor
                     let mut task_stream = task_executor
-                        .execute(workflow_context.clone(), prev_context)
+                        .execute(workflow_context.clone(), Arc::new(prev_context))
                         .await;
 
                     let mut last_context = None;
@@ -348,13 +348,13 @@ impl WorkflowExecutor {
                     }
 
                     // Continue with flow control based on the last context received
-                    if let Some(result_task_context) = last_context {
+                    if let Some(mut result_task_context) = last_context {
                         let flow_directive = result_task_context.flow_directive.clone();
 
                         match flow_directive {
                             Then::Continue => {
-                                result_task_context.remove_position().await;
-                                prev_context = Arc::new(result_task_context);
+                                result_task_context.remove_position();
+                                prev_context = result_task_context;
                                 next_task_pair = task_iterator.next();
                                 tracing::info!(
                                     "Task Continue next: {}",
@@ -362,19 +362,19 @@ impl WorkflowExecutor {
                                 );
                             }
                             Then::End => {
-                                prev_context = Arc::new(result_task_context);
+                                prev_context = result_task_context;
                                 workflow_context.write().await.status = WorkflowStatus::Completed;
                                 next_task_pair = None;
                             }
                             Then::Exit => {
-                                prev_context = Arc::new(result_task_context);
+                                prev_context = result_task_context;
                                 next_task_pair = None;
                                 workflow_context.write().await.status = WorkflowStatus::Completed;
                                 tracing::info!("Exit Task (main): {}", name);
                             }
                             Then::TaskName(tname) => {
-                                result_task_context.remove_position().await;
-                                prev_context = Arc::new(result_task_context);
+                                result_task_context.remove_position();
+                                prev_context = result_task_context;
                                 let mut it = task_map.iter();
                                 for (k, v) in it.by_ref() {
                                     if k == &tname {
@@ -773,8 +773,7 @@ mod tests {
             assert_eq!(
                 final_tc
                     .unwrap()
-                    .prev_position(2)
-                    .await
+                    .prev_position(1)
                     .last()
                     .unwrap()
                     .as_str()
@@ -859,8 +858,7 @@ mod tests {
                 assert_eq!(
                     final_tc
                         .unwrap()
-                        .prev_position(2)
-                        .await
+                        .prev_position(1)
                         .last()
                         .unwrap()
                         .as_str()
@@ -916,8 +914,7 @@ mod tests {
                 assert_eq!(
                     final_tc
                         .unwrap()
-                        .prev_position(2)
-                        .await
+                        .prev_position(1)
                         .last()
                         .unwrap()
                         .as_str()
@@ -1028,8 +1025,7 @@ mod tests {
             assert_eq!(
                 final_tc
                     .unwrap()
-                    .prev_position(2)
-                    .await
+                    .prev_position(1)
                     .last()
                     .unwrap()
                     .as_str()

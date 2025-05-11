@@ -79,7 +79,7 @@ impl TaskExecutor {
         );
         task_context.position = parent_task.position.clone();
         // enter task (add task name to position stack)
-        task_context.add_position_name(self.task_name.clone()).await;
+        task_context.add_position_name(self.task_name.clone());
 
         let expression = Self::expression(
             &*workflow_context.read().await,
@@ -91,7 +91,7 @@ impl TaskExecutor {
             Err(mut e) => {
                 tracing::error!("Failed to evaluate expression: {:#?}", e);
                 task_context.flow_directive = Then::Exit;
-                e.position(&task_context.position.lock().await.clone());
+                e.position(&task_context.position.clone());
                 task_context.set_completed_at();
                 return futures::stream::once(futures::future::ready(Err(e))).boxed();
             }
@@ -114,7 +114,7 @@ impl TaskExecutor {
                             "`If' condition is false, skip: {:#?}",
                             &task_context.raw_input
                         );
-                        task_context.remove_position().await;
+                        task_context.remove_position();
                         task_context.set_completed_at();
                         return futures::stream::once(futures::future::ready(Ok(task_context)))
                             .boxed();
@@ -122,8 +122,8 @@ impl TaskExecutor {
                 }
                 Err(mut e) => {
                     tracing::error!("Failed to evaluate `if' condition: {:#?}", e);
-                    task_context.add_position_name("if".to_string()).await;
-                    e.position(&task_context.position.lock().await.clone());
+                    task_context.add_position_name("if".to_string());
+                    e.position(&task_context.position.clone());
                     task_context.set_completed_at();
                     return futures::stream::once(futures::future::ready(Err(e))).boxed();
                 }
@@ -161,7 +161,7 @@ impl TaskExecutor {
                         "Failed to validate input schema: {:#?}\n{:#?}\n{:#?}",
                         schema, &task_context.raw_input, e
                     );
-                    let mut pos = task_context.position.lock().await.clone();
+                    let mut pos = task_context.position.clone();
                     pos.push("input".to_string());
                     return Err(workflow::errors::ErrorFactory::new().bad_argument(
                         m,
@@ -200,7 +200,7 @@ impl TaskExecutor {
                     Ok(v) => v,
                     Err(mut e) => {
                         tracing::error!("Failed to transform output: {:#?}", e);
-                        let mut pos = task_context.position.lock().await.clone();
+                        let mut pos = task_context.position.clone();
                         pos.push("output".to_string());
                         e.position(&pos);
                         return Err(e);
@@ -242,15 +242,15 @@ impl TaskExecutor {
                 Ok(v) => v,
                 Err(mut e) => {
                     tracing::error!("Failed to evaluate `then' condition: {:#?}", e);
-                    task_context.add_position_name("then".to_string()).await;
-                    e.position(&task_context.position.lock().await.clone());
+                    task_context.add_position_name("then".to_string());
+                    e.position(&task_context.position.clone());
                     return Err(e);
                 }
             },
             None => Then::Continue,
         };
 
-        task_context.remove_position().await;
+        task_context.remove_position();
         task_context.set_completed_at();
         Ok(task_context)
     }
@@ -599,7 +599,7 @@ impl TaskExecutorTrait<'_> for RaiseTaskExecutor {
     ) -> Result<TaskContext, Box<workflow::Error>> {
         tracing::error!("RaiseTaskExecutor raise error: {:?}", self.task.raise.error);
         // TODO add error detail information to workflow_context
-        let mut pos = task_context.position.lock().await.clone();
+        let mut pos = task_context.position.clone();
         pos.push("raise".to_string());
         workflow_context.write().await.status = WorkflowStatus::Faulted;
         Err(workflow::errors::ErrorFactory::create(

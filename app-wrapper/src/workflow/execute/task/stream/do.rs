@@ -13,7 +13,7 @@ use crate::workflow::{
 };
 use anyhow::Result;
 use debug_stub_derive::DebugStub;
-use futures::{executor::block_on, StreamExt};
+use futures::StreamExt;
 use indexmap::IndexMap;
 use infra_utils::infra::net::reqwest;
 use std::{pin::Pin, sync::Arc};
@@ -67,7 +67,7 @@ impl DoTaskStreamExecutor {
                     break;
                 }
                 tracing::info!("Executing task: {}", name);
-                prev.add_position_index(pos).await;
+                prev.add_position_index(pos);
                 let mut stream =
                     TaskExecutor::new(job_exec.clone(), http_client.clone(), &name, task.clone())
                         .execute(workflow_context.clone(), Arc::new(prev.clone()))
@@ -88,14 +88,14 @@ impl DoTaskStreamExecutor {
                         }
                     }
                 }
-                let result = match last_ctx {
+                let mut result = match last_ctx {
                     Some(c) => c,
                     None => break,
                 };
                 // determine next task
                 next_pair = match result.flow_directive.clone() {
                     Then::Continue => {
-                        result.remove_position().await;
+                        result.remove_position();
                         iter.next().map(|(k, v)| (k.clone(), v.clone()))
                     }
                     Then::End => {
@@ -104,13 +104,13 @@ impl DoTaskStreamExecutor {
                         None
                     }
                     Then::Exit => {
-                        result.remove_position().await;
+                        result.remove_position();
                         // end of task list
                         tracing::info!("Exit Task: {}", name);
                         None
                     }
                     Then::TaskName(ref tname) => {
-                        result.remove_position().await;
+                        result.remove_position();
                         task_map
                             .iter()
                             .find(|(k, _)| *k == tname)
@@ -138,9 +138,9 @@ impl StreamTaskExecutorTrait<'_> for DoTaskStreamExecutor {
         workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
     ) -> impl futures::Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send {
-        let task_context = task_context.clone();
+        let mut task_context = task_context.clone();
         // position name will be added in execute_task_stream
-        block_on(task_context.add_position_name("do".to_string()));
+        task_context.add_position_name("do".to_string());
 
         tracing::debug!("DoTaskStreamExecutor: {}", task_name);
 

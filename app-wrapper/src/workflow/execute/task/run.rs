@@ -138,8 +138,8 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
         } = run;
         {
             // enter run.function
-            task_context.add_position_name("run".to_string()).await;
-            task_context.add_position_name("function".to_string()).await;
+            task_context.add_position_name("run".to_string());
+            task_context.add_position_name("function".to_string());
 
             let expression = Self::expression(
                 &*(workflow_context.read().await),
@@ -152,7 +152,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
             let expression = match expression {
                 Ok(e) => e,
                 Err(mut e) => {
-                    let pos = task_context.position.lock().await.clone();
+                    let pos = task_context.position.clone();
                     e.position(&pos);
                     return Err(e);
                 }
@@ -166,7 +166,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
             ) {
                 Ok(args) => args,
                 Err(mut e) => {
-                    let mut pos = task_context.position.lock().await.clone();
+                    let mut pos = task_context.position.clone();
                     pos.push("arguments".to_string());
                     e.position(&pos);
                     return Err(e);
@@ -182,7 +182,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
             ) {
                 Ok(settings) => settings,
                 Err(mut e) => {
-                    let mut pos = task_context.position.lock().await.clone();
+                    let mut pos = task_context.position.clone();
                     pos.push("settings".to_string());
                     e.position(&pos);
                     return Err(e);
@@ -201,7 +201,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
             {
                 Ok(output) => Ok(output),
                 Err(e) => {
-                    let pos = task_context.position.lock().await.clone();
+                    let pos = task_context.position.clone();
                     Err(workflow::errors::ErrorFactory::new().service_unavailable(
                         "Failed to execute by jobworkerp".to_string(),
                         Some(&pos),
@@ -212,8 +212,8 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
             task_context.set_raw_output(output);
 
             // out of run.function
-            task_context.remove_position().await;
-            task_context.remove_position().await;
+            task_context.remove_position();
+            task_context.remove_position();
 
             Ok(task_context)
         } // r => Err(anyhow::anyhow!(
