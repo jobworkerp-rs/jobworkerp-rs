@@ -67,16 +67,14 @@ pub trait UseExpression {
                     })?,
                 ),
             );
-            {
-                task_context
-                    .context_variables
-                    .lock()
-                    .await
-                    .iter()
-                    .for_each(|(k, v)| {
-                        expression.insert(k.clone(), Arc::new(v.clone()));
-                    });
-            }
+            task_context
+                .context_variables
+                .lock()
+                .await
+                .iter()
+                .for_each(|(k, v)| {
+                    expression.insert(k.clone(), Arc::new(v.clone()));
+                });
             workflow_context
                 .context_variables
                 .lock()

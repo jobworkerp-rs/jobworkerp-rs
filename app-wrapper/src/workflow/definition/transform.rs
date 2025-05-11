@@ -1,5 +1,6 @@
 use super::workflow::{self, ExportAs, InputFrom, OutputAs};
 use anyhow::Result;
+use command_utils::util::liquid::{JsonDecode, JsonEncode};
 use liquid::Parser;
 use once_cell::sync::OnceCell;
 use std::{collections::BTreeMap, sync::Arc};
@@ -126,8 +127,13 @@ pub trait UseJqAndTemplateTransformer {
                     .trim_end()
                     .to_string();
                 templ.pop(); // remove last one '}'
-                let liquid_parser = LIQUID_PARSER
-                    .get_or_init(|| liquid::ParserBuilder::with_stdlib().build().unwrap());
+                let liquid_parser = LIQUID_PARSER.get_or_init(|| {
+                    liquid::ParserBuilder::with_stdlib()
+                        .filter(JsonEncode)
+                        .filter(JsonDecode)
+                        .build()
+                        .unwrap()
+                });
                 let templ = liquid_parser.parse(templ.as_str())?;
 
                 let mut globals = liquid::to_object(con)?;

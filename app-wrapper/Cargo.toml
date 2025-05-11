@@ -39,7 +39,7 @@ futures-util = { workspace = true }
 genai = "0.2"
 indexmap = "2"
 itertools = { workspace = true }
-jsonschema = "0.29"
+jsonschema = "0.30"
 #kube-client = "0.86"
 libloading = { workspace = true }
 liquid = "0.26"
