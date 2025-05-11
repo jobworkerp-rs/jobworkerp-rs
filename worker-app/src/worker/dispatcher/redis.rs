@@ -184,7 +184,7 @@ pub trait RedisJobDispatcher:
     where
         Self: Sync + Send + 'static,
     {
-        tracing::debug!("process pop-ed job: {:?}", job);
+        tracing::debug!("process pop-ed job: {:?}", &job.id);
         let (jid, jdat) = if let Job {
             id: Some(jid),
             data: Some(jdat),
@@ -193,7 +193,7 @@ pub trait RedisJobDispatcher:
             (jid, jdat)
         } else {
             // TODO cannot return result in this case. send result as error?
-            let mes = format!("job {:?} is incomplete data.", &job);
+            let mes = format!("job {:?} is incomplete data.", &job.id);
             tracing::error!("{}", &mes);
             if let Some(id) = job.id.as_ref() {
                 self.redis_job_repository()

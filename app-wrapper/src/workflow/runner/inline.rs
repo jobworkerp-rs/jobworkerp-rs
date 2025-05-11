@@ -2,7 +2,6 @@ use crate::workflow::{definition::WorkflowLoader, execute::workflow::WorkflowExe
 use anyhow::Result;
 use app::module::AppModule;
 use async_trait::async_trait;
-use futures::executor::block_on;
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use infra_utils::infra::net::reqwest::ReqwestClient;
@@ -278,10 +277,10 @@ impl RunnerTrait for InlineWorkflowRunner {
         self.workflow_executor = Some(executor.clone());
 
         let output_stream = workflow_stream
-            .map(|result| {
+            .then(|result| async move {
                 match result {
                     Ok(context) => {
-                        let context = block_on(context.read_owned());
+                        let context = context.read_owned().await;
                         // Create a WorkflowResult from the context
                         let workflow_result = WorkflowResult {
                             id: context.id.to_string(),

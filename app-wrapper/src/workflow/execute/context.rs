@@ -143,7 +143,7 @@ pub struct TaskContext {
     pub started_at: DateTime<FixedOffset>,
     pub completed_at: Option<DateTime<FixedOffset>>,
     pub flow_directive: Then,
-    pub position: Arc<Mutex<WorkflowPosition>>,
+    pub position: WorkflowPosition,
 }
 impl TaskContext {
     pub fn new(
@@ -163,7 +163,7 @@ impl TaskContext {
             started_at: command_utils::util::datetime::now(),
             completed_at: None,
             flow_directive: Then::Continue,
-            position: Arc::new(Mutex::new(WorkflowPosition::new(vec![]))),
+            position: WorkflowPosition::new(vec![]),
         }
     }
     pub fn new_empty() -> Self {
@@ -177,23 +177,23 @@ impl TaskContext {
             started_at: command_utils::util::datetime::now(),
             completed_at: None,
             flow_directive: Then::Continue,
-            position: Arc::new(Mutex::new(WorkflowPosition::new(vec![]))),
+            position: WorkflowPosition::new(vec![]),
         }
     }
-    pub async fn add_position_name(&self, name: String) {
-        self.position.lock().await.push(name);
+    pub fn add_position_name(&mut self, name: String) {
+        self.position.push(name);
     }
-    pub async fn add_position_index(&self, idx: u32) {
-        self.position.lock().await.push_idx(idx);
+    pub fn add_position_index(&mut self, idx: u32) {
+        self.position.push_idx(idx);
     }
-    pub async fn remove_position(&self) -> Option<serde_json::Value> {
-        self.position.lock().await.pop()
+    pub fn remove_position(&mut self) -> Option<serde_json::Value> {
+        self.position.pop()
     }
-    pub async fn current_position(&self) -> Option<serde_json::Value> {
-        self.position.lock().await.current().cloned()
+    pub fn current_position(&self) -> Option<&serde_json::Value> {
+        self.position.current()
     }
-    pub async fn prev_position(&self, n: usize) -> Vec<serde_json::Value> {
-        self.position.lock().await.n_prev(n)
+    pub fn prev_position(&self, n: usize) -> Vec<serde_json::Value> {
+        self.position.n_prev(n)
     }
     // add context variable
     pub async fn add_context_value(&self, key: String, value: serde_json::Value) {
@@ -293,46 +293,23 @@ impl Then {
         expression: &BTreeMap<String, Arc<serde_json::Value>>,
     ) -> Result<Self, Box<workflow::Error>> {
         match directive {
-            FlowDirective {
-                subtype_0: Some(subtype_0),
-                subtype_1: Some(subtype_1),
-            } => {
-                match subtype_0 {
-                    workflow::FlowDirectiveEnum::Continue => {
-                        match Self::execute_transform(output, subtype_1, expression)? {
-                            serde_json::Value::String(s) => Ok(Then::TaskName(s)),
-                            r => {
-                                tracing::warn!("Transformed Flow directive is not a string: {:#?}, no translation", r);
-                                Ok(Then::TaskName(subtype_1.clone()))
-                            }
-                        }
-                    }
-                    workflow::FlowDirectiveEnum::Exit => Ok(Then::Exit),
-                    workflow::FlowDirectiveEnum::End => Ok(Then::End),
-                }
-            }
-            FlowDirective {
-                subtype_0: Some(subtype_0),
-                subtype_1: None,
-            } => match subtype_0 {
+            FlowDirective::Variant0(subtype_0) => match subtype_0 {
                 workflow::FlowDirectiveEnum::Continue => Ok(Then::Continue),
                 workflow::FlowDirectiveEnum::Exit => Ok(Then::Exit),
                 workflow::FlowDirectiveEnum::End => Ok(Then::End),
             },
-            FlowDirective {
-                subtype_0: None,
-                subtype_1: Some(subtype_1),
-            } => match Self::execute_transform(output, subtype_1, expression)? {
-                serde_json::Value::String(s) => Ok(Then::TaskName(s)),
-                r => {
-                    tracing::warn!(
-                        "Transformed Flow directive is not a string: {:#?}, no translation",
-                        r
-                    );
-                    Ok(Then::TaskName(subtype_1.clone()))
+            FlowDirective::Variant1(subtype_1) => {
+                match Self::execute_transform(output, subtype_1, expression)? {
+                    serde_json::Value::String(s) => Ok(Then::TaskName(s)),
+                    r => {
+                        tracing::warn!(
+                            "Transformed Flow directive is not a string: {:#?}, no translation",
+                            r
+                        );
+                        Ok(Then::TaskName(subtype_1.clone()))
+                    }
                 }
-            },
-            _ => Ok(Then::Continue),
+            }
         }
     }
 }

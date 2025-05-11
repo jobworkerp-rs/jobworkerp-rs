@@ -13,26 +13,24 @@ use crate::workflow::{
 use anyhow::Result;
 use call::CallTaskExecutor;
 use debug_stub_derive::DebugStub;
-use do_::DoTaskExecutor;
-use for_::ForTaskExecutor;
 use fork::ForkTaskExecutor;
+use futures::channel::mpsc;
+use futures::{pin_mut, StreamExt};
 use infra_utils::infra::net::reqwest;
 use run::RunTaskExecutor;
 use set::SetTaskExecutor;
 use std::{collections::BTreeMap, sync::Arc};
+use stream::{do_::DoTaskStreamExecutor, for_::ForTaskStreamExecutor};
 use switch::SwitchTaskExecutor;
 use tokio::sync::RwLock;
 // use tracing::Level;
 use try_::TryTaskExecutor;
 
 pub mod call;
-#[path = "task/do.rs"]
-pub mod do_;
-#[path = "task/for.rs"]
-pub mod for_;
 pub mod fork;
 pub mod run;
 pub mod set;
+pub mod stream;
 pub mod switch;
 #[path = "task/try_.rs"]
 pub mod try_;
@@ -72,7 +70,7 @@ impl TaskExecutor {
         &self,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         parent_task: Arc<TaskContext>,
-    ) -> Result<TaskContext, Box<workflow::Error>> {
+    ) -> futures::stream::BoxStream<'static, Result<TaskContext, Box<workflow::Error>>> {
         let input = parent_task.output.clone();
         let mut task_context = TaskContext::new(
             Some(self.task.clone()),
@@ -81,21 +79,21 @@ impl TaskExecutor {
         );
         task_context.position = parent_task.position.clone();
         // enter task (add task name to position stack)
-        task_context.add_position_name(self.task_name.clone()).await;
+        task_context.add_position_name(self.task_name.clone());
 
         let expression = Self::expression(
             &*workflow_context.read().await,
             Arc::new(task_context.clone()),
         )
         .await;
-        let mut expression = match expression {
+        let expression = match expression {
             Ok(expression) => expression,
             Err(mut e) => {
                 tracing::error!("Failed to evaluate expression: {:#?}", e);
                 task_context.flow_directive = Then::Exit;
-                e.position(&task_context.position.lock().await.clone());
+                e.position(&task_context.position.clone());
                 task_context.set_completed_at();
-                return Err(e);
+                return futures::stream::once(futures::future::ready(Err(e))).boxed();
             }
         };
 
@@ -116,40 +114,36 @@ impl TaskExecutor {
                             "`If' condition is false, skip: {:#?}",
                             &task_context.raw_input
                         );
-                        task_context.remove_position().await;
+                        task_context.remove_position();
                         task_context.set_completed_at();
-                        return Ok(task_context);
+                        return futures::stream::once(futures::future::ready(Ok(task_context)))
+                            .boxed();
                     }
                 }
                 Err(mut e) => {
                     tracing::error!("Failed to evaluate `if' condition: {:#?}", e);
-                    task_context.add_position_name("if".to_string()).await;
-                    e.position(&task_context.position.lock().await.clone());
+                    task_context.add_position_name("if".to_string());
+                    e.position(&task_context.position.clone());
                     task_context.set_completed_at();
-                    return Err(e);
+                    return futures::stream::once(futures::future::ready(Err(e))).boxed();
                 }
             }
         }
 
         // Transform input and update task context
-        let task_context = self
+        let task_context = match self
             .update_context_by_input(&expression, task_context)
-            .await?;
+            .await
+        {
+            Ok(context) => context,
+            Err(e) => {
+                return futures::stream::once(futures::future::ready(Err(e))).boxed();
+            }
+        };
 
-        // Execute task
-        let task_context = self
-            .execute_task(workflow_context.clone(), task_context)
-            .await?;
-
-        // Transform output and export
-        let mut task_context = self
-            .update_context_by_output(workflow_context, &mut expression, task_context)
-            .await?;
-
-        // go out of the task
-        task_context.remove_position().await;
-        task_context.set_completed_at();
-        Ok(task_context)
+        // Execute task - returns a stream
+        self.execute_task(workflow_context.clone(), task_context)
+            .await
     }
 
     // Transform, validate, and update the task context with the input of a task
@@ -167,7 +161,7 @@ impl TaskExecutor {
                         "Failed to validate input schema: {:#?}\n{:#?}\n{:#?}",
                         schema, &task_context.raw_input, e
                     );
-                    let mut pos = task_context.position.lock().await.clone();
+                    let mut pos = task_context.position.clone();
                     pos.push("input".to_string());
                     return Err(workflow::errors::ErrorFactory::new().bad_argument(
                         m,
@@ -193,20 +187,20 @@ impl TaskExecutor {
 
     // Transform and update the task context with the output of a task
     async fn update_context_by_output(
-        &self,
+        task: Arc<Task>,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         expression: &mut BTreeMap<String, Arc<serde_json::Value>>,
         mut task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
         // Transform output
         tracing::debug!("Task raw output: {:#?}", task_context.raw_output);
-        if let Some(as_) = self.task.output().and_then(|o| o.as_.as_ref()) {
+        if let Some(as_) = task.output().and_then(|o| o.as_.as_ref()) {
             task_context.output =
                 match Self::transform_output(task_context.raw_output.clone(), as_, expression) {
                     Ok(v) => v,
                     Err(mut e) => {
                         tracing::error!("Failed to transform output: {:#?}", e);
-                        let mut pos = task_context.position.lock().await.clone();
+                        let mut pos = task_context.position.clone();
                         pos.push("output".to_string());
                         e.position(&pos);
                         return Err(e);
@@ -223,7 +217,7 @@ impl TaskExecutor {
         expression.insert("output".to_string(), task_context.output.clone());
 
         // export output to workflow context
-        if let Some(export) = self.task.export().and_then(|o| o.as_.as_ref()) {
+        if let Some(export) = task.export().and_then(|o| o.as_.as_ref()) {
             let export = Self::transform_export(task_context.output.clone(), export, expression)?;
             tracing::debug!("Transformed export: {:#?}", &export);
             match export.as_ref() {
@@ -243,113 +237,328 @@ impl TaskExecutor {
         }
 
         // Determine next task
-        task_context.flow_directive = match self.task.then() {
+        task_context.flow_directive = match task.then() {
             Some(flow) => match Then::create(task_context.output.clone(), flow, expression) {
                 Ok(v) => v,
                 Err(mut e) => {
                     tracing::error!("Failed to evaluate `then' condition: {:#?}", e);
-                    task_context.add_position_name("then".to_string()).await;
-                    e.position(&task_context.position.lock().await.clone());
+                    task_context.add_position_name("then".to_string());
+                    e.position(&task_context.position.clone());
                     return Err(e);
                 }
             },
             None => Then::Continue,
         };
 
-        // go out of the task
-        task_context.remove_position().await;
+        task_context.remove_position();
+        task_context.set_completed_at();
         Ok(task_context)
     }
 
-    //
     async fn execute_task(
         &self,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
-    ) -> Result<TaskContext, Box<workflow::Error>> {
-        match self.task.as_ref() {
+    ) -> futures::stream::BoxStream<'static, Result<TaskContext, Box<workflow::Error>>> {
+        // Prepare owned data for 'static futures
+        let job_executor_wrapper = self.job_executor_wrapper.clone();
+        let http_client = self.http_client.clone();
+        let task_name = self.task_name.clone();
+        // Clone Task enum to own inner data
+        let task_enum = (*self.task).clone(); // XXX hard clone
+        let original_task = self.task.clone(); // XXX hard clone
+
+        // Dispatch based on owned Task
+        // need to update output context after task execution (not streaming task depends on the other kind tasks)
+        match task_enum {
             Task::CallTask(task) => {
-                let task_executor = CallTaskExecutor::new(
-                    task,
-                    self.http_client.clone(),
-                    self.job_executor_wrapper.clone(),
-                );
-                task_executor
-                    .execute(self.task_name.as_str(), workflow_context, task_context)
-                    .await
+                // CallTask: single-shot execution
+                let task_executor =
+                    CallTaskExecutor::new(task, http_client.clone(), job_executor_wrapper.clone());
+                futures::stream::once(async move {
+                    match task_executor
+                        .execute(
+                            task_name.as_str(),
+                            workflow_context.clone(),
+                            task_context.clone(), // XXX hard clone
+                        )
+                        .await
+                    {
+                        Ok(ctx) => {
+                            // update context by output
+                            let mut expr = Self::expression(
+                                &*workflow_context.read().await,
+                                Arc::new(ctx.clone()),
+                            )
+                            .await?;
+                            Self::update_context_by_output(
+                                original_task.clone(),
+                                workflow_context.clone(),
+                                &mut expr,
+                                ctx,
+                            )
+                            .await
+                        }
+                        Err(e) => Err(e),
+                    }
+                })
+                .boxed()
             }
             Task::DoTask(task) => {
-                let task_executor = DoTaskExecutor::new(
+                // DoTask: stream execution
+                let executor = DoTaskStreamExecutor::new(
                     task,
-                    self.job_executor_wrapper.clone(),
-                    self.http_client.clone(),
+                    job_executor_wrapper.clone(),
+                    http_client.clone(),
                 );
-                task_executor
-                    .execute(self.task_name.as_str(), workflow_context, task_context)
-                    .await
+                let (tx, rx) = mpsc::unbounded();
+                let wc = workflow_context.clone();
+                let tc = task_context.clone();
+                let tn = task_name.clone();
+                tokio::spawn(async move {
+                    let stream = executor.execute_stream(tn.as_str(), wc, tc);
+                    pin_mut!(stream);
+                    while let Some(item) = stream.next().await {
+                        if tx.unbounded_send(item).is_err() {
+                            break;
+                        }
+                    }
+                });
+                rx.boxed()
             }
             Task::ForkTask(task) => {
-                let task_executor = ForkTaskExecutor::new(self, task);
-                task_executor
-                    .execute(self.task_name.as_str(), workflow_context, task_context)
-                    .await
+                // ForkTask: single-shot execution
+                let fork_executor =
+                    ForkTaskExecutor::new(task, job_executor_wrapper.clone(), http_client.clone());
+                futures::stream::once(async move {
+                    match fork_executor
+                        .execute(
+                            task_name.as_str(),
+                            workflow_context.clone(),
+                            task_context.clone(),
+                        )
+                        .await
+                    {
+                        Ok(ctx) => {
+                            let mut expr = Self::expression(
+                                &*workflow_context.read().await,
+                                Arc::new(ctx.clone()),
+                            )
+                            .await?;
+                            Self::update_context_by_output(
+                                original_task.clone(),
+                                workflow_context.clone(),
+                                &mut expr,
+                                ctx,
+                            )
+                            .await
+                        }
+                        Err(e) => Err(e),
+                    }
+                })
+                .boxed()
             }
-            // Task::EmitTask(task) => {
-            //     let task_executor = EmitTaskExecutor::new(task);
-            //     task_executor
-            //         .execute(self.task_name.as_str(), workflow_context, task_context)
-            //         .await
-            // }
             Task::ForTask(task) => {
-                let task_executor = ForTaskExecutor::new(
+                let executor = ForTaskStreamExecutor::new(
                     task,
-                    self.job_executor_wrapper.clone(),
-                    self.http_client.clone(),
+                    job_executor_wrapper.clone(),
+                    http_client.clone(),
                 );
-                task_executor
-                    .execute(self.task_name.as_str(), workflow_context, task_context)
-                    .await
+                let (tx, rx) = mpsc::unbounded();
+                let wc = workflow_context.clone();
+                let tc = task_context.clone();
+                let tn = task_name.clone();
+                tokio::spawn(async move {
+                    let stream = executor.execute_stream(tn.as_str(), wc, tc);
+                    pin_mut!(stream);
+                    while let Some(item) = stream.next().await {
+                        if tx.unbounded_send(item).is_err() {
+                            break;
+                        }
+                    }
+                });
+                rx.boxed()
             }
             Task::RaiseTask(task) => {
                 let task_executor = RaiseTaskExecutor::new(task);
-                task_executor
-                    .execute(self.task_name.as_str(), workflow_context, task_context)
-                    .await
+                futures::stream::once(async move {
+                    match task_executor
+                        .execute(
+                            task_name.as_str(),
+                            workflow_context.clone(),
+                            task_context.clone(),
+                        )
+                        .await
+                    {
+                        Ok(ctx) => {
+                            let mut expr = Self::expression(
+                                &*workflow_context.read().await,
+                                Arc::new(ctx.clone()),
+                            )
+                            .await?;
+                            Self::update_context_by_output(
+                                original_task.clone(),
+                                workflow_context.clone(),
+                                &mut expr,
+                                ctx,
+                            )
+                            .await
+                        }
+                        Err(e) => Err(e),
+                    }
+                })
+                .boxed()
             }
-            // implemented
             Task::RunTask(task) => {
-                let task_executor = RunTaskExecutor::new(self.job_executor_wrapper.clone(), task);
-                task_executor
-                    .execute(self.task_name.as_str(), workflow_context, task_context)
-                    .await
+                let task_executor = RunTaskExecutor::new(job_executor_wrapper.clone(), task);
+                futures::stream::once(async move {
+                    match task_executor
+                        .execute(
+                            task_name.as_str(),
+                            workflow_context.clone(),
+                            task_context.clone(),
+                        )
+                        .await
+                    {
+                        Ok(ctx) => {
+                            let mut expr = Self::expression(
+                                &*workflow_context.read().await,
+                                Arc::new(ctx.clone()),
+                            )
+                            .await?;
+                            Self::update_context_by_output(
+                                original_task.clone(),
+                                workflow_context.clone(),
+                                &mut expr,
+                                ctx,
+                            )
+                            .await
+                        }
+                        Err(e) => Err(e),
+                    }
+                })
+                .boxed()
             }
             Task::SetTask(task) => {
                 let task_executor = SetTaskExecutor::new(task);
-                task_executor
-                    .execute(self.task_name.as_str(), workflow_context, task_context)
-                    .await
+                futures::stream::once(async move {
+                    match task_executor
+                        .execute(
+                            task_name.as_str(),
+                            workflow_context.clone(),
+                            task_context.clone(),
+                        )
+                        .await
+                    {
+                        Ok(ctx) => {
+                            let mut expr = Self::expression(
+                                &*workflow_context.read().await,
+                                Arc::new(ctx.clone()),
+                            )
+                            .await?;
+                            Self::update_context_by_output(
+                                original_task.clone(),
+                                workflow_context.clone(),
+                                &mut expr,
+                                ctx,
+                            )
+                            .await
+                        }
+                        Err(e) => Err(e),
+                    }
+                })
+                .boxed()
             }
             Task::SwitchTask(task) => {
-                let task_executor = SwitchTaskExecutor::new(task);
-                task_executor
-                    .execute(self.task_name.as_str(), workflow_context, task_context)
-                    .await
+                let task_executor = SwitchTaskExecutor::new(&task);
+                futures::stream::once(async move {
+                    match task_executor
+                        .execute(
+                            task_name.as_str(),
+                            workflow_context.clone(),
+                            task_context.clone(),
+                        )
+                        .await
+                    {
+                        Ok(ctx) => {
+                            let mut expr = Self::expression(
+                                &*workflow_context.read().await,
+                                Arc::new(ctx.clone()),
+                            )
+                            .await?;
+                            Self::update_context_by_output(
+                                original_task.clone(),
+                                workflow_context.clone(),
+                                &mut expr,
+                                ctx,
+                            )
+                            .await
+                        }
+                        Err(e) => Err(e),
+                    }
+                })
+                .boxed()
             }
             Task::TryTask(task) => {
-                let task_executor = TryTaskExecutor::new(
-                    task,
-                    self.job_executor_wrapper.clone(),
-                    self.http_client.clone(),
-                );
-                task_executor
-                    .execute(self.task_name.as_str(), workflow_context, task_context)
-                    .await
+                let task_executor =
+                    TryTaskExecutor::new(task, job_executor_wrapper.clone(), http_client.clone());
+                futures::stream::once(async move {
+                    match task_executor
+                        .execute(
+                            task_name.as_str(),
+                            workflow_context.clone(),
+                            task_context.clone(),
+                        )
+                        .await
+                    {
+                        Ok(ctx) => {
+                            let mut expr = Self::expression(
+                                &*workflow_context.read().await,
+                                Arc::new(ctx.clone()),
+                            )
+                            .await?;
+                            Self::update_context_by_output(
+                                original_task.clone(),
+                                workflow_context.clone(),
+                                &mut expr,
+                                ctx,
+                            )
+                            .await
+                        }
+                        Err(e) => Err(e),
+                    }
+                })
+                .boxed()
             }
             Task::WaitTask(task) => {
                 let task_executor = WaitTaskExecutor::new(task);
-                task_executor
-                    .execute(self.task_name.as_str(), workflow_context, task_context)
-                    .await
+                futures::stream::once(async move {
+                    match task_executor
+                        .execute(
+                            task_name.as_str(),
+                            workflow_context.clone(),
+                            task_context.clone(),
+                        )
+                        .await
+                    {
+                        Ok(ctx) => {
+                            let mut expr = Self::expression(
+                                &*workflow_context.read().await,
+                                Arc::new(ctx.clone()),
+                            )
+                            .await?;
+                            Self::update_context_by_output(
+                                original_task.clone(),
+                                workflow_context.clone(),
+                                &mut expr,
+                                ctx,
+                            )
+                            .await
+                        }
+                        Err(e) => Err(e),
+                    }
+                })
+                .boxed()
             }
         }
     }
@@ -364,35 +573,24 @@ pub trait TaskExecutorTrait<'a>: Send + Sync {
     ) -> impl std::future::Future<Output = Result<TaskContext, Box<workflow::Error>>> + Send;
 }
 
-// pub struct EmitTaskExecutor<'a> {
-//     task: &'a workflow::EmitTask,
-// }
-// impl<'a> EmitTaskExecutor<'a> {
-//     pub fn new(task: &'a workflow::EmitTask) -> Self {
-//         Self { task }
-//     }
-// }
-// impl TaskExecutorTrait for EmitTaskExecutor<'_> {
-//     async fn execute(
-//         &self,
-//         _task_name: &str,
-//         _workflow_context: Arc<RwLock<WorkflowContext>>,
-//         _task_context: TaskContext,
-//     ) -> Result<TaskContext> {
-//         tracing::error!("EmitTaskExecutor not implemented yet!: {:?}", self.task);
-//         todo!()
-//     }
-// }
-
-pub struct RaiseTaskExecutor<'a> {
-    task: &'a workflow::RaiseTask,
+pub trait StreamTaskExecutorTrait<'a>: Send + Sync {
+    fn execute_stream(
+        &'a self,
+        task_name: &'a str,
+        workflow_context: Arc<RwLock<WorkflowContext>>,
+        task_context: TaskContext,
+    ) -> impl futures::Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send;
 }
-impl<'a> RaiseTaskExecutor<'a> {
-    pub fn new(task: &'a workflow::RaiseTask) -> Self {
+
+pub struct RaiseTaskExecutor {
+    task: workflow::RaiseTask,
+}
+impl RaiseTaskExecutor {
+    pub fn new(task: workflow::RaiseTask) -> Self {
         Self { task }
     }
 }
-impl TaskExecutorTrait<'_> for RaiseTaskExecutor<'_> {
+impl TaskExecutorTrait<'_> for RaiseTaskExecutor {
     async fn execute(
         &self,
         _task_name: &str,
@@ -401,7 +599,7 @@ impl TaskExecutorTrait<'_> for RaiseTaskExecutor<'_> {
     ) -> Result<TaskContext, Box<workflow::Error>> {
         tracing::error!("RaiseTaskExecutor raise error: {:?}", self.task.raise.error);
         // TODO add error detail information to workflow_context
-        let mut pos = task_context.position.lock().await.clone();
+        let mut pos = task_context.position.clone();
         pos.push("raise".to_string());
         workflow_context.write().await.status = WorkflowStatus::Faulted;
         Err(workflow::errors::ErrorFactory::create(
@@ -413,22 +611,22 @@ impl TaskExecutorTrait<'_> for RaiseTaskExecutor<'_> {
     }
 }
 
-pub struct WaitTaskExecutor<'a> {
-    task: &'a workflow::WaitTask,
+pub struct WaitTaskExecutor {
+    task: workflow::WaitTask,
 }
-impl<'a> WaitTaskExecutor<'a> {
-    pub fn new(task: &'a workflow::WaitTask) -> Self {
+impl WaitTaskExecutor {
+    pub fn new(task: workflow::WaitTask) -> Self {
         Self { task }
     }
 }
-impl TaskExecutorTrait<'_> for WaitTaskExecutor<'_> {
+impl TaskExecutorTrait<'_> for WaitTaskExecutor {
     async fn execute(
         &self,
         task_name: &str,
         _workflow_context: Arc<RwLock<WorkflowContext>>,
         mut task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
-        tracing::info!("WaitTask: {}: {:?}", task_name, self.task);
+        tracing::info!("WaitTask: {}: {:?}", task_name, &self.task);
         tokio::time::sleep(std::time::Duration::from_millis(self.task.wait.to_millis())).await;
         task_context.set_output(task_context.input.clone());
         Ok(task_context)
