@@ -14,7 +14,7 @@ pub mod tasks;
 
 #[doc = r" Error types."]
 pub mod error {
-    #[doc = r" Error from a TryFrom or FromStr implementation."]
+    #[doc = r" Error from a `TryFrom` or `FromStr` implementation."]
     pub struct ConversionError(::std::borrow::Cow<'static, str>);
     impl ::std::error::Error for ConversionError {}
     impl ::std::fmt::Display for ConversionError {
@@ -38,7 +38,7 @@ pub mod error {
         }
     }
 }
-#[doc = "CallTask"]
+#[doc = "`CallTask`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -190,7 +190,7 @@ impl CatchErrors {
         Default::default()
     }
 }
-#[doc = "DoTask"]
+#[doc = "`DoTask`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -400,7 +400,7 @@ impl Document {
         Default::default()
     }
 }
-#[doc = "Duration"]
+#[doc = "`Duration`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -954,7 +954,7 @@ impl FlowDirective {
         Default::default()
     }
 }
-#[doc = "FlowDirectiveEnum"]
+#[doc = "`FlowDirectiveEnum`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -1043,7 +1043,7 @@ impl ::std::default::Default for FlowDirectiveEnum {
         FlowDirectiveEnum::Continue
     }
 }
-#[doc = "ForTask"]
+#[doc = "`ForTask`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -1096,6 +1096,12 @@ impl ::std::default::Default for FlowDirectiveEnum {
 #[doc = "      \"title\": \"TaskBaseIf\","]
 #[doc = "      \"description\": \"A runtime expression, if any, used to determine whether or not the task should be run.\","]
 #[doc = "      \"type\": \"string\""]
+#[doc = "    },"]
+#[doc = "    \"inParallel\": {"]
+#[doc = "      \"title\": \"ForInParallel\","]
+#[doc = "      \"description\": \"Indicates whether or not the subtasks should be executed in parallel.\","]
+#[doc = "      \"default\": false,"]
+#[doc = "      \"type\": \"boolean\""]
 #[doc = "    },"]
 #[doc = "    \"input\": {"]
 #[doc = "      \"title\": \"TaskBaseInput\","]
@@ -1158,6 +1164,9 @@ pub struct ForTask {
         skip_serializing_if = "::std::option::Option::is_none"
     )]
     pub if_: ::std::option::Option<::std::string::String>,
+    #[doc = "Indicates whether or not the subtasks should be executed in parallel."]
+    #[serde(rename = "inParallel", default)]
+    pub in_parallel: bool,
     #[doc = "Configure the task's input."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub input: ::std::option::Option<Input>,
@@ -1247,7 +1256,7 @@ impl ForTaskConfiguration {
         Default::default()
     }
 }
-#[doc = "ForkTask"]
+#[doc = "`ForkTask`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2057,7 +2066,7 @@ impl ::std::default::Default for ProcessReturnType {
         ProcessReturnType::Stdout
     }
 }
-#[doc = "RaiseTask"]
+#[doc = "`RaiseTask`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2229,7 +2238,7 @@ impl RaiseTaskConfiguration {
         Default::default()
     }
 }
-#[doc = "RaiseTaskError"]
+#[doc = "`RaiseTaskError`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2386,7 +2395,7 @@ impl RetryLimit {
         Default::default()
     }
 }
-#[doc = "RetryLimitAttempt"]
+#[doc = "`RetryLimitAttempt`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2556,7 +2565,7 @@ impl RetryPolicy {
         Default::default()
     }
 }
-#[doc = "RunTask"]
+#[doc = "`RunTask`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2968,7 +2977,7 @@ impl ::std::convert::From<&Self> for Schema {
         value.clone()
     }
 }
-#[doc = "SetTask"]
+#[doc = "`SetTask`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3121,7 +3130,7 @@ impl SwitchCase {
         Default::default()
     }
 }
-#[doc = "SwitchTask"]
+#[doc = "`SwitchTask`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3528,7 +3537,7 @@ impl ::std::convert::From<::std::vec::Vec<::std::collections::HashMap<::std::str
         Self(value)
     }
 }
-#[doc = "TaskTimeout"]
+#[doc = "`TaskTimeout`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3604,7 +3613,7 @@ impl Timeout {
         Default::default()
     }
 }
-#[doc = "TryTask"]
+#[doc = "`TryTask`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3876,7 +3885,7 @@ impl TryTaskCatch {
         Default::default()
     }
 }
-#[doc = "TryTaskCatchRetry"]
+#[doc = "`TryTaskCatchRetry`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3913,7 +3922,7 @@ impl ::std::convert::From<RetryPolicy> for TryTaskCatchRetry {
         Self::Variant0(value)
     }
 }
-#[doc = "UriTemplate"]
+#[doc = "`UriTemplate`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3976,7 +3985,7 @@ impl ::std::fmt::Display for UriTemplate {
         self.0.fmt(f)
     }
 }
-#[doc = "WaitTask"]
+#[doc = "`WaitTask`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -5424,6 +5433,7 @@ pub mod builder {
             ::std::option::Option<::std::string::String>,
             ::std::string::String,
         >,
+        in_parallel: ::std::result::Result<bool, ::std::string::String>,
         input: ::std::result::Result<::std::option::Option<super::Input>, ::std::string::String>,
         metadata: ::std::result::Result<
             ::serde_json::Map<::std::string::String, ::serde_json::Value>,
@@ -5448,6 +5458,7 @@ pub mod builder {
                 export: Ok(Default::default()),
                 for_: Err("no value supplied for for_".to_string()),
                 if_: Ok(Default::default()),
+                in_parallel: Ok(Default::default()),
                 input: Ok(Default::default()),
                 metadata: Ok(Default::default()),
                 output: Ok(Default::default()),
@@ -5496,6 +5507,16 @@ pub mod builder {
             self.if_ = value
                 .try_into()
                 .map_err(|e| format!("error converting supplied value for if_: {}", e));
+            self
+        }
+        pub fn in_parallel<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.in_parallel = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for in_parallel: {}", e));
             self
         }
         pub fn input<T>(mut self, value: T) -> Self
@@ -5569,6 +5590,7 @@ pub mod builder {
                 export: value.export?,
                 for_: value.for_?,
                 if_: value.if_?,
+                in_parallel: value.in_parallel?,
                 input: value.input?,
                 metadata: value.metadata?,
                 output: value.output?,
@@ -5585,6 +5607,7 @@ pub mod builder {
                 export: Ok(value.export),
                 for_: Ok(value.for_),
                 if_: Ok(value.if_),
+                in_parallel: Ok(value.in_parallel),
                 input: Ok(value.input),
                 metadata: Ok(value.metadata),
                 output: Ok(value.output),

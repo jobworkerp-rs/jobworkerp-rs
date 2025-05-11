@@ -17,6 +17,7 @@ pub struct WorkflowContext {
     pub status: WorkflowStatus,
     pub started_at: DateTime<FixedOffset>,
     pub output: Option<Arc<serde_json::Value>>,
+    pub position: WorkflowPosition,
     #[serde(skip)]
     pub context_variables: Arc<Mutex<serde_json::Map<String, serde_json::Value>>>,
 }
@@ -38,6 +39,7 @@ impl WorkflowContext {
             status: WorkflowStatus::Pending,
             started_at,
             output: None,
+            position: WorkflowPosition::new(vec![]),
             context_variables: context
                 .as_object()
                 .map(|o| Arc::new(Mutex::new(o.clone())))
@@ -58,6 +60,7 @@ impl WorkflowContext {
             status: WorkflowStatus::Pending,
             started_at,
             output: None,
+            position: WorkflowPosition::new(vec![]),
             context_variables: Arc::new(Mutex::new(serde_json::Map::new())),
         }
     }
@@ -136,6 +139,7 @@ pub struct TaskContext {
     pub output: Arc<serde_json::Value>,
     // #[serde(skip)]
     pub context_variables: Arc<Mutex<serde_json::Map<String, serde_json::Value>>>,
+
     pub started_at: DateTime<FixedOffset>,
     pub completed_at: Option<DateTime<FixedOffset>>,
     pub flow_directive: Then,
@@ -163,11 +167,6 @@ impl TaskContext {
         }
     }
     pub fn new_empty() -> Self {
-        let uuid = Uuid::now_v7();
-        let started_at = uuid
-            .get_timestamp()
-            .map(|t| command_utils::util::datetime::from_epoch_sec(t.to_unix().0 as i64))
-            .unwrap_or_else(command_utils::util::datetime::now);
         Self {
             definition: None,
             raw_input: Arc::new(serde_json::Value::Null),
@@ -175,7 +174,7 @@ impl TaskContext {
             raw_output: Arc::new(serde_json::Value::Null),
             output: Arc::new(serde_json::Value::Null),
             context_variables: Arc::new(Mutex::new(serde_json::Map::new())),
-            started_at,
+            started_at: command_utils::util::datetime::now(),
             completed_at: None,
             flow_directive: Then::Continue,
             position: Arc::new(Mutex::new(WorkflowPosition::new(vec![]))),
@@ -207,6 +206,9 @@ impl TaskContext {
     //cloned
     pub async fn get_context_value(&self, key: &str) -> Option<serde_json::Value> {
         self.context_variables.lock().await.get(key).cloned()
+    }
+    pub fn set_completed_at(&mut self) {
+        self.completed_at = Some(command_utils::util::datetime::now());
     }
     // XXX clone
     pub fn to_descriptor(&self) -> TaskDescriptor {
@@ -422,5 +424,11 @@ impl WorkflowPosition {
     // alias
     pub fn as_error_instance(&self) -> String {
         self.as_json_pointer()
+    }
+}
+
+impl std::fmt::Display for WorkflowPosition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_json_pointer())
     }
 }
