@@ -12,20 +12,20 @@ use crate::workflow::{
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-pub struct SetTaskExecutor<'a> {
-    task: &'a workflow::SetTask,
+pub struct SetTaskExecutor {
+    task: workflow::SetTask,
 }
-impl<'a> SetTaskExecutor<'a> {
-    pub fn new(task: &'a workflow::SetTask) -> Self {
+impl SetTaskExecutor {
+    pub fn new(task: workflow::SetTask) -> Self {
         Self { task }
     }
 }
 
-impl UseExpression for SetTaskExecutor<'_> {}
-impl UseExpressionTransformer for SetTaskExecutor<'_> {}
-impl UseJqAndTemplateTransformer for SetTaskExecutor<'_> {}
+impl UseExpression for SetTaskExecutor {}
+impl UseExpressionTransformer for SetTaskExecutor {}
+impl UseJqAndTemplateTransformer for SetTaskExecutor {}
 
-impl TaskExecutorTrait<'_> for SetTaskExecutor<'_> {
+impl TaskExecutorTrait<'_> for SetTaskExecutor {
     async fn execute(
         &self,
         task_name: &str,
