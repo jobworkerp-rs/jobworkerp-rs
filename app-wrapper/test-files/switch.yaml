@@ -1,0 +1,36 @@
+document:
+  id: 2
+  name: switch-test
+  namespace: default
+  title: Workflow test (switch)
+  version: 0.0.2
+  dsl: 0.0.2
+input:
+  schema:
+    document:
+      type: string
+      description: file name
+      default: /
+do:
+  - TestSwitch:
+      switch:
+        - test:
+            when: '${$input|slice: 0, 1 == "d"}' # condition for switch
+            then: exit
+        - default: 
+            then: "continue"
+  - ListWorker: # worker name for jobworkerp (if not use static, add random suffix as temporary worker)
+      run:
+        function:
+          runnerName: COMMAND # built-in runner type or plugin name
+          # settings: # initialize settings for runner defined with protobuf
+          arguments: # arguments for the runner defined with protobuf
+            command: ls
+            args: ["${.}"] # args for the command
+          options: 
+            channel: workflow
+            useStatic: false
+            storeSuccess: true
+            storeFailure: true
+      then: "exit"
+ 

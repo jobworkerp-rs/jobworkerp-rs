@@ -199,8 +199,8 @@ impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
                                 }
                                 Some(res) => {
                                     tracing::debug!(
-                                        "subscribe_result_stream_received: result={:?}",
-                                        &res
+                                        "subscribe_result_stream_received: result len={:?}",
+                                        &res.encoded_len()
                                     );
                                     Some(ResultOutputItem { item: Some(res) })
                                 }

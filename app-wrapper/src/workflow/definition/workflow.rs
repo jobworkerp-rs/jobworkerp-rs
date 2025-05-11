@@ -14,7 +14,7 @@ pub mod tasks;
 
 #[doc = r" Error types."]
 pub mod error {
-    #[doc = r" Error from a `TryFrom` or `FromStr` implementation."]
+    #[doc = r" Error from a TryFrom or FromStr implementation."]
     pub struct ConversionError(::std::borrow::Cow<'static, str>);
     impl ::std::error::Error for ConversionError {}
     impl ::std::fmt::Display for ConversionError {
@@ -38,7 +38,7 @@ pub mod error {
         }
     }
 }
-#[doc = "`CallTask`"]
+#[doc = "CallTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -190,7 +190,7 @@ impl CatchErrors {
         Default::default()
     }
 }
-#[doc = "`DoTask`"]
+#[doc = "DoTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -400,7 +400,7 @@ impl Document {
         Default::default()
     }
 }
-#[doc = "`Duration`"]
+#[doc = "Duration"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -910,7 +910,7 @@ impl ExternalResource {
 #[doc = "{"]
 #[doc = "  \"title\": \"FlowDirective\","]
 #[doc = "  \"description\": \"Represents different transition options that determine the next execution path within a workflow.\","]
-#[doc = "  \"anyOf\": ["]
+#[doc = "  \"oneOf\": ["]
 #[doc = "    {"]
 #[doc = "      \"title\": \"FlowDirectiveEnum\","]
 #[doc = "      \"default\": \"continue\","]
@@ -930,31 +930,22 @@ impl ExternalResource {
 #[doc = r" ```"]
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
-pub struct FlowDirective {
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub subtype_0: ::std::option::Option<FlowDirectiveEnum>,
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub subtype_1: ::std::option::Option<::std::string::String>,
+#[serde(untagged)]
+pub enum FlowDirective {
+    Variant0(FlowDirectiveEnum),
+    Variant1(::std::string::String),
 }
-impl ::std::convert::From<&FlowDirective> for FlowDirective {
+impl ::std::convert::From<&Self> for FlowDirective {
     fn from(value: &FlowDirective) -> Self {
         value.clone()
     }
 }
-impl ::std::default::Default for FlowDirective {
-    fn default() -> Self {
-        Self {
-            subtype_0: Default::default(),
-            subtype_1: Default::default(),
-        }
+impl ::std::convert::From<FlowDirectiveEnum> for FlowDirective {
+    fn from(value: FlowDirectiveEnum) -> Self {
+        Self::Variant0(value)
     }
 }
-impl FlowDirective {
-    pub fn builder() -> builder::FlowDirective {
-        Default::default()
-    }
-}
-#[doc = "`FlowDirectiveEnum`"]
+#[doc = "FlowDirectiveEnum"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -1038,12 +1029,7 @@ impl ::std::convert::TryFrom<::std::string::String> for FlowDirectiveEnum {
         value.parse()
     }
 }
-impl ::std::default::Default for FlowDirectiveEnum {
-    fn default() -> Self {
-        FlowDirectiveEnum::Continue
-    }
-}
-#[doc = "`ForTask`"]
+#[doc = "ForTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -1256,7 +1242,7 @@ impl ForTaskConfiguration {
         Default::default()
     }
 }
-#[doc = "`ForkTask`"]
+#[doc = "ForkTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2066,7 +2052,7 @@ impl ::std::default::Default for ProcessReturnType {
         ProcessReturnType::Stdout
     }
 }
-#[doc = "`RaiseTask`"]
+#[doc = "RaiseTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2238,7 +2224,7 @@ impl RaiseTaskConfiguration {
         Default::default()
     }
 }
-#[doc = "`RaiseTaskError`"]
+#[doc = "RaiseTaskError"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2395,7 +2381,7 @@ impl RetryLimit {
         Default::default()
     }
 }
-#[doc = "`RetryLimitAttempt`"]
+#[doc = "RetryLimitAttempt"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2565,7 +2551,7 @@ impl RetryPolicy {
         Default::default()
     }
 }
-#[doc = "`RunTask`"]
+#[doc = "RunTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -2977,7 +2963,7 @@ impl ::std::convert::From<&Self> for Schema {
         value.clone()
     }
 }
-#[doc = "`SetTask`"]
+#[doc = "SetTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3130,7 +3116,7 @@ impl SwitchCase {
         Default::default()
     }
 }
-#[doc = "`SwitchTask`"]
+#[doc = "SwitchTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3537,7 +3523,7 @@ impl ::std::convert::From<::std::vec::Vec<::std::collections::HashMap<::std::str
         Self(value)
     }
 }
-#[doc = "`TaskTimeout`"]
+#[doc = "TaskTimeout"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3613,7 +3599,7 @@ impl Timeout {
         Default::default()
     }
 }
-#[doc = "`TryTask`"]
+#[doc = "TryTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3885,7 +3871,7 @@ impl TryTaskCatch {
         Default::default()
     }
 }
-#[doc = "`TryTaskCatchRetry`"]
+#[doc = "TryTaskCatchRetry"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3922,7 +3908,7 @@ impl ::std::convert::From<RetryPolicy> for TryTaskCatchRetry {
         Self::Variant0(value)
     }
 }
-#[doc = "`UriTemplate`"]
+#[doc = "UriTemplate"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -3985,7 +3971,7 @@ impl ::std::fmt::Display for UriTemplate {
         self.0.fmt(f)
     }
 }
-#[doc = "`WaitTask`"]
+#[doc = "WaitTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -5361,66 +5347,6 @@ pub mod builder {
             Self {
                 endpoint: Ok(value.endpoint),
                 name: Ok(value.name),
-            }
-        }
-    }
-    #[derive(Clone, Debug)]
-    pub struct FlowDirective {
-        subtype_0: ::std::result::Result<
-            ::std::option::Option<super::FlowDirectiveEnum>,
-            ::std::string::String,
-        >,
-        subtype_1: ::std::result::Result<
-            ::std::option::Option<::std::string::String>,
-            ::std::string::String,
-        >,
-    }
-    impl ::std::default::Default for FlowDirective {
-        fn default() -> Self {
-            Self {
-                subtype_0: Ok(Default::default()),
-                subtype_1: Ok(Default::default()),
-            }
-        }
-    }
-    impl FlowDirective {
-        pub fn subtype_0<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<super::FlowDirectiveEnum>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.subtype_0 = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for subtype_0: {}", e));
-            self
-        }
-        pub fn subtype_1<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.subtype_1 = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for subtype_1: {}", e));
-            self
-        }
-    }
-    impl ::std::convert::TryFrom<FlowDirective> for super::FlowDirective {
-        type Error = super::error::ConversionError;
-        fn try_from(
-            value: FlowDirective,
-        ) -> ::std::result::Result<Self, super::error::ConversionError> {
-            Ok(Self {
-                subtype_0: value.subtype_0?,
-                subtype_1: value.subtype_1?,
-            })
-        }
-    }
-    impl ::std::convert::From<super::FlowDirective> for FlowDirective {
-        fn from(value: super::FlowDirective) -> Self {
-            Self {
-                subtype_0: Ok(value.subtype_0),
-                subtype_1: Ok(value.subtype_1),
             }
         }
     }

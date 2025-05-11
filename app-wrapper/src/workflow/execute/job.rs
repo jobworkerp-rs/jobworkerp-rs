@@ -131,9 +131,9 @@ pub trait UseJobExecutorHelper:
                 w
             } else {
                 tracing::debug!(
-                    "worker {} not found. create new worker: {:#?}",
+                    "worker {} not found. create new worker: {:?}",
                     &worker_data.name,
-                    &worker_data
+                    &worker_data.runner_id
                 );
                 let wid = self.worker_app().create(worker_data).await?;
                 // wait for worker creation? (replica db)

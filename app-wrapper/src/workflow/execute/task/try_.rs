@@ -17,14 +17,14 @@ use infra_utils::infra::net::reqwest;
 use std::sync::Arc;
 use tokio::{sync::RwLock, time::Instant};
 
-pub struct TryTaskExecutor<'a> {
-    task: &'a workflow::TryTask,
+pub struct TryTaskExecutor {
+    task: workflow::TryTask,
     job_executors: Arc<JobExecutorWrapper>,
     http_client: reqwest::ReqwestClient,
 }
-impl<'a> TryTaskExecutor<'a> {
+impl TryTaskExecutor {
     pub fn new(
-        task: &'a workflow::TryTask,
+        task: workflow::TryTask,
         job_executors: Arc<JobExecutorWrapper>,
         http_client: reqwest::ReqwestClient,
     ) -> Self {
@@ -36,11 +36,11 @@ impl<'a> TryTaskExecutor<'a> {
     }
 }
 
-impl UseExpression for TryTaskExecutor<'_> {}
-impl UseExpressionTransformer for TryTaskExecutor<'_> {}
-impl UseJqAndTemplateTransformer for TryTaskExecutor<'_> {}
+impl UseExpression for TryTaskExecutor {}
+impl UseExpressionTransformer for TryTaskExecutor {}
+impl UseJqAndTemplateTransformer for TryTaskExecutor {}
 
-impl TaskExecutorTrait<'_> for TryTaskExecutor<'_> {
+impl TaskExecutorTrait<'_> for TryTaskExecutor {
     #[allow(clippy::manual_async_fn)]
     fn execute(
         &self,
@@ -50,12 +50,12 @@ impl TaskExecutorTrait<'_> for TryTaskExecutor<'_> {
     ) -> impl std::future::Future<Output = Result<TaskContext, Box<workflow::Error>>> + Send {
         async move {
             let mut task_context = task_context;
-            task_context.add_position_name("try".to_string()).await;
+            task_context.add_position_name("try".to_string());
             let retry = self.task.catch.retry.as_ref();
             let start_time = Instant::now();
 
             let mut retry_count: i64 = 0;
-            let res = loop {
+            let mut res = loop {
                 match self
                     .execute_task_list(
                         task_name,
@@ -111,13 +111,13 @@ impl TaskExecutorTrait<'_> for TryTaskExecutor<'_> {
                     .await?;
             }
             // go out of 'try'
-            res.remove_position().await;
+            res.remove_position();
             Ok(res)
         }
     }
 }
 
-impl TryTaskExecutor<'_> {
+impl TryTaskExecutor {
     async fn execute_task_list(
         &self,
         task_name: &str,
@@ -125,6 +125,7 @@ impl TryTaskExecutor<'_> {
         workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
+        use futures::StreamExt;
         let do_tasks = DoTask {
             do_: task_list.clone(), // XXX clone
             ..Default::default()
@@ -135,8 +136,23 @@ impl TryTaskExecutor<'_> {
             task_name,
             Arc::new(workflow::Task::DoTask(do_tasks)),
         );
-        // for recursive call
-        Box::pin(task_executor.execute(workflow_context.clone(), Arc::new(task_context))).await
+
+        let mut stream = task_executor
+            .execute(workflow_context.clone(), Arc::new(task_context.clone()))
+            .await;
+        let mut last_context = None;
+        while let Some(task_context) = stream.next().await {
+            match task_context {
+                Ok(context) => {
+                    last_context = Some(context);
+                }
+                Err(e) => {
+                    tracing::error!("Error executing task: {:?}", e);
+                    return Err(e);
+                }
+            }
+        }
+        Ok(last_context.unwrap_or(task_context))
     }
 
     // return need retry or not
@@ -232,7 +248,7 @@ impl TryTaskExecutor<'_> {
             Ok(expression) => expression,
             Err(mut e) => {
                 tracing::error!("Failed to evaluate expression: {:#?}", e);
-                e.position(&task_context.position.lock().await.clone());
+                e.position(&task_context.position.clone());
                 return Err(e);
             }
         };
@@ -247,7 +263,7 @@ impl TryTaskExecutor<'_> {
                 Ok(value) => value,
                 Err(mut e) => {
                     tracing::error!("Failed to evaluate when condition: {:#?}", e);
-                    let mut pos = task_context.position.lock().await.clone();
+                    let mut pos = task_context.position.clone();
                     pos.push("when".to_string());
                     e.position(&pos);
                     return Err(e);
@@ -268,7 +284,7 @@ impl TryTaskExecutor<'_> {
                 Ok(value) => value,
                 Err(mut e) => {
                     tracing::error!("Failed to evaluate except_when condition: {:#?}", e);
-                    let mut pos = task_context.position.lock().await.clone();
+                    let mut pos = task_context.position.clone();
                     pos.push("except_when".to_string());
                     e.position(&pos);
                     return Err(e);
@@ -372,11 +388,7 @@ mod tests {
     // Helper function for tests
     async fn setup_test(
         try_task_config: Option<workflow::TryTask>,
-    ) -> (
-        TryTaskExecutor<'static>,
-        Arc<RwLock<WorkflowContext>>,
-        TaskContext,
-    ) {
+    ) -> (TryTaskExecutor, Arc<RwLock<WorkflowContext>>, TaskContext) {
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
         let job_executors = Arc::new(JobExecutorWrapper::new(app_module));
         let http_client = reqwest::ReqwestClient::new(None, None, None, None).unwrap();
@@ -423,7 +435,8 @@ mod tests {
             Arc::new(Mutex::new(Default::default())),
         );
 
-        let try_executor = TryTaskExecutor::new(try_task, job_executors.clone(), http_client);
+        let try_executor =
+            TryTaskExecutor::new(try_task.clone(), job_executors.clone(), http_client);
 
         (try_executor, workflow_context, task_context)
     }
@@ -444,98 +457,104 @@ mod tests {
         })
     }
 
-    #[tokio::test]
-    async fn test_eval_retry_condition_with_count_limit() {
-        let retry = workflow::TryTaskCatchRetry::Variant0(RetryPolicy {
-            backoff: None,
-            delay: None,
-            limit: Some(RetryLimit {
-                attempt: Some(RetryLimitAttempt {
-                    count: Some(3),
-                    duration: None,
+    #[test]
+    fn test_eval_retry_condition_with_count_limit() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let retry = workflow::TryTaskCatchRetry::Variant0(RetryPolicy {
+                backoff: None,
+                delay: None,
+                limit: Some(RetryLimit {
+                    attempt: Some(RetryLimitAttempt {
+                        count: Some(3),
+                        duration: None,
+                    }),
                 }),
-            }),
-        });
+            });
 
-        let start_time = Instant::now();
-        let result = TryTaskExecutor::eval_retry_condition(&retry, &start_time, 1).await;
-        assert!(
-            result,
-            "Should return true when retry count is below the limit"
-        );
+            let start_time = Instant::now();
+            let result = TryTaskExecutor::eval_retry_condition(&retry, &start_time, 1).await;
+            assert!(
+                result,
+                "Should return true when retry count is below the limit"
+            );
 
-        // When retry count equals the limit
-        let result = TryTaskExecutor::eval_retry_condition(&retry, &start_time, 3).await;
-        assert!(
-            result,
-            "Should return true when retry count equals the limit"
-        );
+            // When retry count equals the limit
+            let result = TryTaskExecutor::eval_retry_condition(&retry, &start_time, 3).await;
+            assert!(
+                result,
+                "Should return true when retry count equals the limit"
+            );
 
-        // When retry count exceeds the limit
-        let result = TryTaskExecutor::eval_retry_condition(&retry, &start_time, 4).await;
-        assert!(
-            !result,
-            "Should return false when retry count exceeds the limit"
-        );
+            // When retry count exceeds the limit
+            let result = TryTaskExecutor::eval_retry_condition(&retry, &start_time, 4).await;
+            assert!(
+                !result,
+                "Should return false when retry count exceeds the limit"
+            );
+        })
     }
 
-    #[tokio::test]
-    async fn test_eval_retry_condition_with_duration_limit() {
-        // Time limit retry policy
-        let retry = workflow::TryTaskCatchRetry::Variant0(RetryPolicy {
-            backoff: None,
-            delay: None,
-            limit: Some(RetryLimit {
-                attempt: Some(RetryLimitAttempt {
-                    count: None,
-                    duration: Some(workflow::Duration::from_millis(100)),
+    #[test]
+    fn test_eval_retry_condition_with_duration_limit() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            // Time limit retry policy
+            let retry = workflow::TryTaskCatchRetry::Variant0(RetryPolicy {
+                backoff: None,
+                delay: None,
+                limit: Some(RetryLimit {
+                    attempt: Some(RetryLimitAttempt {
+                        count: None,
+                        duration: Some(workflow::Duration::from_millis(100)),
+                    }),
                 }),
-            }),
-        });
+            });
 
-        let start_time = Instant::now();
-        let result = TryTaskExecutor::eval_retry_condition(&retry, &start_time, 1).await;
-        assert!(
-            result,
-            "Should return true when elapsed time is below the limit"
-        );
+            let start_time = Instant::now();
+            let result = TryTaskExecutor::eval_retry_condition(&retry, &start_time, 1).await;
+            assert!(
+                result,
+                "Should return true when elapsed time is below the limit"
+            );
 
-        // Simulate exceeding time limit (actually wait)
-        tokio::time::sleep(Duration::from_millis(110)).await;
-        let result = TryTaskExecutor::eval_retry_condition(&retry, &start_time, 1).await;
-        assert!(
-            !result,
-            "Should return false when elapsed time exceeds the limit"
-        );
+            // Simulate exceeding time limit (actually wait)
+            tokio::time::sleep(Duration::from_millis(110)).await;
+            let result = TryTaskExecutor::eval_retry_condition(&retry, &start_time, 1).await;
+            assert!(
+                !result,
+                "Should return false when elapsed time exceeds the limit"
+            );
+        })
     }
 
-    #[tokio::test]
-    async fn test_eval_retry_condition_with_delay() {
-        let retry = workflow::TryTaskCatchRetry::Variant0(RetryPolicy {
-            backoff: None,
-            delay: Some(workflow::Duration::from_millis(50)),
-            limit: Some(RetryLimit {
-                attempt: Some(RetryLimitAttempt {
-                    count: Some(3),
-                    duration: None,
+    #[test]
+    fn test_eval_retry_condition_with_delay() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let retry = workflow::TryTaskCatchRetry::Variant0(RetryPolicy {
+                backoff: None,
+                delay: Some(workflow::Duration::from_millis(50)),
+                limit: Some(RetryLimit {
+                    attempt: Some(RetryLimitAttempt {
+                        count: Some(3),
+                        duration: None,
+                    }),
                 }),
-            }),
-        });
+            });
 
-        let start_time = Instant::now();
-        // Record start time
-        let before = Instant::now();
-        let result = TryTaskExecutor::eval_retry_condition(&retry, &start_time, 1).await;
-        let elapsed = before.elapsed();
+            let start_time = Instant::now();
+            // Record start time
+            let before = Instant::now();
+            let result = TryTaskExecutor::eval_retry_condition(&retry, &start_time, 1).await;
+            let elapsed = before.elapsed();
 
-        assert!(
-            result,
-            "Should return true if conditions are met even with delay"
-        );
-        assert!(
-            elapsed.as_millis() >= 50,
-            "Should wait at least the specified delay time"
-        );
+            assert!(
+                result,
+                "Should return true if conditions are met even with delay"
+            );
+            assert!(
+                elapsed.as_millis() >= 50,
+                "Should wait at least the specified delay time"
+            );
+        })
     }
 
     #[test]
