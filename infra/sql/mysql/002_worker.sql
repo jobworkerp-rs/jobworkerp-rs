@@ -80,6 +80,7 @@ CREATE TABLE `runner` (
   UNIQUE KEY `name` (`name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+
 -- builtin runner definitions (runner.type != 0 cannot edit or delete)
 INSERT IGNORE INTO runner (id, name, description, definition, type) VALUES (
   1, 'COMMAND', 

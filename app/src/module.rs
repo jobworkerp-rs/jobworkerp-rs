@@ -1,3 +1,4 @@
+use crate::app::function_set::FunctionSetAppImpl;
 use crate::app::job::hybrid::HybridJobAppImpl;
 use crate::app::job::rdb_chan::RdbChanJobAppImpl;
 use crate::app::job::JobApp;
@@ -14,7 +15,7 @@ use crate::app::{StorageConfig, WorkerConfig};
 use anyhow::Result;
 use infra::infra::module::rdb::RdbChanRepositoryModule;
 use infra::infra::module::{HybridRepositoryModule, RedisRdbOptionalRepositoryModule};
-use infra::infra::{IdGeneratorWrapper, JobQueueConfig};
+use infra::infra::{function_set, IdGeneratorWrapper, JobQueueConfig};
 use infra_utils::infra::memory::MemoryCacheImpl;
 use jobworkerp_runner::runner::factory::RunnerSpecFactory;
 use proto::jobworkerp::data::StorageType;
@@ -70,6 +71,7 @@ pub struct AppModule {
     pub job_app: Arc<dyn JobApp + 'static>,
     pub job_result_app: Arc<dyn JobResultApp + 'static>,
     pub runner_app: Arc<dyn RunnerApp + 'static>,
+    pub function_set_app: Arc<FunctionSetAppImpl>,
     pub descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
 }
 
@@ -81,6 +83,7 @@ impl AppModule {
         job_app: Arc<dyn JobApp + 'static>,
         job_result_app: Arc<dyn JobResultApp + 'static>,
         runner_app: Arc<dyn RunnerApp + 'static>,
+        function_set_app: Arc<FunctionSetAppImpl>, // not dyn (1 impl, trait)
         descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     ) -> Self {
         Self {
@@ -90,6 +93,7 @@ impl AppModule {
             job_app,
             job_result_app,
             runner_app,
+            function_set_app,
             descriptor_cache,
         }
     }
@@ -146,6 +150,10 @@ impl AppModule {
                         Some(Duration::from_secs(5)),
                     ),
                 ));
+                let function_set_app = Arc::new(FunctionSetAppImpl::new(
+                    repositories.function_set_repository.clone(),
+                    &mc_config,
+                ));
                 Ok(AppModule {
                     config_module,
                     repositories: Arc::new(RedisRdbOptionalRepositoryModule::from(repositories)),
@@ -153,6 +161,7 @@ impl AppModule {
                     job_app,
                     job_result_app,
                     runner_app,
+                    function_set_app,
                     descriptor_cache,
                 })
             }
@@ -247,6 +256,10 @@ impl AppModule {
                     repositories.clone(),
                     worker_app.clone(),
                 ));
+                let function_set_app = Arc::new(FunctionSetAppImpl::new(
+                    repositories.rdb_chan_module.function_set_repository.clone(),
+                    &mc_config,
+                ));
                 Ok(AppModule {
                     config_module,
                     repositories: Arc::new(RedisRdbOptionalRepositoryModule::from(repositories)),
@@ -254,6 +267,7 @@ impl AppModule {
                     job_app,
                     job_result_app,
                     runner_app,
+                    function_set_app,
                     descriptor_cache,
                 })
             }
@@ -298,6 +312,7 @@ pub mod test {
     use super::*;
     use crate::{
         app::{
+            function_set::FunctionSetAppImpl,
             runner::{hybrid::HybridRunnerAppImpl, RunnerApp, RunnerDataWithDescriptor},
             worker::hybrid::HybridWorkerAppImpl,
             StorageConfig,
@@ -396,6 +411,10 @@ pub mod test {
             repositories.clone(),
             worker_app.clone(),
         ));
+        let function_set_app = Arc::new(FunctionSetAppImpl::new(
+            repositories.rdb_chan_module.function_set_repository.clone(),
+            &mc_config,
+        ));
 
         Ok(AppModule::new(
             app_config,
@@ -404,6 +423,7 @@ pub mod test {
             job_app,
             job_result_app,
             runner_app,
+            function_set_app,
             descriptor_cache,
         ))
     }

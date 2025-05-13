@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package jobworkerp.data;
+package jobworkerp.function.data;
 
 import "jobworkerp/data/common.proto";
 import "jobworkerp/data/runner.proto";

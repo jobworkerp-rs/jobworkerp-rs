@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::infra::function_set::rdb::FunctionSetRepositoryImpl;
 use crate::infra::job::queue::chan::ChanJobQueueRepositoryImpl;
 use crate::infra::job::rdb::{RdbChanJobRepositoryImpl, UseRdbChanJobRepository};
 use crate::infra::job::status::memory::MemoryJobStatusRepository;
@@ -39,6 +40,7 @@ pub struct RdbChanRepositoryModule {
     pub memory_job_status_repository: Arc<MemoryJobStatusRepository>,
     pub chan_job_result_pubsub_repository: ChanJobResultPubSubRepositoryImpl,
     pub chan_job_queue_repository: ChanJobQueueRepositoryImpl,
+    pub function_set_repository: Arc<FunctionSetRepositoryImpl>,
 }
 
 impl RdbChanRepositoryModule {
@@ -49,7 +51,11 @@ impl RdbChanRepositoryModule {
     ) -> Self {
         let pool = super::super::resource::setup_rdb_by_env().await;
         RdbChanRepositoryModule {
-            runner_repository: RdbRunnerRepositoryImpl::new(pool, runner_factory, id_generator),
+            runner_repository: RdbRunnerRepositoryImpl::new(
+                pool,
+                runner_factory,
+                id_generator.clone(),
+            ),
             worker_repository: RdbWorkerRepositoryImpl::new(pool),
             job_repository: RdbChanJobRepositoryImpl::new(job_queue_config.clone(), pool),
             job_result_repository: RdbJobResultRepositoryImpl::new(pool),
@@ -62,6 +68,7 @@ impl RdbChanRepositoryModule {
                 job_queue_config,
                 ChanBuffer::new(None, 100_000), // mpmc chan. TODO from config
             ),
+            function_set_repository: Arc::new(FunctionSetRepositoryImpl::new(id_generator, pool)),
         }
     }
     pub async fn new(
@@ -72,7 +79,11 @@ impl RdbChanRepositoryModule {
         let pool =
             super::super::resource::setup_rdb(config_module.rdb_config.as_ref().unwrap()).await;
         RdbChanRepositoryModule {
-            runner_repository: RdbRunnerRepositoryImpl::new(pool, runner_factory, id_generator),
+            runner_repository: RdbRunnerRepositoryImpl::new(
+                pool,
+                runner_factory,
+                id_generator.clone(),
+            ),
             worker_repository: RdbWorkerRepositoryImpl::new(pool),
             job_repository: RdbChanJobRepositoryImpl::new(
                 config_module.job_queue_config.clone(),
@@ -88,6 +99,7 @@ impl RdbChanRepositoryModule {
                 config_module.job_queue_config.clone(),
                 ChanBuffer::new(None, 100_000), // TODO from config
             ),
+            function_set_repository: Arc::new(FunctionSetRepositoryImpl::new(id_generator, pool)),
         }
     }
 }
@@ -101,6 +113,7 @@ impl UseRdbChanRepositoryModule for RdbChanRepositoryModule {
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test {
     use super::RdbChanRepositoryModule;
+    use crate::infra::function_set::rdb::FunctionSetRepositoryImpl;
     use crate::infra::job::queue::chan::ChanJobQueueRepositoryImpl;
     use crate::infra::module::test::TEST_PLUGIN_DIR;
     use crate::infra::runner::rdb::RdbRunnerRepositoryImpl;
@@ -145,7 +158,7 @@ pub mod test {
             runner_repository: RdbRunnerRepositoryImpl::new(
                 pool,
                 Arc::new(runner_factory),
-                id_generator,
+                id_generator.clone(),
             ),
             worker_repository: RdbWorkerRepositoryImpl::new(pool),
             job_repository: RdbChanJobRepositoryImpl::new(
@@ -162,6 +175,7 @@ pub mod test {
                 Arc::new(JobQueueConfig::default()),
                 ChanBuffer::new(None, 10000),
             ),
+            function_set_repository: Arc::new(FunctionSetRepositoryImpl::new(id_generator, pool)),
         }
     }
 }

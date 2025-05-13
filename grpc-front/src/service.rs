@@ -1,6 +1,7 @@
 pub mod error_handle;
 
 pub mod function;
+pub mod function_set;
 pub mod job;
 pub mod job_restore;
 pub mod job_result;

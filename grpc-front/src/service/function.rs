@@ -3,9 +3,10 @@ use std::sync::Arc;
 use std::{fmt::Debug, time::Duration};
 
 use crate::proto::jobworkerp::data::WorkerData;
-use crate::proto::jobworkerp::data::{FunctionSchema, FunctionSpecs, Worker, WorkerId};
-use crate::proto::jobworkerp::service::function_service_server::FunctionService;
-use crate::proto::jobworkerp::service::FindFunctionRequest;
+use crate::proto::jobworkerp::data::{Worker, WorkerId};
+use crate::proto::jobworkerp::function::data::{FunctionSchema, FunctionSpecs};
+use crate::proto::jobworkerp::function::service::function_service_server::FunctionService;
+use crate::proto::jobworkerp::function::service::FindFunctionRequest;
 use crate::service::error_handle::handle_error;
 use app::app::runner::RunnerApp;
 use app::app::worker::WorkerApp;
@@ -16,7 +17,8 @@ use infra::infra::runner::rows::RunnerWithSchema;
 use infra_utils::trace::Tracing;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_runner::jobworkerp::runner::ReusableWorkflowRunnerSettings;
-use proto::jobworkerp::data::{function_specs, McpToolList, RunnerType, StreamingOutputType};
+use proto::jobworkerp::data::{RunnerType, StreamingOutputType};
+use proto::jobworkerp::function::data::{function_specs, McpToolList};
 use tonic::Response;
 
 pub trait FunctionGrpc {
@@ -34,7 +36,7 @@ impl<T: FunctionGrpc + Tracing + Send + Debug + Sync + 'static> FunctionService 
     async fn find_list(
         &self,
         request: tonic::Request<FindFunctionRequest>,
-    ) -> Result<tonic::Response<Self::FindListStream>, tonic::Status> {
+    ) -> Result<tonic::Response<<T as FunctionService>::FindListStream>, tonic::Status> {
         let _s = Self::trace_request("function", "find_list", &request);
         let req = request.into_inner();
 

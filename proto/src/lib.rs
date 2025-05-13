@@ -4,6 +4,11 @@ use jobworkerp::data::RunnerData;
 use prost_reflect::MessageDescriptor;
 
 pub mod jobworkerp {
+    pub mod function {
+        pub mod data {
+            tonic::include_proto!("jobworkerp.function.data");
+        }
+    }
     pub mod data {
         tonic::include_proto!("jobworkerp.data");
     }
