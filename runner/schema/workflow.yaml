@@ -95,32 +95,6 @@ $defs:
       maxProperties: 1
       additionalProperties:
         $ref: "#/$defs/task"
-  switchCaseList:
-    title: SwitchCaseList
-    description: List of switch cases to evaluate.
-    type: array
-    items:
-      type: object
-      title: SwitchItem
-      minProperties: 1
-      maxProperties: 1
-      additionalProperties:
-        $ref: "#/$defs/switchCase"
-  switchCase:
-    type: object
-    title: SwitchCase
-    description: The definition of a case within a switch task, defining a condition and corresponding tasks to execute if the condition is met.
-    unevaluatedProperties: false
-    required: [then]
-    properties:
-      when:
-        type: string
-        title: SwitchCaseCondition
-        description: A runtime expression used to determine whether or not the case matches.
-      then:
-        $ref: "#/$defs/flowDirective"
-        title: SwitchCaseOutcome
-        description: The flow directive to execute when the case matches.
   taskBase:
     type: object
     title: TaskBase
@@ -403,8 +377,30 @@ $defs:
     unevaluatedProperties: false
     properties:
       switch:
-        title: SwitchTaskSwitch
-        $ref: "#/$defs/switchCaseList"
+        type: array
+        title: SwitchTaskConfiguration
+        description: The definition of the switch to use.
+        minItems: 1
+        items:
+          type: object
+          title: SwitchItem
+          minProperties: 1
+          maxProperties: 1
+          additionalProperties:
+            type: object
+            title: SwitchCase
+            description: The definition of a case within a switch task, defining a condition and corresponding tasks to execute if the condition is met.
+            unevaluatedProperties: false
+            required: [then]
+            properties:
+              when:
+                type: string
+                title: SwitchCaseCondition
+                description: A runtime expression used to determine whether or not the case matches.
+              then:
+                $ref: "#/$defs/flowDirective"
+                title: SwitchCaseOutcome
+                description: The flow directive to execute when the case matches.
   tryTask:
     type: object
     $ref: "#/$defs/taskBase"

@@ -15,6 +15,30 @@ jobworkerp-rsは以下の主要コンポーネントで構成されています�
 - **ワーカー**: 実際のジョブ処理を行うコンポーネント、複数のチャンネルと並列度の設定が可能
 - **ストレージ**: Redis（即時ジョブ）とRDB（MySQL/SQLite、定期実行/時刻指定ジョブ）の組み合わせ
 
+```mermaid
+graph TB
+    Client[クライアント] --gRPC/gRPC-Web--> Frontend[gRPCフロントエンド]
+    Frontend --Job登録--> Storage[(ストレージ層)]
+    Storage --Job取得--> Worker[ワーカー]
+    Worker --結果保存--> Storage
+    Frontend --結果取得--> Storage
+    
+    subgraph "ストレージ層"
+    Redis[(Redis/mpsc chan<br>即時ジョブ)]
+    RDB[(RDB<br>MySQL/SQLite<br>定期/時刻指定/backupジョブ)]
+    end
+    
+    Storage --- Redis
+    Storage --- RDB
+    
+    subgraph "ワーカー処理"
+    Worker --> Runner1[Runner<br>COMMAND]
+    Worker --> Runner2[Runner<br>HTTP_REQUEST]
+    Worker --> Runner3[Runner<br>その他組込みRunner]
+    Worker --> RunnerP[Plugin Runner<br>カスタム拡張]
+    end
+```
+
 ## 主な機能
 
 ### ジョブ管理機能
@@ -36,6 +60,61 @@ jobworkerp-rsは以下の主要コンポーネントで構成されています�
 - Model Context Protocol (MCP) プロキシ機能: MCPサーバーで提供されるLLMや各種ツールをRunner経由で利用可能
 - ワークフロー機能: 複数のジョブを連携して実行
 
+## システム構成
+
+### Standaloneモード (シングルインスタンス)
+
+```mermaid
+graph TB
+    Client[クライアント] --gRPC--> AllInOne[All-in-One Server<br>または<br>gRPC Front + Worker]
+    
+    subgraph "単一インスタンス内"
+    AllInOne --> Memory[(Memory Channels<br>即時ジョブ)]
+    AllInOne --> SQLite[(SQLite<br>定期/時刻指定ジョブ)]
+    
+    AllInOne --> DefaultCh[デフォルトチャネルプロセス<br>並列度: 4]
+    AllInOne --> CustomCh1[カスタムチャネルプロセス1<br>例: GPU<br>並列度: 1]
+    AllInOne --> CustomCh2[カスタムチャネルプロセス2<br>例: IO<br>並列度: 8]
+    end
+```
+
+### Scalableモード構成例
+
+```mermaid
+graph TB
+    Client[クライアント] --gRPC--> Frontend1[gRPCフロントエンド1]
+    Client --gRPC--> Frontend2[gRPCフロントエンド2]
+    
+    Frontend1 --Job登録--> Redis[(Redis<br>即時ジョブ)]
+    Frontend2 --Job登録--> Redis
+    Frontend1 --Job登録--> MySQL[(MySQL<br>定期/時刻指定ジョブ)]
+    Frontend2 --Job登録--> MySQL
+    
+    Redis --Job取得--> Worker1[Worker1]
+    Redis --Job取得--> Worker2[Worker2]
+    Redis --Job取得--> Worker3[Worker3]
+    
+    MySQL --定期/時刻指定<br>Job取得--> Worker1
+    MySQL --定期/時刻指定<br>Job取得--> Worker2
+    MySQL --定期/時刻指定<br>Job取得--> Worker3
+    
+    Worker1 --結果保存--> MySQL
+    Worker2 --結果保存--> MySQL
+    Worker3 --結果保存--> MySQL
+    
+    Redis --PubSub<br>結果通知--> Frontend1
+    Redis --PubSub<br>結果通知--> Frontend2
+    
+    subgraph "ワーカー構成例"
+    Worker1 --> W1Ch1[デフォルトチャネルプロセス<br>並列度: 4]
+    Worker1 --> W1Ch2[GPUチャネルプロセス<br>並列度: 1]
+    
+    Worker2 --> W2Ch1[デフォルトチャネルプロセス<br>並列度: 4]
+    
+    Worker3 --> W3Ch1[デフォルトチャネルプロセス<br>並列度: 4]
+    Worker3 --> W3Ch2[IOチャネルプロセス<br>並列度: 8]
+    end
+```
 ## 目次
 
 - [クイックスタート](#クイックスタート)

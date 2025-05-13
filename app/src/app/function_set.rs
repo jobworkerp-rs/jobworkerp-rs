@@ -1,0 +1,151 @@
+use anyhow::Result;
+use async_trait::async_trait;
+use core::fmt;
+use debug_stub_derive::DebugStub;
+use infra::infra::function_set::rdb::{
+    FunctionSetRepository, FunctionSetRepositoryImpl, UseFunctionSetRepository,
+};
+use infra_utils::infra::cache::{MokaCache, MokaCacheConfig, MokaCacheImpl, UseMokaCache};
+use infra_utils::infra::rdb::UseRdbPool;
+use jobworkerp_base::error::JobWorkerError;
+use proto::jobworkerp::function::data::{FunctionSet, FunctionSetData, FunctionSetId};
+use std::{sync::Arc, time::Duration};
+
+#[async_trait]
+pub trait FunctionSetApp: // XXX 1 impl
+    UseFunctionSetRepository
+    + UseMokaCache<Arc<String>, FunctionSet>
+    + fmt::Debug
+    + Send
+    + Sync
+    + 'static
+{
+    async fn create_function_set(&self, function_set: &FunctionSetData) -> Result<FunctionSetId> {
+        // transaction example
+        let db = self.function_set_repository().db_pool();
+        let mut tx = db.begin().await.map_err(JobWorkerError::DBError)?;
+        let id = self
+            .function_set_repository()
+            .create(&mut tx, function_set)
+            .await?;
+        tx.commit().await.map_err(JobWorkerError::DBError)?;
+        Ok(id)
+    }
+
+    // only cache single instance
+    async fn update_function_set(
+        &self,
+        id: &FunctionSetId,
+        function_set: &Option<FunctionSetData>,
+    ) -> Result<bool> {
+        if let Some(w) = function_set {
+            let pool = self.function_set_repository().db_pool();
+            let mut tx = pool.begin().await.map_err(JobWorkerError::DBError)?;
+            self.function_set_repository()
+                .update(&mut tx, id, w)
+                .await?;
+            tx.commit().await.map_err(JobWorkerError::DBError)?;
+            // clear memory cache
+            let k = Arc::new(self.find_cache_key(&id.value));
+            let _ = self.delete_cache(&k).await;
+            Ok(true)
+        } else {
+            // all empty, no update
+            Ok(false)
+        }
+    }
+
+    async fn delete_function_set(&self, id: &FunctionSetId) -> Result<bool> {
+        let r = self.function_set_repository().delete(id).await;
+        let k = Arc::new(self.find_cache_key(&id.value));
+        let _ = self.delete_cache(&k).await;
+        r
+    }
+
+    fn find_cache_key(&self, id: &i64) -> String {
+        ["function_set_id:", &id.to_string()].join("")
+    }
+
+    async fn find_function_set(
+        &self,
+        id: &FunctionSetId,
+    ) -> Result<Option<FunctionSet>>
+    where
+        Self: Send + 'static,
+    {
+        let k = Arc::new(self.find_cache_key(&id.value));
+        self.with_cache_if_some(&k, || async {
+            self.function_set_repository().find(&id).await
+        })
+        .await
+    }
+    async fn find_function_set_list(
+        &self,
+        limit: Option<&i32>,
+        offset: Option<&i64>,
+        _ttl: Option<&Duration>,
+    ) -> Result<Vec<FunctionSet>>
+    where
+        Self: Send + 'static,
+    {
+        // TODO list cache
+        self.function_set_repository()
+            .find_list(limit, offset)
+            .await
+    }
+
+    async fn find_function_set_all_list(&self, _ttl: Option<&Duration>) -> Result<Vec<FunctionSet>>
+    where
+        Self: Send + 'static,
+    {
+        // TODO list cache
+        self.function_set_repository().find_list(None, None).await
+    }
+
+    async fn count(&self) -> Result<i64>
+    where
+        Self: Send + 'static,
+    {
+        // TODO cache
+        self.function_set_repository()
+            .count_list_tx(self.function_set_repository().db_pool())
+            .await
+    }
+}
+
+#[derive(DebugStub)]
+pub struct FunctionSetAppImpl {
+    function_set_repository: Arc<FunctionSetRepositoryImpl>,
+    #[debug_stub = "MokaCache"]
+    memory_cache: MokaCacheImpl<Arc<String>, FunctionSet>,
+}
+
+impl FunctionSetAppImpl {
+    const DEFAULT_TTL_SEC: u64 = 60; // XXX fix it
+    pub fn new(
+        function_set_repository: Arc<FunctionSetRepositoryImpl>,
+        mc_config: &infra_utils::infra::memory::MemoryCacheConfig,
+    ) -> Self {
+        let memory_cache = MokaCacheImpl::new(&MokaCacheConfig {
+            num_counters: mc_config.num_counters,
+            ttl: Some(Duration::from_secs(Self::DEFAULT_TTL_SEC)),
+        });
+        Self {
+            function_set_repository,
+            memory_cache,
+        }
+    }
+}
+
+impl UseFunctionSetRepository for FunctionSetAppImpl {
+    fn function_set_repository(&self) -> &FunctionSetRepositoryImpl {
+        &self.function_set_repository
+    }
+}
+impl FunctionSetApp for FunctionSetAppImpl {}
+
+impl UseMokaCache<Arc<String>, FunctionSet> for FunctionSetAppImpl {
+    fn cache(&self) -> &MokaCache<Arc<String>, FunctionSet> {
+        &self.memory_cache.cache()
+    }
+}
