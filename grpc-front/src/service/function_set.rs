@@ -4,7 +4,7 @@ use std::{fmt::Debug, time::Duration};
 use crate::proto::jobworkerp::function::data::{FunctionSet, FunctionSetData, FunctionSetId};
 use crate::proto::jobworkerp::function::service::function_set_service_server::FunctionSetService;
 use crate::proto::jobworkerp::function::service::{
-    CreateFunctionSetResponse, OptionalFunctionSetResponse,
+    CreateFunctionSetResponse, FindByNameRequest, OptionalFunctionSetResponse,
 };
 use crate::proto::jobworkerp::service::{
     CountCondition, CountResponse, FindListRequest, SuccessResponse,
@@ -26,7 +26,7 @@ const LIST_TTL: Duration = Duration::from_secs(5);
 
 #[tonic::async_trait]
 impl<T: FunctionSetGrpc + Tracing + Send + Debug + Sync + 'static> FunctionSetService for T {
-    #[tracing::instrument]
+    #[tracing::instrument(name = "function_set.create", skip(self, request))]
     async fn create(
         &self,
         request: tonic::Request<FunctionSetData>,
@@ -38,7 +38,7 @@ impl<T: FunctionSetGrpc + Tracing + Send + Debug + Sync + 'static> FunctionSetSe
             Err(e) => Err(handle_error(&e)),
         }
     }
-    #[tracing::instrument]
+    #[tracing::instrument(name = "function_set.update", skip(self, request))]
     async fn update(
         &self,
         request: tonic::Request<FunctionSet>,
@@ -67,7 +67,7 @@ impl<T: FunctionSetGrpc + Tracing + Send + Debug + Sync + 'static> FunctionSetSe
             Err(e) => Err(handle_error(&e)),
         }
     }
-    #[tracing::instrument]
+    #[tracing::instrument(name = "function_set.find", skip(self, request))]
     async fn find(
         &self,
         request: tonic::Request<FunctionSetId>,
@@ -80,8 +80,25 @@ impl<T: FunctionSetGrpc + Tracing + Send + Debug + Sync + 'static> FunctionSetSe
         }
     }
 
+    #[tracing::instrument(name = "function_set.find_by_name", skip(self, request))]
+    async fn find_by_name(
+        &self,
+        request: tonic::Request<FindByNameRequest>,
+    ) -> Result<tonic::Response<OptionalFunctionSetResponse>, tonic::Status> {
+        let _s = Self::trace_request("function_set", "find", &request);
+        let req = request.get_ref();
+        match self.app().find_function_set_by_name(&req.name).await {
+            Ok(res) => Ok(Response::new(OptionalFunctionSetResponse { data: res })),
+            Err(e) => Err(handle_error(&e)),
+        }
+    }
+
     type FindListStream = BoxStream<'static, Result<FunctionSet, tonic::Status>>;
-    #[tracing::instrument]
+    #[tracing::instrument(
+        name = "function_set.find_list",
+        skip(self, request),
+        fields(method = "find_list")
+    )]
     async fn find_list(
         &self,
         request: tonic::Request<FindListRequest>,

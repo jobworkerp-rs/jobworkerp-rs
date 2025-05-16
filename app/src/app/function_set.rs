@@ -66,6 +66,10 @@ pub trait FunctionSetApp: // XXX 1 impl
         ["function_set_id:", &id.to_string()].join("")
     }
 
+    fn find_by_name_cache_key(&self, name: &str) -> String {
+        ["function_set_id_name:", name].join("")
+    }
+
     async fn find_function_set(
         &self,
         id: &FunctionSetId,
@@ -75,10 +79,25 @@ pub trait FunctionSetApp: // XXX 1 impl
     {
         let k = Arc::new(self.find_cache_key(&id.value));
         self.with_cache_if_some(&k, || async {
-            self.function_set_repository().find(&id).await
+            self.function_set_repository().find(id).await
         })
         .await
     }
+
+    async fn find_function_set_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<FunctionSet>>
+    where
+        Self: Send + 'static,
+    {
+        let k = Arc::new(self.find_by_name_cache_key(name));
+        self.with_cache_if_some(&k, || async {
+            self.function_set_repository().find_by_name(name).await
+        })
+        .await
+    }
+
     async fn find_function_set_list(
         &self,
         limit: Option<&i32>,
@@ -146,6 +165,10 @@ impl FunctionSetApp for FunctionSetAppImpl {}
 
 impl UseMokaCache<Arc<String>, FunctionSet> for FunctionSetAppImpl {
     fn cache(&self) -> &MokaCache<Arc<String>, FunctionSet> {
-        &self.memory_cache.cache()
+        self.memory_cache.cache()
     }
+}
+
+pub trait UseFunctionSetApp {
+    fn function_set_app(&self) -> &FunctionSetAppImpl;
 }
