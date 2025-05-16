@@ -28,10 +28,10 @@ pub trait FunctionSetRepository: UseRdbPool + UseIdGenerator + Sync + Send {
             `category`
             ) VALUES (?,?,?,?)",
         )
-        .bind(&id)
+        .bind(id)
         .bind(&function_set.name)
         .bind(&function_set.description)
-        .bind(&function_set.category)
+        .bind(function_set.category)
         .execute(&mut **tx)
         .await
         .map_err(JobWorkerError::DBError)?;
@@ -68,9 +68,7 @@ pub trait FunctionSetRepository: UseRdbPool + UseIdGenerator + Sync + Send {
 
         // Create query with the appropriate number of VALUE triplets
         let values_placeholder = "(?, ?, ?)".to_string();
-        let values: Vec<String> = std::iter::repeat(values_placeholder)
-            .take(targets.len())
-            .collect();
+        let values: Vec<String> = std::iter::repeat_n(values_placeholder, targets.len()).collect();
 
         let query = format!(
             "INSERT INTO `function_set_target` (
@@ -86,7 +84,7 @@ pub trait FunctionSetRepository: UseRdbPool + UseIdGenerator + Sync + Send {
 
         // Bind all parameters for each target
         for target in &targets {
-            q = q.bind(&set_id.value).bind(&target.id).bind(&target.r#type);
+            q = q.bind(set_id.value).bind(target.id).bind(target.r#type);
         }
 
         // Execute the query
@@ -114,20 +112,20 @@ pub trait FunctionSetRepository: UseRdbPool + UseIdGenerator + Sync + Send {
         )
         .bind(&function_set.name)
         .bind(&function_set.description)
-        .bind(&function_set.category)
-        .bind(&id.value)
+        .bind(function_set.category)
+        .bind(id.value)
         .execute(&mut **tx)
         .await
         .map(|r| r.rows_affected() > 0)
-        .map_err(|e| JobWorkerError::DBError(e))
+        .map_err(JobWorkerError::DBError)
         .context(format!("error in update function_set: id = {}", id.value))?;
 
         // Delete existing targets for this function set
         sqlx::query("DELETE FROM `function_set_target` WHERE `set_id` = ?;")
-            .bind(&id.value)
+            .bind(id.value)
             .execute(&mut **tx)
             .await
-            .map_err(|e| JobWorkerError::DBError(e))
+            .map_err(JobWorkerError::DBError)
             .context(format!(
                 "error deleting function_set_targets: set_id = {}",
                 id.value
@@ -172,6 +170,18 @@ pub trait FunctionSetRepository: UseRdbPool + UseIdGenerator + Sync + Send {
         }
     }
 
+    async fn find_by_name(&self, name: &str) -> Result<Option<FunctionSet>> {
+        let pool = self.db_pool();
+        let row = self.find_row_by_name_tx(pool, name).await?;
+
+        if let Some(fs_row) = row {
+            let targets = self.find_targets_by_set_id(pool, fs_row.id).await?;
+            Ok(Some(fs_row.to_proto(targets)))
+        } else {
+            Ok(None)
+        }
+    }
+
     async fn find_row_tx<'c, E: Executor<'c, Database = Rdb>>(
         &self,
         tx: E,
@@ -179,11 +189,27 @@ pub trait FunctionSetRepository: UseRdbPool + UseIdGenerator + Sync + Send {
     ) -> Result<Option<FunctionSetRow>> {
         let function_set =
             sqlx::query_as::<Rdb, FunctionSetRow>("SELECT * FROM `function_set` WHERE `id` = ?;")
-                .bind(&id.value)
+                .bind(id.value)
                 .fetch_optional(tx)
                 .await
                 .map_err(JobWorkerError::DBError)
                 .context(format!("error in find: id = {}", id.value))?;
+
+        Ok(function_set)
+    }
+
+    async fn find_row_by_name_tx<'c, E: Executor<'c, Database = Rdb>>(
+        &self,
+        tx: E,
+        name: &str,
+    ) -> Result<Option<FunctionSetRow>> {
+        let function_set =
+            sqlx::query_as::<Rdb, FunctionSetRow>("SELECT * FROM `function_set` WHERE `name` = ?;")
+                .bind(name)
+                .fetch_optional(tx)
+                .await
+                .map_err(JobWorkerError::DBError)
+                .context(format!("error in find_by_name: name = {}", name))?;
 
         Ok(function_set)
     }
@@ -316,7 +342,7 @@ mod test {
 
         let id1 = id;
         let expect = FunctionSet {
-            id: Some(id1.clone()),
+            id: Some(id1),
             data,
         };
 
@@ -336,14 +362,14 @@ mod test {
             ],
         };
         let updated = repository
-            .update(&mut tx, &expect.id.clone().unwrap(), &update)
+            .update(&mut tx, &expect.id.unwrap(), &update)
             //            .upsert(&mut tx, &expect.id.clone().unwrap(), &update)
             .await?;
         assert!(updated);
         tx.commit().await.context("error in test delete commit")?;
 
         // find
-        let found = repository.find(&expect.id.clone().unwrap()).await?;
+        let found = repository.find(&expect.id.unwrap()).await?;
         assert_eq!(&update, &found.unwrap().data.unwrap());
         let count = repository.count_list_tx(repository.db_pool()).await?;
         assert_eq!(1, count);

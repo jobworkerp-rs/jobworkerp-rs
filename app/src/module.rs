@@ -1,3 +1,4 @@
+use crate::app::function::FunctionAppImpl;
 use crate::app::function_set::FunctionSetAppImpl;
 use crate::app::job::hybrid::HybridJobAppImpl;
 use crate::app::job::rdb_chan::RdbChanJobAppImpl;
@@ -15,7 +16,7 @@ use crate::app::{StorageConfig, WorkerConfig};
 use anyhow::Result;
 use infra::infra::module::rdb::RdbChanRepositoryModule;
 use infra::infra::module::{HybridRepositoryModule, RedisRdbOptionalRepositoryModule};
-use infra::infra::{function_set, IdGeneratorWrapper, JobQueueConfig};
+use infra::infra::{IdGeneratorWrapper, JobQueueConfig};
 use infra_utils::infra::memory::MemoryCacheImpl;
 use jobworkerp_runner::runner::factory::RunnerSpecFactory;
 use proto::jobworkerp::data::StorageType;
@@ -72,10 +73,12 @@ pub struct AppModule {
     pub job_result_app: Arc<dyn JobResultApp + 'static>,
     pub runner_app: Arc<dyn RunnerApp + 'static>,
     pub function_set_app: Arc<FunctionSetAppImpl>,
+    pub function_app: Arc<FunctionAppImpl>,
     pub descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
 }
 
 impl AppModule {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config_module: Arc<AppConfigModule>,
         repositories: Arc<RedisRdbOptionalRepositoryModule>,
@@ -84,6 +87,7 @@ impl AppModule {
         job_result_app: Arc<dyn JobResultApp + 'static>,
         runner_app: Arc<dyn RunnerApp + 'static>,
         function_set_app: Arc<FunctionSetAppImpl>, // not dyn (1 impl, trait)
+        function_app: Arc<FunctionAppImpl>,
         descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     ) -> Self {
         Self {
@@ -94,6 +98,7 @@ impl AppModule {
             job_result_app,
             runner_app,
             function_set_app,
+            function_app,
             descriptor_cache,
         }
     }
@@ -154,6 +159,12 @@ impl AppModule {
                     repositories.function_set_repository.clone(),
                     &mc_config,
                 ));
+                let function_app = Arc::new(FunctionAppImpl::new(
+                    function_set_app.clone(),
+                    runner_app.clone(),
+                    worker_app.clone(),
+                    &mc_config,
+                ));
                 Ok(AppModule {
                     config_module,
                     repositories: Arc::new(RedisRdbOptionalRepositoryModule::from(repositories)),
@@ -162,6 +173,7 @@ impl AppModule {
                     job_result_app,
                     runner_app,
                     function_set_app,
+                    function_app,
                     descriptor_cache,
                 })
             }
@@ -260,6 +272,12 @@ impl AppModule {
                     repositories.rdb_chan_module.function_set_repository.clone(),
                     &mc_config,
                 ));
+                let function_app = Arc::new(FunctionAppImpl::new(
+                    function_set_app.clone(),
+                    runner_app.clone(),
+                    worker_app.clone(),
+                    &mc_config,
+                ));
                 Ok(AppModule {
                     config_module,
                     repositories: Arc::new(RedisRdbOptionalRepositoryModule::from(repositories)),
@@ -268,6 +286,7 @@ impl AppModule {
                     job_result_app,
                     runner_app,
                     function_set_app,
+                    function_app,
                     descriptor_cache,
                 })
             }
@@ -415,6 +434,12 @@ pub mod test {
             repositories.rdb_chan_module.function_set_repository.clone(),
             &mc_config,
         ));
+        let function_app = Arc::new(FunctionAppImpl::new(
+            function_set_app.clone(),
+            runner_app.clone(),
+            worker_app.clone(),
+            &mc_config,
+        ));
 
         Ok(AppModule::new(
             app_config,
@@ -424,6 +449,7 @@ pub mod test {
             job_result_app,
             runner_app,
             function_set_app,
+            function_app,
             descriptor_cache,
         ))
     }

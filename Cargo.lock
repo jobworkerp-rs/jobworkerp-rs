@@ -145,6 +145,7 @@ dependencies = [
  "prost-reflect",
  "proto",
  "serde",
+ "serde_json",
  "sqlx",
  "stretto",
  "strum",
@@ -2327,6 +2328,8 @@ dependencies = [
  "once_cell",
  "opentelemetry",
  "prost",
+ "prost-reflect",
+ "prost-reflect-build",
  "readability",
  "redis",
  "regex",
@@ -2348,6 +2351,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic 0.13.1",
+ "tonic-reflection",
  "tonic-web",
  "tower 0.5.2",
  "tower-http",
@@ -2527,6 +2531,7 @@ dependencies = [
  "nix",
  "once_cell",
  "prost",
+ "prost-reflect",
  "proto",
  "redis",
  "reqwest 0.12.15",
@@ -2551,8 +2556,10 @@ dependencies = [
  "toml",
  "tonic 0.13.1",
  "tonic-build",
+ "tonic-reflection",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]

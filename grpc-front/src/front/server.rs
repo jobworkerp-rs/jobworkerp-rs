@@ -87,7 +87,7 @@ pub async fn start_server(
                 FunctionSetGrpcImpl::new(app_module.clone()),
             )))
             .add_service(enable_grpc_web(FunctionServiceServer::new(
-                FunctionGrpcImpl::new(app_module.clone()),
+                FunctionGrpcImpl::new(app_module),
             )))
             .add_service(reflection)
             .add_service(health_service)
@@ -113,9 +113,6 @@ pub async fn start_server(
             .add_service(WorkerServiceServer::new(WorkerGrpcImpl::new(
                 app_module.clone(),
             )))
-            .add_service(FunctionServiceServer::new(FunctionGrpcImpl::new(
-                app_module.clone(),
-            )))
             .add_service(JobServiceServer::new(JobGrpcImpl::new(app_module.clone())))
             .add_service(JobStatusServiceServer::new(JobStatusGrpcImpl::new(
                 app_module.clone(),
@@ -124,6 +121,12 @@ pub async fn start_server(
                 app_module.clone(),
             )))
             .add_service(JobResultServiceServer::new(JobResultGrpcImpl::new(
+                app_module.clone(),
+            )))
+            .add_service(FunctionSetServiceServer::new(FunctionSetGrpcImpl::new(
+                app_module.clone(),
+            )))
+            .add_service(FunctionServiceServer::new(FunctionGrpcImpl::new(
                 app_module,
             )))
             .add_service(reflection)

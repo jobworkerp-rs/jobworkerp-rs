@@ -64,11 +64,16 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
 tonic = { workspace = true }
+tonic-reflection = "0.13"
+prost-reflect = "0.15"
 tracing = { workspace = true }
 url = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }
+
+[dev-dependencies]
+uuid = { version = "1", features = ["v4"] }
 
 [features]
 default = []

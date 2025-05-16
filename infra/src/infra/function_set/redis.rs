@@ -76,7 +76,7 @@ where
         {
             Ok(Some(v)) => Self::deserialize_to_function_set(&v).map(|d| {
                 Some(FunctionSet {
-                    id: Some(id.clone()),
+                    id: Some(*id),
                     data: Some(d),
                 })
             }),
@@ -117,8 +117,7 @@ where
     }
 
     fn serialize_function_set(w: &FunctionSetData) -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.reserve(w.encoded_len());
+        let mut buf = Vec::with_capacity(w.encoded_len());
         w.encode(&mut buf).unwrap();
         buf
     }
