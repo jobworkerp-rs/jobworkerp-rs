@@ -233,14 +233,6 @@ impl ForTaskStreamExecutor {
             items_to_process.len(),
             tokio::runtime::Handle::current().metrics().num_workers()
         );
-
-        // Create a separate workflow context clone for each task to minimize lock contention
-        let base_workflow_ctx = {
-            // Clone once to avoid frequent read locks
-            let read_guard = workflow_context.read().await;
-            read_guard.clone()
-        };
-
         let mut join_set = tokio::task::JoinSet::new();
         for (i, prepared_context) in items_to_process {
             // Clone all resources needed for this task
@@ -248,11 +240,7 @@ impl ForTaskStreamExecutor {
             let do_task_clone = do_task.clone();
             let job_executor_wrapper_clone = self.job_executor_wrapper.clone();
             let http_client_clone = self.http_client.clone();
-
-            // Each task gets its own workflow context to minimize lock contention
-            // Important: Only status updates will be synchronized with the original context
-            let task_workflow_ctx = Arc::new(RwLock::new(base_workflow_ctx.clone()));
-
+            let workflow_context = workflow_context.clone();
             let task_name_formatted = Arc::new(format!("{}_{}", task_name, i));
 
             // Spawn this task asynchronously
@@ -272,7 +260,7 @@ impl ForTaskStreamExecutor {
                 let stream = do_stream_executor
                     .execute_stream(
                         task_name_formatted.as_ref(),
-                        task_workflow_ctx.clone(),
+                        workflow_context.clone(),
                         prepared_context,
                     )
                     .boxed();
