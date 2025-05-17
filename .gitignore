@@ -336,3 +336,4 @@ ASALocalRun/
 .vscode/
 *.sqlite3*
 *.dylib
+^\._*
