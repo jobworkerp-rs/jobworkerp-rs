@@ -1,3 +1,5 @@
+use crate::app::function::FunctionAppImpl;
+use crate::app::function_set::FunctionSetAppImpl;
 use crate::app::job::hybrid::HybridJobAppImpl;
 use crate::app::job::rdb_chan::RdbChanJobAppImpl;
 use crate::app::job::JobApp;
@@ -70,10 +72,13 @@ pub struct AppModule {
     pub job_app: Arc<dyn JobApp + 'static>,
     pub job_result_app: Arc<dyn JobResultApp + 'static>,
     pub runner_app: Arc<dyn RunnerApp + 'static>,
+    pub function_set_app: Arc<FunctionSetAppImpl>,
+    pub function_app: Arc<FunctionAppImpl>,
     pub descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
 }
 
 impl AppModule {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config_module: Arc<AppConfigModule>,
         repositories: Arc<RedisRdbOptionalRepositoryModule>,
@@ -81,6 +86,8 @@ impl AppModule {
         job_app: Arc<dyn JobApp + 'static>,
         job_result_app: Arc<dyn JobResultApp + 'static>,
         runner_app: Arc<dyn RunnerApp + 'static>,
+        function_set_app: Arc<FunctionSetAppImpl>, // not dyn (1 impl, trait)
+        function_app: Arc<FunctionAppImpl>,
         descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     ) -> Self {
         Self {
@@ -90,6 +97,8 @@ impl AppModule {
             job_app,
             job_result_app,
             runner_app,
+            function_set_app,
+            function_app,
             descriptor_cache,
         }
     }
@@ -146,6 +155,16 @@ impl AppModule {
                         Some(Duration::from_secs(5)),
                     ),
                 ));
+                let function_set_app = Arc::new(FunctionSetAppImpl::new(
+                    repositories.function_set_repository.clone(),
+                    &mc_config,
+                ));
+                let function_app = Arc::new(FunctionAppImpl::new(
+                    function_set_app.clone(),
+                    runner_app.clone(),
+                    worker_app.clone(),
+                    &mc_config,
+                ));
                 Ok(AppModule {
                     config_module,
                     repositories: Arc::new(RedisRdbOptionalRepositoryModule::from(repositories)),
@@ -153,6 +172,8 @@ impl AppModule {
                     job_app,
                     job_result_app,
                     runner_app,
+                    function_set_app,
+                    function_app,
                     descriptor_cache,
                 })
             }
@@ -247,6 +268,16 @@ impl AppModule {
                     repositories.clone(),
                     worker_app.clone(),
                 ));
+                let function_set_app = Arc::new(FunctionSetAppImpl::new(
+                    repositories.rdb_chan_module.function_set_repository.clone(),
+                    &mc_config,
+                ));
+                let function_app = Arc::new(FunctionAppImpl::new(
+                    function_set_app.clone(),
+                    runner_app.clone(),
+                    worker_app.clone(),
+                    &mc_config,
+                ));
                 Ok(AppModule {
                     config_module,
                     repositories: Arc::new(RedisRdbOptionalRepositoryModule::from(repositories)),
@@ -254,6 +285,8 @@ impl AppModule {
                     job_app,
                     job_result_app,
                     runner_app,
+                    function_set_app,
+                    function_app,
                     descriptor_cache,
                 })
             }
@@ -298,6 +331,7 @@ pub mod test {
     use super::*;
     use crate::{
         app::{
+            function_set::FunctionSetAppImpl,
             runner::{hybrid::HybridRunnerAppImpl, RunnerApp, RunnerDataWithDescriptor},
             worker::hybrid::HybridWorkerAppImpl,
             StorageConfig,
@@ -396,6 +430,16 @@ pub mod test {
             repositories.clone(),
             worker_app.clone(),
         ));
+        let function_set_app = Arc::new(FunctionSetAppImpl::new(
+            repositories.rdb_chan_module.function_set_repository.clone(),
+            &mc_config,
+        ));
+        let function_app = Arc::new(FunctionAppImpl::new(
+            function_set_app.clone(),
+            runner_app.clone(),
+            worker_app.clone(),
+            &mc_config,
+        ));
 
         Ok(AppModule::new(
             app_config,
@@ -404,6 +448,8 @@ pub mod test {
             job_app,
             job_result_app,
             runner_app,
+            function_set_app,
+            function_app,
             descriptor_cache,
         ))
     }

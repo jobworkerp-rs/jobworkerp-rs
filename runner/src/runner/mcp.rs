@@ -11,10 +11,10 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use jobworkerp_base::codec::ProstMessageCodec;
 use jobworkerp_base::codec::UseProstCodec;
-use proto::jobworkerp::data::McpTool;
 use proto::jobworkerp::data::ResultOutputItem;
 use proto::jobworkerp::data::StreamingOutputType;
-use proto::jobworkerp::data::ToolAnnotations;
+use proto::jobworkerp::function::data::McpTool;
+use proto::jobworkerp::function::data::ToolAnnotations;
 use proxy::McpServerProxy;
 use rmcp::model::CallToolRequestParam;
 

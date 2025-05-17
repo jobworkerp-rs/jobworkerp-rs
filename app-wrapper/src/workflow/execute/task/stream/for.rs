@@ -14,7 +14,7 @@ use anyhow::Result;
 use futures::stream::{self, Stream, StreamExt};
 use infra_utils::infra::net::reqwest;
 use std::{pin::Pin, sync::Arc};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 
 pub struct ForTaskStreamExecutor {
     task: workflow::ForTask,
@@ -49,7 +49,11 @@ impl ForTaskStreamExecutor {
         task_context: &TaskContext,
         while_: &Option<String>,
     ) -> Result<(TaskContext, serde_json::Value), Box<workflow::Error>> {
-        let task_context = task_context.clone();
+        // Create a completely independent deep copy to ensure each iteration has its own isolated context
+        // This uses our copy() method which creates new Arc instances for all values
+        let task_context = task_context.deep_copy().await;
+
+        // Add the current item to the context
         task_context
             .add_context_value(item_name.to_string(), item.clone())
             .await;
@@ -59,6 +63,7 @@ impl ForTaskStreamExecutor {
                 serde_json::Value::Number(serde_json::Number::from(i)),
             )
             .await;
+
         let expression = match Self::expression(
             &*(workflow_context.read().await),
             Arc::new(task_context.clone()),
@@ -88,6 +93,7 @@ impl ForTaskStreamExecutor {
                 return Err(e);
             }
         };
+
         Ok((task_context, while_cond))
     }
 
@@ -153,23 +159,26 @@ impl ForTaskStreamExecutor {
         do_task: workflow::DoTask,
         task_name: &str,
         while_: &Option<String>,
-        original_context: TaskContext, // Original context for finalizing
     ) -> Result<
         Pin<Box<dyn Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send>>,
         Box<workflow::Error>,
     > {
-        tracing::debug!("Processing {} items in parallel (streaming)", items.len());
+        tracing::debug!(
+            "[FOR]Processing {} items in parallel (streaming)",
+            items.len()
+        );
+        let original_context = task_context.clone();
 
-        // Create an mpsc channel to collect results from multiple streams
-        let (tx, rx) = mpsc::channel(32); // Buffer size of 32 should be sufficient for most use cases
+        // Larger buffer to reduce back-pressure
+        let (tx, rx) = mpsc::channel(128);
 
         let mut has_items = false;
 
-        // Create tasks for each item that will be processed in parallel
-        let mut tasks = Vec::new();
+        // First pass - prepare all items and determine which ones should be processed
+        let mut items_to_process = Vec::new();
 
         for (i, item) in items.iter().enumerate() {
-            let (prepared_context, while_cond) = match self
+            match self
                 .prepare_for_item(
                     item,
                     i,
@@ -181,91 +190,133 @@ impl ForTaskStreamExecutor {
                 )
                 .await
             {
-                Ok(result) => result,
-                Err(e) => return Err(e),
-            };
-
-            if !Self::eval_as_bool(&while_cond) {
-                tracing::debug!("for: while condition is false, skipping item {}", i);
-                continue;
-            }
-
-            has_items = true;
-
-            // Create a clone of the sender for each task
-            let tx = tx.clone();
-
-            // Create executor with all required values
-            let do_stream_executor = DoTaskStreamExecutor::new(
-                do_task.clone(),
-                self.job_executor_wrapper.clone(),
-                self.http_client.clone(),
-            );
-
-            let task_name_formatted = format!("{}_{}", task_name, i);
-            let workflow_ctx_clone = workflow_context.clone();
-
-            // Spawn a task for each item
-            let task = tokio::spawn(async move {
-                // Execute the stream for this item
-                let mut stream = do_stream_executor.execute_stream(
-                    &task_name_formatted,
-                    workflow_ctx_clone,
-                    prepared_context,
-                );
-
-                // Forward all results from this stream to the channel
-                while let Some(result) = stream.next().await {
-                    if tx.send(result).await.is_err() {
-                        // Channel closed, receiver dropped
+                Ok((prepared_context, while_cond)) => {
+                    if Self::eval_as_bool(&while_cond) {
+                        has_items = true;
+                        items_to_process.push((i, prepared_context));
+                    } else {
+                        tracing::debug!("for: while condition is false, skipping item {}", i);
                         break;
                     }
                 }
-            });
+                Err(e) => {
+                    // Instead of failing the entire operation, record this specific error
+                    // and let other tasks continue
+                    tracing::error!("Error preparing item {}: {:?}", i, e);
 
-            tasks.push(task);
+                    // Send the error directly into the stream instead of returning early
+                    let tx_err = tx.clone();
+                    let e_clone = e.clone();
+                    tokio::spawn(async move {
+                        let _ = tx_err.send(Err(e_clone)).await;
+                    });
+
+                    // Continue with other items
+                    continue;
+                }
+            };
         }
 
         // If no items to process, return a stream with just the final result
         if !has_items {
-            let mut original_context = original_context;
-            original_context.set_raw_output(serde_json::Value::Array(vec![]));
-            original_context.remove_context_value(item_name).await;
-            original_context.remove_context_value(index_name).await;
-            original_context.remove_position();
-            return Ok(stream::once(async move { Ok(original_context) }).boxed());
+            let mut final_ctx = original_context;
+            final_ctx.set_raw_output(serde_json::Value::Array(vec![]));
+            final_ctx.remove_context_value(item_name).await;
+            final_ctx.remove_context_value(index_name).await;
+            final_ctx.remove_position();
+            return Ok(stream::once(async move { Ok(final_ctx) }).boxed());
         }
 
-        // Drop the original sender so the receiver will close when all tasks are done
-        drop(tx);
+        // Log detailed parallel execution information
+        tracing::debug!(
+            "Starting parallel execution of {} tasks with {} worker threads",
+            items_to_process.len(),
+            tokio::runtime::Handle::current().metrics().num_workers()
+        );
+        let mut join_set = tokio::task::JoinSet::new();
+        for (i, prepared_context) in items_to_process {
+            // Clone all resources needed for this task
+            let tx = tx.clone();
+            let do_task_clone = do_task.clone();
+            let job_executor_wrapper_clone = self.job_executor_wrapper.clone();
+            let http_client_clone = self.http_client.clone();
+            let workflow_context = workflow_context.clone();
+            let task_name_formatted = Arc::new(format!("{}_{}", task_name, i));
 
-        // Spawn a task to await all the processing tasks and ensure they complete
-        let cleanup = tokio::spawn(async move {
-            // Wait for all tasks to complete
-            for task in tasks {
-                // Ignore errors, we're just ensuring tasks complete
-                let _ = task.await;
-            }
-        });
+            // Spawn this task asynchronously
+            join_set.spawn(async move {
+                let start_time = std::time::Instant::now();
+
+                tracing::debug!("[PARALLEL] Task {} starting at t=0ms", &task_name_formatted);
+
+                // Create executor for this task
+                let do_stream_executor = DoTaskStreamExecutor::new(
+                    do_task_clone,
+                    job_executor_wrapper_clone,
+                    http_client_clone,
+                );
+
+                // Execute the stream and track results
+                let stream = do_stream_executor
+                    .execute_stream(
+                        task_name_formatted.as_ref(),
+                        workflow_context.clone(),
+                        prepared_context,
+                    )
+                    .boxed();
+
+                tokio::pin!(stream);
+
+                let mut result_count = 0;
+                while let Some(result) = stream.next().await {
+                    result_count += 1;
+                    let elapsed_ms = start_time.elapsed().as_millis();
+
+                    tracing::debug!(
+                        "[PARALLEL] Task {} yielding result #{} at t={}ms",
+                        &task_name_formatted,
+                        result_count,
+                        elapsed_ms
+                    );
+
+                    if tx.send(result).await.is_err() {
+                        tracing::error!(
+                            "Channel closed while sending results for task {}",
+                            &task_name_formatted
+                        );
+                    }
+                }
+
+                let elapsed_ms = start_time.elapsed().as_millis();
+                tracing::debug!(
+                    "[PARALLEL] Task {} completed in {}ms with {} results",
+                    &task_name_formatted,
+                    elapsed_ms,
+                    result_count
+                );
+            });
+        }
+        drop(tx);
 
         // Convert the receiver into a stream
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-
-        // For parallel processing, we don't need to collect all outputs
-        // Instead, we'll just append a final item to the stream that resets the context
+        let join_set = Arc::new(Mutex::new(join_set));
         let item_name = item_name.to_string();
         let index_name = index_name.to_string();
+        let original_context = original_context.clone();
 
-        // Chain with the final result that will just clean up the context
-        // This final item doesn't replace previous results, it just adds one more to the stream
-        // after all parallel tasks have completed
         let final_stream = stream
             .chain(stream::once(async move {
-                // Ensure cleanup task completes
-                let _ = cleanup.await;
+                // XXX workaround: wait for last result sent
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-                // Create final result that just cleans up the context
-                // This doesn't override or replace any of the previous results that were streamed
+                // Wait for all tasks to complete before sending the final cleanup
+                let mut set = join_set.lock().await;
+                while let Some(result) = set.join_next().await {
+                    let _ = result;
+                }
+
+                // cleanup
                 let mut final_ctx = original_context;
                 final_ctx.remove_context_value(&item_name).await;
                 final_ctx.remove_context_value(&index_name).await;
@@ -297,6 +348,10 @@ impl ForTaskStreamExecutor {
         Pin<Box<dyn Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send>>,
         Box<workflow::Error>,
     > {
+        tracing::debug!(
+            "[FOR] Processing {} items sequentially (streaming)",
+            items.len()
+        );
         // No items to process, return a stream with just the final result
         if items.is_empty() {
             let mut final_ctx = original_context;
@@ -304,7 +359,10 @@ impl ForTaskStreamExecutor {
             final_ctx.remove_context_value(&item_name).await;
             final_ctx.remove_context_value(&index_name).await;
             final_ctx.remove_position();
-            return Ok(Box::pin(stream::once(async move { Ok(final_ctx) })));
+            return Ok::<
+                Pin<Box<dyn Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send>>,
+                Box<workflow::Error>,
+            >(stream::once(async move { Ok(final_ctx) }).boxed());
         }
 
         // Create streams for each item that passes the while condition
@@ -314,7 +372,7 @@ impl ForTaskStreamExecutor {
         let mut has_items = false;
 
         for (i, item) in items.iter().enumerate() {
-            let (prepared_context, while_cond) = match self
+            match self
                 .prepare_for_item(
                     item,
                     i,
@@ -326,50 +384,61 @@ impl ForTaskStreamExecutor {
                 )
                 .await
             {
-                Ok(result) => result,
-                Err(e) => return Err(e),
-            };
+                Ok((prepared_context, while_cond)) => {
+                    if !Self::eval_as_bool(&while_cond) {
+                        tracing::debug!("for: while condition is false, skipping item {}", i);
+                        break;
+                    }
 
-            if !Self::eval_as_bool(&while_cond) {
-                tracing::debug!("for: while condition is false, skipping item {}", i);
-                continue;
-            }
+                    has_items = true;
 
-            has_items = true;
+                    // Create a do task executor for this item
+                    let task_name_formatted = Arc::new(format!("{}_{}", task_name, i));
+                    let do_stream_executor = Arc::new(DoTaskStreamExecutor::new(
+                        do_task.clone(), //XXX clone
+                        self.job_executor_wrapper.clone(),
+                        self.http_client.clone(),
+                    ));
 
-            // Create a do task executor for this item
-            let task_name_formatted = Arc::new(format!("{}_{}", task_name, i));
-            let do_stream_executor = Arc::new(DoTaskStreamExecutor::new(
-                do_task.clone(), //XXX clone
-                self.job_executor_wrapper.clone(),
-                self.http_client.clone(),
-            ));
+                    let tnf = task_name_formatted.clone();
+                    keeps.push((tnf.clone(), do_stream_executor.clone()));
 
-            let tnf = task_name_formatted.clone();
-            // Clone the workflow context for lifetime management
-            keeps.push((tnf.clone(), do_stream_executor.clone()));
-            // Create a stream for this item
-            // let stream = do_stream_executor.execute_stream(
-            //     tnf.as_str(),
-            //     workflow_context.clone(),
-            //     prepared_context,
-            // );
-            let tnf_clone = tnf.clone();
-            let workflow_context_clone = workflow_context.clone();
-            let prepared_context_clone = prepared_context.clone(); // XXX clone
-            let stream = Box::pin(async_stream::stream! {
-                let mut inner_stream = do_stream_executor.execute_stream(
-                    tnf_clone.as_str(),
-                    workflow_context_clone,
-                    prepared_context_clone,
-                );
-                while let Some(item) = inner_stream.next().await {
-                    yield item;
+                    let tnf_clone = tnf.clone();
+                    let workflow_context_clone = workflow_context.clone();
+                    let do_stream_executor_clone = do_stream_executor.clone();
+
+                    let stream: Pin<
+                        Box<dyn Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send>,
+                    > = Box::pin(async_stream::stream! {
+                        let mut inner_stream = do_stream_executor_clone.execute_stream(
+                            tnf_clone.as_str(),
+                            workflow_context_clone,
+                            prepared_context,
+                        );
+                        while let Some(item) = inner_stream.next().await {
+                            yield item;
+                        }
+                    });
+
+                    // Add this item's stream to our collection
+                    item_streams.push(stream);
                 }
-            });
+                Err(e) => {
+                    tracing::error!("Error preparing item {}: {:?}", i, e);
 
-            // Add this item's stream to our collection
-            item_streams.push(stream);
+                    let e_clone = e.clone();
+                    let error_stream: Pin<
+                        Box<dyn Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send>,
+                    > = Box::pin(async_stream::stream! {
+                        yield Err(e_clone);
+                    });
+
+                    // Add this error stream to our collection
+                    // Continue with other items
+                    item_streams.push(error_stream);
+                    continue;
+                }
+            };
         }
 
         // No items passed the while condition check
@@ -379,31 +448,33 @@ impl ForTaskStreamExecutor {
             final_ctx.remove_context_value(&item_name).await;
             final_ctx.remove_context_value(&index_name).await;
             final_ctx.remove_position();
-            return Ok(Box::pin(stream::once(async move { Ok(final_ctx) })));
+            return Ok::<
+                Pin<Box<dyn Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send>>,
+                Box<workflow::Error>,
+            >(stream::once(async move { Ok(final_ctx) }).boxed());
         }
 
-        // Combine all streams in sequence by:
-        // 1. Converting our Vec of streams into a stream of streams
-        // 2. Flattening it to a single stream (keeping the order)
-        // 3. Adding a final cleanup item
-        let stream = futures::stream::iter(item_streams)
-            .flatten()
-            .chain(stream::once(async move {
-                // Final cleanup context - just clean up variables and context
-                let mut final_ctx = original_context;
-                let _exec = keeps;
+        let stream = Box::pin(async_stream::stream! {
+            // Process each item's stream completely before moving to the next
+            for stream in item_streams {
+                tokio::pin!(stream);
+                while let Some(result) = stream.next().await {
+                    yield result;
+                }
+            }
+            // XXX workaround: for last result sent
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-                // No need to set any array output - we're streaming results as they come
-                // We'll just clean up our context variables
-                final_ctx.remove_context_value(&item_name).await;
-                final_ctx.remove_context_value(&index_name).await;
-                final_ctx.remove_position();
+            let mut final_ctx = original_context;
+            let _exec = keeps;
+            final_ctx.remove_context_value(&item_name).await;
+            final_ctx.remove_context_value(&index_name).await;
+            final_ctx.remove_position();
 
-                Ok(final_ctx)
-            }));
+            yield Ok(final_ctx);
+        });
 
-        // Return the combined stream - it provides real-time results while processing
-        Ok(stream.boxed())
+        Ok(stream)
     }
 }
 
@@ -413,12 +484,11 @@ impl StreamTaskExecutorTrait<'_> for ForTaskStreamExecutor {
         task_name: &str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
-    ) -> impl Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send {
+    ) -> impl futures::Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send {
         let this = self;
         let task_name = task_name.to_string();
 
-        // Create a one-shot async stream that handles initialization and sets up the real processing
-        stream::once(async move {
+        Box::pin(async_stream::stream! {
             // Initialize execution
             let init_result = this
                 .initialize_execution(&task_name, &workflow_context, task_context)
@@ -437,8 +507,9 @@ impl StreamTaskExecutorTrait<'_> for ForTaskStreamExecutor {
                         final_ctx.set_raw_output(serde_json::Value::Array(vec![]));
                         final_ctx.remove_position();
 
-                        // Return a single-item stream with empty result
-                        return stream::once(async move { Ok(final_ctx) }).boxed();
+                        // Return the single result and exit
+                        yield Ok(final_ctx);
+                        return;
                     }
 
                     // Extract parameters from task
@@ -476,15 +547,21 @@ impl StreamTaskExecutorTrait<'_> for ForTaskStreamExecutor {
                                 do_task,
                                 &task_name,
                                 while_,
-                                task_context.clone(),
                             )
                             .await
                         {
-                            Ok(stream) => stream.boxed(),
-                            Err(e) => stream::once(async move { Err(e) }).boxed(),
+                            Ok(mut stream) => {
+                                // Forward all results from the inner stream, regardless of success/error
+                                while let Some(result) = stream.next().await {
+                                    yield result;
+                                }
+                            }
+                            Err(e) => {
+                                yield Err(e);
+                            }
                         }
                     } else {
-                        // Sequential processing with real-time streaming
+                        // Sequential processing
                         match this
                             .process_items_sequentially_stream(
                                 items,
@@ -499,17 +576,22 @@ impl StreamTaskExecutorTrait<'_> for ForTaskStreamExecutor {
                             )
                             .await
                         {
-                            Ok(stream) => stream.boxed(),
-                            Err(e) => stream::once(async move { Err(e) }).boxed(),
+                            Ok(mut stream) => {
+                                // Forward all results from the inner stream, regardless of success/error
+                                while let Some(result) = stream.next().await {
+                                    yield result;
+                                }
+                            }
+                            Err(e) => {
+                                yield Err(e);
+                            }
                         }
                     }
                 }
                 Err(e) => {
-                    // Return error as a single item stream
-                    stream::once(async move { Err(e) }).boxed()
+                    yield Err(e);
                 }
             }
         })
-        .flatten() // Flatten the nested streams
     }
 }

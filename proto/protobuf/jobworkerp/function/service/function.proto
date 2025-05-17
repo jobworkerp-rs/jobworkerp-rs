@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package jobworkerp.function.service;
+
+import "jobworkerp/function/data/function.proto";
+
+message FindFunctionRequest {
+  bool exclude_runner = 1;
+  bool exclude_worker = 2;
+}
+
+message FindFunctionSetRequest {
+  // FunctionSet name
+  string name = 1;
+}
+
+service FunctionService {
+  rpc FindList(FindFunctionRequest)
+      returns (stream jobworkerp.function.data.FunctionSpecs);
+  rpc FindListBySet(FindFunctionSetRequest)
+      returns (stream jobworkerp.function.data.FunctionSpecs);
+}

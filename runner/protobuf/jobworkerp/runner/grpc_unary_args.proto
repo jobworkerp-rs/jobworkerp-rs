@@ -10,8 +10,8 @@ message GrpcUnaryArgs {
     string method = 1;
     
     // # Request
-    // Serialized request payload containing the protobuf binary-encoded request message
-    bytes request = 2;
+    // Request payload in JSON format which will be converted to protobuf message using reflection
+    string request = 2;
     
     // # Metadata
     // Request metadata as key-value pairs to be sent with the gRPC call

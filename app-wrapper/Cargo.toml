@@ -36,7 +36,7 @@ dotenvy = { workspace = true }
 envy = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
-genai = "0.2"
+genai = "0.3"
 indexmap = "2"
 itertools = { workspace = true }
 jsonschema = "0.30"

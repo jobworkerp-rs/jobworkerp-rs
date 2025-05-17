@@ -1,6 +1,21 @@
 // If not making a type alias like this, the dependency inside the auto-generated proto code will be wrong.
 // (In auto-generated proto code, class references were being resolved with super, so the positional relationship of the data class is pseudo-compatible.)
 pub mod jobworkerp {
+    pub mod function {
+        pub mod data {
+            use proto::jobworkerp::function::data;
+            pub type FunctionSetData = data::FunctionSetData;
+            pub type FunctionSet = data::FunctionSet;
+            pub type FunctionSetId = data::FunctionSetId;
+            pub type FunctionSpecs = data::FunctionSpecs;
+            pub type FunctionSchema = data::FunctionSchema;
+            pub type McpToolList = data::McpToolList;
+            pub type McpTool = data::McpTool;
+        }
+        pub mod service {
+            tonic::include_proto!("jobworkerp.function.service");
+        }
+    }
     pub mod data {
         use proto::jobworkerp::data;
         pub type Priority = data::Priority;
@@ -23,10 +38,6 @@ pub mod jobworkerp {
         pub type ResultOutput = data::ResultOutput;
         pub type ResultOutputItem = data::ResultOutputItem;
         pub type JobStatus = data::JobStatus;
-        pub type FunctionSpecs = data::FunctionSpecs;
-        pub type FunctionSchema = data::FunctionSchema;
-        pub type McpToolList = data::McpToolList;
-        pub type McpTool = data::McpTool;
         pub type Empty = data::Empty;
     }
     pub mod service {

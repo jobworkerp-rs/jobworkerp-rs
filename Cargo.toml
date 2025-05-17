@@ -117,6 +117,7 @@ tracing-subscriber = { version = "0.3", features = [
     "json",
 ] }
 url = "2.5"
+uuid = { version = "1", features = ["v4", "v7"] }
 
 [profile.release]
 # Tell `rustc` to optimize for small code size.

@@ -1,5 +1,6 @@
 use jobworkerp_runner::runner::{mcp::McpServerRunnerImpl, RunnerSpec};
-use proto::jobworkerp::data::{McpTool, Runner, RunnerData, RunnerId};
+use proto::jobworkerp::data::{Runner, RunnerData, RunnerId};
+use proto::jobworkerp::function::data::McpTool;
 use std::any::Any;
 
 // db row definitions
