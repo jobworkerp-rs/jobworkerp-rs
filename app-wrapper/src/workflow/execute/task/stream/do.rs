@@ -78,11 +78,12 @@ impl DoTaskStreamExecutor {
                         Ok(ctx) => {
                             last_ctx = Some(ctx.clone());
                             if tx.send(Ok(ctx)).await.is_err() {
-                                return;
+                                // tracing::warn!("Receiver dropped, stopping task execution.");
+                                // return;
                             }
                         }
                         Err(e) => {
-                            workflow_context.write().await.status = WorkflowStatus::Faulted;
+                            // workflow_context.write().await.status = WorkflowStatus::Faulted;
                             let _ = tx.send(Err(e)).await;
                             return;
                         }

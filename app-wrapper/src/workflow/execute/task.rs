@@ -372,8 +372,8 @@ impl TaskExecutor {
                     let stream = executor.execute_stream(tn.as_str(), wc, tc);
                     pin_mut!(stream);
                     while let Some(item) = stream.next().await {
-                        if tx.unbounded_send(item).is_err() {
-                            break;
+                        if let Err(e) = tx.unbounded_send(item) {
+                            tracing::debug!("Failed to send item in {}: {:#?}", &task_name, e);
                         }
                     }
                 });

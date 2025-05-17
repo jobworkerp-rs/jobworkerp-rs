@@ -154,14 +154,15 @@ impl GrpcUnaryRunner {
         Ok(())
     }
 
-    // Helper method to extract service and method names from a full method path
     fn parse_method_path(method_path: &str) -> Result<(String, String)> {
         let parts: Vec<&str> = method_path.split('/').collect();
-        if parts.len() != 3 || !parts[0].is_empty() {
-            return Err(anyhow!("Invalid method path format: {}", method_path));
+        if parts.len() == 3 && parts[0].is_empty() {
+            Ok((parts[1].to_string(), parts[2].to_string()))
+        } else if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+            Ok((parts[0].to_string(), parts[1].to_string()))
+        } else {
+            Err(anyhow!("Invalid method path format: {}", method_path))
         }
-
-        Ok((parts[1].to_string(), parts[2].to_string()))
     }
 
     // Helper method to get input message descriptor for a given method
@@ -320,24 +321,18 @@ impl RunnerTrait for GrpcUnaryRunner {
             ProstMessageCodec::deserialize_message::<GrpcUnaryRunnerSettings>(&settings)?;
         self.create(&settings).await
     }
-    // args: {headers:{<headers map>}, queries:[<query string array>], body: <body string or struct>}
     async fn run(&mut self, args: &[u8]) -> Result<Vec<Vec<u8>>> {
         if let Some(mut client) = self.client.clone() {
-            // Since the proto definition was changed from bytes to string,
-            // adjust deserialization to handle the new format
             let req = ProstMessageCodec::deserialize_message::<GrpcUnaryArgs>(args)?;
-            // Use our custom BytesCodec instead of ProstCodec to handle raw byte data correctly
             let codec = RawBytesCodec;
 
-            // Setup the message size limits if needed
             if let Some(size) = self.max_message_size {
-                // Set max message size using the cloned instance
                 client = client
                     .max_decoding_message_size(size)
                     .max_encoding_message_size(size);
             }
 
-            // Wait for the client to be ready - important to avoid buffer full errors
+            // Wait for the client to be ready (to avoid buffer full errors)
             client.ready().await.map_err(|e| {
                 tonic::Status::new(
                     tonic::Code::Unknown,
@@ -351,9 +346,13 @@ impl RunnerTrait for GrpcUnaryRunner {
                 self.json_to_protobuf(&req.method, &req.request).await?
             } else {
                 // Fallback to treating the string as base64 encoded bytes for backward compatibility
-                tracing::warn!(
-                    "Reflection not enabled or unavailable. Treating request as raw data."
-                );
+                if self.use_reflection {
+                    tracing::warn!(
+                        "Requested reflection unavailable. Treating request as raw data."
+                    );
+                } else {
+                    tracing::debug!("Using raw bytes(base64) for request");
+                }
                 match base64::engine::general_purpose::STANDARD.decode(&req.request) {
                     Ok(bytes) => bytes,
                     Err(_) => {
@@ -502,7 +501,7 @@ mod tests {
         let base64_encoded = base64::engine::general_purpose::STANDARD.encode(&buf);
 
         let arg = crate::jobworkerp::runner::GrpcUnaryArgs {
-            method: "/jobworkerp.service.RunnerService/Find".to_string(),
+            method: "jobworkerp.service.RunnerService/Find".to_string(),
             request: base64_encoded,
             metadata: Default::default(),
             timeout: 0,
