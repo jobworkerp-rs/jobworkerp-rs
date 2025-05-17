@@ -55,7 +55,7 @@ impl<T: FunctionGrpc + Tracing + Send + Debug + Sync + 'static> FunctionService 
     async fn find_list_by_set(
         &self,
         request: tonic::Request<FindFunctionSetRequest>,
-    ) -> Result<tonic::Response<<T as FunctionService>::FindListStream>, tonic::Status> {
+    ) -> Result<tonic::Response<<T as FunctionService>::FindListBySetStream>, tonic::Status> {
         let _s = Self::trace_request("function", "find_list_by_set", &request);
         let req = request.into_inner();
 

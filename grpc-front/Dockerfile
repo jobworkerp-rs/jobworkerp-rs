@@ -1,6 +1,6 @@
 FROM nvcr.io/nvidia/cuda:12.8.1-runtime-ubuntu24.04
 
-RUN apt update && apt install -y libssl3 libcurl4 protobuf-compiler libgomp1 libcudnn9-cuda-12 \
+RUN apt-get update && apt-get -y dist-upgrade && apt-get install -y libssl3 libcurl4 protobuf-compiler libgomp1 libcudnn9-cuda-12 docker.io docker-compose \
     && apt-get clean -y && rm -rf /var/lib/apt/lists/*
 
 RUN adduser --system jobworkerp
