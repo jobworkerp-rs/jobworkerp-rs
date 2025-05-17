@@ -64,29 +64,35 @@ impl HelloPlugin {
         let arg = HelloArgs::decode(arg).unwrap_or(HelloArgs {
             arg: String::from_utf8_lossy(arg).to_string(),
         });
+        let id = uuid::Uuid::new_v4();
         let start = chrono::Utc::now().to_rfc3339();
         let data = arg.arg;
         println!(
-            "========== [{}] HelloPlugin run: Hello! {} ==========",
-            start, &data
+            "========== [{}] HelloPlugin run: Hello! {}: {} ==========",
+            start, &data, id
         );
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
         println!(
-            "========== [{}] END OF HelloPlugin: until {} ==========",
+            "========== [{}] END OF HelloPlugin: until {}: {} ==========",
             start,
-            chrono::Utc::now().to_rfc3339()
+            chrono::Utc::now().to_rfc3339(),
+            id
         );
-        Ok(vec![format!("SUCCESS: arg={}", &data).into_bytes()])
+        Ok(vec![HelloRunnerResult {
+            data: format!("SUCCESS: {} arg={}", id, &data),
+        }
+        .encode_to_vec()])
     }
     pub async fn async_run(hello_name: String) -> Result<BoxStream<'static, Vec<u8>>> {
         let (tx, rx) = mpsc::channel(100);
         // heavy task
         tokio::spawn(async move {
             let start = chrono::Utc::now().to_rfc3339();
+            let id = uuid::Uuid::new_v4();
             tokio::time::sleep(Duration::from_millis(100)).await;
             println!(
-                "========== [{}] HelloPlugin run_stream: Hello! {} ==========",
-                start, &hello_name
+                "========== [{}] HelloPlugin run_stream: Hello! {}: {} ==========",
+                start, &hello_name, id
             );
             for c in hello_name.chars() {
                 let c = HelloRunnerResult {
@@ -94,13 +100,14 @@ impl HelloPlugin {
                 }
                 .encode_to_vec();
                 let _ = tx.send(c).await;
-                tokio::time::sleep(Duration::from_millis(400)).await;
+                tokio::time::sleep(Duration::from_millis(1000)).await;
             }
             drop(tx);
             println!(
-                "========== [{}] END OF HelloPlugin: until {} ==========",
+                "========== [{}] END OF HelloPlugin: until {}: {} ==========",
                 start,
-                chrono::Utc::now().to_rfc3339()
+                chrono::Utc::now().to_rfc3339(),
+                id
             );
         });
         Ok(tokio_stream::wrappers::ReceiverStream::new(rx).boxed())
