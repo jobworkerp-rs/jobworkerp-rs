@@ -139,7 +139,6 @@ $defs:
     description: A discrete unit of work that contributes to achieving the overall objectives defined by the workflow.
     unevaluatedProperties: false
     oneOf:
-      - $ref: "#/$defs/callTask"
       - $ref: "#/$defs/forkTask"
       - $ref: "#/$defs/forTask"
       - $ref: "#/$defs/raiseTask"
@@ -149,25 +148,6 @@ $defs:
       - $ref: "#/$defs/tryTask"
       - $ref: "#/$defs/doTask"
       - $ref: "#/$defs/waitTask"
-  callTask:
-    title: CallTask
-    description: Defines the call to perform.
-    oneOf:
-      - title: CallFunction
-        description: Defines the function(runner) call to perform.
-        $ref: "#/$defs/taskBase"
-        type: object
-        unevaluatedProperties: false
-        required: [call]
-        properties:
-          call:
-            type: string
-            description: The name of the function to call.
-          with:
-            type: object
-            title: FunctionArguments
-            description: A name/value mapping of the parameters, if any, to call the function with.
-            additionalProperties: true
   forkTask:
     type: object
     $ref: "#/$defs/taskBase"

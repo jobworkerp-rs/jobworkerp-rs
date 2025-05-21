@@ -11,7 +11,6 @@ use crate::workflow::{
     execute::context::{Then, WorkflowStatus},
 };
 use anyhow::Result;
-use call::CallTaskExecutor;
 use debug_stub_derive::DebugStub;
 use fork::ForkTaskExecutor;
 use futures::channel::mpsc;
@@ -271,39 +270,39 @@ impl TaskExecutor {
         // Dispatch based on owned Task
         // need to update output context after task execution (not streaming task depends on the other kind tasks)
         match task_enum {
-            Task::CallTask(task) => {
-                // CallTask: single-shot execution
-                let task_executor =
-                    CallTaskExecutor::new(task, http_client.clone(), job_executor_wrapper.clone());
-                futures::stream::once(async move {
-                    match task_executor
-                        .execute(
-                            task_name.as_str(),
-                            workflow_context.clone(),
-                            task_context.clone(), // XXX hard clone
-                        )
-                        .await
-                    {
-                        Ok(ctx) => {
-                            // update context by output
-                            let mut expr = Self::expression(
-                                &*workflow_context.read().await,
-                                Arc::new(ctx.clone()),
-                            )
-                            .await?;
-                            Self::update_context_by_output(
-                                original_task.clone(),
-                                workflow_context.clone(),
-                                &mut expr,
-                                ctx,
-                            )
-                            .await
-                        }
-                        Err(e) => Err(e),
-                    }
-                })
-                .boxed()
-            }
+            // Task::CallTask(task) => {
+            //     // CallTask: single-shot execution
+            //     let task_executor =
+            //         CallTaskExecutor::new(task, http_client.clone(), job_executor_wrapper.clone());
+            //     futures::stream::once(async move {
+            //         match task_executor
+            //             .execute(
+            //                 task_name.as_str(),
+            //                 workflow_context.clone(),
+            //                 task_context.clone(), // XXX hard clone
+            //             )
+            //             .await
+            //         {
+            //             Ok(ctx) => {
+            //                 // update context by output
+            //                 let mut expr = Self::expression(
+            //                     &*workflow_context.read().await,
+            //                     Arc::new(ctx.clone()),
+            //                 )
+            //                 .await?;
+            //                 Self::update_context_by_output(
+            //                     original_task.clone(),
+            //                     workflow_context.clone(),
+            //                     &mut expr,
+            //                     ctx,
+            //                 )
+            //                 .await
+            //             }
+            //             Err(e) => Err(e),
+            //         }
+            //     })
+            //     .boxed()
+            // }
             Task::DoTask(task) => {
                 // DoTask: stream execution
                 let executor = DoTaskStreamExecutor::new(
