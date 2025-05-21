@@ -2,6 +2,7 @@ use super::config::{McpConfig, McpServerConfig, McpServerTransportConfig};
 use anyhow::Result;
 use debug_stub_derive::DebugStub;
 use infra_utils::infra::cache::{MokaCache, MokaCacheConfig, MokaCacheImpl, UseMokaCache};
+use jobworkerp_base::error::JobWorkerError;
 use rmcp::{
     model::{CallToolRequestParam, CallToolResult, LoggingLevel, Tool},
     service::{QuitReason, RunningService},
@@ -43,7 +44,8 @@ impl McpServerProxy {
     async fn start(config: &McpServerTransportConfig) -> Result<RunningService<RoleClient, ()>> {
         let client = match config {
             McpServerTransportConfig::Sse { url } => {
-                let transport = rmcp::transport::sse::SseTransport::start(url).await?;
+                let transport =
+                    rmcp::transport::sse_client::SseClientTransport::start(url.as_str()).await?;
                 // TODO use handler
                 ().serve(transport).await?
             }
@@ -104,6 +106,10 @@ impl McpServerProxy {
         match self.transport.cancel().await? {
             QuitReason::Cancelled => Ok(true),
             QuitReason::Closed => Ok(false),
+            QuitReason::JoinError(join_error) => {
+                tracing::error!("tokio thread Join error: {:?}", join_error);
+                Err(JobWorkerError::RuntimeError(format!("Join error: {}", join_error)).into())
+            }
         }
     }
 }

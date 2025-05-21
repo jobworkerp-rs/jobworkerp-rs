@@ -2,7 +2,7 @@ syntax = "proto3";
 package jobworkerp.runner.llm;
 
 // Completion request (text completion)
-message LLMCompletionArgs {
+message LLMChatArgs {
   // LLM request options for generation configuration
   // To specify to change the default behavior of the LLM
   message LLMOptions {
@@ -39,34 +39,66 @@ message LLMCompletionArgs {
     optional bool use_workers_as_function = 4;
   }
 
-  // An encoding of a conversation returned by Ollama after a completion
-  // request, this can be sent in a new request to keep a conversational memory.
-  message OllamaContext { repeated int32 data = 1; }
+  enum ChatRole {
+    // The role of the message.
+    ROLE_UNSPECIFIED = 0;
+    ROLE_SYSTEM = 1;    // System message
+    ROLE_USER = 2;      // User message
+    ROLE_ASSISTANT = 3; // Assistant message
+    ROLE_TOOL = 4;      // Assistant message
+  }
 
-  message GenerationContext {
-    oneof context {
-      // The context returned by Ollama.
-      OllamaContext ollama_context = 1;
+  message MessageContent {
+    message ImageSource {
+      // For models/services that support URL as input
+      string url = 1;
+
+      // The base64 string of the image
+      string base64 = 2;
     }
+
+    message Image {
+      string content_type = 1;
+      ImageSource source = 2;
+    }
+
+    message ToolCall {
+      string call_id = 1;
+      string fn_name = 2;
+      string fn_arguments = 3;
+    }
+
+    // Tool calls
+    message ToolCalls { repeated ToolCall calls = 1; }
+
+    oneof content {
+      // The role of the message.
+      string text = 1;
+
+      // The content of the message.
+      Image image = 2;
+
+      // The content of the message.
+      ToolCalls tool_calls = 3;
+    }
+  }
+
+  message ChatMessage {
+    /// The role of the message.
+    ChatRole role = 1;
+
+    /// The content of the message.
+    MessageContent content = 2;
   }
 
   // The name of the model (override default in runner settings).
   optional string model = 1;
 
-  // The system prompt to use for the system output.
-  // (override the default system prompt)
-  optional string system_prompt = 2;
-
-  // The initial prompt (override runner settings).
-  string prompt = 3;
-
   // The options to use for the model.
-  optional LLMOptions options = 4;
-
-  // An encoding of the conversation used in this response, this can be sent in
-  // the next request to keep a conversational memory
-  optional GenerationContext context = 5;
+  optional LLMOptions options = 2;
 
   // The function options to use for the model.
-  optional FunctionOptions function_options = 6;
+  optional FunctionOptions function_options = 4;
+
+  repeated ChatMessage messages = 5;
 }

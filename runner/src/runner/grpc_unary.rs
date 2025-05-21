@@ -1,5 +1,5 @@
 use crate::jobworkerp::runner::{GrpcUnaryArgs, GrpcUnaryResult, GrpcUnaryRunnerSettings};
-use crate::schema_to_json_string;
+use crate::{schema_to_json_string, schema_to_json_string_option};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use base64::Engine;
@@ -287,7 +287,7 @@ impl RunnerSpec for GrpcUnaryRunner {
         include_str!("../../protobuf/jobworkerp/runner/grpc_unary_args.proto").to_string()
     }
     fn result_output_proto(&self) -> Option<String> {
-        None
+        Some(include_str!("../../protobuf/jobworkerp/runner/grpc_unary_result.proto").to_string())
     }
     fn output_type(&self) -> StreamingOutputType {
         StreamingOutputType::NonStreaming
@@ -299,19 +299,7 @@ impl RunnerSpec for GrpcUnaryRunner {
         schema_to_json_string!(GrpcUnaryArgs, "arguments_schema")
     }
     fn output_schema(&self) -> Option<String> {
-        // plain string with title
-        let mut schema = schemars::schema_for!(String);
-        schema.insert(
-            "title".to_string(),
-            serde_json::Value::String("Command stdout".to_string()),
-        );
-        match serde_json::to_string(&schema) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::error!("error in output_json_schema: {:?}", e);
-                None
-            }
-        }
+        schema_to_json_string_option!(GrpcUnaryResult, "output_schema")
     }
 }
 #[async_trait]

@@ -52,6 +52,11 @@ rand = { workspace = true }
 regex = { workspace = true }
 regress = "0.10"
 reqwest = { workspace = true }
+rmcp = { workspace = true, features = [
+    "client",
+    "transport-child-process",
+    "transport-sse",
+] }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -71,7 +76,7 @@ tokio-util = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
-uuid = { version = "1", features = ["v7", "serde"] }
+uuid = {workspace = true}
 
 [dev-dependencies]
 regex = { workspace = true }

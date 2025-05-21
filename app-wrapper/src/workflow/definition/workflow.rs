@@ -38,119 +38,6 @@ pub mod error {
         }
     }
 }
-#[doc = "CallTask"]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"type\": \"object\","]
-#[doc = "  \"required\": ["]
-#[doc = "    \"call\""]
-#[doc = "  ],"]
-#[doc = "  \"properties\": {"]
-#[doc = "    \"call\": {"]
-#[doc = "      \"description\": \"The name of the function to call.\","]
-#[doc = "      \"type\": \"string\""]
-#[doc = "    },"]
-#[doc = "    \"export\": {"]
-#[doc = "      \"title\": \"TaskBaseExport\","]
-#[doc = "      \"description\": \"Export task output to context.\","]
-#[doc = "      \"$ref\": \"#/$defs/export\""]
-#[doc = "    },"]
-#[doc = "    \"if\": {"]
-#[doc = "      \"title\": \"TaskBaseIf\","]
-#[doc = "      \"description\": \"A runtime expression, if any, used to determine whether or not the task should be run.\","]
-#[doc = "      \"type\": \"string\""]
-#[doc = "    },"]
-#[doc = "    \"input\": {"]
-#[doc = "      \"title\": \"TaskBaseInput\","]
-#[doc = "      \"description\": \"Configure the task's input.\","]
-#[doc = "      \"$ref\": \"#/$defs/input\""]
-#[doc = "    },"]
-#[doc = "    \"metadata\": {"]
-#[doc = "      \"title\": \"TaskMetadata\","]
-#[doc = "      \"description\": \"Holds additional information about the task.\","]
-#[doc = "      \"type\": \"object\","]
-#[doc = "      \"additionalProperties\": true"]
-#[doc = "    },"]
-#[doc = "    \"output\": {"]
-#[doc = "      \"title\": \"TaskBaseOutput\","]
-#[doc = "      \"description\": \"Configure the task's output.\","]
-#[doc = "      \"$ref\": \"#/$defs/output\""]
-#[doc = "    },"]
-#[doc = "    \"then\": {"]
-#[doc = "      \"title\": \"TaskBaseThen\","]
-#[doc = "      \"description\": \"The flow directive to be performed upon completion of the task.\","]
-#[doc = "      \"$ref\": \"#/$defs/flowDirective\""]
-#[doc = "    },"]
-#[doc = "    \"timeout\": {"]
-#[doc = "      \"title\": \"TaskTimeout\","]
-#[doc = "      \"oneOf\": ["]
-#[doc = "        {"]
-#[doc = "          \"title\": \"TaskTimeoutDefinition\","]
-#[doc = "          \"description\": \"The task's timeout configuration, if any.\","]
-#[doc = "          \"$ref\": \"#/$defs/timeout\""]
-#[doc = "        },"]
-#[doc = "        {"]
-#[doc = "          \"title\": \"TaskTimeoutReference\","]
-#[doc = "          \"description\": \"The name of the task's timeout, if any.\","]
-#[doc = "          \"type\": \"string\""]
-#[doc = "        }"]
-#[doc = "      ]"]
-#[doc = "    },"]
-#[doc = "    \"with\": {"]
-#[doc = "      \"title\": \"FunctionArguments\","]
-#[doc = "      \"description\": \"A name/value mapping of the parameters, if any, to call the function with.\","]
-#[doc = "      \"type\": \"object\","]
-#[doc = "      \"additionalProperties\": true"]
-#[doc = "    }"]
-#[doc = "  }"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
-pub struct CallTask {
-    #[doc = "The name of the function to call."]
-    pub call: ::std::string::String,
-    #[doc = "Export task output to context."]
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub export: ::std::option::Option<Export>,
-    #[doc = "A runtime expression, if any, used to determine whether or not the task should be run."]
-    #[serde(
-        rename = "if",
-        default,
-        skip_serializing_if = "::std::option::Option::is_none"
-    )]
-    pub if_: ::std::option::Option<::std::string::String>,
-    #[doc = "Configure the task's input."]
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub input: ::std::option::Option<Input>,
-    #[doc = "Holds additional information about the task."]
-    #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
-    pub metadata: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-    #[doc = "Configure the task's output."]
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub output: ::std::option::Option<Output>,
-    #[doc = "The flow directive to be performed upon completion of the task."]
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub then: ::std::option::Option<FlowDirective>,
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub timeout: ::std::option::Option<TaskTimeout>,
-    #[doc = "A name/value mapping of the parameters, if any, to call the function with."]
-    #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
-    pub with: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-}
-impl ::std::convert::From<&CallTask> for CallTask {
-    fn from(value: &CallTask) -> Self {
-        value.clone()
-    }
-}
-impl CallTask {
-    pub fn builder() -> builder::CallTask {
-        Default::default()
-    }
-}
 #[doc = "static error filter"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -3259,9 +3146,6 @@ impl SwitchTask {
 #[doc = "  \"description\": \"A discrete unit of work that contributes to achieving the overall objectives defined by the workflow.\","]
 #[doc = "  \"oneOf\": ["]
 #[doc = "    {"]
-#[doc = "      \"$ref\": \"#/$defs/callTask\""]
-#[doc = "    },"]
-#[doc = "    {"]
 #[doc = "      \"$ref\": \"#/$defs/forkTask\""]
 #[doc = "    },"]
 #[doc = "    {"]
@@ -3296,7 +3180,6 @@ impl SwitchTask {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 #[serde(untagged)]
 pub enum Task {
-    CallTask(CallTask),
     ForkTask(ForkTask),
     ForTask(ForTask),
     RaiseTask(RaiseTask),
@@ -3310,11 +3193,6 @@ pub enum Task {
 impl ::std::convert::From<&Self> for Task {
     fn from(value: &Task) -> Self {
         value.clone()
-    }
-}
-impl ::std::convert::From<CallTask> for Task {
-    fn from(value: CallTask) -> Self {
-        Self::CallTask(value)
     }
 }
 impl ::std::convert::From<ForkTask> for Task {
@@ -4524,173 +4402,6 @@ impl<'de> ::serde::Deserialize<'de> for WorkflowVersion {
 }
 #[doc = r" Types for composing complex structures."]
 pub mod builder {
-    #[derive(Clone, Debug)]
-    pub struct CallTask {
-        call: ::std::result::Result<::std::string::String, ::std::string::String>,
-        export: ::std::result::Result<::std::option::Option<super::Export>, ::std::string::String>,
-        if_: ::std::result::Result<
-            ::std::option::Option<::std::string::String>,
-            ::std::string::String,
-        >,
-        input: ::std::result::Result<::std::option::Option<super::Input>, ::std::string::String>,
-        metadata: ::std::result::Result<
-            ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            ::std::string::String,
-        >,
-        output: ::std::result::Result<::std::option::Option<super::Output>, ::std::string::String>,
-        then: ::std::result::Result<
-            ::std::option::Option<super::FlowDirective>,
-            ::std::string::String,
-        >,
-        timeout:
-            ::std::result::Result<::std::option::Option<super::TaskTimeout>, ::std::string::String>,
-        with: ::std::result::Result<
-            ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            ::std::string::String,
-        >,
-    }
-    impl ::std::default::Default for CallTask {
-        fn default() -> Self {
-            Self {
-                call: Err("no value supplied for call".to_string()),
-                export: Ok(Default::default()),
-                if_: Ok(Default::default()),
-                input: Ok(Default::default()),
-                metadata: Ok(Default::default()),
-                output: Ok(Default::default()),
-                then: Ok(Default::default()),
-                timeout: Ok(Default::default()),
-                with: Ok(Default::default()),
-            }
-        }
-    }
-    impl CallTask {
-        pub fn call<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::string::String>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.call = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for call: {}", e));
-            self
-        }
-        pub fn export<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<super::Export>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.export = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for export: {}", e));
-            self
-        }
-        pub fn if_<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.if_ = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for if_: {}", e));
-            self
-        }
-        pub fn input<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<super::Input>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.input = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for input: {}", e));
-            self
-        }
-        pub fn metadata<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<
-                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            >,
-            T::Error: ::std::fmt::Display,
-        {
-            self.metadata = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
-            self
-        }
-        pub fn output<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<super::Output>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.output = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for output: {}", e));
-            self
-        }
-        pub fn then<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<super::FlowDirective>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.then = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for then: {}", e));
-            self
-        }
-        pub fn timeout<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<super::TaskTimeout>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.timeout = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for timeout: {}", e));
-            self
-        }
-        pub fn with<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<
-                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            >,
-            T::Error: ::std::fmt::Display,
-        {
-            self.with = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for with: {}", e));
-            self
-        }
-    }
-    impl ::std::convert::TryFrom<CallTask> for super::CallTask {
-        type Error = super::error::ConversionError;
-        fn try_from(value: CallTask) -> ::std::result::Result<Self, super::error::ConversionError> {
-            Ok(Self {
-                call: value.call?,
-                export: value.export?,
-                if_: value.if_?,
-                input: value.input?,
-                metadata: value.metadata?,
-                output: value.output?,
-                then: value.then?,
-                timeout: value.timeout?,
-                with: value.with?,
-            })
-        }
-    }
-    impl ::std::convert::From<super::CallTask> for CallTask {
-        fn from(value: super::CallTask) -> Self {
-            Self {
-                call: Ok(value.call),
-                export: Ok(value.export),
-                if_: Ok(value.if_),
-                input: Ok(value.input),
-                metadata: Ok(value.metadata),
-                output: Ok(value.output),
-                then: Ok(value.then),
-                timeout: Ok(value.timeout),
-                with: Ok(value.with),
-            }
-        }
-    }
     #[derive(Clone, Debug)]
     pub struct CatchErrors {
         with:
