@@ -22,8 +22,10 @@ futures = { workspace = true }
 num_cpus = { workspace = true }
 once_cell = { workspace = true }
 prost-reflect = { workspace = true }
+rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 stretto = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use command_utils::text::TextUtil;
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::worker::rdb::{RdbWorkerRepository, UseRdbWorkerRepository};
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
@@ -77,6 +78,31 @@ impl WorkerApp for RdbWorkerAppImpl {
         tx.commit().await.map_err(JobWorkerError::DBError)?;
         // clear name cache (and list cache)
         self.clear_cache_by_name(&worker.name).await;
+        // not broadcast to runner (single instance for rdb only)
+        Ok(wid)
+    }
+
+    async fn create_temp(&self, worker: WorkerData, with_random_name: bool) -> Result<WorkerId> {
+        let wsid = worker
+            .runner_id
+            .ok_or_else(|| JobWorkerError::InvalidParameter("runner_id is required".to_string()))?;
+        self.validate_runner_settings_data(&wsid, worker.runner_settings.as_slice())
+            .await?;
+
+        let mut wdata = worker;
+        if with_random_name {
+            // generate random name
+            wdata.name = TextUtil::generate_random_key(Some(&wdata.name));
+        }
+        let wid = WorkerId {
+            value: self.id_generator.generate_id()?,
+        };
+        let worker = Worker {
+            id: Some(wid),
+            data: Some(wdata),
+        };
+        // clear name cache (and list cache)
+        self.create_cache(&wid, &worker).await?;
         // not broadcast to runner (single instance for rdb only)
         Ok(wid)
     }
@@ -241,3 +267,189 @@ impl UseRunnerParserWithCache for RdbWorkerAppImpl {
 }
 
 impl UseRunnerAppParserWithCache for RdbWorkerAppImpl {}
+
+// Add tests for RdbWorkerAppImpl
+#[cfg(test)]
+mod tests {
+    use crate::app::runner::rdb::RdbRunnerAppImpl;
+    use crate::app::runner::RunnerApp;
+    use crate::app::worker::rdb::RdbWorkerAppImpl;
+    use crate::app::worker::WorkerApp;
+    use crate::app::StorageConfig;
+    use crate::module::test::TEST_PLUGIN_DIR;
+    use anyhow::Result;
+    use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
+    use infra::infra::module::rdb::test::setup_test_rdb_module;
+    use infra::infra::IdGeneratorWrapper;
+    use infra_utils::infra::memory::MemoryCacheImpl;
+    use infra_utils::infra::test::TEST_RUNTIME;
+    use proto::jobworkerp::data::{RunnerId, StorageType, WorkerData};
+    use proto::TestRunnerSettings;
+    use std::sync::Arc;
+
+    async fn create_test_app(use_mock_id: bool) -> Result<RdbWorkerAppImpl> {
+        let rdb_module = Arc::new(setup_test_rdb_module().await);
+
+        // Mock id generator or use real one
+        let id_generator = if use_mock_id {
+            Arc::new(IdGeneratorWrapper::new_mock())
+        } else {
+            Arc::new(IdGeneratorWrapper::new())
+        };
+
+        // Memory cache configuration
+        let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
+            num_counters: 10000,
+            max_cost: 10000,
+            use_metrics: false,
+        };
+
+        let descriptor_cache = Arc::new(MemoryCacheImpl::new(&mc_config, None));
+        let storage_config = Arc::new(StorageConfig {
+            r#type: StorageType::Standalone,
+            restore_at_startup: Some(false),
+        });
+
+        // Create and initialize runner app
+        let runner_app = RdbRunnerAppImpl::new(
+            TEST_PLUGIN_DIR.to_string(),
+            storage_config.clone(),
+            &mc_config,
+            rdb_module.clone(),
+            descriptor_cache.clone(),
+            id_generator.clone(),
+        );
+        runner_app.load_runner().await?;
+
+        // Create worker app with runner app
+        let worker_app = RdbWorkerAppImpl::new(
+            storage_config.clone(),
+            id_generator.clone(),
+            &mc_config,
+            rdb_module,
+            descriptor_cache,
+            Arc::new(runner_app),
+        );
+
+        Ok(worker_app)
+    }
+
+    #[test]
+    fn test_integrated() -> Result<()> {
+        // Test creating multiple workers, finding them, updating one, and deleting one
+        TEST_RUNTIME.block_on(async {
+            let app = create_test_app(false).await?;
+            let runner_settings = JobqueueAndCodec::serialize_message(&TestRunnerSettings {
+                name: "testRunner1".to_string(),
+            });
+
+            // Create three workers
+            let w1 = WorkerData {
+                name: "test_rdb_1".to_string(),
+                runner_settings: runner_settings.clone(),
+                runner_id: Some(RunnerId { value: 1 }),
+                ..Default::default()
+            };
+            let w2 = WorkerData {
+                name: "test_rdb_2".to_string(),
+                runner_settings: runner_settings.clone(),
+                runner_id: Some(RunnerId { value: 1 }),
+                ..Default::default()
+            };
+            let w3 = WorkerData {
+                name: "test_rdb_3".to_string(),
+                runner_settings: runner_settings.clone(),
+                runner_id: Some(RunnerId { value: 1 }),
+                ..Default::default()
+            };
+
+            // Create the workers and verify IDs
+            let id1 = app.create(&w1).await?;
+            let id2 = app.create(&w2).await?;
+            let id3 = app.create(&w3).await?;
+
+            assert!(id1.value > 0);
+            assert_eq!(id2.value, id1.value + 1);
+            assert_eq!(id3.value, id2.value + 1);
+
+            // Find worker list and verify count
+            let list = app.find_list(None, None).await?;
+            assert_eq!(list.len(), 3);
+            assert_eq!(app.count().await?, 3);
+
+            // Update a worker
+            let w4 = WorkerData {
+                name: "test_rdb_updated".to_string(),
+                runner_settings: runner_settings.clone(),
+                runner_id: Some(RunnerId { value: 1 }),
+                ..Default::default()
+            };
+            let res = app.update(&id1, &Some(w4.clone())).await?;
+            assert!(res);
+
+            // Verify the update worked
+            let found = app.find(&id1).await?;
+            assert!(found.is_some());
+            let worker_data = found.and_then(|w| w.data);
+            assert!(worker_data.is_some());
+            assert_eq!(worker_data.unwrap().name, w4.name);
+
+            // Verify we can retrieve by name
+            let found_by_name = app.find_by_name("test_rdb_updated").await?;
+            assert!(found_by_name.is_some());
+
+            // Delete a worker
+            let deleted = app.delete(&id1).await?;
+            assert!(deleted);
+
+            // Verify it's gone
+            let list = app.find_list(None, None).await?;
+            assert_eq!(list.len(), 2);
+            assert_eq!(app.count().await?, 2);
+
+            // Cleanup
+            let _ = app.delete_all().await?;
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_temp() -> Result<()> {
+        // Test creating a temporary worker, finding it, and deleting it
+        TEST_RUNTIME.block_on(async {
+            let app = create_test_app(false).await?;
+            let runner_settings = JobqueueAndCodec::serialize_message(&TestRunnerSettings {
+                name: "testRdbTempRunner".to_string(),
+            });
+
+            let temp_worker = WorkerData {
+                name: "temp_rdb_worker".to_string(),
+                runner_settings: runner_settings.clone(),
+                runner_id: Some(RunnerId { value: 1 }),
+                ..Default::default()
+            };
+
+            // Create temporary worker
+            let id = app.create_temp(temp_worker.clone(), true).await?;
+            assert!(id.value > 0);
+
+            // Find the worker
+            let found = app.find(&id).await?;
+            assert!(found.is_some());
+            let worker_data = found.and_then(|w| w.data);
+            assert!(worker_data.is_some());
+            assert_eq!(worker_data.as_ref().unwrap().name, temp_worker.name);
+
+            // Delete the worker
+            let deleted = app.delete(&id).await?;
+            assert!(deleted);
+
+            // Verify it's gone
+            let not_found = app.find(&id).await?;
+            assert!(not_found.is_none());
+
+            Ok(())
+        })
+    }
+}

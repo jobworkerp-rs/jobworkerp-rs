@@ -1,5 +1,5 @@
+use crate::app::function::function_set::FunctionSetAppImpl;
 use crate::app::function::FunctionAppImpl;
-use crate::app::function_set::FunctionSetAppImpl;
 use crate::app::job::hybrid::HybridJobAppImpl;
 use crate::app::job::rdb_chan::RdbChanJobAppImpl;
 use crate::app::job::JobApp;
@@ -163,6 +163,7 @@ impl AppModule {
                     function_set_app.clone(),
                     runner_app.clone(),
                     worker_app.clone(),
+                    job_app.clone(),
                     &mc_config,
                 ));
                 Ok(AppModule {
@@ -276,6 +277,7 @@ impl AppModule {
                     function_set_app.clone(),
                     runner_app.clone(),
                     worker_app.clone(),
+                    job_app.clone(),
                     &mc_config,
                 ));
                 Ok(AppModule {
@@ -331,7 +333,7 @@ pub mod test {
     use super::*;
     use crate::{
         app::{
-            function_set::FunctionSetAppImpl,
+            function::function_set::FunctionSetAppImpl,
             runner::{hybrid::HybridRunnerAppImpl, RunnerApp, RunnerDataWithDescriptor},
             worker::hybrid::HybridWorkerAppImpl,
             StorageConfig,
@@ -438,6 +440,7 @@ pub mod test {
             function_set_app.clone(),
             runner_app.clone(),
             worker_app.clone(),
+            job_app.clone(),
             &mc_config,
         ));
 

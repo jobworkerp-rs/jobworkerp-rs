@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use command_utils::text::TextUtil;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::module::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
@@ -95,6 +96,40 @@ impl WorkerApp for HybridWorkerAppImpl {
         // clear caches (name and list)
         self.clear_cache_by_name(&worker.name).await;
         tracing::debug!("clear cache by name: {}", worker.name);
+        let _ = self
+            .redis_worker_repository()
+            .publish_worker_changed(&wid, &wdata)
+            .await;
+        Ok(wid)
+    }
+
+    async fn create_temp(&self, worker: WorkerData, with_random_name: bool) -> Result<WorkerId> {
+        let wsid = worker
+            .runner_id
+            .ok_or_else(|| JobWorkerError::InvalidParameter("runner_id is required".to_string()))?;
+        let _ = self
+            .validate_runner_settings_data(&wsid, worker.runner_settings.as_slice())
+            .await?
+            .ok_or_else(|| {
+                JobWorkerError::InvalidParameter("runner settings not provided".to_string())
+            })?;
+        let mut wdata = worker;
+        if with_random_name {
+            // generate random name
+            wdata.name = TextUtil::generate_random_key(Some(&wdata.name));
+        }
+        let wid = WorkerId {
+            value: self.id_generator().generate_id()?,
+        };
+        tracing::debug!("create temp worker: {:?}", wid);
+        let w = Worker {
+            id: Some(wid),
+            data: Some(wdata.clone()),
+        };
+        let _ = self.redis_worker_repository().upsert(&w).await;
+        // clear caches (name and list)
+        self.clear_cache_by_name(&wdata.name).await;
+        tracing::debug!("clear cache by name: {}", &wdata.name);
         let _ = self
             .redis_worker_repository()
             .publish_worker_changed(&wid, &wdata)
@@ -530,6 +565,50 @@ mod tests {
             let list = app.find_list(None, None).await?;
             assert_eq!(app.count().await?, 2);
             assert_eq!(list.len(), 2);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_temp() -> Result<()> {
+        // Test creating a temporary worker, finding it, and deleting it
+        TEST_RUNTIME.block_on(async {
+            let app = create_test_app(false).await?;
+            let runner_settings = JobqueueAndCodec::serialize_message(&TestRunnerSettings {
+                name: "testTempRunner".to_string(),
+            });
+            let temp_worker = WorkerData {
+                name: "temp_worker".to_string(),
+                runner_settings: runner_settings.clone(),
+                runner_id: Some(RunnerId { value: 1 }),
+                ..Default::default()
+            };
+
+            // Create temporary worker
+            let id = app.create_temp(temp_worker, true).await?;
+            assert!(id.value > 0);
+
+            // Find the worker
+            let found = app.find(&id).await?;
+            assert!(found.is_some());
+            let worker_data = found.and_then(|w| w.data);
+            assert!(worker_data.is_some());
+
+            // Verify the name has the original name as a prefix
+            assert!(worker_data
+                .as_ref()
+                .unwrap()
+                .name
+                .starts_with("temp_worker"));
+
+            // Delete the worker
+            let deleted = app.delete(&id).await?;
+            assert!(deleted);
+
+            // Verify it's gone
+            let not_found = app.find(&id).await?;
+            assert!(not_found.is_none());
+
             Ok(())
         })
     }

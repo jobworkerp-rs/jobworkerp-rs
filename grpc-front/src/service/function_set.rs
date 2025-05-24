@@ -10,7 +10,7 @@ use crate::proto::jobworkerp::service::{
     CountCondition, CountResponse, FindListRequest, SuccessResponse,
 };
 use crate::service::error_handle::handle_error;
-use app::app::function_set::{FunctionSetApp, FunctionSetAppImpl};
+use app::app::function::function_set::{FunctionSetApp, FunctionSetAppImpl};
 use app::module::AppModule;
 use async_stream::stream;
 use futures::stream::BoxStream;

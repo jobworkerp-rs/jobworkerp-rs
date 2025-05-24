@@ -10,6 +10,7 @@ use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use std::fmt;
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::runner::UseRunnerApp;
 
@@ -18,6 +19,18 @@ pub trait WorkerAppCacheHelper: Send + Sync {
     fn memory_cache(&self) -> &MemoryCacheImpl<Arc<String>, Worker>;
     fn list_memory_cache(&self) -> &MemoryCacheImpl<Arc<String>, Vec<Worker>>;
     //cache control
+    // create cache for temporary worker
+    async fn create_cache(&self, id: &WorkerId, worker: &Worker) -> Result<()> {
+        let k = Arc::new(Self::find_cache_key(id));
+        self.memory_cache()
+            .set_and_wait_cache(
+                k.clone(),
+                worker.clone(),
+                Some(&Duration::from_secs(60 * 60)),
+            )
+            .await;
+        Ok(())
+    }
     async fn clear_cache(&self, id: &WorkerId) {
         let k = Arc::new(Self::find_cache_key(id));
         let _ = self.memory_cache().delete_cache(&k).await; // ignore error
@@ -69,6 +82,8 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
     // async fn reflesh_redis_record_from_rdb(&self) -> Result<()> ;
 
     async fn create(&self, worker: &WorkerData) -> Result<WorkerId>;
+    // create a temp worker (only in redis or memory)
+    async fn create_temp(&self, worker: WorkerData, with_random_name: bool) -> Result<WorkerId>;
     // if worker is None, clear cache only
     async fn update(&self, id: &WorkerId, worker: &Option<WorkerData>) -> Result<bool>;
     async fn delete(&self, id: &WorkerId) -> Result<bool>;

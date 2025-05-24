@@ -22,7 +22,7 @@ impl Default for LLMChatRunnerSpecImpl {
 
 pub trait LLMChatRunnerSpec {
     fn name(&self) -> String {
-        RunnerType::LlmCompletion.as_str_name().to_string()
+        RunnerType::LlmChat.as_str_name().to_string()
     }
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/llm/runner.proto").to_string()
