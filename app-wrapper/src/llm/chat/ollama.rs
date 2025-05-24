@@ -5,10 +5,12 @@ use anyhow::{anyhow, Result};
 use app::app::function::{FunctionApp, FunctionAppImpl};
 use futures::stream::BoxStream;
 use futures::StreamExt;
+use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatRole;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::OllamaRunnerSettings;
 use jobworkerp_runner::jobworkerp::runner::llm::{self, LlmChatArgs, LlmChatResult};
+use ollama_rs::generation::chat::ChatMessageResponse;
 use ollama_rs::generation::tools::ToolInfo;
 use ollama_rs::{
     generation::chat::{request::ChatMessageRequest, ChatMessage, MessageRole},
@@ -80,17 +82,42 @@ impl OllamaChatService {
             if function_options.use_function_calling {
                 let list_future =
                     if let Some(set_name) = function_options.function_set_name.as_ref() {
+                        tracing::debug!("Use functions by set: {}", set_name);
                         self.function_app.find_functions_by_set(set_name)
                     } else {
+                        tracing::debug!(
+                            "Use all functions from {}",
+                            if function_options.use_runners_as_function()
+                                && function_options.use_workers_as_function()
+                            {
+                                "all"
+                            } else if function_options.use_workers_as_function() {
+                                "workers"
+                            } else if function_options.use_runners_as_function() {
+                                "runners"
+                            } else {
+                                "none"
+                            }
+                        );
                         self.function_app.find_functions(
                             !function_options.use_runners_as_function(),
                             !function_options.use_workers_as_function(),
                         )
                     };
                 match list_future.await {
-                    Ok(functions) => Ok(ToolConverter::convert_functions_to_ollama_tools(
-                        functions.clone(),
-                    )),
+                    Ok(functions) => {
+                        tracing::debug!("Functions found: {}", &functions.len());
+                        let converted =
+                            ToolConverter::convert_functions_to_ollama_tools(functions.clone());
+                        tracing::debug!(
+                            "Converted functions: {:?}",
+                            &converted
+                                .iter()
+                                .map(|f| f.function.name.as_str())
+                                .collect::<Vec<&str>>()
+                        );
+                        Ok(converted)
+                    }
                     Err(e) => {
                         tracing::error!("Error finding functions: {}", e);
                         Ok(vec![])
@@ -136,15 +163,11 @@ impl OllamaChatService {
             messages.retain(|m| m.role != MessageRole::System);
             messages.insert(0, ChatMessage::new(MessageRole::System, system_prompt));
         }
+        let tools = self.function_list(&args).await?;
 
-        let mut req = ChatMessageRequest::new(model, Self::convert_messages(&args));
-        req.tools = self.function_list(&args).await?;
-        req = req.options(options);
         let res = self
-            .ollama
-            .send_chat_messages(req)
-            .await
-            .map_err(|e| anyhow!("Chat error: {}", e))?;
+            .request_chat_internal(model, options, messages, tools)
+            .await?;
         let text = res.message.content;
         let result = LlmChatResult {
             content: Some(llm::llm_chat_result::MessageContent {
@@ -155,6 +178,46 @@ impl OllamaChatService {
             usage: None,
         };
         Ok(result)
+    }
+
+    pub async fn request_chat_internal(
+        &mut self,
+        model: String,
+        options: ModelOptions,
+        mut messages: Vec<ChatMessage>,
+        tools: Vec<ToolInfo>,
+    ) -> Result<ChatMessageResponse> {
+        // XXX clone for tool call
+        let mut req = ChatMessageRequest::new(model.clone(), messages.clone());
+        req = req.options(options.clone());
+        let res = self
+            .ollama
+            .send_chat_messages(req)
+            .await
+            .map_err(|e| JobWorkerError::OtherError(format!("Chat error: {}", e)))?;
+        tracing::debug!("Ollama chat response: {:#?}", &res);
+        if res.message.tool_calls.is_empty() {
+            tracing::debug!("No tool calls in response");
+            Ok(res)
+        } else {
+            tracing::debug!("Tool calls in response: {:#?}", &res.message.tool_calls);
+            for call in res.message.tool_calls {
+                tracing::debug!("Tool call: {:?}", call.function); // TODO: Use log crate?
+
+                let res = self
+                    .function_app
+                    .call_function(
+                        call.function.name.as_str(),
+                        call.function.arguments.as_object().cloned(),
+                    )
+                    .await?;
+                tracing::debug!("Tool response: {}", &res);
+
+                messages.push(ChatMessage::tool(res.to_string()))
+            }
+            // recurse
+            Box::pin(self.request_chat_internal(model, options, messages, tools)).await
+        }
     }
 
     pub async fn request_stream_chat(

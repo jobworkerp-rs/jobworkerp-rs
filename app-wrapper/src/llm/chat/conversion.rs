@@ -1,3 +1,4 @@
+use app::app::function::helper::McpNameConverter;
 use command_utils::util::json_schema::SchemaCombiner;
 use proto::jobworkerp::data::RunnerType;
 use proto::jobworkerp::function::data::{function_specs, FunctionSpecs};
@@ -15,35 +16,9 @@ pub const CREATION_TOOL_DESCRIPTION: &str =
 - Specify execution steps that utilize any available runner(function) in the system (except this creation Tool)";
 
 pub struct ToolConverter;
+impl McpNameConverter for ToolConverter {}
 
 impl ToolConverter {
-    const DELIMITER: &str = "___";
-    pub fn combine_names(server_name: &str, tool_name: &str) -> String {
-        format!("{}{}{}", server_name, Self::DELIMITER, tool_name)
-    }
-
-    pub fn divide_names(combined: &str) -> Option<(String, String)> {
-        let delimiter = Self::DELIMITER;
-        let mut v: std::collections::VecDeque<&str> = combined.split(delimiter).collect();
-        match v.len().cmp(&2) {
-            std::cmp::Ordering::Less => {
-                tracing::error!("Failed to parse combined name: {:#?}", &combined);
-                None
-            }
-            std::cmp::Ordering::Equal => Some((v[0].to_string(), v[1].to_string())),
-            std::cmp::Ordering::Greater => {
-                let server_name = v.pop_front();
-                Some((
-                    server_name.unwrap_or_default().to_string(),
-                    v.into_iter()
-                        .map(|s| s.to_string())
-                        .reduce(|acc, n| format!("{}{}{}", acc, delimiter, n))
-                        .unwrap_or_default(),
-                ))
-            }
-        }
-    }
-
     pub fn convert_reusable_workflow(tool: &FunctionSpecs) -> Option<Tool> {
         Some(Tool::new(
             tool.name.clone(),

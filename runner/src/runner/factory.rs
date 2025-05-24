@@ -3,6 +3,7 @@ use super::{
     docker::{DockerExecRunner, DockerRunner},
     grpc_unary::GrpcUnaryRunner,
     llm::LLMCompletionRunnerSpecImpl,
+    llm_chat::LLMChatRunnerSpecImpl,
     mcp::{
         config::McpServerConfig,
         proxy::{McpServerFactory, McpServerProxy},
@@ -144,6 +145,9 @@ impl RunnerSpecFactory {
             Some(RunnerType::ReusableWorkflow) => {
                 Some(Box::new(ReusableWorkflowRunnerSpecImpl::new())
                     as Box<dyn RunnerSpec + Send + Sync>)
+            }
+            Some(RunnerType::LlmChat) => {
+                Some(Box::new(LLMChatRunnerSpecImpl::new()) as Box<dyn RunnerSpec + Send + Sync>)
             }
             Some(RunnerType::LlmCompletion) => {
                 Some(Box::new(LLMCompletionRunnerSpecImpl::new())

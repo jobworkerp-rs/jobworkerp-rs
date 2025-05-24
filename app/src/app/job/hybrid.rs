@@ -25,7 +25,7 @@ use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobStatus, Priority, QueueType,
-    ResponseType, ResultOutputItem, Worker, WorkerId,
+    ResponseType, ResultOutputItem, Worker, WorkerData, WorkerId,
 };
 use std::collections::HashSet;
 use std::{sync::Arc, time::Duration};
@@ -134,10 +134,184 @@ impl HybridJobAppImpl {
         }
         Ok(())
     }
+    #[allow(clippy::too_many_arguments)]
+    async fn enqueue_job_with_worker(
+        &self,
+        worker: &Worker,
+        args: Vec<u8>,
+        uniq_key: Option<String>,
+        run_after_time: i64,
+        priority: i32,
+        timeout: u64,
+        reserved_job_id: Option<JobId>,
+        request_streaming: bool,
+    ) -> Result<(
+        JobId,
+        Option<JobResult>,
+        Option<BoxStream<'static, ResultOutputItem>>,
+    )> {
+        if let Worker {
+            id: Some(wid),
+            data: Some(w),
+        } = worker
+        {
+            // check if worker supports streaming mode
+            self.worker_app()
+                .check_worker_streaming(wid, request_streaming)
+                .await?;
+
+            let job_data = JobData {
+                worker_id: Some(*wid),
+                args,
+                uniq_key,
+                enqueue_time: datetime::now_millis(),
+                grabbed_until_time: None,
+                run_after_time,
+                retried: 0u32,
+                priority,
+                timeout,
+                request_streaming,
+            };
+
+            // TODO validate argument types (using Runner)
+            // self.validate_worker_and_job_arg(w, job_data.arg.as_ref())?;
+            // cannot wait for direct response
+            if run_after_time > 0 && w.response_type == ResponseType::Direct as i32 {
+                return Err(JobWorkerError::InvalidParameter(format!(
+                    "run_after_time must be 0 for worker response_type=Direct. job: {:?}",
+                    &job_data
+                ))
+                .into());
+            }
+            let jid = reserved_job_id.unwrap_or(JobId {
+                value: self.id_generator().generate_id()?,
+            });
+            // job fetched by rdb (periodic job) should have positive run_after_time
+            let data = if (w.periodic_interval > 0 || w.queue_type == QueueType::ForcedRdb as i32)
+                && job_data.run_after_time == 0
+            {
+                // make job_data.run_after_time datetime::now_millis() and create job by db
+                JobData {
+                    run_after_time: datetime::now_millis(), // set now millis
+                    ..job_data
+                }
+            } else {
+                job_data
+            };
+
+            if w.response_type == ResponseType::Direct as i32 {
+                // use redis only for direct response (not restore)
+                // TODO create backup for queue_type == Hybrid ?
+                let job = Job {
+                    id: Some(jid),
+                    data: Some(data.to_owned()),
+                };
+                self.enqueue_job_to_redis_with_wait_if_needed(&job, w, request_streaming)
+                    .await
+            } else if w.periodic_interval > 0 || self.is_run_after_job_data(&data) {
+                let job = Job {
+                    id: Some(jid),
+                    data: Some(data),
+                };
+                // enqueue rdb only
+                if self.rdb_job_repository().create(&job).await? {
+                    self.job_status_repository()
+                        .upsert_status(&jid, &JobStatus::Pending)
+                        .await?;
+                    Ok((jid, None, None))
+                } else {
+                    Err(
+                        JobWorkerError::RuntimeError(format!("cannot create record: {:?}", &job))
+                            .into(),
+                    )
+                }
+            } else {
+                // normal instant job
+                let job = Job {
+                    id: Some(jid),
+                    data: Some(data),
+                };
+                if w.queue_type == QueueType::WithBackup as i32 {
+                    // instant job (store rdb for failback, and enqueue to redis)
+                    // TODO store async to rdb (not necessary to wait)
+                    match self.rdb_job_repository().create(&job).await {
+                        Ok(_id) => {
+                            self.enqueue_job_to_redis_with_wait_if_needed(
+                                &job,
+                                w,
+                                request_streaming,
+                            )
+                            .await
+                        }
+                        Err(e) => Err(e),
+                    }
+                } else if w.queue_type == QueueType::ForcedRdb as i32 {
+                    // use only rdb queue (not recommended for hybrid storage)
+                    let created = self.rdb_job_repository().create(&job).await?;
+                    if created {
+                        Ok((job.id.unwrap(), None, None))
+                    } else {
+                        // storage error?
+                        Err(JobWorkerError::RuntimeError(format!(
+                            "cannot create record: {:?}",
+                            &job
+                        ))
+                        .into())
+                    }
+                } else {
+                    // instant job (enqueue to redis only)
+                    self.enqueue_job_to_redis_with_wait_if_needed(&job, w, request_streaming)
+                        .await
+                }
+            }
+        } else {
+            Err(JobWorkerError::WorkerNotFound(format!(
+                "illegal structure with empty: {:?}",
+                worker
+            ))
+            .into())
+        }
+    }
 }
 
 #[async_trait]
 impl JobApp for HybridJobAppImpl {
+    async fn enqueue_job_with_temp_worker(
+        &self,
+        worker_data: WorkerData,
+        args: Vec<u8>,
+        uniq_key: Option<String>,
+        run_after_time: i64,
+        priority: i32,
+        timeout: u64,
+        reserved_job_id: Option<JobId>,
+        request_streaming: bool,
+        with_random_name: bool,
+    ) -> Result<(
+        JobId,
+        Option<JobResult>,
+        Option<BoxStream<'static, ResultOutputItem>>,
+    )> {
+        let id = self
+            .worker_app()
+            .create_temp(worker_data.clone(), with_random_name)
+            .await?;
+        let worker = Worker {
+            id: Some(id),
+            data: Some(worker_data),
+        };
+        self.enqueue_job_with_worker(
+            &worker,
+            args,
+            uniq_key,
+            run_after_time,
+            priority,
+            timeout,
+            reserved_job_id,
+            request_streaming,
+        )
+        .await
+    }
     async fn enqueue_job(
         &self,
         worker_id: Option<&WorkerId>,

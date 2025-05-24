@@ -1,9 +1,15 @@
-use std::sync::Arc;
-
-use crate::app::function_set::FunctionSetApp as BaseFunctionSetApp;
+use super::function::function_set::FunctionSetAppImpl;
+use super::job::{JobApp, UseJobApp};
+use super::runner::RunnerApp;
+use super::worker::WorkerApp;
+use super::{
+    function::function_set::UseFunctionSetApp, runner::UseRunnerApp, worker::UseWorkerApp,
+};
+use crate::app::function::function_set::FunctionSetApp as BaseFunctionSetApp;
 use anyhow::Result;
 use async_trait::async_trait;
 use core::fmt;
+use helper::{workflow::ReusableWorkflowHelper, FunctionCallHelper, McpNameConverter};
 use infra::infra::runner::rows::RunnerWithSchema;
 use infra_utils::infra::cache::UseMokaCache;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
@@ -12,11 +18,11 @@ use proto::jobworkerp::data::{RunnerType, StreamingOutputType, WorkerData, Worke
 use proto::jobworkerp::function::data::{
     function_specs, FunctionSchema, FunctionSpecs, McpToolList,
 };
+use proto::ProtobufHelper;
+use std::sync::Arc;
 
-use super::function_set::FunctionSetAppImpl;
-use super::runner::RunnerApp;
-use super::worker::WorkerApp;
-use super::{function_set::UseFunctionSetApp, runner::UseRunnerApp, worker::UseWorkerApp};
+pub mod function_set;
+pub mod helper;
 
 #[async_trait]
 pub trait FunctionApp:
@@ -24,6 +30,9 @@ pub trait FunctionApp:
     + UseWorkerApp
     + UseRunnerApp
     + UseMokaCache<Arc<String>, Vec<FunctionSpecs>>
+    + FunctionSpecConverter
+    + ReusableWorkflowHelper
+    + FunctionCallHelper
     + fmt::Debug
     + Send
     + Sync
@@ -148,7 +157,115 @@ pub trait FunctionApp:
             Ok(Vec::new())
         }
     }
+    async fn call_function(
+        &self,
+        name: &str,
+        arguments: Option<serde_json::Map<String, serde_json::Value>>,
+    ) -> Result<serde_json::Value> {
+        tracing::debug!("call_tool: {}: {:?}", name, &arguments);
 
+        match self.find_runner_by_name_with_mcp(name).await {
+            Ok(Some((
+                RunnerWithSchema {
+                    id: Some(rid),
+                    data: Some(rdata),
+                    ..
+                },
+                _,
+            ))) if rdata.runner_type == RunnerType::ReusableWorkflow as i32 => {
+                self.handle_reusable_workflow(name, arguments, rid, rdata)
+                    .await
+            }
+            Ok(Some((runner, tool_name_opt))) => self
+                .handle_runner_call(arguments, runner, tool_name_opt)
+                .await
+                .map(|r| r.unwrap_or_default()),
+            Ok(None) => self.handle_worker_call(name, arguments).await,
+            Err(e) => {
+                tracing::error!("error: {:#?}", &e);
+                Err(e)
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct FunctionAppImpl {
+    function_set_app: Arc<FunctionSetAppImpl>,
+    runner_app: Arc<dyn crate::app::runner::RunnerApp>,
+    worker_app: Arc<dyn crate::app::worker::WorkerApp>,
+    job_app: Arc<dyn crate::app::job::JobApp>,
+    function_cache: infra_utils::infra::cache::MokaCacheImpl<Arc<String>, Vec<FunctionSpecs>>,
+}
+
+impl FunctionAppImpl {
+    pub fn new(
+        function_set_app: Arc<FunctionSetAppImpl>,
+        runner_app: Arc<dyn crate::app::runner::RunnerApp>,
+        worker_app: Arc<dyn crate::app::worker::WorkerApp>,
+        job_app: Arc<dyn crate::app::job::JobApp>,
+        mc_config: &infra_utils::infra::memory::MemoryCacheConfig,
+    ) -> Self {
+        let function_cache = infra_utils::infra::cache::MokaCacheImpl::new(
+            &infra_utils::infra::cache::MokaCacheConfig {
+                num_counters: mc_config.num_counters,
+                ttl: Some(std::time::Duration::from_secs(60)), // 60 seconds TTL
+            },
+        );
+        Self {
+            function_set_app,
+            runner_app,
+            worker_app,
+            job_app,
+            function_cache,
+        }
+    }
+}
+
+impl UseFunctionSetApp for FunctionAppImpl {
+    fn function_set_app(&self) -> &FunctionSetAppImpl {
+        &self.function_set_app
+    }
+}
+
+impl UseRunnerApp for FunctionAppImpl {
+    fn runner_app(&self) -> Arc<dyn RunnerApp + 'static> {
+        self.runner_app.clone()
+    }
+}
+
+impl UseWorkerApp for FunctionAppImpl {
+    fn worker_app(&self) -> &Arc<dyn WorkerApp + 'static> {
+        &self.worker_app
+    }
+}
+impl UseJobApp for FunctionAppImpl {
+    fn job_app(&self) -> &Arc<dyn JobApp + 'static> {
+        &self.job_app
+    }
+}
+
+impl infra_utils::infra::cache::UseMokaCache<Arc<String>, Vec<FunctionSpecs>> for FunctionAppImpl {
+    fn cache(&self) -> &infra_utils::infra::cache::MokaCache<Arc<String>, Vec<FunctionSpecs>> {
+        self.function_cache.cache()
+    }
+}
+impl FunctionSpecConverter for FunctionAppImpl {}
+impl ProtobufHelper for FunctionAppImpl {}
+impl ReusableWorkflowHelper for FunctionAppImpl {}
+impl McpNameConverter for FunctionAppImpl {}
+impl FunctionCallHelper for FunctionAppImpl {
+    fn timeout_sec(&self) -> u32 {
+        30 * 60 // 30 minutes
+    }
+}
+impl FunctionApp for FunctionAppImpl {}
+
+pub trait UseFunctionApp {
+    fn function_app(&self) -> &FunctionAppImpl;
+}
+
+pub trait FunctionSpecConverter {
     // Helper function to convert Runner to FunctionSpecs
     fn convert_runner_to_function_specs(runner: RunnerWithSchema) -> FunctionSpecs {
         if runner
@@ -327,64 +444,4 @@ pub trait FunctionApp:
             }
         }
     }
-}
-
-#[derive(Debug)]
-pub struct FunctionAppImpl {
-    function_set_app: Arc<FunctionSetAppImpl>,
-    runner_app: Arc<dyn crate::app::runner::RunnerApp>,
-    worker_app: Arc<dyn crate::app::worker::WorkerApp>,
-    function_cache: infra_utils::infra::cache::MokaCacheImpl<Arc<String>, Vec<FunctionSpecs>>,
-}
-
-impl FunctionAppImpl {
-    pub fn new(
-        function_set_app: Arc<FunctionSetAppImpl>,
-        runner_app: Arc<dyn crate::app::runner::RunnerApp>,
-        worker_app: Arc<dyn crate::app::worker::WorkerApp>,
-        mc_config: &infra_utils::infra::memory::MemoryCacheConfig,
-    ) -> Self {
-        let function_cache = infra_utils::infra::cache::MokaCacheImpl::new(
-            &infra_utils::infra::cache::MokaCacheConfig {
-                num_counters: mc_config.num_counters,
-                ttl: Some(std::time::Duration::from_secs(60)), // 60 seconds TTL
-            },
-        );
-        Self {
-            function_set_app,
-            runner_app,
-            worker_app,
-            function_cache,
-        }
-    }
-}
-
-impl UseFunctionSetApp for FunctionAppImpl {
-    fn function_set_app(&self) -> &FunctionSetAppImpl {
-        &self.function_set_app
-    }
-}
-
-impl UseRunnerApp for FunctionAppImpl {
-    fn runner_app(&self) -> Arc<dyn RunnerApp + 'static> {
-        self.runner_app.clone()
-    }
-}
-
-impl UseWorkerApp for FunctionAppImpl {
-    fn worker_app(&self) -> &Arc<dyn WorkerApp + 'static> {
-        &self.worker_app
-    }
-}
-
-impl infra_utils::infra::cache::UseMokaCache<Arc<String>, Vec<FunctionSpecs>> for FunctionAppImpl {
-    fn cache(&self) -> &infra_utils::infra::cache::MokaCache<Arc<String>, Vec<FunctionSpecs>> {
-        self.function_cache.cache()
-    }
-}
-
-impl FunctionApp for FunctionAppImpl {}
-
-pub trait UseFunctionApp {
-    fn function_app(&self) -> &FunctionAppImpl;
 }

@@ -249,7 +249,6 @@ impl GenaiService {
                 completion_tokens: res.usage.completion_tokens.map(|v| v as u32),
                 ..Default::default()
             }),
-            ..Default::default()
         })
     }
     pub async fn request_chat_stream(
