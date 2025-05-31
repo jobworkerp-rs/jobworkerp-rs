@@ -40,6 +40,7 @@ impl JobRow {
                 timeout: self.timeout as u64,
                 request_streaming: self.request_streaming,
             }),
+            ..Default::default()
         }
     }
 }
@@ -109,6 +110,7 @@ pub trait UseJobqueueAndCodec {
         let j = JobResult {
             id: Some(id),
             data: Some(res),
+            ..Default::default()
         };
         let mut buf = Vec::with_capacity(j.encoded_len());
         j.encode(&mut buf).unwrap();
@@ -148,6 +150,8 @@ impl UseJobqueueAndCodec for JobqueueAndCodec {}
 // test for serialize and deserialize equality for job, job_result_data
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use chrono::Utc;
     use jobworkerp_base::codec::ProstMessageCodec;
@@ -174,6 +178,7 @@ mod tests {
                 timeout: 1000,
                 request_streaming: false,
             }),
+            metadata: HashMap::new(),
         };
         struct JobQueueImpl {}
         impl UseProstCodec for JobQueueImpl {}
@@ -198,7 +203,7 @@ mod tests {
             uniq_key: Some("hoge4".to_string()),
             status: 6,
             output: Some(ResultOutput {
-                items: vec!["hoge7".as_bytes().to_vec()],
+                items: "hoge7".as_bytes().to_vec(),
             }),
             max_retry: 7,
             retried: 8,

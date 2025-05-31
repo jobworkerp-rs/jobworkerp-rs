@@ -58,6 +58,7 @@ pub trait JobResultAppHelper: UseWorkerApp {
                 Ok(res) => Ok(JobResult {
                     id: result.id,
                     data: Some(res),
+                    metadata: result.metadata,
                 }),
                 Err(e) => {
                     tracing::warn!("fill_worker_data error: {:?}", e);
@@ -81,12 +82,14 @@ pub trait JobResultAppHelper: UseWorkerApp {
         if let Some(JobResult {
             id: Some(id),
             data: Some(dat),
+            metadata,
         }) = res_opt
         {
             self._fill_worker_data_to_data(dat).await.map(|d| {
                 Some(JobResult {
                     id: Some(id),
                     data: Some(d),
+                    metadata,
                 })
             })
         } else {

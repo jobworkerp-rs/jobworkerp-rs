@@ -428,8 +428,6 @@ impl UseChanQueueBuffer for RdbChanJobRepositoryImpl {
 
 #[cfg(test)]
 mod test {
-    use std::sync::Arc;
-
     use super::RdbChanJobRepositoryImpl;
     use super::RdbJobRepository;
     use crate::infra::job::rows::UseJobqueueAndCodec;
@@ -442,6 +440,8 @@ mod test {
     use proto::jobworkerp::data::JobId;
     use proto::jobworkerp::data::WorkerId;
     use proto::TestArgs;
+    use std::collections::HashMap;
+    use std::sync::Arc;
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
         let repository = RdbChanJobRepositoryImpl::new(Arc::new(JobQueueConfig::default()), pool);
@@ -464,6 +464,7 @@ mod test {
         let job = Job {
             id: Some(id),
             data: data.clone(),
+            metadata: HashMap::new(),
         };
 
         let res = repository.create(&job).await?;
@@ -526,6 +527,7 @@ mod test {
         let job = Job {
             id: Some(JobId { value: 1 }),
             data: data.clone(),
+            metadata: HashMap::new(),
         };
         repository.create(&job).await?;
         // future job
@@ -548,6 +550,7 @@ mod test {
         let job = Job {
             id: Some(JobId { value: 2 }),
             data: data.clone(),
+            metadata: HashMap::new(),
         };
         repository.create(&job).await?;
         // grabbed job
@@ -569,6 +572,7 @@ mod test {
         let job = Job {
             id: Some(JobId { value: 3 }),
             data: data.clone(),
+            metadata: HashMap::new(),
         };
         repository.create(&job).await?;
         let ids = repository.find_id_set_in_instant(true, None, None).await?;

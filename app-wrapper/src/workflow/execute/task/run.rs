@@ -12,23 +12,30 @@ use crate::workflow::{
     },
 };
 use anyhow::Result;
+use infra_utils::infra::trace::Tracing;
 use proto::jobworkerp::data::{QueueType, ResponseType, WorkerData};
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 
 pub struct RunTaskExecutor {
     task: workflow::RunTask,
     job_executor_wrapper: Arc<JobExecutorWrapper>,
+    metadata: Arc<HashMap<String, String>>,
 }
 impl UseExpression for RunTaskExecutor {}
 impl UseJqAndTemplateTransformer for RunTaskExecutor {}
 impl UseExpressionTransformer for RunTaskExecutor {}
-
+impl Tracing for RunTaskExecutor {}
 impl RunTaskExecutor {
-    pub fn new(job_executor_wrapper: Arc<JobExecutorWrapper>, task: workflow::RunTask) -> Self {
+    pub fn new(
+        job_executor_wrapper: Arc<JobExecutorWrapper>,
+        task: workflow::RunTask,
+        metadata: Arc<HashMap<String, String>>,
+    ) -> Self {
         Self {
             task,
             job_executor_wrapper,
+            metadata,
         }
     }
     fn function_options_to_worker_data(
@@ -61,6 +68,7 @@ impl RunTaskExecutor {
     }
     async fn execute_by_jobworkerp(
         &self,
+        cx: Arc<opentelemetry::Context>,
         runner_name: &str,
         settings: Option<serde_json::Value>,
         options: Option<workflow::FunctionOptions>,
@@ -83,9 +91,12 @@ impl RunTaskExecutor {
                 retry_policy: None, //TODO
                 broadcast_results: true,
             });
-
+        // inject metadata from opentelemetry context for remote job
+        let mut metadata = (*self.metadata).clone();
+        Self::inject_metadata_from_context(&mut metadata, &cx);
         self.job_executor_wrapper
             .setup_worker_and_enqueue_with_json(
+                Arc::new(metadata),
                 runner_name,
                 settings,
                 worker_data,
@@ -108,6 +119,7 @@ impl RunTaskExecutor {
 impl TaskExecutorTrait<'_> for RunTaskExecutor {
     async fn execute(
         &self,
+        cx: Arc<opentelemetry::Context>,
         task_name: &str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         mut task_context: TaskContext,
@@ -191,6 +203,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
 
             let output = match self
                 .execute_by_jobworkerp(
+                    cx.clone(),
                     runner_name,
                     Some(transformed_settings),
                     options.clone(),

@@ -3,6 +3,7 @@ use app::module::{AppConfigModule, AppModule};
 use app_wrapper::runner::RunnerFactory;
 use command_utils::util::{self, tracing::LoggingConfig};
 use dotenvy::dotenv;
+use jobworkerp_base::APP_WORKER_NAME;
 use jobworkerp_runner::runner::{
     factory::RunnerSpecFactory,
     mcp::{config::McpConfig, proxy::McpServerFactory},
@@ -15,7 +16,7 @@ pub async fn main() -> Result<()> {
     dotenv().ok();
     // node specific str (based on ip)
     let log_filename =
-        command_utils::util::tracing::create_filename_with_ip_postfix("jobworkerp-worker", "log");
+        command_utils::util::tracing::create_filename_with_ip_postfix(APP_WORKER_NAME, "log");
     let conf = command_utils::util::tracing::load_tracing_config_from_env().unwrap_or_default();
     command_utils::util::tracing::tracing_init(LoggingConfig {
         file_name: Some(log_filename),

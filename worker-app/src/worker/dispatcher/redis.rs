@@ -25,6 +25,7 @@ use infra::infra::runner::rows::RunnerWithSchema;
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use infra_utils::infra::redis::{RedisClient, UseRedisClient};
 use infra_utils::infra::redis::{RedisPool, UseRedisPool};
+use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, Worker,
@@ -153,7 +154,7 @@ pub trait RedisJobDispatcher:
             }
             tracing::info!("exit job loop for channel {}", cn);
             lock.unlock();
-            Result::<()>::Ok(())
+            Result::Ok(())
         })
     }
     #[inline]
@@ -185,12 +186,13 @@ pub trait RedisJobDispatcher:
         Self: Sync + Send + 'static,
     {
         tracing::debug!("process pop-ed job: {:?}", &job.id);
-        let (jid, jdat) = if let Job {
+        let (jid, jdat, meta) = if let Job {
             id: Some(jid),
             data: Some(jdat),
+            metadata,
         } = job
         {
-            (jid, jdat)
+            (jid, jdat, metadata)
         } else {
             // TODO cannot return result in this case. send result as error?
             let mes = format!("job {:?} is incomplete data.", &job.id);
@@ -282,7 +284,7 @@ pub trait RedisJobDispatcher:
             }
         }
         // run job
-        let r = self
+        let mut r = self
             .run_job(
                 &runner_data,
                 &wid,
@@ -290,11 +292,18 @@ pub trait RedisJobDispatcher:
                 Job {
                     id: Some(jid),
                     data: Some(jdat),
+                    metadata: meta,
                 },
             )
             .await;
-        let id = JobResultId {
-            value: self.id_generator().generate_id()?,
+        let id = if let Some(id) = r.0.id {
+            id
+        } else {
+            let id = JobResultId {
+                value: self.id_generator().generate_id()?,
+            };
+            r.0.id = Some(id);
+            id
         };
         // TODO execute and return result to result channel.
         tracing::trace!("send result id: {:?}, data: {:?}", id, &r.0);
@@ -305,7 +314,7 @@ pub trait RedisJobDispatcher:
                 .upsert_status(&jid, &JobStatus::WaitResult)
                 .await?;
         }
-        self.result_processor().process_result(id, r, wdat).await
+        self.result_processor().process_result(r.0, r.1, wdat).await
     }
 }
 
@@ -403,6 +412,7 @@ impl UseRunnerPoolMap for RedisJobDispatcherImpl {
         &self.runner_pool_map
     }
 }
+impl Tracing for RedisJobDispatcherImpl {}
 impl JobRunner for RedisJobDispatcherImpl {}
 
 impl UseIdGenerator for RedisJobDispatcherImpl {

@@ -14,7 +14,7 @@ use anyhow::Result;
 use jobworkerp_runner::jobworkerp::runner::{workflow_result::WorkflowStatus, InlineWorkflowArgs};
 use prost::Message;
 use proto::jobworkerp::data::RunnerType;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 
 // unused
@@ -22,16 +22,22 @@ use tokio::sync::RwLock;
 pub struct DoAsExtWorkflowTaskExecutor<'a> {
     task: &'a workflow::DoTask,
     job_executor_wrapper: Arc<JobExecutorWrapper>,
+    metadata: Arc<HashMap<String, String>>,
 }
 impl UseJqAndTemplateTransformer for DoAsExtWorkflowTaskExecutor<'_> {}
 impl UseExpression for DoAsExtWorkflowTaskExecutor<'_> {}
 
 impl<'a> DoAsExtWorkflowTaskExecutor<'a> {
     const TIMEOUT_SEC: u32 = 1800; // 30 minutes
-    pub fn new(task: &'a workflow::DoTask, job_executor_wrapper: Arc<JobExecutorWrapper>) -> Self {
+    pub fn new(
+        task: &'a workflow::DoTask,
+        job_executor_wrapper: Arc<JobExecutorWrapper>,
+        metadata: Arc<HashMap<String, String>>,
+    ) -> Self {
         Self {
             task,
             job_executor_wrapper,
+            metadata,
         }
     }
     async fn execute_by_jobworkerp(
@@ -69,6 +75,7 @@ impl<'a> DoAsExtWorkflowTaskExecutor<'a> {
         let result = self
             .job_executor_wrapper
             .setup_worker_and_enqueue(
+                self.metadata.clone(),
                 RunnerType::InlineWorkflow.as_str_name(),
                 worker_data,
                 args.encode_to_vec(),
@@ -99,6 +106,7 @@ impl<'a> DoAsExtWorkflowTaskExecutor<'a> {
 impl TaskExecutorTrait<'_> for DoAsExtWorkflowTaskExecutor<'_> {
     async fn execute(
         &self,
+        _cx: Arc<opentelemetry::Context>,
         task_name: &str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         mut task_context: TaskContext,

@@ -41,7 +41,8 @@ service JobResultService {
       returns (stream jobworkerp.data.JobResult);
   // listen job result until timeout or job result is created.
   rpc Listen(ListenRequest) returns (jobworkerp.data.JobResult);
-  rpc ListenStream(ListenRequest) returns (stream jobworkerp.data.ResultOutputItem);
+  rpc ListenStream(ListenRequest)
+      returns (stream jobworkerp.data.ResultOutputItem);
   rpc ListenByWorker(ListenByWorkerRequest)
       returns (stream jobworkerp.data.JobResult);
   rpc Count(CountCondition) returns (CountResponse);

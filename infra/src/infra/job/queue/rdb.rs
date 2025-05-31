@@ -198,6 +198,7 @@ mod test {
     use proto::jobworkerp::data::Job;
     use proto::jobworkerp::data::JobData;
     use proto::jobworkerp::data::WorkerId;
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     async fn _test_job_queue_repository(pool: &'static RdbPool) -> Result<()> {
@@ -216,9 +217,11 @@ mod test {
             run_after_time: 0,
             ..Default::default()
         };
+        let metadata = HashMap::new();
         let job0 = Job {
             id: Some(jid),
             data: Some(instant_job_data.clone()),
+            metadata: metadata.clone(),
         };
         assert!(repo.create(&job0).await?);
         let current_job_data = JobData {
@@ -232,6 +235,7 @@ mod test {
         let job1 = Job {
             id: Some(jid1),
             data: Some(current_job_data.clone()),
+            metadata: metadata.clone(),
         };
         assert!(repo.create(&job1).await?);
 
@@ -246,6 +250,7 @@ mod test {
         let job2 = Job {
             id: Some(jid2),
             data: Some(future_job_data.clone()),
+            metadata: metadata.clone(),
         };
 
         assert!(repo.create(&job2).await?);
@@ -359,6 +364,7 @@ mod test {
             let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["GET".to_string(), "/".to_string()],
             });
+            let metadata = HashMap::new();
             let now_millis = datetime::now_millis();
 
             // for redis job: run_after_time:0, not timeouted (grabbed)
@@ -372,6 +378,7 @@ mod test {
             let job0 = Job {
                 id: Some(jid0),
                 data: Some(instant_job_data_for_redis.clone()),
+                metadata: metadata.clone(),
             };
             assert!(repo.create(&job0).await?);
 
@@ -387,6 +394,7 @@ mod test {
             let job1 = Job {
                 id: Some(jid1),
                 data: Some(timeouted_job_data_for_redis.clone()),
+                metadata: metadata.clone(),
             };
             assert!(repo.create(&job1).await?);
 
@@ -402,6 +410,7 @@ mod test {
             let job2 = Job {
                 id: Some(jid2),
                 data: Some(current_job_data_for_rdb.clone()),
+                metadata: metadata.clone(),
             };
             assert!(repo.create(&job2).await?);
 
@@ -417,6 +426,7 @@ mod test {
             let job3 = Job {
                 id: Some(jid3),
                 data: Some(future_job_data.clone()),
+                metadata: metadata.clone(),
             };
             assert!(repo.create(&job3).await?);
 
@@ -425,6 +435,7 @@ mod test {
             if let Job {
                 id: Some(jid),
                 data: Some(data),
+                metadata: _,
             } = &timeouted_backup_jobs[0]
             {
                 assert_eq!(jid, &jid1);

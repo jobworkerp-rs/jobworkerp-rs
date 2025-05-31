@@ -27,7 +27,7 @@ use proto::jobworkerp::data::{
     Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobStatus, Priority, QueueType,
     ResponseType, ResultOutputItem, Worker, WorkerData, WorkerId,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::{sync::Arc, time::Duration};
 
 #[derive(Clone, Debug)]
@@ -137,6 +137,7 @@ impl HybridJobAppImpl {
     #[allow(clippy::too_many_arguments)]
     async fn enqueue_job_with_worker(
         &self,
+        metadata: HashMap<String, String>,
         worker: &Worker,
         args: Vec<u8>,
         uniq_key: Option<String>,
@@ -198,13 +199,13 @@ impl HybridJobAppImpl {
             } else {
                 job_data
             };
-
             if w.response_type == ResponseType::Direct as i32 {
                 // use redis only for direct response (not restore)
                 // TODO create backup for queue_type == Hybrid ?
                 let job = Job {
                     id: Some(jid),
                     data: Some(data.to_owned()),
+                    metadata,
                 };
                 self.enqueue_job_to_redis_with_wait_if_needed(&job, w, request_streaming)
                     .await
@@ -212,6 +213,7 @@ impl HybridJobAppImpl {
                 let job = Job {
                     id: Some(jid),
                     data: Some(data),
+                    metadata,
                 };
                 // enqueue rdb only
                 if self.rdb_job_repository().create(&job).await? {
@@ -230,6 +232,7 @@ impl HybridJobAppImpl {
                 let job = Job {
                     id: Some(jid),
                     data: Some(data),
+                    metadata,
                 };
                 if w.queue_type == QueueType::WithBackup as i32 {
                     // instant job (store rdb for failback, and enqueue to redis)
@@ -276,8 +279,9 @@ impl HybridJobAppImpl {
 
 #[async_trait]
 impl JobApp for HybridJobAppImpl {
-    async fn enqueue_job_with_temp_worker(
-        &self,
+    async fn enqueue_job_with_temp_worker<'a>(
+        &'a self,
+        meta: HashMap<String, String>,
         worker_data: WorkerData,
         args: Vec<u8>,
         uniq_key: Option<String>,
@@ -301,6 +305,7 @@ impl JobApp for HybridJobAppImpl {
             data: Some(worker_data),
         };
         self.enqueue_job_with_worker(
+            meta,
             &worker,
             args,
             uniq_key,
@@ -312,10 +317,11 @@ impl JobApp for HybridJobAppImpl {
         )
         .await
     }
-    async fn enqueue_job(
-        &self,
-        worker_id: Option<&WorkerId>,
-        worker_name: Option<&String>,
+    async fn enqueue_job<'a>(
+        &'a self,
+        meta: HashMap<String, String>,
+        worker_id: Option<&'a WorkerId>,
+        worker_name: Option<&'a String>,
         args: Vec<u8>,
         uniq_key: Option<String>,
         run_after_time: i64,
@@ -387,13 +393,13 @@ impl JobApp for HybridJobAppImpl {
             } else {
                 job_data
             };
-
             if w.response_type == ResponseType::Direct as i32 {
                 // use redis only for direct response (not restore)
                 // TODO create backup for queue_type == Hybrid ?
                 let job = Job {
                     id: Some(jid),
                     data: Some(data.to_owned()),
+                    metadata: meta,
                 };
                 self.enqueue_job_to_redis_with_wait_if_needed(&job, w, request_streaming)
                     .await
@@ -401,6 +407,7 @@ impl JobApp for HybridJobAppImpl {
                 let job = Job {
                     id: Some(jid),
                     data: Some(data),
+                    metadata: meta,
                 };
                 // enqueue rdb only
                 if self.rdb_job_repository().create(&job).await? {
@@ -419,6 +426,7 @@ impl JobApp for HybridJobAppImpl {
                 let job = Job {
                     id: Some(jid),
                     data: Some(data),
+                    metadata: meta,
                 };
                 if w.queue_type == QueueType::WithBackup as i32 {
                     // instant job (store rdb for failback, and enqueue to redis)
@@ -463,6 +471,7 @@ impl JobApp for HybridJobAppImpl {
         if let Job {
             id: Some(jid),
             data: Some(data),
+            metadata: _,
         } = job
         {
             let is_run_after_job_data = self.is_run_after_job_data(data);
@@ -486,6 +495,7 @@ impl JobApp for HybridJobAppImpl {
                         &w.name
                     );
                     // XXX should compare grabbed_until_time and update if not changed or not (now not compared)
+                    // TODO store metadata to rdb
                     self.rdb_job_repository().upsert(jid, data).await
                 } else {
                     Ok(false)
@@ -641,6 +651,7 @@ impl JobApp for HybridJobAppImpl {
                             if let Some(Job {
                                 id: Some(_),
                                 data: Some(r),
+                                metadata: _, // not store metadata in db
                             }) = rv.first()
                             {
                                 self.redis_job_repository().create(id, r).await?;
@@ -998,7 +1009,7 @@ pub mod tests {
             let jarg = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["/".to_string()],
             });
-
+            let metadata = HashMap::new();
             // move
             let worker_id1 = worker_id;
             let jarg1 = jarg.clone();
@@ -1006,7 +1017,18 @@ pub mod tests {
             // need waiting for direct response
             let jh = tokio::spawn(async move {
                 let res = app1
-                    .enqueue_job(Some(&worker_id1), None, jarg1, None, 0, 0, 0, None, false)
+                    .enqueue_job(
+                        metadata.clone(),
+                        Some(&worker_id1),
+                        None,
+                        jarg1,
+                        None,
+                        0,
+                        0,
+                        0,
+                        None,
+                        false,
+                    )
                     .await;
                 let (jid, job_res, _) = res.unwrap();
                 assert!(jid.value > 0);
@@ -1047,7 +1069,7 @@ pub mod tests {
                     uniq_key: None,
                     status: proto::jobworkerp::data::ResultStatus::Success as i32,
                     output: Some(proto::jobworkerp::data::ResultOutput {
-                        items: { vec!["test".as_bytes().to_vec()] },
+                        items: { "test".as_bytes().to_vec() },
                     }),
                     retried: 0,
                     max_retry: 0,
@@ -1062,6 +1084,7 @@ pub mod tests {
                     store_success: false,
                     store_failure: false,
                 }),
+                ..Default::default()
             };
             assert!(
                 app.complete_job(&rid, result.data.as_ref().unwrap(), None)
@@ -1110,10 +1133,12 @@ pub mod tests {
             let jarg = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["/".to_string()],
             });
+            let metadata = HashMap::new();
 
             // wait for direct response
             let res = app
                 .enqueue_job(
+                    metadata,
                     Some(&worker_id),
                     None,
                     jarg.clone(),
@@ -1159,10 +1184,12 @@ pub mod tests {
             let jarg = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["/".to_string()],
             });
+            let metadata = HashMap::new();
 
             // wait for direct response
             let job_id = app
                 .enqueue_job(
+                    metadata.clone(),
                     Some(&worker_id),
                     None,
                     jarg.clone(),
@@ -1189,6 +1216,7 @@ pub mod tests {
                     timeout: 0,
                     request_streaming: true,
                 }),
+                ..Default::default()
             };
             assert_eq!(
                 app.job_status_repository()
@@ -1208,7 +1236,7 @@ pub mod tests {
                     uniq_key: None,
                     status: proto::jobworkerp::data::ResultStatus::Success as i32,
                     output: Some(proto::jobworkerp::data::ResultOutput {
-                        items: { vec!["test".as_bytes().to_vec()] },
+                        items: { "test".as_bytes().to_vec() },
                     }),
                     retried: 0,
                     max_retry: 0,
@@ -1223,6 +1251,7 @@ pub mod tests {
                     store_success: false,
                     store_failure: false,
                 }),
+                metadata,
             };
             let jid = job_id;
             let res = result.clone();
@@ -1287,10 +1316,12 @@ pub mod tests {
             let jarg = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["/".to_string()],
             });
+            let metadata = HashMap::new();
 
             // wait for direct response
             let (job_id, res, _) = app
                 .enqueue_job(
+                    metadata.clone(),
                     Some(&worker_id),
                     None,
                     jarg.clone(),
@@ -1334,7 +1365,7 @@ pub mod tests {
                     uniq_key: None,
                     status: proto::jobworkerp::data::ResultStatus::Success as i32,
                     output: Some(proto::jobworkerp::data::ResultOutput {
-                        items: { vec!["test".as_bytes().to_vec()] },
+                        items: { "test".as_bytes().to_vec() },
                     }),
                     retried: 0,
                     max_retry: 0,
@@ -1349,6 +1380,7 @@ pub mod tests {
                     store_success: true,
                     store_failure: false,
                 }),
+                metadata,
             };
             assert!(
                 !app.complete_job(
@@ -1411,8 +1443,11 @@ pub mod tests {
                     .await?,
                 0
             );
+            let metadata = HashMap::new();
+
             let (job_id, res, _) = app
                 .enqueue_job(
+                    metadata.clone(),
                     Some(&worker_id),
                     None,
                     jarg.clone(),
@@ -1429,6 +1464,7 @@ pub mod tests {
             // job2
             let (job_id2, res2, _) = app
                 .enqueue_job(
+                    metadata.clone(),
                     Some(&worker_id),
                     None,
                     jarg.clone(),

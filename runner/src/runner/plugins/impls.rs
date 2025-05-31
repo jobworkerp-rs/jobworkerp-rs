@@ -1,5 +1,6 @@
 use crate::runner::RunnerSpec;
 use crate::runner::RunnerTrait;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::PluginRunner;
@@ -9,9 +10,9 @@ use futures::executor::block_on;
 use futures::stream::BoxStream;
 use futures::stream::StreamExt;
 use proto::jobworkerp::data::result_output_item;
-use proto::jobworkerp::data::Empty;
 use proto::jobworkerp::data::ResultOutputItem;
 use proto::jobworkerp::data::StreamingOutputType;
+use proto::jobworkerp::data::Trailer;
 use tokio::sync::RwLock;
 
 /**
@@ -85,7 +86,11 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
     }
     // arg: assumed as utf-8 string, specify multiple arguments with \n separated
     #[allow(unstable_name_collisions)]
-    async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
+    async fn run(
+        &mut self,
+        arg: &[u8],
+        metadata: HashMap<String, String>,
+    ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         // XXX clone
         // let plugin_runner = Arc::clone(&self.plugin_runner);
         // let arg1 = arg.to_vec();
@@ -103,14 +108,23 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         let plugin_runner = self.plugin_runner.clone();
         let arg1 = arg.to_vec();
         let mut runner = plugin_runner.write().await;
-        runner.run(arg1).map_err(|e| {
-            tracing::warn!("in running pluginRunner: {:?}", e);
-            // anyhow!("in running pluginRunner: {:?}", e)
-            e
-        })
+
+        let (r, meta) = runner.run(arg1, metadata);
+        (
+            r.map_err(|e| {
+                tracing::warn!("in running pluginRunner: {:?}", e);
+                // anyhow!("in running pluginRunner: {:?}", e)
+                e
+            }),
+            meta,
+        )
     }
 
-    async fn run_stream(&mut self, arg: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>> {
+    async fn run_stream(
+        &mut self,
+        arg: &[u8],
+        metadata: HashMap<String, String>,
+    ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // XXX clone
         let plugin_runner = self.plugin_runner.clone();
         let arg1 = arg.to_vec();
@@ -118,7 +132,7 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         // .map_err(|e| anyhow!("plugin runner lock error: {:?}", e))?;
         let r1 = runner.as_mut();
         // begin stream (set argument and setup stream)
-        r1.begin_stream(arg1).map_err(|e| {
+        r1.begin_stream(arg1, metadata.clone()).map_err(|e| {
             tracing::warn!("in running pluginRunner: {:?}", e);
             anyhow!("in running pluginRunner: {:?}", e)
         })?;
@@ -135,12 +149,14 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
                         yield ResultOutputItem { item: Some(result_output_item::Item::Data(v)) }
                     },
                     Ok(None) => {
-                        yield ResultOutputItem { item: Some(result_output_item::Item::End(Empty{})) };
+                        yield ResultOutputItem { item: Some(result_output_item::Item::End(Trailer{
+                            metadata
+                        })) };
                         break
                     },
                     Err(e) => {
                         tracing::warn!("Error occurred: {:}", e);
-                        yield ResultOutputItem { item: Some(result_output_item::Item::End(Empty{})) };
+                        yield ResultOutputItem { item: Some(result_output_item::Item::End(Trailer{metadata})) };
                         break
                     },
                 }

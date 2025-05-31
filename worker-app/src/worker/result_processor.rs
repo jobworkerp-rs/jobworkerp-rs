@@ -17,10 +17,13 @@ use app::module::AppModule;
 use debug_stub_derive::DebugStub;
 use futures::stream::BoxStream;
 use infra::infra::job::rows::UseJobqueueAndCodec;
+use infra_utils::infra::trace::Tracing;
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::JobResultData;
 use proto::jobworkerp::data::JobResultId;
 use proto::jobworkerp::data::ResultOutputItem;
 use proto::jobworkerp::data::{JobResult, WorkerData};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tracing;
 
@@ -31,6 +34,7 @@ pub struct ResultProcessorImpl {
     pub app_module: Arc<AppModule>,
 }
 
+impl Tracing for ResultProcessorImpl {}
 impl ResultProcessorImpl {
     pub fn new(
         config_module: Arc<AppConfigModule>,
@@ -45,32 +49,43 @@ impl ResultProcessorImpl {
 
     pub async fn process_result(
         &self,
-        id: JobResultId,
-        data: (JobResultData, Option<BoxStream<'static, ResultOutputItem>>),
+        jr: JobResult,
+        st_data: Option<BoxStream<'static, ResultOutputItem>>,
         w: WorkerData,
     ) -> Result<JobResult> {
-        tracing::debug!("got job_result: {:?}, worker: {:?}", &id, &w.name);
-        // retry first if necessary
-        let retried = self
-            .process_complete_or_retry_condition(&id, &data.0, data.1, &w)
-            .await;
-        // store result if necessary by result status and worker setting
-        match self
-            .job_result_app()
-            .create_job_result_if_necessary(&id, &data.0, w.broadcast_results)
-            .await
+        tracing::debug!("got job_result: {:?}, worker: {:?}", &jr.id, &w.name);
+        if let JobResult {
+            id: Some(id),
+            data: Some(data),
+            metadata,
+        } = jr
         {
-            Ok(_r) => {
-                retried?; // error if retried err
-                Ok(JobResult {
-                    id: Some(id),
-                    data: Some(data.0),
-                })
+            // retry first if necessary
+            let retried = self
+                .process_complete_or_retry_condition(&id, &data, st_data, &w, &metadata)
+                .await;
+            // store result if necessary by result status and worker setting
+            match self
+                .job_result_app()
+                .create_job_result_if_necessary(&id, &data, w.broadcast_results)
+                .await
+            {
+                Ok(_r) => {
+                    retried?; // error if retried err
+                    Ok(JobResult {
+                        id: Some(id),
+                        data: Some(data),
+                        metadata,
+                    })
+                }
+                Err(e) => {
+                    tracing::error!("job result store error: {:?}, retried: {:?}", e, retried);
+                    Err(e)
+                }
             }
-            Err(e) => {
-                tracing::error!("job result store error: {:?}, retried: {:?}", e, retried);
-                Err(e)
-            }
+        } else {
+            tracing::warn!("job result without id or data: {:?}", jr);
+            Err(JobWorkerError::NotFound("job result without id or data".to_string()).into())
         }
     }
 
@@ -80,9 +95,10 @@ impl ResultProcessorImpl {
         dat: &JobResultData,
         stream: Option<BoxStream<'static, ResultOutputItem>>,
         worker: &WorkerData,
+        metadata: &HashMap<String, String>,
     ) -> Result<()> {
         // retry or periodic job
-        let jopt = Self::build_retry_job(dat, worker);
+        let jopt = Self::build_retry_job(dat, worker, metadata);
         // need to retry
         if let Some(j) = jopt {
             // update or insert job for retry or periodic
@@ -102,6 +118,7 @@ impl ResultProcessorImpl {
                 let pjres = self
                     .job_app()
                     .enqueue_job(
+                        metadata.clone(),
                         pj.worker_id.as_ref(),
                         None,
                         pj.args,

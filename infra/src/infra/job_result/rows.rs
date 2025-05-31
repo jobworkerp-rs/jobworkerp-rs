@@ -56,6 +56,7 @@ impl JobResultRow {
                 store_success: false,
                 store_failure: false,
             }),
+            ..Default::default()
         }
     }
 

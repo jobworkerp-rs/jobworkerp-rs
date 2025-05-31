@@ -223,6 +223,8 @@ impl UseJobqueueAndCodec for RdbJobResultRepositoryImpl {}
 impl RdbJobResultRepository for RdbJobResultRepositoryImpl {}
 
 mod test {
+    use std::collections::HashMap;
+
     use super::RdbJobResultRepository;
     use super::RdbJobResultRepositoryImpl;
     use crate::infra::job::rows::UseJobqueueAndCodec;
@@ -253,7 +255,7 @@ mod test {
             uniq_key: Some("hoge4".to_string()),
             status: ResultStatus::ErrorAndRetry as i32,
             output: Some(ResultOutput {
-                items: vec!["hoge6".as_bytes().to_vec()],
+                items: "hoge6".as_bytes().to_vec(),
             }),
             retried: 8,
             max_retry: 0, // fixed
@@ -276,6 +278,7 @@ mod test {
         let expect = JobResult {
             id: Some(id1),
             data,
+            metadata: HashMap::new(), // not stored in rdb etc
         };
 
         // find
@@ -295,7 +298,7 @@ mod test {
             uniq_key: Some("fuga4".to_string()),
             status: ResultStatus::FatalError as i32,
             output: Some(ResultOutput {
-                items: vec!["fuga6".as_bytes().to_vec()],
+                items: "fuga6".as_bytes().to_vec(),
             }),
             retried: 1,
             max_retry: 0, // fixed

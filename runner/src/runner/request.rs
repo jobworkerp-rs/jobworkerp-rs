@@ -1,4 +1,4 @@
-use std::{str::FromStr, time::Duration};
+use std::{collections::HashMap, str::FromStr, time::Duration};
 
 use super::{RunnerSpec, RunnerTrait};
 use crate::jobworkerp::runner::{HttpRequestArgs, HttpRequestRunnerSettings, HttpResponseResult};
@@ -89,73 +89,84 @@ impl RunnerTrait for RequestRunner {
         let op = ProstMessageCodec::deserialize_message::<HttpRequestRunnerSettings>(&settings)?;
         self.create(op.base_url.as_str())
     }
-    async fn run(&mut self, args: &[u8]) -> Result<Vec<Vec<u8>>> {
-        if let Some(url) = self.url.as_ref() {
-            let args = ProstMessageCodec::deserialize_message::<HttpRequestArgs>(args)?;
-            let met = Method::from_str(args.method.as_str())?;
-            let u = url.join(args.path.as_str())?;
-            // create request
-            let req = self.client.request(met, u);
-            // set body
-            let req = if let Some(b) = &args.body {
-                req.body(b.to_owned())
-            } else {
-                req
-            };
-            // set queries
-            let req = if args.queries.is_empty() {
-                req
-            } else {
-                req.query(
-                    &args
-                        .queries
-                        .iter()
-                        .map(|kv| (kv.key.as_str(), kv.value.as_str()))
-                        .collect::<Vec<_>>(),
-                )
-            };
-            // set headers
-            let req = if args.headers.is_empty() {
-                req
-            } else {
-                let mut hm = HeaderMap::new();
-                for kv in args.headers.iter() {
-                    let k1: HeaderName = kv.key.parse().map_err(|e| {
-                        JobWorkerError::ParseError(format!("header value error: {:?}", e))
-                    })?;
-                    let v1 = kv.value.parse().map_err(|e| {
-                        JobWorkerError::ParseError(format!("header value error: {:?}", e))
-                    })?;
-                    hm.append(k1, v1);
-                }
-                req.headers(hm)
-            };
-            // send request and await
-            let res = req.send().await.map_err(JobWorkerError::ReqwestError)?;
-            let h = res.headers().clone();
-            let s = res.status().as_u16();
-            let t = res.text().await.map_err(JobWorkerError::ReqwestError)?;
-            let mes = HttpResponseResult {
-                status_code: s as u32,
-                headers: h
-                    .iter()
-                    .map(
-                        |(k, v)| crate::jobworkerp::runner::http_response_result::KeyValue {
-                            key: k.as_str().to_string(),
-                            value: v.to_str().unwrap().to_string(),
-                        },
+    async fn run(
+        &mut self,
+        args: &[u8],
+        metadata: HashMap<String, String>,
+    ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        let result = async {
+            if let Some(url) = self.url.as_ref() {
+                let args = ProstMessageCodec::deserialize_message::<HttpRequestArgs>(args)?;
+                let met = Method::from_str(args.method.as_str())?;
+                let u = url.join(args.path.as_str())?;
+                // create request
+                let req = self.client.request(met, u);
+                // set body
+                let req = if let Some(b) = &args.body {
+                    req.body(b.to_owned())
+                } else {
+                    req
+                };
+                // set queries
+                let req = if args.queries.is_empty() {
+                    req
+                } else {
+                    req.query(
+                        &args
+                            .queries
+                            .iter()
+                            .map(|kv| (kv.key.as_str(), kv.value.as_str()))
+                            .collect::<Vec<_>>(),
                     )
-                    .collect(),
-                content: t,
-            };
-            Ok(vec![ProstMessageCodec::serialize_message(&mes)?])
-        } else {
-            Err(JobWorkerError::RuntimeError("url is not set".to_string()).into())
-        }
+                };
+                // set headers
+                let req = if args.headers.is_empty() {
+                    req
+                } else {
+                    let mut hm = HeaderMap::new();
+                    for kv in args.headers.iter() {
+                        let k1: HeaderName = kv.key.parse().map_err(|e| {
+                            JobWorkerError::ParseError(format!("header value error: {:?}", e))
+                        })?;
+                        let v1 = kv.value.parse().map_err(|e| {
+                            JobWorkerError::ParseError(format!("header value error: {:?}", e))
+                        })?;
+                        hm.append(k1, v1);
+                    }
+                    req.headers(hm)
+                };
+                // send request and await
+                let res = req.send().await.map_err(JobWorkerError::ReqwestError)?;
+                let h = res.headers().clone();
+                let s = res.status().as_u16();
+                let t = res.text().await.map_err(JobWorkerError::ReqwestError)?;
+                let mes = HttpResponseResult {
+                    status_code: s as u32,
+                    headers: h
+                        .iter()
+                        .map(
+                            |(k, v)| crate::jobworkerp::runner::http_response_result::KeyValue {
+                                key: k.as_str().to_string(),
+                                value: v.to_str().unwrap().to_string(),
+                            },
+                        )
+                        .collect(),
+                    content: t,
+                };
+                Ok(ProstMessageCodec::serialize_message(&mes)?)
+            } else {
+                Err(JobWorkerError::RuntimeError("url is not set".to_string()).into())
+            }
+        };
+        (result.await, metadata)
     }
-    async fn run_stream(&mut self, arg: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>> {
+    async fn run_stream(
+        &mut self,
+        arg: &[u8],
+        metadata: HashMap<String, String>,
+    ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // default implementation (return empty)
-        let _ = arg;
+        let _ = (arg, metadata);
         Err(anyhow::anyhow!("not implemented"))
     }
 
@@ -191,13 +202,13 @@ async fn run_request() {
     })
     .unwrap();
 
-    let res = runner.run(&arg).await;
+    let res = runner.run(&arg, HashMap::new()).await;
 
-    let out = res.as_ref().unwrap().first().unwrap();
+    let out = &res.0.as_ref().unwrap();
     println!(
         "arg: {:?}, res: {:?}",
         arg,
         String::from_utf8_lossy(out.as_slice()),
     );
-    assert!(res.is_ok());
+    assert!(res.0.is_ok());
 }

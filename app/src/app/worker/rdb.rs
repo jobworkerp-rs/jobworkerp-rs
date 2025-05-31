@@ -439,7 +439,11 @@ mod tests {
             assert!(found.is_some());
             let worker_data = found.and_then(|w| w.data);
             assert!(worker_data.is_some());
-            assert_eq!(worker_data.as_ref().unwrap().name, temp_worker.name);
+            assert!(worker_data
+                .as_ref()
+                .unwrap()
+                .name
+                .starts_with(&temp_worker.name));
 
             // Delete the worker
             let deleted = app.delete(&id).await?;

@@ -423,6 +423,7 @@ mod test {
                 timeout: 1000,
                 request_streaming: false,
             }),
+            metadata: HashMap::new(),
         };
         let r = repo.enqueue_job(None, &job).await?;
         assert_eq!(r, 1);
@@ -542,6 +543,7 @@ mod test {
                 timeout: 1000,
                 request_streaming: false,
             }),
+            metadata: HashMap::new(),
         };
         let job2 = Job {
             id: Some(JobId { value: 2 }),
@@ -557,6 +559,7 @@ mod test {
                 timeout: 1000,
                 request_streaming: false,
             }),
+            metadata: HashMap::new(),
         };
         let r = repo.enqueue_job(None, &job1).await?;
         assert_eq!(r, 1);

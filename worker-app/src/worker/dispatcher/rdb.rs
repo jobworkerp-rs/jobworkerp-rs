@@ -31,10 +31,10 @@ use infra::infra::IdGeneratorWrapper;
 use infra::infra::JobQueueConfig;
 use infra::infra::UseIdGenerator;
 use infra::infra::UseJobQueueConfig;
+use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::Job;
 use proto::jobworkerp::data::JobResult;
-use proto::jobworkerp::data::JobResultId;
 use proto::jobworkerp::data::Worker;
 use proto::jobworkerp::data::WorkerId;
 use std::sync::Arc;
@@ -208,13 +208,10 @@ pub trait RdbJobDispatcher:
             Ok(grabbed) => {
                 if grabbed {
                     let res = self.run_job(&runner_data, &wid, &w, job).await;
-                    let id = JobResultId {
-                        value: self.id_generator().generate_id()?,
-                    };
                     tracing::debug!("job completed. result: {:?}", &res.0);
                     // store result
                     self.result_processor()
-                        .process_result(id, res, w)
+                        .process_result(res.0, res.1, w)
                         .await
                         .inspect_err(|e| {
                             tracing::error!(
@@ -304,6 +301,7 @@ impl UseRunnerPoolMap for RdbJobDispatcherImpl {
         &self.runner_pool_map
     }
 }
+impl Tracing for RdbJobDispatcherImpl {}
 impl JobRunner for RdbJobDispatcherImpl {}
 
 impl UseWorkerConfig for RdbJobDispatcherImpl {

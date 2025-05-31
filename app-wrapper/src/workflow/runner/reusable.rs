@@ -6,7 +6,9 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use infra_utils::infra::net::reqwest::ReqwestClient;
+use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+use jobworkerp_base::APP_NAME;
 use jobworkerp_runner::jobworkerp::runner::{
     workflow_result::WorkflowStatus, ReusableWorkflowArgs,
 };
@@ -16,6 +18,7 @@ use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use prost::Message;
 use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
+use std::collections::HashMap;
 use std::{sync::Arc, time::Duration};
 
 #[derive(Debug, Clone)]
@@ -100,6 +103,8 @@ impl RunnerSpec for ReusableWorkflowRunner {
     }
 }
 
+impl Tracing for ReusableWorkflowRunner {}
+
 #[async_trait]
 impl RunnerTrait for ReusableWorkflowRunner {
     async fn load(&mut self, settings: Vec<u8>) -> Result<()> {
@@ -114,80 +119,100 @@ impl RunnerTrait for ReusableWorkflowRunner {
 
         Ok(())
     }
-    async fn run(&mut self, args: &[u8]) -> Result<Vec<Vec<u8>>> {
-        let arg = ProstMessageCodec::deserialize_message::<ReusableWorkflowArgs>(args)?;
-        tracing::debug!("Workflow args: {:#?}", &arg);
-        if let Some(workflow) = self.workflow.as_ref() {
-            tracing::debug!("Workflow: {:#?}", workflow);
-            if self.canceled {
-                return Err(anyhow::anyhow!(
-                    "canceled by user: {}, {:?}",
-                    RunnerType::ReusableWorkflow.as_str_name(),
-                    arg
-                ));
-            }
-            let input_json = serde_json::from_str(&arg.input)
-                .unwrap_or_else(|_| serde_json::Value::String(arg.input.clone()));
-            let context_json = Arc::new(
-                arg.workflow_context
-                    .as_deref()
-                    .map(serde_json::from_str)
-                    .unwrap_or_else(|| Ok(serde_json::Value::Object(Default::default())))?,
-            );
-            let executor = WorkflowExecutor::new(
-                self.app_module.clone(),
-                self.http_client.clone(),
-                workflow.clone(),
-                Arc::new(input_json),
-                context_json,
-            );
+    async fn run(
+        &mut self,
+        args: &[u8],
+        metadata: HashMap<String, String>,
+    ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        let result = async {
+            let (span, cx) =
+                Self::tracing_span_from_metadata(&metadata, APP_NAME, "reusable_workflow.run");
+            let _ = span.enter();
+            let arg = ProstMessageCodec::deserialize_message::<ReusableWorkflowArgs>(args)?;
+            tracing::debug!("Workflow args: {:#?}", &arg);
+            if let Some(workflow) = self.workflow.as_ref() {
+                tracing::debug!("Workflow: {:#?}", workflow);
+                if self.canceled {
+                    return Err(anyhow::anyhow!(
+                        "canceled by user: {}, {:?}",
+                        RunnerType::ReusableWorkflow.as_str_name(),
+                        arg
+                    ));
+                }
+                let input_json = serde_json::from_str(&arg.input)
+                    .unwrap_or_else(|_| serde_json::Value::String(arg.input.clone()));
+                let context_json = Arc::new(
+                    arg.workflow_context
+                        .as_deref()
+                        .map(serde_json::from_str)
+                        .unwrap_or_else(|| Ok(serde_json::Value::Object(Default::default())))?,
+                );
+                let executor = WorkflowExecutor::new(
+                    self.app_module.clone(),
+                    self.http_client.clone(),
+                    workflow.clone(),
+                    Arc::new(input_json),
+                    context_json,
+                    Arc::new(metadata.clone()),
+                );
 
-            // Get the stream of workflow context updates
-            let mut workflow_stream = executor.execute_workflow();
+                // Get the stream of workflow context updates
+                let mut workflow_stream = executor.execute_workflow(Arc::new(cx));
 
-            // Store the final workflow context
-            let mut final_context = None;
+                // Store the final workflow context
+                let mut final_context = None;
 
-            // Process the stream of workflow context results
-            while let Some(result) = workflow_stream.next().await {
-                match result {
-                    Ok(context) => {
-                        final_context = Some(context);
-                    }
-                    Err(e) => {
-                        return Err(e.context("Failed to execute workflow"));
+                // Process the stream of workflow context results
+                while let Some(result) = workflow_stream.next().await {
+                    match result {
+                        Ok(context) => {
+                            final_context = Some(context);
+                        }
+                        Err(e) => {
+                            return Err(e.context("Failed to execute workflow"));
+                        }
                     }
                 }
+
+                // Return the final workflow context or an error if none was received
+                let res = final_context
+                    .ok_or_else(|| anyhow::anyhow!("No workflow context was returned"))?;
+
+                tracing::info!("Workflow result: {}", res.read().await.output_string());
+
+                let res = res.read().await;
+                let r = WorkflowResult {
+                    id: res.id.to_string().clone(),
+                    output: serde_json::to_string(&res.output)?,
+                    status: WorkflowStatus::from_str_name(res.status.to_string().as_str())
+                        .unwrap_or(WorkflowStatus::Faulted) as i32,
+                    error_message: if res.status == WorkflowStatus::Completed.into() {
+                        None
+                    } else {
+                        res.output.as_ref().map(|o| o.to_string())
+                    },
+                };
+                drop(res);
+                Ok(r.encode_to_vec())
+            } else {
+                Err(anyhow::anyhow!("workflow not loaded"))
             }
-
-            // Return the final workflow context or an error if none was received
-            let res =
-                final_context.ok_or_else(|| anyhow::anyhow!("No workflow context was returned"))?;
-
-            tracing::info!("Workflow result: {}", res.read().await.output_string());
-
-            let res = res.read().await;
-            let r = WorkflowResult {
-                id: res.id.to_string().clone(),
-                output: serde_json::to_string(&res.output)?,
-                status: WorkflowStatus::from_str_name(res.status.to_string().as_str())
-                    .unwrap_or(WorkflowStatus::Faulted) as i32,
-                error_message: if res.status == WorkflowStatus::Completed.into() {
-                    None
-                } else {
-                    res.output.as_ref().map(|o| o.to_string())
-                },
-            };
-            drop(res);
-            Ok(vec![r.encode_to_vec()])
-        } else {
-            return Err(anyhow::anyhow!("workflow not loaded"));
         }
+        .await;
+        (result, metadata)
     }
 
-    async fn run_stream(&mut self, args: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>> {
+    async fn run_stream(
+        &mut self,
+        args: &[u8],
+        metadata: HashMap<String, String>,
+    ) -> Result<BoxStream<'static, ResultOutputItem>> {
+        let (span, cx) =
+            Self::tracing_span_from_metadata(&metadata, APP_NAME, "reusable_workflow.run_stream");
+        let _ = span.enter();
         let arg = ProstMessageCodec::deserialize_message::<ReusableWorkflowArgs>(args)?;
         tracing::debug!("workflow args: {:#?}", arg);
+        let metadata_arc = Arc::new(metadata.clone());
 
         if self.canceled {
             return Err(anyhow::anyhow!(
@@ -227,8 +252,9 @@ impl RunnerTrait for ReusableWorkflowRunner {
             workflow,
             Arc::new(input_json),
             context_json.clone(),
+            metadata_arc.clone(),
         ));
-        let workflow_stream = executor.execute_workflow();
+        let workflow_stream = executor.execute_workflow(Arc::new(cx));
         self.workflow_executor = Some(executor.clone());
 
         let output_stream = workflow_stream
@@ -276,10 +302,10 @@ impl RunnerTrait for ReusableWorkflowRunner {
                     }
                 }
             })
-            .chain(futures::stream::once(async {
+            .chain(futures::stream::once(async move {
                 ResultOutputItem {
                     item: Some(proto::jobworkerp::data::result_output_item::Item::End(
-                        proto::jobworkerp::data::Empty {},
+                        proto::jobworkerp::data::Trailer { metadata },
                     )),
                 }
             }))

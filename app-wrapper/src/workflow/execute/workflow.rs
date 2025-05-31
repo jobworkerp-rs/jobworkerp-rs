@@ -8,8 +8,9 @@ use anyhow::Result;
 use app::module::AppModule;
 use futures::{Stream, StreamExt};
 use indexmap::IndexMap;
-use infra_utils::infra::net::reqwest::ReqwestClient;
-use std::sync::Arc;
+use infra_utils::infra::{net::reqwest::ReqwestClient, trace::Tracing};
+use jobworkerp_base::APP_NAME;
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -19,10 +20,12 @@ pub struct WorkflowExecutor {
     pub http_client: ReqwestClient,
     pub workflow: Arc<WorkflowSchema>,
     pub workflow_context: Arc<RwLock<context::WorkflowContext>>,
+    pub metadata: Arc<HashMap<String, String>>,
 }
 impl UseJqAndTemplateTransformer for WorkflowExecutor {}
 impl UseExpressionTransformer for WorkflowExecutor {}
 impl UseExpression for WorkflowExecutor {}
+impl Tracing for WorkflowExecutor {}
 
 impl WorkflowExecutor {
     pub fn new(
@@ -31,6 +34,7 @@ impl WorkflowExecutor {
         workflow: Arc<WorkflowSchema>,
         input: Arc<serde_json::Value>,
         context: Arc<serde_json::Value>,
+        metadata: Arc<HashMap<String, String>>,
     ) -> Self {
         let workflow_context = Arc::new(RwLock::new(context::WorkflowContext::new(
             &workflow, input, context,
@@ -41,6 +45,7 @@ impl WorkflowExecutor {
             http_client,
             workflow,
             workflow_context,
+            metadata,
         }
     }
 
@@ -55,6 +60,7 @@ impl WorkflowExecutor {
     /// after each task execution.
     pub fn execute_workflow(
         &self,
+        cx: Arc<opentelemetry::Context>,
     ) -> impl Stream<Item = Result<Arc<RwLock<WorkflowContext>>>> + 'static {
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Arc<RwLock<WorkflowContext>>>>(32);
 
@@ -63,6 +69,8 @@ impl WorkflowExecutor {
         let workflow = self.workflow.clone();
         let job_executors = self.job_executors.clone();
         let http_client = self.http_client.clone();
+        let cxc = cx.clone();
+        let metadata = self.metadata.clone();
 
         tokio::spawn(async move {
             // Set workflow to running status
@@ -70,6 +78,9 @@ impl WorkflowExecutor {
                 let mut lock = initial_wfc.write().await;
                 lock.status = WorkflowStatus::Running;
             }
+            let (span, ccx) =
+                Self::child_tracing_span(&cxc, APP_NAME, "execute_workflow".to_string());
+            let _s = span.enter();
 
             // // Send the initial workflow context
             // let _ = tx.send(Ok(initial_wfc.clone())).await;
@@ -162,10 +173,12 @@ impl WorkflowExecutor {
                 http_client,
                 workflow: workflow.clone(),
                 workflow_context: initial_wfc.clone(),
+                metadata: metadata.clone(),
             };
 
             // Execute tasks and update workflow context after each task
-            let mut task_stream = task_executor.execute_task_list(task_map, task_context);
+            let mut task_stream =
+                task_executor.execute_task_list(task_map, task_context, Arc::new(ccx));
 
             while let Some(tc_result) = task_stream.next().await {
                 match tc_result {
@@ -292,12 +305,15 @@ impl WorkflowExecutor {
         &self,
         task_map: Arc<IndexMap<String, (u32, Arc<Task>)>>,
         parent_task_context: TaskContext,
+        cx: Arc<opentelemetry::Context>,
     ) -> impl Stream<Item = Result<Arc<TaskContext>>> + '_ {
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Arc<TaskContext>>>(32);
 
         let workflow_context = self.workflow_context.clone();
         let job_executors = self.job_executors.clone();
         let http_client = self.http_client.clone();
+        let req_meta = self.metadata.clone();
+        let cx = cx.clone();
 
         tokio::spawn(async move {
             let mut prev_context = parent_task_context;
@@ -310,6 +326,12 @@ impl WorkflowExecutor {
 
             while next_task_pair.is_some() && status == WorkflowStatus::Running {
                 if let Some((name, (pos, task))) = next_task_pair {
+                    let (span, ccx) = Self::child_tracing_span(
+                        &cx,
+                        APP_NAME,
+                        format!("execute_task_{}:{}", pos, name),
+                    );
+                    let _ = span.enter();
                     tracing::info!("Executing task: {}", name);
                     prev_context.add_position_index(*pos);
                     let task_executor = TaskExecutor::new(
@@ -317,11 +339,16 @@ impl WorkflowExecutor {
                         http_client.clone(),
                         name,
                         task.clone(),
+                        req_meta.clone(),
                     );
 
                     // Get stream from task executor
                     let mut task_stream = task_executor
-                        .execute(workflow_context.clone(), Arc::new(prev_context))
+                        .execute(
+                            Arc::new(ccx),
+                            workflow_context.clone(),
+                            Arc::new(prev_context),
+                        )
                         .await;
 
                     let mut last_context = None;
@@ -513,6 +540,7 @@ mod tests {
                 Arc::new(workflow.clone()),
                 input.clone(),
                 context.clone(),
+                Arc::new(HashMap::new()),
             );
 
             let mut idx = 0;
@@ -534,7 +562,11 @@ mod tests {
             );
 
             executor.workflow_context.write().await.status = WorkflowStatus::Running;
-            let mut task_stream = executor.execute_task_list(task_map, task_context);
+            let mut task_stream = executor.execute_task_list(
+                task_map,
+                task_context,
+                opentelemetry::Context::current().into(),
+            );
             let mut final_tc = None;
             while let Some(tc) = task_stream.next().await {
                 match tc {
@@ -574,6 +606,7 @@ mod tests {
                 Arc::new(workflow.clone()),
                 input.clone(),
                 context.clone(),
+                Arc::new(HashMap::new()),
             );
 
             executor.workflow_context.write().await.status = WorkflowStatus::Running;
@@ -681,6 +714,7 @@ mod tests {
                 Arc::new(workflow.clone()),
                 input.clone(),
                 context.clone(),
+                Arc::new(HashMap::new()),
             );
 
             let mut task_map = IndexMap::<String, (u32, Arc<Task>)>::new();
@@ -756,7 +790,11 @@ mod tests {
             );
 
             executor.workflow_context.write().await.status = WorkflowStatus::Running;
-            let mut task_stream = executor.execute_task_list(Arc::new(task_map), task_context);
+            let mut task_stream = executor.execute_task_list(
+                Arc::new(task_map),
+                task_context,
+                Arc::new(opentelemetry::Context::current()),
+            );
             let mut final_tc = None;
             while let Some(tc) = task_stream.next().await {
                 match tc {
@@ -808,6 +846,7 @@ mod tests {
                     Arc::new(workflow.clone()),
                     input.clone(),
                     context.clone(),
+                    Arc::new(HashMap::new()),
                 );
 
                 let task_map = Arc::new(indexmap! {
@@ -841,7 +880,11 @@ mod tests {
 
                 // exit case
                 executor.workflow_context.write().await.status = WorkflowStatus::Running;
-                let mut task_stream = executor.execute_task_list(task_map, task_context);
+                let mut task_stream = executor.execute_task_list(
+                    task_map,
+                    task_context,
+                    Arc::new(opentelemetry::Context::current()),
+                );
                 let mut final_tc = None;
                 while let Some(tc) = task_stream.next().await {
                     match tc {
@@ -876,6 +919,7 @@ mod tests {
                     Arc::new(workflow.clone()),
                     input.clone(),
                     context.clone(),
+                    Arc::new(HashMap::new()),
                 );
 
                 let task_map = Arc::new(indexmap! {
@@ -897,7 +941,11 @@ mod tests {
                     Arc::new(Mutex::new(serde_json::Map::new())),
                 );
                 executor.workflow_context.write().await.status = WorkflowStatus::Running;
-                let mut task_stream = executor.execute_task_list(task_map, task_context);
+                let mut task_stream = executor.execute_task_list(
+                    task_map,
+                    task_context,
+                    Arc::new(opentelemetry::Context::current()),
+                );
                 let mut final_tc = None;
                 while let Some(tc) = task_stream.next().await {
                     match tc {
@@ -967,6 +1015,7 @@ mod tests {
                 workflow.clone(),
                 input.clone(),
                 context.clone(),
+                Arc::new(HashMap::new()),
             );
 
             let task_map = Arc::new(indexmap! {
@@ -1008,7 +1057,11 @@ mod tests {
                 Arc::new(Mutex::new(serde_json::Map::new())),
             );
             executor.workflow_context.write().await.status = WorkflowStatus::Running;
-            let mut task_stream = executor.execute_task_list(task_map, task_context);
+            let mut task_stream = executor.execute_task_list(
+                task_map,
+                task_context,
+                Arc::new(opentelemetry::Context::current()),
+            );
             let mut final_tc = None;
             while let Some(tc) = task_stream.next().await {
                 match tc {
