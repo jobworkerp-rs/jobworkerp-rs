@@ -264,6 +264,8 @@ pub trait UseChanJobResultPubSubRepository {
 
 #[cfg(test)]
 mod test {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::infra::JobQueueConfig;
     use anyhow::Result;
@@ -288,13 +290,14 @@ mod test {
             job_id: Some(job_id),
             worker_id: Some(worker_id),
             output: Some(ResultOutput {
-                items: vec![b"test".to_vec()],
+                items: b"test".to_vec(),
             }),
             ..JobResultData::default()
         };
         let job_result = JobResult {
             id: Some(job_result_id),
             data: Some(data.clone()),
+            metadata: HashMap::new(),
         };
 
         let mut jhv = Vec::with_capacity(10);
@@ -333,13 +336,14 @@ mod test {
             job_id: Some(JobId { value: 11 }),
             worker_id: Some(worker_id),
             output: Some(ResultOutput {
-                items: vec![b"test".to_vec()],
+                items: b"test".to_vec(),
             }),
             ..JobResultData::default()
         };
         let job_result = JobResult {
             id: Some(job_result_id),
             data: Some(data.clone()),
+            metadata: HashMap::new(),
         };
 
         let mut jhv = Vec::with_capacity(10);

@@ -34,6 +34,7 @@ impl UseJqAndTemplateTransformer for SwitchTaskExecutor {}
 impl TaskExecutorTrait<'_> for SwitchTaskExecutor {
     async fn execute(
         &self,
+        _cx: Arc<opentelemetry::Context>,
         _task_id: &str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         mut task_context: TaskContext,
@@ -116,6 +117,7 @@ mod tests {
     use crate::workflow::definition::workflow::{FlowDirective, SwitchCase, SwitchTask};
     use crate::workflow::execute::context::{TaskContext, WorkflowContext};
     use crate::workflow::execute::task::TaskExecutorTrait;
+    use opentelemetry::Context;
     use serde_json::{json, Map};
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -178,7 +180,12 @@ mod tests {
             );
 
             let result = executor
-                .execute("test_switch", workflow_context, task_context)
+                .execute(
+                    Arc::new(Context::current()),
+                    "test_switch",
+                    workflow_context,
+                    task_context,
+                )
                 .await
                 .unwrap();
 
@@ -219,7 +226,12 @@ mod tests {
             );
 
             let result = executor
-                .execute("test_switch", workflow_context, task_context)
+                .execute(
+                    Arc::new(Context::current()),
+                    "test_switch",
+                    workflow_context,
+                    task_context,
+                )
                 .await
                 .unwrap();
 
@@ -260,7 +272,12 @@ mod tests {
             );
 
             let result = executor
-                .execute("test_switch", workflow_context, task_context)
+                .execute(
+                    Arc::new(Context::current()),
+                    "test_switch",
+                    workflow_context,
+                    task_context,
+                )
                 .await
                 .unwrap();
 
@@ -298,7 +315,12 @@ mod tests {
             );
 
             let result = executor
-                .execute("test_switch", workflow_context, task_context)
+                .execute(
+                    Arc::new(Context::current()),
+                    "test_switch",
+                    workflow_context,
+                    task_context,
+                )
                 .await
                 .unwrap();
 
@@ -338,7 +360,12 @@ mod tests {
             );
 
             let result = executor
-                .execute("test_switch", workflow_context, task_context)
+                .execute(
+                    Arc::new(Context::current()),
+                    "test_switch",
+                    workflow_context,
+                    task_context,
+                )
                 .await
                 .unwrap();
 

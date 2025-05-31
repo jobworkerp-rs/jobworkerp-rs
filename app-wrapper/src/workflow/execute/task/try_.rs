@@ -21,17 +21,20 @@ pub struct TryTaskExecutor {
     task: workflow::TryTask,
     job_executors: Arc<JobExecutorWrapper>,
     http_client: reqwest::ReqwestClient,
+    metadata: Arc<std::collections::HashMap<String, String>>,
 }
 impl TryTaskExecutor {
     pub fn new(
         task: workflow::TryTask,
         job_executors: Arc<JobExecutorWrapper>,
         http_client: reqwest::ReqwestClient,
+        metadata: Arc<std::collections::HashMap<String, String>>,
     ) -> Self {
         Self {
             task,
             job_executors,
             http_client,
+            metadata,
         }
     }
 }
@@ -44,6 +47,7 @@ impl TaskExecutorTrait<'_> for TryTaskExecutor {
     #[allow(clippy::manual_async_fn)]
     fn execute(
         &self,
+        cx: Arc<opentelemetry::Context>,
         task_name: &str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
@@ -58,6 +62,7 @@ impl TaskExecutorTrait<'_> for TryTaskExecutor {
             let mut res = loop {
                 match self
                     .execute_task_list(
+                        cx.clone(),
                         task_name,
                         &self.task.try_,
                         workflow_context.clone(),
@@ -107,7 +112,7 @@ impl TaskExecutorTrait<'_> for TryTaskExecutor {
             // `do` in the end of retries
             if let Some(do_tasks) = &self.task.catch.do_ {
                 // TODO return task_context in workflow::Error for catch block (to error recovering)
-                self.execute_task_list("[try_do]", do_tasks, workflow_context, res.clone()) // XXX clone
+                self.execute_task_list(cx, "[try_do]", do_tasks, workflow_context, res.clone()) // XXX clone
                     .await?;
             }
             // go out of 'try'
@@ -120,6 +125,7 @@ impl TaskExecutorTrait<'_> for TryTaskExecutor {
 impl TryTaskExecutor {
     async fn execute_task_list(
         &self,
+        cx: Arc<opentelemetry::Context>,
         task_name: &str,
         task_list: &workflow::TaskList,
         workflow_context: Arc<RwLock<WorkflowContext>>,
@@ -135,10 +141,11 @@ impl TryTaskExecutor {
             self.http_client.clone(),
             task_name,
             Arc::new(workflow::Task::DoTask(do_tasks)),
+            self.metadata.clone(),
         );
 
         let mut stream = task_executor
-            .execute(workflow_context.clone(), Arc::new(task_context.clone()))
+            .execute(cx, workflow_context.clone(), Arc::new(task_context.clone()))
             .await;
         let mut last_context = None;
         while let Some(task_context) = stream.next().await {
@@ -435,8 +442,12 @@ mod tests {
             Arc::new(Mutex::new(Default::default())),
         );
 
-        let try_executor =
-            TryTaskExecutor::new(try_task.clone(), job_executors.clone(), http_client);
+        let try_executor = TryTaskExecutor::new(
+            try_task.clone(),
+            job_executors.clone(),
+            http_client,
+            Arc::new(Default::default()),
+        );
 
         (try_executor, workflow_context, task_context)
     }

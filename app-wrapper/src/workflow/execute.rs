@@ -14,12 +14,16 @@ use anyhow::Result;
 use app::module::AppModule;
 use futures::StreamExt;
 use infra_utils::infra::net::reqwest::ReqwestClient;
+use infra_utils::infra::trace::Tracing;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 // enough time for heavy task like llm but not too long
 const DEFAULT_REQUEST_TIMEOUT_SEC: u32 = 1200; // 20 minutes
 
+struct TracingImpl;
+impl infra_utils::infra::trace::Tracing for TracingImpl {}
 /// Executes a workflow schema.
 ///
 /// This function creates a workflow executor and executes the workflow.
@@ -40,12 +44,22 @@ pub async fn execute(
     workflow: Arc<WorkflowSchema>,
     input: Arc<serde_json::Value>,
     context: Arc<serde_json::Value>,
+    metadata: HashMap<String, String>,
 ) -> Result<Arc<RwLock<WorkflowContext>>> {
-    let workflow_executor =
-        WorkflowExecutor::new(app_module, http_client, workflow.clone(), input, context);
+    let (span, cx) =
+        TracingImpl::tracing_span_from_metadata(&metadata, "workflow-execute", "execute_workflow");
+    let _ = span.enter();
+    let workflow_executor = WorkflowExecutor::new(
+        app_module,
+        http_client,
+        workflow.clone(),
+        input,
+        context,
+        Arc::new(metadata.clone()),
+    );
 
     // Get the stream of workflow context updates
-    let mut workflow_stream = workflow_executor.execute_workflow();
+    let mut workflow_stream = workflow_executor.execute_workflow(Arc::new(cx));
 
     // Store the final workflow context
     let mut final_context = None;

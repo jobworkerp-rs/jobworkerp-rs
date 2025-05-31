@@ -28,6 +28,7 @@ impl UseJqAndTemplateTransformer for SetTaskExecutor {}
 impl TaskExecutorTrait<'_> for SetTaskExecutor {
     async fn execute(
         &self,
+        _cx: Arc<opentelemetry::Context>,
         task_name: &str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         mut task_context: TaskContext,

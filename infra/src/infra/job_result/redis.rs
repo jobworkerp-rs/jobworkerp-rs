@@ -250,7 +250,7 @@ async fn redis_test() -> Result<()> {
         uniq_key: Some("hoge4".to_string()),
         status: 6,
         output: Some(ResultOutput {
-            items: vec!["hoge6".as_bytes().to_vec()],
+            items: "hoge6".as_bytes().to_vec(),
         }),
         retried: 8,
         max_retry: 9,
@@ -283,7 +283,7 @@ async fn redis_test() -> Result<()> {
     job_result2.uniq_key = Some("fuga4".to_string());
     job_result2.status = 7;
     job_result2.output = Some(ResultOutput {
-        items: vec!["fuga6".as_bytes().to_vec()],
+        items: "fuga6".as_bytes().to_vec(),
     });
     job_result2.max_retry = 9;
     job_result2.retried = 9;

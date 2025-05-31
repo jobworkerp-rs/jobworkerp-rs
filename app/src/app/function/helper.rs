@@ -12,6 +12,7 @@ use proto::{
 };
 use serde_json::{Map, Value};
 use std::{
+    collections::HashMap,
     future::Future,
     hash::{DefaultHasher, Hasher},
 };
@@ -119,12 +120,13 @@ pub trait FunctionCallHelper:
         }
     }
 
-    fn handle_runner_call(
-        &self,
+    fn handle_runner_call<'a>(
+        &'a self,
+        meta: HashMap<String, String>,
         arguments: Option<Map<String, Value>>,
         runner: RunnerWithSchema,
         tool_name_opt: Option<String>,
-    ) -> impl Future<Output = Result<Option<Value>>> + Send + '_ {
+    ) -> impl Future<Output = Result<Option<Value>>> + Send + 'a {
         async move {
             tracing::debug!("found runner: {:?}, tool: {:?}", &runner, &tool_name_opt);
             let (settings, arguments) = Self::prepare_runner_call_arguments(
@@ -141,6 +143,7 @@ pub trait FunctionCallHelper:
             } = &runner
             {
                 self.setup_worker_and_enqueue_with_json(
+                    meta,
                     runner_data.name.as_str(),
                     settings,
                     None,
@@ -156,6 +159,7 @@ pub trait FunctionCallHelper:
 
     fn handle_worker_call<'a>(
         &'a self,
+        meta: HashMap<String, String>,
         name: &'a str,
         arguments: Option<Map<String, Value>>,
     ) -> impl Future<Output = Result<Value>> + Send + 'a {
@@ -180,7 +184,7 @@ pub trait FunctionCallHelper:
             } else {
                 request_args
             };
-            self.enqueue_with_json(&worker_data, Value::Object(args))
+            self.enqueue_with_json(meta, &worker_data, Value::Object(args))
                 .await
                 .map(|r| r.unwrap_or_default())
         }
@@ -188,6 +192,7 @@ pub trait FunctionCallHelper:
 
     fn setup_worker_and_enqueue_with_json<'a>(
         &'a self,
+        meta: HashMap<String, String>,              // metadata for job
         runner_name: &'a str,                       // runner(runner) name
         runner_settings: Option<serde_json::Value>, // runner_settings data
         worker_params: Option<serde_json::Value>, // worker parameters (if not exists, use default values)
@@ -238,6 +243,7 @@ pub trait FunctionCallHelper:
                     worker_params,
                 );
                 self.enqueue_with_json(
+                    meta,
                     &worker_data,
                     job_args, // enqueue job args
                 )
@@ -249,6 +255,7 @@ pub trait FunctionCallHelper:
     }
     fn enqueue_with_json<'a>(
         &'a self,
+        meta: HashMap<String, String>,
         temp_worker_data: &'a WorkerData,
         arguments: Value,
     ) -> impl Future<Output = Result<Option<Value>>> + Send + 'a {
@@ -278,6 +285,7 @@ pub trait FunctionCallHelper:
                     let res = self
                         .job_app()
                         .enqueue_job_with_temp_worker(
+                            meta,
                             temp_worker_data.clone(),
                             job_args,
                             None,
@@ -487,7 +495,7 @@ pub trait FunctionCallHelper:
         let output = job_result
             .data
             .as_ref()
-            .and_then(|r| r.output.as_ref().map(|o| &o.items[0]));
+            .and_then(|r| r.output.as_ref().map(|o| &o.items));
         if let Some(output) = output {
             let result_descriptor = Self::parse_job_result_schema_descriptor(runner_data)?;
             if let Some(desc) = result_descriptor {

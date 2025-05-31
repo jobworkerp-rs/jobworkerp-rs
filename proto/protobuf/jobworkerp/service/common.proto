@@ -2,20 +2,14 @@ syntax = "proto3";
 
 package jobworkerp.service;
 
-message SuccessResponse {
-    bool is_success = 1;
-}
+message SuccessResponse { bool is_success = 1; }
 
 message FindListRequest {
-    optional int32 limit  = 1;
-    optional int64 offset = 2;
+  optional int32 limit = 1;
+  optional int64 offset = 2;
 }
 
 // XXX now empty...
-message CountCondition {
+message CountCondition {}
 
-}
-
-message CountResponse {
-    int64 total = 1;
-}
+message CountResponse { int64 total = 1; }

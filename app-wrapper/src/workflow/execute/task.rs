@@ -15,10 +15,14 @@ use debug_stub_derive::DebugStub;
 use fork::ForkTaskExecutor;
 use futures::channel::mpsc;
 use futures::{pin_mut, StreamExt};
-use infra_utils::infra::net::reqwest;
+use infra_utils::infra::{net::reqwest, trace::Tracing};
+use jobworkerp_base::APP_NAME;
 use run::RunTaskExecutor;
 use set::SetTaskExecutor;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 use stream::{do_::DoTaskStreamExecutor, for_::ForTaskStreamExecutor};
 use switch::SwitchTaskExecutor;
 use tokio::sync::RwLock;
@@ -31,6 +35,7 @@ pub mod run;
 pub mod set;
 pub mod stream;
 pub mod switch;
+pub mod trace;
 #[path = "task/try_.rs"]
 pub mod try_;
 
@@ -42,6 +47,7 @@ pub struct TaskExecutor {
     pub http_client: reqwest::ReqwestClient,
     pub task_name: String,
     pub task: Arc<Task>,
+    pub metadata: Arc<HashMap<String, String>>,
 }
 impl UseExpression for TaskExecutor {}
 impl UseJqAndTemplateTransformer for TaskExecutor {}
@@ -53,6 +59,7 @@ impl TaskExecutor {
         http_client: reqwest::ReqwestClient,
         task_name: &str,
         task: Arc<Task>,
+        metadata: Arc<HashMap<String, String>>,
     ) -> Self {
         // command_utils::util::tracing::tracing_init_test(Level::DEBUG);
         Self {
@@ -60,6 +67,7 @@ impl TaskExecutor {
             http_client,
             task_name: task_name.to_owned(),
             task,
+            metadata,
         }
     }
     // input is the output of the previous task
@@ -67,6 +75,7 @@ impl TaskExecutor {
     // TODO timeout implementation
     pub async fn execute(
         &self,
+        cx: Arc<opentelemetry::Context>,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         parent_task: Arc<TaskContext>,
     ) -> futures::stream::BoxStream<'static, Result<TaskContext, Box<workflow::Error>>> {
@@ -141,7 +150,7 @@ impl TaskExecutor {
         };
 
         // Execute task - returns a stream
-        self.execute_task(workflow_context.clone(), task_context)
+        self.execute_task(cx, workflow_context.clone(), task_context)
             .await
     }
 
@@ -256,6 +265,7 @@ impl TaskExecutor {
 
     async fn execute_task(
         &self,
+        cx: Arc<opentelemetry::Context>,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
     ) -> futures::stream::BoxStream<'static, Result<TaskContext, Box<workflow::Error>>> {
@@ -306,6 +316,7 @@ impl TaskExecutor {
             Task::DoTask(task) => {
                 // DoTask: stream execution
                 let executor = DoTaskStreamExecutor::new(
+                    self.metadata.clone(),
                     task,
                     job_executor_wrapper.clone(),
                     http_client.clone(),
@@ -315,7 +326,7 @@ impl TaskExecutor {
                 let tc = task_context.clone();
                 let tn = task_name.clone();
                 tokio::spawn(async move {
-                    let stream = executor.execute_stream(tn.as_str(), wc, tc);
+                    let stream = executor.execute_stream(cx, tn.as_str(), wc, tc);
                     pin_mut!(stream);
                     while let Some(item) = stream.next().await {
                         if tx.unbounded_send(item).is_err() {
@@ -327,11 +338,16 @@ impl TaskExecutor {
             }
             Task::ForkTask(task) => {
                 // ForkTask: single-shot execution
-                let fork_executor =
-                    ForkTaskExecutor::new(task, job_executor_wrapper.clone(), http_client.clone());
+                let fork_executor = ForkTaskExecutor::new(
+                    task,
+                    job_executor_wrapper.clone(),
+                    http_client.clone(),
+                    self.metadata.clone(),
+                );
                 futures::stream::once(async move {
                     match fork_executor
                         .execute(
+                            cx,
                             task_name.as_str(),
                             workflow_context.clone(),
                             task_context.clone(),
@@ -362,13 +378,15 @@ impl TaskExecutor {
                     task,
                     job_executor_wrapper.clone(),
                     http_client.clone(),
+                    self.metadata.clone(),
                 );
                 let (tx, rx) = mpsc::unbounded();
                 let wc = workflow_context.clone();
                 let tc = task_context.clone();
                 let tn = task_name.clone();
+                let cx = cx.clone();
                 tokio::spawn(async move {
-                    let stream = executor.execute_stream(tn.as_str(), wc, tc);
+                    let stream = executor.execute_stream(cx, tn.as_str(), wc, tc);
                     pin_mut!(stream);
                     while let Some(item) = stream.next().await {
                         if let Err(e) = tx.unbounded_send(item) {
@@ -383,6 +401,7 @@ impl TaskExecutor {
                 futures::stream::once(async move {
                     match task_executor
                         .execute(
+                            cx,
                             task_name.as_str(),
                             workflow_context.clone(),
                             task_context.clone(),
@@ -409,10 +428,12 @@ impl TaskExecutor {
                 .boxed()
             }
             Task::RunTask(task) => {
-                let task_executor = RunTaskExecutor::new(job_executor_wrapper.clone(), task);
+                let task_executor =
+                    RunTaskExecutor::new(job_executor_wrapper.clone(), task, self.metadata.clone());
                 futures::stream::once(async move {
                     match task_executor
                         .execute(
+                            cx,
                             task_name.as_str(),
                             workflow_context.clone(),
                             task_context.clone(),
@@ -443,6 +464,7 @@ impl TaskExecutor {
                 futures::stream::once(async move {
                     match task_executor
                         .execute(
+                            cx,
                             task_name.as_str(),
                             workflow_context.clone(),
                             task_context.clone(),
@@ -473,6 +495,7 @@ impl TaskExecutor {
                 futures::stream::once(async move {
                     match task_executor
                         .execute(
+                            cx,
                             task_name.as_str(),
                             workflow_context.clone(),
                             task_context.clone(),
@@ -499,11 +522,16 @@ impl TaskExecutor {
                 .boxed()
             }
             Task::TryTask(task) => {
-                let task_executor =
-                    TryTaskExecutor::new(task, job_executor_wrapper.clone(), http_client.clone());
+                let task_executor = TryTaskExecutor::new(
+                    task,
+                    job_executor_wrapper.clone(),
+                    http_client.clone(),
+                    self.metadata.clone(),
+                );
                 futures::stream::once(async move {
                     match task_executor
                         .execute(
+                            cx,
                             task_name.as_str(),
                             workflow_context.clone(),
                             task_context.clone(),
@@ -534,6 +562,7 @@ impl TaskExecutor {
                 futures::stream::once(async move {
                     match task_executor
                         .execute(
+                            cx,
                             task_name.as_str(),
                             workflow_context.clone(),
                             task_context.clone(),
@@ -566,6 +595,7 @@ impl TaskExecutor {
 pub trait TaskExecutorTrait<'a>: Send + Sync {
     fn execute(
         &'a self,
+        cx: Arc<opentelemetry::Context>,
         task_name: &'a str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
@@ -575,6 +605,7 @@ pub trait TaskExecutorTrait<'a>: Send + Sync {
 pub trait StreamTaskExecutorTrait<'a>: Send + Sync {
     fn execute_stream(
         &'a self,
+        cx: Arc<opentelemetry::Context>,
         task_name: &'a str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
@@ -592,6 +623,7 @@ impl RaiseTaskExecutor {
 impl TaskExecutorTrait<'_> for RaiseTaskExecutor {
     async fn execute(
         &self,
+        _cx: Arc<opentelemetry::Context>,
         _task_name: &str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
@@ -618,14 +650,19 @@ impl WaitTaskExecutor {
         Self { task }
     }
 }
+impl Tracing for WaitTaskExecutor {}
 impl TaskExecutorTrait<'_> for WaitTaskExecutor {
     async fn execute(
         &self,
+        cx: Arc<opentelemetry::Context>,
         task_name: &str,
         _workflow_context: Arc<RwLock<WorkflowContext>>,
         mut task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
+        let (span, _cx) = Self::child_tracing_span(&cx, APP_NAME, task_name.to_string());
+        let _ = span.enter();
         tracing::info!("WaitTask: {}: {:?}", task_name, &self.task);
+
         tokio::time::sleep(std::time::Duration::from_millis(self.task.wait.to_millis())).await;
         task_context.set_output(task_context.input.clone());
         Ok(task_context)

@@ -5,19 +5,13 @@ package jobworkerp.service;
 import "jobworkerp/data/worker.proto";
 import "jobworkerp/service/common.proto";
 
-
 message CreateWorkerResponse {
-    jobworkerp.data.WorkerId id = 1; // generated id
+  jobworkerp.data.WorkerId id = 1; // generated id
 }
 
-message OptionalWorkerResponse {
-    optional jobworkerp.data.Worker data = 1;
-}
+message OptionalWorkerResponse { optional jobworkerp.data.Worker data = 1; }
 
-message WorkerNameRequest {
-    string name = 1;
-}
-
+message WorkerNameRequest { string name = 1; }
 
 service WorkerService {
   rpc Create(jobworkerp.data.WorkerData) returns (CreateWorkerResponse);

@@ -309,136 +309,130 @@ impl RunnerTrait for GrpcUnaryRunner {
             ProstMessageCodec::deserialize_message::<GrpcUnaryRunnerSettings>(&settings)?;
         self.create(&settings).await
     }
-    async fn run(&mut self, args: &[u8]) -> Result<Vec<Vec<u8>>> {
-        if let Some(mut client) = self.client.clone() {
-            let req = ProstMessageCodec::deserialize_message::<GrpcUnaryArgs>(args)?;
-            let codec = RawBytesCodec;
+    async fn run(
+        &mut self,
+        args: &[u8],
+        metadata: HashMap<String, String>,
+    ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        let result = async {
+            if let Some(mut client) = self.client.clone() {
+                let req = ProstMessageCodec::deserialize_message::<GrpcUnaryArgs>(args)?;
+                let codec = RawBytesCodec;
 
-            if let Some(size) = self.max_message_size {
-                client = client
-                    .max_decoding_message_size(size)
-                    .max_encoding_message_size(size);
-            }
+                if let Some(size) = self.max_message_size {
+                    client = client
+                        .max_decoding_message_size(size)
+                        .max_encoding_message_size(size);
+                }
 
-            // Wait for the client to be ready (to avoid buffer full errors)
-            client.ready().await.map_err(|e| {
-                tonic::Status::new(
-                    tonic::Code::Unknown,
-                    format!("Service was not ready: {:?}", e),
-                )
-            })?;
+                // Wait for the client to be ready (to avoid buffer full errors)
+                client.ready().await.map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {:?}", e),
+                    )
+                })?;
 
-            // Prepare the request payload
-            // If reflection is enabled and we have a reflection client, convert JSON to protobuf bytes
-            let request_bytes = if self.use_reflection && self.reflection_client.is_some() {
-                self.json_to_protobuf(&req.method, &req.request).await?
-            } else {
-                // Fallback to treating the string as base64 encoded bytes for backward compatibility
-                if self.use_reflection {
-                    tracing::warn!(
-                        "Requested reflection unavailable. Treating request as raw data."
-                    );
+                let request_bytes = if self.use_reflection && self.reflection_client.is_some() {
+                    self.json_to_protobuf(&req.method, &req.request).await?
                 } else {
-                    tracing::debug!("Using raw bytes(base64) for request");
-                }
-                match base64::engine::general_purpose::STANDARD.decode(&req.request) {
-                    Ok(bytes) => bytes,
-                    Err(_) => {
-                        // If not base64, treat as raw bytes (for backward compatibility)
-                        req.request.into_bytes()
-                    }
-                }
-            };
-            let request_len = request_bytes.len();
-
-            // Prepare the request with the encoded bytes
-            let mut request = tonic::Request::new(request_bytes);
-
-            // Apply metadata from GrpcUnaryArgs by cloning values to avoid lifetime issues
-            let metadata = request.metadata_mut();
-            for (key, value) in req.metadata.clone() {
-                if let Ok(val) = MetadataValue::try_from(value.as_str()) {
-                    // Use String type to solve lifetime issues with metadata keys
-                    if let Ok(key) = tonic::metadata::MetadataKey::from_bytes(key.as_bytes()) {
-                        metadata.insert(key, val);
+                    if self.use_reflection {
+                        tracing::warn!(
+                            "Requested reflection unavailable. Treating request as raw data."
+                        );
                     } else {
-                        tracing::warn!("Invalid metadata key: {}", key);
+                        tracing::debug!("Using raw bytes(base64) for request");
                     }
-                } else {
-                    tracing::warn!("Invalid metadata value for key {}: {}", key, value);
+                    match base64::engine::general_purpose::STANDARD.decode(&req.request) {
+                        Ok(bytes) => bytes,
+                        Err(_) => req.request.into_bytes(),
+                    }
+                };
+                let request_len = request_bytes.len();
+
+                let mut request = tonic::Request::new(request_bytes);
+
+                let metadata_mut = request.metadata_mut();
+                for (key, value) in req.metadata.clone() {
+                    if let Ok(val) = MetadataValue::try_from(value.as_str()) {
+                        if let Ok(key) = tonic::metadata::MetadataKey::from_bytes(key.as_bytes()) {
+                            metadata_mut.insert(key, val);
+                        } else {
+                            tracing::warn!("Invalid metadata key: {}", key);
+                        }
+                    } else {
+                        tracing::warn!("Invalid metadata value for key {}: {}", key, value);
+                    }
                 }
-            }
 
-            // Add authorization token if present
-            if let Some(token) = &self.auth_token {
-                let token_str = format!("Bearer {}", token);
-                if let Ok(val) = MetadataValue::try_from(token_str.as_str()) {
-                    // Use a static string to avoid lifetime issues
-                    metadata.insert(
-                        tonic::metadata::MetadataKey::from_static("authorization"),
-                        val,
-                    );
-                } else {
-                    tracing::warn!("Failed to create authorization metadata");
+                if let Some(token) = &self.auth_token {
+                    let token_str = format!("Bearer {}", token);
+                    if let Ok(val) = MetadataValue::try_from(token_str.as_str()) {
+                        metadata_mut.insert(
+                            tonic::metadata::MetadataKey::from_static("authorization"),
+                            val,
+                        );
+                    } else {
+                        tracing::warn!("Failed to create authorization metadata");
+                    }
                 }
-            }
 
-            // Convert method string to URI path
-            let method = http::uri::PathAndQuery::try_from(req.method.clone())
-                .map_err(|e| anyhow!("Invalid URI path: {}", e))?;
+                let method = http::uri::PathAndQuery::try_from(req.method.clone())
+                    .map_err(|e| anyhow!("Invalid URI path: {}", e))?;
 
-            tracing::debug!(
-                "Sending gRPC request to {}, payload size: {} bytes",
-                req.method,
-                request_len
-            );
+                tracing::debug!(
+                    "Sending gRPC request to {}, payload size: {} bytes",
+                    req.method,
+                    request_len
+                );
 
-            // For better clarity, handle timeout differently
-            let response = if req.timeout > 0 {
-                let timeout_duration = Duration::from_millis(req.timeout as u64);
-                // Use tokio timeout to wrap the entire gRPC call
-                tokio::time::timeout(timeout_duration, client.unary(request, method, codec))
-                    .await
-                    .map(|r| {
-                        r.inspect_err(|e| tracing::warn!("grpc request error: status={:?}", e))
-                    })
-                    .map_err(|_| anyhow!("Request timed out after {} ms", req.timeout))?
+                let response = if req.timeout > 0 {
+                    let timeout_duration = Duration::from_millis(req.timeout as u64);
+                    tokio::time::timeout(timeout_duration, client.unary(request, method, codec))
+                        .await
+                        .map(|r| {
+                            r.inspect_err(|e| tracing::warn!("grpc request error: status={:?}", e))
+                        })
+                        .map_err(|_| anyhow!("Request timed out after {} ms", req.timeout))?
+                } else {
+                    client
+                        .unary(request, method, codec)
+                        .await
+                        .inspect_err(|e| tracing::warn!("grpc request error: status={:?}", e))
+                };
+                let res = match response {
+                    Ok(response) => GrpcUnaryResult {
+                        metadata: Self::metadata_map_to_hashmap(response.metadata()),
+                        body: response.into_inner(),
+                        code: tonic::Code::Ok as i32,
+                        message: None,
+                    },
+                    Err(e) => {
+                        tracing::warn!("grpc request error: status={:?}", e);
+                        GrpcUnaryResult {
+                            metadata: Self::metadata_map_to_hashmap(e.metadata()),
+                            body: e.details().to_vec(),
+                            code: e.code() as i32,
+                            message: Some(e.message().to_string()),
+                        }
+                    }
+                };
+
+                tracing::info!("grpc unary runner result: {:?}", &res);
+                Ok(ProstMessageCodec::serialize_message(&res)?)
             } else {
-                // Send the unary request without timeout
-                client
-                    .unary(request, method, codec)
-                    .await
-                    .inspect_err(|e| tracing::warn!("grpc request error: status={:?}", e))
-            };
-            let res = match response {
-                Ok(response) => GrpcUnaryResult {
-                    metadata: Self::metadata_map_to_hashmap(response.metadata()),
-                    body: response.into_inner(),
-                    code: tonic::Code::Ok as i32,
-                    message: None,
-                },
-                Err(e) => {
-                    tracing::warn!("grpc request error: status={:?}", e);
-                    let res = GrpcUnaryResult {
-                        metadata: Self::metadata_map_to_hashmap(e.metadata()),
-                        body: e.details().to_vec(),
-                        code: e.code() as i32,
-                        message: Some(e.message().to_string()),
-                    };
-                    res
-                }
-            };
-
-            tracing::info!("grpc unary runner result: {:?}", &res);
-            Ok(vec![ProstMessageCodec::serialize_message(&res)?])
-        } else {
-            Err(anyhow!("grpc client is not initialized"))
-        }
+                Err(anyhow!("grpc client is not initialized"))
+            }
+        };
+        (result.await, metadata)
     }
 
-    async fn run_stream(&mut self, arg: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>> {
-        // default implementation (return empty)
-        let _ = arg;
+    async fn run_stream(
+        &mut self,
+        arg: &[u8],
+        metadata: HashMap<String, String>,
+    ) -> Result<BoxStream<'static, ResultOutputItem>> {
+        let _ = (arg, metadata);
         Err(anyhow!("not implemented"))
     }
 
@@ -496,13 +490,13 @@ mod tests {
         };
 
         let arg = ProstMessageCodec::serialize_message(&arg)?;
-        let res = runner.run(&arg).await;
+        let res = runner.run(&arg, HashMap::new()).await;
 
-        match res {
+        match res.0 {
             Ok(data) => {
                 if !data.is_empty() {
                     // Try to deserialize the response as a Runner message
-                    match GrpcUnaryResult::decode(data[0].as_slice()) {
+                    match GrpcUnaryResult::decode(data.as_slice()) {
                         Ok(result) => {
                             #[derive(Clone, PartialEq, prost::Message)]
                             pub struct OptionRunner {
@@ -522,7 +516,7 @@ mod tests {
                         }
                         Err(e) => {
                             println!("Failed to decode response as Runner: {:?}", e);
-                            println!("Raw response: {:?}", data[0]);
+                            println!("Raw response: {:?}", data);
                             unreachable!()
                         }
                     }
@@ -610,9 +604,12 @@ mod tests {
 
         let create_result = {
             let result = runner
-                .run(&ProstMessageCodec::serialize_message(&create_request)?)
-                .await?;
-            let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result[0])?;
+                .run(
+                    &ProstMessageCodec::serialize_message(&create_request)?,
+                    HashMap::new(),
+                )
+                .await;
+            let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result.0?)?;
 
             assert_eq!(
                 response.code,
@@ -655,9 +652,12 @@ mod tests {
 
         let find_result = {
             let result = runner
-                .run(&ProstMessageCodec::serialize_message(&find_request)?)
-                .await?;
-            let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result[0])?;
+                .run(
+                    &ProstMessageCodec::serialize_message(&find_request)?,
+                    HashMap::new(),
+                )
+                .await;
+            let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result.0?)?;
 
             assert_eq!(
                 response.code,
@@ -701,11 +701,12 @@ mod tests {
 
         let _find_by_name_result = {
             let result = runner
-                .run(&ProstMessageCodec::serialize_message(
-                    &find_by_name_request,
-                )?)
-                .await?;
-            let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result[0])?;
+                .run(
+                    &ProstMessageCodec::serialize_message(&find_by_name_request)?,
+                    HashMap::new(),
+                )
+                .await;
+            let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result.0?)?;
 
             assert_eq!(
                 response.code,
@@ -769,9 +770,12 @@ mod tests {
 
         {
             let result = runner
-                .run(&ProstMessageCodec::serialize_message(&update_request)?)
-                .await?;
-            let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result[0])?;
+                .run(
+                    &ProstMessageCodec::serialize_message(&update_request)?,
+                    HashMap::new(),
+                )
+                .await;
+            let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result.0?)?;
 
             assert_eq!(
                 response.code,
@@ -785,9 +789,12 @@ mod tests {
         // 9. Verify the update worked
         {
             let result = runner
-                .run(&ProstMessageCodec::serialize_message(&find_request)?)
-                .await?;
-            let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result[0])?;
+                .run(
+                    &ProstMessageCodec::serialize_message(&find_request)?,
+                    HashMap::new(),
+                )
+                .await;
+            let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result.0?)?;
 
             let reflection_client = runner.reflection_client.as_ref().unwrap();
             let response_message = "jobworkerp.function.service.OptionalFunctionSetResponse";
@@ -818,9 +825,12 @@ mod tests {
 
         {
             let result = runner
-                .run(&ProstMessageCodec::serialize_message(&delete_request)?)
-                .await?;
-            let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result[0])?;
+                .run(
+                    &ProstMessageCodec::serialize_message(&delete_request)?,
+                    HashMap::new(),
+                )
+                .await;
+            let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result.0?)?;
 
             assert_eq!(
                 response.code,
@@ -834,9 +844,12 @@ mod tests {
         // 11. Verify the function set was deleted
         {
             let result = runner
-                .run(&ProstMessageCodec::serialize_message(&find_request)?)
-                .await?;
-            let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result[0])?;
+                .run(
+                    &ProstMessageCodec::serialize_message(&find_request)?,
+                    HashMap::new(),
+                )
+                .await;
+            let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result.0?)?;
 
             let reflection_client = runner.reflection_client.as_ref().unwrap();
             let response_message = "jobworkerp.function.service.OptionalFunctionSetResponse";

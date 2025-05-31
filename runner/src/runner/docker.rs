@@ -300,34 +300,46 @@ impl RunnerTrait for DockerExecRunner {
         self.create(&op.into()).await
     }
 
-    async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
-        if let Some(docker) = self.docker.as_ref() {
-            let req = ProstMessageCodec::deserialize_message::<DockerArgs>(arg)?;
-            let mut c: CreateExecOptions<String> = self.trans_exec_arg(req.clone());
-            // for log
-            c.attach_stdout = Some(true);
-            c.attach_stderr = Some(true);
+    async fn run(
+        &mut self,
+        arg: &[u8],
+        metadata: HashMap<String, String>,
+    ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        let result = async {
+            if let Some(docker) = self.docker.as_ref() {
+                let req = ProstMessageCodec::deserialize_message::<DockerArgs>(arg)?;
+                let mut c: CreateExecOptions<String> = self.trans_exec_arg(req.clone());
+                // for log
+                c.attach_stdout = Some(true);
+                c.attach_stderr = Some(true);
 
-            // non interactive
-            let exec = docker.create_exec(&self.instant_id, c).await?.id;
+                // non interactive
+                let exec = docker.create_exec(&self.instant_id, c).await?.id;
 
-            let mut out = Vec::<Vec<u8>>::new();
-            if let StartExecResults::Attached { mut output, .. } =
-                docker.start_exec(&exec, None).await?
-            {
-                while let Some(Ok(msg)) = output.next().await {
-                    out.push(format!("{}\n", msg).into_bytes().to_vec());
+                let mut out = Vec::<Vec<u8>>::new();
+                if let StartExecResults::Attached { mut output, .. } =
+                    docker.start_exec(&exec, None).await?
+                {
+                    while let Some(Ok(msg)) = output.next().await {
+                        out.push(format!("{}\n", msg).into_bytes().to_vec());
+                    }
+                    Ok(out.concat())
+                } else {
+                    tracing::error!("unexpected error: cannot attach container (exec)");
+                    Err(anyhow!("unexpected error: cannot attach container (exec)"))
                 }
-                Ok(vec![out.concat()])
             } else {
-                tracing::error!("unexpected error: cannot attach container (exec)");
-                Err(anyhow!("unexpected error: cannot attach container (exec)"))
+                Err(anyhow!("docker instance is not found"))
             }
-        } else {
-            Err(anyhow!("docker instance is not found"))
         }
+        .await;
+        (result, metadata)
     }
-    async fn run_stream(&mut self, arg: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>> {
+    async fn run_stream(
+        &mut self,
+        arg: &[u8],
+        _metadata: HashMap<String, String>,
+    ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // default implementation (return empty)
         let _ = arg;
         Err(anyhow::anyhow!("not implemented"))
@@ -360,9 +372,10 @@ async fn exec_test() -> Result<()> {
         ..Default::default()
     })?;
     let handle1 = tokio::spawn(async move {
-        let res = runner1.run(&arg).await;
+        let metadata = HashMap::new();
+        let res = runner1.run(&arg, metadata).await;
         tracing::info!("result:{:?}", &res);
-        runner1.stop(2, false).await.and(res)
+        runner1.stop(2, false).await.and(res.0)
     });
 
     let arg2 = ProstMessageCodec::serialize_message(&DockerArgs {
@@ -370,9 +383,10 @@ async fn exec_test() -> Result<()> {
         ..Default::default()
     })?;
     let handle2 = tokio::spawn(async move {
-        let res = runner2.run(&arg2).await;
+        let metadata = HashMap::new();
+        let res = runner2.run(&arg2, metadata).await;
         tracing::info!("result:{:?}", &res);
-        runner2.stop(2, true).await.and(res)
+        runner2.stop(2, true).await.and(res.0)
     });
 
     let r = tokio::join!(handle1, handle2);
@@ -515,77 +529,89 @@ impl RunnerTrait for DockerRunner {
         let op = ProstMessageCodec::deserialize_message::<DockerRunnerSettings>(&settings)?;
         self.create(&op.into()).await
     }
-    async fn run(&mut self, args: &[u8]) -> Result<Vec<Vec<u8>>> {
-        let arg = ProstMessageCodec::deserialize_message::<DockerArgs>(args)?;
-        let create_option = CreateRunnerOptions::new(arg.image.clone());
-        if self.docker.is_none() {
-            self.create(&create_option).await?;
-        }
-        if let Some(docker) = self.docker.as_ref() {
-            // create image if not exist
-            docker
-                .create_image(Some(create_option.to_docker()), None, None)
-                .try_collect::<Vec<_>>()
-                .await
-                .map_err(JobWorkerError::DockerError)?;
-
-            let mut config = self.trans_docker_arg_to_config(&arg);
-            // to output log
-            config.attach_stdout = Some(true);
-            config.attach_stderr = Some(true);
-
-            let created = docker
-                .create_container::<&str, String>(None, config)
-                .await?;
-            let id = created.id;
-            tracing::info!("container id: {}", &id);
-
-            let AttachContainerResults {
-                mut output,
-                input: _,
-            } = docker
-                .attach_container(
-                    &id,
-                    Some(AttachContainerOptions::<String> {
-                        stdout: Some(true),
-                        stderr: Some(true),
-                        // stdin: Some(true),
-                        stream: Some(true),
-                        ..Default::default()
-                    }),
-                )
-                .await?;
-
-            docker.start_container::<String>(&id, None).await?;
-
-            let mut logs = Vec::<Vec<u8>>::new();
-            // pipe docker attach output into stdout
-            while let Some(Ok(output)) = output.next().await {
-                match String::from_utf8(output.into_bytes().to_vec()) {
-                    Ok(o) => {
-                        tracing::info!("{}", &o);
-                        logs.push(format!("{}\n", o).into_bytes().to_vec())
-                        // logs.push(o);
-                    }
-                    Err(e) => tracing::error!("error in decoding logs: {:?}", e),
-                }
+    async fn run(
+        &mut self,
+        args: &[u8],
+        metadata: HashMap<String, String>,
+    ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        let result = async {
+            let arg = ProstMessageCodec::deserialize_message::<DockerArgs>(args)?;
+            let create_option = CreateRunnerOptions::new(arg.image.clone());
+            if self.docker.is_none() {
+                self.create(&create_option).await?;
             }
-            // remove container if persist to running
-            docker
-                .remove_container(
-                    &id,
-                    Some(RemoveContainerOptions {
-                        force: true,
-                        ..Default::default()
-                    }),
-                )
-                .await?;
-            Ok(vec![logs.concat()])
-        } else {
-            Err(anyhow!("docker instance is not found"))
+            if let Some(docker) = self.docker.as_ref() {
+                // create image if not exist
+                docker
+                    .create_image(Some(create_option.to_docker()), None, None)
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .map_err(JobWorkerError::DockerError)?;
+
+                let mut config = self.trans_docker_arg_to_config(&arg);
+                // to output log
+                config.attach_stdout = Some(true);
+                config.attach_stderr = Some(true);
+
+                let created = docker
+                    .create_container::<&str, String>(None, config)
+                    .await?;
+                let id = created.id;
+                tracing::info!("container id: {}", &id);
+
+                let AttachContainerResults {
+                    mut output,
+                    input: _,
+                } = docker
+                    .attach_container(
+                        &id,
+                        Some(AttachContainerOptions::<String> {
+                            stdout: Some(true),
+                            stderr: Some(true),
+                            // stdin: Some(true),
+                            stream: Some(true),
+                            ..Default::default()
+                        }),
+                    )
+                    .await?;
+
+                docker.start_container::<String>(&id, None).await?;
+
+                let mut logs = Vec::<Vec<u8>>::new();
+                // pipe docker attach output into stdout
+                while let Some(Ok(output)) = output.next().await {
+                    match String::from_utf8(output.into_bytes().to_vec()) {
+                        Ok(o) => {
+                            tracing::info!("{}", &o);
+                            logs.push(format!("{}\n", o).into_bytes().to_vec())
+                            // logs.push(o);
+                        }
+                        Err(e) => tracing::error!("error in decoding logs: {:?}", e),
+                    }
+                }
+                // remove container if persist to running
+                docker
+                    .remove_container(
+                        &id,
+                        Some(RemoveContainerOptions {
+                            force: true,
+                            ..Default::default()
+                        }),
+                    )
+                    .await?;
+                Ok(logs.concat())
+            } else {
+                Err(anyhow!("docker instance is not found"))
+            }
         }
+        .await;
+        (result, metadata)
     }
-    async fn run_stream(&mut self, arg: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>> {
+    async fn run_stream(
+        &mut self,
+        arg: &[u8],
+        _metadata: HashMap<String, String>,
+    ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // default implementation (return empty)
         let _ = arg;
         Err(anyhow::anyhow!("not implemented"))
@@ -620,7 +646,7 @@ async fn run_test() -> Result<()> {
         ..Default::default()
     })?;
     let handle1 = tokio::spawn(async move {
-        let res = runner1.run(&arg).await;
+        let res = runner1.run(&arg, HashMap::new()).await;
         tracing::info!("result:{:?}", &res);
         res
     });
@@ -631,7 +657,7 @@ async fn run_test() -> Result<()> {
         ..Default::default()
     })?;
     let handle2 = tokio::spawn(async move {
-        let res = runner2.run(&arg2).await;
+        let res = runner2.run(&arg2, HashMap::new()).await;
         tracing::info!("result:{:?}", &res);
         res
     });

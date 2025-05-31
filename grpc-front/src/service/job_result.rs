@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use crate::proto::jobworkerp::data::{ResultOutput, ResultOutputItem};
+use crate::proto::jobworkerp::data::ResultOutputItem;
 use crate::proto::jobworkerp::service::job_result_service_server::JobResultService;
 use crate::proto::jobworkerp::service::listen_request::Worker;
 use crate::proto::jobworkerp::service::{
@@ -14,13 +14,12 @@ use app::app::job_result::JobResultApp;
 use app::module::AppModule;
 use async_stream::stream;
 use futures::stream::BoxStream;
-use infra_utils::trace::Tracing;
+use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
-use proto::jobworkerp::data::{result_output_item, JobResult, JobResultId};
+use proto::jobworkerp::data::{JobResult, JobResultId};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tokio_stream::StreamExt;
 use tonic::metadata::MetadataValue;
 use tonic::Response;
 
@@ -144,24 +143,13 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
             Ok(res) => {
                 let data_stream_opt = res.1;
                 // not streaming mode. collect stream data and modify res.0.data
-                if let Some(data_stream) = data_stream_opt {
-                    // collect stream data and modify res.0.data
-                    let items: Vec<Vec<u8>> = data_stream
-                        .filter_map(|item| {
-                            tracing::debug!("\tstreaming item: {:?}", item);
-                            match item.item {
-                                Some(result_output_item::Item::Data(data)) => Some(data),
-                                Some(result_output_item::Item::End(_)) => None,
-                                None => None,
-                            }
-                        })
-                        .collect()
-                        .await;
-                    let mut job_result = res.0;
-                    if let Some(ref mut data) = job_result.data {
-                        data.output = Some(ResultOutput { items });
-                    }
-                    Ok(Response::new(job_result))
+                if let Some(_data_stream) = data_stream_opt {
+                    Err(handle_error(
+                        &JobWorkerError::InvalidParameter(
+                            "streaming mode is not supported in this method".to_string(),
+                        )
+                        .into(),
+                    ))
                 } else {
                     Ok(Response::new(res.0))
                 }

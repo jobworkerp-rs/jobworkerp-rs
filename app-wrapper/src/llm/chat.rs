@@ -3,20 +3,23 @@ use app::module::AppModule;
 use async_trait::async_trait;
 use futures::stream::{BoxStream, StreamExt};
 use genai::GenaiService;
+use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+use jobworkerp_base::APP_NAME;
 use jobworkerp_runner::jobworkerp::runner::llm::{LlmChatArgs, LlmRunnerSettings};
 use jobworkerp_runner::runner::llm_chat::LLMChatRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use ollama::OllamaChatService;
 use prost::Message;
 use proto::jobworkerp::data::{result_output_item, ResultOutputItem, RunnerType};
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
-use std::vec;
 
 pub mod conversion;
 pub mod genai;
 pub mod ollama;
+pub mod tracing_helper;
 
 pub struct LLMChatRunnerImpl {
     pub app: Arc<AppModule>,
@@ -34,6 +37,7 @@ impl LLMChatRunnerImpl {
     }
 }
 
+impl Tracing for LLMChatRunnerImpl {}
 impl LLMChatRunnerSpec for LLMChatRunnerImpl {}
 impl RunnerSpec for LLMChatRunnerImpl {
     fn name(&self) -> String {
@@ -99,37 +103,55 @@ impl RunnerTrait for LLMChatRunnerImpl {
         }
     }
 
-    async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
-        let args = LlmChatArgs::decode(&mut Cursor::new(arg))
-            .map_err(|e| anyhow!("decode error: {}", e))?;
-        if let Some(ollama) = self.ollama.as_mut() {
-            let res = ollama.request_chat(args).await?;
-            let mut buf = Vec::with_capacity(res.encoded_len());
-            res.encode(&mut buf)
-                .map_err(|e| anyhow!("encode error: {}", e))?;
-            Ok(vec![buf])
-        } else if let Some(genai) = self.genai.as_mut() {
-            //XXX chat only
-            let res = genai.request_chat(args).await?;
-            let mut buf = Vec::with_capacity(res.encoded_len());
-            res.encode(&mut buf)
-                .map_err(|e| anyhow!("encode error: {}", e))?;
-            Ok(vec![buf])
-        } else {
-            Err(anyhow!("llm is not initialized"))
+    async fn run(
+        &mut self,
+        arg: &[u8],
+        metadata: HashMap<String, String>,
+    ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        let metadata_clone = metadata.clone();
+        let result = async {
+            let (span, cx) = Self::tracing_span_from_metadata(&metadata, APP_NAME, "llm_chat_run");
+            let _ = span.enter();
+
+            // TODO process metadata
+            let args = LlmChatArgs::decode(&mut Cursor::new(arg))
+                .map_err(|e| anyhow!("decode error: {}", e))?;
+            if let Some(ollama) = self.ollama.as_mut() {
+                let res = ollama.request_chat(args, cx, metadata_clone).await?;
+                let mut buf = Vec::with_capacity(res.encoded_len());
+                res.encode(&mut buf)
+                    .map_err(|e| anyhow!("encode error: {}", e))?;
+                Ok(buf)
+            } else if let Some(genai) = self.genai.as_mut() {
+                //XXX chat only
+                let res = genai.request_chat(args).await?;
+                let mut buf = Vec::with_capacity(res.encoded_len());
+                res.encode(&mut buf)
+                    .map_err(|e| anyhow!("encode error: {}", e))?;
+                Ok(buf)
+            } else {
+                Err(anyhow!("llm is not initialized"))
+            }
         }
+        .await;
+        (result, metadata)
     }
 
-    async fn run_stream(&mut self, args: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>> {
+    async fn run_stream(
+        &mut self,
+        args: &[u8],
+        metadata: HashMap<String, String>,
+    ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let args = LlmChatArgs::decode(args).map_err(|e| anyhow!("decode error: {}", e))?;
 
         if let Some(ollama) = self.ollama.as_mut() {
             // Get streaming responses from ollama service
             let stream = ollama.request_stream_chat(args).await?;
 
+            let req_meta = Arc::new(metadata.clone());
             // Transform each LlmChatResult into ResultOutputItem
             let output_stream = stream
-                .flat_map(|completion_result| {
+                .flat_map(move |completion_result| {
                     let mut result_items = Vec::new();
 
                     // Encode the completion result to binary if there is content
@@ -153,7 +175,9 @@ impl RunnerTrait for LLMChatRunnerImpl {
                     if completion_result.done {
                         result_items.push(ResultOutputItem {
                             item: Some(result_output_item::Item::End(
-                                proto::jobworkerp::data::Empty {},
+                                proto::jobworkerp::data::Trailer {
+                                    metadata: (*req_meta).clone(),
+                                },
                             )),
                         });
                     }
@@ -165,7 +189,7 @@ impl RunnerTrait for LLMChatRunnerImpl {
             Ok(output_stream)
         } else if let Some(genai) = self.genai.as_mut() {
             // Get streaming responses from genai service
-            let stream = genai.request_chat_stream(args).await?;
+            let stream = genai.request_chat_stream(args, metadata).await?;
             Ok(stream)
         } else {
             Err(anyhow!("llm is not initialized"))

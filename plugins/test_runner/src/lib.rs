@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use jobworkerp_runner::runner::plugins::PluginRunner;
 use prost::Message;
-use std::alloc::System;
+use std::{alloc::System, collections::HashMap};
 use test::{TestArgs, TestRunnerSettings};
 use tracing::Level; // Add this line to import the Message trait
 
@@ -40,12 +40,12 @@ impl TestPlugin {
             .try_init();
         TestPlugin {}
     }
-    pub async fn test(&self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
+    pub async fn test(&self, arg: &[u8]) -> Result<Vec<u8>> {
         let arg = TestArgs::decode(arg).unwrap_or(TestArgs {
             args: vec![String::from_utf8_lossy(arg).to_string()],
         });
         let data = arg.args;
-        Ok(vec![format!("end test arg={:?}", &data).into_bytes()])
+        Ok(format!("end test arg={:?}", &data).into_bytes())
     }
 }
 
@@ -65,13 +65,17 @@ impl PluginRunner for TestPlugin {
         });
         Ok(())
     }
-    fn run(&mut self, arg: Vec<u8>) -> Result<Vec<Vec<u8>>> {
+    fn run(
+        &mut self,
+        arg: Vec<u8>,
+        metadata: HashMap<String, String>,
+    ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let arg_clone = arg.clone();
         tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(async move { self.test(arg_clone.as_slice()).await })
+            .block_on(async move { (self.test(arg_clone.as_slice()).await, metadata) })
     }
-    fn begin_stream(&mut self, arg: Vec<u8>) -> Result<()> {
+    fn begin_stream(&mut self, arg: Vec<u8>, _metadata: HashMap<String, String>) -> Result<()> {
         // default implementation (return empty)
         let _ = arg;
         Err(anyhow::anyhow!("not implemented"))

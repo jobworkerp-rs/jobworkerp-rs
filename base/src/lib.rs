@@ -4,6 +4,10 @@ use std::{env, net::SocketAddr};
 pub mod codec;
 pub mod error;
 
+pub static APP_NAME: &str = "jobworkerp";
+pub static APP_WORKER_NAME: &str = "jobworkerp-worker";
+pub static APP_FRONT_NAME: &str = "jobworkerp-front";
+
 pub static MCP_CONFIG_PATH: Lazy<String> =
     Lazy::new(|| std::env::var("MCP_CONFIG").unwrap_or_else(|_| "mcp-settings.toml".to_string()));
 

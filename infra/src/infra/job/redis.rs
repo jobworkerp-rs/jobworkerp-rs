@@ -89,6 +89,7 @@ where
                 Some(Job {
                     id: Some(*id),
                     data: Some(d),
+                    ..Default::default()
                 })
             }),
             Ok(None) => Ok(None),
@@ -110,6 +111,7 @@ where
                     Self::deserialize_to_job(v).map(|d| Job {
                         id: Some(JobId { value: *id }),
                         data: Some(d),
+                        ..Default::default()
                     })
                 })
                 .collect()

@@ -5,9 +5,12 @@ use crate::jobworkerp::runner::{
 use crate::runner::RunnerTrait;
 use crate::schema_to_json_string_option;
 use anyhow::{anyhow, Context, Result};
+use async_trait::async_trait;
 use futures::stream::BoxStream;
+use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use prost::Message;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
@@ -15,7 +18,6 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::process::Command;
 use tokio::sync::Mutex;
-use tonic::async_trait;
 
 use super::RunnerSpec;
 
@@ -102,6 +104,7 @@ impl RunnerTrait for PythonCommandRunner {
         } else {
             "uv" // from path
         };
+
         let output = Command::new(uv_path)
             .args(["venv", &venv_path.to_string_lossy()])
             .arg("--python")
@@ -177,135 +180,145 @@ impl RunnerTrait for PythonCommandRunner {
         Ok(())
     }
 
-    async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
-        let python_bin = self
-            .python_bin_path()
-            .ok_or_else(|| anyhow!("Virtual environment not loaded"))?;
+    async fn run(
+        &mut self,
+        arg: &[u8],
+        metadata: HashMap<String, String>,
+    ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        let result = async {
+            let python_bin = self
+                .python_bin_path()
+                .ok_or_else(|| anyhow!("Virtual environment not loaded"))?;
 
-        let job_args =
-            PythonCommandArgs::decode(arg).context("Failed to decode PythonCommandArgs")?;
+            let job_args = ProstMessageCodec::deserialize_message::<PythonCommandArgs>(arg)?;
 
-        let temp_dir_path = self
-            .temp_dir
-            .as_ref()
-            .ok_or_else(|| anyhow!("Temporary directory not created"))?
-            .path();
+            let temp_dir_path = self
+                .temp_dir
+                .as_ref()
+                .ok_or_else(|| anyhow!("Temporary directory not created"))?
+                .path();
 
-        let script_path = temp_dir_path.join("script.py");
+            let script_path = temp_dir_path.join("script.py");
 
-        if let Some(script_spec) = &job_args.script {
-            let script_content = match script_spec {
-                python_command_args::Script::ScriptContent(script) => {
-                    // content
-                    script.clone()
-                }
-                python_command_args::Script::ScriptUrl(url) => {
-                    // download from URL
-                    let response = reqwest::get(url)
-                        .await
-                        .context(format!("Failed to download script from URL: {}", url))?;
-
-                    if !response.status().is_success() {
-                        return Err(anyhow!(
-                            "Failed to download script: HTTP status {}",
-                            response.status()
-                        ));
+            if let Some(script_spec) = &job_args.script {
+                let script_content = match script_spec {
+                    python_command_args::Script::ScriptContent(script) => {
+                        // content
+                        script.clone()
                     }
-                    response
-                        .text()
-                        .await
-                        .context("Failed to read script response as text")?
-                }
-            };
+                    python_command_args::Script::ScriptUrl(url) => {
+                        // download from URL
+                        let response = reqwest::get(url)
+                            .await
+                            .context(format!("Failed to download script from URL: {}", url))?;
 
-            let mut script_file =
-                File::create(&script_path).context("Failed to create script file")?;
-            script_file
-                .write_all(script_content.as_bytes())
-                .context("Failed to write script content")?;
-        } else {
-            return Err(anyhow!("No script specified: {:?}", job_args));
-        }
-
-        let input_path = if let Some(input_data_spec) = &job_args.input_data {
-            let input_path = temp_dir_path.join("input.bin");
-
-            let input_data = match input_data_spec {
-                python_command_args::InputData::DataBody(data) => data.clone(),
-                python_command_args::InputData::DataUrl(url) => {
-                    let response = reqwest::get(url)
-                        .await
-                        .context(format!("Failed to download input data from URL: {}", url))?;
-
-                    if !response.status().is_success() {
-                        return Err(anyhow!(
-                            "Failed to download input data: HTTP status {}",
-                            response.status()
-                        ));
+                        if !response.status().is_success() {
+                            Err(anyhow!(
+                                "Failed to download script: HTTP status {}",
+                                response.status()
+                            ))?
+                        }
+                        response
+                            .text()
+                            .await
+                            .context("Failed to read script response as text")?
                     }
+                };
 
-                    response
-                        .text()
-                        .await
-                        .context("Failed to read input data as text")?
-                }
-            };
-
-            fs::write(&input_path, input_data).context("Failed to write input data")?;
-            Some(input_path)
-        } else {
-            None
-        };
-
-        // execute async
-        let mut command = Command::new(&python_bin);
-        command.arg("-u");
-        command.arg(&script_path);
-
-        // Add input file path as argument if available
-        if let Some(input_path) = &input_path {
-            command.arg(input_path);
-        }
-
-        // capture stdout/stderr
-        command.stdout(std::process::Stdio::piped());
-        command.stderr(std::process::Stdio::piped());
-
-        // env
-        for (key, value) in &job_args.env_vars {
-            command.env(key, value);
-        }
-
-        let child = command.spawn().context("Failed to execute Python script")?;
-
-        *self.current_process_id.lock().await = child.id();
-
-        let output = child
-            .wait_with_output()
-            .await
-            .context("Failed to wait for process")?;
-
-        *self.current_process_id.lock().await = None;
-
-        let result = PythonCommandResult {
-            output: String::from_utf8_lossy(&output.stdout).to_string(),
-            output_stderr: if output.stderr.is_empty() {
-                None
+                let mut script_file =
+                    File::create(&script_path).context("Failed to create script file")?;
+                script_file
+                    .write_all(script_content.as_bytes())
+                    .context("Failed to write script content")?;
             } else {
-                Some(String::from_utf8_lossy(&output.stderr).to_string())
-            },
-            exit_code: output.status.code().unwrap_or(-1),
-        };
+                Err(anyhow!("No script specified: {:?}", job_args))?;
+            }
 
-        let mut encoded_result = Vec::new();
-        result
-            .encode(&mut encoded_result)
-            .context("Failed to encode result")?;
+            let input_path = if let Some(input_data_spec) = &job_args.input_data {
+                let input_path = temp_dir_path.join("input.bin");
 
-        Ok(vec![encoded_result])
+                let input_data = match input_data_spec {
+                    python_command_args::InputData::DataBody(data) => data.clone(),
+                    python_command_args::InputData::DataUrl(url) => {
+                        let response = reqwest::get(url)
+                            .await
+                            .context(format!("Failed to download input data from URL: {}", url))?;
+
+                        if !response.status().is_success() {
+                            Err(anyhow!(
+                                "Failed to download input data: HTTP status {}",
+                                response.status()
+                            ))?
+                        }
+
+                        response
+                            .text()
+                            .await
+                            .context("Failed to read input data as text")?
+                    }
+                };
+
+                fs::write(&input_path, input_data).context("Failed to write input data")?;
+                Some(input_path)
+            } else {
+                None
+            };
+
+            // execute async
+            let mut command = Command::new(&python_bin);
+            command.arg("-u");
+            command.arg(&script_path);
+
+            // Add input file path as argument if available
+            if let Some(input_path) = &input_path {
+                command.arg(input_path);
+            }
+
+            // capture stdout/stderr
+            command.stdout(std::process::Stdio::piped());
+            command.stderr(std::process::Stdio::piped());
+
+            // env
+            for (key, value) in &job_args.env_vars {
+                command.env(key, value);
+            }
+
+            let child = command.spawn().context("Failed to execute Python script")?;
+
+            *self.current_process_id.lock().await = child.id();
+
+            let output = child
+                .wait_with_output()
+                .await
+                .context("Failed to wait for process")?;
+
+            *self.current_process_id.lock().await = None;
+
+            let result = PythonCommandResult {
+                output: String::from_utf8_lossy(&output.stdout).to_string(),
+                output_stderr: if output.stderr.is_empty() {
+                    None
+                } else {
+                    Some(String::from_utf8_lossy(&output.stderr).to_string())
+                },
+                exit_code: output.status.code().unwrap_or(-1),
+            };
+
+            let mut encoded_result = Vec::new();
+            result
+                .encode(&mut encoded_result)
+                .context("Failed to encode result")?;
+            Ok(encoded_result)
+        }
+        .await;
+        (result, metadata)
     }
 
-    async fn run_stream(&mut self, _arg: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>> {
+    async fn run_stream(
+        &mut self,
+        _arg: &[u8],
+        _metadata: HashMap<String, String>,
+    ) -> Result<BoxStream<'static, ResultOutputItem>> {
         Err(anyhow!("Stream output not supported by PythonRunner"))
     }
 
@@ -395,13 +408,17 @@ print(f"Requests version: {requests.__version__}")
             let mut args_bytes = Vec::new();
             job_args.encode(&mut args_bytes).unwrap();
 
-            let run_result = runner.run(&args_bytes).await;
-            assert!(run_result.is_ok(), "Failed to run: {:?}", run_result.err());
+            let run_result = runner.run(&args_bytes, HashMap::new()).await;
+            assert!(
+                run_result.0.is_ok(),
+                "Failed to run: {:?}",
+                run_result.0.err()
+            );
 
-            let output = run_result.unwrap();
+            let output = run_result.0.unwrap();
             assert!(!output.is_empty());
 
-            let result = PythonCommandResult::decode(output[0].as_slice()).unwrap();
+            let result = PythonCommandResult::decode(output.as_slice()).unwrap();
             let stdout = &result.output;
 
             assert!(stdout.contains("Hello from Python!"));

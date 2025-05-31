@@ -16,8 +16,8 @@ use crate::workflow::{
 };
 use debug_stub_derive::DebugStub;
 use futures::{future, Future, StreamExt};
-use infra_utils::infra::net::reqwest;
-use std::sync::Arc;
+use infra_utils::infra::{net::reqwest, trace::Tracing};
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 use tokio_stream::StreamMap;
 
@@ -28,20 +28,25 @@ pub struct ForkTaskExecutor {
     #[debug_stub = "reqwest::HttpClient"]
     pub http_client: reqwest::ReqwestClient,
     task: workflow::ForkTask,
+    metadata: Arc<HashMap<String, String>>,
 }
 
+impl Tracing for ForkTaskExecutor {}
 impl ForkTaskExecutor {
     pub fn new(
         task: workflow::ForkTask,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
         http_client: reqwest::ReqwestClient,
+        metadata: Arc<HashMap<String, String>>,
     ) -> Self {
         Self {
             job_executor_wrapper,
             http_client,
             task,
+            metadata,
         }
     }
+    #[allow(clippy::too_many_arguments)]
     pub async fn execute_task(
         name: &str,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
@@ -49,10 +54,13 @@ impl ForkTaskExecutor {
         workflow_context: Arc<RwLock<WorkflowContext>>,
         prev_context: Arc<TaskContext>,
         task: Arc<Task>,
+        metadata: Arc<HashMap<String, String>>,
+        cx: Arc<opentelemetry::Context>,
     ) -> futures::stream::BoxStream<'static, Result<TaskContext, Box<workflow::Error>>> {
-        let task_executor = TaskExecutor::new(job_executor_wrapper, http_client, name, task);
+        let task_executor =
+            TaskExecutor::new(job_executor_wrapper, http_client, name, task, metadata);
         task_executor
-            .execute(workflow_context, prev_context.clone())
+            .execute(cx, workflow_context, prev_context.clone())
             .await
     }
 }
@@ -65,6 +73,7 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
     #[allow(clippy::manual_async_fn)]
     fn execute(
         &'a self,
+        cx: Arc<opentelemetry::Context>,
         task_name: &'a str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         mut task_context: TaskContext,
@@ -87,7 +96,8 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
                     let task_context_clone = Arc::clone(&task_context_ref);
                     let name = branch_name.to_string();
                     let task_clone = Arc::new(task.clone());
-
+                    let metadata_clone = Arc::clone(&self.metadata);
+                    let cxc = cx.clone();
                     let future = Box::pin(async move {
                         Self::execute_task(
                             &name,
@@ -96,6 +106,8 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
                             workflow_context_clone,
                             task_context_clone,
                             task_clone,
+                            metadata_clone,
+                            cxc,
                         )
                         .await
                     });
@@ -199,6 +211,7 @@ mod tests {
     use crate::workflow::execute::job::JobExecutorWrapper;
     use app::module::test::create_hybrid_test_app;
     use infra_utils::infra::net::reqwest;
+    use opentelemetry::Context;
     use serde_json::json;
     use std::collections::HashMap;
     use tokio::sync::Mutex;
@@ -232,6 +245,7 @@ mod tests {
     #[test]
     fn test_fork_task_executor_normal_mode() {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let metadata = Arc::new(HashMap::new());
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
             let job_executor_wrapper = Arc::new(JobExecutorWrapper::new(app_module));
             let http_client = reqwest::ReqwestClient::new(
@@ -292,12 +306,17 @@ mod tests {
 
             // TaskExecutor, ForkTaskExecutor
             let fork_task_executor =
-                ForkTaskExecutor::new(fork_task, job_executor_wrapper, http_client);
+                ForkTaskExecutor::new(fork_task, job_executor_wrapper, http_client, metadata);
 
             let input = json!({"initial": "value"});
             let task_context = MockTaskContext::create(input.clone());
             let result = fork_task_executor
-                .execute("fork_test", workflow_context, task_context)
+                .execute(
+                    Arc::new(Context::current()),
+                    "fork_test",
+                    workflow_context,
+                    task_context,
+                )
                 .await;
 
             assert!(result.is_ok());
@@ -317,6 +336,7 @@ mod tests {
     #[test]
     fn test_fork_task_executor_compete_mode() {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let metadata = Arc::new(HashMap::new());
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
             let job_executor_wrapper = Arc::new(JobExecutorWrapper::new(app_module));
             let http_client = reqwest::ReqwestClient::new(
@@ -365,12 +385,17 @@ mod tests {
             };
 
             let fork_task_executor =
-                ForkTaskExecutor::new(fork_task, job_executor_wrapper, http_client);
+                ForkTaskExecutor::new(fork_task, job_executor_wrapper, http_client, metadata);
 
             // execute
             let task_context = MockTaskContext::create(json!({"initial": "value"}));
             let result = fork_task_executor
-                .execute("fork_test", workflow_context, task_context)
+                .execute(
+                    Arc::new(opentelemetry::Context::current()),
+                    "fork_test",
+                    workflow_context,
+                    task_context,
+                )
                 .await;
 
             assert!(result.is_ok());
@@ -380,6 +405,7 @@ mod tests {
     #[test]
     fn test_fork_task_executor_compete_mode_all_fail() {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let metadata = Arc::new(HashMap::new());
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
             let job_executor_wrapper = Arc::new(JobExecutorWrapper::new(app_module));
             let http_client = reqwest::ReqwestClient::new(
@@ -440,12 +466,17 @@ mod tests {
             };
 
             let fork_task_executor =
-                ForkTaskExecutor::new(fork_task, job_executor_wrapper, http_client);
+                ForkTaskExecutor::new(fork_task, job_executor_wrapper, http_client, metadata);
 
             // execute
             let task_context = MockTaskContext::create(json!({"initial": "value"}));
             let result = fork_task_executor
-                .execute("fork_test", workflow_context, task_context)
+                .execute(
+                    Arc::new(opentelemetry::Context::current()),
+                    "fork_test",
+                    workflow_context,
+                    task_context,
+                )
                 .await;
 
             // all tasks failed
