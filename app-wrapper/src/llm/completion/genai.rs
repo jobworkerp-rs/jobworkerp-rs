@@ -49,12 +49,30 @@ impl GenaiService {
                             ))
                         })?;
                     if let Some(url) = endpoint_url {
-                        service_target.endpoint = Endpoint::from_owned(url);
+                        let mut u = url.parse::<url::Url>().map_err(|e| {
+                            genai::resolver::Error::Custom(format!(
+                                "Failed to parse endpoint URL={} : {:#?}",
+                                &url, e
+                            ))
+                        })?;
+                        // Set the path to "/v1/" to match the GenAI API if it's empty
+                        if u.path() == "" || u.path() == "/" {
+                            u.set_path("/v1/");
+                        } else if !u.path().ends_with('/') {
+                            u.set_path(&format!("{}/", u.path()));
+                        }
+                        service_target.endpoint = Endpoint::from_owned(u.to_string());
+                        tracing::debug!(
+                            "Genai LLM: resolved service target model: {:?}, endpoint: {:?}",
+                            &service_target.model,
+                            &service_target.endpoint,
+                        );
                     }
                     Ok(service_target)
                 })
             },
         );
+        tracing::debug!("=== Genai LLM: target_resolver: {:?}", &target_resolver,);
         // -- Build the new client with this adapter_config
         let client = Client::builder()
             .with_service_target_resolver(target_resolver)
@@ -93,7 +111,7 @@ impl GenaiService {
             "Genai LLM: model: {}, Chat request: {:?}, options: {:?}",
             &self.model,
             &chat_req,
-            &options
+            &options,
         );
         let res = self
             .client

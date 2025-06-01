@@ -80,6 +80,7 @@ CREATE TABLE `runner` (
   UNIQUE KEY `name` (`name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+
 -- builtin runner definitions (runner.type != 0 cannot edit or delete)
 INSERT IGNORE INTO runner (id, name, description, definition, type) VALUES (
   1, 'COMMAND', 
@@ -105,6 +106,10 @@ INSERT IGNORE INTO runner (id, name, description, definition, type) VALUES (
   6, 'PYTHON_COMMAND',
   'Executes Python scripts or commands with specified arguments and environment.',
   'builtin6', 6
+), (
+  65533, 'LLM_CHAT',
+  'Generates chat interactions using large language models with specified messages and configuration parameters.',
+  'builtin65533', 65533
 ), (
   65534, 'LLM_COMPLETION',
   'Generates text completions using large language models with specified prompts and configuration parameters.',

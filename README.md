@@ -17,6 +17,30 @@ jobworkerp-rs consists of the following main components:
 - **Worker**: The component that performs the actual job processing, configurable with multiple channels and parallelism settings
 - **Storage**: A combination of Redis (for immediate jobs) and RDB (MySQL/SQLite, for scheduled/periodic jobs)
 
+```mermaid
+graph TB
+    Client[Client] --gRPC/gRPC-Web--> Frontend[gRPC Frontend]
+    Frontend --Job registration--> Storage[(Storage layer)]
+    Storage --Job retrieval--> Worker[Worker]
+    Worker --Result storage--> Storage
+    Frontend --Result retrieval--> Storage
+    
+    subgraph "Storage layer"
+    Redis[(Redis/mpsc chan<br>Immediate jobs)]
+    RDB[(RDB<br>MySQL/SQLite<br>Periodic/Scheduled/Backup jobs)]
+    end
+    
+    Storage --- Redis
+    Storage --- RDB
+    
+    subgraph "Worker processing"
+    Worker --> Runner1[Runner<br>COMMAND]
+    Worker --> Runner2[Runner<br>HTTP_REQUEST]
+    Worker --> Runner3[Runner<br>Other built-in Runners]
+    Worker --> RunnerP[Plugin Runner<br>Custom extensions]
+    end
+```
+
 ### Main Features
 
 #### Job Management Features

@@ -133,7 +133,7 @@ where
         let (pop_result, subscribe_result) = tokio::join!(pop_future, subscribe_future);
         tracing::debug!(
             "wait_for_result_queue_for_response: got res: {:?} {}",
-            pop_result,
+            pop_result.as_ref().map(|r| r.id),
             if subscribe_result.is_some() {
                 "with stream"
             } else {

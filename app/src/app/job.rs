@@ -60,6 +60,24 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         Option<BoxStream<'static, ResultOutputItem>>,
     )>;
 
+    #[allow(clippy::too_many_arguments)]
+    async fn enqueue_job_with_temp_worker(
+        &self,
+        worker_data: WorkerData,
+        arg: Vec<u8>,
+        uniq_key: Option<String>,
+        run_after_time: i64,
+        priority: i32,
+        timeout: u64,
+        reserved_job_id: Option<JobId>,
+        request_streaming: bool,
+        with_random_name: bool,
+    ) -> Result<(
+        JobId,
+        Option<JobResult>,
+        Option<BoxStream<'static, ResultOutputItem>>,
+    )>;
+
     // update job with id (redis: upsert, rdb: update)
     async fn update_job(&self, job: &Job) -> Result<()>;
 
@@ -125,94 +143,6 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         include_grabbed: bool,
         limit: Option<&i32>,
     ) -> Result<Vec<Job>>;
-
-    // TODO check valid type of worker runner_settings and job arg
-    // fn validate_worker_and_job_arg(
-    //     &self,
-    //     worker: &WorkerData,
-    //     job_arg: Option<&DynamicMessage>,
-    // ) -> Result<()> {
-    //     match worker.runner_settings {
-    //         Some(RunnerSettings::Command(_)) => match job_arg {
-    //             Some(RunnerArg {
-    //                 data: Some(Data::Command(_)),
-    //             }) => Ok(()),
-    //             _ => Err(JobWorkerError::InvalidParameter(format!(
-    //                 "invalid job arg for command worker: {:?}",
-    //                 &job_arg
-    //             ))
-    //             .into()),
-    //         },
-    //         Some(WorkerRunnerSettings {
-    //             runner_settings: Some(RunnerSettings::Plugin(_)),
-    //         }) => match job_arg {
-    //             Some(RunnerArg {
-    //                 data: Some(Data::Plugin(_)),
-    //             }) => Ok(()),
-    //             _ => Err(JobWorkerError::InvalidParameter(format!(
-    //                 "invalid job arg for plugin worker: {:?}",
-    //                 job_arg
-    //             ))
-    //             .into()),
-    //         },
-    //         Some(WorkerRunnerSettings {
-    //             runner_settings: Some(RunnerSettings::GrpcUnary(_)),
-    //         }) => match job_arg {
-    //             Some(RunnerArg {
-    //                 data: Some(Data::GrpcUnary(_)),
-    //             }) => Ok(()),
-    //             _ => Err(JobWorkerError::InvalidParameter(format!(
-    //                 "invalid job arg for grpc unary worker: {:?}",
-    //                 job_arg
-    //             ))
-    //             .into()),
-    //         },
-    //         Some(WorkerRunnerSettings {
-    //             runner_settings: Some(RunnerSettings::HttpRequest(_)),
-    //         }) => match job_arg {
-    //             Some(RunnerArg {
-    //                 data: Some(Data::HttpRequest(_)),
-    //             }) => Ok(()),
-    //             _ => Err(JobWorkerError::InvalidParameter(format!(
-    //                 "invalid job arg for http request worker: {:?}",
-    //                 job_arg
-    //             ))
-    //             .into()),
-    //         },
-    //         Some(WorkerRunnerSettings {
-    //             runner_settings: Some(RunnerSettings::Docker(_)),
-    //         }) => match job_arg {
-    //             Some(RunnerArg {
-    //                 data: Some(Data::Docker(_)),
-    //             }) => Ok(()),
-    //             _ => Err(JobWorkerError::InvalidParameter(format!(
-    //                 "invalid job arg for docker worker: {:?}",
-    //                 job_arg
-    //             ))
-    //             .into()),
-    //         },
-    //         Some(WorkerRunnerSettings {
-    //             runner_settings: Some(RunnerSettings::SlackInternal(_)),
-    //         }) => match job_arg {
-    //             Some(RunnerArg {
-    //                 data: Some(Data::SlackJobResult(_)),
-    //             }) => Ok(()),
-    //             _ => Err(JobWorkerError::InvalidParameter(format!(
-    //                 "invalid job arg for docker worker: {:?}",
-    //                 job_arg
-    //             ))
-    //             .into()),
-    //         },
-    //         Some(WorkerRunnerSettings { runner_settings: None }) => Err(JobWorkerError::WorkerNotFound(
-    //             "invalid runner_settings: runner_settings=None".to_string(),
-    //         )
-    //         .into()),
-    //         None => Err(JobWorkerError::WorkerNotFound(
-    //             "invalid runner_settings: None".to_string(),
-    //         )
-    //         .into()),
-    //     }
-    // }
 }
 
 pub trait UseJobApp {

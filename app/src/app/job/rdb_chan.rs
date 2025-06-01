@@ -71,14 +71,11 @@ impl RdbChanJobAppImpl {
     async fn restore_jobs_by(&self, _job_ids: &HashSet<i64>, _channels: &[String]) -> Result<()> {
         Ok(())
     }
-}
 
-#[async_trait]
-impl JobApp for RdbChanJobAppImpl {
-    async fn enqueue_job(
+    #[allow(clippy::too_many_arguments)]
+    async fn enqueue_job_with_worker(
         &self,
-        worker_id: Option<&WorkerId>,
-        worker_name: Option<&String>,
+        worker: Worker,
         args: Vec<u8>,
         uniq_key: Option<String>,
         run_after_time: i64,
@@ -91,24 +88,13 @@ impl JobApp for RdbChanJobAppImpl {
         Option<JobResult>,
         Option<BoxStream<'static, ResultOutputItem>>,
     )> {
-        let worker_res = if let Some(id) = worker_id {
-            self.worker_app().find(id).await?
-        } else if let Some(name) = worker_name {
-            self.worker_app().find_by_name(name).await?
-        } else {
-            return Err(JobWorkerError::WorkerNotFound(
-                "worker_id or worker_name is required".to_string(),
-            )
-            .into());
-        };
-        if let Some(Worker {
+        if let Worker {
             id: Some(wid),
             data: Some(w),
-        }) = worker_res.as_ref()
+        } = &worker
         {
             // check if worker supports streaming mode
-            let _ = self
-                .worker_app()
+            self.worker_app()
                 .check_worker_streaming(wid, request_streaming)
                 .await?;
 
@@ -205,6 +191,92 @@ impl JobApp for RdbChanJobAppImpl {
                     self.enqueue_job_sync(&job, w).await
                 }
             }
+        } else {
+            Err(JobWorkerError::WorkerNotFound(format!(
+                "illegal worker structure with empty: {:?}",
+                &worker
+            ))
+            .into())
+        }
+    }
+}
+
+#[async_trait]
+impl JobApp for RdbChanJobAppImpl {
+    async fn enqueue_job_with_temp_worker(
+        &self,
+        worker_data: WorkerData,
+        args: Vec<u8>,
+        uniq_key: Option<String>,
+        run_after_time: i64,
+        priority: i32,
+        timeout: u64,
+        reserved_job_id: Option<JobId>,
+        request_streaming: bool,
+        with_random_name: bool,
+    ) -> Result<(
+        JobId,
+        Option<JobResult>,
+        Option<BoxStream<'static, ResultOutputItem>>,
+    )> {
+        let wid = self
+            .worker_app()
+            .create_temp(worker_data.clone(), with_random_name)
+            .await?;
+        let worker = Worker {
+            id: Some(wid),
+            data: Some(worker_data),
+        };
+        self.enqueue_job_with_worker(
+            worker,
+            args,
+            uniq_key,
+            run_after_time,
+            priority,
+            timeout,
+            reserved_job_id,
+            request_streaming,
+        )
+        .await
+    }
+    async fn enqueue_job(
+        &self,
+        worker_id: Option<&WorkerId>,
+        worker_name: Option<&String>,
+        args: Vec<u8>,
+        uniq_key: Option<String>,
+        run_after_time: i64,
+        priority: i32,
+        timeout: u64,
+        reserved_job_id: Option<JobId>,
+        request_streaming: bool,
+    ) -> Result<(
+        JobId,
+        Option<JobResult>,
+        Option<BoxStream<'static, ResultOutputItem>>,
+    )> {
+        let worker_res = if let Some(id) = worker_id {
+            self.worker_app().find(id).await?
+        } else if let Some(name) = worker_name {
+            self.worker_app().find_by_name(name).await?
+        } else {
+            return Err(JobWorkerError::WorkerNotFound(
+                "worker_id or worker_name is required".to_string(),
+            )
+            .into());
+        };
+        if let Some(w) = worker_res {
+            self.enqueue_job_with_worker(
+                w,
+                args,
+                uniq_key,
+                run_after_time,
+                priority,
+                timeout,
+                reserved_job_id,
+                request_streaming,
+            )
+            .await
         } else {
             Err(JobWorkerError::WorkerNotFound(format!("name: {:?}", &worker_name)).into())
         }

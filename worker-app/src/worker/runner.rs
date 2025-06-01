@@ -36,7 +36,7 @@ pub trait JobRunner:
         worker_data: &WorkerData,
         job: Job,
     ) -> (JobResultData, Option<BoxStream<'static, ResultOutputItem>>) {
-        tracing::debug!("run_job: {:?}", job);
+        tracing::debug!("run_job: {:?}, worker: {:?}", &job.id, &worker_id);
         // XXX for keeping pool object
         if worker_data.use_static {
             let to = if let Some(data) = job.data.as_ref() {
@@ -67,7 +67,10 @@ pub trait JobRunner:
                 .get_non_static_runner(runner_data, worker_data)
                 .await;
             match rres {
-                Ok(mut runner) => self.run_job_inner(worker_data, job, &mut runner).await,
+                Ok(mut runner) => {
+                    tracing::debug!("non-static runner found: {:?}", runner.name());
+                    self.run_job_inner(worker_data, job, &mut runner).await
+                }
                 Err(e) => (self.handle_error_option(worker_data, job, Some(e)), None),
             }
         }

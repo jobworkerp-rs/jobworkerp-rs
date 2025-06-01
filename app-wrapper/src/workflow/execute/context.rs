@@ -17,6 +17,7 @@ pub struct WorkflowContext {
     pub status: WorkflowStatus,
     pub started_at: DateTime<FixedOffset>,
     pub output: Option<Arc<serde_json::Value>>,
+    pub position: WorkflowPosition,
     #[serde(skip)]
     pub context_variables: Arc<Mutex<serde_json::Map<String, serde_json::Value>>>,
 }
@@ -38,6 +39,7 @@ impl WorkflowContext {
             status: WorkflowStatus::Pending,
             started_at,
             output: None,
+            position: WorkflowPosition::new(vec![]),
             context_variables: context
                 .as_object()
                 .map(|o| Arc::new(Mutex::new(o.clone())))
@@ -58,6 +60,7 @@ impl WorkflowContext {
             status: WorkflowStatus::Pending,
             started_at,
             output: None,
+            position: WorkflowPosition::new(vec![]),
             context_variables: Arc::new(Mutex::new(serde_json::Map::new())),
         }
     }
@@ -136,10 +139,11 @@ pub struct TaskContext {
     pub output: Arc<serde_json::Value>,
     // #[serde(skip)]
     pub context_variables: Arc<Mutex<serde_json::Map<String, serde_json::Value>>>,
+
     pub started_at: DateTime<FixedOffset>,
     pub completed_at: Option<DateTime<FixedOffset>>,
     pub flow_directive: Then,
-    pub position: Arc<Mutex<WorkflowPosition>>,
+    pub position: WorkflowPosition,
 }
 impl TaskContext {
     pub fn new(
@@ -159,15 +163,10 @@ impl TaskContext {
             started_at: command_utils::util::datetime::now(),
             completed_at: None,
             flow_directive: Then::Continue,
-            position: Arc::new(Mutex::new(WorkflowPosition::new(vec![]))),
+            position: WorkflowPosition::new(vec![]),
         }
     }
     pub fn new_empty() -> Self {
-        let uuid = Uuid::now_v7();
-        let started_at = uuid
-            .get_timestamp()
-            .map(|t| command_utils::util::datetime::from_epoch_sec(t.to_unix().0 as i64))
-            .unwrap_or_else(command_utils::util::datetime::now);
         Self {
             definition: None,
             raw_input: Arc::new(serde_json::Value::Null),
@@ -175,26 +174,26 @@ impl TaskContext {
             raw_output: Arc::new(serde_json::Value::Null),
             output: Arc::new(serde_json::Value::Null),
             context_variables: Arc::new(Mutex::new(serde_json::Map::new())),
-            started_at,
+            started_at: command_utils::util::datetime::now(),
             completed_at: None,
             flow_directive: Then::Continue,
-            position: Arc::new(Mutex::new(WorkflowPosition::new(vec![]))),
+            position: WorkflowPosition::new(vec![]),
         }
     }
-    pub async fn add_position_name(&self, name: String) {
-        self.position.lock().await.push(name);
+    pub fn add_position_name(&mut self, name: String) {
+        self.position.push(name);
     }
-    pub async fn add_position_index(&self, idx: u32) {
-        self.position.lock().await.push_idx(idx);
+    pub fn add_position_index(&mut self, idx: u32) {
+        self.position.push_idx(idx);
     }
-    pub async fn remove_position(&self) -> Option<serde_json::Value> {
-        self.position.lock().await.pop()
+    pub fn remove_position(&mut self) -> Option<serde_json::Value> {
+        self.position.pop()
     }
-    pub async fn current_position(&self) -> Option<serde_json::Value> {
-        self.position.lock().await.current().cloned()
+    pub fn current_position(&self) -> Option<&serde_json::Value> {
+        self.position.current()
     }
-    pub async fn prev_position(&self, n: usize) -> Vec<serde_json::Value> {
-        self.position.lock().await.n_prev(n)
+    pub fn prev_position(&self, n: usize) -> Vec<serde_json::Value> {
+        self.position.n_prev(n)
     }
     // add context variable
     pub async fn add_context_value(&self, key: String, value: serde_json::Value) {
@@ -207,6 +206,9 @@ impl TaskContext {
     //cloned
     pub async fn get_context_value(&self, key: &str) -> Option<serde_json::Value> {
         self.context_variables.lock().await.get(key).cloned()
+    }
+    pub fn set_completed_at(&mut self) {
+        self.completed_at = Some(command_utils::util::datetime::now());
     }
     // XXX clone
     pub fn to_descriptor(&self) -> TaskDescriptor {
@@ -237,6 +239,24 @@ impl TaskContext {
     }
     pub fn set_output(&mut self, output: Arc<serde_json::Value>) {
         self.output = output.clone();
+    }
+
+    // Create a completely independent deep copy of the TaskContext
+    pub async fn deep_copy(&self) -> Self {
+        Self {
+            definition: self.definition.clone(),
+            // Create new Arc instances for all values to ensure independent copies
+            raw_input: Arc::new(self.raw_input.as_ref().clone()),
+            input: Arc::new(self.input.as_ref().clone()),
+            raw_output: Arc::new(self.raw_output.as_ref().clone()),
+            output: Arc::new(self.output.as_ref().clone()),
+            // Create a new mutex with a copy of the context variables
+            context_variables: Arc::new(Mutex::new(self.context_variables.lock().await.clone())),
+            started_at: self.started_at,
+            completed_at: self.completed_at,
+            flow_directive: self.flow_directive.clone(),
+            position: self.position.clone(),
+        }
     }
 
     pub fn from_flow_directive(&self, flow_directive: Option<String>) -> Self {
@@ -291,46 +311,23 @@ impl Then {
         expression: &BTreeMap<String, Arc<serde_json::Value>>,
     ) -> Result<Self, Box<workflow::Error>> {
         match directive {
-            FlowDirective {
-                subtype_0: Some(subtype_0),
-                subtype_1: Some(subtype_1),
-            } => {
-                match subtype_0 {
-                    workflow::FlowDirectiveEnum::Continue => {
-                        match Self::execute_transform(output, subtype_1, expression)? {
-                            serde_json::Value::String(s) => Ok(Then::TaskName(s)),
-                            r => {
-                                tracing::warn!("Transformed Flow directive is not a string: {:#?}, no translation", r);
-                                Ok(Then::TaskName(subtype_1.clone()))
-                            }
-                        }
-                    }
-                    workflow::FlowDirectiveEnum::Exit => Ok(Then::Exit),
-                    workflow::FlowDirectiveEnum::End => Ok(Then::End),
-                }
-            }
-            FlowDirective {
-                subtype_0: Some(subtype_0),
-                subtype_1: None,
-            } => match subtype_0 {
+            FlowDirective::Variant0(subtype_0) => match subtype_0 {
                 workflow::FlowDirectiveEnum::Continue => Ok(Then::Continue),
                 workflow::FlowDirectiveEnum::Exit => Ok(Then::Exit),
                 workflow::FlowDirectiveEnum::End => Ok(Then::End),
             },
-            FlowDirective {
-                subtype_0: None,
-                subtype_1: Some(subtype_1),
-            } => match Self::execute_transform(output, subtype_1, expression)? {
-                serde_json::Value::String(s) => Ok(Then::TaskName(s)),
-                r => {
-                    tracing::warn!(
-                        "Transformed Flow directive is not a string: {:#?}, no translation",
-                        r
-                    );
-                    Ok(Then::TaskName(subtype_1.clone()))
+            FlowDirective::Variant1(subtype_1) => {
+                match Self::execute_transform(output, subtype_1, expression)? {
+                    serde_json::Value::String(s) => Ok(Then::TaskName(s)),
+                    r => {
+                        tracing::warn!(
+                            "Transformed Flow directive is not a string: {:#?}, no translation",
+                            r
+                        );
+                        Ok(Then::TaskName(subtype_1.clone()))
+                    }
                 }
-            },
-            _ => Ok(Then::Continue),
+            }
         }
     }
 }
@@ -422,5 +419,11 @@ impl WorkflowPosition {
     // alias
     pub fn as_error_instance(&self) -> String {
         self.as_json_pointer()
+    }
+}
+
+impl std::fmt::Display for WorkflowPosition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_json_pointer())
     }
 }

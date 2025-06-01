@@ -1,5 +1,6 @@
 use super::workflow::{self, ExportAs, InputFrom, OutputAs};
 use anyhow::Result;
+use command_utils::util::liquid::{JsonDecode, JsonEncode};
 use liquid::Parser;
 use once_cell::sync::OnceCell;
 use std::{collections::BTreeMap, sync::Arc};
@@ -12,22 +13,29 @@ const TEMPLATE_END: &str = "}";
 
 pub trait UseJqAndTemplateTransformer {
     fn execute_transform(
-        raw_input: Arc<serde_json::Value>,
+        input: Arc<serde_json::Value>,
         filter: &str,
         context: &BTreeMap<String, Arc<serde_json::Value>>,
     ) -> Result<serde_json::Value, Box<workflow::Error>> {
         if Self::is_transform_template(filter) {
-            Self::execute_liquid_template(raw_input, filter, context).map(|r| {
-                match serde_json::from_str(r.as_str()) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::debug!("failed to parse as json: {}", e);
-                        serde_json::Value::String(r)
+            Self::execute_liquid_template(input, filter, context).map(|r| {
+                // parse as primitive types (not obj, arr)
+                if let Ok(v) = r.parse::<i64>() {
+                    serde_json::Value::Number(v.into())
+                } else if let Ok(v) = r.parse::<f64>() {
+                    match serde_json::Number::from_f64(v) {
+                        Some(n) => serde_json::Value::Number(n),
+                        None => serde_json::Value::String(r), // inf or nan
                     }
+                } else if let Ok(v) = r.parse::<bool>() {
+                    // "true" or "false" only
+                    serde_json::Value::Bool(v)
+                } else {
+                    serde_json::Value::String(r)
                 }
             })
         } else if Self::is_transform_filter(filter) {
-            Self::execute_jq_filter(raw_input, filter, context)
+            Self::execute_jq_filter(input, filter, context)
         } else {
             Ok(serde_json::Value::String(filter.to_owned()))
         }
@@ -57,11 +65,11 @@ pub trait UseJqAndTemplateTransformer {
         }
     }
     fn execute_transform_as_bool(
-        raw_input: Arc<serde_json::Value>,
-        if_cond: &str,
+        input: Arc<serde_json::Value>,
+        if_cond_filter: &str,
         expression: &BTreeMap<String, Arc<serde_json::Value>>,
     ) -> Result<bool, Box<workflow::Error>> {
-        Self::execute_transform(raw_input.clone(), if_cond, expression)
+        Self::execute_transform(input.clone(), if_cond_filter, expression)
             .map(|v| Self::eval_as_bool(&v))
     }
 
@@ -101,7 +109,7 @@ pub trait UseJqAndTemplateTransformer {
         }
     }
     fn execute_liquid_template(
-        raw_input: Arc<serde_json::Value>,
+        input: Arc<serde_json::Value>,
         template: &str,
         context: &BTreeMap<String, Arc<serde_json::Value>>,
     ) -> Result<String, Box<workflow::Error>> {
@@ -119,8 +127,13 @@ pub trait UseJqAndTemplateTransformer {
                     .trim_end()
                     .to_string();
                 templ.pop(); // remove last one '}'
-                let liquid_parser = LIQUID_PARSER
-                    .get_or_init(|| liquid::ParserBuilder::with_stdlib().build().unwrap());
+                let liquid_parser = LIQUID_PARSER.get_or_init(|| {
+                    liquid::ParserBuilder::with_stdlib()
+                        .filter(JsonEncode)
+                        .filter(JsonDecode)
+                        .build()
+                        .unwrap()
+                });
                 let templ = liquid_parser.parse(templ.as_str())?;
 
                 let mut globals = liquid::to_object(con)?;
@@ -139,7 +152,7 @@ pub trait UseJqAndTemplateTransformer {
                 let output = templ.render(&globals)?;
                 Ok(output)
             }
-            transform_inner(&raw_input, context, template).map_err(|e| {
+            transform_inner(&input, context, template).map_err(|e| {
                 workflow::errors::ErrorFactory::create_from_liquid(
                     &e,
                     Some("failed to parse liquid template"),
@@ -247,7 +260,7 @@ mod test_use_jq_and_template_transformer {
     fn test_execute_transform() {
         let input = Arc::new(json!({
             "key": 1,
-            "key2": 2,
+            "key2": 2.55,
         }));
         let filter = "${.key}";
         let context = BTreeMap::new();
@@ -260,10 +273,26 @@ mod test_use_jq_and_template_transformer {
             DefaultTransformer::execute_transform(input.clone(), filter, &context).unwrap();
         assert_eq!(result, serde_json::Value::Number(1.into()));
 
+        let filter = "$${{{ key2 }}}";
+        let result =
+            DefaultTransformer::execute_transform(input.clone(), filter, &context).unwrap();
+        assert_eq!(
+            result,
+            serde_json::Value::Number(serde_json::Number::from_f64(2.55).unwrap())
+        );
+
         let filter = "key";
         let result =
             DefaultTransformer::execute_transform(input.clone(), filter, &context).unwrap();
         assert_eq!(result, serde_json::Value::String("key".to_string()));
+
+        let filter = "$${{\"hoge\": {{ key2 }}}}";
+        let result =
+            DefaultTransformer::execute_transform(input.clone(), filter, &context).unwrap();
+        assert_eq!(
+            result,
+            serde_json::Value::String("{\"hoge\": 2.55}".to_string())
+        ); // not object
     }
 }
 

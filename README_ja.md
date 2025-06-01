@@ -15,6 +15,30 @@ jobworkerp-rsは以下の主要コンポーネントで構成されています�
 - **ワーカー**: 実際のジョブ処理を行うコンポーネント、複数のチャンネルと並列度の設定が可能
 - **ストレージ**: Redis（即時ジョブ）とRDB（MySQL/SQLite、定期実行/時刻指定ジョブ）の組み合わせ
 
+```mermaid
+graph TB
+    Client[クライアント] --gRPC/gRPC-Web--> Frontend[gRPCフロントエンド]
+    Frontend --Job登録--> Storage[(ストレージ層)]
+    Storage --Job取得--> Worker[ワーカー]
+    Worker --結果保存--> Storage
+    Frontend --結果取得--> Storage
+    
+    subgraph "ストレージ層"
+    Redis[(Redis/mpsc chan<br>即時ジョブ)]
+    RDB[(RDB<br>MySQL/SQLite<br>定期/時刻指定/backupジョブ)]
+    end
+    
+    Storage --- Redis
+    Storage --- RDB
+    
+    subgraph "ワーカー処理"
+    Worker --> Runner1[Runner<br>COMMAND]
+    Worker --> Runner2[Runner<br>HTTP_REQUEST]
+    Worker --> Runner3[Runner<br>その他組込みRunner]
+    Worker --> RunnerP[Plugin Runner<br>カスタム拡張]
+    end
+```
+
 ## 主な機能
 
 ### ジョブ管理機能

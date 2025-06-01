@@ -1,3 +1,4 @@
+use super::task::TaskExecutorTrait;
 use crate::workflow::{
     definition::{
         transform::UseJqAndTemplateTransformer,
@@ -15,8 +16,6 @@ use prost::Message;
 use proto::jobworkerp::data::RunnerType;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-
-use super::task::TaskExecutorTrait;
 
 // unused
 // TODO remove if not needed
@@ -105,11 +104,12 @@ impl TaskExecutorTrait<'_> for DoAsExtWorkflowTaskExecutor<'_> {
         mut task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
         tracing::debug!("DoTaskExecutor: {}", task_name);
-        task_context.add_position_name("do".to_string()).await;
+        task_context.add_position_name("do".to_string());
+        let current_pos = task_context.position.clone();
         let do_yaml = match serde_yaml::to_string(self.task) {
             Ok(yaml) => yaml,
             Err(e) => {
-                let pos = task_context.position.lock().await.clone();
+                let pos = current_pos;
                 return Err(workflow::errors::ErrorFactory::new().bad_argument(
                     format!("Failed to serialize do task: {:#?}", self.task),
                     Some(&pos),
@@ -125,7 +125,7 @@ impl TaskExecutorTrait<'_> for DoAsExtWorkflowTaskExecutor<'_> {
         {
             Ok(e) => e,
             Err(mut e) => {
-                let pos = task_context.position.lock().await.clone();
+                let pos = current_pos;
                 e.position(&pos);
                 return Err(e);
             }
@@ -133,7 +133,7 @@ impl TaskExecutorTrait<'_> for DoAsExtWorkflowTaskExecutor<'_> {
         let expression = match serde_json::to_value(expression) {
             Ok(expression) => expression,
             Err(e) => {
-                let pos = task_context.position.lock().await.clone();
+                let pos = current_pos;
                 return Err(workflow::errors::ErrorFactory::create_from_serde_json(
                     &e,
                     Some("Failed to serialize expression to json"),
@@ -146,7 +146,7 @@ impl TaskExecutorTrait<'_> for DoAsExtWorkflowTaskExecutor<'_> {
         let metadata = match serde_json::to_value(&self.task.metadata) {
             Ok(metadata) => metadata,
             Err(e) => {
-                let mut pos = task_context.position.lock().await.clone();
+                let mut pos = current_pos;
                 pos.push("metadata".to_string());
                 return Err(workflow::errors::ErrorFactory::create_from_serde_json(
                     &e,
@@ -175,15 +175,15 @@ impl TaskExecutorTrait<'_> for DoAsExtWorkflowTaskExecutor<'_> {
             Err(e) => {
                 tracing::warn!("Failed to execute by jobworkerp: {:#?}", e);
                 // TODO get position from jobworkerp result and add inner position
-                let pos = task_context.position.lock().await.clone();
                 return Err(workflow::errors::ErrorFactory::new().service_unavailable(
                     format!("Failed to execute do task: {:#?}", e),
-                    Some(&pos),
+                    Some(&current_pos),
                     Some(format!("{:?}", e)),
                 ));
             }
         };
         task_context.set_raw_output(output);
+        task_context.remove_position();
 
         Ok(task_context)
     }

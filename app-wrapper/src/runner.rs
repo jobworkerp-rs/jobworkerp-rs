@@ -1,5 +1,8 @@
+use crate::llm::chat::LLMChatRunnerImpl;
 use crate::workflow::runner::reusable::ReusableWorkflowRunner;
-use crate::{llm::LLMCompletionRunnerImpl, workflow::runner::inline::InlineWorkflowRunner};
+use crate::{
+    llm::completion::LLMCompletionRunnerImpl, workflow::runner::inline::InlineWorkflowRunner,
+};
 use anyhow::Result;
 use app::module::AppModule;
 use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
@@ -87,6 +90,10 @@ impl RunnerFactory {
             }
             Some(RunnerType::LlmCompletion) => {
                 Some(Box::new(LLMCompletionRunnerImpl::new()) as Box<dyn RunnerTrait + Send + Sync>)
+            }
+            Some(RunnerType::LlmChat) => {
+                Some(Box::new(LLMChatRunnerImpl::new(self.app_module.clone()))
+                    as Box<dyn RunnerTrait + Send + Sync>)
             }
             _ => {
                 if let Ok(server) = self.mcp_clients.connect_server(name).await {

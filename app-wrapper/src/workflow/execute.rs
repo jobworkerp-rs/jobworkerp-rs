@@ -7,42 +7,61 @@ pub mod workflow;
 
 // execute workflow from yaml definition file
 
+use super::definition::workflow::WorkflowSchema;
+use crate::workflow::execute::context::WorkflowContext;
+use crate::workflow::execute::workflow::WorkflowExecutor;
 use anyhow::Result;
 use app::module::AppModule;
+use futures::StreamExt;
 use infra_utils::infra::net::reqwest::ReqwestClient;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::RwLock;
-use workflow::WorkflowExecutor;
 
 // enough time for heavy task like llm but not too long
 const DEFAULT_REQUEST_TIMEOUT_SEC: u32 = 1200; // 20 minutes
-const DEFAULT_USER_AGENT: &str = "simple-workflow";
 
-pub async fn execute_workflow(
+/// Executes a workflow schema.
+///
+/// This function creates a workflow executor and executes the workflow.
+///
+/// # Arguments
+/// * `app_module` - An Arc reference to an AppModule instance.
+/// * `http_client` - A ReqwestClient instance.
+/// * `workflow` - An Arc reference to a WorkflowSchema instance.
+/// * `workflow_file` - A string representation of the workflow file.
+/// * `input` - An Arc reference to a serde_json::Value representing the input to the workflow.
+/// * `context` - An Arc reference to a serde_json::Value representing the context of the workflow.
+///
+/// # Returns
+/// A Result containing an Arc<RwLock<WorkflowContext>>.
+pub async fn execute(
     app_module: Arc<AppModule>,
-    workflow_file: &str,
-    input: serde_json::Value,
-) -> Result<Arc<RwLock<context::WorkflowContext>>> {
-    let http_client = ReqwestClient::new(
-        Some(DEFAULT_USER_AGENT),
-        Some(Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SEC as u64)),
-        Some(Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SEC as u64)),
-        Some(2),
-    )?;
-    let workflow = super::definition::WorkflowLoader::new(http_client.clone())?
-        .load_workflow(Some(workflow_file), None)
-        .await?;
-    tracing::trace!("Workflow: {:#?}", workflow);
-    let mut executor = WorkflowExecutor::new(
-        app_module,
-        http_client,
-        Arc::new(workflow),
-        Arc::new(input),
-        Arc::new(serde_json::Value::Null),
-    );
-    let res = executor.execute_workflow().await;
-    tracing::debug!("Workflow: {}, result: {:#?}", workflow_file, &res);
-    tracing::info!("Workflow result: {}", res.read().await.output_string());
-    Ok(res)
+    http_client: ReqwestClient,
+    workflow: Arc<WorkflowSchema>,
+    input: Arc<serde_json::Value>,
+    context: Arc<serde_json::Value>,
+) -> Result<Arc<RwLock<WorkflowContext>>> {
+    let workflow_executor =
+        WorkflowExecutor::new(app_module, http_client, workflow.clone(), input, context);
+
+    // Get the stream of workflow context updates
+    let mut workflow_stream = workflow_executor.execute_workflow();
+
+    // Store the final workflow context
+    let mut final_context = None;
+
+    // Process the stream of workflow context results
+    while let Some(result) = workflow_stream.next().await {
+        match result {
+            Ok(context) => {
+                final_context = Some(context);
+            }
+            Err(e) => {
+                return Err(e.context("Failed to execute workflow"));
+            }
+        }
+    }
+
+    // Return the final workflow context or an error if none was received
+    final_context.ok_or_else(|| anyhow::anyhow!("No workflow context was returned"))
 }

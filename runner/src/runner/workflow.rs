@@ -32,7 +32,7 @@ pub trait InlineWorkflowRunnerSpec: RunnerSpec {
         Some(include_str!("../../protobuf/jobworkerp/runner/workflow_result.proto").to_string())
     }
     fn output_type(&self) -> StreamingOutputType {
-        StreamingOutputType::NonStreaming
+        StreamingOutputType::Both
     }
 }
 impl InlineWorkflowRunnerSpec for InlineWorkflowRunnerSpecImpl {}
@@ -105,7 +105,7 @@ pub trait ReusableWorkflowRunnerSpec: RunnerSpec {
         Some(include_str!("../../protobuf/jobworkerp/runner/workflow_result.proto").to_string())
     }
     fn output_type(&self) -> StreamingOutputType {
-        StreamingOutputType::NonStreaming
+        StreamingOutputType::Both
     }
 }
 impl ReusableWorkflowRunnerSpec for ReusableWorkflowRunnerSpecImpl {}
