@@ -109,7 +109,7 @@ pub trait OllamaTracingHelper {
         span_builder.build()
     }
 
-   /// Create span attributes for tool call tracing
+    /// Create span attributes for tool call tracing
     fn create_tool_call_span_attributes(
         &self,
         function_name: &str,
