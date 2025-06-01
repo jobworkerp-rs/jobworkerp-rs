@@ -109,32 +109,7 @@ pub trait OllamaTracingHelper {
         span_builder.build()
     }
 
-    /// Create span attributes for stream completion
-    fn create_stream_completion_span_attributes(
-        &self,
-        model: &str,
-        input_messages: serde_json::Value,
-        model_parameters: Option<&HashMap<String, serde_json::Value>>,
-    ) -> OtelSpanAttributes {
-        let mut span_builder = OtelSpanBuilder::new("ollama.chat.completions.stream")
-            .span_type(OtelSpanType::Generation)
-            .model(model.to_string())
-            .system("ollama")
-            .operation_name("chat_stream")
-            .session_id(self.get_session_id().to_string())
-            .input(input_messages)
-            .is_stream(true)
-            .openinference_span_kind("LLM");
-        if let Some(user_id) = self.get_user_id() {
-            span_builder = span_builder.user_id(user_id.clone());
-        }
-        if let Some(params) = model_parameters {
-            span_builder = span_builder.model_parameters(params.clone());
-        }
-        span_builder.build()
-    }
-
-    /// Create span attributes for tool call tracing
+   /// Create span attributes for tool call tracing
     fn create_tool_call_span_attributes(
         &self,
         function_name: &str,
@@ -443,71 +418,4 @@ pub trait OllamaTracingHelper {
             Ok(())
         }
     }
-
-    // /// Trace the final output result for a chat completion
-    // fn trace_chat_output(
-    //     &self,
-    //     chat_result: &LlmChatResult,
-    // ) -> impl std::future::Future<Output = Result<()>> + Send + 'static {
-    //     let otel_client = self.get_otel_client().cloned();
-    //     let session_id = self.get_session_id().to_string();
-    //     let user_id = self.get_user_id().cloned();
-
-    //     // Create properly separated outputs
-    //     let content_text = chat_result.content.as_ref().and_then(|c| c.content.as_ref()).and_then(|content| {
-    //         match content {
-    //             jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text) => Some(text.clone()),
-    //             _ => None
-    //         }
-    //     });
-
-    //     // Observation output: external API call result (the complete LLM response)
-    //     let observation_output = serde_json::json!({
-    //         "content": content_text,
-    //         "reasoning_content": chat_result.reasoning_content.clone(),
-    //         "done": chat_result.done,
-    //         "usage": chat_result.usage.clone()
-    //     });
-
-    //     // Completion output: LLM completion text only
-    //     let completion_output = content_text.as_ref().map(|text| serde_json::json!(text));
-
-    //     // Trace output: main processing result (the usable content)
-    //     let trace_output = content_text
-    //         .map(|text| {
-    //             serde_json::json!({
-    //                 "text": text,
-    //                 "reasoning": chat_result.reasoning_content.clone()
-    //             })
-    //         })
-    //         .unwrap_or_else(|| serde_json::json!({}));
-
-    //     async move {
-    //         if let Some(client) = otel_client {
-    //             let mut trace_output_attributes = OtelSpanBuilder::new("ollama.chat.trace_output")
-    //                 .span_type(OtelSpanType::Event)
-    //                 .session_id(session_id)
-    //                 .observation_output(observation_output)
-    //                 .trace_output(trace_output)
-    //                 .level("INFO");
-
-    //             // Add completion output if available
-    //             if let Some(completion) = completion_output {
-    //                 trace_output_attributes = trace_output_attributes.completion_output(completion);
-    //             }
-
-    //             if let Some(user_id) = user_id {
-    //                 trace_output_attributes = trace_output_attributes.user_id(user_id);
-    //             }
-
-    //             // XXX context None
-    //             let _ = client
-    //                 .with_span_result(trace_output_attributes.build(), None, async {
-    //                     Ok::<(), JobWorkerError>(())
-    //                 })
-    //                 .await;
-    //         }
-    //         Ok(())
-    //     }
-    // }
 }

@@ -32,9 +32,9 @@ impl infra_utils::infra::trace::Tracing for TracingImpl {}
 /// * `app_module` - An Arc reference to an AppModule instance.
 /// * `http_client` - A ReqwestClient instance.
 /// * `workflow` - An Arc reference to a WorkflowSchema instance.
-/// * `workflow_file` - A string representation of the workflow file.
 /// * `input` - An Arc reference to a serde_json::Value representing the input to the workflow.
 /// * `context` - An Arc reference to a serde_json::Value representing the context of the workflow.
+/// * `metadata` - A HashMap containing metadata for tracing from request metadata.
 ///
 /// # Returns
 /// A Result containing an Arc<RwLock<WorkflowContext>>.
