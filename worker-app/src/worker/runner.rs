@@ -9,13 +9,11 @@ use anyhow::Result;
 use app_wrapper::runner::UseRunnerFactory;
 use async_trait::async_trait;
 use command_utils::util::{datetime, result::Flatten};
-use futures::StreamExt;
 use futures::{future::FutureExt, stream::BoxStream};
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::UseIdGenerator;
 use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
-use jobworkerp_base::APP_WORKER_NAME;
 use jobworkerp_runner::runner::RunnerTrait;
 use proto::jobworkerp::data::JobResult;
 use proto::jobworkerp::data::JobResultId;
@@ -25,7 +23,6 @@ use proto::jobworkerp::data::{
 };
 use result::ResultOutputEnum;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::{panic::AssertUnwindSafe, time::Duration};
 use tracing;
 
@@ -201,30 +198,14 @@ pub trait JobRunner:
         job: &Job,
         runner_impl: &mut Box<dyn RunnerTrait + Send + Sync>,
     ) -> Result<BoxStream<'a, ResultOutputItem>> {
-        let mut metadata = job.metadata.clone();
-        let (span, cx) =
-            Self::tracing_span_from_metadata(&metadata, APP_WORKER_NAME, "job.run_stream");
-        let _ = span.enter();
-        let cx = Arc::new(cx);
-        // inject trace context to metadata
-        Self::inject_metadata_from_context(&mut metadata, &cx);
+        let metadata = job.metadata.clone();
         let data = job.data.as_ref().unwrap(); // XXX unwrap
         let args = &data.args; // XXX unwrap, clone
         let name = runner_impl.name();
         if data.timeout > 0 {
             tokio::select! {
                 r = AssertUnwindSafe(
-                    runner_impl.run_stream(args, metadata).map(|stream| {
-                        let cx = cx.clone();
-                        // inject trace context to metadata
-                        stream.map(|st| {
-                            let cx = cx.clone();
-                            st.map(move |item| {
-                                let _cx = cx.clone();// for tracing context lifetime
-                                item
-                            }).boxed()
-                        })
-                    }),
+                    runner_impl.run_stream(args, metadata),
                 ).catch_unwind() => {
                     r.map_err(|e| {
                         let msg = format!("Caught panic from runner {}: {:?}", &name, e);
@@ -258,10 +239,7 @@ pub trait JobRunner:
         runner_impl: &mut Box<dyn RunnerTrait + Send + Sync>,
     ) -> Result<(Result<Vec<u8>>, HashMap<String, String>)> {
         let data = job.data.as_ref().unwrap(); // XXX unwrap
-        let mut metadata = job.metadata.clone();
-        let (span, cx) = Self::tracing_span_from_metadata(&metadata, APP_WORKER_NAME, "job.run");
-        let _ = span.enter();
-        Self::inject_metadata_from_context(&mut metadata, &cx);
+        let metadata = job.metadata.clone();
         let args = &data.args; // XXX unwrap, clone
         let name = runner_impl.name();
         let res = if data.timeout > 0 {
