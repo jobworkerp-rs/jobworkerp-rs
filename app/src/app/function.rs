@@ -160,7 +160,7 @@ pub trait FunctionApp:
     }
     async fn call_function(
         &self,
-        meta: HashMap<String, String>,
+        meta: Arc<HashMap<String, String>>,
         name: &str,
         arguments: Option<serde_json::Map<String, serde_json::Value>>,
     ) -> Result<serde_json::Value> {

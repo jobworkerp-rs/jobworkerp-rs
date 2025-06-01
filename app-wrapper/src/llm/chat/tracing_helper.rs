@@ -14,8 +14,6 @@ use tokio::sync::Mutex;
 
 /// Trait for OpenTelemetry tracing functionality in Ollama services
 pub trait OllamaTracingHelper {
-    fn get_session_id(&self) -> &str;
-    fn get_user_id(&self) -> Option<&String>;
     fn get_otel_client(&self) -> Option<&Arc<GenericOtelClient>>;
 
     /// Convert ChatMessage vector to proper tracing input format
@@ -82,17 +80,20 @@ pub trait OllamaTracingHelper {
         input_messages: serde_json::Value,
         model_parameters: Option<&HashMap<String, serde_json::Value>>,
         tools: &[ToolInfo],
+        metadata: &HashMap<String, String>,
     ) -> OtelSpanAttributes {
         let mut span_builder = OtelSpanBuilder::new("ollama.chat.completions")
             .span_type(OtelSpanType::Generation)
             .model(model.to_string())
             .system("ollama")
             .operation_name("chat")
-            .session_id(self.get_session_id().to_string())
             .input(input_messages)
             .openinference_span_kind("LLM");
-        if let Some(user_id) = self.get_user_id() {
-            span_builder = span_builder.user_id(user_id.clone());
+        if let Some(sid) = metadata.get("session_id").cloned() {
+            span_builder = span_builder.session_id(sid);
+        }
+        if let Some(uid) = metadata.get("user_id").cloned() {
+            span_builder = span_builder.user_id(uid);
         }
         if let Some(params) = model_parameters {
             span_builder = span_builder.model_parameters(params.clone());
@@ -114,20 +115,23 @@ pub trait OllamaTracingHelper {
         &self,
         function_name: &str,
         arguments: serde_json::Value,
+        metadata: &HashMap<String, String>, // request metadata
     ) -> OtelSpanAttributes {
         let mut span_builder = OtelSpanBuilder::new(format!("ollama.tool.{}", function_name))
             .span_type(OtelSpanType::Span)
             .system("ollama")
             .operation_name("tool_calls")
-            .session_id(self.get_session_id().to_string())
             .input(arguments);
 
-        // Add tool name to metadata for better observability
-        let mut metadata = HashMap::new();
-        metadata.insert("gen_ai.tool.name".to_string(), json!(function_name));
-        span_builder = span_builder.metadata(metadata);
+        // Add tool name to telemetry metadata for better observability
+        let mut m = HashMap::new();
+        m.insert("gen_ai.tool.name".to_string(), json!(function_name));
+        span_builder = span_builder.metadata(m);
 
-        if let Some(user_id) = self.get_user_id() {
+        if let Some(session_id) = metadata.get("session_id").cloned() {
+            span_builder = span_builder.session_id(session_id.clone());
+        }
+        if let Some(user_id) = metadata.get("user_id").cloned() {
             span_builder = span_builder.user_id(user_id.clone());
         }
         span_builder.build()
@@ -137,13 +141,19 @@ pub trait OllamaTracingHelper {
     fn create_tool_call_span_from_call(
         &self,
         call: &ollama_rs::generation::tools::ToolCall,
+        metadata: &HashMap<String, String>,
     ) -> OtelSpanAttributes {
-        self.create_tool_call_span_attributes(&call.function.name, call.function.arguments.clone())
+        self.create_tool_call_span_attributes(
+            &call.function.name,
+            call.function.arguments.clone(),
+            metadata,
+        )
     }
 
     /// Execute chat action with proper parent-child span tracing and response recording
     fn with_chat_response_tracing<F>(
         &self,
+        metadata: &HashMap<String, String>,
         parent_context: Option<opentelemetry::Context>,
         span_attributes: OtelSpanAttributes,
         action: F,
@@ -153,8 +163,8 @@ pub trait OllamaTracingHelper {
             + Send
             + 'static,
     {
-        let session_id = self.get_session_id().to_string();
-        let user_id = self.get_user_id().cloned();
+        let session_id = metadata.get("session_id").cloned();
+        let user_id = metadata.get("user_id").cloned();
         let otel_client = self.get_otel_client().cloned();
 
         async move {
@@ -176,7 +186,6 @@ pub trait OllamaTracingHelper {
                         let mut response_span_builder =
                             OtelSpanBuilder::new("ollama.chat.response")
                                 .span_type(OtelSpanType::Event)
-                                .session_id(session_id.clone())
                                 .output(response_output)
                                 .level("INFO");
 
@@ -185,6 +194,10 @@ pub trait OllamaTracingHelper {
                             .insert("event_type".to_string(), serde_json::json!("chat_response"));
                         response_span_builder = response_span_builder.metadata(metadata);
 
+                        if let Some(session_id) = &session_id {
+                            response_span_builder =
+                                response_span_builder.session_id(session_id.clone());
+                        }
                         if let Some(user_id) = &user_id {
                             response_span_builder = response_span_builder.user_id(user_id.clone());
                         }
@@ -231,6 +244,7 @@ pub trait OllamaTracingHelper {
     /// Execute tool action with child span tracing and response recording
     fn with_tool_response_tracing<F>(
         &self,
+        metadata: &HashMap<String, String>,
         parent_context: opentelemetry::Context,
         tool_attributes: OtelSpanAttributes,
         call: &ollama_rs::generation::tools::ToolCall,
@@ -244,8 +258,8 @@ pub trait OllamaTracingHelper {
         // Extract all necessary values from self before entering the async block
         let function_name = call.function.name.clone();
         let arguments = call.function.arguments.clone();
-        let session_id = self.get_session_id().to_string();
-        let user_id = self.get_user_id().cloned();
+        let session_id = metadata.get("session_id").cloned();
+        let user_id = metadata.get("user_id").cloned();
         let otel_client = self.get_otel_client().cloned();
 
         async move {
@@ -279,7 +293,6 @@ pub trait OllamaTracingHelper {
                         let mut response_span_builder =
                             OtelSpanBuilder::new(format!("ollama.tool.{}.response", function_name))
                                 .span_type(OtelSpanType::Event)
-                                .session_id(session_id.clone())
                                 .observation_output(observation_output)
                                 .completion_output(completion_output)
                                 .trace_output(trace_output)
@@ -297,6 +310,10 @@ pub trait OllamaTracingHelper {
 
                         response_span_builder = response_span_builder.metadata(metadata);
 
+                        if let Some(ref session_id) = session_id {
+                            response_span_builder =
+                                response_span_builder.session_id(session_id.clone());
+                        }
                         if let Some(ref user_id) = user_id {
                             response_span_builder = response_span_builder.user_id(user_id.clone());
                         }
@@ -347,6 +364,7 @@ pub trait OllamaTracingHelper {
         messages: Arc<Mutex<Vec<ChatMessage>>>,
         options: &ModelOptions,
         tools: &[ToolInfo],
+        metadata: &HashMap<String, String>,
     ) -> OtelSpanAttributes {
         let input_messages = Self::convert_messages_to_input(messages.lock().await.as_ref());
         let model_parameters = Self::convert_model_options_to_parameters(options);
@@ -356,18 +374,21 @@ pub trait OllamaTracingHelper {
             input_messages,
             Some(&model_parameters),
             tools,
+            metadata,
         )
     }
 
     fn trace_usage(
         &self,
+        metadata: &HashMap<String, String>,
+        parent_context: opentelemetry::Context,
         name: &str,
         final_data: &ChatMessageFinalResponseData,
         content: Option<&str>,
     ) -> impl std::future::Future<Output = Result<()>> + Send + 'static {
         let otel_client = self.get_otel_client().cloned();
-        let session_id = self.get_session_id().to_string();
-        let user_id = self.get_user_id().cloned();
+        let session_id = metadata.get("session_id").cloned();
+        let user_id = metadata.get("user_id").cloned();
         let name = name.to_string();
         let final_data = final_data.clone();
         let content = content.map(|s| s.to_string());
@@ -398,10 +419,12 @@ pub trait OllamaTracingHelper {
 
                 let mut span_builder = OtelSpanBuilder::new(&name)
                     .span_type(OtelSpanType::Event)
-                    .session_id(session_id)
                     .usage(usage)
                     .output(output)
                     .level("INFO");
+                if let Some(session_id) = session_id {
+                    span_builder = span_builder.session_id(session_id);
+                }
                 if let Some(user_id) = user_id {
                     span_builder = span_builder.user_id(user_id);
                 }
@@ -409,7 +432,7 @@ pub trait OllamaTracingHelper {
 
                 // XXX context None
                 otel_client
-                    .with_span_result(span_attributes, None, async {
+                    .with_span_result(span_attributes, Some(parent_context), async {
                         Ok::<(), JobWorkerError>(())
                     })
                     .await

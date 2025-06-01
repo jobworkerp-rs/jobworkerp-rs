@@ -45,7 +45,7 @@ pub trait JobApp: fmt::Debug + Send + Sync {
     #[allow(clippy::too_many_arguments)]
     async fn enqueue_job<'a>(
         &'a self,
-        meta: HashMap<String, String>,
+        meta: Arc<HashMap<String, String>>,
         worker_id: Option<&'a WorkerId>,
         worker_name: Option<&'a String>,
         arg: Vec<u8>,
@@ -64,7 +64,7 @@ pub trait JobApp: fmt::Debug + Send + Sync {
     #[allow(clippy::too_many_arguments)]
     async fn enqueue_job_with_temp_worker<'a>(
         &'a self,
-        meta: HashMap<String, String>,
+        meta: Arc<HashMap<String, String>>,
         worker_data: WorkerData,
         arg: Vec<u8>,
         uniq_key: Option<String>,

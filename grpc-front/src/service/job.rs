@@ -1,7 +1,3 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::{fmt::Debug, time::Duration};
-
 use crate::proto::jobworkerp::data::{Priority, ResultOutputItem};
 use crate::proto::jobworkerp::service::job_request::Worker;
 use crate::proto::jobworkerp::service::job_service_server::JobService;
@@ -19,6 +15,8 @@ use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
 use proto::jobworkerp::data::{Job, JobId};
+use std::sync::Arc;
+use std::{fmt::Debug, time::Duration};
 use tonic::metadata::MetadataValue;
 use tonic::Response;
 
@@ -70,7 +68,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
     ) -> Result<tonic::Response<CreateJobResponse>, tonic::Status> {
         let _span = Self::trace_request("job", "create", &request);
         let (metadata, _extensions, req) = request.into_parts();
-        let metadata: HashMap<String, String> = super::process_metadata(metadata)?;
+        let metadata = Arc::new(super::process_metadata(metadata)?);
         self.validate_create(&req)?;
         let res = match req.worker.as_ref() {
             Some(Worker::WorkerId(id)) => {
@@ -158,7 +156,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
     ) -> Result<tonic::Response<Self::EnqueueForStreamStream>, tonic::Status> {
         let _span = Self::trace_request("job", "create", &request);
         let (metadata, _, req) = request.into_parts();
-        let metadata = super::process_metadata(metadata)?;
+        let metadata = Arc::new(super::process_metadata(metadata)?);
         self.validate_create(&req)?;
         let res = match req.worker.as_ref() {
             Some(Worker::WorkerId(id)) => {

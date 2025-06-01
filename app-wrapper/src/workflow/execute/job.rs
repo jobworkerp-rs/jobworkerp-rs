@@ -161,7 +161,7 @@ pub trait UseJobExecutorHelper:
             let res = self
                 .job_app()
                 .enqueue_job(
-                    (*metadata).clone(), // clone
+                    metadata,
                     Some(worker_id),
                     None,
                     args,
