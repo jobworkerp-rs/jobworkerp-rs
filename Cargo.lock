@@ -2558,6 +2558,7 @@ dependencies = [
  "libloading",
  "nix",
  "once_cell",
+ "opentelemetry 0.29.1",
  "prost",
  "prost-reflect",
  "proto",

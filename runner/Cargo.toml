@@ -36,6 +36,7 @@ itertools = { workspace = true }
 libloading = { workspace = true }
 nix = { workspace = true, features = ["signal"] }
 once_cell = { workspace = true }
+opentelemetry = { workspace = true }
 prost = { workspace = true }
 redis = { workspace = true }
 reqwest = { workspace = true }

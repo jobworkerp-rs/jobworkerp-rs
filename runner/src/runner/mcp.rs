@@ -13,6 +13,7 @@ use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::codec::ProstMessageCodec;
 use jobworkerp_base::codec::UseProstCodec;
 use jobworkerp_base::APP_WORKER_NAME;
+use opentelemetry::trace::TraceContextExt;
 use proto::jobworkerp::data::ResultOutputItem;
 use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::function::data::McpTool;
@@ -103,17 +104,24 @@ impl RunnerTrait for McpServerRunnerImpl {
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let result = async {
-            let (span, cx) = Self::tracing_span_from_metadata(
+            let cx = Self::otel_context_from_metadata(
                 &metadata,
                 APP_WORKER_NAME,
                 "McpServerRunnerImpl::run",
             );
-            let _ = span.enter();
             let mut metadata = metadata.clone();
             Self::inject_metadata_from_context(&mut metadata, &cx);
+            let span = cx.span();
+
             let arg = ProstMessageCodec::deserialize_message::<McpServerArgs>(args)?;
-            span.record("input.tool_name", &arg.tool_name);
-            span.record("input.arg_json", &arg.arg_json);
+            span.set_attribute(opentelemetry::KeyValue::new(
+                "input.tool_name",
+                arg.tool_name.clone(),
+            ));
+            span.set_attribute(opentelemetry::KeyValue::new(
+                "input.arg_json",
+                arg.arg_json.clone(), // XXX clone
+            ));
             let res = self
                 .mcp_server
                 .transport
@@ -128,9 +136,16 @@ impl RunnerTrait for McpServerRunnerImpl {
                 .await?;
 
             if res.is_error.unwrap_or_default() {
-                Self::record_error(&span, serde_json::json!(res.content).to_string().as_str());
+                let error = anyhow!(
+                    "Tool call failed: {}",
+                    serde_json::json!(res.content).to_string()
+                );
+                span.record_error(error.as_ref());
             } else {
-                span.record("output", serde_json::json!(res.content).to_string());
+                span.set_attribute(opentelemetry::KeyValue::new(
+                    "output",
+                    serde_json::json!(res.content).to_string(),
+                ));
             }
             // map res to McpServerResult and encode to Vec<u8>
             let mut mcp_contents = Vec::new();
