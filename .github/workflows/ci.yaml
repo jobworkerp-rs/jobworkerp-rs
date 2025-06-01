@@ -2,7 +2,7 @@ name: CI
 on:
   pull_request:
     branches:
-    - main
+      - main
 #  push:
 #    branches:
 #    - main
@@ -13,26 +13,26 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-    - name: Install last version of Protoc
-      uses: arduino/setup-protoc@v2
-      with:
-        version: '24.x'
-#        repo-token: ${{ secrets.GITHUB_TOKEN }}
-    - name: Checkout Crate
-      uses: actions/checkout@v4
-      with:
-        submodules: true
-    - name: Set Toolchain
-      uses: dtolnay/rust-toolchain@master
-      with:
-        toolchain: stable
-        components: rustfmt, clippy
-    - name: Run check
-      run: cargo check
-    - name: Run rustfmt
-      run: cargo fmt --all -- --check
-    - name: Run clippy
-      run: cargo clippy -- -D warnings
+      - name: Install last version of Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          version: "24.x"
+      #        repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Checkout Crate
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Set Toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - name: Run check
+        run: cargo check
+      - name: Run rustfmt
+        run: cargo fmt --all -- --check
+      - name: Run clippy
+        run: cargo clippy -- -D warnings
 
   job-test:
     runs-on: ubuntu-latest
@@ -81,50 +81,51 @@ jobs:
           - 7005:7005
 
     steps:
-    - name: apt upgrade
-      run: |
-        apt-get update
-        apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip
-    - name: Clean up apt cache
-      run: |
-        apt-get clean
-        rm -rf /var/lib/apt/lists/*
-    - name: Install last version of Protoc
-      uses: arduino/setup-protoc@v2
-      with:
-        version: '24.x'
-#        repo-token: ${{ secrets.GITHUB_TOKEN }}
-    - uses: actions/checkout@v4
-      with:
-        submodules: true
-    - name: Install uv (for test only)
-      uses: astral-sh/setup-uv@v5
-    - uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-    - uses: actions/setup-node@v4
-      with:
-        node-version: 18
-    - name: Cache Rust artifacts
-      uses: Swatinem/rust-cache@v2
-    - uses: actions-rs/cargo@v1
-      with:
-        command: build
-        args: --all-features
-    - name: Run test
-      run: |
-        cargo build --release
-        cargo test --release -- --test-threads=1
-      env:
-        PLUGINS_RUNNER_DIR: "../target/release/"
-        TEST_REDIS_URL: "redis://redis:6379"
-        TEST_MYSQL_URL: "mysql://maria:maria@db:3306/test"
-    - name: Run test with mysql
-      run: |
-        cargo build --features "mysql" --release
-        cargo test --features "mysql" --release -- --test-threads=1
-        cargo clean
-      env:
-        PLUGINS_RUNNER_DIR: "../target/release/"
-        TEST_REDIS_URL: "redis://redis:6379"
-        TEST_MYSQL_URL: "mysql://maria:maria@db:3306/test"
+      - name: apt upgrade
+        run: |
+          apt-get update
+          apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip
+      - name: Clean up apt cache
+        run: |
+          apt-get clean
+          rm -rf /var/lib/apt/lists/*
+      - name: Install last version of Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          version: "24.x"
+      #        repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Install uv (for test only)
+        uses: astral-sh/setup-uv@v5
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+      - uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --all-features
+      - name: Run test
+        run: |
+          cargo build --release
+          cargo test --release -- --test-threads=1
+        env:
+          PLUGINS_RUNNER_DIR: "../target/release/"
+          TEST_REDIS_URL: "redis://redis:6379"
+          TEST_MYSQL_URL: "mysql://maria:maria@db:3306/test"
+      - name: Run test with mysql
+        run: |
+          mysql -h db -u maria -pmaria test < ./infra/sql/mysql/002_worker.sql
+          cargo build --features "mysql" --release
+          cargo test --features "mysql" --release -- --test-threads=1
+          cargo clean
+        env:
+          PLUGINS_RUNNER_DIR: "../target/release/"
+          TEST_REDIS_URL: "redis://redis:6379"
+          TEST_MYSQL_URL: "mysql://maria:maria@db:3306/test"
