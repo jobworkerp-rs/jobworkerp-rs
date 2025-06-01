@@ -207,9 +207,7 @@ impl RunnerTrait for ReusableWorkflowRunner {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        let (span, cx) =
-            Self::tracing_span_from_metadata(&metadata, APP_NAME, "reusable_workflow.run_stream");
-        let _ = span.enter();
+        let cx = Self::create_context(&metadata);
         let arg = ProstMessageCodec::deserialize_message::<ReusableWorkflowArgs>(args)?;
         tracing::debug!("workflow args: {:#?}", arg);
         let metadata_arc = Arc::new(metadata.clone());

@@ -242,9 +242,7 @@ impl RunnerTrait for InlineWorkflowRunner {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        let (span, cx) =
-            Self::tracing_span_from_metadata(&metadata, APP_NAME, "inline_workflow.run_stream");
-        let _ = span.enter();
+        let cx = Self::create_context(&metadata);
 
         let arg = InlineWorkflowArgs::decode(args)?;
         tracing::debug!("workflow args: {:#?}", arg);
