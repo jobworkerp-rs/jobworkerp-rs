@@ -19,35 +19,6 @@ pub trait TaskTrait {
     fn timeout(&self) -> ::std::option::Option<&TaskTimeout>;
 }
 
-// impl TaskTrait for CallTask {
-//     fn export(&self) -> ::std::option::Option<&Export> {
-//         self.export.as_ref()
-//     }
-
-//     fn if_(&self) -> ::std::option::Option<&String> {
-//         self.if_.as_ref()
-//     }
-
-//     fn input(&self) -> ::std::option::Option<&Input> {
-//         self.input.as_ref()
-//     }
-
-//     fn metadata(&self) -> &::serde_json::Map<::std::string::String, ::serde_json::Value> {
-//         &self.metadata
-//     }
-
-//     fn output(&self) -> ::std::option::Option<&Output> {
-//         self.output.as_ref()
-//     }
-
-//     fn then(&self) -> ::std::option::Option<&FlowDirective> {
-//         self.then.as_ref()
-//     }
-
-//     fn timeout(&self) -> ::std::option::Option<&TaskTimeout> {
-//         self.timeout.as_ref()
-//     }
-// }
 impl TaskTrait for DoTask {
     fn export(&self) -> ::std::option::Option<&Export> {
         self.export.as_ref()
