@@ -246,6 +246,7 @@ where
 #[cfg(test)]
 // create test (functional test without mock)
 mod test {
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     use crate::infra::job::rows::JobqueueAndCodec;
@@ -329,6 +330,7 @@ mod test {
                 timeout: 1000,
                 request_streaming: false,
             }),
+            metadata: HashMap::new(),
         };
         let r = repo.enqueue_job(None, &job).await?;
         assert_eq!(r, 1);
@@ -369,7 +371,7 @@ mod test {
             job_id: Some(job_id),
             status: ResultStatus::Success as i32,
             output: Some(ResultOutput {
-                items: vec!["test".as_bytes().to_owned()],
+                items: "test".as_bytes().to_owned(),
             }),
             timeout: 2000,
             enqueue_time: datetime::now_millis() - 10000,

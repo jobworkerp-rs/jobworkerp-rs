@@ -3,25 +3,23 @@ syntax = "proto3";
 package jobworkerp.function.data;
 
 enum FunctionType {
-    RUNNER = 0;
-    WORKER = 1;
+  RUNNER = 0;
+  WORKER = 1;
 }
 
 message FunctionTarget {
-    int64 id = 1;
-    FunctionType type = 2;
+  int64 id = 1;
+  FunctionType type = 2;
 }
 
 message FunctionSetData {
-    string name = 1;
-    string description = 2;
-    int32 category = 3;
-    repeated FunctionTarget targets = 4;
+  string name = 1;
+  string description = 2;
+  int32 category = 3;
+  repeated FunctionTarget targets = 4;
 }
 
-message FunctionSetId {
-    int64 value = 1;
-}
+message FunctionSetId { int64 value = 1; }
 
 message FunctionSet {
   FunctionSetId id = 1;

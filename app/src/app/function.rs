@@ -19,6 +19,7 @@ use proto::jobworkerp::function::data::{
     function_specs, FunctionSchema, FunctionSpecs, McpToolList,
 };
 use proto::ProtobufHelper;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 pub mod function_set;
@@ -159,6 +160,7 @@ pub trait FunctionApp:
     }
     async fn call_function(
         &self,
+        meta: Arc<HashMap<String, String>>,
         name: &str,
         arguments: Option<serde_json::Map<String, serde_json::Value>>,
     ) -> Result<serde_json::Value> {
@@ -177,10 +179,10 @@ pub trait FunctionApp:
                     .await
             }
             Ok(Some((runner, tool_name_opt))) => self
-                .handle_runner_call(arguments, runner, tool_name_opt)
+                .handle_runner_call(meta, arguments, runner, tool_name_opt)
                 .await
                 .map(|r| r.unwrap_or_default()),
-            Ok(None) => self.handle_worker_call(name, arguments).await,
+            Ok(None) => self.handle_worker_call(meta, name, arguments).await,
             Err(e) => {
                 tracing::error!("error: {:#?}", &e);
                 Err(e)

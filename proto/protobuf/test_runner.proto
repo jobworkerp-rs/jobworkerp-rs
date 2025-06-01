@@ -2,6 +2,4 @@ syntax = "proto3";
 
 // only for test
 // job runner settings
-message TestRunnerSettings {
-  string name = 1;
-}
+message TestRunnerSettings { string name = 1; }

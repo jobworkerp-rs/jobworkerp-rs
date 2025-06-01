@@ -9,8 +9,9 @@ use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use ollama::OllamaService;
 use prost::Message;
 use proto::jobworkerp::data::{result_output_item, ResultOutputItem, RunnerType};
+use std::collections::HashMap;
 use std::io::Cursor;
-use std::vec;
+use std::sync::Arc;
 
 pub mod genai;
 pub mod ollama;
@@ -100,37 +101,50 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         }
     }
 
-    async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
-        let args = LlmCompletionArgs::decode(&mut Cursor::new(arg))
-            .map_err(|e| anyhow!("decode error: {}", e))?;
-        if let Some(ollama) = self.ollama.as_mut() {
-            let res = ollama.request_generation(args).await?;
-            let mut buf = Vec::with_capacity(res.encoded_len());
-            res.encode(&mut buf)
-                .map_err(|e| anyhow!("encode error: {}", e))?;
-            Ok(vec![buf])
-        } else if let Some(genai) = self.genai.as_mut() {
-            //XXX chat only
-            let res = genai.request_chat(args).await?;
-            let mut buf = Vec::with_capacity(res.encoded_len());
-            res.encode(&mut buf)
-                .map_err(|e| anyhow!("encode error: {}", e))?;
-            Ok(vec![buf])
-        } else {
-            Err(anyhow!("llm is not initialized"))
+    async fn run(
+        &mut self,
+        arg: &[u8],
+        metadata: HashMap<String, String>,
+    ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        let result = async {
+            let args = LlmCompletionArgs::decode(&mut Cursor::new(arg))
+                .map_err(|e| anyhow!("decode error: {}", e))?;
+            if let Some(ollama) = self.ollama.as_mut() {
+                let res = ollama.request_generation(args).await?;
+                let mut buf = Vec::with_capacity(res.encoded_len());
+                res.encode(&mut buf)
+                    .map_err(|e| anyhow!("encode error: {}", e))?;
+                Ok(buf)
+            } else if let Some(genai) = self.genai.as_mut() {
+                //XXX chat only
+                let res = genai.request_chat(args).await?;
+                let mut buf = Vec::with_capacity(res.encoded_len());
+                res.encode(&mut buf)
+                    .map_err(|e| anyhow!("encode error: {}", e))?;
+                Ok(buf)
+            } else {
+                Err(anyhow!("llm is not initialized"))
+            }
         }
+        .await;
+        (result, metadata)
     }
 
-    async fn run_stream(&mut self, args: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>> {
+    async fn run_stream(
+        &mut self,
+        args: &[u8],
+        metadata: HashMap<String, String>,
+    ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let args = LlmCompletionArgs::decode(args).map_err(|e| anyhow!("decode error: {}", e))?;
 
         if let Some(ollama) = self.ollama.as_mut() {
             // Get streaming responses from ollama service
             let stream = ollama.request_stream_generation(args).await?;
 
+            let req_meta = Arc::new(metadata.clone());
             // Transform each LlmCompletionResult into ResultOutputItem
             let output_stream = stream
-                .flat_map(|completion_result| {
+                .flat_map(move |completion_result| {
                     let mut result_items = Vec::new();
 
                     // Encode the completion result to binary if there is content
@@ -150,11 +164,13 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                         }
                     }
 
-                    // If this is the last chunk, add an End item
+                    // If this is the final result (done=true), add an end marker
                     if completion_result.done {
                         result_items.push(ResultOutputItem {
-                            item: Some(result_output_item::Item::End(
-                                proto::jobworkerp::data::Empty {},
+                            item: Some(proto::jobworkerp::data::result_output_item::Item::End(
+                                proto::jobworkerp::data::Trailer {
+                                    metadata: (*req_meta).clone(),
+                                },
                             )),
                         });
                     }
@@ -166,7 +182,7 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
             Ok(output_stream)
         } else if let Some(genai) = self.genai.as_mut() {
             // Get streaming responses from genai service
-            let stream = genai.request_chat_stream(args).await?;
+            let stream = genai.request_chat_stream(args, metadata).await?;
             Ok(stream)
         } else {
             Err(anyhow!("llm is not initialized"))

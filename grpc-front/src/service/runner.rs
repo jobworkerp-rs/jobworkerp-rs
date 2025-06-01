@@ -12,7 +12,7 @@ use app::app::runner::RunnerApp;
 use app::module::AppModule;
 use async_stream::stream;
 use futures::stream::BoxStream;
-use infra_utils::trace::Tracing;
+use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
 use tonic::Response;
 

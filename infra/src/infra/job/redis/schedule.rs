@@ -245,7 +245,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::cmp::Ordering;
+    use std::{cmp::Ordering, collections::HashMap};
 
     use super::*;
     use deadpool_redis::Pool;
@@ -282,6 +282,7 @@ mod tests {
                         run_after_time: now_millis - i, // past
                         ..Default::default()
                     }),
+                    metadata: HashMap::new(),
                 })
                 .await
                 .unwrap()
@@ -303,6 +304,7 @@ mod tests {
                     run_after_time: now_millis + 1000, // future
                     ..Default::default()
                 }),
+                metadata: HashMap::new(),
             })
             .await
             .unwrap()

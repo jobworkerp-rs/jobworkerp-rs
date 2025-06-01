@@ -8,8 +8,10 @@ use anyhow::Result;
 use app::module::AppModule;
 use futures::{Stream, StreamExt};
 use indexmap::IndexMap;
-use infra_utils::infra::net::reqwest::ReqwestClient;
-use std::sync::Arc;
+use infra_utils::infra::{net::reqwest::ReqwestClient, trace::Tracing};
+use jobworkerp_base::{APP_NAME, APP_WORKER_NAME};
+use opentelemetry::trace::{SpanRef, TraceContextExt};
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -19,10 +21,12 @@ pub struct WorkflowExecutor {
     pub http_client: ReqwestClient,
     pub workflow: Arc<WorkflowSchema>,
     pub workflow_context: Arc<RwLock<context::WorkflowContext>>,
+    pub metadata: Arc<HashMap<String, String>>,
 }
 impl UseJqAndTemplateTransformer for WorkflowExecutor {}
 impl UseExpressionTransformer for WorkflowExecutor {}
 impl UseExpression for WorkflowExecutor {}
+impl Tracing for WorkflowExecutor {}
 
 impl WorkflowExecutor {
     pub fn new(
@@ -31,6 +35,7 @@ impl WorkflowExecutor {
         workflow: Arc<WorkflowSchema>,
         input: Arc<serde_json::Value>,
         context: Arc<serde_json::Value>,
+        metadata: Arc<HashMap<String, String>>,
     ) -> Self {
         let workflow_context = Arc::new(RwLock::new(context::WorkflowContext::new(
             &workflow, input, context,
@@ -41,7 +46,211 @@ impl WorkflowExecutor {
             http_client,
             workflow,
             workflow_context,
+            metadata,
         }
+    }
+
+    /// Records workflow input to the current span using OpenTelemetry semantic conventions
+    fn record_workflow_input(span: &SpanRef, input: &serde_json::Value) {
+        // Record input as pretty-printed JSON - Jaeger will parse and display it nicely
+        let input_str = serde_json::to_string_pretty(input).unwrap_or_else(|_| input.to_string());
+        span.set_attribute(opentelemetry::KeyValue::new(
+            "input.value",
+            input_str.clone(),
+        ));
+        span.set_attribute(opentelemetry::KeyValue::new(
+            "input.size",
+            input_str.len() as i64,
+        ));
+
+        // Record type information and actual values for filtering and debugging
+        match input {
+            serde_json::Value::Object(obj) => {
+                span.set_attribute(opentelemetry::KeyValue::new("input.type", "object"));
+                span.set_attribute(opentelemetry::KeyValue::new(
+                    "input.object.key_count",
+                    obj.len() as i64,
+                ));
+
+                // Record object keys for better debugging
+                let keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+                if !keys.is_empty() {
+                    span.set_attribute(opentelemetry::KeyValue::new(
+                        "input.object.keys",
+                        format!("{:?}", keys),
+                    ));
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                span.set_attribute(opentelemetry::KeyValue::new("input.type", "array"));
+                span.set_attribute(opentelemetry::KeyValue::new(
+                    "input.array.length",
+                    arr.len() as i64,
+                ));
+            }
+            serde_json::Value::String(s) => {
+                span.set_attribute(opentelemetry::KeyValue::new("input.type", "string"));
+                span.set_attribute(opentelemetry::KeyValue::new(
+                    "input.string.value",
+                    s.clone(),
+                ));
+                span.set_attribute(opentelemetry::KeyValue::new(
+                    "input.string.length",
+                    s.len() as i64,
+                ));
+            }
+            serde_json::Value::Number(n) => {
+                span.set_attribute(opentelemetry::KeyValue::new("input.type", "number"));
+                span.set_attribute(opentelemetry::KeyValue::new(
+                    "input.number.value",
+                    n.to_string(),
+                ));
+            }
+            serde_json::Value::Bool(b) => {
+                span.set_attribute(opentelemetry::KeyValue::new("input.type", "boolean"));
+                span.set_attribute(opentelemetry::KeyValue::new("input.boolean.value", *b));
+            }
+            serde_json::Value::Null => {
+                span.set_attribute(opentelemetry::KeyValue::new("input.type", "null"));
+                span.set_attribute(opentelemetry::KeyValue::new("input.null.value", "null"));
+            }
+        }
+    }
+
+    /// Records workflow output to the current span using OpenTelemetry semantic conventions
+    fn record_workflow_output(span: &SpanRef, output: &serde_json::Value, status: &WorkflowStatus) {
+        // Record output as pretty-printed JSON - Jaeger will parse and display it nicely
+        let output_str =
+            serde_json::to_string_pretty(output).unwrap_or_else(|_| output.to_string());
+        span.set_attribute(opentelemetry::KeyValue::new(
+            "output.value",
+            output_str.clone(),
+        ));
+        span.set_attribute(opentelemetry::KeyValue::new(
+            "output.size",
+            output_str.len() as i64,
+        ));
+        span.set_attribute(opentelemetry::KeyValue::new(
+            "operation.status",
+            format!("{:?}", status),
+        ));
+
+        // Set span status based on workflow status
+        match status {
+            WorkflowStatus::Completed => {
+                span.set_attribute(opentelemetry::KeyValue::new("otel.status_code", "OK"));
+            }
+            WorkflowStatus::Faulted | WorkflowStatus::Cancelled => {
+                span.set_attribute(opentelemetry::KeyValue::new("otel.status_code", "ERROR"));
+                span.set_attribute(opentelemetry::KeyValue::new("error", true));
+            }
+            _ => {
+                span.set_attribute(opentelemetry::KeyValue::new("otel.status_code", "UNSET"));
+            }
+        }
+
+        // Record basic type information for filtering and metrics
+        match output {
+            serde_json::Value::Object(obj) => {
+                span.set_attribute(opentelemetry::KeyValue::new("output.type", "object"));
+                span.set_attribute(opentelemetry::KeyValue::new(
+                    "output.object.key_count",
+                    obj.len() as i64,
+                ));
+
+                // Record object keys for better debugging
+                let keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+                if !keys.is_empty() {
+                    span.set_attribute(opentelemetry::KeyValue::new(
+                        "output.object.keys",
+                        format!("{:?}", keys),
+                    ));
+                }
+
+                // Handle error outputs with standard error attributes
+                if obj.contains_key("error") {
+                    span.set_attribute(opentelemetry::KeyValue::new("error", true));
+                    span.set_attribute(opentelemetry::KeyValue::new("otel.status_code", "ERROR"));
+                    if let Some(error_msg) = obj.get("error") {
+                        span.set_attribute(opentelemetry::KeyValue::new(
+                            "error.type",
+                            "workflow_execution_error",
+                        ));
+                        span.set_attribute(opentelemetry::KeyValue::new(
+                            "error.message",
+                            error_msg.to_string(),
+                        ));
+                        span.set_attribute(opentelemetry::KeyValue::new(
+                            "otel.status_description",
+                            error_msg.to_string(),
+                        ));
+                    }
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                span.set_attribute(opentelemetry::KeyValue::new("output.type", "array"));
+                span.set_attribute(opentelemetry::KeyValue::new(
+                    "output.array.length",
+                    arr.len() as i64,
+                ));
+            }
+            serde_json::Value::String(s) => {
+                span.set_attribute(opentelemetry::KeyValue::new("output.type", "string"));
+                span.set_attribute(opentelemetry::KeyValue::new(
+                    "output.string.value",
+                    s.clone(),
+                ));
+                span.set_attribute(opentelemetry::KeyValue::new(
+                    "output.string.length",
+                    s.len() as i64,
+                ));
+            }
+            serde_json::Value::Number(n) => {
+                span.set_attribute(opentelemetry::KeyValue::new("output.type", "number"));
+                span.set_attribute(opentelemetry::KeyValue::new(
+                    "output.number.value",
+                    n.to_string(),
+                ));
+            }
+            serde_json::Value::Bool(b) => {
+                span.set_attribute(opentelemetry::KeyValue::new("output.type", "boolean"));
+                span.set_attribute(opentelemetry::KeyValue::new("output.boolean.value", *b));
+            }
+            serde_json::Value::Null => {
+                span.set_attribute(opentelemetry::KeyValue::new("output.type", "null"));
+                span.set_attribute(opentelemetry::KeyValue::new("output.null.value", "null"));
+            }
+        }
+    }
+
+    /// Records workflow metadata to the current span
+    fn record_workflow_metadata(span: &SpanRef, workflow: &WorkflowSchema, workflow_id: &str) {
+        span.set_attribute(opentelemetry::KeyValue::new(
+            "service.name",
+            workflow.document.name.to_string(),
+        ));
+        span.set_attribute(opentelemetry::KeyValue::new(
+            "service.version",
+            workflow.document.version.to_string(),
+        ));
+        span.set_attribute(opentelemetry::KeyValue::new(
+            "operation.id",
+            workflow_id.to_string(),
+        ));
+        span.set_attribute(opentelemetry::KeyValue::new(
+            "operation.task_count",
+            workflow.do_.0.len() as i64,
+        ));
+
+        // Add service-related attributes for better organization in Jaeger
+        span.set_attribute(opentelemetry::KeyValue::new(
+            "service.operation",
+            "workflow_execution",
+        ));
+        span.set_attribute(opentelemetry::KeyValue::new(
+            "component",
+            "workflow_executor",
+        ));
     }
 
     /// Executes the workflow.
@@ -55,6 +264,7 @@ impl WorkflowExecutor {
     /// after each task execution.
     pub fn execute_workflow(
         &self,
+        cx: Arc<opentelemetry::Context>,
     ) -> impl Stream<Item = Result<Arc<RwLock<WorkflowContext>>>> + 'static {
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Arc<RwLock<WorkflowContext>>>>(32);
 
@@ -63,6 +273,8 @@ impl WorkflowExecutor {
         let workflow = self.workflow.clone();
         let job_executors = self.job_executors.clone();
         let http_client = self.http_client.clone();
+        let cxc = cx.clone();
+        let metadata = self.metadata.clone();
 
         tokio::spawn(async move {
             // Set workflow to running status
@@ -70,14 +282,28 @@ impl WorkflowExecutor {
                 let mut lock = initial_wfc.write().await;
                 lock.status = WorkflowStatus::Running;
             }
-
-            // // Send the initial workflow context
-            // let _ = tx.send(Ok(initial_wfc.clone())).await;
+            let ccx = Self::start_child_otel_context(
+                &cxc,
+                APP_WORKER_NAME,
+                "execute_workflow".to_string(),
+            );
+            let span = ccx.span();
+            let ccx = Arc::new(ccx.clone());
+            // let (span, ccx) =
+            //     Self::child_tracing_span(&cxc, APP_WORKER_NAME, "execute_workflow".to_string());
+            // let _s = span.enter();
 
             let input = {
                 let lock = initial_wfc.read().await;
                 lock.input.clone()
             };
+
+            // Record workflow metadata and input
+            {
+                let lock = initial_wfc.read().await;
+                Self::record_workflow_metadata(&span, &workflow, &lock.id.to_string());
+                Self::record_workflow_input(&span, &input);
+            }
 
             // Validate input schema
             if let Some(schema) = workflow.input.schema.as_ref() {
@@ -90,7 +316,10 @@ impl WorkflowExecutor {
                             tracing::debug!("Failed to validate workflow input schema: {:#?}", e);
                             let mut wf = initial_wfc.write().await;
                             wf.status = WorkflowStatus::Faulted;
-                            wf.output = Some(Arc::new(serde_json::json!({"error": e.to_string()})));
+                            let error_output =
+                                Arc::new(serde_json::json!({"error": e.to_string()}));
+                            Self::record_workflow_output(&span, &error_output, &wf.status);
+                            wf.output = Some(error_output);
                             drop(wf);
                             let _ = tx.send(Ok(initial_wfc.clone())).await;
                             return;
@@ -129,7 +358,12 @@ impl WorkflowExecutor {
                     tracing::debug!("Failed to create expression: {:#?}", e);
                     let mut wf = initial_wfc.write().await;
                     wf.status = WorkflowStatus::Faulted;
-                    wf.output = Some(Arc::new(serde_json::json!({"error": e.to_string()})));
+                    let error_output = Arc::new(serde_json::json!({"error": e.to_string()}));
+                    Self::record_workflow_output(&span, &error_output, &wf.status);
+                    wf.output = Some(error_output);
+
+                    // Record error output
+
                     drop(wf);
                     let _ = tx.send(Ok(initial_wfc.clone())).await;
                     return;
@@ -144,7 +378,9 @@ impl WorkflowExecutor {
                         tracing::debug!("Failed to transform input: {:#?}", e);
                         let mut wf = initial_wfc.write().await;
                         wf.status = WorkflowStatus::Faulted;
-                        wf.output = Some(Arc::new(serde_json::json!({"error": e.to_string()})));
+                        let error_output = Arc::new(serde_json::json!({"error": e.to_string()}));
+                        Self::record_workflow_output(&span, &error_output, &wf.status);
+                        wf.output = Some(error_output);
                         drop(wf);
                         let _ = tx.send(Ok(initial_wfc.clone())).await;
                         return;
@@ -162,10 +398,11 @@ impl WorkflowExecutor {
                 http_client,
                 workflow: workflow.clone(),
                 workflow_context: initial_wfc.clone(),
+                metadata: metadata.clone(),
             };
 
             // Execute tasks and update workflow context after each task
-            let mut task_stream = task_executor.execute_task_list(task_map, task_context);
+            let mut task_stream = task_executor.execute_task_list(task_map, task_context, ccx);
 
             while let Some(tc_result) = task_stream.next().await {
                 match tc_result {
@@ -181,7 +418,9 @@ impl WorkflowExecutor {
                         tracing::debug!("Failed to execute task list: {:#?}", e);
                         let mut wf = initial_wfc.write().await;
                         wf.status = WorkflowStatus::Faulted;
-                        wf.output = Some(Arc::new(serde_json::json!({"error": e.to_string()})));
+                        let error_output = Arc::new(serde_json::json!({"error": e.to_string()}));
+                        Self::record_workflow_output(&span, &error_output, &wf.status);
+                        wf.output = Some(error_output);
                         drop(wf);
                         let _ = tx.send(Ok(initial_wfc.clone())).await;
                         break;
@@ -193,8 +432,6 @@ impl WorkflowExecutor {
             let lock = initial_wfc.read().await;
             if lock.status == WorkflowStatus::Running {
                 drop(lock);
-
-                // Get the final task context
 
                 // Transform output if specified
                 if let Some(output) = workflow.output.as_ref() {
@@ -225,9 +462,14 @@ impl WorkflowExecutor {
                                     Err(e) => {
                                         tracing::debug!("Failed to transform output: {:#?}", e);
                                         lock.status = WorkflowStatus::Faulted;
-                                        lock.output = Some(Arc::new(
-                                            serde_json::json!({"error": e.to_string()}),
-                                        ));
+                                        let error_output =
+                                            Arc::new(serde_json::json!({"error": e.to_string()}));
+                                        Self::record_workflow_output(
+                                            &span,
+                                            &error_output,
+                                            &lock.status,
+                                        );
+                                        lock.output = Some(error_output);
                                     }
                                 }
                             }
@@ -239,6 +481,11 @@ impl WorkflowExecutor {
                 // Mark workflow as completed if it's still running
                 if lock.status == WorkflowStatus::Running {
                     lock.status = WorkflowStatus::Completed;
+                }
+
+                // Record final output
+                if let Some(output) = lock.output.as_ref() {
+                    Self::record_workflow_output(&span, output, &lock.status);
                 }
 
                 drop(lock);
@@ -292,12 +539,15 @@ impl WorkflowExecutor {
         &self,
         task_map: Arc<IndexMap<String, (u32, Arc<Task>)>>,
         parent_task_context: TaskContext,
+        cx: Arc<opentelemetry::Context>,
     ) -> impl Stream<Item = Result<Arc<TaskContext>>> + '_ {
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Arc<TaskContext>>>(32);
 
         let workflow_context = self.workflow_context.clone();
         let job_executors = self.job_executors.clone();
         let http_client = self.http_client.clone();
+        let req_meta = self.metadata.clone();
+        let cx = cx.clone();
 
         tokio::spawn(async move {
             let mut prev_context = parent_task_context;
@@ -310,6 +560,12 @@ impl WorkflowExecutor {
 
             while next_task_pair.is_some() && status == WorkflowStatus::Running {
                 if let Some((name, (pos, task))) = next_task_pair {
+                    let (span, ccx) = Self::child_tracing_span(
+                        &cx,
+                        APP_NAME,
+                        format!("execute_task_{}:{}", pos, name),
+                    );
+                    let _ = span.enter();
                     tracing::info!("Executing task: {}", name);
                     prev_context.add_position_index(*pos);
                     let task_executor = TaskExecutor::new(
@@ -317,11 +573,16 @@ impl WorkflowExecutor {
                         http_client.clone(),
                         name,
                         task.clone(),
+                        req_meta.clone(),
                     );
 
                     // Get stream from task executor
                     let mut task_stream = task_executor
-                        .execute(workflow_context.clone(), Arc::new(prev_context))
+                        .execute(
+                            Arc::new(ccx),
+                            workflow_context.clone(),
+                            Arc::new(prev_context),
+                        )
                         .await;
 
                     let mut last_context = None;
@@ -513,6 +774,7 @@ mod tests {
                 Arc::new(workflow.clone()),
                 input.clone(),
                 context.clone(),
+                Arc::new(HashMap::new()),
             );
 
             let mut idx = 0;
@@ -534,7 +796,11 @@ mod tests {
             );
 
             executor.workflow_context.write().await.status = WorkflowStatus::Running;
-            let mut task_stream = executor.execute_task_list(task_map, task_context);
+            let mut task_stream = executor.execute_task_list(
+                task_map,
+                task_context,
+                opentelemetry::Context::current().into(),
+            );
             let mut final_tc = None;
             while let Some(tc) = task_stream.next().await {
                 match tc {
@@ -574,6 +840,7 @@ mod tests {
                 Arc::new(workflow.clone()),
                 input.clone(),
                 context.clone(),
+                Arc::new(HashMap::new()),
             );
 
             executor.workflow_context.write().await.status = WorkflowStatus::Running;
@@ -681,6 +948,7 @@ mod tests {
                 Arc::new(workflow.clone()),
                 input.clone(),
                 context.clone(),
+                Arc::new(HashMap::new()),
             );
 
             let mut task_map = IndexMap::<String, (u32, Arc<Task>)>::new();
@@ -756,7 +1024,11 @@ mod tests {
             );
 
             executor.workflow_context.write().await.status = WorkflowStatus::Running;
-            let mut task_stream = executor.execute_task_list(Arc::new(task_map), task_context);
+            let mut task_stream = executor.execute_task_list(
+                Arc::new(task_map),
+                task_context,
+                Arc::new(opentelemetry::Context::current()),
+            );
             let mut final_tc = None;
             while let Some(tc) = task_stream.next().await {
                 match tc {
@@ -808,6 +1080,7 @@ mod tests {
                     Arc::new(workflow.clone()),
                     input.clone(),
                     context.clone(),
+                    Arc::new(HashMap::new()),
                 );
 
                 let task_map = Arc::new(indexmap! {
@@ -841,7 +1114,11 @@ mod tests {
 
                 // exit case
                 executor.workflow_context.write().await.status = WorkflowStatus::Running;
-                let mut task_stream = executor.execute_task_list(task_map, task_context);
+                let mut task_stream = executor.execute_task_list(
+                    task_map,
+                    task_context,
+                    Arc::new(opentelemetry::Context::current()),
+                );
                 let mut final_tc = None;
                 while let Some(tc) = task_stream.next().await {
                     match tc {
@@ -876,6 +1153,7 @@ mod tests {
                     Arc::new(workflow.clone()),
                     input.clone(),
                     context.clone(),
+                    Arc::new(HashMap::new()),
                 );
 
                 let task_map = Arc::new(indexmap! {
@@ -897,7 +1175,11 @@ mod tests {
                     Arc::new(Mutex::new(serde_json::Map::new())),
                 );
                 executor.workflow_context.write().await.status = WorkflowStatus::Running;
-                let mut task_stream = executor.execute_task_list(task_map, task_context);
+                let mut task_stream = executor.execute_task_list(
+                    task_map,
+                    task_context,
+                    Arc::new(opentelemetry::Context::current()),
+                );
                 let mut final_tc = None;
                 while let Some(tc) = task_stream.next().await {
                     match tc {
@@ -967,6 +1249,7 @@ mod tests {
                 workflow.clone(),
                 input.clone(),
                 context.clone(),
+                Arc::new(HashMap::new()),
             );
 
             let task_map = Arc::new(indexmap! {
@@ -1008,7 +1291,11 @@ mod tests {
                 Arc::new(Mutex::new(serde_json::Map::new())),
             );
             executor.workflow_context.write().await.status = WorkflowStatus::Running;
-            let mut task_stream = executor.execute_task_list(task_map, task_context);
+            let mut task_stream = executor.execute_task_list(
+                task_map,
+                task_context,
+                Arc::new(opentelemetry::Context::current()),
+            );
             let mut final_tc = None;
             while let Some(tc) = task_stream.next().await {
                 match tc {

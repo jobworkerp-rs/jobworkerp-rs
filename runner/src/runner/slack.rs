@@ -12,6 +12,7 @@ use futures::stream::BoxStream;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
+use std::collections::HashMap;
 use tonic::async_trait;
 
 use super::RunnerSpec;
@@ -72,46 +73,58 @@ impl RunnerTrait for SlackPostMessageRunner {
         self.slack = Some(SlackRepository::new(res.into()));
         Ok(())
     }
-    async fn run(&mut self, args: &[u8]) -> Result<Vec<Vec<u8>>> {
-        if let Some(slack) = self.slack.as_ref() {
-            tracing::debug!("slack runner is initialized");
-            let message = ProstMessageCodec::deserialize_message::<SlackChatPostMessageArgs>(args)
-                .map_err(|e| {
-                    JobWorkerError::InvalidParameter(format!(
-                        "cannot deserialize slack message: {:?}",
-                        e
-                    ))
-                })?;
-            // not validate json structure for slack
-            tracing::debug!("try to send slack message: {:?}", &message);
-            let r = slack.send_message(&message).await;
-            match r {
-                Ok(res) => {
-                    tracing::debug!("slack notification was sent: {:?}", &res);
-                    Ok(vec![ProstMessageCodec::serialize_message(
-                        &res.to_proto().map_err(|e| {
-                            JobWorkerError::OtherError(format!(
-                                "cannot serialize slack result: {:?}",
+    async fn run(
+        &mut self,
+        args: &[u8],
+        metadata: HashMap<String, String>,
+    ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        let result = async {
+            if let Some(slack) = self.slack.as_ref() {
+                tracing::debug!("slack runner is initialized");
+                let message =
+                    ProstMessageCodec::deserialize_message::<SlackChatPostMessageArgs>(args)
+                        .map_err(|e| {
+                            JobWorkerError::InvalidParameter(format!(
+                                "cannot deserialize slack message: {:?}",
                                 e
                             ))
-                        })?,
-                    )?])
+                        })?;
+                // not validate json structure for slack
+                tracing::debug!("try to send slack message: {:?}", &message);
+                let r = slack.send_message(&message).await;
+                match r {
+                    Ok(res) => {
+                        tracing::debug!("slack notification was sent: {:?}", &res);
+                        Ok(ProstMessageCodec::serialize_message(
+                            &res.to_proto().map_err(|e| {
+                                JobWorkerError::OtherError(format!(
+                                    "cannot serialize slack result: {:?}",
+                                    e
+                                ))
+                            })?,
+                        )?)
+                    }
+                    Err(e) => {
+                        tracing::error!("slack error: {:?}", &e);
+                        Err(anyhow!("slack error: {:?}", e))
+                    }
                 }
-                Err(e) => {
-                    tracing::error!("slack error: {:?}", &e);
-                    Err(anyhow!("slack error: {:?}", e))
-                }
+            } else {
+                Err(JobWorkerError::InvalidParameter(
+                    "slack repository is not initialized".to_string(),
+                )
+                .into())
             }
-        } else {
-            Err(
-                JobWorkerError::InvalidParameter("slack repository is not initialized".to_string())
-                    .into(),
-            )
-        }
+        };
+        (result.await, metadata)
     }
-    async fn run_stream(&mut self, arg: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>> {
+    async fn run_stream(
+        &mut self,
+        arg: &[u8],
+        metadata: HashMap<String, String>,
+    ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // default implementation (return empty)
-        let _ = arg;
+        let _ = (arg, metadata);
         Err(anyhow::anyhow!("not implemented"))
     }
 

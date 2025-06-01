@@ -6,6 +6,13 @@ package jobworkerp.data;
 // Represents an empty message with no fields, used as a placeholder
 message Empty {}
 
+// # Trailer
+message Trailer {
+  // # metadata
+  // Additional metadata information
+  map<string, string> metadata = 1;
+}
+
 // # Storage Type
 // Defines the storage backend type used for job queue and result storage
 enum StorageType {
@@ -225,7 +232,7 @@ message ResultOutputItem {
 
     // # End of Stream
     // Marker indicating the end of the stream
-    Empty end = 2;
+    Trailer end = 2;
   }
 }
 
@@ -234,5 +241,5 @@ message ResultOutputItem {
 message ResultOutput {
   // # Result Items
   // List of binary data chunks representing the result
-  repeated bytes items = 1;
+  bytes items = 1;
 }

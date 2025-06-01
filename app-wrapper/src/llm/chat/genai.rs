@@ -12,7 +12,8 @@ use jobworkerp_runner::jobworkerp;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::GenaiRunnerSettings;
 use jobworkerp_runner::jobworkerp::runner::llm::{llm_chat_result, LlmChatArgs, LlmChatResult};
-use proto::jobworkerp::data::{result_output_item, Empty, ResultOutputItem};
+use proto::jobworkerp::data::{result_output_item, ResultOutputItem, Trailer};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::conversion::ToolConverter;
@@ -254,6 +255,7 @@ impl GenaiService {
     pub async fn request_chat_stream(
         &self,
         args: LlmChatArgs,
+        metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let options = self.options(&args);
         let messages = self.trans_messages(args);
@@ -273,11 +275,15 @@ impl GenaiService {
         // Clone the model name to use inside the closure
         let model_name = Arc::new(res.model_iden.model_name.to_string().clone());
 
+        // XXX TODO tracing metadata
+        let metadata = Trailer { metadata };
+        let metadata_clone = metadata.clone();
         // Use flatmap to allow returning multiple ResultOutputItems from a single event
         let stream = res
             .stream
             .filter_map(move |event_result| {
                 let value = model_name.clone();
+                let metadata = metadata.clone();
                 async move {
                     match event_result {
                         Ok(event) => match event {
@@ -367,7 +373,9 @@ impl GenaiService {
                                     _ => {
                                         // If encoding fails, send an empty End signal
                                         return Some(ResultOutputItem {
-                                            item: Some(result_output_item::Item::End(Empty {})),
+                                            item: Some(result_output_item::Item::End(
+                                                metadata.clone(),
+                                            )),
                                         });
                                     }
                                 };
@@ -381,16 +389,16 @@ impl GenaiService {
                             tracing::error!("Error in chat stream: {:?}", e);
                             // On error, send termination signal
                             Some(ResultOutputItem {
-                                item: Some(result_output_item::Item::End(Empty {})),
+                                item: Some(result_output_item::Item::End(metadata.clone())),
                             })
                         }
                     }
                 }
             })
-            .chain(futures::stream::once(async {
+            .chain(futures::stream::once(async move {
                 // Always send End item at the end of the stream
                 ResultOutputItem {
-                    item: Some(result_output_item::Item::End(Empty {})),
+                    item: Some(result_output_item::Item::End(metadata_clone)),
                 }
             }))
             .boxed();

@@ -7,34 +7,40 @@ use crate::workflow::{
         context::{TaskContext, WorkflowContext},
         expression::UseExpression,
         job::JobExecutorWrapper,
-        task::{stream::do_::DoTaskStreamExecutor, StreamTaskExecutorTrait},
+        task::{stream::do_::DoTaskStreamExecutor, trace::TaskTracing, StreamTaskExecutorTrait},
     },
 };
 use anyhow::Result;
 use futures::stream::{self, Stream, StreamExt};
-use infra_utils::infra::net::reqwest;
-use std::{pin::Pin, sync::Arc};
+use infra_utils::infra::{net::reqwest, trace::Tracing};
+use jobworkerp_base::APP_NAME;
+use std::{collections::HashMap, pin::Pin, sync::Arc};
 use tokio::sync::{mpsc, Mutex, RwLock};
 
 pub struct ForTaskStreamExecutor {
     task: workflow::ForTask,
     job_executor_wrapper: Arc<JobExecutorWrapper>,
     http_client: reqwest::ReqwestClient,
+    metadata: Arc<HashMap<String, String>>,
 }
 impl UseExpression for ForTaskStreamExecutor {}
 impl UseJqAndTemplateTransformer for ForTaskStreamExecutor {}
 impl UseExpressionTransformer for ForTaskStreamExecutor {}
+impl Tracing for ForTaskStreamExecutor {}
+impl TaskTracing for ForTaskStreamExecutor {}
 
 impl ForTaskStreamExecutor {
     pub fn new(
         task: workflow::ForTask,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
         http_client: reqwest::ReqwestClient,
+        metadata: Arc<HashMap<String, String>>,
     ) -> Self {
         Self {
             task,
             job_executor_wrapper,
             http_client,
+            metadata,
         }
     }
 
@@ -151,6 +157,7 @@ impl ForTaskStreamExecutor {
     #[allow(clippy::too_many_arguments)]
     async fn process_items_in_parallel_stream(
         &self,
+        cx: Arc<opentelemetry::Context>,
         items: &[serde_json::Value],
         item_name: &str,
         index_name: &str,
@@ -242,15 +249,30 @@ impl ForTaskStreamExecutor {
             let http_client_clone = self.http_client.clone();
             let workflow_context = workflow_context.clone();
             let task_name_formatted = Arc::new(format!("{}_{}", task_name, i));
+            let item_name_clone = item_name.to_string();
+            let cx = cx.clone();
+            let meta = self.metadata.clone();
 
             // Spawn this task asynchronously
             join_set.spawn(async move {
+                let (span, ccx) = Self::create_task_span(
+                    &cx,
+                    item_name_clone.clone(),
+                    &format!(
+                        "for_parallel_task:{}_{}",
+                        &task_name_formatted, &item_name_clone
+                    ),
+                    &prepared_context,
+                );
+                let _ = span.enter();
+
                 let start_time = std::time::Instant::now();
 
                 tracing::debug!("[PARALLEL] Task {} starting at t=0ms", &task_name_formatted);
 
                 // Create executor for this task
                 let do_stream_executor = DoTaskStreamExecutor::new(
+                    meta.clone(),
                     do_task_clone,
                     job_executor_wrapper_clone,
                     http_client_clone,
@@ -259,6 +281,7 @@ impl ForTaskStreamExecutor {
                 // Execute the stream and track results
                 let stream = do_stream_executor
                     .execute_stream(
+                        Arc::new(ccx),
                         task_name_formatted.as_ref(),
                         workflow_context.clone(),
                         prepared_context,
@@ -278,12 +301,13 @@ impl ForTaskStreamExecutor {
                         result_count,
                         elapsed_ms
                     );
-
+                    Self::record_result(&span, result.as_ref());
                     if tx.send(result).await.is_err() {
                         tracing::error!(
                             "Channel closed while sending results for task {}",
                             &task_name_formatted
                         );
+                        Self::record_error(&span, "Channel closed while sending results");
                     }
                 }
 
@@ -335,6 +359,7 @@ impl ForTaskStreamExecutor {
     #[allow(clippy::too_many_arguments)]
     async fn process_items_sequentially_stream(
         &self,
+        cx: Arc<opentelemetry::Context>,
         items: Vec<serde_json::Value>,
         item_name: String,
         index_name: String,
@@ -385,6 +410,12 @@ impl ForTaskStreamExecutor {
                 .await
             {
                 Ok((prepared_context, while_cond)) => {
+                    let (span, cx) = Self::child_tracing_span(
+                        &cx.clone(),
+                        APP_NAME,
+                        format!("for_task_{}:{}_{}", task_name, item_name, i),
+                    );
+                    let _ = span.enter();
                     if !Self::eval_as_bool(&while_cond) {
                         tracing::debug!("for: while condition is false, skipping item {}", i);
                         break;
@@ -395,6 +426,7 @@ impl ForTaskStreamExecutor {
                     // Create a do task executor for this item
                     let task_name_formatted = Arc::new(format!("{}_{}", task_name, i));
                     let do_stream_executor = Arc::new(DoTaskStreamExecutor::new(
+                        self.metadata.clone(),
                         do_task.clone(), //XXX clone
                         self.job_executor_wrapper.clone(),
                         self.http_client.clone(),
@@ -406,11 +438,13 @@ impl ForTaskStreamExecutor {
                     let tnf_clone = tnf.clone();
                     let workflow_context_clone = workflow_context.clone();
                     let do_stream_executor_clone = do_stream_executor.clone();
+                    let cxc = Arc::new(cx);
 
                     let stream: Pin<
                         Box<dyn Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send>,
                     > = Box::pin(async_stream::stream! {
                         let mut inner_stream = do_stream_executor_clone.execute_stream(
+                            cxc.clone(),
                             tnf_clone.as_str(),
                             workflow_context_clone,
                             prepared_context,
@@ -481,6 +515,7 @@ impl ForTaskStreamExecutor {
 impl StreamTaskExecutorTrait<'_> for ForTaskStreamExecutor {
     fn execute_stream(
         &self,
+        cx: Arc<opentelemetry::Context>,
         task_name: &str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
@@ -539,6 +574,7 @@ impl StreamTaskExecutorTrait<'_> for ForTaskStreamExecutor {
                         // Parallel processing with real-time streaming
                         match this
                             .process_items_in_parallel_stream(
+                                cx.clone(),
                                 &items,
                                 item_name,
                                 index_name,
@@ -564,6 +600,7 @@ impl StreamTaskExecutorTrait<'_> for ForTaskStreamExecutor {
                         // Sequential processing
                         match this
                             .process_items_sequentially_stream(
+                                cx.clone(),
                                 items,
                                 item_name.to_string(),
                                 index_name.to_string(),

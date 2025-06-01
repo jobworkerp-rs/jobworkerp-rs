@@ -27,7 +27,7 @@ use proto::jobworkerp::data::{
     Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobStatus, QueueType, ResponseType,
     ResultOutputItem, Worker, WorkerData, WorkerId,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::{sync::Arc, time::Duration};
 
 #[derive(Clone, Debug)]
@@ -75,6 +75,7 @@ impl RdbChanJobAppImpl {
     #[allow(clippy::too_many_arguments)]
     async fn enqueue_job_with_worker(
         &self,
+        metadata: Arc<HashMap<String, String>>,
         worker: Worker,
         args: Vec<u8>,
         uniq_key: Option<String>,
@@ -135,19 +136,20 @@ impl RdbChanJobAppImpl {
             } else {
                 job_data
             };
-
             if w.response_type == ResponseType::Direct as i32 {
                 // use chan only for direct response (not restore)
                 // TODO create backup for queue_type == RdbChan ?
                 let job = Job {
                     id: Some(jid),
                     data: Some(data.to_owned()),
+                    metadata: (*metadata).clone(),
                 };
                 self.enqueue_job_sync(&job, w).await
             } else if w.periodic_interval > 0 || self.is_run_after_job_data(&data) {
                 let job = Job {
                     id: Some(jid),
                     data: Some(data),
+                    metadata: (*metadata).clone(),
                 };
                 // enqueue rdb only
                 if self.rdb_job_repository().create(&job).await? {
@@ -166,6 +168,7 @@ impl RdbChanJobAppImpl {
                 let job = Job {
                     id: Some(jid),
                     data: Some(data),
+                    metadata: (*metadata).clone(),
                 };
                 if w.queue_type == QueueType::WithBackup as i32 {
                     // instant job (store rdb for backup, and enqueue to chan)
@@ -203,8 +206,9 @@ impl RdbChanJobAppImpl {
 
 #[async_trait]
 impl JobApp for RdbChanJobAppImpl {
-    async fn enqueue_job_with_temp_worker(
-        &self,
+    async fn enqueue_job_with_temp_worker<'a>(
+        &'a self,
+        meta: Arc<HashMap<String, String>>,
         worker_data: WorkerData,
         args: Vec<u8>,
         uniq_key: Option<String>,
@@ -228,6 +232,7 @@ impl JobApp for RdbChanJobAppImpl {
             data: Some(worker_data),
         };
         self.enqueue_job_with_worker(
+            meta,
             worker,
             args,
             uniq_key,
@@ -239,10 +244,11 @@ impl JobApp for RdbChanJobAppImpl {
         )
         .await
     }
-    async fn enqueue_job(
-        &self,
-        worker_id: Option<&WorkerId>,
-        worker_name: Option<&String>,
+    async fn enqueue_job<'a>(
+        &'a self,
+        metadata: Arc<HashMap<String, String>>,
+        worker_id: Option<&'a WorkerId>,
+        worker_name: Option<&'a String>,
         args: Vec<u8>,
         uniq_key: Option<String>,
         run_after_time: i64,
@@ -267,6 +273,7 @@ impl JobApp for RdbChanJobAppImpl {
         };
         if let Some(w) = worker_res {
             self.enqueue_job_with_worker(
+                metadata,
                 w,
                 args,
                 uniq_key,
@@ -287,6 +294,7 @@ impl JobApp for RdbChanJobAppImpl {
         if let Job {
             id: Some(jid),
             data: Some(data),
+            metadata: _,
         } = job
         {
             let is_run_after_job_data = self.is_run_after_job_data(data);
@@ -305,6 +313,7 @@ impl JobApp for RdbChanJobAppImpl {
                     || w.queue_type == QueueType::WithBackup as i32
                 {
                     // XXX should compare grabbed_until_time and update if not changed or not (now not compared)
+                    // TODO store metadata
                     self.rdb_job_repository().upsert(jid, data).await
                 } else {
                     Ok(false)
@@ -809,7 +818,6 @@ mod tests {
             subscrber,
         ))
     }
-
     #[test]
     fn test_create_direct_job_complete() -> Result<()> {
         // tracing_init_test(tracing::Level::DEBUG);
@@ -843,9 +851,21 @@ mod tests {
             let jargs1 = jargs.clone();
             let app1 = app.clone();
             // need waiting for direct response
+            let metadata = Arc::new(HashMap::new());
             let jh = tokio::spawn(async move {
                 let res = app1
-                    .enqueue_job(Some(&worker_id1), None, jargs1, None, 0, 0, 0, None, false)
+                    .enqueue_job(
+                        metadata.clone(),
+                        Some(&worker_id1),
+                        None,
+                        jargs1,
+                        None,
+                        0,
+                        0,
+                        0,
+                        None,
+                        false,
+                    )
                     .await;
                 let (jid, job_res, _) = res.unwrap();
                 assert!(jid.value > 0);
@@ -885,7 +905,7 @@ mod tests {
                     uniq_key: None,
                     status: ResultStatus::Success as i32,
                     output: Some(ResultOutput {
-                        items: { vec!["test".as_bytes().to_vec()] },
+                        items: { "test".as_bytes().to_vec() },
                     }),
                     retried: 0,
                     max_retry: 0,
@@ -900,6 +920,7 @@ mod tests {
                     store_success: false,
                     store_failure: false,
                 }),
+                ..Default::default()
             };
             assert!(
                 app.complete_job(&rid, result.data.as_ref().unwrap(), None)
@@ -947,10 +968,12 @@ mod tests {
             let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["/".to_string()],
             });
+            let metadata = Arc::new(HashMap::new());
 
             // wait for direct response
             let job_id = app
                 .enqueue_job(
+                    metadata.clone(),
                     Some(&worker_id),
                     None,
                     jargs.clone(),
@@ -977,6 +1000,7 @@ mod tests {
                     timeout: 0,
                     request_streaming: false,
                 }),
+                metadata: (*metadata).clone(),
             };
             assert_eq!(
                 app.job_status_repository()
@@ -996,7 +1020,7 @@ mod tests {
                     uniq_key: None,
                     status: ResultStatus::Success as i32,
                     output: Some(ResultOutput {
-                        items: { vec!["test".as_bytes().to_vec()] },
+                        items: { "test".as_bytes().to_vec() },
                     }),
                     retried: 0,
                     max_retry: 0,
@@ -1011,6 +1035,7 @@ mod tests {
                     store_success: true,
                     store_failure: true,
                 }),
+                metadata: (*metadata).clone(),
             };
             let jid = job_id;
             let res = result.clone();
@@ -1075,10 +1100,12 @@ mod tests {
             let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["/".to_string()],
             });
+            let metadata = Arc::new(HashMap::new());
 
             // wait for direct response
             let (job_id, res, _) = app
                 .enqueue_job(
+                    metadata.clone(),
                     Some(&worker_id),
                     None,
                     jargs.clone(),
@@ -1122,7 +1149,7 @@ mod tests {
                     uniq_key: None,
                     status: ResultStatus::Success as i32,
                     output: Some(ResultOutput {
-                        items: { vec!["test".as_bytes().to_vec()] },
+                        items: { "test".as_bytes().to_vec() },
                     }),
                     retried: 0,
                     max_retry: 0,
@@ -1137,6 +1164,7 @@ mod tests {
                     store_success: true,
                     store_failure: false,
                 }),
+                metadata: (*metadata).clone(),
             };
             assert!(
                 !app.complete_job(
@@ -1199,8 +1227,10 @@ mod tests {
                     .await?,
                 0
             );
+            let metadata = Arc::new(HashMap::new());
             let (job_id, res, _) = app
                 .enqueue_job(
+                    metadata.clone(),
                     Some(&worker_id),
                     None,
                     jargs.clone(),
@@ -1217,6 +1247,7 @@ mod tests {
             // job2
             let (job_id2, res2, _) = app
                 .enqueue_job(
+                    metadata,
                     Some(&worker_id),
                     None,
                     jargs.clone(),

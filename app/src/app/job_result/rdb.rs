@@ -151,6 +151,7 @@ impl JobResultApp for RdbJobResultAppImpl {
                     Some(JobResult {
                         id: Some(*id),
                         data: Some(d),
+                        ..Default::default()
                     })
                 })
             } else {
@@ -158,6 +159,7 @@ impl JobResultApp for RdbJobResultAppImpl {
                 Ok(Some(JobResult {
                     id: Some(*id),
                     data: None,
+                    ..Default::default()
                 }))
             }
         } else {

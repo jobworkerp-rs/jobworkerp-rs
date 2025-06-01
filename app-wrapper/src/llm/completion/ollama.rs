@@ -12,6 +12,8 @@ use ollama_rs::{
 };
 use proto::jobworkerp::data::RunnerType;
 
+use crate::llm::ThinkTagHelper;
+
 pub struct OllamaService {
     pub ollama: Ollama,
     pub model: String,
@@ -19,11 +21,10 @@ pub struct OllamaService {
 }
 // static DATA: OnceCell<Bytes> = OnceCell::new();
 
+impl ThinkTagHelper for OllamaService {}
+
 impl OllamaService {
     const URL_BASE: &'static str = "http://localhost:11434";
-    const START_THINK_TAG: &'static str = "<think>";
-    const END_THINK_TAG: &'static str = "</think>";
-
     pub async fn new(settings: OllamaRunnerSettings) -> Result<Self> {
         let ollama = Ollama::try_new(settings.base_url.unwrap_or(Self::URL_BASE.to_string()))?;
         if settings.pull_model.unwrap_or(true) {
@@ -250,16 +251,6 @@ impl OllamaService {
             });
         }
         Ok(result)
-    }
-    fn divide_think_tag(prompt: String) -> (String, Option<String>) {
-        if let Some(think_start) = prompt.find(Self::START_THINK_TAG) {
-            if let Some(think_end) = prompt.find(Self::END_THINK_TAG) {
-                let think = Some(prompt[think_start + 7..think_end].trim().to_string());
-                let new_prompt = prompt[..think_start].to_string() + &prompt[think_end + 8..];
-                return (new_prompt.trim().to_string(), think);
-            }
-        }
-        (prompt.trim().to_string(), None)
     }
 }
 

@@ -18,7 +18,7 @@ use proto::jobworkerp::data::{
     Job, JobId, JobResult, JobResultData, JobResultId, JobStatus, ResponseType, ResultOutputItem,
     WorkerData, WorkerId,
 };
-use std::{fmt, sync::Arc, time::Duration};
+use std::{collections::HashMap, fmt, sync::Arc, time::Duration};
 
 pub trait JobCacheKeys {
     // cache keys
@@ -43,10 +43,11 @@ pub trait JobCacheKeys {
 #[async_trait]
 pub trait JobApp: fmt::Debug + Send + Sync {
     #[allow(clippy::too_many_arguments)]
-    async fn enqueue_job(
-        &self,
-        worker_id: Option<&WorkerId>,
-        worker_name: Option<&String>,
+    async fn enqueue_job<'a>(
+        &'a self,
+        meta: Arc<HashMap<String, String>>,
+        worker_id: Option<&'a WorkerId>,
+        worker_name: Option<&'a String>,
         arg: Vec<u8>,
         uniq_key: Option<String>,
         run_after_time: i64,
@@ -61,8 +62,9 @@ pub trait JobApp: fmt::Debug + Send + Sync {
     )>;
 
     #[allow(clippy::too_many_arguments)]
-    async fn enqueue_job_with_temp_worker(
-        &self,
+    async fn enqueue_job_with_temp_worker<'a>(
+        &'a self,
+        meta: Arc<HashMap<String, String>>,
         worker_data: WorkerData,
         arg: Vec<u8>,
         uniq_key: Option<String>,

@@ -9,14 +9,18 @@ use crate::{schema_to_json_string, schema_to_json_string_option};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::codec::ProstMessageCodec;
 use jobworkerp_base::codec::UseProstCodec;
+use jobworkerp_base::APP_WORKER_NAME;
+use opentelemetry::trace::TraceContextExt;
 use proto::jobworkerp::data::ResultOutputItem;
 use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::function::data::McpTool;
 use proto::jobworkerp::function::data::ToolAnnotations;
 use proxy::McpServerProxy;
 use rmcp::model::CallToolRequestParam;
+use std::collections::HashMap;
 
 pub mod config;
 #[cfg(any(test, feature = "test-utils"))]
@@ -87,119 +91,162 @@ impl RunnerSpec for McpServerRunnerImpl {
     }
 }
 
+impl Tracing for McpServerRunnerImpl {}
+
 #[async_trait]
 impl RunnerTrait for McpServerRunnerImpl {
     async fn load(&mut self, _settings: Vec<u8>) -> Result<()> {
         Ok(())
     }
-    async fn run(&mut self, args: &[u8]) -> Result<Vec<Vec<u8>>> {
-        let arg = ProstMessageCodec::deserialize_message::<McpServerArgs>(args)?;
-        let res = self
-            .mcp_server
-            .transport
-            .call_tool(CallToolRequestParam {
-                name: std::borrow::Cow::Owned(arg.tool_name),
-                arguments: serde_json::from_str(arg.arg_json.as_str())
-                    .inspect_err(|e| {
-                        tracing::error!("Failed to parse arguments: {}", e);
-                    })
-                    .ok(),
-            })
-            .await?;
+    async fn run(
+        &mut self,
+        args: &[u8],
+        metadata: HashMap<String, String>,
+    ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        let result = async {
+            let cx = Self::otel_context_from_metadata(
+                &metadata,
+                APP_WORKER_NAME,
+                "McpServerRunnerImpl::run",
+            );
+            let mut metadata = metadata.clone();
+            Self::inject_metadata_from_context(&mut metadata, &cx);
+            let span = cx.span();
 
-        // map res to McpServerResult and encode to Vec<u8>
-        let mut mcp_contents = Vec::new();
-        for content in res.content {
-            match content.raw {
-                rmcp::model::RawContent::Text(rmcp::model::RawTextContent { text }) => {
-                    mcp_contents.push(mcp_server_result::Content {
-                        raw_content: Some(mcp_server_result::content::RawContent::Text(
-                            mcp_server_result::TextContent { text },
-                        )),
-                    });
-                }
-                rmcp::model::RawContent::Image(rmcp::model::RawImageContent {
-                    data,
-                    mime_type,
-                }) => {
-                    mcp_contents.push(mcp_server_result::Content {
-                        raw_content: Some(mcp_server_result::content::RawContent::Image(
-                            mcp_server_result::ImageContent { data, mime_type },
-                        )),
-                    });
-                }
-                // wait for raw audio content of raw content
-                // https://github.com/modelcontextprotocol/rust-sdk/blob/main/crates/rmcp/src/model/content.rs#L55
-                rmcp::model::RawContent::Audio(_audio) => {
-                    // mcp_contents.push(mcp_server_result::Content {
-                    //     raw_content: Some(mcp_server_result::content::RawContent::Audio(
-                    //         mcp_server_result::AudioContent { data, mime_type },
-                    //     )),
-                    // });
-                    tracing::error!("Audio content not supported yet");
-                }
-                rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
-                    resource:
-                        rmcp::model::ResourceContents::TextResourceContents {
-                            uri,
-                            mime_type,
-                            text,
-                        },
-                }) => {
-                    mcp_contents.push(mcp_server_result::Content {
-                        raw_content: Some(mcp_server_result::content::RawContent::Resource(
-                            mcp_server_result::EmbeddedResource {
-                                resource: Some(
-                                    mcp_server_result::embedded_resource::Resource::Text(
-                                        TextResourceContents {
-                                            uri,
-                                            mime_type,
-                                            text,
-                                        },
-                                    ),
-                                ),
+            let arg = ProstMessageCodec::deserialize_message::<McpServerArgs>(args)?;
+            span.set_attribute(opentelemetry::KeyValue::new(
+                "input.tool_name",
+                arg.tool_name.clone(),
+            ));
+            span.set_attribute(opentelemetry::KeyValue::new(
+                "input.arg_json",
+                arg.arg_json.clone(), // XXX clone
+            ));
+            let res = self
+                .mcp_server
+                .transport
+                .call_tool(CallToolRequestParam {
+                    name: std::borrow::Cow::Owned(arg.tool_name),
+                    arguments: serde_json::from_str(arg.arg_json.as_str())
+                        .inspect_err(|e| {
+                            tracing::error!("Failed to parse arguments: {}", e);
+                        })
+                        .ok(),
+                })
+                .await?;
+
+            if res.is_error.unwrap_or_default() {
+                let error = anyhow!(
+                    "Tool call failed: {}",
+                    serde_json::json!(res.content).to_string()
+                );
+                span.record_error(error.as_ref());
+            } else {
+                span.set_attribute(opentelemetry::KeyValue::new(
+                    "output",
+                    serde_json::json!(res.content).to_string(),
+                ));
+            }
+            // map res to McpServerResult and encode to Vec<u8>
+            let mut mcp_contents = Vec::new();
+            for content in res.content {
+                match content.raw {
+                    rmcp::model::RawContent::Text(rmcp::model::RawTextContent { text }) => {
+                        mcp_contents.push(mcp_server_result::Content {
+                            raw_content: Some(mcp_server_result::content::RawContent::Text(
+                                mcp_server_result::TextContent { text },
+                            )),
+                        });
+                    }
+                    rmcp::model::RawContent::Image(rmcp::model::RawImageContent {
+                        data,
+                        mime_type,
+                    }) => {
+                        mcp_contents.push(mcp_server_result::Content {
+                            raw_content: Some(mcp_server_result::content::RawContent::Image(
+                                mcp_server_result::ImageContent { data, mime_type },
+                            )),
+                        });
+                    }
+                    // wait for raw audio content of raw content
+                    // https://github.com/modelcontextprotocol/rust-sdk/blob/main/crates/rmcp/src/model/content.rs#L55
+                    rmcp::model::RawContent::Audio(_audio) => {
+                        // mcp_contents.push(mcp_server_result::Content {
+                        //     raw_content: Some(mcp_server_result::content::RawContent::Audio(
+                        //         mcp_server_result::AudioContent { data, mime_type },
+                        //     )),
+                        // });
+                        tracing::error!("Audio content not supported yet");
+                    }
+                    rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
+                        resource:
+                            rmcp::model::ResourceContents::TextResourceContents {
+                                uri,
+                                mime_type,
+                                text,
                             },
-                        )),
-                    });
-                }
-                rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
-                    resource:
-                        rmcp::model::ResourceContents::BlobResourceContents {
-                            uri,
-                            mime_type,
-                            blob,
-                        },
-                }) => {
-                    mcp_contents.push(mcp_server_result::Content {
-                        raw_content: Some(mcp_server_result::content::RawContent::Resource(
-                            mcp_server_result::EmbeddedResource {
-                                resource: Some(
-                                    mcp_server_result::embedded_resource::Resource::Blob(
-                                        BlobResourceContents {
-                                            uri,
-                                            mime_type,
-                                            blob,
-                                        },
+                    }) => {
+                        mcp_contents.push(mcp_server_result::Content {
+                            raw_content: Some(mcp_server_result::content::RawContent::Resource(
+                                mcp_server_result::EmbeddedResource {
+                                    resource: Some(
+                                        mcp_server_result::embedded_resource::Resource::Text(
+                                            TextResourceContents {
+                                                uri,
+                                                mime_type,
+                                                text,
+                                            },
+                                        ),
                                     ),
-                                ),
+                                },
+                            )),
+                        });
+                    }
+                    rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
+                        resource:
+                            rmcp::model::ResourceContents::BlobResourceContents {
+                                uri,
+                                mime_type,
+                                blob,
                             },
-                        )),
-                    });
+                    }) => {
+                        mcp_contents.push(mcp_server_result::Content {
+                            raw_content: Some(mcp_server_result::content::RawContent::Resource(
+                                mcp_server_result::EmbeddedResource {
+                                    resource: Some(
+                                        mcp_server_result::embedded_resource::Resource::Blob(
+                                            BlobResourceContents {
+                                                uri,
+                                                mime_type,
+                                                blob,
+                                            },
+                                        ),
+                                    ),
+                                },
+                            )),
+                        });
+                    }
                 }
             }
+
+            let mcp_result = McpServerResult {
+                content: mcp_contents,
+                is_error: res.is_error.unwrap_or(false),
+            };
+
+            // Encode the result as protobuf
+            let encoded = ProstMessageCodec::serialize_message(&mcp_result)?;
+            Ok(encoded)
         }
-
-        let mcp_result = McpServerResult {
-            content: mcp_contents,
-            is_error: res.is_error.unwrap_or(false),
-        };
-
-        // Encode the result as protobuf
-        let encoded = ProstMessageCodec::serialize_message(&mcp_result)?;
-        Ok(vec![encoded])
+        .await;
+        (result, metadata)
     }
 
-    async fn run_stream(&mut self, _arg: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>> {
+    async fn run_stream(
+        &mut self,
+        _arg: &[u8],
+        _metadata: HashMap<String, String>,
+    ) -> Result<BoxStream<'static, ResultOutputItem>> {
         tracing::error!("run_stream not implemented");
         Err(anyhow!("run_stream not implemented"))
     }

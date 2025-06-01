@@ -342,7 +342,9 @@ pub mod test {
     };
     use anyhow::Result;
     use infra::infra::{
-        module::RedisRdbOptionalRepositoryModule, test::new_for_test_config_rdb, IdGeneratorWrapper,
+        module::{rdb::test::setup_test_rdb_module, RedisRdbOptionalRepositoryModule},
+        test::new_for_test_config_rdb,
+        IdGeneratorWrapper,
     };
     use infra_utils::infra::memory::MemoryCacheImpl;
     use jobworkerp_runner::runner::{
@@ -359,6 +361,8 @@ pub mod test {
             r#type: StorageType::Scalable,
             restore_at_startup: Some(false),
         });
+        // for rdb migration
+        let _rdb_module = setup_test_rdb_module().await;
         let id_generator = Arc::new(IdGeneratorWrapper::new());
         let module = new_for_test_config_rdb();
         let plugins = Arc::new(Plugins::new());

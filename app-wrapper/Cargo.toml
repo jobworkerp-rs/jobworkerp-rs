@@ -46,6 +46,7 @@ liquid = "0.26"
 nix = { workspace = true, features = ["signal"] }
 ollama-rs = { version = "0.3", features = ["stream"] }
 once_cell = { workspace = true }
+opentelemetry = { workspace = true }
 prost = { workspace = true }
 # redis = { workspace = true }
 rand = { workspace = true }
@@ -75,8 +76,9 @@ tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
 url = { workspace = true }
-uuid = {workspace = true}
+uuid = { workspace = true }
 
 [dev-dependencies]
 regex = { workspace = true }
