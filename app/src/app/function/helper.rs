@@ -574,10 +574,9 @@ mod tests {
     #[test]
     fn test_function_call_helper_correct_mcp_worker_args_with_tool_name() {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            // tokio::time::sleep(std::time::Duration::from_secs(10)).await;
             // Get test app instance
-            let app = create_hybrid_test_app()
-                .await
-                .expect("Failed to create test app");
+            let app = create_hybrid_test_app().await.unwrap();
             let _helper = TestFunctionCallHelper { app };
 
             // Case 1: tool_name already exists and matches the value
@@ -615,10 +614,9 @@ mod tests {
     #[test]
     fn test_function_call_helper_correct_mcp_worker_args_without_tool_name() {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            // tokio::time::sleep(std::time::Duration::from_secs(10)).await;
             // Get test app instance
-            let app = create_hybrid_test_app()
-                .await
-                .expect("Failed to create test app");
+            let app = create_hybrid_test_app().await.unwrap();
             let _helper = TestFunctionCallHelper { app };
 
             // Case 3: tool_name doesn't exist
