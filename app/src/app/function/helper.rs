@@ -571,80 +571,86 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_function_call_helper_correct_mcp_worker_args_with_tool_name() {
-        // Get test app instance
-        let app = create_hybrid_test_app()
-            .await
-            .expect("Failed to create test app");
-        let _helper = TestFunctionCallHelper { app };
+    #[test]
+    fn test_function_call_helper_correct_mcp_worker_args_with_tool_name() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            // Get test app instance
+            let app = create_hybrid_test_app()
+                .await
+                .expect("Failed to create test app");
+            let _helper = TestFunctionCallHelper { app };
 
-        // Case 1: tool_name already exists and matches the value
-        let tool_name = "test_tool".to_string();
-        let mut arguments = Map::new();
-        arguments.insert(
-            "tool_name".to_string(),
-            Value::String("test_tool".to_string()),
-        );
-        arguments.insert("arg_json".to_string(), Value::String("value1".to_string()));
+            // Case 1: tool_name already exists and matches the value
+            let tool_name = "test_tool".to_string();
+            let mut arguments = Map::new();
+            arguments.insert(
+                "tool_name".to_string(),
+                Value::String("test_tool".to_string()),
+            );
+            arguments.insert("arg_json".to_string(), Value::String("value1".to_string()));
 
-        // Using FunctionCallHelper's static method through the struct
-        let result = TestFunctionCallHelper::correct_mcp_worker_args(tool_name, arguments.clone());
-        assert!(result.is_ok());
-        let result_args = result.unwrap();
-        assert_eq!(result_args.len(), 2);
-        assert_eq!(
-            result_args["tool_name"],
-            Value::String("test_tool".to_string())
-        );
-        assert_eq!(result_args["arg_json"], Value::String("value1".to_string()));
+            // Using FunctionCallHelper's static method through the struct
+            let result =
+                TestFunctionCallHelper::correct_mcp_worker_args(tool_name, arguments.clone());
+            assert!(result.is_ok());
+            let result_args = result.unwrap();
+            assert_eq!(result_args.len(), 2);
+            assert_eq!(
+                result_args["tool_name"],
+                Value::String("test_tool".to_string())
+            );
+            assert_eq!(result_args["arg_json"], Value::String("value1".to_string()));
 
-        // Case 2: tool_name exists but with different value
-        let tool_name = "different_tool".to_string();
-        let result = TestFunctionCallHelper::correct_mcp_worker_args(tool_name, arguments);
-        assert!(result.is_err());
-        if let Err(err) = result {
-            let err_string = err.to_string();
-            assert!(err_string.contains("tool_name is not matched"));
-        }
+            // Case 2: tool_name exists but with different value
+            let tool_name = "different_tool".to_string();
+            let result = TestFunctionCallHelper::correct_mcp_worker_args(tool_name, arguments);
+            assert!(result.is_err());
+            if let Err(err) = result {
+                let err_string = err.to_string();
+                assert!(err_string.contains("tool_name is not matched"));
+            }
+        })
     }
 
-    #[tokio::test]
-    async fn test_function_call_helper_correct_mcp_worker_args_without_tool_name() {
-        // Get test app instance
-        let app = create_hybrid_test_app()
-            .await
-            .expect("Failed to create test app");
-        let _helper = TestFunctionCallHelper { app };
+    #[test]
+    fn test_function_call_helper_correct_mcp_worker_args_without_tool_name() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            // Get test app instance
+            let app = create_hybrid_test_app()
+                .await
+                .expect("Failed to create test app");
+            let _helper = TestFunctionCallHelper { app };
 
-        // Case 3: tool_name doesn't exist
-        let tool_name = "new_tool".to_string();
-        let mut arguments = Map::new();
-        arguments.insert("param1".to_string(), Value::String("value1".to_string()));
-        arguments.insert(
-            "param2".to_string(),
-            Value::Number(serde_json::Number::from(42)),
-        );
-
-        // Using FunctionCallHelper's static method through the struct
-        let result = TestFunctionCallHelper::correct_mcp_worker_args(tool_name.clone(), arguments);
-        assert!(result.is_ok());
-        let result_args = result.unwrap();
-
-        // Verify the new arguments object is constructed correctly
-        assert_eq!(result_args.len(), 2);
-        assert_eq!(result_args["tool_name"], Value::String(tool_name));
-
-        // Verify that the original arguments map is stored in arg_json field
-        if let Value::Object(arg_json_map) = &result_args["arg_json"] {
-            assert_eq!(arg_json_map.len(), 2);
-            assert_eq!(arg_json_map["param1"], Value::String("value1".to_string()));
-            assert_eq!(
-                arg_json_map["param2"],
-                Value::Number(serde_json::Number::from(42))
+            // Case 3: tool_name doesn't exist
+            let tool_name = "new_tool".to_string();
+            let mut arguments = Map::new();
+            arguments.insert("param1".to_string(), Value::String("value1".to_string()));
+            arguments.insert(
+                "param2".to_string(),
+                Value::Number(serde_json::Number::from(42)),
             );
-        } else {
-            panic!("arg_json is not an object");
-        }
+
+            // Using FunctionCallHelper's static method through the struct
+            let result =
+                TestFunctionCallHelper::correct_mcp_worker_args(tool_name.clone(), arguments);
+            assert!(result.is_ok());
+            let result_args = result.unwrap();
+
+            // Verify the new arguments object is constructed correctly
+            assert_eq!(result_args.len(), 2);
+            assert_eq!(result_args["tool_name"], Value::String(tool_name));
+
+            // Verify that the original arguments map is stored in arg_json field
+            if let Value::Object(arg_json_map) = &result_args["arg_json"] {
+                assert_eq!(arg_json_map.len(), 2);
+                assert_eq!(arg_json_map["param1"], Value::String("value1".to_string()));
+                assert_eq!(
+                    arg_json_map["param2"],
+                    Value::Number(serde_json::Number::from(42))
+                );
+            } else {
+                panic!("arg_json is not an object");
+            }
+        })
     }
 }
