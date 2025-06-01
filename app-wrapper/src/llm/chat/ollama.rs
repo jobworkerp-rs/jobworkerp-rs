@@ -29,21 +29,9 @@ pub struct OllamaChatService {
     pub model: String,
     pub system_prompt: Option<String>,
     pub otel_client: Option<Arc<GenericOtelClient>>,
-    pub session_id: Option<String>,
-    pub user_id: Option<String>,
 }
 
 impl OllamaTracingHelper for OllamaChatService {
-    fn get_session_id(&self) -> &str {
-        if let Some(s) = self.session_id.as_ref() {
-            s
-        } else {
-            "default-session"
-        }
-    }
-    fn get_user_id(&self) -> Option<&String> {
-        self.user_id.as_ref()
-    }
     fn get_otel_client(&self) -> Option<&Arc<GenericOtelClient>> {
         self.otel_client.as_ref()
     }
@@ -65,23 +53,11 @@ impl OllamaChatService {
             model: settings.model,
             system_prompt: settings.system_prompt,
             otel_client: Some(Arc::new(GenericOtelClient::new("ollama.chat_service"))),
-            session_id: None,
-            user_id: None,
         })
     }
 
     pub fn with_otel_client(mut self, client: Arc<GenericOtelClient>) -> Self {
         self.otel_client = Some(client);
-        self
-    }
-
-    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
-        self.session_id = Some(session_id.into());
-        self
-    }
-
-    pub fn with_user_id(mut self, user_id: impl Into<String>) -> Self {
-        self.user_id = Some(user_id.into());
         self
     }
 
@@ -204,6 +180,7 @@ impl OllamaChatService {
         cx: opentelemetry::Context,
         metadata: HashMap<String, String>,
     ) -> Result<LlmChatResult> {
+        let metadata = Arc::new(metadata);
         let options = Self::create_chat_options(&args);
         let model = args.model.clone().unwrap_or_else(|| self.model.clone());
         let mut messages = Self::convert_messages(&args);
@@ -223,8 +200,8 @@ impl OllamaChatService {
             options,
             Arc::new(Mutex::new(messages)),
             tools.clone(),
-            Some(cx), // No parent context for initial call
-            metadata,
+            Some(cx.clone()), // No parent context for initial call
+            metadata.clone(),
         )
         .await?;
 
@@ -250,7 +227,9 @@ impl OllamaChatService {
                     message_content::Content::Text(text) => Some(text.as_str()),
                     _ => None,
                 });
-            let _ = self.trace_usage("ollama.usage", final_data, content).await;
+            let _ = self
+                .trace_usage(&metadata, cx.clone(), "ollama.usage", final_data, content)
+                .await;
         }
 
         Ok(chat_result)
@@ -262,7 +241,7 @@ impl OllamaChatService {
         messages: Arc<Mutex<Vec<ChatMessage>>>,
         tools: Arc<Vec<ToolInfo>>,
         parent_context: Option<opentelemetry::Context>,
-        metadata: HashMap<String, String>,
+        metadata: Arc<HashMap<String, String>>,
     ) -> Result<ChatMessageResponse> {
         let mut req = ChatMessageRequest::new(model.clone(), messages.lock().await.clone());
         req = req.options(options.clone());
@@ -286,11 +265,18 @@ impl OllamaChatService {
         let (res, current_context) = if let Some(_otel_client) = self.get_otel_client() {
             // Create span attributes for chat API call
             let span_attributes = self
-                .create_chat_span_from_request(&model, messages.clone(), &options, &tools)
+                .create_chat_span_from_request(
+                    &model,
+                    messages.clone(),
+                    &options,
+                    &tools,
+                    &metadata,
+                )
                 .await;
 
             // Execute chat API call with response tracing, getting both result and context
             self.with_chat_response_tracing(
+                &metadata,
                 parent_context.clone(),
                 span_attributes,
                 chat_api_action,
@@ -354,7 +340,7 @@ impl OllamaChatService {
         messages: Arc<Mutex<Vec<ChatMessage>>>,
         tool_calls: &[ollama_rs::generation::tools::ToolCall],
         parent_context: Option<opentelemetry::Context>,
-        metadata: HashMap<String, String>,
+        metadata: Arc<HashMap<String, String>>,
     ) -> Result<opentelemetry::Context> {
         if parent_context.is_none() && self.get_otel_client().is_some() {
             tracing::warn!("No parent context provided for tool calls, using current context");
@@ -382,11 +368,17 @@ impl OllamaChatService {
             };
 
             // Execute individual tool call as child span and get updated context
-            let tool_attributes = self.create_tool_call_span_from_call(call);
+            let tool_attributes = self.create_tool_call_span_from_call(call, &metadata);
 
             // Execute tool call with response tracing and get both result and updated context
             let (tool_result, updated_context) = self
-                .with_tool_response_tracing(current_context, tool_attributes, call, tool_action)
+                .with_tool_response_tracing(
+                    &metadata,
+                    current_context,
+                    tool_attributes,
+                    call,
+                    tool_action,
+                )
                 .await?;
 
             tracing::debug!("Tool response: {}", &tool_result);
@@ -405,7 +397,7 @@ impl OllamaChatService {
         &self,
         messages: Arc<Mutex<Vec<ChatMessage>>>,
         tool_calls: &[ollama_rs::generation::tools::ToolCall],
-        metadata: HashMap<String, String>,
+        metadata: Arc<HashMap<String, String>>,
     ) -> Result<()> {
         for call in tool_calls {
             tracing::debug!("Tool call: {:?}", call.function);

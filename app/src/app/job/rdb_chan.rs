@@ -75,7 +75,7 @@ impl RdbChanJobAppImpl {
     #[allow(clippy::too_many_arguments)]
     async fn enqueue_job_with_worker(
         &self,
-        metadata: HashMap<String, String>,
+        metadata: Arc<HashMap<String, String>>,
         worker: Worker,
         args: Vec<u8>,
         uniq_key: Option<String>,
@@ -142,14 +142,14 @@ impl RdbChanJobAppImpl {
                 let job = Job {
                     id: Some(jid),
                     data: Some(data.to_owned()),
-                    metadata,
+                    metadata: (*metadata).clone(),
                 };
                 self.enqueue_job_sync(&job, w).await
             } else if w.periodic_interval > 0 || self.is_run_after_job_data(&data) {
                 let job = Job {
                     id: Some(jid),
                     data: Some(data),
-                    metadata: metadata.clone(),
+                    metadata: (*metadata).clone(),
                 };
                 // enqueue rdb only
                 if self.rdb_job_repository().create(&job).await? {
@@ -168,7 +168,7 @@ impl RdbChanJobAppImpl {
                 let job = Job {
                     id: Some(jid),
                     data: Some(data),
-                    metadata: metadata.clone(),
+                    metadata: (*metadata).clone(),
                 };
                 if w.queue_type == QueueType::WithBackup as i32 {
                     // instant job (store rdb for backup, and enqueue to chan)
@@ -208,7 +208,7 @@ impl RdbChanJobAppImpl {
 impl JobApp for RdbChanJobAppImpl {
     async fn enqueue_job_with_temp_worker<'a>(
         &'a self,
-        meta: HashMap<String, String>,
+        meta: Arc<HashMap<String, String>>,
         worker_data: WorkerData,
         args: Vec<u8>,
         uniq_key: Option<String>,
@@ -246,7 +246,7 @@ impl JobApp for RdbChanJobAppImpl {
     }
     async fn enqueue_job<'a>(
         &'a self,
-        metadata: HashMap<String, String>,
+        metadata: Arc<HashMap<String, String>>,
         worker_id: Option<&'a WorkerId>,
         worker_name: Option<&'a String>,
         args: Vec<u8>,
@@ -851,7 +851,7 @@ mod tests {
             let jargs1 = jargs.clone();
             let app1 = app.clone();
             // need waiting for direct response
-            let metadata = HashMap::new();
+            let metadata = Arc::new(HashMap::new());
             let jh = tokio::spawn(async move {
                 let res = app1
                     .enqueue_job(
@@ -968,7 +968,7 @@ mod tests {
             let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["/".to_string()],
             });
-            let metadata = HashMap::new();
+            let metadata = Arc::new(HashMap::new());
 
             // wait for direct response
             let job_id = app
@@ -1000,7 +1000,7 @@ mod tests {
                     timeout: 0,
                     request_streaming: false,
                 }),
-                metadata: metadata.clone(),
+                metadata: (*metadata).clone(),
             };
             assert_eq!(
                 app.job_status_repository()
@@ -1035,7 +1035,7 @@ mod tests {
                     store_success: true,
                     store_failure: true,
                 }),
-                metadata,
+                metadata: (*metadata).clone(),
             };
             let jid = job_id;
             let res = result.clone();
@@ -1100,7 +1100,7 @@ mod tests {
             let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["/".to_string()],
             });
-            let metadata = HashMap::new();
+            let metadata = Arc::new(HashMap::new());
 
             // wait for direct response
             let (job_id, res, _) = app
@@ -1164,7 +1164,7 @@ mod tests {
                     store_success: true,
                     store_failure: false,
                 }),
-                metadata,
+                metadata: (*metadata).clone(),
             };
             assert!(
                 !app.complete_job(
@@ -1227,7 +1227,7 @@ mod tests {
                     .await?,
                 0
             );
-            let metadata = HashMap::new();
+            let metadata = Arc::new(HashMap::new());
             let (job_id, res, _) = app
                 .enqueue_job(
                     metadata.clone(),

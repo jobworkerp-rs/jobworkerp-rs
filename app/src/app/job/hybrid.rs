@@ -137,7 +137,7 @@ impl HybridJobAppImpl {
     #[allow(clippy::too_many_arguments)]
     async fn enqueue_job_with_worker(
         &self,
-        metadata: HashMap<String, String>,
+        metadata: Arc<HashMap<String, String>>,
         worker: &Worker,
         args: Vec<u8>,
         uniq_key: Option<String>,
@@ -205,7 +205,7 @@ impl HybridJobAppImpl {
                 let job = Job {
                     id: Some(jid),
                     data: Some(data.to_owned()),
-                    metadata,
+                    metadata: (*metadata).clone(),
                 };
                 self.enqueue_job_to_redis_with_wait_if_needed(&job, w, request_streaming)
                     .await
@@ -213,7 +213,7 @@ impl HybridJobAppImpl {
                 let job = Job {
                     id: Some(jid),
                     data: Some(data),
-                    metadata,
+                    metadata: (*metadata).clone(),
                 };
                 // enqueue rdb only
                 if self.rdb_job_repository().create(&job).await? {
@@ -232,7 +232,7 @@ impl HybridJobAppImpl {
                 let job = Job {
                     id: Some(jid),
                     data: Some(data),
-                    metadata,
+                    metadata: (*metadata).clone(),
                 };
                 if w.queue_type == QueueType::WithBackup as i32 {
                     // instant job (store rdb for failback, and enqueue to redis)
@@ -281,7 +281,7 @@ impl HybridJobAppImpl {
 impl JobApp for HybridJobAppImpl {
     async fn enqueue_job_with_temp_worker<'a>(
         &'a self,
-        meta: HashMap<String, String>,
+        meta: Arc<HashMap<String, String>>,
         worker_data: WorkerData,
         args: Vec<u8>,
         uniq_key: Option<String>,
@@ -319,7 +319,7 @@ impl JobApp for HybridJobAppImpl {
     }
     async fn enqueue_job<'a>(
         &'a self,
-        meta: HashMap<String, String>,
+        meta: Arc<HashMap<String, String>>,
         worker_id: Option<&'a WorkerId>,
         worker_name: Option<&'a String>,
         args: Vec<u8>,
@@ -399,7 +399,7 @@ impl JobApp for HybridJobAppImpl {
                 let job = Job {
                     id: Some(jid),
                     data: Some(data.to_owned()),
-                    metadata: meta,
+                    metadata: (*meta).clone(),
                 };
                 self.enqueue_job_to_redis_with_wait_if_needed(&job, w, request_streaming)
                     .await
@@ -407,7 +407,7 @@ impl JobApp for HybridJobAppImpl {
                 let job = Job {
                     id: Some(jid),
                     data: Some(data),
-                    metadata: meta,
+                    metadata: (*meta).clone(),
                 };
                 // enqueue rdb only
                 if self.rdb_job_repository().create(&job).await? {
@@ -426,7 +426,7 @@ impl JobApp for HybridJobAppImpl {
                 let job = Job {
                     id: Some(jid),
                     data: Some(data),
-                    metadata: meta,
+                    metadata: (*meta).clone(),
                 };
                 if w.queue_type == QueueType::WithBackup as i32 {
                     // instant job (store rdb for failback, and enqueue to redis)
@@ -1009,7 +1009,7 @@ pub mod tests {
             let jarg = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["/".to_string()],
             });
-            let metadata = HashMap::new();
+            let metadata = Arc::new(HashMap::new());
             // move
             let worker_id1 = worker_id;
             let jarg1 = jarg.clone();
@@ -1133,7 +1133,7 @@ pub mod tests {
             let jarg = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["/".to_string()],
             });
-            let metadata = HashMap::new();
+            let metadata = Arc::new(HashMap::new());
 
             // wait for direct response
             let res = app
@@ -1184,7 +1184,7 @@ pub mod tests {
             let jarg = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["/".to_string()],
             });
-            let metadata = HashMap::new();
+            let metadata = Arc::new(HashMap::new());
 
             // wait for direct response
             let job_id = app
@@ -1251,7 +1251,7 @@ pub mod tests {
                     store_success: false,
                     store_failure: false,
                 }),
-                metadata,
+                metadata: (*metadata).clone(),
             };
             let jid = job_id;
             let res = result.clone();
@@ -1316,7 +1316,7 @@ pub mod tests {
             let jarg = JobqueueAndCodec::serialize_message(&proto::TestArgs {
                 args: vec!["/".to_string()],
             });
-            let metadata = HashMap::new();
+            let metadata = Arc::new(HashMap::new());
 
             // wait for direct response
             let (job_id, res, _) = app
@@ -1380,7 +1380,7 @@ pub mod tests {
                     store_success: true,
                     store_failure: false,
                 }),
-                metadata,
+                metadata: (*metadata).clone(),
             };
             assert!(
                 !app.complete_job(
@@ -1443,7 +1443,7 @@ pub mod tests {
                     .await?,
                 0
             );
-            let metadata = HashMap::new();
+            let metadata = Arc::new(HashMap::new());
 
             let (job_id, res, _) = app
                 .enqueue_job(

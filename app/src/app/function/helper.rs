@@ -15,6 +15,7 @@ use std::{
     collections::HashMap,
     future::Future,
     hash::{DefaultHasher, Hasher},
+    sync::Arc,
 };
 use tracing;
 
@@ -122,7 +123,7 @@ pub trait FunctionCallHelper:
 
     fn handle_runner_call<'a>(
         &'a self,
-        meta: HashMap<String, String>,
+        meta: Arc<HashMap<String, String>>,
         arguments: Option<Map<String, Value>>,
         runner: RunnerWithSchema,
         tool_name_opt: Option<String>,
@@ -159,7 +160,7 @@ pub trait FunctionCallHelper:
 
     fn handle_worker_call<'a>(
         &'a self,
-        meta: HashMap<String, String>,
+        meta: Arc<HashMap<String, String>>,
         name: &'a str,
         arguments: Option<Map<String, Value>>,
     ) -> impl Future<Output = Result<Value>> + Send + 'a {
@@ -192,8 +193,8 @@ pub trait FunctionCallHelper:
 
     fn setup_worker_and_enqueue_with_json<'a>(
         &'a self,
-        meta: HashMap<String, String>,              // metadata for job
-        runner_name: &'a str,                       // runner(runner) name
+        meta: Arc<HashMap<String, String>>, // metadata for job
+        runner_name: &'a str,               // runner(runner) name
         runner_settings: Option<serde_json::Value>, // runner_settings data
         worker_params: Option<serde_json::Value>, // worker parameters (if not exists, use default values)
         job_args: serde_json::Value,              // enqueue job args
@@ -255,7 +256,7 @@ pub trait FunctionCallHelper:
     }
     fn enqueue_with_json<'a>(
         &'a self,
-        meta: HashMap<String, String>,
+        meta: Arc<HashMap<String, String>>,
         temp_worker_data: &'a WorkerData,
         arguments: Value,
     ) -> impl Future<Output = Result<Option<Value>>> + Send + 'a {

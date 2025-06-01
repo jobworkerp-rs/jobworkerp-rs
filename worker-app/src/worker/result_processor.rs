@@ -118,7 +118,7 @@ impl ResultProcessorImpl {
                 let pjres = self
                     .job_app()
                     .enqueue_job(
-                        metadata.clone(),
+                        Arc::new(metadata.clone()),
                         pj.worker_id.as_ref(),
                         None,
                         pj.args,

@@ -342,7 +342,9 @@ pub mod test {
     };
     use anyhow::Result;
     use infra::infra::{
-        module::{rdb::test::setup_test_rdb_module, RedisRdbOptionalRepositoryModule}, test::new_for_test_config_rdb, IdGeneratorWrapper,
+        module::{rdb::test::setup_test_rdb_module, RedisRdbOptionalRepositoryModule},
+        test::new_for_test_config_rdb,
+        IdGeneratorWrapper,
     };
     use infra_utils::infra::memory::MemoryCacheImpl;
     use jobworkerp_runner::runner::{
