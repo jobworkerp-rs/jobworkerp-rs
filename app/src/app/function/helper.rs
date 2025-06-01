@@ -12,8 +12,10 @@ use proto::{
 };
 use serde_json::{Map, Value};
 use std::{
+    collections::HashMap,
     future::Future,
     hash::{DefaultHasher, Hasher},
+    sync::Arc,
 };
 use tracing;
 
@@ -119,12 +121,13 @@ pub trait FunctionCallHelper:
         }
     }
 
-    fn handle_runner_call(
-        &self,
+    fn handle_runner_call<'a>(
+        &'a self,
+        meta: Arc<HashMap<String, String>>,
         arguments: Option<Map<String, Value>>,
         runner: RunnerWithSchema,
         tool_name_opt: Option<String>,
-    ) -> impl Future<Output = Result<Option<Value>>> + Send + '_ {
+    ) -> impl Future<Output = Result<Option<Value>>> + Send + 'a {
         async move {
             tracing::debug!("found runner: {:?}, tool: {:?}", &runner, &tool_name_opt);
             let (settings, arguments) = Self::prepare_runner_call_arguments(
@@ -141,6 +144,7 @@ pub trait FunctionCallHelper:
             } = &runner
             {
                 self.setup_worker_and_enqueue_with_json(
+                    meta,
                     runner_data.name.as_str(),
                     settings,
                     None,
@@ -156,6 +160,7 @@ pub trait FunctionCallHelper:
 
     fn handle_worker_call<'a>(
         &'a self,
+        meta: Arc<HashMap<String, String>>,
         name: &'a str,
         arguments: Option<Map<String, Value>>,
     ) -> impl Future<Output = Result<Value>> + Send + 'a {
@@ -180,7 +185,7 @@ pub trait FunctionCallHelper:
             } else {
                 request_args
             };
-            self.enqueue_with_json(&worker_data, Value::Object(args))
+            self.enqueue_with_json(meta, &worker_data, Value::Object(args))
                 .await
                 .map(|r| r.unwrap_or_default())
         }
@@ -188,7 +193,8 @@ pub trait FunctionCallHelper:
 
     fn setup_worker_and_enqueue_with_json<'a>(
         &'a self,
-        runner_name: &'a str,                       // runner(runner) name
+        meta: Arc<HashMap<String, String>>, // metadata for job
+        runner_name: &'a str,               // runner(runner) name
         runner_settings: Option<serde_json::Value>, // runner_settings data
         worker_params: Option<serde_json::Value>, // worker parameters (if not exists, use default values)
         job_args: serde_json::Value,              // enqueue job args
@@ -238,6 +244,7 @@ pub trait FunctionCallHelper:
                     worker_params,
                 );
                 self.enqueue_with_json(
+                    meta,
                     &worker_data,
                     job_args, // enqueue job args
                 )
@@ -249,6 +256,7 @@ pub trait FunctionCallHelper:
     }
     fn enqueue_with_json<'a>(
         &'a self,
+        meta: Arc<HashMap<String, String>>,
         temp_worker_data: &'a WorkerData,
         arguments: Value,
     ) -> impl Future<Output = Result<Option<Value>>> + Send + 'a {
@@ -278,6 +286,7 @@ pub trait FunctionCallHelper:
                     let res = self
                         .job_app()
                         .enqueue_job_with_temp_worker(
+                            meta,
                             temp_worker_data.clone(),
                             job_args,
                             None,
@@ -487,7 +496,7 @@ pub trait FunctionCallHelper:
         let output = job_result
             .data
             .as_ref()
-            .and_then(|r| r.output.as_ref().map(|o| &o.items[0]));
+            .and_then(|r| r.output.as_ref().map(|o| &o.items));
         if let Some(output) = output {
             let result_descriptor = Self::parse_job_result_schema_descriptor(runner_data)?;
             if let Some(desc) = result_descriptor {
@@ -563,80 +572,84 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_function_call_helper_correct_mcp_worker_args_with_tool_name() {
-        // Get test app instance
-        let app = create_hybrid_test_app()
-            .await
-            .expect("Failed to create test app");
-        let _helper = TestFunctionCallHelper { app };
+    #[test]
+    fn test_function_call_helper_correct_mcp_worker_args_with_tool_name() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            // tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            // Get test app instance
+            let app = create_hybrid_test_app().await.unwrap();
+            let _helper = TestFunctionCallHelper { app };
 
-        // Case 1: tool_name already exists and matches the value
-        let tool_name = "test_tool".to_string();
-        let mut arguments = Map::new();
-        arguments.insert(
-            "tool_name".to_string(),
-            Value::String("test_tool".to_string()),
-        );
-        arguments.insert("arg_json".to_string(), Value::String("value1".to_string()));
+            // Case 1: tool_name already exists and matches the value
+            let tool_name = "test_tool".to_string();
+            let mut arguments = Map::new();
+            arguments.insert(
+                "tool_name".to_string(),
+                Value::String("test_tool".to_string()),
+            );
+            arguments.insert("arg_json".to_string(), Value::String("value1".to_string()));
 
-        // Using FunctionCallHelper's static method through the struct
-        let result = TestFunctionCallHelper::correct_mcp_worker_args(tool_name, arguments.clone());
-        assert!(result.is_ok());
-        let result_args = result.unwrap();
-        assert_eq!(result_args.len(), 2);
-        assert_eq!(
-            result_args["tool_name"],
-            Value::String("test_tool".to_string())
-        );
-        assert_eq!(result_args["arg_json"], Value::String("value1".to_string()));
+            // Using FunctionCallHelper's static method through the struct
+            let result =
+                TestFunctionCallHelper::correct_mcp_worker_args(tool_name, arguments.clone());
+            assert!(result.is_ok());
+            let result_args = result.unwrap();
+            assert_eq!(result_args.len(), 2);
+            assert_eq!(
+                result_args["tool_name"],
+                Value::String("test_tool".to_string())
+            );
+            assert_eq!(result_args["arg_json"], Value::String("value1".to_string()));
 
-        // Case 2: tool_name exists but with different value
-        let tool_name = "different_tool".to_string();
-        let result = TestFunctionCallHelper::correct_mcp_worker_args(tool_name, arguments);
-        assert!(result.is_err());
-        if let Err(err) = result {
-            let err_string = err.to_string();
-            assert!(err_string.contains("tool_name is not matched"));
-        }
+            // Case 2: tool_name exists but with different value
+            let tool_name = "different_tool".to_string();
+            let result = TestFunctionCallHelper::correct_mcp_worker_args(tool_name, arguments);
+            assert!(result.is_err());
+            if let Err(err) = result {
+                let err_string = err.to_string();
+                assert!(err_string.contains("tool_name is not matched"));
+            }
+        })
     }
 
-    #[tokio::test]
-    async fn test_function_call_helper_correct_mcp_worker_args_without_tool_name() {
-        // Get test app instance
-        let app = create_hybrid_test_app()
-            .await
-            .expect("Failed to create test app");
-        let _helper = TestFunctionCallHelper { app };
+    #[test]
+    fn test_function_call_helper_correct_mcp_worker_args_without_tool_name() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            // tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            // Get test app instance
+            let app = create_hybrid_test_app().await.unwrap();
+            let _helper = TestFunctionCallHelper { app };
 
-        // Case 3: tool_name doesn't exist
-        let tool_name = "new_tool".to_string();
-        let mut arguments = Map::new();
-        arguments.insert("param1".to_string(), Value::String("value1".to_string()));
-        arguments.insert(
-            "param2".to_string(),
-            Value::Number(serde_json::Number::from(42)),
-        );
-
-        // Using FunctionCallHelper's static method through the struct
-        let result = TestFunctionCallHelper::correct_mcp_worker_args(tool_name.clone(), arguments);
-        assert!(result.is_ok());
-        let result_args = result.unwrap();
-
-        // Verify the new arguments object is constructed correctly
-        assert_eq!(result_args.len(), 2);
-        assert_eq!(result_args["tool_name"], Value::String(tool_name));
-
-        // Verify that the original arguments map is stored in arg_json field
-        if let Value::Object(arg_json_map) = &result_args["arg_json"] {
-            assert_eq!(arg_json_map.len(), 2);
-            assert_eq!(arg_json_map["param1"], Value::String("value1".to_string()));
-            assert_eq!(
-                arg_json_map["param2"],
-                Value::Number(serde_json::Number::from(42))
+            // Case 3: tool_name doesn't exist
+            let tool_name = "new_tool".to_string();
+            let mut arguments = Map::new();
+            arguments.insert("param1".to_string(), Value::String("value1".to_string()));
+            arguments.insert(
+                "param2".to_string(),
+                Value::Number(serde_json::Number::from(42)),
             );
-        } else {
-            panic!("arg_json is not an object");
-        }
+
+            // Using FunctionCallHelper's static method through the struct
+            let result =
+                TestFunctionCallHelper::correct_mcp_worker_args(tool_name.clone(), arguments);
+            assert!(result.is_ok());
+            let result_args = result.unwrap();
+
+            // Verify the new arguments object is constructed correctly
+            assert_eq!(result_args.len(), 2);
+            assert_eq!(result_args["tool_name"], Value::String(tool_name));
+
+            // Verify that the original arguments map is stored in arg_json field
+            if let Value::Object(arg_json_map) = &result_args["arg_json"] {
+                assert_eq!(arg_json_map.len(), 2);
+                assert_eq!(arg_json_map["param1"], Value::String("value1".to_string()));
+                assert_eq!(
+                    arg_json_map["param2"],
+                    Value::Number(serde_json::Number::from(42))
+                );
+            } else {
+                panic!("arg_json is not an object");
+            }
+        })
     }
 }

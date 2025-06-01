@@ -6,6 +6,8 @@ pub mod job_result;
 pub mod runner;
 pub mod worker;
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use command_utils::util::datetime;
 use infra::infra::job::rows::UseJobqueueAndCodec;
@@ -108,7 +110,11 @@ pub trait UseWorkerConfig {
 #[async_trait]
 pub trait JobBuilder {
     // return Some if it is necessary to retry with result and retry policy
-    fn build_retry_job(dat: &JobResultData, worker: &WorkerData) -> Option<Job> {
+    fn build_retry_job(
+        dat: &JobResultData,
+        worker: &WorkerData,
+        metadata: &HashMap<String, String>,
+    ) -> Option<Job> {
         // store result to db if necessary by worker setting
         if dat.status != ResultStatus::ErrorAndRetry as i32 {
             return None;
@@ -147,6 +153,7 @@ pub trait JobBuilder {
                     timeout: dat.timeout,
                     request_streaming: dat.request_streaming,
                 }),
+                metadata: metadata.clone(),
             })
         } else {
             None

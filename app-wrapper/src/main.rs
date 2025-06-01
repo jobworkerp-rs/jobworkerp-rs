@@ -80,6 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         serde_json::from_str(args.workflow.as_str())?,
         Arc::new(json),
         Arc::new(serde_json::Value::Object(Default::default())),
+        Default::default(),
     )
     .await
     {

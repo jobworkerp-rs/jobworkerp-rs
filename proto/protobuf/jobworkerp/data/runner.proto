@@ -11,11 +11,12 @@ enum StreamingOutputType {
   STREAMING = 1;     // Runner only supports streaming output
   BOTH = 2;          // Runner supports both streaming and non-streaming outputs
 }
- 
+
 message RunnerData {
   // # Runner Name
   // Unique key and proto message prefix (e.g. name: "command",
-  // runner_settings_proto: "CommandRunnerSettings", job_args_proto: "CommandArg")
+  // runner_settings_proto: "CommandRunnerSettings", job_args_proto:
+  // "CommandArg")
   string name = 1;
   // # Runner Description
   // Description of runner implementation

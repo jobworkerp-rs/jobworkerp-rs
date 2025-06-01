@@ -11,20 +11,32 @@ use async_trait::async_trait;
 use command_utils::util::{datetime, result::Flatten};
 use futures::{future::FutureExt, stream::BoxStream};
 use infra::infra::job::rows::UseJobqueueAndCodec;
+use infra::infra::UseIdGenerator;
+use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::runner::RunnerTrait;
+use proto::jobworkerp::data::JobResult;
+use proto::jobworkerp::data::JobResultId;
 use proto::jobworkerp::data::ResultOutputItem;
 use proto::jobworkerp::data::{
     Job, JobResultData, ResultOutput, ResultStatus, RunnerData, WorkerData, WorkerId,
 };
 use result::ResultOutputEnum;
+use std::collections::HashMap;
 use std::{panic::AssertUnwindSafe, time::Duration};
 use tracing;
 
 // execute runner
 #[async_trait]
 pub trait JobRunner:
-    RunnerResultHandler + UseJobqueueAndCodec + UseRunnerFactory + UseRunnerPoolMap + Send + Sync
+    RunnerResultHandler
+    + UseJobqueueAndCodec
+    + UseRunnerFactory
+    + UseRunnerPoolMap
+    + UseIdGenerator
+    + Tracing
+    + Send
+    + Sync
 {
     #[allow(unstable_name_collisions)] // for flatten()
     //#[tracing::instrument(name = "JobRunner", skip(self))]
@@ -35,7 +47,7 @@ pub trait JobRunner:
         worker_id: &WorkerId,
         worker_data: &WorkerData,
         job: Job,
-    ) -> (JobResultData, Option<BoxStream<'static, ResultOutputItem>>) {
+    ) -> (JobResult, Option<BoxStream<'static, ResultOutputItem>>) {
         tracing::debug!("run_job: {:?}, worker: {:?}", &job.id, &worker_id);
         // XXX for keeping pool object
         if worker_data.use_static {
@@ -80,7 +92,7 @@ pub trait JobRunner:
         worker_data: &WorkerData,
         job: Job,
         err: Option<anyhow::Error>,
-    ) -> JobResultData {
+    ) -> JobResult {
         let end = datetime::now_millis();
         let error_message = if let Some(e) = err {
             let mes = format!(
@@ -93,13 +105,16 @@ pub trait JobRunner:
             tracing::info!("runner not found for static worker:{:?}", worker_data.name);
             format!("runner not found for static worker:{:?}", worker_data.name)
         };
-        Self::job_result_data(
+        let metadata = job.metadata.clone();
+        self.job_result_data(
             job,
             worker_data,
             ResultStatus::FatalError,
-            ResultOutputEnum::Normal(vec![error_message.into_bytes()]).result_output(),
+            ResultOutputEnum::Normal(Err(anyhow!(error_message)), HashMap::default())
+                .result_output(),
             end,
             end,
+            Some(metadata), // XXX unwrap or default
         )
     }
 
@@ -109,7 +124,7 @@ pub trait JobRunner:
         worker_data: &WorkerData,
         job: Job,
         runner_impl: &mut Box<dyn RunnerTrait + Send + Sync>,
-    ) -> (JobResultData, Option<BoxStream<'static, ResultOutputItem>>) {
+    ) -> (JobResult, Option<BoxStream<'static, ResultOutputItem>>) {
         let data = job.data.as_ref().unwrap(); // XXX unwrap
         let run_after_time = data.run_after_time;
 
@@ -141,7 +156,15 @@ pub trait JobRunner:
             );
             let (status, mes) = self.job_result_status(&worker_data.retry_policy, data, res);
             (
-                Self::job_result_data(job, worker_data, status, mes.result_output(), start, end),
+                self.job_result_data(
+                    job,
+                    worker_data,
+                    status,
+                    mes.result_output(),
+                    start,
+                    end,
+                    mes.metadata().cloned(),
+                ),
                 mes.stream(),
             )
         } else {
@@ -149,13 +172,21 @@ pub trait JobRunner:
             let res = self
                 .run_and_result(&job, runner_impl)
                 .await
-                .map(ResultOutputEnum::Normal);
+                .map(|(a, b)| ResultOutputEnum::Normal(a, b));
             let end = datetime::now_millis();
             tracing::debug!("end runner: {}, duration:{}(ms)", &name, end - start);
             // TODO
             let (status, mes) = self.job_result_status(&worker_data.retry_policy, data, res);
             (
-                Self::job_result_data(job, worker_data, status, mes.result_output(), start, end),
+                self.job_result_data(
+                    job,
+                    worker_data,
+                    status,
+                    mes.result_output(),
+                    start,
+                    end,
+                    mes.metadata().cloned(),
+                ),
                 None,
             )
         }
@@ -167,21 +198,20 @@ pub trait JobRunner:
         job: &Job,
         runner_impl: &mut Box<dyn RunnerTrait + Send + Sync>,
     ) -> Result<BoxStream<'a, ResultOutputItem>> {
+        let metadata = job.metadata.clone();
         let data = job.data.as_ref().unwrap(); // XXX unwrap
         let args = &data.args; // XXX unwrap, clone
         let name = runner_impl.name();
         if data.timeout > 0 {
             tokio::select! {
                 r = AssertUnwindSafe(
-                        runner_impl.run_stream(args)
+                    runner_impl.run_stream(args, metadata),
                 ).catch_unwind() => {
                     r.map_err(|e| {
                         let msg = format!("Caught panic from runner {}: {:?}", &name, e);
                         tracing::error!(msg);
                         anyhow!(msg)
-                    })
-                    .inspect_err(|e| tracing::warn!("error in running runner: {} : {:?}", &name, e))
-                    .flatten()
+                    }).flatten()
                 },
                 _ = tokio::time::sleep(Duration::from_millis(data.timeout)) => {
                     runner_impl.cancel().await;
@@ -190,7 +220,7 @@ pub trait JobRunner:
                 }
             }
         } else {
-            AssertUnwindSafe(runner_impl.run_stream(args))
+            AssertUnwindSafe(runner_impl.run_stream(args, metadata))
                 .catch_unwind()
                 .await
                 .map_err(|e| {
@@ -207,14 +237,15 @@ pub trait JobRunner:
         &self,
         job: &Job,
         runner_impl: &mut Box<dyn RunnerTrait + Send + Sync>,
-    ) -> Result<Vec<Vec<u8>>> {
+    ) -> Result<(Result<Vec<u8>>, HashMap<String, String>)> {
         let data = job.data.as_ref().unwrap(); // XXX unwrap
+        let metadata = job.metadata.clone();
         let args = &data.args; // XXX unwrap, clone
         let name = runner_impl.name();
-        if data.timeout > 0 {
+        let res = if data.timeout > 0 {
             tokio::select! {
                 r = AssertUnwindSafe(
-                        runner_impl.run(args)
+                        runner_impl.run(args, metadata)
                 ).catch_unwind() => {
                     r.map_err(|e| {
                         let msg = format!("Caught panic from runner {}: {:?}", &name, e);
@@ -222,7 +253,6 @@ pub trait JobRunner:
                         anyhow!(msg)
                     })
                     .inspect_err(|e| tracing::warn!("error in running runner: {} : {:?}", &name, e))
-                    .flatten()
                 },
                 _ = tokio::time::sleep(Duration::from_millis(data.timeout)) => {
                     runner_impl.cancel().await;
@@ -231,7 +261,7 @@ pub trait JobRunner:
                 }
             }
         } else {
-            AssertUnwindSafe(runner_impl.run(args))
+            AssertUnwindSafe(runner_impl.run(args, metadata))
                 .catch_unwind()
                 .await
                 .map_err(|e| {
@@ -240,21 +270,24 @@ pub trait JobRunner:
                     anyhow!(msg)
                 })
                 .inspect_err(|e| tracing::warn!("error in running runner: {} : {:?}", &name, e))
-                .flatten()
-        }
+        };
+        res
     }
     // calculate job status and create JobResult (not increment retry count now)
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     fn job_result_data(
+        &self,
         job: Job,
         worker: &WorkerData,
         st: ResultStatus,
         res: Option<ResultOutput>,
         start_msec: i64,
         end_msec: i64,
-    ) -> JobResultData {
+        metadata: Option<HashMap<String, String>>,
+    ) -> JobResult {
         let dat = job.data.unwrap_or_default(); // XXX unwrap or default
-        JobResultData {
+        let data = JobResultData {
             job_id: job.id,
             worker_id: dat.worker_id,
             worker_name: worker.name.clone(),
@@ -278,6 +311,13 @@ pub trait JobRunner:
             response_type: worker.response_type,
             store_success: worker.store_success,
             store_failure: worker.store_failure,
+        };
+        JobResult {
+            id: Some(JobResultId {
+                value: self.id_generator().generate_id().unwrap_or_default(), // XXX unwrap or default
+            }),
+            data: Some(data),
+            metadata: metadata.unwrap_or_default(), // XXX unwrap or default
         }
     }
 }
@@ -288,6 +328,7 @@ mod tests {
     use anyhow::Result;
     use app::app::WorkerConfig;
     use app_wrapper::runner::RunnerFactory;
+    use infra::infra::IdGeneratorWrapper;
     use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
     use jobworkerp_runner::jobworkerp::runner::{CommandArgs, CommandResult};
     use proto::jobworkerp::data::{
@@ -300,6 +341,7 @@ mod tests {
     struct MockJobRunner {
         runner_factory: Arc<RunnerFactory>,
         runner_pool: RunnerFactoryWithPoolMap,
+        id_generator: IdGeneratorWrapper,
     }
     impl MockJobRunner {
         async fn new() -> Self {
@@ -315,6 +357,7 @@ mod tests {
                     Arc::new(RunnerFactory::new(app_module, mcp_clients)),
                     Arc::new(WorkerConfig::default()),
                 ),
+                id_generator: IdGeneratorWrapper::new_mock(),
             }
         }
     }
@@ -331,6 +374,12 @@ mod tests {
         }
     }
     impl JobRunner for MockJobRunner {}
+    impl Tracing for MockJobRunner {}
+    impl UseIdGenerator for MockJobRunner {
+        fn id_generator(&self) -> &IdGeneratorWrapper {
+            &self.id_generator
+        }
+    }
 
     // create test for run_job() using command runner (sleep)
     // and create timeout test (using command runner)
@@ -364,6 +413,7 @@ mod tests {
                     grabbed_until_time: None,
                     request_streaming: false,
                 }),
+                ..Default::default()
             };
             let worker_id = WorkerId { value: 1 };
             let runner_settings = vec![];
@@ -387,10 +437,10 @@ mod tests {
                 .unwrap()
                 .run_job(&runner_data, &worker_id, &worker, job.clone())
                 .await;
-            let output = ProstMessageCodec::deserialize_message::<CommandResult>(
-                &res.output.unwrap().items[0],
-            )
-            .unwrap();
+            let res = res.data.unwrap();
+            let output =
+                ProstMessageCodec::deserialize_message::<CommandResult>(&res.output.unwrap().items)
+                    .unwrap();
             assert_eq!(res.status, ResultStatus::Success as i32);
             assert_eq!(output.exit_code.unwrap(), 0);
             assert_eq!(res.retried, 0);
@@ -416,16 +466,18 @@ mod tests {
                     timeout: 1000, // timeout 1sec
                     ..job.data.as_ref().unwrap().clone()
                 }),
+                ..Default::default()
             };
             let (res, _) = JOB_RUNNER
                 .get()
                 .unwrap()
                 .run_job(&runner_data, &worker_id, &worker, timeout_job.clone())
                 .await;
+            let res = res.data.unwrap();
             assert_eq!(res.status, ResultStatus::MaxRetry as i32); // no retry
             assert_eq!(
                 res.output.unwrap().items,
-                vec![b"timeout error: \"timeout: 1000ms\""]
+                b"RuntimeError(timeout error: \"timeout: 1000ms\")"
             ); // timeout error
             assert_eq!(res.retried, 0);
             assert_eq!(res.max_retry, 0);

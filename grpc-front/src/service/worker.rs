@@ -13,7 +13,7 @@ use async_stream::stream;
 use futures::stream::BoxStream;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::UseJobQueueConfig;
-use infra_utils::trace::Tracing;
+use infra_utils::infra::trace::Tracing;
 use proto::jobworkerp::data::{RetryPolicy, StorageType};
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -31,6 +31,7 @@ pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig {
             // StorageType::Redis => QueueType::Normal,
         }
     }
+    #[allow(clippy::result_large_err)]
     fn validate_create(&self, dat: WorkerData) -> Result<WorkerData, tonic::Status> {
         let data = WorkerData {
             name: dat.name,
@@ -57,15 +58,18 @@ pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig {
         Ok(data)
     }
     // XXX not necessary now
+    #[allow(clippy::result_large_err)]
     fn validate_queue_type(&self, qt: QueueType) -> Result<QueueType, tonic::Status> {
         Ok(qt)
     }
+    #[allow(clippy::result_large_err)]
     fn validate_update(&self, dat: Option<&WorkerData>) -> Result<(), tonic::Status> {
         if let Some(d) = dat {
             self.validate_worker(d)?
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn validate_worker(&self, req: &WorkerData) -> Result<(), tonic::Status> {
         if req.periodic_interval != 0 && req.response_type == ResponseType::Direct as i32 {
             return Err(tonic::Status::invalid_argument(
@@ -103,6 +107,7 @@ pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig {
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn validate_retry_policy(&self, rp: &RetryPolicy) -> Result<(), tonic::Status> {
         if rp.basis < 1.0 {
             return Err(tonic::Status::invalid_argument(

@@ -47,18 +47,21 @@ message WorkerData {
   // If true, job results will be stored in database when execution fails
   bool store_failure = 11;
   // # Static Execution Flag
-  // If true, fixed number instance of this worker will run at a time (with lock)
+  // If true, fixed number instance of this worker will run at a time (with
+  // lock)
   bool use_static = 13;
   // # Output Broadcast Flag
   // Broadcast job results to all result listeners or not.
-  // If false, cannot use JobResultService/{Listen, ListenStream, ListenByWorker}.
+  // If false, cannot use JobResultService/{Listen, ListenStream,
+  // ListenByWorker}.
   bool broadcast_results = 14;
 }
 
 message WorkerId { int64 value = 1; }
 
 // # Worker
-// A worker that loads a runner with specified settings and executes jobs by providing arguments
+// A worker that loads a runner with specified settings and executes jobs by
+// providing arguments
 message Worker {
   WorkerId id = 1;
   WorkerData data = 2;

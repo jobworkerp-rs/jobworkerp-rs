@@ -21,9 +21,10 @@ use infra::infra::job::status::memory::MemoryJobStatusRepository;
 use infra::infra::job::status::{JobStatusRepository, UseJobStatusRepository};
 use infra::infra::runner::rows::RunnerWithSchema;
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
+use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
-    Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, Worker,
+    Job, JobResult, JobStatus, Priority, QueueType, ResponseType, Worker,
 };
 use std::sync::Arc;
 use tokio::task::JoinHandle;
@@ -129,7 +130,7 @@ pub trait ChanJobDispatcher:
             }
             tracing::info!("exit chan job loop for channel {}", cn);
             lock.unlock();
-            Result::<()>::Ok(())
+            Result::Ok(())
         })
     }
     #[inline]
@@ -152,11 +153,12 @@ pub trait ChanJobDispatcher:
         Self: Sync + Send + 'static,
     {
         tracing::debug!("process pop-ed job: {:?}", job);
-        let (jid, jdat) = if let Job {
+        let (jid, jdat,metadata) = if let Job {
             id: Some(jid),
             data: Some(jdat),
+            metadata
         } = job {
-           (jid, jdat)
+           (jid, jdat, metadata)
         } else {
             // TODO cannot return result in this case. send result as error?
             let mes = format!("job {:?} is incomplete data.", &job);
@@ -255,21 +257,19 @@ pub trait ChanJobDispatcher:
                     Job {
                         id: Some(jid),
                         data: Some(jdat),
+                        metadata
                     },
                 )
                 .await;
-            let id = JobResultId {
-                value: self.id_generator().generate_id()?,
-            };
             // TODO execute and return result to result channel.
-            tracing::trace!("send result id: {:?}, data: {:?}", id, &r.0);
+            tracing::trace!("send result id: {:?}, data: {:?}", &r.0.id, &r.0.data);
             // change status to wait handling result
             if wdat.response_type != ResponseType::Direct as i32 {
                 self.job_status_repository()
                     .upsert_status(&jid, &JobStatus::WaitResult)
                     .await?;
             }
-            self.result_processor().process_result(id, r, wdat).await
+            self.result_processor().process_result(r.0, r.1, wdat).await
     }
 }
 
@@ -336,6 +336,7 @@ impl UseRunnerPoolMap for ChanJobDispatcherImpl {
         &self.runner_pool_map
     }
 }
+impl Tracing for ChanJobDispatcherImpl {}
 impl JobRunner for ChanJobDispatcherImpl {}
 
 impl UseIdGenerator for ChanJobDispatcherImpl {

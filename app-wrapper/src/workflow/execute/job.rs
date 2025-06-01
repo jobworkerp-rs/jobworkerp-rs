@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,12 +14,11 @@ use command_utils::cache_ok;
 use command_utils::protobuf::ProtobufDescriptor;
 use command_utils::util::datetime;
 use command_utils::util::scoped_cache::ScopedCache;
-use futures::stream::BoxStream;
 use infra::infra::runner::rows::RunnerWithSchema;
 use infra_utils::infra::memory::MemoryCacheImpl;
 use proto::jobworkerp::data::{
-    JobId, JobResult, JobResultData, Priority, QueueType, ResponseType, ResultOutputItem,
-    ResultStatus, RetryPolicy, RetryType, Worker, WorkerData, WorkerId,
+    Priority, QueueType, ResponseType, ResultStatus, RetryPolicy, RetryType, Worker, WorkerData,
+    WorkerId,
 };
 use proto::ProtobufHelper;
 use std::hash::{DefaultHasher, Hasher};
@@ -68,6 +68,7 @@ impl UseRunnerParserWithCache for JobExecutorWrapper {
 impl ProtobufHelper for JobExecutorWrapper {}
 impl UseJobExecutorHelper for JobExecutorWrapper {}
 
+// TODO integrate with function calling logic
 pub trait UseJobExecutorHelper:
     UseJobApp
     + UseWorkerApp
@@ -146,124 +147,11 @@ pub trait UseJobExecutorHelper:
             Ok(worker)
         }
     }
-
-    // fillin runner_id and enqueue job and get result data for worker
-    fn enqueue_and_get_result_worker_job_with_runner(
-        &self,
-        runner_name: &str,
-        mut worker_data: WorkerData,
-        args: Vec<u8>,
-        timeout_sec: u32,
-    ) -> impl std::future::Future<Output = Result<JobResultData>> + Send {
-        async move {
-            let runner = self.find_runner_by_name(runner_name).await?;
-            worker_data.runner_id = runner.and_then(|r| r.id);
-            tracing::debug!("resolved runner_id: {:?}", &worker_data.runner_id);
-            let res = self
-                .enqueue_and_get_result_worker_job(&worker_data, args, timeout_sec)
-                .await?;
-            if res.status() == ResultStatus::Success {
-                Ok(res)
-            } else {
-                Err(anyhow!(
-                    "job failed: {:?}",
-                    res.output.and_then(|o| o
-                        .items
-                        .first()
-                        .cloned()
-                        .map(|e| String::from_utf8_lossy(&e).into_owned()))
-                ))
-            }
-        }
-    }
-    // enqueue job and get result data for worker
-    // XXX result data is JobResultData (not stream)
-    fn enqueue_and_get_result_worker_job(
-        &self,
-        worker_data: &WorkerData,
-        args: Vec<u8>,
-        timeout_sec: u32,
-    ) -> impl std::future::Future<Output = Result<JobResultData>> + Send {
-        async move {
-            self.enqueue_worker_job(worker_data, args, timeout_sec)
-                .await?
-                .1
-                .ok_or(anyhow!("result not found"))?
-                .data
-                .ok_or(anyhow!("result data not found"))
-        }
-    }
-    // enqueue job and get only output data for worker
-    fn enqueue_and_get_output_worker_job(
-        &self,
-        worker_data: &WorkerData,
-        args: Vec<u8>,
-        timeout_sec: u32,
-    ) -> impl std::future::Future<Output = Result<Vec<u8>>> + Send {
-        async move {
-            let res = self
-                .enqueue_and_get_result_worker_job(worker_data, args, timeout_sec)
-                .await?;
-            if res.status() == ResultStatus::Success && res.output.is_some() {
-                // output is Vec<Vec<u8>> but actually 1st Vec<u8> is valid.
-                let output = res
-                    .output
-                    .as_ref()
-                    .ok_or(anyhow!("job result output is empty: {:?}", res))?
-                    .items
-                    .first()
-                    .ok_or(anyhow!(
-                        "{} job result output first is empty: {:?}",
-                        &worker_data.name,
-                        res
-                    ))?
-                    .to_owned();
-                Ok(output)
-            } else {
-                Err(anyhow!(
-                    "job failed: {:?}",
-                    res.output.and_then(|o| o
-                        .items
-                        .first()
-                        .cloned()
-                        .map(|e| String::from_utf8_lossy(&e).into_owned()))
-                ))
-            }
-        }
-    }
-    // enqueue job for worker (use find_or_create_worker)
-    fn enqueue_worker_job(
-        &self,
-        worker_data: &WorkerData,
-        args: Vec<u8>,
-        timeout_sec: u32,
-    ) -> impl std::future::Future<
-        Output = Result<(
-            JobId,
-            Option<JobResult>,
-            Option<BoxStream<'static, ResultOutputItem>>,
-        )>,
-    > + Send {
-        async move {
-            let worker = self.find_or_create_worker(worker_data).await?;
-            self.job_app()
-                .enqueue_job(
-                    worker.id.as_ref(),
-                    None,
-                    args,
-                    None,
-                    0,
-                    Priority::High as i32,
-                    timeout_sec as u64 * 1000,
-                    None,
-                    false, // TODO can treat as stream job?
-                )
-                .await
-        }
-    }
+    // TODO enqueue job with temporary worker if necessary
     // enqueue job for worker and get output data
     fn enqueue_job_and_get_output(
         &self,
+        metadata: Arc<HashMap<String, String>>,
         worker_id: &WorkerId,
         args: Vec<u8>,
         timeout_sec: u32,
@@ -273,6 +161,7 @@ pub trait UseJobExecutorHelper:
             let res = self
                 .job_app()
                 .enqueue_job(
+                    metadata,
                     Some(worker_id),
                     None,
                     args,
@@ -296,18 +185,13 @@ pub trait UseJobExecutorHelper:
                     .as_ref()
                     .ok_or(anyhow!("job result output is empty: {:?}", res))?
                     .items
-                    .first()
-                    .unwrap_or(&vec![])
                     .to_owned();
                 Ok(output)
             } else {
                 Err(anyhow!(
                     "job failed: {:?}",
-                    res.output.and_then(|o| o
-                        .items
-                        .first()
-                        .cloned()
-                        .map(|e| String::from_utf8_lossy(&e).into_owned()))
+                    res.output
+                        .and_then(|o| String::from_utf8_lossy(&o.items).into_owned().into())
                 ))
             }
         }
@@ -388,23 +272,10 @@ pub trait UseJobExecutorHelper:
         }
     }
 
-    /// Enqueues a job for a worker and retrieves the raw output data.
-    ///
-    /// This function creates a worker if it doesn't exist and uses a temporary name.
-    /// The worker is deleted after processing unless `use_static` is set to true.
-    ///
-    /// # Parameters
-    /// * `name` - The name of the runner
-    /// * `runner_settings` - Binary data for runner configuration
-    /// * `worker_params` - Optional worker parameters (uses defaults if not provided)
-    /// * `job_args` - Binary data for job arguments
-    /// * `job_timeout_sec` - Timeout in seconds for the job execution
-    ///
-    /// # Returns
-    /// Raw binary output data
     fn setup_worker_and_enqueue_with_raw_output(
         &self,
-        worker_data: &mut WorkerData, // change name (add random postfix) if not static
+        metadata: Arc<HashMap<String, String>>, // metadata for job
+        worker_data: &mut WorkerData,           // change name (add random postfix) if not static
         job_args: Vec<u8>,
         job_timeout_sec: u32,
     ) -> impl std::future::Future<Output = Result<Vec<u8>>> + Send {
@@ -424,7 +295,7 @@ pub trait UseJobExecutorHelper:
             } = self.find_or_create_worker(worker_data).await?
             {
                 let output = self
-                    .enqueue_job_and_get_output(&wid, job_args, job_timeout_sec)
+                    .enqueue_job_and_get_output(metadata, &wid, job_args, job_timeout_sec)
                     .await
                     .inspect_err(|e| {
                         tracing::warn!("Execute task failed: enqueue job and get output: {:#?}", e)
@@ -454,7 +325,8 @@ pub trait UseJobExecutorHelper:
     }
     fn setup_worker_and_enqueue(
         &self,
-        runner_name: &str,           // runner(runner) name
+        metadata: Arc<HashMap<String, String>>, // metadata for job
+        runner_name: &str,                      // runner(runner) name
         mut worker_data: WorkerData, // worker parameters (if not exists, use default values)
         job_args: Vec<u8>,           // enqueue job args
         job_timeout_sec: u32,        // job timeout in seconds
@@ -477,6 +349,7 @@ pub trait UseJobExecutorHelper:
                     .and_then(|d| d.get_messages().first().cloned());
                 let output = self
                     .setup_worker_and_enqueue_with_raw_output(
+                        metadata,
                         &mut worker_data,
                         job_args,
                         job_timeout_sec,
@@ -512,7 +385,8 @@ pub trait UseJobExecutorHelper:
     }
     fn setup_worker_and_enqueue_with_json(
         &self,
-        runner_name: &str,                          // runner(runner) name
+        metadata: Arc<HashMap<String, String>>, // metadata for job
+        runner_name: &str,                      // runner(runner) name
         runner_settings: Option<serde_json::Value>, // runner_settings data
         mut worker_data: WorkerData, // worker parameters (if not exists, use default values)
         job_args: serde_json::Value, // enqueue job args
@@ -570,6 +444,7 @@ pub trait UseJobExecutorHelper:
                 };
                 worker_data.runner_settings = runner_settings;
                 self.setup_worker_and_enqueue(
+                    metadata,        // metadata for job
                     runner_name,     // runner(runner) name
                     worker_data,     // worker parameters (if not exists, use default values)
                     job_args,        // enqueue job args

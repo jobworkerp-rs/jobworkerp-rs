@@ -1,7 +1,4 @@
-use std::sync::Arc;
-use std::{fmt::Debug, time::Duration};
-
-use crate::proto::jobworkerp::data::{Priority, ResultOutput, ResultOutputItem};
+use crate::proto::jobworkerp::data::{Priority, ResultOutputItem};
 use crate::proto::jobworkerp::service::job_request::Worker;
 use crate::proto::jobworkerp::service::job_service_server::JobService;
 use crate::proto::jobworkerp::service::{
@@ -14,10 +11,12 @@ use app::module::AppModule;
 use async_stream::stream;
 use futures::stream::{self, BoxStream};
 use futures::StreamExt;
-use infra_utils::trace::Tracing;
+use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
-use proto::jobworkerp::data::{result_output_item, Job, JobId};
+use proto::jobworkerp::data::{Job, JobId};
+use std::sync::Arc;
+use std::{fmt::Debug, time::Duration};
 use tonic::metadata::MetadataValue;
 use tonic::Response;
 
@@ -31,6 +30,7 @@ const LIST_TTL: Duration = Duration::from_secs(5);
 pub trait RequestValidator {
     // almost no timeout (1 year after)
     const DEFAULT_TIMEOUT: u64 = 1000 * 60 * 60 * 24 * 365;
+    #[allow(clippy::result_large_err)]
     fn validate_create(&self, req: &JobRequest) -> Result<(), tonic::Status> {
         if req.worker.is_none() {
             return Err(tonic::Status::invalid_argument(format!(
@@ -61,21 +61,24 @@ pub trait RequestValidator {
 #[tonic::async_trait]
 impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> JobService for T {
     #[tracing::instrument(level = "info", skip(self, request), fields(method = "enqueue"))]
+    #[allow(clippy::result_large_err)]
     async fn enqueue(
         &self,
         request: tonic::Request<JobRequest>,
     ) -> Result<tonic::Response<CreateJobResponse>, tonic::Status> {
         let _span = Self::trace_request("job", "create", &request);
-        let req = request.get_ref();
-        self.validate_create(req)?;
+        let (metadata, _extensions, req) = request.into_parts();
+        let metadata = Arc::new(super::process_metadata(metadata)?);
+        self.validate_create(&req)?;
         let res = match req.worker.as_ref() {
             Some(Worker::WorkerId(id)) => {
                 self.app()
                     .enqueue_job(
+                        metadata,
                         Some(id),
                         None,
-                        req.args.clone(),
-                        req.uniq_key.clone(),
+                        req.args,
+                        req.uniq_key,
                         req.run_after_time.unwrap_or(0),
                         req.priority.unwrap_or(Priority::Medium as i32),
                         req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
@@ -87,10 +90,11 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
             Some(Worker::WorkerName(name)) => {
                 self.app()
                     .enqueue_job(
+                        metadata,
                         None,
                         Some(name),
-                        req.args.clone(),
-                        req.uniq_key.clone(),
+                        req.args,
+                        req.uniq_key,
                         req.run_after_time.unwrap_or(0),
                         req.priority.unwrap_or(Priority::Medium as i32),
                         req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
@@ -107,31 +111,18 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
         match res {
             Ok((id, res, st)) => {
                 // if st is some, collect it and return as result
-                if let Some(mut res) = res {
+                if let Some(res) = res {
                     if res.data.as_ref().is_some_and(|d| d.output.is_none()) {
                         // if stream is some, collect it and return as result
-                        let data = if let Some(stream) = st {
-                            // XXX try to collect result stream
-                            // (if runner is finished, stream will be closed and return only first few items)
-                            // should use enqueue_for_stream for streaming result
-
-                            let items: Vec<Vec<u8>> = stream
-                                .filter_map(|item| async move {
-                                    match item.item {
-                                        Some(result_output_item::Item::Data(data)) => Some(data),
-                                        _ => None,
-                                    }
-                                })
-                                .collect()
-                                .await;
-                            res.data.map(|mut d| {
-                                d.output = Some(ResultOutput { items });
-                                d
-                            })
-                        } else {
-                            res.data
+                        if let Some(_stream) = st {
+                            Err(handle_error(
+                                &JobWorkerError::InvalidParameter(
+                                    "Result stream is not supported for enqueue".to_string(),
+                                )
+                                .into(),
+                            ))?;
                         };
-                        res.data = data;
+                        // res.data = data;
                         Ok(Response::new(CreateJobResponse {
                             id: Some(id),
                             result: Some(res),
@@ -158,21 +149,24 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
         skip(self, request),
         fields(method = "enqueue_for_stream")
     )]
+    #[allow(clippy::result_large_err)]
     async fn enqueue_for_stream(
         &self,
         request: tonic::Request<JobRequest>,
     ) -> Result<tonic::Response<Self::EnqueueForStreamStream>, tonic::Status> {
         let _span = Self::trace_request("job", "create", &request);
-        let req = request.get_ref();
-        self.validate_create(req)?;
+        let (metadata, _, req) = request.into_parts();
+        let metadata = Arc::new(super::process_metadata(metadata)?);
+        self.validate_create(&req)?;
         let res = match req.worker.as_ref() {
             Some(Worker::WorkerId(id)) => {
                 self.app()
                     .enqueue_job(
+                        metadata,
                         Some(id),
                         None,
-                        req.args.clone(),
-                        req.uniq_key.clone(),
+                        req.args,
+                        req.uniq_key,
                         req.run_after_time.unwrap_or(0),
                         req.priority.unwrap_or(Priority::Medium as i32),
                         req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
@@ -184,10 +178,11 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
             Some(Worker::WorkerName(name)) => {
                 self.app()
                     .enqueue_job(
+                        metadata,
                         None,
                         Some(name),
-                        req.args.clone(),
-                        req.uniq_key.clone(),
+                        req.args,
+                        req.uniq_key,
                         req.run_after_time.unwrap_or(0),
                         req.priority.unwrap_or(Priority::Medium as i32),
                         req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
@@ -208,8 +203,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
         match res {
             Ok((_id, Some(res), Some(st))) => {
                 tracing::debug!(
-                    "enqueue_for_stream request = {:?}, output = {:?}",
-                    &req,
+                    "enqueue_for_stream output = {:?}",
                     &res.data
                         .as_ref()
                         .map(|d| d.output.as_ref().map(|o| o.items.len()))
@@ -240,6 +234,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
             Err(e) => Err(handle_error(&e)),
         }
     }
+    #[allow(clippy::result_large_err)]
     #[tracing::instrument(level = "info", skip(self, request), fields(method = "delete"))]
     async fn delete(
         &self,
@@ -252,6 +247,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
             Err(e) => Err(handle_error(&e)),
         }
     }
+    #[allow(clippy::result_large_err)]
     #[tracing::instrument(level = "info", skip(self, request), fields(method = "find"))]
     async fn find(
         &self,
@@ -266,6 +262,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
     }
 
     type FindListStream = BoxStream<'static, Result<Job, tonic::Status>>;
+    #[allow(clippy::result_large_err)]
     #[tracing::instrument(level = "info", skip(self, request), fields(method = "find_list"))]
     async fn find_list(
         &self,
@@ -293,6 +290,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
         }
     }
     type FindQueueListStream = BoxStream<'static, Result<JobAndStatus, tonic::Status>>;
+    #[allow(clippy::result_large_err)]
     #[tracing::instrument(
         level = "info",
         skip(self, request),
@@ -323,6 +321,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
             Err(e) => Err(handle_error(&e)),
         }
     }
+    #[allow(clippy::result_large_err)]
     #[tracing::instrument(level = "info", skip(self, request), fields(method = "count"))]
     async fn count(
         &self,

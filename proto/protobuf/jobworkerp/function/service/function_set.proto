@@ -5,25 +5,28 @@ package jobworkerp.function.service;
 import "jobworkerp/service/common.proto";
 import "jobworkerp/function/data/function_set.proto";
 
-
 message CreateFunctionSetResponse {
-    jobworkerp.function.data.FunctionSetId id = 1; // generated id
+  jobworkerp.function.data.FunctionSetId id = 1; // generated id
 }
 
 message OptionalFunctionSetResponse {
-    optional jobworkerp.function.data.FunctionSet data = 1;
+  optional jobworkerp.function.data.FunctionSet data = 1;
 }
 
-message FindByNameRequest {
-    string name = 1;
-}
+message FindByNameRequest { string name = 1; }
 
 service FunctionSetService {
-  rpc Create(jobworkerp.function.data.FunctionSetData) returns (CreateFunctionSetResponse);
-  rpc Update(jobworkerp.function.data.FunctionSet) returns (jobworkerp.service.SuccessResponse);
-  rpc Delete(jobworkerp.function.data.FunctionSetId) returns (jobworkerp.service.SuccessResponse);
-  rpc Find(jobworkerp.function.data.FunctionSetId) returns (OptionalFunctionSetResponse);
+  rpc Create(jobworkerp.function.data.FunctionSetData)
+      returns (CreateFunctionSetResponse);
+  rpc Update(jobworkerp.function.data.FunctionSet)
+      returns (jobworkerp.service.SuccessResponse);
+  rpc Delete(jobworkerp.function.data.FunctionSetId)
+      returns (jobworkerp.service.SuccessResponse);
+  rpc Find(jobworkerp.function.data.FunctionSetId)
+      returns (OptionalFunctionSetResponse);
   rpc FindByName(FindByNameRequest) returns (OptionalFunctionSetResponse);
-  rpc FindList(jobworkerp.service.FindListRequest) returns (stream jobworkerp.function.data.FunctionSet);
-  rpc Count(jobworkerp.service.CountCondition) returns (jobworkerp.service.CountResponse);
+  rpc FindList(jobworkerp.service.FindListRequest)
+      returns (stream jobworkerp.function.data.FunctionSet);
+  rpc Count(jobworkerp.service.CountCondition)
+      returns (jobworkerp.service.CountResponse);
 }

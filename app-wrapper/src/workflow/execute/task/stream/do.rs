@@ -8,20 +8,23 @@ use crate::workflow::{
         context::{TaskContext, Then, WorkflowContext, WorkflowStatus},
         expression::UseExpression,
         job::JobExecutorWrapper,
-        task::TaskExecutor,
+        task::{trace::TaskTracing, TaskExecutor},
     },
 };
 use anyhow::Result;
 use debug_stub_derive::DebugStub;
 use futures::StreamExt;
 use indexmap::IndexMap;
-use infra_utils::infra::net::reqwest;
-use std::{pin::Pin, sync::Arc};
+use infra_utils::infra::{net::reqwest, trace::Tracing};
+use std::{collections::HashMap, pin::Pin, sync::Arc};
 use tokio::sync::RwLock;
 use tokio_stream::wrappers::ReceiverStream;
 
 #[derive(DebugStub, Clone)]
 pub struct DoTaskStreamExecutor {
+    // for secret metadata
+    #[debug_stub = "HashMap<String, String>"]
+    metadata: Arc<HashMap<String, String>>,
     task: workflow::DoTask,
     #[debug_stub = "AppModule"]
     pub job_executor_wrapper: Arc<JobExecutorWrapper>,
@@ -30,14 +33,18 @@ pub struct DoTaskStreamExecutor {
 }
 impl UseJqAndTemplateTransformer for DoTaskStreamExecutor {}
 impl UseExpression for DoTaskStreamExecutor {}
+impl Tracing for DoTaskStreamExecutor {}
+impl TaskTracing for DoTaskStreamExecutor {}
 
 impl DoTaskStreamExecutor {
     pub fn new(
+        metadata: Arc<HashMap<String, String>>,
         task: workflow::DoTask,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
         http_client: reqwest::ReqwestClient,
     ) -> Self {
         Self {
+            metadata,
             task,
             job_executor_wrapper,
             http_client,
@@ -46,6 +53,7 @@ impl DoTaskStreamExecutor {
 
     fn execute_task_stream(
         &self,
+        cx: Arc<opentelemetry::Context>,
         task_map: Arc<IndexMap<String, (u32, Arc<Task>)>>,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         parent_task_context: TaskContext,
@@ -56,22 +64,41 @@ impl DoTaskStreamExecutor {
         let task_map = task_map.clone();
         let workflow_context = workflow_context.clone();
         let parent_ctx = parent_task_context.clone();
+        let cx = cx.clone();
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<TaskContext, Box<workflow::Error>>>(32);
+        let req_meta = self.metadata.clone();
         tokio::spawn(async move {
             let mut prev = parent_ctx;
             let mut iter = task_map.iter();
             let mut next_pair = iter.next().map(|(k, v)| (k.clone(), v.clone()));
+            let mut cx = cx;
             while let Some((name, (pos, task))) = next_pair {
+                let (span, ccx) = Self::create_task_span(
+                    &cx.clone(),
+                    format!("do_task_{}:{}", &pos, &name),
+                    &name,
+                    &prev,
+                );
+                cx = Arc::new(ccx);
+                let _span_guard = span.enter();
+
+                tracing::info!("Starting task execution: {}", name);
+
                 // stop if not running
                 if workflow_context.read().await.status != WorkflowStatus::Running {
                     break;
                 }
                 tracing::info!("Executing task: {}", name);
                 prev.add_position_index(pos);
-                let mut stream =
-                    TaskExecutor::new(job_exec.clone(), http_client.clone(), &name, task.clone())
-                        .execute(workflow_context.clone(), Arc::new(prev.clone()))
-                        .await;
+                let mut stream = TaskExecutor::new(
+                    job_exec.clone(),
+                    http_client.clone(),
+                    &name,
+                    task.clone(),
+                    req_meta.clone(),
+                )
+                .execute(cx.clone(), workflow_context.clone(), Arc::new(prev.clone()))
+                .await;
                 let mut last_ctx = None;
                 while let Some(item) = stream.next().await {
                     match item {
@@ -93,6 +120,20 @@ impl DoTaskStreamExecutor {
                     Some(c) => c,
                     None => break,
                 };
+
+                // Record task execution result to span attributes
+                let execution_duration = result
+                    .completed_at
+                    .unwrap_or_else(command_utils::util::datetime::now)
+                    - result.started_at;
+
+                Self::record_task_output(&span, &result, execution_duration.num_milliseconds());
+
+                tracing::info!(
+                    task_name = %name,
+                    "Task execution completed"
+                );
+
                 // determine next task
                 next_pair = match result.flow_directive.clone() {
                     Then::Continue => {
@@ -135,6 +176,7 @@ impl StreamTaskExecutorTrait<'_> for DoTaskStreamExecutor {
     /// The updated task context after executing all tasks.
     fn execute_stream(
         &self,
+        cx: Arc<opentelemetry::Context>,
         task_name: &str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
@@ -159,7 +201,7 @@ impl StreamTaskExecutorTrait<'_> for DoTaskStreamExecutor {
 
         // Execute tasks as a stream
         Box::pin(
-            self.execute_task_stream(task_map, workflow_context, task_context)
+            self.execute_task_stream(cx, task_map, workflow_context, task_context)
                 .map(|result| {
                     match result {
                         Ok(tc) => {

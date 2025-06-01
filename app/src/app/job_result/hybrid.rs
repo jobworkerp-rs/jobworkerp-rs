@@ -363,7 +363,7 @@ pub mod tests {
             args,
             uniq_key: None,
             output: Some(proto::jobworkerp::data::ResultOutput {
-                items: vec![b"data".to_vec()],
+                items: b"data".to_vec(),
             }),
             retried: 0,
             max_retry: 0,
@@ -496,7 +496,7 @@ pub mod tests {
                 args,
                 uniq_key: Some("uniq_key".to_string()),
                 output: Some(proto::jobworkerp::data::ResultOutput {
-                    items: vec![b"data".to_vec()],
+                    items: b"data".to_vec(),
                 }),
                 retried: 0,
                 max_retry: worker_data.retry_policy.map(|p| p.max_retry).unwrap_or(0),
@@ -514,6 +514,7 @@ pub mod tests {
             let result = JobResult {
                 id: Some(id),
                 data: Some(data.clone()),
+                ..Default::default()
             };
             assert!(
                 app.create_job_result_if_necessary(&id, &data, worker_data.broadcast_results)
@@ -534,6 +535,7 @@ pub mod tests {
             let result = JobResult {
                 id: Some(id),
                 data: Some(data.clone()),
+                ..Default::default()
             };
             assert!(
                 app.create_job_result_if_necessary(&id, &data, worker_data.broadcast_results)
@@ -559,6 +561,7 @@ pub mod tests {
             let result = JobResult {
                 id: Some(id),
                 data: Some(data.clone()),
+                ..Default::default()
             };
             // store only to redis for listen after (broadcast_results = true)
             assert!(app.create_job_result_if_necessary(&id, &data, true).await?);

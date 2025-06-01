@@ -4,7 +4,7 @@ use futures::{stream::BoxStream, StreamExt};
 use hello::{HelloArgs, HelloRunnerResult, HelloRunnerSettings};
 use jobworkerp_runner::runner::plugins::PluginRunner;
 use prost::Message;
-use std::{alloc::System, sync::Arc, time::Duration};
+use std::{alloc::System, collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, Mutex};
 use tracing::Level; // Add this line to import the Message trait
 
@@ -59,7 +59,7 @@ impl HelloPlugin {
             },
         }
     }
-    pub async fn hello(&self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
+    pub async fn hello(&self, arg: &[u8]) -> Result<Vec<u8>> {
         // XXX to test easy
         let arg = HelloArgs::decode(arg).unwrap_or(HelloArgs {
             arg: String::from_utf8_lossy(arg).to_string(),
@@ -78,10 +78,10 @@ impl HelloPlugin {
             chrono::Utc::now().to_rfc3339(),
             id
         );
-        Ok(vec![HelloRunnerResult {
+        Ok(HelloRunnerResult {
             data: format!("SUCCESS: {} arg={}", id, &data),
         }
-        .encode_to_vec()])
+        .encode_to_vec())
     }
     pub async fn async_run(hello_name: String) -> Result<BoxStream<'static, Vec<u8>>> {
         let (tx, rx) = mpsc::channel(100);
@@ -131,12 +131,16 @@ impl PluginRunner for HelloPlugin {
 
         Ok(())
     }
-    fn run(&mut self, arg: Vec<u8>) -> Result<Vec<Vec<u8>>> {
+    fn run(
+        &mut self,
+        arg: Vec<u8>,
+        metadata: HashMap<String, String>,
+    ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let arg_clone = arg.clone();
         self.rt
-            .block_on(async { self.hello(arg_clone.as_slice()).await })
+            .block_on(async { (self.hello(arg_clone.as_slice()).await, metadata) })
     }
-    fn begin_stream(&mut self, arg: Vec<u8>) -> Result<()> {
+    fn begin_stream(&mut self, arg: Vec<u8>, _metadata: HashMap<String, String>) -> Result<()> {
         // decode the arguments
         self.args = HelloArgs::decode(arg.as_slice())?;
         // process the arguments (dummy)

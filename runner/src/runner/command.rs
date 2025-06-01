@@ -6,13 +6,14 @@ use anyhow::{Context, Result};
 use async_stream::stream;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::{
     codec::{ProstMessageCodec, UseProstCodec},
     error::JobWorkerError,
 };
-use proto::jobworkerp::data::Empty;
 use proto::jobworkerp::data::{result_output_item::Item, StreamingOutputType};
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::{
     future::Future,
@@ -81,6 +82,8 @@ impl CommandRunner for CommandRunnerImpl {
     }
 }
 
+impl Tracing for CommandRunnerImpl {}
+
 impl RunnerSpec for CommandRunnerImpl {
     fn name(&self) -> String {
         RunnerType::Command.as_str_name().to_string()
@@ -115,7 +118,18 @@ impl RunnerTrait for CommandRunnerImpl {
         Ok(())
     }
     // arg: assumed as utf-8 string, specify multiple arguments with \n separated
-    async fn run(&mut self, args: &[u8]) -> Result<Vec<Vec<u8>>> {
+    async fn run(
+        &mut self,
+        args: &[u8],
+        metadata: HashMap<String, String>,
+    ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        // let (span, cx) =
+        //     Self::tracing_span_from_metadata(&metadata, APP_WORKER_NAME, "COMMAND::run");
+        // let _guard = span.enter();
+        // let mut metadata = metadata.clone();
+        // Self::inject_metadata_from_context(&mut metadata, &cx);
+
+        let res = async {
         let data =
             ProstMessageCodec::deserialize_message::<CommandArgs>(args).context("on run job")?;
         let mut command = Command::new(data.command.as_str());
@@ -144,7 +158,6 @@ impl RunnerTrait for CommandRunnerImpl {
             should_monitor_memory,
             started_at
         );
-
         match command
             .args(args)
             .kill_on_drop(true)
@@ -315,7 +328,7 @@ impl RunnerTrait for CommandRunnerImpl {
                 // Serialize the result
                 let serialized_result = ProstMessageCodec::serialize_message(&result)?;
 
-                Ok(vec![serialized_result])
+                Ok(serialized_result)
             }
             Err(e) => {
                 tracing::error!(
@@ -330,8 +343,14 @@ impl RunnerTrait for CommandRunnerImpl {
                 )
             }
         }
+        }.await;
+        (res, metadata)
     }
-    async fn run_stream(&mut self, args: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>> {
+    async fn run_stream(
+        &mut self,
+        args: &[u8],
+        metadata: HashMap<String, String>,
+    ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let data = ProstMessageCodec::deserialize_message::<CommandArgs>(args)
             .context("on run_stream job")?;
         let command_str = data.command.clone();
@@ -360,7 +379,15 @@ impl RunnerTrait for CommandRunnerImpl {
             should_monitor_memory,
             started_at
         );
+        // let (span, cx) =
+        //     Self::tracing_span_from_metadata(&metadata, APP_WORKER_NAME, "COMMAND::run_stream");
+        // let _guard = span.enter();
+        // let mut metadata = metadata.clone();
+        // Self::inject_metadata_from_context(&mut metadata, &cx);
 
+        let trailer = Arc::new(proto::jobworkerp::data::Trailer {
+            metadata: metadata.clone(),
+        });
         // Create the stream - use stream! instead of try_stream! to handle errors internally
         let stream = stream! {
             match command
@@ -437,7 +464,7 @@ impl RunnerTrait for CommandRunnerImpl {
                             }
 
                             yield ResultOutputItem {
-                                item: Some(Item::End(Empty {})),
+                                item: Some(Item::End((*trailer).clone() )),
                             };
 
                             return;
@@ -464,7 +491,7 @@ impl RunnerTrait for CommandRunnerImpl {
                             }
 
                             yield ResultOutputItem {
-                                item: Some(Item::End(Empty {})),
+                                item: Some(Item::End((*trailer).clone() )),
                             };
 
                             return;
@@ -705,7 +732,7 @@ impl RunnerTrait for CommandRunnerImpl {
 
                     // Send the end of stream marker
                     yield ResultOutputItem {
-                        item: Some(Item::End(Empty {})),
+                        item: Some(Item::End((*trailer).clone())),
                     };
                 },
                 Err(e) => {
@@ -740,7 +767,7 @@ impl RunnerTrait for CommandRunnerImpl {
 
                     // Always send end marker even on error
                     yield ResultOutputItem {
-                        item: Some(Item::End(Empty {})),
+                        item: Some(Item::End((*trailer).clone())),
                     };
                 }
             }
@@ -774,11 +801,14 @@ mod tests {
         };
 
         let res = runner
-            .run(&ProstMessageCodec::serialize_message(&arg).unwrap())
+            .run(
+                &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                HashMap::new(),
+            )
             .await;
 
-        assert!(res.is_ok());
-        let result_bytes = res.unwrap().pop().unwrap();
+        assert!(res.0.is_ok());
+        let result_bytes = res.0.unwrap();
         let result =
             ProstMessageCodec::deserialize_message::<CommandResult>(&result_bytes).unwrap();
 
@@ -810,11 +840,14 @@ mod tests {
         };
 
         let res = runner
-            .run(&ProstMessageCodec::serialize_message(&arg).unwrap())
+            .run(
+                &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                HashMap::new(),
+            )
             .await;
 
-        assert!(res.is_ok());
-        let result_bytes = res.unwrap().pop().unwrap();
+        assert!(res.0.is_ok());
+        let result_bytes = res.0.unwrap();
         let result =
             ProstMessageCodec::deserialize_message::<CommandResult>(&result_bytes).unwrap();
 
@@ -832,11 +865,14 @@ mod tests {
         };
 
         let res = runner
-            .run(&ProstMessageCodec::serialize_message(&arg).unwrap())
+            .run(
+                &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                HashMap::new(),
+            )
             .await;
 
         // Should return an error for non-existent command
-        assert!(res.is_err());
+        assert!(res.0.is_err());
     }
 
     #[tokio::test]
@@ -851,7 +887,10 @@ mod tests {
         // Run the command in a separate task so we can cancel it
         let run_handle = tokio::spawn(async move {
             let res = runner
-                .run(&ProstMessageCodec::serialize_message(&arg).unwrap())
+                .run(
+                    &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                    HashMap::new(),
+                )
                 .await;
             (runner, res)
         });
@@ -873,7 +912,10 @@ mod tests {
         };
 
         let stream_result = runner
-            .run_stream(&ProstMessageCodec::serialize_message(&arg).unwrap())
+            .run_stream(
+                &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                HashMap::new(),
+            )
             .await;
 
         assert!(stream_result.is_ok());
@@ -953,7 +995,10 @@ mod tests {
 
         // Get the stream
         let stream_result = runner
-            .run_stream(&ProstMessageCodec::serialize_message(&arg).unwrap())
+            .run_stream(
+                &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                HashMap::new(),
+            )
             .await;
 
         assert!(stream_result.is_ok());

@@ -35,7 +35,7 @@
 //! Defines the core execution interface for job runners, including methods
 //! for initialization, job execution (both streaming and non-streaming), and
 //! job cancellation.
-use std::any::Any;
+use std::{any::Any, collections::HashMap};
 
 use anyhow::Result;
 use futures::stream::BoxStream;
@@ -103,8 +103,16 @@ pub trait RunnerSpec: Send + Sync + Any {
 #[async_trait]
 pub trait RunnerTrait: RunnerSpec + Send + Sync {
     async fn load(&mut self, settings: Vec<u8>) -> Result<()>;
-    async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>>;
+    async fn run(
+        &mut self,
+        arg: &[u8],
+        metadata: HashMap<String, String>,
+    ) -> (Result<Vec<u8>>, HashMap<String, String>);
     // only implement for stream runner (output_as_stream() == true)
-    async fn run_stream(&mut self, arg: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>>;
+    async fn run_stream(
+        &mut self,
+        arg: &[u8],
+        metadata: HashMap<String, String>,
+    ) -> Result<BoxStream<'static, ResultOutputItem>>;
     async fn cancel(&mut self);
 }
