@@ -16,16 +16,16 @@ use proto::jobworkerp::data::{QueueType, ResponseType, WorkerData};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-pub struct RunTaskExecutor<'a> {
-    task: &'a workflow::RunTask,
+pub struct RunTaskExecutor {
+    task: workflow::RunTask,
     job_executor_wrapper: Arc<JobExecutorWrapper>,
 }
-impl UseExpression for RunTaskExecutor<'_> {}
-impl UseJqAndTemplateTransformer for RunTaskExecutor<'_> {}
-impl UseExpressionTransformer for RunTaskExecutor<'_> {}
+impl UseExpression for RunTaskExecutor {}
+impl UseJqAndTemplateTransformer for RunTaskExecutor {}
+impl UseExpressionTransformer for RunTaskExecutor {}
 
-impl<'a> RunTaskExecutor<'a> {
-    pub fn new(job_executor_wrapper: Arc<JobExecutorWrapper>, task: &'a workflow::RunTask) -> Self {
+impl RunTaskExecutor {
+    pub fn new(job_executor_wrapper: Arc<JobExecutorWrapper>, task: workflow::RunTask) -> Self {
         Self {
             task,
             job_executor_wrapper,
@@ -40,7 +40,7 @@ impl<'a> RunTaskExecutor<'a> {
             let worker_data = WorkerData {
                 name: name.to_string(),
                 description: String::new(),
-                broadcast_results: options.broadcast_results_to_listener.unwrap_or(false),
+                broadcast_results: options.broadcast_results.unwrap_or(false),
                 store_failure: options.store_failure.unwrap_or(false),
                 store_success: options.store_success.unwrap_or(false),
                 use_static: options.use_static.unwrap_or(false),
@@ -105,7 +105,7 @@ impl<'a> RunTaskExecutor<'a> {
         //     .await
     }
 }
-impl TaskExecutorTrait<'_> for RunTaskExecutor<'_> {
+impl TaskExecutorTrait<'_> for RunTaskExecutor {
     async fn execute(
         &self,
         task_name: &str,
@@ -122,7 +122,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor<'_> {
             // then, //  ::std::option::Option<FlowDirective>
             run,
             ..
-        } = self.task;
+        } = &self.task;
         // TODO: add other task types
         // currently support only RunTaskConfiguration
         let workflow::RunTaskConfiguration {
@@ -138,8 +138,8 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor<'_> {
         } = run;
         {
             // enter run.function
-            task_context.add_position_name("run".to_string()).await;
-            task_context.add_position_name("function".to_string()).await;
+            task_context.add_position_name("run".to_string());
+            task_context.add_position_name("function".to_string());
 
             let expression = Self::expression(
                 &*(workflow_context.read().await),
@@ -147,12 +147,12 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor<'_> {
             )
             .await;
 
-            tracing::debug!("expression: {:#?}", expression);
+            // tracing::debug!("expression: {:#?}", expression);
 
             let expression = match expression {
                 Ok(e) => e,
                 Err(mut e) => {
-                    let pos = task_context.position.lock().await.clone();
+                    let pos = task_context.position.clone();
                     e.position(&pos);
                     return Err(e);
                 }
@@ -166,7 +166,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor<'_> {
             ) {
                 Ok(args) => args,
                 Err(mut e) => {
-                    let mut pos = task_context.position.lock().await.clone();
+                    let mut pos = task_context.position.clone();
                     pos.push("arguments".to_string());
                     e.position(&pos);
                     return Err(e);
@@ -182,7 +182,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor<'_> {
             ) {
                 Ok(settings) => settings,
                 Err(mut e) => {
-                    let mut pos = task_context.position.lock().await.clone();
+                    let mut pos = task_context.position.clone();
                     pos.push("settings".to_string());
                     e.position(&pos);
                     return Err(e);
@@ -201,7 +201,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor<'_> {
             {
                 Ok(output) => Ok(output),
                 Err(e) => {
-                    let pos = task_context.position.lock().await.clone();
+                    let pos = task_context.position.clone();
                     Err(workflow::errors::ErrorFactory::new().service_unavailable(
                         "Failed to execute by jobworkerp".to_string(),
                         Some(&pos),
@@ -212,8 +212,8 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor<'_> {
             task_context.set_raw_output(output);
 
             // out of run.function
-            task_context.remove_position().await;
-            task_context.remove_position().await;
+            task_context.remove_position();
+            task_context.remove_position();
 
             Ok(task_context)
         } // r => Err(anyhow::anyhow!(

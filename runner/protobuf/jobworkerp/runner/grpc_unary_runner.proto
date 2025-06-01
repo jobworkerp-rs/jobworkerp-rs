@@ -52,4 +52,8 @@ message GrpcUnaryRunnerSettings {
     // # TLS Configuration
     // TLS configuration options (relevant when tls=true)
     optional TlsConfig tls_config = 7;
+    
+    // # Use Reflection
+    // Whether to use gRPC reflection API for dynamic message construction
+    optional bool use_reflection = 8;
 }

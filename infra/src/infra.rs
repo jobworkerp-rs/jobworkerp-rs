@@ -1,4 +1,5 @@
 pub mod event;
+pub mod function_set;
 pub mod job;
 pub mod job_result;
 pub mod module;

@@ -27,6 +27,18 @@ message LLMCompletionArgs {
     // extract reasoning content from the response
     optional bool extract_reasoning_content = 7;
   }
+
+  message FunctionOptions {
+    // use function calling
+    bool use_function_calling = 1;
+    // function set name
+    optional string function_set_name = 2;
+    // use runners as function (exclusive with function_set_name)
+    optional bool use_runners_as_function = 3;
+    // use workers as function (exclusive with function_set_name)
+    optional bool use_workers_as_function = 4;
+  }
+
   // An encoding of a conversation returned by Ollama after a completion
   // request, this can be sent in a new request to keep a conversational memory.
   message OllamaContext { repeated int32 data = 1; }
@@ -54,4 +66,7 @@ message LLMCompletionArgs {
   // An encoding of the conversation used in this response, this can be sent in
   // the next request to keep a conversational memory
   optional GenerationContext context = 5;
+
+  // The function options to use for the model.
+  optional FunctionOptions function_options = 6;
 }

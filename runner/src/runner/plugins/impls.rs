@@ -87,24 +87,27 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
     #[allow(unstable_name_collisions)]
     async fn run(&mut self, arg: &[u8]) -> Result<Vec<Vec<u8>>> {
         // XXX clone
+        // let plugin_runner = Arc::clone(&self.plugin_runner);
+        // let arg1 = arg.to_vec();
+
+        // tokio::task::spawn_blocking(move || {
+        //     let mut runner = futures::executor::block_on(plugin_runner.write());
+        //     runner.run(arg1).map_err(|e| {
+        //         tracing::warn!("in running pluginRunner: {:?}", e);
+        //         e
+        //     })
+        // })
+        // .await?
+        // .map_err(|e| anyhow!("Join error: {:?}", e))
+
         let plugin_runner = self.plugin_runner.clone();
         let arg1 = arg.to_vec();
-        // tokio::task::spawn_blocking(|| async move {
         let mut runner = plugin_runner.write().await;
-        // .map_err(|e| anyhow::anyhow!("plugin runner lock error: {:?}", e))
-        // {
-        //     Ok(mut runner) =>
         runner.run(arg1).map_err(|e| {
             tracing::warn!("in running pluginRunner: {:?}", e);
             // anyhow!("in running pluginRunner: {:?}", e)
             e
         })
-        // Err(e) => Err(e),
-        // }
-        // })
-        // .await
-        // .map_err(|e| e.into())
-        // .flatten()
     }
 
     async fn run_stream(&mut self, arg: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>> {

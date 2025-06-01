@@ -12,6 +12,7 @@ use infra::infra::IdGeneratorWrapper;
 use infra_utils::infra::lock::RwLockWithKey;
 use infra_utils::infra::memory::{self, MemoryCacheConfig, MemoryCacheImpl, UseMemoryCache};
 use infra_utils::infra::rdb::UseRdbPool;
+use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{RunnerId, RunnerType};
 use std::{sync::Arc, time::Duration};
 use stretto::AsyncCache;
@@ -49,31 +50,44 @@ impl HybridRunnerAppImpl {
         }
     }
     // load runners from db in initialization
-    async fn load_runners_from_db(&self) -> Result<()> {
-        let runners = self.runner_repository().find_list(None, None).await?;
-        for data in runners.into_iter().flat_map(|r| r.data) {
-            if let Err(e) = match data.runner_type {
-                val if val == RunnerType::McpServer as i32 => self
-                    .runner_repository()
-                    .load_mcp_server(
-                        data.name.as_str(),
-                        data.description.as_str(),
-                        data.definition.as_str(),
-                    )
-                    .await
-                    .map(|_| ()),
-                val if val == RunnerType::Plugin as i32 => self
-                    .runner_repository()
-                    .load_plugin(Some(data.name.as_str()), &data.definition)
-                    .await
-                    .map(|_| ()),
-                _ => Ok(()), // skip other types
-            } {
-                tracing::error!("load runner error: {:?}", e);
-                return Err(e);
+    async fn load_runners_from_db(&self) {
+        if let Ok(runners) = self
+            .runner_repository()
+            .find_row_list_tx(self.runner_repository().db_pool(), None, None)
+            .await
+        {
+            for data in runners.into_iter() {
+                if let Err(e) = match data.r#type {
+                    val if val == RunnerType::McpServer as i32 => {
+                        tracing::debug!("load mcp server: {:?}", data);
+                        self.runner_repository()
+                            .load_mcp_server(
+                                data.name.as_str(),
+                                data.description.as_str(),
+                                data.definition.as_str(),
+                            )
+                            .await
+                            .map(|_| ())
+                    }
+                    val if val == RunnerType::Plugin as i32 => self
+                        .runner_repository()
+                        .load_plugin(Some(data.name.as_str()), &data.definition, false)
+                        .await
+                        .map(|_| ()),
+                    _ => Ok(()), // skip other types
+                } {
+                    if let Some(JobWorkerError::AlreadyExists(_)) =
+                        e.downcast_ref::<JobWorkerError>()
+                    {
+                        tracing::debug!("load runner is already exists: {:?}", e);
+                    } else {
+                        tracing::warn!("load runner error: {:?}", e);
+                    }
+                }
             }
+        } else {
+            tracing::warn!("load runner from db error");
         }
-        Ok(())
     }
 }
 
@@ -86,11 +100,11 @@ impl UseRunnerParserWithCache for HybridRunnerAppImpl {
 #[async_trait]
 impl RunnerApp for HybridRunnerAppImpl {
     async fn load_runner(&self) -> Result<bool> {
-        self.load_runners_from_db().await?;
         self.runner_repository()
             .add_from_plugins_from(self.plugin_dir.as_str())
             .await?;
         self.runner_repository().add_from_mcp_config_file().await?;
+        self.load_runners_from_db().await;
         let _ = self
             .delete_cache_locked(&Self::find_all_list_cache_key())
             .await;
@@ -104,25 +118,28 @@ impl RunnerApp for HybridRunnerAppImpl {
         runner_type: i32,
         definition: &str,
     ) -> Result<RunnerId> {
-        let runner_id = self.id_generator.generate_id()?;
-        let _ = match runner_type {
-            val if val == RunnerType::McpServer as i32 => self
-                .runner_repository()
-                .create_mcp_server(name, description, definition)
-                .await
-                .map(|_| ()),
-            val if val == RunnerType::Plugin as i32 => self
-                .runner_repository()
-                .create_plugin(name, description, definition)
-                .await
-                .map(|_| ()),
-            _ => Ok(()),
+        let r = match runner_type {
+            val if val == RunnerType::McpServer as i32 => {
+                self.runner_repository()
+                    .create_mcp_server(name, description, definition)
+                    .await
+            }
+            val if val == RunnerType::Plugin as i32 => {
+                self.runner_repository()
+                    .create_plugin(name, description, definition)
+                    .await
+            }
+            _ => Err(JobWorkerError::InvalidParameter(format!(
+                "invalid runner type: {}",
+                runner_type
+            ))
+            .into()),
         }?;
         // clear memory cache
         let _ = self
             .delete_cache_locked(&Self::find_all_list_cache_key())
             .await;
-        Ok(RunnerId { value: runner_id })
+        Ok(r)
     }
 
     async fn delete_runner(&self, id: &RunnerId) -> Result<bool> {

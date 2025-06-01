@@ -2,6 +2,7 @@ use super::config::{McpConfig, McpServerConfig, McpServerTransportConfig};
 use anyhow::Result;
 use debug_stub_derive::DebugStub;
 use infra_utils::infra::cache::{MokaCache, MokaCacheConfig, MokaCacheImpl, UseMokaCache};
+use jobworkerp_base::error::JobWorkerError;
 use rmcp::{
     model::{CallToolRequestParam, CallToolResult, LoggingLevel, Tool},
     service::{QuitReason, RunningService},
@@ -43,7 +44,8 @@ impl McpServerProxy {
     async fn start(config: &McpServerTransportConfig) -> Result<RunningService<RoleClient, ()>> {
         let client = match config {
             McpServerTransportConfig::Sse { url } => {
-                let transport = rmcp::transport::sse::SseTransport::start(url).await?;
+                let transport =
+                    rmcp::transport::sse_client::SseClientTransport::start(url.as_str()).await?;
                 // TODO use handler
                 ().serve(transport).await?
             }
@@ -104,6 +106,10 @@ impl McpServerProxy {
         match self.transport.cancel().await? {
             QuitReason::Cancelled => Ok(true),
             QuitReason::Closed => Ok(false),
+            QuitReason::JoinError(join_error) => {
+                tracing::error!("tokio thread Join error: {:?}", join_error);
+                Err(JobWorkerError::RuntimeError(format!("Join error: {}", join_error)).into())
+            }
         }
     }
 }
@@ -213,11 +219,12 @@ impl McpServerFactory {
             mcp_configs: Arc::new(RwLock::new(mcp_configs)),
         }
     }
+    // overwrite config if exists
     pub async fn add_server(&self, config: McpServerConfig) -> Result<McpServerProxy> {
+        let server = McpServerProxy::new(&config).await?;
         let mut mcp_configs = self.mcp_configs.write().await;
         mcp_configs.insert(config.name.clone(), config.clone());
         // test connection
-        let server = McpServerProxy::new(&config).await?;
         Ok(server)
     }
     pub async fn remove_server(&self, name: &str) -> Result<bool> {
@@ -228,6 +235,18 @@ impl McpServerFactory {
         } else {
             Ok(false)
         }
+    }
+    pub async fn find_server_config(&self, name: &str) -> Option<McpServerConfig> {
+        let mcp_configs = self.mcp_configs.read().await;
+        mcp_configs.get(name).cloned()
+    }
+    pub async fn get_server_proxy(&self, name: &str) -> Result<McpServerProxy> {
+        let mcp_configs = self.mcp_configs.read().await;
+        let config = mcp_configs
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("MCP client not found: {}", name))?;
+        let server = McpServerProxy::new(config).await?;
+        Ok(server)
     }
     pub async fn find_all(&self) -> Vec<McpServerConfig> {
         self.mcp_configs

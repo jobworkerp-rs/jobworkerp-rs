@@ -1,4 +1,5 @@
-use crate::proto::jobworkerp::service::function_service_server::FunctionServiceServer;
+use crate::proto::jobworkerp::function::service::function_service_server::FunctionServiceServer;
+use crate::proto::jobworkerp::function::service::function_set_service_server::FunctionSetServiceServer;
 use crate::proto::jobworkerp::service::job_restore_service_server::JobRestoreServiceServer;
 use crate::proto::jobworkerp::service::job_result_service_server::JobResultServiceServer;
 use crate::proto::jobworkerp::service::job_service_server::JobServiceServer;
@@ -7,6 +8,7 @@ use crate::proto::jobworkerp::service::runner_service_server::RunnerServiceServe
 use crate::proto::jobworkerp::service::worker_service_server::WorkerServiceServer;
 use crate::proto::FILE_DESCRIPTOR_SET;
 use crate::service::function::FunctionGrpcImpl;
+use crate::service::function_set::FunctionSetGrpcImpl;
 use crate::service::job::JobGrpcImpl;
 use crate::service::job_restore::JobRestoreGrpcImpl;
 use crate::service::job_result::JobResultGrpcImpl;
@@ -69,9 +71,6 @@ pub async fn start_server(
             .add_service(enable_grpc_web(WorkerServiceServer::new(
                 WorkerGrpcImpl::new(app_module.clone()),
             )))
-            .add_service(enable_grpc_web(FunctionServiceServer::new(
-                FunctionGrpcImpl::new(app_module.clone()),
-            )))
             .add_service(enable_grpc_web(JobServiceServer::new(JobGrpcImpl::new(
                 app_module.clone(),
             ))))
@@ -83,6 +82,12 @@ pub async fn start_server(
             )))
             .add_service(enable_grpc_web(JobResultServiceServer::new(
                 JobResultGrpcImpl::new(app_module.clone()),
+            )))
+            .add_service(enable_grpc_web(FunctionSetServiceServer::new(
+                FunctionSetGrpcImpl::new(app_module.clone()),
+            )))
+            .add_service(enable_grpc_web(FunctionServiceServer::new(
+                FunctionGrpcImpl::new(app_module),
             )))
             .add_service(reflection)
             .add_service(health_service)
@@ -108,9 +113,6 @@ pub async fn start_server(
             .add_service(WorkerServiceServer::new(WorkerGrpcImpl::new(
                 app_module.clone(),
             )))
-            .add_service(FunctionServiceServer::new(FunctionGrpcImpl::new(
-                app_module.clone(),
-            )))
             .add_service(JobServiceServer::new(JobGrpcImpl::new(app_module.clone())))
             .add_service(JobStatusServiceServer::new(JobStatusGrpcImpl::new(
                 app_module.clone(),
@@ -119,6 +121,12 @@ pub async fn start_server(
                 app_module.clone(),
             )))
             .add_service(JobResultServiceServer::new(JobResultGrpcImpl::new(
+                app_module.clone(),
+            )))
+            .add_service(FunctionSetServiceServer::new(FunctionSetGrpcImpl::new(
+                app_module.clone(),
+            )))
+            .add_service(FunctionServiceServer::new(FunctionGrpcImpl::new(
                 app_module,
             )))
             .add_service(reflection)
