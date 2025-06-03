@@ -1,5 +1,3 @@
-use tokio::sync::RwLock;
-
 use crate::workflow::{
     definition::workflow,
     execute::{
@@ -15,6 +13,7 @@ use crate::workflow::{
     execute::expression::UseExpression,
 };
 use std::sync::Arc;
+use tokio::sync::RwLock;
 pub struct SwitchTaskExecutor {
     switch_task: SwitchTask,
 }
@@ -41,7 +40,7 @@ impl TaskExecutorTrait<'_> for SwitchTaskExecutor {
     ) -> Result<TaskContext, Box<workflow::Error>> {
         tracing::debug!("SwitchTaskExecutor: {}", _task_id);
         task_context.output = task_context.input.clone();
-        task_context.add_position_name("switch".to_string());
+        task_context.add_position_name("switch".to_string()).await;
 
         // find match case
         let mut matched = false;
@@ -53,7 +52,7 @@ impl TaskExecutorTrait<'_> for SwitchTaskExecutor {
         {
             Ok(e) => e,
             Err(mut e) => {
-                let pos = task_context.position.clone();
+                let pos = task_context.position.read().await;
                 e.position(&pos);
                 return Err(e);
             }
@@ -71,7 +70,8 @@ impl TaskExecutorTrait<'_> for SwitchTaskExecutor {
                     ) {
                         Ok(matched) => matched,
                         Err(mut e) => {
-                            let mut pos = task_context.position.clone();
+                            let pos = task_context.position.clone();
+                            let mut pos = pos.write().await;
                             pos.push("when".to_string());
                             e.position(&pos);
                             return Err(e);
@@ -93,8 +93,9 @@ impl TaskExecutorTrait<'_> for SwitchTaskExecutor {
                         Ok(v) => v,
                         Err(mut e) => {
                             tracing::error!("Failed to evaluate switch `then' condition: {:#?}", e);
-                            task_context.add_position_name("then".to_string());
-                            e.position(&task_context.position.clone());
+                            task_context.add_position_name("then".to_string()).await;
+                            let pos = task_context.position.read().await;
+                            e.position(&pos);
                             return Err(e);
                         }
                     };
@@ -106,7 +107,7 @@ impl TaskExecutorTrait<'_> for SwitchTaskExecutor {
                 break;
             }
         }
-        task_context.remove_position();
+        task_context.remove_position().await;
         Ok(task_context)
     }
 }
