@@ -1,6 +1,5 @@
 pub mod context;
 pub mod expression;
-pub mod ext;
 pub mod job;
 pub mod task;
 pub mod workflow;
@@ -15,6 +14,7 @@ use app::module::AppModule;
 use futures::StreamExt;
 use infra_utils::infra::net::reqwest::ReqwestClient;
 use infra_utils::infra::trace::Tracing;
+use opentelemetry::trace::TraceContextExt;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -46,9 +46,14 @@ pub async fn execute(
     context: Arc<serde_json::Value>,
     metadata: HashMap<String, String>,
 ) -> Result<Arc<RwLock<WorkflowContext>>> {
-    let (span, cx) =
-        TracingImpl::tracing_span_from_metadata(&metadata, "workflow-execute", "execute_workflow");
-    let _ = span.enter();
+    // let span =
+    //     TracingImpl::tracing_span_from_metadata(&metadata, "workflow-execute", "execute_workflow");
+    // let _ = span.enter();
+    // let cx = span.context();
+    let span =
+        TracingImpl::otel_span_from_metadata(&metadata, "workflow-execute", "execute_workflow");
+    let cx = opentelemetry::Context::current_with_span(span);
+
     let workflow_executor = WorkflowExecutor::new(
         app_module,
         http_client,
@@ -57,7 +62,6 @@ pub async fn execute(
         context,
         Arc::new(metadata.clone()),
     );
-
     // Get the stream of workflow context updates
     let mut workflow_stream = workflow_executor.execute_workflow(Arc::new(cx));
 

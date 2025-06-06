@@ -5,11 +5,13 @@ use futures::stream::{BoxStream, StreamExt};
 use genai::GenaiService;
 use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
-use jobworkerp_base::APP_NAME;
+use jobworkerp_base::APP_WORKER_NAME;
 use jobworkerp_runner::jobworkerp::runner::llm::{LlmChatArgs, LlmRunnerSettings};
 use jobworkerp_runner::runner::llm_chat::LLMChatRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use ollama::OllamaChatService;
+use opentelemetry::trace::TraceContextExt;
+use opentelemetry::Context;
 use prost::Message;
 use proto::jobworkerp::data::{result_output_item, ResultOutputItem, RunnerType};
 use std::collections::HashMap;
@@ -110,8 +112,12 @@ impl RunnerTrait for LLMChatRunnerImpl {
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let metadata_clone = metadata.clone();
         let result = async {
-            let (span, cx) = Self::tracing_span_from_metadata(&metadata, APP_NAME, "llm_chat_run");
-            let _ = span.enter();
+            let span = Self::otel_span_from_metadata(&metadata, APP_WORKER_NAME, "llm_chat_run");
+            let cx = Context::current_with_span(span);
+            // let span = cx.span();
+            // let span = Self::tracing_span_from_metadata(&metadata, APP_NAME, "llm_chat_run");
+            // let _ = span.enter();
+            // let cx = span.context();
 
             // TODO process metadata
             let args = LlmChatArgs::decode(&mut Cursor::new(arg))
