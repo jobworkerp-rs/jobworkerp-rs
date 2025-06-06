@@ -14,6 +14,7 @@ use jobworkerp_base::codec::ProstMessageCodec;
 use jobworkerp_base::codec::UseProstCodec;
 use jobworkerp_base::APP_WORKER_NAME;
 use opentelemetry::trace::TraceContextExt;
+use opentelemetry::Context;
 use proto::jobworkerp::data::ResultOutputItem;
 use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::function::data::McpTool;
@@ -104,13 +105,15 @@ impl RunnerTrait for McpServerRunnerImpl {
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let result = async {
-            let cx = Self::otel_context_from_metadata(
+            let span = Self::otel_span_from_metadata(
                 &metadata,
                 APP_WORKER_NAME,
                 "McpServerRunnerImpl::run",
             );
+            let cx = Context::current_with_span(span);
             let mut metadata = metadata.clone();
             Self::inject_metadata_from_context(&mut metadata, &cx);
+            // ref
             let span = cx.span();
 
             let arg = ProstMessageCodec::deserialize_message::<McpServerArgs>(args)?;

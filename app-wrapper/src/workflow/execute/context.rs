@@ -5,7 +5,7 @@ use crate::workflow::definition::{
 use chrono::{DateTime, FixedOffset};
 use command_utils::util::stack::StackWithHistory;
 use std::{collections::BTreeMap, fmt, ops::Deref, sync::Arc};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -143,7 +143,7 @@ pub struct TaskContext {
     pub started_at: DateTime<FixedOffset>,
     pub completed_at: Option<DateTime<FixedOffset>>,
     pub flow_directive: Then,
-    pub position: WorkflowPosition,
+    pub position: Arc<RwLock<WorkflowPosition>>,
 }
 impl TaskContext {
     pub fn new(
@@ -163,7 +163,7 @@ impl TaskContext {
             started_at: command_utils::util::datetime::now(),
             completed_at: None,
             flow_directive: Then::Continue,
-            position: WorkflowPosition::new(vec![]),
+            position: Arc::new(RwLock::new(WorkflowPosition::new(vec![]))),
         }
     }
     pub fn new_empty() -> Self {
@@ -177,23 +177,23 @@ impl TaskContext {
             started_at: command_utils::util::datetime::now(),
             completed_at: None,
             flow_directive: Then::Continue,
-            position: WorkflowPosition::new(vec![]),
+            position: Arc::new(RwLock::new(WorkflowPosition::new(vec![]))),
         }
     }
-    pub fn add_position_name(&mut self, name: String) {
-        self.position.push(name);
+    pub async fn add_position_name(&self, name: String) {
+        self.position.write().await.push(name);
     }
-    pub fn add_position_index(&mut self, idx: u32) {
-        self.position.push_idx(idx);
+    pub async fn add_position_index(&self, idx: u32) {
+        self.position.write().await.push_idx(idx);
     }
-    pub fn remove_position(&mut self) -> Option<serde_json::Value> {
-        self.position.pop()
+    pub async fn remove_position(&self) -> Option<serde_json::Value> {
+        self.position.write().await.pop()
     }
-    pub fn current_position(&self) -> Option<&serde_json::Value> {
-        self.position.current()
+    pub async fn current_position(&self) -> Option<serde_json::Value> {
+        self.position.read().await.current().cloned()
     }
-    pub fn prev_position(&self, n: usize) -> Vec<serde_json::Value> {
-        self.position.n_prev(n)
+    pub async fn prev_position(&self, n: usize) -> Vec<serde_json::Value> {
+        self.position.read().await.n_prev(n)
     }
     // add context variable
     pub async fn add_context_value(&self, key: String, value: serde_json::Value) {

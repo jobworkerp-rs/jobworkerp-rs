@@ -228,7 +228,6 @@ pub trait JobRunner:
                     tracing::error!(msg);
                     anyhow!(msg)
                 })
-                .inspect_err(|e| tracing::warn!("error in running runner: {} : {:?}", &name, e))
                 .flatten()
         }
     }

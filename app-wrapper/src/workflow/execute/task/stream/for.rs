@@ -13,7 +13,8 @@ use crate::workflow::{
 use anyhow::Result;
 use futures::stream::{self, Stream, StreamExt};
 use infra_utils::infra::{net::reqwest, trace::Tracing};
-use jobworkerp_base::APP_NAME;
+use jobworkerp_base::APP_WORKER_NAME;
+use opentelemetry::trace::TraceContextExt;
 use std::{collections::HashMap, pin::Pin, sync::Arc};
 use tokio::sync::{mpsc, Mutex, RwLock};
 
@@ -79,6 +80,7 @@ impl ForTaskStreamExecutor {
             Ok(e) => e,
             Err(mut e) => {
                 let pos = task_context.position.clone();
+                let pos = pos.read().await;
                 e.position(&pos);
                 return Err(e);
             }
@@ -93,7 +95,8 @@ impl ForTaskStreamExecutor {
         {
             Ok(cond) => cond,
             Err(mut e) => {
-                let mut pos = task_context.position.clone();
+                let pos = task_context.position.clone();
+                let mut pos = pos.write().await;
                 pos.push("while".to_string());
                 e.position(&pos);
                 return Err(e);
@@ -107,7 +110,7 @@ impl ForTaskStreamExecutor {
         &self,
         task_name: &str,
         workflow_context: &Arc<RwLock<WorkflowContext>>,
-        mut task_context: TaskContext,
+        task_context: TaskContext,
     ) -> Result<(TaskContext, serde_json::Value, workflow::DoTask), Box<workflow::Error>> {
         tracing::debug!("ForStreamTaskExecutor: {}", task_name);
         let workflow::ForTask {
@@ -117,7 +120,7 @@ impl ForTaskStreamExecutor {
             ..
         } = &self.task;
 
-        task_context.add_position_name("for".to_string());
+        task_context.add_position_name("for".to_string()).await;
 
         let expression = match Self::expression(
             &*(workflow_context.read().await),
@@ -128,6 +131,7 @@ impl ForTaskStreamExecutor {
             Ok(e) => e,
             Err(mut e) => {
                 let pos = task_context.position.clone();
+                let pos = pos.read().await;
                 e.position(&pos);
                 return Err(e);
             }
@@ -139,7 +143,13 @@ impl ForTaskStreamExecutor {
             &expression,
         ) {
             Ok(items) => items,
-            Err(e) => return Err(e),
+            Err(mut e) => {
+                let pos = task_context.position.clone();
+                let mut pos = pos.write().await;
+                pos.push("in".to_string());
+                e.position(&pos);
+                return Err(e);
+            }
         };
 
         let do_task = workflow::DoTask {
@@ -230,7 +240,7 @@ impl ForTaskStreamExecutor {
             final_ctx.set_raw_output(serde_json::Value::Array(vec![]));
             final_ctx.remove_context_value(item_name).await;
             final_ctx.remove_context_value(index_name).await;
-            final_ctx.remove_position();
+            final_ctx.remove_position().await;
             return Ok(stream::once(async move { Ok(final_ctx) }).boxed());
         }
 
@@ -255,16 +265,32 @@ impl ForTaskStreamExecutor {
 
             // Spawn this task asynchronously
             join_set.spawn(async move {
-                let (span, ccx) = Self::create_task_span(
-                    &cx,
-                    item_name_clone.clone(),
-                    &format!(
+                let span =
+                    Self::start_child_otel_span(&cx, APP_WORKER_NAME, item_name_clone.clone());
+                let ccx = Arc::new(opentelemetry::Context::current_with_span(span));
+                let ccx_clone = ccx.clone();
+                let mut span = ccx_clone.span();
+                Self::record_task_input(
+                    &mut span,
+                    format!(
                         "for_parallel_task:{}_{}",
                         &task_name_formatted, &item_name_clone
                     ),
                     &prepared_context,
+                    prepared_context.position.read().await.as_json_pointer(),
                 );
-                let _ = span.enter();
+
+                // let span = Self::create_task_span(
+                //     &cx,
+                //     item_name_clone.clone(),
+                //     &format!(
+                //         "for_parallel_task:{}_{}",
+                //         &task_name_formatted, &item_name_clone
+                //     ),
+                //     &prepared_context,
+                // );
+                // let _ = span.enter();
+                // let ccx = span.context();
 
                 let start_time = std::time::Instant::now();
 
@@ -281,8 +307,8 @@ impl ForTaskStreamExecutor {
                 // Execute the stream and track results
                 let stream = do_stream_executor
                     .execute_stream(
-                        Arc::new(ccx),
-                        task_name_formatted.as_ref(),
+                        ccx,
+                        task_name_formatted.clone(),
                         workflow_context.clone(),
                         prepared_context,
                     )
@@ -297,7 +323,7 @@ impl ForTaskStreamExecutor {
 
                     tracing::debug!(
                         "[PARALLEL] Task {} yielding result #{} at t={}ms",
-                        &task_name_formatted,
+                        task_name_formatted.clone(),
                         result_count,
                         elapsed_ms
                     );
@@ -341,10 +367,10 @@ impl ForTaskStreamExecutor {
                 }
 
                 // cleanup
-                let mut final_ctx = original_context;
+                let final_ctx = original_context;
                 final_ctx.remove_context_value(&item_name).await;
                 final_ctx.remove_context_value(&index_name).await;
-                final_ctx.remove_position();
+                final_ctx.remove_position().await;
 
                 Ok(final_ctx)
             }))
@@ -383,7 +409,7 @@ impl ForTaskStreamExecutor {
             final_ctx.set_raw_output(serde_json::Value::Array(vec![]));
             final_ctx.remove_context_value(&item_name).await;
             final_ctx.remove_context_value(&index_name).await;
-            final_ctx.remove_position();
+            final_ctx.remove_position().await;
             return Ok::<
                 Pin<Box<dyn Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send>>,
                 Box<workflow::Error>,
@@ -410,12 +436,20 @@ impl ForTaskStreamExecutor {
                 .await
             {
                 Ok((prepared_context, while_cond)) => {
-                    let (span, cx) = Self::child_tracing_span(
+                    // let span = Self::child_tracing_span(
+                    //     &cx.clone(),
+                    //     APP_NAME,
+                    //     format!("for_task_{}:{}_{}", task_name, item_name, i),
+                    // );
+                    // let _ = span.enter();
+                    // let cx = span.context();
+                    let span = Self::start_child_otel_span(
                         &cx.clone(),
-                        APP_NAME,
+                        APP_WORKER_NAME,
                         format!("for_task_{}:{}_{}", task_name, item_name, i),
                     );
-                    let _ = span.enter();
+                    let cx = opentelemetry::Context::current_with_span(span);
+
                     if !Self::eval_as_bool(&while_cond) {
                         tracing::debug!("for: while condition is false, skipping item {}", i);
                         break;
@@ -445,7 +479,7 @@ impl ForTaskStreamExecutor {
                     > = Box::pin(async_stream::stream! {
                         let mut inner_stream = do_stream_executor_clone.execute_stream(
                             cxc.clone(),
-                            tnf_clone.as_str(),
+                            tnf_clone,
                             workflow_context_clone,
                             prepared_context,
                         );
@@ -481,7 +515,7 @@ impl ForTaskStreamExecutor {
             final_ctx.set_raw_output(serde_json::Value::Array(vec![]));
             final_ctx.remove_context_value(&item_name).await;
             final_ctx.remove_context_value(&index_name).await;
-            final_ctx.remove_position();
+            final_ctx.remove_position().await;
             return Ok::<
                 Pin<Box<dyn Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send>>,
                 Box<workflow::Error>,
@@ -499,11 +533,11 @@ impl ForTaskStreamExecutor {
             // XXX workaround: for last result sent
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-            let mut final_ctx = original_context;
+            let final_ctx = original_context;
             let _exec = keeps;
             final_ctx.remove_context_value(&item_name).await;
             final_ctx.remove_context_value(&index_name).await;
-            final_ctx.remove_position();
+            final_ctx.remove_position().await;
 
             yield Ok(final_ctx);
         });
@@ -516,7 +550,7 @@ impl StreamTaskExecutorTrait<'_> for ForTaskStreamExecutor {
     fn execute_stream(
         &self,
         cx: Arc<opentelemetry::Context>,
-        task_name: &str,
+        task_name: Arc<String>,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
     ) -> impl futures::Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send {
@@ -540,7 +574,7 @@ impl StreamTaskExecutorTrait<'_> for ForTaskStreamExecutor {
                         );
                         let mut final_ctx = task_context;
                         final_ctx.set_raw_output(serde_json::Value::Array(vec![]));
-                        final_ctx.remove_position();
+                        final_ctx.remove_position().await;
 
                         // Return the single result and exit
                         yield Ok(final_ctx);

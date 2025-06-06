@@ -12,6 +12,7 @@ use jobworkerp_runner::jobworkerp::runner::workflow_result::WorkflowStatus;
 use jobworkerp_runner::jobworkerp::runner::{Empty, InlineWorkflowArgs, WorkflowResult};
 use jobworkerp_runner::runner::workflow::InlineWorkflowRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
+use opentelemetry::trace::TraceContextExt;
 use prost::Message;
 use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
@@ -124,9 +125,11 @@ impl RunnerTrait for InlineWorkflowRunner {
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let result = async {
-            let (span, cx) =
-                Self::tracing_span_from_metadata(&metadata, APP_NAME, "inline_workflow.run");
-            let _ = span.enter();
+            // let span = Self::tracing_span_from_metadata(&metadata, APP_NAME, "inline_workflow.run");
+            // let _ = span.enter();
+            // let cx = span.context();
+            let span = Self::otel_span_from_metadata(&metadata, APP_NAME, "inline_workflow.run");
+            let cx = opentelemetry::Context::current_with_span(span);
             let arg = InlineWorkflowArgs::decode(args)?;
             tracing::debug!("workflow args: {:#?}", arg);
             if self.canceled {

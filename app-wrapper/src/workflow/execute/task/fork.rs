@@ -76,12 +76,12 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
         cx: Arc<opentelemetry::Context>,
         task_name: &'a str,
         workflow_context: Arc<RwLock<WorkflowContext>>,
-        mut task_context: TaskContext,
+        task_context: TaskContext,
     ) -> impl Future<Output = Result<TaskContext, Box<workflow::Error>>> + Send {
         async move {
             tracing::debug!("ForkTaskExecutor: {}", task_name);
 
-            task_context.add_position_name("fork".to_string());
+            task_context.add_position_name("fork".to_string()).await;
             let position = task_context.position.clone();
             let branches = &self.task.fork.branches;
             let compete = self.task.fork.compete;
@@ -149,7 +149,7 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
                                 return Err(workflow::errors::ErrorFactory::new()
                                     .service_unavailable(
                                         "All tasks failed in compete mode".to_string(),
-                                        Some(&position),
+                                        Some(position.read().await.as_error_instance()),
                                         Some(format!("{:#?}", all_errors)),
                                     ));
                             }
@@ -160,7 +160,7 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
                 // If we get here, all streams ended without success
                 Err(workflow::errors::ErrorFactory::new().service_unavailable(
                     "All tasks failed in compete mode".to_string(),
-                    Some(&position),
+                    Some(position.read().await.as_error_instance()),
                     Some(format!("{:#?}", all_errors)),
                 ))
             } else {
@@ -194,8 +194,8 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
             };
 
             match res {
-                Ok(mut context) => {
-                    context.remove_position();
+                Ok(context) => {
+                    context.remove_position().await;
                     Ok(context)
                 }
                 Err(e) => Err(e),
