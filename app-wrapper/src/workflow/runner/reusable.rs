@@ -15,6 +15,7 @@ use jobworkerp_runner::jobworkerp::runner::{
 use jobworkerp_runner::jobworkerp::runner::{ReusableWorkflowRunnerSettings, WorkflowResult};
 use jobworkerp_runner::runner::workflow::ReusableWorkflowRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
+use opentelemetry::trace::TraceContextExt;
 use prost::Message;
 use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
@@ -125,9 +126,9 @@ impl RunnerTrait for ReusableWorkflowRunner {
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let result = async {
-            let (span, cx) =
-                Self::tracing_span_from_metadata(&metadata, APP_NAME, "reusable_workflow.run");
-            let _ = span.enter();
+            let span = Self::otel_span_from_metadata(&metadata, APP_NAME, "reusable_workflow.run");
+            // let _ = span.enter();
+            let cx = opentelemetry::Context::current_with_span(span);
             let arg = ProstMessageCodec::deserialize_message::<ReusableWorkflowArgs>(args)?;
             tracing::debug!("Workflow args: {:#?}", &arg);
             if let Some(workflow) = self.workflow.as_ref() {

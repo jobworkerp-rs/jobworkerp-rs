@@ -241,3 +241,13 @@ impl Default for WorkflowSchema {
         }
     }
 }
+impl WorkflowSchema {
+    pub fn create_do_task(&self) -> DoTask {
+        DoTask {
+            do_: self.do_.clone(),
+            input: Some(self.input.clone()),
+            output: self.output.clone(),
+            ..Default::default()
+        }
+    }
+}

@@ -134,13 +134,13 @@ impl ErrorFactory {
     pub fn create(
         status: ErrorCode,
         message: Option<String>,
-        position: Option<&WorkflowPosition>,
+        position: Option<String>,
         err: Option<&anyhow::Error>,
     ) -> Box<super::Error> {
         let status_code = ERROR_CODE_MAP.get(&status).copied().unwrap_or(500);
         Box::new(Error {
             title: message,
-            instance: position.map(|p| p.as_error_instance()),
+            instance: position,
             status: status_code as i64,
             detail: err.map(|e| e.to_string()),
             type_: super::UriTemplate(format!(
@@ -202,13 +202,13 @@ impl ErrorFactory {
         &self,
         code: ErrorCode,
         message: String,
-        position: Option<&WorkflowPosition>,
+        position: Option<String>,
         detail: Option<String>,
     ) -> Box<super::Error> {
         let status_code = ERROR_CODE_MAP.get(&code).copied().unwrap_or(500);
         Box::new(Error {
             title: Some(message),
-            instance: position.map(|p| p.as_error_instance()),
+            instance: position,
             detail,
             status: status_code as i64,
             type_: super::UriTemplate(format!(
@@ -222,7 +222,7 @@ impl ErrorFactory {
     pub fn bad_argument(
         &self,
         message: String,
-        position: Option<&WorkflowPosition>,
+        position: Option<String>,
         detail: Option<String>,
     ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::BadArgument, message, position, detail)
@@ -231,7 +231,7 @@ impl ErrorFactory {
     pub fn unauthorized(
         &self,
         message: String,
-        position: Option<&WorkflowPosition>,
+        position: Option<String>,
         detail: Option<String>,
     ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::Unauthorized, message, position, detail)
@@ -240,7 +240,7 @@ impl ErrorFactory {
     pub fn payment_required(
         &self,
         message: String,
-        position: Option<&WorkflowPosition>,
+        position: Option<String>,
         detail: Option<String>,
     ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::PaymentRequired, message, position, detail)
@@ -249,7 +249,7 @@ impl ErrorFactory {
     pub fn permission_denied(
         &self,
         message: String,
-        position: Option<&WorkflowPosition>,
+        position: Option<String>,
         detail: Option<String>,
     ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::PermissionDenied, message, position, detail)
@@ -258,7 +258,7 @@ impl ErrorFactory {
     pub fn not_found(
         &self,
         message: String,
-        position: Option<&WorkflowPosition>,
+        position: Option<String>,
         detail: Option<String>,
     ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::NotFound, message, position, detail)
@@ -267,7 +267,7 @@ impl ErrorFactory {
     pub fn method_not_allowed(
         &self,
         message: String,
-        position: Option<&WorkflowPosition>,
+        position: Option<String>,
         detail: Option<String>,
     ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::MethodNotAllowed, message, position, detail)
@@ -276,7 +276,7 @@ impl ErrorFactory {
     pub fn not_acceptable(
         &self,
         message: String,
-        position: Option<&WorkflowPosition>,
+        position: Option<String>,
         detail: Option<String>,
     ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::NotAcceptable, message, position, detail)
@@ -285,7 +285,7 @@ impl ErrorFactory {
     pub fn request_timeout(
         &self,
         message: String,
-        position: Option<&WorkflowPosition>,
+        position: Option<String>,
         detail: Option<String>,
     ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::RequestTimeout, message, position, detail)
@@ -294,7 +294,7 @@ impl ErrorFactory {
     pub fn conflict(
         &self,
         message: String,
-        position: Option<&WorkflowPosition>,
+        position: Option<String>,
         detail: Option<String>,
     ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::Conflict, message, position, detail)
@@ -303,7 +303,7 @@ impl ErrorFactory {
     pub fn gone(
         &self,
         message: String,
-        position: Option<&WorkflowPosition>,
+        position: Option<String>,
         detail: Option<String>,
     ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::Gone, message, position, detail)
@@ -312,7 +312,7 @@ impl ErrorFactory {
     pub fn precondition_failed(
         &self,
         message: String,
-        position: Option<&WorkflowPosition>,
+        position: Option<String>,
         detail: Option<String>,
     ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::PreconditionFailed, message, position, detail)
@@ -321,7 +321,7 @@ impl ErrorFactory {
     pub fn unsupported_media_type(
         &self,
         message: String,
-        position: Option<&WorkflowPosition>,
+        position: Option<String>,
         detail: Option<String>,
     ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::UnsupportedMediaType, message, position, detail)
@@ -330,7 +330,7 @@ impl ErrorFactory {
     pub fn internal_error(
         &self,
         message: String,
-        position: Option<&WorkflowPosition>,
+        position: Option<String>,
         detail: Option<String>,
     ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::InternalError, message, position, detail)
@@ -339,7 +339,7 @@ impl ErrorFactory {
     pub fn not_implemented(
         &self,
         message: String,
-        position: Option<&WorkflowPosition>,
+        position: Option<String>,
         detail: Option<String>,
     ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::NotImplemented, message, position, detail)
@@ -348,7 +348,7 @@ impl ErrorFactory {
     pub fn too_many_requests(
         &self,
         message: String,
-        position: Option<&WorkflowPosition>,
+        position: Option<String>,
         detail: Option<String>,
     ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::TooManyRequests, message, position, detail)
@@ -357,7 +357,7 @@ impl ErrorFactory {
     pub fn unavailable_for_legal_reasons(
         &self,
         message: String,
-        position: Option<&WorkflowPosition>,
+        position: Option<String>,
         detail: Option<String>,
     ) -> Box<super::Error> {
         self.create_error_with_code(
@@ -371,7 +371,7 @@ impl ErrorFactory {
     pub fn bad_gateway(
         &self,
         message: String,
-        position: Option<&WorkflowPosition>,
+        position: Option<String>,
         detail: Option<String>,
     ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::BadGateway, message, position, detail)
@@ -380,7 +380,7 @@ impl ErrorFactory {
     pub fn service_unavailable(
         &self,
         message: String,
-        position: Option<&WorkflowPosition>,
+        position: Option<String>,
         detail: Option<String>,
     ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::ServiceUnavailable, message, position, detail)
@@ -389,7 +389,7 @@ impl ErrorFactory {
     pub fn gateway_timeout(
         &self,
         message: String,
-        position: Option<&WorkflowPosition>,
+        position: Option<String>,
         detail: Option<String>,
     ) -> Box<super::Error> {
         self.create_error_with_code(ErrorCode::GatewayTimeout, message, position, detail)

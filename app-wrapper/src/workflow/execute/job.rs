@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use app::app::job::{JobApp, UseJobApp};
 use app::app::job_result::{JobResultApp, UseJobResultApp};
 use app::app::runner::{
@@ -12,16 +12,14 @@ use app::app::worker::{UseWorkerApp, WorkerApp};
 use app::module::AppModule;
 use command_utils::cache_ok;
 use command_utils::protobuf::ProtobufDescriptor;
-use command_utils::util::datetime;
 use command_utils::util::scoped_cache::ScopedCache;
 use infra::infra::runner::rows::RunnerWithSchema;
 use infra_utils::infra::memory::MemoryCacheImpl;
 use proto::jobworkerp::data::{
-    Priority, QueueType, ResponseType, ResultStatus, RetryPolicy, RetryType, Worker, WorkerData,
-    WorkerId,
+    JobResult, Priority, QueueType, ResponseType, ResultStatus, RetryPolicy, RetryType, Worker,
+    WorkerData,
 };
 use proto::ProtobufHelper;
-use std::hash::{DefaultHasher, Hasher};
 
 const DEFAULT_RETRY_POLICY: RetryPolicy = RetryPolicy {
     r#type: RetryType::Exponential as i32,
@@ -147,56 +145,6 @@ pub trait UseJobExecutorHelper:
             Ok(worker)
         }
     }
-    // TODO enqueue job with temporary worker if necessary
-    // enqueue job for worker and get output data
-    fn enqueue_job_and_get_output(
-        &self,
-        metadata: Arc<HashMap<String, String>>,
-        worker_id: &WorkerId,
-        args: Vec<u8>,
-        timeout_sec: u32,
-    ) -> impl std::future::Future<Output = Result<Vec<u8>>> + Send {
-        async move {
-            tracing::debug!("enqueue_job_and_get_output: {:?}", &worker_id);
-            let res = self
-                .job_app()
-                .enqueue_job(
-                    metadata,
-                    Some(worker_id),
-                    None,
-                    args,
-                    None,
-                    0,
-                    Priority::High as i32, // higher priority for user slack response
-                    timeout_sec as u64 * 1000,
-                    None,
-                    false, // TODO can treat as stream job?
-                )
-                .await
-                .map(|r| r.1)
-                .context("enqueue_worker_job")?
-                .ok_or(anyhow!("result not found"))?
-                .data
-                .ok_or(anyhow!("result data not found"))?;
-            if res.status() == ResultStatus::Success && res.output.is_some() {
-                // output is Vec<Vec<u8>> but actually 1st Vec<u8> is valid.
-                let output = res
-                    .output
-                    .as_ref()
-                    .ok_or(anyhow!("job result output is empty: {:?}", res))?
-                    .items
-                    .to_owned();
-                Ok(output)
-            } else {
-                Err(anyhow!(
-                    "job failed: {:?}",
-                    res.output
-                        .and_then(|o| String::from_utf8_lossy(&o.items).into_owned().into())
-                ))
-            }
-        }
-    }
-
     fn create_worker_data_from(
         &self,
         name: &str,
@@ -274,62 +222,65 @@ pub trait UseJobExecutorHelper:
 
     fn setup_worker_and_enqueue_with_raw_output(
         &self,
-        metadata: Arc<HashMap<String, String>>, // metadata for job
-        worker_data: &mut WorkerData,           // change name (add random postfix) if not static
+        metadata: &mut HashMap<String, String>, // metadata for job
+        worker_data: WorkerData,                // change name (add random postfix) if not static
         job_args: Vec<u8>,
         job_timeout_sec: u32,
     ) -> impl std::future::Future<Output = Result<Vec<u8>>> + Send {
         async move {
-            // random name (temporary name for not static worker)
-            if !worker_data.use_static {
-                let mut hasher = DefaultHasher::default();
-                hasher.write_i64(datetime::now_millis());
-                hasher.write_i64(rand::random()); // random
-                worker_data.name = format!("{}_{:x}", worker_data.name, hasher.finish());
-                tracing::debug!("Worker name with hash: {}", &worker_data.name);
-            }
-            // TODO unwind and delete not static worker if failed to enqueue job
-            if let Worker {
-                id: Some(wid),
-                data: Some(wdata),
-            } = self.find_or_create_worker(worker_data).await?
+            let (_jid, res, _stream) = self
+                .job_app()
+                .enqueue_job_with_temp_worker(
+                    Arc::new(metadata.clone()),
+                    worker_data,
+                    job_args,
+                    None,
+                    0,
+                    Priority::Medium as i32,
+                    job_timeout_sec as u64 * 1000,
+                    None,
+                    false,
+                    true,
+                )
+                .await?;
+            if let Some(JobResult {
+                id: Some(jid),
+                data: Some(jdata),
+                metadata: new_meta,
+            }) = res
             {
-                let output = self
-                    .enqueue_job_and_get_output(metadata, &wid, job_args, job_timeout_sec)
-                    .await
-                    .inspect_err(|e| {
-                        tracing::warn!("Execute task failed: enqueue job and get output: {:#?}", e)
-                    });
-                // use worker one-time
-                // XXX use_static means static worker in jobworkerp, not in workflow (but use as a temporary worker or not)
-                if !wdata.use_static {
-                    match self.worker_app().delete(&wid).await {
-                        Ok(deleted) => {
-                            if !deleted {
-                                tracing::warn!("Worker not deleted: {:?}", wid);
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to delete worker: {:?}, {:?}", wid, e);
-                        }
-                    }
+                tracing::debug!("Job result: id={}, data={:?}", jid.value, jdata);
+                if jdata.status() == ResultStatus::Success && jdata.output.is_some() {
+                    // output is Vec<Vec<u8>> but actually 1st Vec<u8> is valid.
+                    let output = jdata
+                        .output
+                        .as_ref()
+                        .ok_or(anyhow!("job result output is empty: {:?}", &jdata))?
+                        .items
+                        .to_owned();
+                    // update metadata with job result metadata
+                    metadata.extend(new_meta);
+                    Ok(output)
+                } else {
+                    Err(anyhow!(
+                        "job failed: {:?}",
+                        jdata
+                            .output
+                            .and_then(|o| String::from_utf8_lossy(&o.items).into_owned().into())
+                    ))
                 }
-                output
             } else {
-                Err(anyhow::anyhow!(
-                    "Failed to find or create worker: {:#?}",
-                    worker_data
-                ))
+                Err(anyhow::anyhow!("job result not found"))
             }
         }
     }
     fn setup_worker_and_enqueue(
         &self,
-        metadata: Arc<HashMap<String, String>>, // metadata for job
+        metadata: &mut HashMap<String, String>, // metadata for job
         runner_name: &str,                      // runner(runner) name
-        mut worker_data: WorkerData, // worker parameters (if not exists, use default values)
-        job_args: Vec<u8>,           // enqueue job args
-        job_timeout_sec: u32,        // job timeout in seconds
+        worker_data: WorkerData, // worker parameters (if not exists, use default values)
+        job_args: Vec<u8>,       // enqueue job args
+        job_timeout_sec: u32,    // job timeout in seconds
     ) -> impl std::future::Future<Output = Result<serde_json::Value>> + Send {
         async move {
             // use memory cache?
@@ -350,7 +301,7 @@ pub trait UseJobExecutorHelper:
                 let output = self
                     .setup_worker_and_enqueue_with_raw_output(
                         metadata,
-                        &mut worker_data,
+                        worker_data,
                         job_args,
                         job_timeout_sec,
                     )
@@ -385,7 +336,7 @@ pub trait UseJobExecutorHelper:
     }
     fn setup_worker_and_enqueue_with_json(
         &self,
-        metadata: Arc<HashMap<String, String>>, // metadata for job
+        metadata: &mut HashMap<String, String>, // metadata for job
         runner_name: &str,                      // runner(runner) name
         runner_settings: Option<serde_json::Value>, // runner_settings data
         mut worker_data: WorkerData, // worker parameters (if not exists, use default values)
