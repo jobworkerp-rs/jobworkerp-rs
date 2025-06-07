@@ -3,7 +3,7 @@ use anyhow::Result;
 use app::module::AppModule;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use futures::StreamExt;
+use futures::{pin_mut, StreamExt};
 use infra_utils::infra::net::reqwest::ReqwestClient;
 use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
@@ -190,7 +190,8 @@ impl RunnerTrait for InlineWorkflowRunner {
             );
 
             // Get the stjream of workflow context updates
-            let mut workflow_stream = executor.execute_workflow(Arc::new(cx));
+            let workflow_stream = executor.execute_workflow(Arc::new(cx));
+            pin_mut!(workflow_stream);
 
             // Store the final workflow context
             let mut final_context = None;
@@ -210,7 +211,11 @@ impl RunnerTrait for InlineWorkflowRunner {
                         }
                     }
                     Err(e) => {
-                        return Err(e.context("Failed to execute workflow"));
+                        return Err(JobWorkerError::RuntimeError(format!(
+                            "Failed to execute workflow: {:?}",
+                            e
+                        ))
+                        .into());
                     }
                 }
             }
@@ -225,6 +230,7 @@ impl RunnerTrait for InlineWorkflowRunner {
             let r = WorkflowResult {
                 id: res.id.to_string().clone(),
                 output: serde_json::to_string(&res.output)?,
+                position: res.position.as_json_pointer(),
                 status: WorkflowStatus::from_str_name(res.status.to_string().as_str())
                     .unwrap_or(WorkflowStatus::Faulted) as i32,
                 error_message: if res.status == WorkflowStatus::Completed.into() {
@@ -313,6 +319,7 @@ impl RunnerTrait for InlineWorkflowRunner {
                         let workflow_result = WorkflowResult {
                             id: context.id.to_string(),
                             output: serde_json::to_string(&context.output).unwrap_or_default(),
+                            position: context.position.as_json_pointer(),
                             status: WorkflowStatus::from_str_name(
                                 context.status.to_string().as_str(),
                             )
@@ -335,12 +342,13 @@ impl RunnerTrait for InlineWorkflowRunner {
                     }
                     Err(e) => {
                         // If there's an error, create a WorkflowResult with error information
-                        tracing::error!("Error in workflow execution: {:?}", e);
+                        tracing::error!("Error in workflow execution: {:?}", &e);
                         let workflow_result = WorkflowResult {
                             id: "error".to_string(),
                             output: "".to_string(),
+                            position: e.instance.clone().unwrap_or_default(),
                             status: WorkflowStatus::Faulted as i32,
-                            error_message: Some(format!("Failed to execute workflow: {}", e)),
+                            error_message: Some(format!("Failed to execute workflow: {:?}", e)),
                         };
 
                         // Encode the error workflow result and return it as a data item

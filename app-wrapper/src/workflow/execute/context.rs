@@ -255,7 +255,7 @@ impl TaskContext {
             started_at: self.started_at,
             completed_at: self.completed_at,
             flow_directive: self.flow_directive.clone(),
-            position: self.position.clone(),
+            position: Arc::new(RwLock::new(self.position.read().await.clone())),
         }
     }
 
