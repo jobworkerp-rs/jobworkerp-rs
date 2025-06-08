@@ -9,8 +9,10 @@ pub mod workflow;
 use super::definition::workflow::WorkflowSchema;
 use crate::workflow::execute::context::WorkflowContext;
 use crate::workflow::execute::workflow::WorkflowExecutor;
+use anyhow::anyhow;
 use anyhow::Result;
 use app::module::AppModule;
+use futures::pin_mut;
 use futures::StreamExt;
 use infra_utils::infra::net::reqwest::ReqwestClient;
 use infra_utils::infra::trace::Tracing;
@@ -63,7 +65,8 @@ pub async fn execute(
         Arc::new(metadata.clone()),
     );
     // Get the stream of workflow context updates
-    let mut workflow_stream = workflow_executor.execute_workflow(Arc::new(cx));
+    let workflow_stream = workflow_executor.execute_workflow(Arc::new(cx));
+    pin_mut!(workflow_stream);
 
     // Store the final workflow context
     let mut final_context = None;
@@ -75,7 +78,7 @@ pub async fn execute(
                 final_context = Some(context);
             }
             Err(e) => {
-                return Err(e.context("Failed to execute workflow"));
+                return Err(anyhow!("Failed to execute workflow: {:?}", e));
             }
         }
     }
