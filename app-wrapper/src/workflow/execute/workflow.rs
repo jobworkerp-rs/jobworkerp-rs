@@ -365,24 +365,30 @@ impl WorkflowExecutor {
             };
             task_context.set_input(transformed_input);
 
+            // run workflow tasks as do_task
             let task_executor = TaskExecutor::new(
                 job_executors,
                 http_client,
                 "ROOT",
-                Arc::new(Task::DoTask(workflow.create_do_task())),
+                Arc::new(Task::DoTask(workflow.create_do_task(metadata.clone()))),
                 metadata.clone(),
             );
             let mut task_stream = task_executor
                 .execute(ccx, initial_wfc.clone(), Arc::new(task_context))
                 .await;
 
+            tracing::debug!(
+                "Task stream created for workflow: {}, id={}",
+                workflow.document.name.as_str(),
+                initial_wfc.read().await.id.to_string()
+            );
             while let Some(tc_result) = task_stream.next().await {
                 match tc_result {
                     Ok(tc) => {
                         // Update and yield workflow context
                         let mut wf = initial_wfc.write().await;
                         wf.output = Some(tc.output.clone());
-                        wf.position = tc.position.read().await.clone();
+                        wf.position = tc.position.read().await.clone(); // XXX clone
                         drop(wf);
                         yield Ok(initial_wfc.clone());
                     }
@@ -394,8 +400,8 @@ impl WorkflowExecutor {
                         Self::record_workflow_output(&span, &error_output, &wf.status);
                         wf.output = Some(error_output);
                         drop(wf);
-                        yield Ok(initial_wfc.clone());
-                        break;
+                        Self::record_error(&span, &e.to_string());
+                        yield Err(e);
                     }
                 }
             }

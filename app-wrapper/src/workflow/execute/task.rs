@@ -153,6 +153,8 @@ impl TaskExecutor {
                 return futures::stream::once(futures::future::ready(Err(e))).boxed();
             }
         };
+        // only use in rare error
+        let err_pos = task_context.position.read().await.as_error_instance();
 
         let res = self
             .execute_task(cx, workflow_context.clone(), task_context)
@@ -160,24 +162,37 @@ impl TaskExecutor {
         // remove task position after execution (last task context)
         Box::pin(stream! {
             pin_mut!(res);
-            let mut previous_item: Option<Result<TaskContext, Box<workflow::Error>>> = None;
-
-            while let Some(current_item) = res.next().await {
-                // If we have a previous item, yield it
-                if let Some(prev) = previous_item.take() {
-                    yield prev;
+            let mut previous_item: Option<Result<TaskContext, Box<workflow::Error>>> = res.next().await;
+            if previous_item.is_none() {
+                // If no item is returned, we yield an empty result
+                yield Err(workflow::errors::ErrorFactory::create(
+                    workflow::errors::ErrorCode::NotFound,
+                    Some("No task context returned".to_string()),
+                    Some(err_pos),
+                    None,
+                ));
+            } else {
+                while let Some(current_item) = res.next().await {
+                    // If we have a previous item, yield it
+                    if let Some(prev) = previous_item.take() {
+                        yield prev;
+                    }
+                    // Store current item as previous for next iteration
+                    previous_item = Some(current_item);
                 }
-                // Store current item as previous for next iteration
-                previous_item = Some(current_item);
-            }
 
-            // Handle the final item - call remove_position() only if it's Ok
-            if let Some(mut final_item) = previous_item {
-                if let Ok(ref mut tc) = final_item {
-                    tc.remove_position().await; // remove task name from position stack
+                // Handle the final item - call remove_position() only if it's Ok
+                if let Some(final_item) = previous_item {
+                    if let Ok(tc) = final_item {
+                        tc.remove_position().await; // remove task name from position stack
+                        yield Ok(tc);
+                    } else {
+                        tracing::debug!("Final item is an error: {:#?}", final_item);
+                        // If the final item is an error, yield it as is
+                        yield final_item;
+                    }
                 }
-                yield final_item;
-            }
+             }
         })
     }
 
@@ -234,11 +249,11 @@ impl TaskExecutor {
                 match Self::transform_output(task_context.raw_output.clone(), as_, expression) {
                     Ok(v) => v,
                     Err(mut e) => {
-                        tracing::error!("Failed to transform output: {:#?}", e);
                         let pos = task_context.position.clone();
                         let mut pos = pos.write().await;
                         pos.push("output".to_string());
                         e.position(&pos);
+                        tracing::error!("Failed to transform output: {:#?}", e);
                         return Err(e);
                     }
                 };
