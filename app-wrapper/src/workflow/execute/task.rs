@@ -132,12 +132,12 @@ impl TaskExecutor {
                     }
                 }
                 Err(mut e) => {
-                    tracing::error!("Failed to evaluate `if' condition: {:#?}", e);
                     task_context.add_position_name("if".to_string()).await;
                     let pos = task_context.position.read().await;
                     e.position(&pos);
                     drop(pos);
                     task_context.set_completed_at();
+                    tracing::error!("Failed to evaluate `if' condition: {:#?}", e);
                     return futures::stream::once(futures::future::ready(Err(e))).boxed();
                 }
             }

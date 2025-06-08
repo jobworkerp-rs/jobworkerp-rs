@@ -1,5 +1,5 @@
 use crate::workflow::{
-    definition::workflow::{DoTask, TryTaskCatch},
+    definition::workflow::{DoTask, Input, TryTaskCatch},
     execute::{
         context::{TaskContext, WorkflowContext},
         job::JobExecutorWrapper,
@@ -96,6 +96,12 @@ impl TaskExecutorTrait<'_> for TryTaskExecutor {
                                         // retry limit reached or no retry
                                         break Ok(catch_context);
                                     }
+                                } else {
+                                    // no retry configured, just return catch context
+                                    tracing::debug!(
+                                        "No retry configured, continuing with catch context"
+                                    );
+                                    break Ok(catch_context);
                                 }
                                 task_context = catch_context;
                             }
@@ -113,11 +119,12 @@ impl TaskExecutorTrait<'_> for TryTaskExecutor {
             if let Some(do_tasks) = &self.task.catch.do_ {
                 // TODO return task_context in workflow::Error for catch block (to error recovering)
                 self.execute_task_list(cx, "[try_do]", do_tasks, workflow_context, res.clone()) // XXX clone
-                    .await?;
+                    .await
+            } else {
+                // go out of 'try'
+                res.remove_position().await;
+                Ok(res)
             }
-            // go out of 'try'
-            res.remove_position().await;
-            Ok(res)
         }
     }
 }
@@ -132,8 +139,31 @@ impl TryTaskExecutor {
         task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
         use futures::StreamExt;
+        if task_list.is_empty() {
+            tracing::warn!("Task list is empty, nothing to execute");
+            return Ok(task_context);
+        }
+        // for error output
+        let try_position = {
+            task_context
+                .position
+                .read()
+                .await
+                .as_error_instance()
+                .clone()
+        };
+
         let do_tasks = DoTask {
             do_: task_list.clone(), // XXX clone
+            // use input and output as is
+            input: Some(Input {
+                from: Some(workflow::InputFrom::Variant0("${.}".to_string())), // raw jq
+                ..Default::default()
+            }),
+            output: Some(workflow::Output {
+                as_: Some(workflow::OutputAs::Variant0("${.}".to_string())), // raw jq
+                schema: None,
+            }),
             ..Default::default()
         };
         let task_executor = TaskExecutor::new(
@@ -145,12 +175,17 @@ impl TryTaskExecutor {
         );
 
         let mut stream = task_executor
-            .execute(cx, workflow_context.clone(), Arc::new(task_context.clone()))
+            .execute(cx, workflow_context.clone(), Arc::new(task_context))
             .await;
         let mut last_context = None;
         while let Some(task_context) = stream.next().await {
             match task_context {
                 Ok(context) => {
+                    tracing::debug!(
+                        "Task executed successfully: {}: {:#?}",
+                        task_name,
+                        context.raw_output
+                    );
                     last_context = Some(context);
                 }
                 Err(e) => {
@@ -159,7 +194,19 @@ impl TryTaskExecutor {
                 }
             }
         }
-        Ok(last_context.unwrap_or(task_context))
+        match last_context {
+            Some(context) => {
+                // remove position from context
+                Ok(context)
+            }
+            None => Err(Box::new(workflow::Error {
+                type_: workflow::UriTemplate("task-execution-error".to_string()),
+                status: 400,
+                detail: Some("No task context returned from task list execution".to_string()),
+                title: None,
+                instance: Some(try_position),
+            })),
+        }
     }
 
     // return need retry or not
@@ -389,7 +436,7 @@ mod tests {
             },
             WorkflowLoader,
         },
-        execute::context::{TaskContext, WorkflowContext},
+        execute::context::{TaskContext, WorkflowContext, WorkflowStatus},
     };
     use app::module::test::create_hybrid_test_app;
     use std::time::Duration;
@@ -439,9 +486,10 @@ mod tests {
             Arc::new(serde_json::Value::Object(Default::default())),
             Arc::new(serde_json::Value::Object(Default::default())),
         )));
+        workflow_context.write().await.status = WorkflowStatus::Running;
         let task_context = TaskContext::new(
             None,
-            Arc::new(serde_json::Value::Null),
+            Arc::new(serde_json::Value::String("test-task-input0".to_string())),
             Arc::new(Mutex::new(Default::default())),
         );
 
@@ -670,13 +718,83 @@ mod tests {
                 error_value.is_some(),
                 "Error information should be added to context"
             );
-            println!("context: {:?}", context);
-            println!("error_value: {:?}", error_value);
+            // println!("error_value: {:?}", error_value);
 
             // Verify error information content
             let error_json = error_value.unwrap();
             let error_status = error_json["status"].as_i64().unwrap();
             assert_eq!(error_status, 500, "Error status should be correctly stored");
+        })
+    }
+
+    #[test]
+    fn test_trytask_success_output_passthrough() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+            // Create a TaskList with a DoTask that sets a known output
+            use std::collections::HashMap;
+            let set_task = workflow::SetTask {
+                set: serde_json::json!({
+                    "name": "test_output".to_string(),
+                    "value": serde_json::json!("test_output_value"),
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+                output: Some(workflow::Output {
+                    as_: Some(workflow::OutputAs::Variant0("test_output".to_string())),
+                    schema: None,
+                }),
+                ..Default::default()
+            };
+            let set_task_list = workflow::TaskList(vec![HashMap::from([(
+                "set_task1".to_string(),
+                workflow::Task::SetTask(set_task),
+            )])]);
+
+            let mut do_task_map = HashMap::new();
+            do_task_map.insert(
+                "test_do1".to_string(),
+                workflow::Task::DoTask(DoTask {
+                    do_: set_task_list,
+                    output: Some(workflow::Output {
+                        as_: Some(workflow::OutputAs::Variant0("${.}".to_string())),
+                        schema: None,
+                    }),
+                    ..Default::default()
+                }),
+            );
+            let task_list = workflow::TaskList(vec![do_task_map]);
+            let try_task = workflow::TryTask {
+                try_: task_list,
+                catch: TryTaskCatch {
+                    errors: None,
+                    as_: Some("error".to_string()),
+                    when: None,
+                    except_when: None,
+                    retry: None,
+                    do_: None,
+                },
+                ..Default::default()
+            };
+
+            let (executor, workflow_context, task_context) = setup_test(Some(try_task)).await;
+
+            // Execute TryTaskExecutor
+            let cx = Arc::new(opentelemetry::Context::current());
+            let result = executor
+                .execute(cx, "test-task", workflow_context, task_context)
+                .await;
+
+            assert!(result.is_ok(), "TryTask should succeed");
+            let context = result.unwrap();
+            let output = &*context.output;
+            // output should be an empty object (default Output)
+            assert_eq!(
+                *output,
+                serde_json::json!("test_output"),
+                "Output should be passed through from the inner task"
+            );
         })
     }
 }
