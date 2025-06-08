@@ -1,11 +1,12 @@
 use super::{expression::UseExpression, job::JobExecutorWrapper, task::TaskExecutor};
 use crate::workflow::definition::{
     transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
-    workflow::{Task, WorkflowSchema},
+    workflow::{self, Task, WorkflowSchema},
 };
 use crate::workflow::execute::context::{self, TaskContext, WorkflowContext, WorkflowStatus};
 use anyhow::Result;
 use app::module::AppModule;
+use async_stream::stream;
 use futures::{Stream, StreamExt};
 use infra_utils::infra::{net::reqwest::ReqwestClient, trace::Tracing};
 use jobworkerp_base::APP_WORKER_NAME;
@@ -15,7 +16,6 @@ use opentelemetry::{
 };
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
-use tokio_stream::wrappers::ReceiverStream;
 
 #[derive(Debug, Clone)]
 pub struct WorkflowExecutor {
@@ -266,10 +266,8 @@ impl WorkflowExecutor {
     pub fn execute_workflow(
         &self,
         cx: Arc<opentelemetry::Context>,
-    ) -> impl Stream<Item = Result<Arc<RwLock<WorkflowContext>>>> + 'static {
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Arc<RwLock<WorkflowContext>>>>(32);
-
-        // Create a clone of the workflow context to send initial state
+    ) -> impl Stream<Item = Result<Arc<RwLock<WorkflowContext>>, Box<workflow::Error>>> + 'static
+    {
         let initial_wfc = self.workflow_context.clone();
         let workflow = self.workflow.clone();
         let job_executors = self.job_executors.clone();
@@ -277,7 +275,7 @@ impl WorkflowExecutor {
         let cxc = cx.clone();
         let metadata = self.metadata.clone();
 
-        tokio::spawn(async move {
+        stream! {
             // Set workflow to running status
             {
                 let mut lock = initial_wfc.write().await;
@@ -288,9 +286,6 @@ impl WorkflowExecutor {
             let ccx = Context::current_with_span(span);
             let span = ccx.span();
             let ccx = Arc::new(ccx.clone());
-            // let (span, ccx) =
-            //     Self::child_tracing_span(&cxc, APP_WORKER_NAME, "execute_workflow".to_string());
-            // let _s = span.enter();
 
             let input = {
                 let lock = initial_wfc.read().await;
@@ -316,7 +311,7 @@ impl WorkflowExecutor {
                             Self::record_workflow_output(&span, &error_output, &wf.status);
                             wf.output = Some(error_output);
                             drop(wf);
-                            let _ = tx.send(Ok(initial_wfc.clone())).await;
+                            yield Ok(initial_wfc.clone());
                             return;
                         }
                     }
@@ -343,11 +338,8 @@ impl WorkflowExecutor {
                     let error_output = Arc::new(serde_json::json!({"error": e.to_string()}));
                     Self::record_workflow_output(&span, &error_output, &wf.status);
                     wf.output = Some(error_output);
-
-                    // Record error output
-
                     drop(wf);
-                    let _ = tx.send(Ok(initial_wfc.clone())).await;
+                    yield Ok(initial_wfc.clone());
                     return;
                 }
             };
@@ -364,7 +356,7 @@ impl WorkflowExecutor {
                         Self::record_workflow_output(&span, &error_output, &wf.status);
                         wf.output = Some(error_output);
                         drop(wf);
-                        let _ = tx.send(Ok(initial_wfc.clone())).await;
+                        yield Ok(initial_wfc.clone());
                         return;
                     }
                 }
@@ -387,12 +379,12 @@ impl WorkflowExecutor {
             while let Some(tc_result) = task_stream.next().await {
                 match tc_result {
                     Ok(tc) => {
-                        // Send updated workflow context through the channel
+                        // Update and yield workflow context
                         let mut wf = initial_wfc.write().await;
                         wf.output = Some(tc.output.clone());
                         wf.position = tc.position.read().await.clone();
                         drop(wf);
-                        let _ = tx.send(Ok(initial_wfc.clone())).await;
+                        yield Ok(initial_wfc.clone());
                     }
                     Err(e) => {
                         tracing::debug!("Failed to execute task list: {:#?}", e);
@@ -402,7 +394,7 @@ impl WorkflowExecutor {
                         Self::record_workflow_output(&span, &error_output, &wf.status);
                         wf.output = Some(error_output);
                         drop(wf);
-                        let _ = tx.send(Ok(initial_wfc.clone())).await;
+                        yield Ok(initial_wfc.clone());
                         break;
                     }
                 }
@@ -470,8 +462,8 @@ impl WorkflowExecutor {
 
                 drop(lock);
 
-                // Send final workflow context
-                let _ = tx.send(Ok(initial_wfc.clone())).await;
+                // Yield final workflow context
+                yield Ok(initial_wfc.clone());
             }
 
             // Log workflow status
@@ -506,9 +498,7 @@ impl WorkflowExecutor {
                     );
                 }
             }
-        });
-
-        ReceiverStream::new(rx)
+        }
     }
 
     /// Cancels the workflow if it is running, pending, or waiting.
@@ -538,6 +528,7 @@ mod tests {
         WorkflowName, WorkflowSchema, WorkflowVersion,
     };
     use app::module::test::create_hybrid_test_app;
+    use futures::pin_mut;
     use std::collections::HashMap;
     use std::str::FromStr;
     use std::sync::Arc;
@@ -620,8 +611,9 @@ mod tests {
                 Arc::new(HashMap::new()),
             );
 
-            let mut workflow_stream =
+            let workflow_stream =
                 executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+            pin_mut!(workflow_stream);
 
             let mut final_wfc = None;
             while let Some(wfc) = workflow_stream.next().await {

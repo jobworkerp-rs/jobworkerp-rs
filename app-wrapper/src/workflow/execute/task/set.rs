@@ -39,8 +39,17 @@ impl TaskExecutorTrait<'_> for SetTaskExecutor {
             &*workflow_context.read().await,
             Arc::new(task_context.clone()),
         )
-        .await?;
+        .await;
 
+        let expression = match expression {
+            Ok(expr) => expr,
+            Err(mut e) => {
+                tracing::warn!("Failed to get expression for set task: {:?}", e);
+                let pos = task_context.position.read().await;
+                e.position(&pos);
+                return Err(e);
+            }
+        };
         // export output to workflow context
         let set_values = match Self::transform_ref_map(
             task_context.input.clone(),
@@ -51,6 +60,7 @@ impl TaskExecutorTrait<'_> for SetTaskExecutor {
             Err(mut e) => {
                 let pos = task_context.position.read().await;
                 e.position(&pos);
+                tracing::warn!("Failed to transform set task values: {:?}", e);
                 return Err(e);
             }
         };
