@@ -1,5 +1,4 @@
 document:
-  id: 1
   name: ls-test
   namespace: default
   title: Workflow test (ls)

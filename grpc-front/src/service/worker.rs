@@ -2,8 +2,8 @@ use crate::proto::jobworkerp::data::{QueueType, ResponseType};
 use crate::proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use crate::proto::jobworkerp::service::worker_service_server::WorkerService;
 use crate::proto::jobworkerp::service::{
-    CountCondition, CountResponse, CreateWorkerResponse, FindListRequest, OptionalWorkerResponse,
-    SuccessResponse, WorkerNameRequest,
+    CountCondition, CountResponse, CreateWorkerResponse, FindWorkerListRequest,
+    OptionalWorkerResponse, SuccessResponse, WorkerNameRequest,
 };
 use crate::service::error_handle::handle_error;
 use app::app::worker::WorkerApp;
@@ -231,12 +231,16 @@ impl<
     #[tracing::instrument(level = "info", skip(self, request), fields(method = "find_list"))]
     async fn find_list(
         &self,
-        request: tonic::Request<FindListRequest>,
+        request: tonic::Request<FindWorkerListRequest>,
     ) -> Result<tonic::Response<Self::FindListStream>, tonic::Status> {
         let _s = Self::trace_request("worker", "find_list", &request);
-        let req = request.get_ref();
+        let req = request.into_inner();
         // TODO streaming?
-        match self.app().find_list(req.limit, req.offset).await {
+        match self
+            .app()
+            .find_list(req.runner_types, req.channel, req.limit, req.offset)
+            .await
+        {
             Ok(list) => {
                 let l = list
                     .into_iter()
