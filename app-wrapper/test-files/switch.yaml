@@ -1,5 +1,4 @@
 document:
-  id: 2
   name: switch-test
   namespace: default
   title: Workflow test (switch)
@@ -14,16 +13,16 @@ input:
 do:
   - TestSwitch:
       switch:
-        - test:
-            when: '${$input|slice: 0, 1 == "d"}' # condition for switch
+        - case1:
+            when: '${$input | startswith("d")}'
             then: exit
-        - default: 
-            then: "continue"
+        - case2: 
+            then: continue
   - ListWorker: # worker name for jobworkerp (if not use static, add random suffix as temporary worker)
       run:
         function:
           runnerName: COMMAND # built-in runner type or plugin name
-          # settings: # initialize settings for runner defined with protobuf
+          settings: {} # initialize settings for runner defined with protobuf
           arguments: # arguments for the runner defined with protobuf
             command: ls
             args: ["${.}"] # args for the command

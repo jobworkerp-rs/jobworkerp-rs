@@ -412,6 +412,10 @@ pub mod tests {
             max_cost: 10000,
             use_metrics: false,
         };
+        let moka_config = infra_utils::infra::cache::MokaCacheConfig {
+            num_counters: 10000,
+            ttl: Some(Duration::from_secs(5 * 60)), // 5 minutes
+        };
         let storage_config = Arc::new(StorageConfig {
             r#type: StorageType::Scalable,
             restore_at_startup: Some(false),
@@ -432,7 +436,7 @@ pub mod tests {
         let worker_app = Arc::new(HybridWorkerAppImpl::new(
             storage_config.clone(),
             id_generator.clone(),
-            &mc_config,
+            &moka_config,
             repositories.clone(),
             descriptor_cache.clone(),
             runner_app,

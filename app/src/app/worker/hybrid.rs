@@ -9,12 +9,12 @@ use infra::infra::worker::event::UseWorkerPublish;
 use infra::infra::worker::rdb::{RdbWorkerRepository, UseRdbWorkerRepository};
 use infra::infra::worker::redis::{RedisWorkerRepository, UseRedisWorkerRepository};
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
-use infra_utils::infra::memory::{MemoryCacheConfig, MemoryCacheImpl, UseMemoryCache};
+use infra_utils::infra::cache::{MokaCacheConfig, MokaCacheImpl, UseMokaCache};
+use infra_utils::infra::memory::MemoryCacheImpl;
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use std::sync::Arc;
-use std::time::Duration;
 
 // use crate::app::worker::builtin::{BuiltinWorker, BuiltinWorkerTrait};
 
@@ -30,8 +30,8 @@ use super::{WorkerApp, WorkerAppCacheHelper};
 pub struct HybridWorkerAppImpl {
     storage_config: Arc<StorageConfig>,
     id_generator: Arc<IdGeneratorWrapper>,
-    memory_cache: MemoryCacheImpl<Arc<String>, Worker>,
-    list_memory_cache: MemoryCacheImpl<Arc<String>, Vec<Worker>>,
+    moka_cache: MokaCacheImpl<Arc<String>, Worker>,
+    list_memory_cache: MokaCacheImpl<Arc<String>, Vec<Worker>>,
     repositories: Arc<HybridRepositoryModule>,
     descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     runner_app: Arc<dyn RunnerApp + 'static>,
@@ -41,29 +41,62 @@ impl HybridWorkerAppImpl {
     pub fn new(
         storage_config: Arc<StorageConfig>,
         id_generator: Arc<IdGeneratorWrapper>,
-        mc_config: &MemoryCacheConfig,
+        moka_config: &MokaCacheConfig,
         repositories: Arc<HybridRepositoryModule>,
         descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
         runner_app: Arc<dyn RunnerApp + 'static>,
     ) -> Self {
-        let list_memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
-            mc_config,
-            Some(Duration::from_secs(5 * 60)),
-        );
+        let list_memory_cache = infra_utils::infra::cache::MokaCacheImpl::new(moka_config);
 
-        let memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
-            mc_config,
-            Some(Duration::from_secs(5 * 60)),
-        );
+        let memory_cache = infra_utils::infra::cache::MokaCacheImpl::new(moka_config);
         Self {
             storage_config,
             id_generator,
-            memory_cache,
+            moka_cache: memory_cache,
             list_memory_cache,
             repositories,
             descriptor_cache,
             runner_app,
         }
+    }
+
+    fn find_list_cache_key(
+        runner_types: &[i32],
+        channel: Option<&String>,
+        limit: Option<i32>,
+        offset: Option<i64>,
+    ) -> String {
+        let mut key = "worker_list:".to_string();
+        if !runner_types.is_empty() {
+            // sort and distinct runner types
+            let runner_types = runner_types
+                .into_iter()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            key.push_str(
+                &runner_types
+                    .iter()
+                    .map(|t| t.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+            key.push(':');
+        }
+        if let Some(c) = channel {
+            key.push_str(&c);
+            key.push(':');
+        }
+        if let Some(l) = limit {
+            key.push_str(&l.to_string());
+            key.push(':');
+        }
+        if let Some(o) = offset {
+            key.push_str(&o.to_string());
+        } else {
+            key.push_str("0");
+        }
+        key
     }
 }
 
@@ -222,8 +255,8 @@ impl WorkerApp for HybridWorkerAppImpl {
     {
         let k = Arc::new(Self::find_cache_key(id));
         tracing::debug!("find worker: {}, cache key: {}", id.value, k);
-        self.memory_cache
-            .with_cache_if_some(&k, None, || async {
+        self.moka_cache
+            .with_cache_if_some(&k, || async {
                 tracing::trace!("not find from memory");
                 match self.redis_worker_repository().find(id).await {
                     Ok(Some(v)) => Ok(Some(v)),
@@ -256,8 +289,8 @@ impl WorkerApp for HybridWorkerAppImpl {
     {
         let k = Arc::new(Self::find_name_cache_key(name));
         tracing::debug!("find worker: {}, cache key: {}", name, k);
-        self.memory_cache
-            .with_cache_if_some(&k, None, || async {
+        self.moka_cache
+            .with_cache_if_some(&k, || async {
                 tracing::debug!("not find from memory");
                 match self.redis_worker_repository().find_by_name(name).await {
                     Ok(Some(v)) => Ok(Some(v)),
@@ -275,35 +308,46 @@ impl WorkerApp for HybridWorkerAppImpl {
             .await
     }
 
-    async fn find_list(&self, limit: Option<i32>, offset: Option<i64>) -> Result<Vec<Worker>>
+    async fn find_list(
+        &self,
+        runner_types: Vec<i32>,
+        channel: Option<String>,
+        limit: Option<i32>,
+        offset: Option<i64>,
+    ) -> Result<Vec<Worker>>
     where
         Self: Send + 'static,
     {
-        // let k = Arc::new(Self::find_list_cache_key(limit, offset));
-        // self.memory_cache
-        //     .with_cache(&k, None, || async {
-        // not use rdb in normal case
-        match self.redis_worker_repository().find_all().await {
-            Ok(v) if !v.is_empty() => {
-                tracing::debug!("worker list from redis: ({:?}, {:?})", limit, offset);
-                // soft paging
-                let start = offset.unwrap_or(0);
-                if let Some(l) = limit {
-                    Ok(v.into_iter()
-                        .skip(start as usize)
-                        .take(l as usize)
-                        .collect())
-                } else {
-                    Ok(v.into_iter().skip(start as usize).collect())
-                }
-            }
-            // empty
-            Ok(_v) => {
+        let k = Arc::new(Self::find_list_cache_key(
+            runner_types.as_slice(),
+            channel.as_ref(),
+            limit,
+            offset,
+        ));
+        self.list_memory_cache()
+            .with_cache(&k, || async move {
+                // not use rdb in normal case
+                // match self.redis_worker_repository().find_all().await {
+                //     Ok(v) if !v.is_empty() => {
+                //         tracing::debug!("worker list from redis: ({:?}, {:?})", limit, offset);
+                //         // soft paging
+                //         let start = offset.unwrap_or(0);
+                //         if let Some(l) = limit {
+                //             Ok(v.into_iter()
+                //                 .skip(start as usize)
+                //                 .take(l as usize)
+                //                 .collect())
+                //         } else {
+                //             Ok(v.into_iter().skip(start as usize).collect())
+                //         }
+                //     }
+                //     // empty
+                //     Ok(_v) => {
                 tracing::debug!("worker list from rdb: ({:?}, {:?})", limit, offset);
                 // fallback to rdb if rdb is enabled
                 let list = self
                     .rdb_worker_repository()
-                    .find_list(limit, offset)
+                    .find_list(runner_types, channel, limit, offset)
                     .await?;
                 if !list.is_empty() {
                     for w in list.iter() {
@@ -311,27 +355,28 @@ impl WorkerApp for HybridWorkerAppImpl {
                     }
                 }
                 Ok(list)
-            }
-            Err(err) => {
-                tracing::debug!(
-                    "worker list from rdb (redis error): ({:?}, {:?})",
-                    limit,
-                    offset
-                );
-                tracing::warn!("workers find error from redis: {:?}", err);
-                // fallback to rdb if rdb is enabled
-                let list = self
-                    .rdb_worker_repository()
-                    .find_list(limit, offset)
-                    .await?;
-                if !list.is_empty() {
-                    for w in list.iter() {
-                        let _ = self.redis_worker_repository().upsert(w).await;
-                    }
-                }
-                Ok(list)
-            }
-        }
+                // }
+                // Err(err) => {
+                //     tracing::debug!(
+                //         "worker list from rdb (redis error): ({:?}, {:?})",
+                //         limit,
+                //         offset
+                //     );
+                //     tracing::warn!("workers find error from redis: {:?}", err);
+                //     // fallback to rdb if rdb is enabled
+                //     let list = self
+                //         .rdb_worker_repository()
+                //         .find_list(limit, offset)
+                //         .await?;
+                //     if !list.is_empty() {
+                //         for w in list.iter() {
+                //             let _ = self.redis_worker_repository().upsert(w).await;
+                //         }
+                //     }
+                //     Ok(list)
+                // }
+            })
+            .await
         // })
         // .await
     }
@@ -342,14 +387,17 @@ impl WorkerApp for HybridWorkerAppImpl {
     {
         let k = Arc::new(Self::find_all_list_cache_key());
         self.list_memory_cache
-            .with_cache(&k, None, || async {
+            .with_cache(&k, || async {
                 match self.redis_worker_repository().find_all().await {
                     Ok(v) if !v.is_empty() => Ok(v),
                     // empty
                     Ok(_v) => {
                         tracing::debug!("workers not find (empty) from redis: get from db");
                         // fallback to rdb if rdb is enabled
-                        let list = self.rdb_worker_repository().find_list(None, None).await;
+                        let list = self
+                            .rdb_worker_repository()
+                            .find_list(vec![], None, None, None)
+                            .await;
                         if let Ok(l) = list.as_ref() {
                             for w in l {
                                 let _ = self.redis_worker_repository().upsert(w).await;
@@ -360,7 +408,9 @@ impl WorkerApp for HybridWorkerAppImpl {
                     Err(err) => {
                         // fallback to rdb if rdb is enabled
                         tracing::warn!("workers find error from redis: {:?}", err);
-                        self.rdb_worker_repository().find_list(None, None).await
+                        self.rdb_worker_repository()
+                            .find_list(vec![], None, None, None)
+                            .await
                     }
                 }
             })
@@ -432,10 +482,10 @@ impl UseRunnerParserWithCache for HybridWorkerAppImpl {
 impl UseRunnerAppParserWithCache for HybridWorkerAppImpl {}
 
 impl WorkerAppCacheHelper for HybridWorkerAppImpl {
-    fn memory_cache(&self) -> &MemoryCacheImpl<Arc<String>, Worker> {
-        &self.memory_cache
+    fn memory_cache(&self) -> &MokaCacheImpl<Arc<String>, Worker> {
+        &self.moka_cache
     }
-    fn list_memory_cache(&self) -> &MemoryCacheImpl<Arc<String>, Vec<Worker>> {
+    fn list_memory_cache(&self) -> &MokaCacheImpl<Arc<String>, Vec<Worker>> {
         &self.list_memory_cache
     }
 }
@@ -459,6 +509,7 @@ mod tests {
     use proto::jobworkerp::data::{RunnerId, StorageType, WorkerData};
     use proto::TestRunnerSettings;
     use std::sync::Arc;
+    use std::time::Duration;
 
     async fn create_test_app(use_mock_id: bool) -> Result<HybridWorkerAppImpl> {
         let rdb_module = setup_test_rdb_module().await;
@@ -478,6 +529,10 @@ mod tests {
             max_cost: 10000,
             use_metrics: false,
         };
+        let moka_config = infra_utils::infra::cache::MokaCacheConfig {
+            num_counters: 10000,
+            ttl: Some(Duration::from_secs(60 * 60)), // 1 hour
+        };
         let descriptor_cache = Arc::new(MemoryCacheImpl::new(&mc_config, None));
         let storage_config = Arc::new(StorageConfig {
             r#type: StorageType::Scalable,
@@ -495,7 +550,7 @@ mod tests {
         let worker_app = HybridWorkerAppImpl::new(
             storage_config.clone(),
             id_generator.clone(),
-            &mc_config,
+            &moka_config,
             repositories.clone(),
             descriptor_cache,
             Arc::new(runner_app),
@@ -536,7 +591,7 @@ mod tests {
             assert_eq!(id2.value, id1.value + 1);
             assert_eq!(id3.value, id2.value + 1);
             // find list
-            let list = app.find_list(None, None).await?;
+            let list = app.find_list(vec![], None, None, None).await?;
             assert_eq!(list.len(), 3);
             assert_eq!(app.count().await?, 3);
             // update
@@ -555,14 +610,14 @@ mod tests {
             assert!(fd.is_some());
             assert_eq!(fd.unwrap().name, w4.name);
             // find list
-            let list = app.find_list(None, None).await?;
+            let list = app.find_list(vec![], None, None, None).await?;
             assert_eq!(list.len(), 3);
             assert_eq!(app.count().await?, 3);
             // delete
             let res = app.delete(&id1).await?;
             assert!(res);
             // find list
-            let list = app.find_list(None, None).await?;
+            let list = app.find_list(vec![], None, None, None).await?;
             assert_eq!(app.count().await?, 2);
             assert_eq!(list.len(), 2);
             Ok(())

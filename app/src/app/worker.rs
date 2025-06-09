@@ -5,29 +5,24 @@ use anyhow::Result;
 use async_trait::async_trait;
 use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
 use infra::infra::runner::rows::RunnerWithSchema;
-use infra_utils::infra::memory::{MemoryCacheImpl, UseMemoryCache};
+use infra_utils::infra::cache::{MokaCacheImpl, UseMokaCache};
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use std::fmt;
 use std::sync::Arc;
-use std::time::Duration;
 
 use super::runner::UseRunnerApp;
 
 #[async_trait]
 pub trait WorkerAppCacheHelper: Send + Sync {
-    fn memory_cache(&self) -> &MemoryCacheImpl<Arc<String>, Worker>;
-    fn list_memory_cache(&self) -> &MemoryCacheImpl<Arc<String>, Vec<Worker>>;
+    fn memory_cache(&self) -> &MokaCacheImpl<Arc<String>, Worker>;
+    fn list_memory_cache(&self) -> &MokaCacheImpl<Arc<String>, Vec<Worker>>;
     //cache control
     // create cache for temporary worker
     async fn create_cache(&self, id: &WorkerId, worker: &Worker) -> Result<()> {
         let k = Arc::new(Self::find_cache_key(id));
         self.memory_cache()
-            .set_and_wait_cache(
-                k.clone(),
-                worker.clone(),
-                Some(&Duration::from_secs(60 * 60)),
-            )
+            .set_cache(k.clone(), worker.clone())
             .await;
         Ok(())
     }
@@ -42,8 +37,7 @@ pub trait WorkerAppCacheHelper: Send + Sync {
         self.clear_all_list_cache().await;
     }
     async fn clear_all_list_cache(&self) {
-        let kl = Arc::new(Self::find_all_list_cache_key());
-        let _ = self.list_memory_cache().delete_cache(&kl).await; // ignore error
+        let _ = self.list_memory_cache().clear().await; // XXX clear all list cache
     }
     // all clear
     async fn clear_cache_all(&self) {
@@ -135,7 +129,13 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
     where
         Self: Send + 'static;
 
-    async fn find_list(&self, limit: Option<i32>, offset: Option<i64>) -> Result<Vec<Worker>>
+    async fn find_list(
+        &self,
+        runner_types: Vec<i32>,
+        channel: Option<String>,
+        limit: Option<i32>,
+        offset: Option<i64>,
+    ) -> Result<Vec<Worker>>
     where
         Self: Send + 'static;
 

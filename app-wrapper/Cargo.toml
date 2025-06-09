@@ -30,7 +30,7 @@ async-stream = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive"] }
 # dashmap = { workspace = true }
-# deadpool-redis = { workspace = true }
+deadpool-redis = { workspace = true }
 debug_stub_derive = { workspace = true }
 dotenvy = { workspace = true }
 envy = { workspace = true }
@@ -39,7 +39,8 @@ futures-util = { workspace = true }
 genai = "0.3"
 indexmap = "2"
 itertools = { workspace = true }
-jsonschema = "0.30"
+# 0.30 is buggy
+jsonschema = {git = "https://github.com/Stranger6667/jsonschema", branch = "master"}
 #kube-client = "0.86"
 libloading = { workspace = true }
 liquid = "0.26"

@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package jobworkerp.service;
 
+import "jobworkerp/data/common.proto";
 import "jobworkerp/data/worker.proto";
 import "jobworkerp/service/common.proto";
 
@@ -13,12 +14,20 @@ message OptionalWorkerResponse { optional jobworkerp.data.Worker data = 1; }
 
 message WorkerNameRequest { string name = 1; }
 
+message FindWorkerListRequest {
+  repeated jobworkerp.data.RunnerType runner_types = 1; 
+  optional string channel = 2;
+  optional int32 limit = 3;
+  optional int64 offset = 4;
+}
+
+
 service WorkerService {
   rpc Create(jobworkerp.data.WorkerData) returns (CreateWorkerResponse);
   rpc Update(jobworkerp.data.Worker) returns (SuccessResponse);
   rpc Delete(jobworkerp.data.WorkerId) returns (SuccessResponse);
   rpc Find(jobworkerp.data.WorkerId) returns (OptionalWorkerResponse);
   rpc FindByName(WorkerNameRequest) returns (OptionalWorkerResponse);
-  rpc FindList(FindListRequest) returns (stream jobworkerp.data.Worker);
+  rpc FindList(FindWorkerListRequest) returns (stream jobworkerp.data.Worker);
   rpc Count(CountCondition) returns (CountResponse);
 }
