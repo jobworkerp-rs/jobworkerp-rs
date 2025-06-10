@@ -239,17 +239,17 @@ mod test {
                 }
             })));
         assert!(run_task.input.as_ref().is_none());
-        let workflow::RunTaskConfiguration {
-            function:
-                workflow::Function {
+        if let workflow::RunTaskConfiguration::Variant1 {
+            runner:
+                workflow::RunJobRunner {
                     arguments,
+                    name: runner_name,
                     options,
-                    runner_name,
                     settings,
                 },
             await_,
             ..
-        } = run_task.run.clone();
+        } = run_task.run.clone()
         {
             assert_eq!(runner_name, "COMMAND".to_string());
             assert_eq!(
@@ -286,6 +286,10 @@ mod test {
             assert_eq!(options, Some(opts));
             assert!(await_); // default true
                              // _ => panic!("unexpected script variant"),
+        } else {
+            return Err(
+                "Expected RunTaskConfiguration::Variant1 but found different configuration".into(),
+            );
         }
         let _for_task = match &flow.do_.0[1]["EachFileIteration"] {
             workflow::Task::ForTask(for_task) => for_task,

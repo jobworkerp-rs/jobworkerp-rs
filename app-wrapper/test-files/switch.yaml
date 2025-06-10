@@ -20,8 +20,8 @@ do:
             then: continue
   - ListWorker: # worker name for jobworkerp (if not use static, add random suffix as temporary worker)
       run:
-        function:
-          runnerName: COMMAND # built-in runner type or plugin name
+        runner:
+          name: COMMAND # built-in runner type or plugin name
           settings: {} # initialize settings for runner defined with protobuf
           arguments: # arguments for the runner defined with protobuf
             command: ls

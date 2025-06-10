@@ -2,7 +2,7 @@ use super::TaskExecutorTrait;
 use crate::workflow::{
     definition::{
         transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
-        workflow,
+        workflow::{self, RunJobRunner, RunJobWorker},
     },
     execute::{
         context::{TaskContext, WorkflowContext},
@@ -128,114 +128,194 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
         let workflow::RunTask {
             // TODO
             // export,   //: ::std::option::Option<Export>,
-            metadata: _metadata, //: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+            metadata: task_metadata, //: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
             // output,   //: ::std::option::Option<Output>,
-            // timeout,  //: ::std::option::Option<TaskTimeout>,
+            timeout, //: ::std::option::Option<TaskTimeout>,
             // then, //  ::std::option::Option<FlowDirective>
             run,
             ..
         } = &self.task;
+        let timeout_sec = if let Some(workflow::TaskTimeout::Timeout(duration)) = timeout {
+            (duration.after.to_millis() / 1000) as u32
+        } else {
+            DEFAULT_REQUEST_TIMEOUT_SEC // no timeout
+        };
+
+        // merge metadata: create new metadata with both self.metadata and task metadata
+        let mut metadata = (*self.metadata).clone();
+        for (k, v) in task_metadata {
+            // if key already exists, append value
+            if metadata.contains_key(k) {
+                continue; // skip if key already exists
+            } else if let Some(v) = v.as_str() {
+                // add only if value is a string
+                metadata.insert(k.clone(), v.to_string());
+            }
+        }
+
+        // setup task context
+        task_context.add_position_name("run".to_string()).await;
+
+        let expression = Self::expression(
+            &*(workflow_context.read().await),
+            Arc::new(task_context.clone()),
+        )
+        .await;
+
+        // tracing::debug!("expression: {:#?}", expression);
+
+        let expression = match expression {
+            Ok(e) => e,
+            Err(mut e) => {
+                let pos = task_context.position.clone();
+                let pos = pos.read().await;
+                e.position(&pos);
+                return Err(e);
+            }
+        };
+
         // TODO: add other task types
         // currently support only RunTaskConfiguration
-        let workflow::RunTaskConfiguration {
-            await_: _await_,   // TODO
-            return_: _return_, // TODO
-            function:
-                workflow::Function {
-                    arguments,
-                    options,
-                    runner_name,
-                    settings,
-                },
-        } = run;
-        {
-            // enter run.function
-            task_context.add_position_name("run".to_string()).await;
-            task_context.add_position_name("function".to_string()).await;
+        match run {
+            workflow::RunTaskConfiguration::Variant0 {
+                await_: _await_,   // TODO
+                return_: _return_, // TODO
+                worker:
+                    RunJobWorker {
+                        arguments,
+                        name: worker_name,
+                    },
+            } => {
+                task_context.add_position_name("worker".to_string()).await;
 
-            let expression = Self::expression(
-                &*(workflow_context.read().await),
-                Arc::new(task_context.clone()),
-            )
-            .await;
+                tracing::debug!("raw arguments: {:#?}", arguments);
+                let args = match Self::transform_map(
+                    task_context.input.clone(),
+                    arguments.clone(),
+                    &expression,
+                ) {
+                    Ok(args) => args,
+                    Err(mut e) => {
+                        let pos = task_context.position.clone();
+                        let mut pos = pos.write().await;
+                        pos.push("arguments".to_string());
+                        e.position(&pos);
+                        return Err(e);
+                    }
+                };
+                // let args = serde_json::Value::Object(arguments.clone());
+                tracing::debug!("transformed arguments: {:#?}", args);
 
-            // tracing::debug!("expression: {:#?}", expression);
+                let output = match self
+                    .job_executor_wrapper
+                    .enqueue_with_worker_name(&mut metadata, worker_name, &args, timeout_sec)
+                    .await
+                {
+                    Ok(output) => Ok(output),
+                    Err(e) => {
+                        let pos = task_context.position.clone();
+                        let pos = pos.read().await.as_error_instance();
+                        Err(workflow::errors::ErrorFactory::new().service_unavailable(
+                            "Failed to execute by jobworkerp".to_string(),
+                            Some(pos),
+                            Some(format!("{:?}", e)),
+                        ))
+                    }
+                }?;
+                task_context.set_raw_output(output);
 
-            let expression = match expression {
-                Ok(e) => e,
-                Err(mut e) => {
-                    let pos = task_context.position.clone();
-                    let pos = pos.read().await;
-                    e.position(&pos);
-                    return Err(e);
-                }
-            };
+                // out of run.function
+                task_context.remove_position().await;
+                task_context.remove_position().await;
 
-            tracing::debug!("raw arguments: {:#?}", arguments);
-            let args = match Self::transform_map(
-                task_context.input.clone(),
-                arguments.clone(),
-                &expression,
-            ) {
-                Ok(args) => args,
-                Err(mut e) => {
-                    let pos = task_context.position.clone();
-                    let mut pos = pos.write().await;
-                    pos.push("arguments".to_string());
-                    e.position(&pos);
-                    return Err(e);
-                }
-            };
-            // let args = serde_json::Value::Object(arguments.clone());
-            tracing::debug!("transformed arguments: {:#?}", args);
+                Ok(task_context)
+            }
+            workflow::RunTaskConfiguration::Variant1 {
+                await_: _await_,   // TODO
+                return_: _return_, // TODO
+                runner:
+                    RunJobRunner {
+                        arguments,
+                        name: runner_name,
+                        options,
+                        settings,
+                    },
+            } => {
+                task_context.add_position_name("runner".to_string()).await;
 
-            let transformed_settings = match Self::transform_map(
-                task_context.input.clone(),
-                settings.clone(),
-                &expression,
-            ) {
-                Ok(settings) => settings,
-                Err(mut e) => {
-                    let pos = task_context.position.clone();
-                    let mut pos = pos.write().await;
-                    pos.push("settings".to_string());
-                    e.position(&pos);
-                    return Err(e);
-                }
-            };
+                tracing::debug!("raw arguments: {:#?}", arguments);
+                let args = match Self::transform_map(
+                    task_context.input.clone(),
+                    arguments.clone(),
+                    &expression,
+                ) {
+                    Ok(args) => args,
+                    Err(mut e) => {
+                        let pos = task_context.position.clone();
+                        let mut pos = pos.write().await;
+                        pos.push("arguments".to_string());
+                        e.position(&pos);
+                        return Err(e);
+                    }
+                };
+                // let args = serde_json::Value::Object(arguments.clone());
+                tracing::debug!("transformed arguments: {:#?}", args);
 
-            let output = match self
-                .execute_by_jobworkerp(
-                    cx.clone(),
-                    runner_name,
-                    Some(transformed_settings),
-                    options.clone(),
-                    args,
-                    task_name,
-                )
-                .await
-            {
-                Ok(output) => Ok(output),
-                Err(e) => {
-                    let pos = task_context.position.clone();
-                    let pos = pos.read().await.as_error_instance();
-                    Err(workflow::errors::ErrorFactory::new().service_unavailable(
-                        "Failed to execute by jobworkerp".to_string(),
-                        Some(pos),
-                        Some(format!("{:?}", e)),
-                    ))
-                }
-            }?;
-            task_context.set_raw_output(output);
+                // enter run.function
+                let transformed_settings = match Self::transform_map(
+                    task_context.input.clone(),
+                    settings.clone(),
+                    &expression,
+                ) {
+                    Ok(settings) => settings,
+                    Err(mut e) => {
+                        let pos = task_context.position.clone();
+                        let mut pos = pos.write().await;
+                        pos.push("settings".to_string());
+                        e.position(&pos);
+                        return Err(e);
+                    }
+                };
 
-            // out of run.function
-            task_context.remove_position().await;
-            task_context.remove_position().await;
+                let output = match self
+                    .execute_by_jobworkerp(
+                        cx.clone(),
+                        runner_name,
+                        Some(transformed_settings),
+                        options.clone(),
+                        args,
+                        task_name,
+                    )
+                    .await
+                {
+                    Ok(output) => Ok(output),
+                    Err(e) => {
+                        let pos = task_context.position.clone();
+                        let pos = pos.read().await.as_error_instance();
+                        Err(workflow::errors::ErrorFactory::new().service_unavailable(
+                            "Failed to execute by jobworkerp".to_string(),
+                            Some(pos),
+                            Some(format!("{:?}", e)),
+                        ))
+                    }
+                }?;
+                task_context.set_raw_output(output);
 
-            Ok(task_context)
-        } // r => Err(anyhow::anyhow!(
-          //     "Not implemented now: RunTaskConfiguration: {:#?}",
-          //     r
-          // )),
+                // out of run.function
+                task_context.remove_position().await;
+                task_context.remove_position().await;
+
+                Ok(task_context)
+            } // _ => {
+              //     let pos = task_context.position.clone();
+              //     let mut pos = pos.write().await;
+              //     pos.push("run".to_string());
+              //     Err(workflow::errors::ErrorFactory::new().not_implemented(
+              //         "RunTaskConfiguration".to_string(),
+              //         Some(pos.as_error_instance()),
+              //         Some(format!("Not implemented now: {:#?}", run)),
+              //     ))
+              // }
+        }
     }
 }

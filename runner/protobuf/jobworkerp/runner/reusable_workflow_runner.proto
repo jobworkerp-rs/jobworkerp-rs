@@ -7,9 +7,4 @@ message ReusableWorkflowRunnerSettings {
   // simplified version of the ServerlessWorkflow definition)
   // (schema TO BE defined)) the workflow JSON data string
   string json_data = 1;
-
-  // # Execution ID
-  // Unique identifier for the workflow execution instance
-  // Used to track and manage the execution state if specified
-  optional string execution_id = 5;
 }
