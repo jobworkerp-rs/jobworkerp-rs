@@ -1,6 +1,6 @@
 {
   "$id": "https://serverlessworkflow.io/schemas/1.0.0/workflow.yaml",
-  "$schema": "https://json-schema.org/draft-07/schema",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "WorkflowSchema",
   "description": "Partial Serverless Workflow DSL with function(tool) support. \nRuntime expressions: - jq expressions using ${..} syntax (e.g. ${.key.ckey}, ${$task.input}) - liquid templates using $${..} syntax - Available only in fields marked in their descriptions\nContext variables in expressions: - Input mode: keys from input data - Output mode: keys from output data - Workflow info: workflow.id, workflow.definition, workflow.input, workflow.context_variables - Current task info: task.definition, task.raw_input, task.raw_output, task.output, task.flow_directive - Raw data: access pre-transformation data via raw_input and raw_output (e.g. ${$task.raw_input})",
   "type": "object",
@@ -384,84 +384,118 @@
           },
           "oneOf": [
             {
-              "title": "RunFunction",
-              "description": "Executes a function using a specified runtime environment (runner)",
-              "properties": {
-                "function": {
-                  "type": "object",
-                  "title": "Function",
-                  "description": "The configuration of the function to run by runner(runtime).",
-                  "unevaluatedProperties": false,
-                  "properties": {
-                    "runnerName": {
-                      "type": "string",
-                      "title": "RunnerName",
-                      "description": "The name of the runtime environment that executes this function (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND)"
-                    },
-                    "settings": {
-                      "type": "object",
-                      "title": "InitializeSettings",
-                      "description": "The initialization settings, if any. Runtime expression can be used to transform each value (not keys, no mixed plain text)."
-                    },
-                    "options": {
-                      "type": "object",
-                      "title": "FunctionOptions",
-                      "description": "The options to use when running the configured function.",
-                      "properties": {
-                        "channel": {
-                          "type": "string",
-                          "title": "FunctionChannel",
-                          "description": "The channel to use when running the function. (Channel controls execution concurrency)"
-                        },
-                        "withBackup": {
-                          "type": "boolean",
-                          "title": "FunctionWithBackup",
-                          "description": "Whether to backup the function call (queue) to database when queueing and running the function."
-                        },
-                        "storeSuccess": {
-                          "type": "boolean",
-                          "title": "StoreSuccessResult",
-                          "description": "Whether to store successful results to database."
-                        },
-                        "storeFailure": {
-                          "type": "boolean",
-                          "title": "StoreFailureResult",
-                          "description": "Whether to store failure results to database."
-                        },
-                        "useStatic": {
-                          "type": "boolean",
-                          "title": "UseStaticFunction",
-                          "description": "Whether to use a static function (persist in database, pool initialized function)."
-                        },
-                        "retry": {
-                          "$ref": "#/$defs/retryPolicy",
-                          "title": "RetryPolicyDefinition",
-                          "description": "The retry policy to use, if any, when catching errors."
-                        },
-                        "broadcastResults": {
-                          "type": "boolean",
-                          "title": "BroadcastResultsToListener",
-                          "description": "Whether to broadcast results to listeners."
-                        }
-                      }
-                    },
-                    "arguments": {
-                      "type": "object",
-                      "title": "FunctionArguments",
-                      "description": "A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation.",
-                      "additionalProperties": true
-                    }
-                  },
-                  "required": [
-                    "runnerName",
-                    "arguments"
-                  ]
-                }
-              },
-              "required": [
-                "function"
-              ]
+              "$ref": "#/$defs/runWorker"
+            },
+            {
+              "$ref": "#/$defs/runRunner"
             }
+          ]
+        }
+      }
+    },
+    "runRunner": {
+      "required": [
+        "runner"
+      ],
+      "properties": {
+        "runner": {
+          "type": "object",
+          "title": "RunJobRunner",
+          "description": "Executes a job using a specified runner.",
+          "unevaluatedProperties": false,
+          "properties": {
+            "name": {
+              "type": "string",
+              "title": "RunnerName",
+              "description": "The name of the runner(runtime environment) that executes job (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND, PLUGIN, MCP_SERVER, LLM_CHAT etc.)"
+            },
+            "settings": {
+              "type": "object",
+              "title": "InitializeSettings",
+              "description": "The initialization settings, if any. Runtime expression can be used to transform each value (not keys, no mixed plain text)."
+            },
+            "options": {
+              "type": "object",
+              "title": "FunctionOptions",
+              "description": "The options to use when running the configured function.",
+              "properties": {
+                "channel": {
+                  "type": "string",
+                  "title": "FunctionChannel",
+                  "description": "The channel to use when running the function. (Channel controls execution concurrency)"
+                },
+                "withBackup": {
+                  "type": "boolean",
+                  "title": "FunctionWithBackup",
+                  "description": "Whether to backup the function call (queue) to database when queueing and running the function."
+                },
+                "storeSuccess": {
+                  "type": "boolean",
+                  "title": "StoreSuccessResult",
+                  "description": "Whether to store successful results to database."
+                },
+                "storeFailure": {
+                  "type": "boolean",
+                  "title": "StoreFailureResult",
+                  "description": "Whether to store failure results to database."
+                },
+                "useStatic": {
+                  "type": "boolean",
+                  "title": "UseStaticFunction",
+                  "description": "Whether to use a static function (persist in database, pool initialized function)."
+                },
+                "retry": {
+                  "$ref": "#/$defs/retryPolicy",
+                  "title": "RetryPolicyDefinition",
+                  "description": "The retry policy to use, if any, when catching errors."
+                },
+                "broadcastResults": {
+                  "type": "boolean",
+                  "title": "BroadcastResultsToListener",
+                  "description": "Whether to broadcast results to listeners."
+                }
+              }
+            },
+            "arguments": {
+              "type": "object",
+              "title": "FunctionArguments",
+              "description": "A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation.",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "name",
+            "arguments"
+          ]
+        }
+      }
+    },
+    "runWorker": {
+      "required": [
+        "worker"
+      ],
+      "properties": {
+        "worker": {
+          "type": "object",
+          "title": "RunJobWorker",
+          "description": "Executes a job using a specified worker (runner with settings).",
+          "unevaluatedProperties": false,
+          "properties": {
+            "name": {
+              "type": "string",
+              "title": "WorkerName",
+              "description": "The name of the worker that executes this function (defined by user)"
+            },
+            "arguments": {
+              "type": "object",
+              "title": "FunctionArguments",
+              "description": "A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation.",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "name",
+            "arguments"
           ]
         }
       }

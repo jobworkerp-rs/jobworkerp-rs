@@ -338,7 +338,7 @@ impl Document {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum Duration {
     Inline {
@@ -1294,106 +1294,6 @@ impl ForkTaskConfiguration {
         Default::default()
     }
 }
-#[doc = "The configuration of the function to run by runner(runtime)."]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"title\": \"Function\","]
-#[doc = "  \"description\": \"The configuration of the function to run by runner(runtime).\","]
-#[doc = "  \"type\": \"object\","]
-#[doc = "  \"required\": ["]
-#[doc = "    \"arguments\","]
-#[doc = "    \"runnerName\""]
-#[doc = "  ],"]
-#[doc = "  \"properties\": {"]
-#[doc = "    \"arguments\": {"]
-#[doc = "      \"title\": \"FunctionArguments\","]
-#[doc = "      \"description\": \"A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation.\","]
-#[doc = "      \"type\": \"object\","]
-#[doc = "      \"additionalProperties\": true"]
-#[doc = "    },"]
-#[doc = "    \"options\": {"]
-#[doc = "      \"title\": \"FunctionOptions\","]
-#[doc = "      \"description\": \"The options to use when running the configured function.\","]
-#[doc = "      \"type\": \"object\","]
-#[doc = "      \"properties\": {"]
-#[doc = "        \"broadcastResults\": {"]
-#[doc = "          \"title\": \"BroadcastResultsToListener\","]
-#[doc = "          \"description\": \"Whether to broadcast results to listeners.\","]
-#[doc = "          \"type\": \"boolean\""]
-#[doc = "        },"]
-#[doc = "        \"channel\": {"]
-#[doc = "          \"title\": \"FunctionChannel\","]
-#[doc = "          \"description\": \"The channel to use when running the function. (Channel controls execution concurrency)\","]
-#[doc = "          \"type\": \"string\""]
-#[doc = "        },"]
-#[doc = "        \"retry\": {"]
-#[doc = "          \"title\": \"RetryPolicyDefinition\","]
-#[doc = "          \"description\": \"The retry policy to use, if any, when catching errors.\","]
-#[doc = "          \"$ref\": \"#/$defs/retryPolicy\""]
-#[doc = "        },"]
-#[doc = "        \"storeFailure\": {"]
-#[doc = "          \"title\": \"StoreFailureResult\","]
-#[doc = "          \"description\": \"Whether to store failure results to database.\","]
-#[doc = "          \"type\": \"boolean\""]
-#[doc = "        },"]
-#[doc = "        \"storeSuccess\": {"]
-#[doc = "          \"title\": \"StoreSuccessResult\","]
-#[doc = "          \"description\": \"Whether to store successful results to database.\","]
-#[doc = "          \"type\": \"boolean\""]
-#[doc = "        },"]
-#[doc = "        \"useStatic\": {"]
-#[doc = "          \"title\": \"UseStaticFunction\","]
-#[doc = "          \"description\": \"Whether to use a static function (persist in database, pool initialized function).\","]
-#[doc = "          \"type\": \"boolean\""]
-#[doc = "        },"]
-#[doc = "        \"withBackup\": {"]
-#[doc = "          \"title\": \"FunctionWithBackup\","]
-#[doc = "          \"description\": \"Whether to backup the function call (queue) to database when queueing and running the function.\","]
-#[doc = "          \"type\": \"boolean\""]
-#[doc = "        }"]
-#[doc = "      }"]
-#[doc = "    },"]
-#[doc = "    \"runnerName\": {"]
-#[doc = "      \"title\": \"RunnerName\","]
-#[doc = "      \"description\": \"The name of the runtime environment that executes this function (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND)\","]
-#[doc = "      \"type\": \"string\""]
-#[doc = "    },"]
-#[doc = "    \"settings\": {"]
-#[doc = "      \"title\": \"InitializeSettings\","]
-#[doc = "      \"description\": \"The initialization settings, if any. Runtime expression can be used to transform each value (not keys, no mixed plain text).\","]
-#[doc = "      \"type\": \"object\""]
-#[doc = "    }"]
-#[doc = "  },"]
-#[doc = "  \"unevaluatedProperties\": false"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
-pub struct Function {
-    #[doc = "A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation."]
-    pub arguments: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub options: ::std::option::Option<FunctionOptions>,
-    #[doc = "The name of the runtime environment that executes this function (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND)"]
-    #[serde(rename = "runnerName")]
-    pub runner_name: ::std::string::String,
-    #[doc = "The initialization settings, if any. Runtime expression can be used to transform each value (not keys, no mixed plain text)."]
-    #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
-    pub settings: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-}
-impl ::std::convert::From<&Function> for Function {
-    fn from(value: &Function) -> Self {
-        value.clone()
-    }
-}
-impl Function {
-    pub fn builder() -> builder::Function {
-        Default::default()
-    }
-}
 #[doc = "The options to use when running the configured function."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -2200,7 +2100,7 @@ impl ::std::convert::From<Error> for RaiseTaskError {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq, Eq)]
 pub enum RetryBackoff {
     #[serde(rename = "constant")]
     Constant(::serde_json::Map<::std::string::String, ::serde_json::Value>),
@@ -2246,7 +2146,7 @@ impl ::std::convert::From<&Self> for RetryBackoff {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct RetryLimit {
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub attempt: ::std::option::Option<RetryLimitAttempt>,
@@ -2292,7 +2192,7 @@ impl RetryLimit {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct RetryLimitAttempt {
     #[doc = "The maximum amount of retry attempts, if any."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -2438,6 +2338,250 @@ impl RetryPolicy {
         Default::default()
     }
 }
+#[doc = "Executes a job using a specified runner."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"RunJobRunner\","]
+#[doc = "  \"description\": \"Executes a job using a specified runner.\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"arguments\","]
+#[doc = "    \"name\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"arguments\": {"]
+#[doc = "      \"title\": \"FunctionArguments\","]
+#[doc = "      \"description\": \"A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation.\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"additionalProperties\": true"]
+#[doc = "    },"]
+#[doc = "    \"name\": {"]
+#[doc = "      \"title\": \"RunnerName\","]
+#[doc = "      \"description\": \"The name of the runner(runtime environment) that executes job (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND, PLUGIN, MCP_SERVER, LLM_CHAT etc.)\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    },"]
+#[doc = "    \"options\": {"]
+#[doc = "      \"title\": \"FunctionOptions\","]
+#[doc = "      \"description\": \"The options to use when running the configured function.\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"broadcastResults\": {"]
+#[doc = "          \"title\": \"BroadcastResultsToListener\","]
+#[doc = "          \"description\": \"Whether to broadcast results to listeners.\","]
+#[doc = "          \"type\": \"boolean\""]
+#[doc = "        },"]
+#[doc = "        \"channel\": {"]
+#[doc = "          \"title\": \"FunctionChannel\","]
+#[doc = "          \"description\": \"The channel to use when running the function. (Channel controls execution concurrency)\","]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        },"]
+#[doc = "        \"retry\": {"]
+#[doc = "          \"title\": \"RetryPolicyDefinition\","]
+#[doc = "          \"description\": \"The retry policy to use, if any, when catching errors.\","]
+#[doc = "          \"$ref\": \"#/$defs/retryPolicy\""]
+#[doc = "        },"]
+#[doc = "        \"storeFailure\": {"]
+#[doc = "          \"title\": \"StoreFailureResult\","]
+#[doc = "          \"description\": \"Whether to store failure results to database.\","]
+#[doc = "          \"type\": \"boolean\""]
+#[doc = "        },"]
+#[doc = "        \"storeSuccess\": {"]
+#[doc = "          \"title\": \"StoreSuccessResult\","]
+#[doc = "          \"description\": \"Whether to store successful results to database.\","]
+#[doc = "          \"type\": \"boolean\""]
+#[doc = "        },"]
+#[doc = "        \"useStatic\": {"]
+#[doc = "          \"title\": \"UseStaticFunction\","]
+#[doc = "          \"description\": \"Whether to use a static function (persist in database, pool initialized function).\","]
+#[doc = "          \"type\": \"boolean\""]
+#[doc = "        },"]
+#[doc = "        \"withBackup\": {"]
+#[doc = "          \"title\": \"FunctionWithBackup\","]
+#[doc = "          \"description\": \"Whether to backup the function call (queue) to database when queueing and running the function.\","]
+#[doc = "          \"type\": \"boolean\""]
+#[doc = "        }"]
+#[doc = "      }"]
+#[doc = "    },"]
+#[doc = "    \"settings\": {"]
+#[doc = "      \"title\": \"InitializeSettings\","]
+#[doc = "      \"description\": \"The initialization settings, if any. Runtime expression can be used to transform each value (not keys, no mixed plain text).\","]
+#[doc = "      \"type\": \"object\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"unevaluatedProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+pub struct RunJobRunner {
+    #[doc = "A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation."]
+    pub arguments: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+    #[doc = "The name of the runner(runtime environment) that executes job (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND, PLUGIN, MCP_SERVER, LLM_CHAT etc.)"]
+    pub name: ::std::string::String,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub options: ::std::option::Option<FunctionOptions>,
+    #[doc = "The initialization settings, if any. Runtime expression can be used to transform each value (not keys, no mixed plain text)."]
+    #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
+    pub settings: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+}
+impl ::std::convert::From<&RunJobRunner> for RunJobRunner {
+    fn from(value: &RunJobRunner) -> Self {
+        value.clone()
+    }
+}
+impl RunJobRunner {
+    pub fn builder() -> builder::RunJobRunner {
+        Default::default()
+    }
+}
+#[doc = "Executes a job using a specified worker (runner with settings)."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"RunJobWorker\","]
+#[doc = "  \"description\": \"Executes a job using a specified worker (runner with settings).\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"arguments\","]
+#[doc = "    \"name\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"arguments\": {"]
+#[doc = "      \"title\": \"FunctionArguments\","]
+#[doc = "      \"description\": \"A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation.\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"additionalProperties\": true"]
+#[doc = "    },"]
+#[doc = "    \"name\": {"]
+#[doc = "      \"title\": \"WorkerName\","]
+#[doc = "      \"description\": \"The name of the worker that executes this function (defined by user)\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"unevaluatedProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+pub struct RunJobWorker {
+    #[doc = "A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation."]
+    pub arguments: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+    #[doc = "The name of the worker that executes this function (defined by user)"]
+    pub name: ::std::string::String,
+}
+impl ::std::convert::From<&RunJobWorker> for RunJobWorker {
+    fn from(value: &RunJobWorker) -> Self {
+        value.clone()
+    }
+}
+impl RunJobWorker {
+    pub fn builder() -> builder::RunJobWorker {
+        Default::default()
+    }
+}
+#[doc = "RunRunner"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"required\": ["]
+#[doc = "    \"runner\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"runner\": {"]
+#[doc = "      \"title\": \"RunJobRunner\","]
+#[doc = "      \"description\": \"Executes a job using a specified runner.\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"arguments\","]
+#[doc = "        \"name\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"arguments\": {"]
+#[doc = "          \"title\": \"FunctionArguments\","]
+#[doc = "          \"description\": \"A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation.\","]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"additionalProperties\": true"]
+#[doc = "        },"]
+#[doc = "        \"name\": {"]
+#[doc = "          \"title\": \"RunnerName\","]
+#[doc = "          \"description\": \"The name of the runner(runtime environment) that executes job (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND, PLUGIN, MCP_SERVER, LLM_CHAT etc.)\","]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        },"]
+#[doc = "        \"options\": {"]
+#[doc = "          \"title\": \"FunctionOptions\","]
+#[doc = "          \"description\": \"The options to use when running the configured function.\","]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"broadcastResults\": {"]
+#[doc = "              \"title\": \"BroadcastResultsToListener\","]
+#[doc = "              \"description\": \"Whether to broadcast results to listeners.\","]
+#[doc = "              \"type\": \"boolean\""]
+#[doc = "            },"]
+#[doc = "            \"channel\": {"]
+#[doc = "              \"title\": \"FunctionChannel\","]
+#[doc = "              \"description\": \"The channel to use when running the function. (Channel controls execution concurrency)\","]
+#[doc = "              \"type\": \"string\""]
+#[doc = "            },"]
+#[doc = "            \"retry\": {"]
+#[doc = "              \"title\": \"RetryPolicyDefinition\","]
+#[doc = "              \"description\": \"The retry policy to use, if any, when catching errors.\","]
+#[doc = "              \"$ref\": \"#/$defs/retryPolicy\""]
+#[doc = "            },"]
+#[doc = "            \"storeFailure\": {"]
+#[doc = "              \"title\": \"StoreFailureResult\","]
+#[doc = "              \"description\": \"Whether to store failure results to database.\","]
+#[doc = "              \"type\": \"boolean\""]
+#[doc = "            },"]
+#[doc = "            \"storeSuccess\": {"]
+#[doc = "              \"title\": \"StoreSuccessResult\","]
+#[doc = "              \"description\": \"Whether to store successful results to database.\","]
+#[doc = "              \"type\": \"boolean\""]
+#[doc = "            },"]
+#[doc = "            \"useStatic\": {"]
+#[doc = "              \"title\": \"UseStaticFunction\","]
+#[doc = "              \"description\": \"Whether to use a static function (persist in database, pool initialized function).\","]
+#[doc = "              \"type\": \"boolean\""]
+#[doc = "            },"]
+#[doc = "            \"withBackup\": {"]
+#[doc = "              \"title\": \"FunctionWithBackup\","]
+#[doc = "              \"description\": \"Whether to backup the function call (queue) to database when queueing and running the function.\","]
+#[doc = "              \"type\": \"boolean\""]
+#[doc = "            }"]
+#[doc = "          }"]
+#[doc = "        },"]
+#[doc = "        \"settings\": {"]
+#[doc = "          \"title\": \"InitializeSettings\","]
+#[doc = "          \"description\": \"The initialization settings, if any. Runtime expression can be used to transform each value (not keys, no mixed plain text).\","]
+#[doc = "          \"type\": \"object\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"unevaluatedProperties\": false"]
+#[doc = "    }"]
+#[doc = "  }"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+pub struct RunRunner {
+    pub runner: RunJobRunner,
+}
+impl ::std::convert::From<&RunRunner> for RunRunner {
+    fn from(value: &RunRunner) -> Self {
+        value.clone()
+    }
+}
+impl RunRunner {
+    pub fn builder() -> builder::RunRunner {
+        Default::default()
+    }
+}
 #[doc = "RunTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -2481,83 +2625,10 @@ impl RetryPolicy {
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"oneOf\": ["]
 #[doc = "        {"]
-#[doc = "          \"title\": \"RunFunction\","]
-#[doc = "          \"description\": \"Executes a function using a specified runtime environment (runner)\","]
-#[doc = "          \"required\": ["]
-#[doc = "            \"function\""]
-#[doc = "          ],"]
-#[doc = "          \"properties\": {"]
-#[doc = "            \"function\": {"]
-#[doc = "              \"title\": \"Function\","]
-#[doc = "              \"description\": \"The configuration of the function to run by runner(runtime).\","]
-#[doc = "              \"type\": \"object\","]
-#[doc = "              \"required\": ["]
-#[doc = "                \"arguments\","]
-#[doc = "                \"runnerName\""]
-#[doc = "              ],"]
-#[doc = "              \"properties\": {"]
-#[doc = "                \"arguments\": {"]
-#[doc = "                  \"title\": \"FunctionArguments\","]
-#[doc = "                  \"description\": \"A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation.\","]
-#[doc = "                  \"type\": \"object\","]
-#[doc = "                  \"additionalProperties\": true"]
-#[doc = "                },"]
-#[doc = "                \"options\": {"]
-#[doc = "                  \"title\": \"FunctionOptions\","]
-#[doc = "                  \"description\": \"The options to use when running the configured function.\","]
-#[doc = "                  \"type\": \"object\","]
-#[doc = "                  \"properties\": {"]
-#[doc = "                    \"broadcastResults\": {"]
-#[doc = "                      \"title\": \"BroadcastResultsToListener\","]
-#[doc = "                      \"description\": \"Whether to broadcast results to listeners.\","]
-#[doc = "                      \"type\": \"boolean\""]
-#[doc = "                    },"]
-#[doc = "                    \"channel\": {"]
-#[doc = "                      \"title\": \"FunctionChannel\","]
-#[doc = "                      \"description\": \"The channel to use when running the function. (Channel controls execution concurrency)\","]
-#[doc = "                      \"type\": \"string\""]
-#[doc = "                    },"]
-#[doc = "                    \"retry\": {"]
-#[doc = "                      \"title\": \"RetryPolicyDefinition\","]
-#[doc = "                      \"description\": \"The retry policy to use, if any, when catching errors.\","]
-#[doc = "                      \"$ref\": \"#/$defs/retryPolicy\""]
-#[doc = "                    },"]
-#[doc = "                    \"storeFailure\": {"]
-#[doc = "                      \"title\": \"StoreFailureResult\","]
-#[doc = "                      \"description\": \"Whether to store failure results to database.\","]
-#[doc = "                      \"type\": \"boolean\""]
-#[doc = "                    },"]
-#[doc = "                    \"storeSuccess\": {"]
-#[doc = "                      \"title\": \"StoreSuccessResult\","]
-#[doc = "                      \"description\": \"Whether to store successful results to database.\","]
-#[doc = "                      \"type\": \"boolean\""]
-#[doc = "                    },"]
-#[doc = "                    \"useStatic\": {"]
-#[doc = "                      \"title\": \"UseStaticFunction\","]
-#[doc = "                      \"description\": \"Whether to use a static function (persist in database, pool initialized function).\","]
-#[doc = "                      \"type\": \"boolean\""]
-#[doc = "                    },"]
-#[doc = "                    \"withBackup\": {"]
-#[doc = "                      \"title\": \"FunctionWithBackup\","]
-#[doc = "                      \"description\": \"Whether to backup the function call (queue) to database when queueing and running the function.\","]
-#[doc = "                      \"type\": \"boolean\""]
-#[doc = "                    }"]
-#[doc = "                  }"]
-#[doc = "                },"]
-#[doc = "                \"runnerName\": {"]
-#[doc = "                  \"title\": \"RunnerName\","]
-#[doc = "                  \"description\": \"The name of the runtime environment that executes this function (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND)\","]
-#[doc = "                  \"type\": \"string\""]
-#[doc = "                },"]
-#[doc = "                \"settings\": {"]
-#[doc = "                  \"title\": \"InitializeSettings\","]
-#[doc = "                  \"description\": \"The initialization settings, if any. Runtime expression can be used to transform each value (not keys, no mixed plain text).\","]
-#[doc = "                  \"type\": \"object\""]
-#[doc = "                }"]
-#[doc = "              },"]
-#[doc = "              \"unevaluatedProperties\": false"]
-#[doc = "            }"]
-#[doc = "          }"]
+#[doc = "          \"$ref\": \"#/$defs/runWorker\""]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"$ref\": \"#/$defs/runRunner\""]
 #[doc = "        }"]
 #[doc = "      ],"]
 #[doc = "      \"properties\": {"]
@@ -2656,83 +2727,10 @@ impl RunTask {
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"oneOf\": ["]
 #[doc = "    {"]
-#[doc = "      \"title\": \"RunFunction\","]
-#[doc = "      \"description\": \"Executes a function using a specified runtime environment (runner)\","]
-#[doc = "      \"required\": ["]
-#[doc = "        \"function\""]
-#[doc = "      ],"]
-#[doc = "      \"properties\": {"]
-#[doc = "        \"function\": {"]
-#[doc = "          \"title\": \"Function\","]
-#[doc = "          \"description\": \"The configuration of the function to run by runner(runtime).\","]
-#[doc = "          \"type\": \"object\","]
-#[doc = "          \"required\": ["]
-#[doc = "            \"arguments\","]
-#[doc = "            \"runnerName\""]
-#[doc = "          ],"]
-#[doc = "          \"properties\": {"]
-#[doc = "            \"arguments\": {"]
-#[doc = "              \"title\": \"FunctionArguments\","]
-#[doc = "              \"description\": \"A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation.\","]
-#[doc = "              \"type\": \"object\","]
-#[doc = "              \"additionalProperties\": true"]
-#[doc = "            },"]
-#[doc = "            \"options\": {"]
-#[doc = "              \"title\": \"FunctionOptions\","]
-#[doc = "              \"description\": \"The options to use when running the configured function.\","]
-#[doc = "              \"type\": \"object\","]
-#[doc = "              \"properties\": {"]
-#[doc = "                \"broadcastResults\": {"]
-#[doc = "                  \"title\": \"BroadcastResultsToListener\","]
-#[doc = "                  \"description\": \"Whether to broadcast results to listeners.\","]
-#[doc = "                  \"type\": \"boolean\""]
-#[doc = "                },"]
-#[doc = "                \"channel\": {"]
-#[doc = "                  \"title\": \"FunctionChannel\","]
-#[doc = "                  \"description\": \"The channel to use when running the function. (Channel controls execution concurrency)\","]
-#[doc = "                  \"type\": \"string\""]
-#[doc = "                },"]
-#[doc = "                \"retry\": {"]
-#[doc = "                  \"title\": \"RetryPolicyDefinition\","]
-#[doc = "                  \"description\": \"The retry policy to use, if any, when catching errors.\","]
-#[doc = "                  \"$ref\": \"#/$defs/retryPolicy\""]
-#[doc = "                },"]
-#[doc = "                \"storeFailure\": {"]
-#[doc = "                  \"title\": \"StoreFailureResult\","]
-#[doc = "                  \"description\": \"Whether to store failure results to database.\","]
-#[doc = "                  \"type\": \"boolean\""]
-#[doc = "                },"]
-#[doc = "                \"storeSuccess\": {"]
-#[doc = "                  \"title\": \"StoreSuccessResult\","]
-#[doc = "                  \"description\": \"Whether to store successful results to database.\","]
-#[doc = "                  \"type\": \"boolean\""]
-#[doc = "                },"]
-#[doc = "                \"useStatic\": {"]
-#[doc = "                  \"title\": \"UseStaticFunction\","]
-#[doc = "                  \"description\": \"Whether to use a static function (persist in database, pool initialized function).\","]
-#[doc = "                  \"type\": \"boolean\""]
-#[doc = "                },"]
-#[doc = "                \"withBackup\": {"]
-#[doc = "                  \"title\": \"FunctionWithBackup\","]
-#[doc = "                  \"description\": \"Whether to backup the function call (queue) to database when queueing and running the function.\","]
-#[doc = "                  \"type\": \"boolean\""]
-#[doc = "                }"]
-#[doc = "              }"]
-#[doc = "            },"]
-#[doc = "            \"runnerName\": {"]
-#[doc = "              \"title\": \"RunnerName\","]
-#[doc = "              \"description\": \"The name of the runtime environment that executes this function (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND)\","]
-#[doc = "              \"type\": \"string\""]
-#[doc = "            },"]
-#[doc = "            \"settings\": {"]
-#[doc = "              \"title\": \"InitializeSettings\","]
-#[doc = "              \"description\": \"The initialization settings, if any. Runtime expression can be used to transform each value (not keys, no mixed plain text).\","]
-#[doc = "              \"type\": \"object\""]
-#[doc = "            }"]
-#[doc = "          },"]
-#[doc = "          \"unevaluatedProperties\": false"]
-#[doc = "        }"]
-#[doc = "      }"]
+#[doc = "      \"$ref\": \"#/$defs/runWorker\""]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"$ref\": \"#/$defs/runRunner\""]
 #[doc = "    }"]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
@@ -2761,22 +2759,86 @@ impl RunTask {
 #[doc = r" ```"]
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
-pub struct RunTaskConfiguration {
-    #[doc = "Whether to await the process completion before continuing."]
-    #[serde(rename = "await", default = "defaults::default_bool::<true>")]
-    pub await_: bool,
-    pub function: Function,
-    #[doc = "Configures the output of the process."]
-    #[serde(rename = "return", default = "defaults::run_task_configuration_return")]
-    pub return_: ProcessReturnType,
+#[serde(untagged)]
+pub enum RunTaskConfiguration {
+    Variant0 {
+        #[doc = "Whether to await the process completion before continuing."]
+        #[serde(rename = "await", default = "defaults::default_bool::<true>")]
+        await_: bool,
+        #[doc = "Configures the output of the process."]
+        #[serde(
+            rename = "return",
+            default = "defaults::run_task_configuration_variant0_return"
+        )]
+        return_: ProcessReturnType,
+        worker: RunJobWorker,
+    },
+    Variant1 {
+        #[doc = "Whether to await the process completion before continuing."]
+        #[serde(rename = "await", default = "defaults::default_bool::<true>")]
+        await_: bool,
+        #[doc = "Configures the output of the process."]
+        #[serde(
+            rename = "return",
+            default = "defaults::run_task_configuration_variant1_return"
+        )]
+        return_: ProcessReturnType,
+        runner: RunJobRunner,
+    },
 }
-impl ::std::convert::From<&RunTaskConfiguration> for RunTaskConfiguration {
+impl ::std::convert::From<&Self> for RunTaskConfiguration {
     fn from(value: &RunTaskConfiguration) -> Self {
         value.clone()
     }
 }
-impl RunTaskConfiguration {
-    pub fn builder() -> builder::RunTaskConfiguration {
+#[doc = "RunWorker"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"required\": ["]
+#[doc = "    \"worker\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"worker\": {"]
+#[doc = "      \"title\": \"RunJobWorker\","]
+#[doc = "      \"description\": \"Executes a job using a specified worker (runner with settings).\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"arguments\","]
+#[doc = "        \"name\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"arguments\": {"]
+#[doc = "          \"title\": \"FunctionArguments\","]
+#[doc = "          \"description\": \"A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation.\","]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"additionalProperties\": true"]
+#[doc = "        },"]
+#[doc = "        \"name\": {"]
+#[doc = "          \"title\": \"WorkerName\","]
+#[doc = "          \"description\": \"The name of the worker that executes this function (defined by user)\","]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"unevaluatedProperties\": false"]
+#[doc = "    }"]
+#[doc = "  }"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+pub struct RunWorker {
+    pub worker: RunJobWorker,
+}
+impl ::std::convert::From<&RunWorker> for RunWorker {
+    fn from(value: &RunWorker) -> Self {
+        value.clone()
+    }
+}
+impl RunWorker {
+    pub fn builder() -> builder::RunWorker {
         Default::default()
     }
 }
@@ -5525,99 +5587,6 @@ pub mod builder {
         }
     }
     #[derive(Clone, Debug)]
-    pub struct Function {
-        arguments: ::std::result::Result<
-            ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            ::std::string::String,
-        >,
-        options: ::std::result::Result<
-            ::std::option::Option<super::FunctionOptions>,
-            ::std::string::String,
-        >,
-        runner_name: ::std::result::Result<::std::string::String, ::std::string::String>,
-        settings: ::std::result::Result<
-            ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            ::std::string::String,
-        >,
-    }
-    impl ::std::default::Default for Function {
-        fn default() -> Self {
-            Self {
-                arguments: Err("no value supplied for arguments".to_string()),
-                options: Ok(Default::default()),
-                runner_name: Err("no value supplied for runner_name".to_string()),
-                settings: Ok(Default::default()),
-            }
-        }
-    }
-    impl Function {
-        pub fn arguments<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<
-                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            >,
-            T::Error: ::std::fmt::Display,
-        {
-            self.arguments = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for arguments: {}", e));
-            self
-        }
-        pub fn options<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<super::FunctionOptions>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.options = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for options: {}", e));
-            self
-        }
-        pub fn runner_name<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::string::String>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.runner_name = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for runner_name: {}", e));
-            self
-        }
-        pub fn settings<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<
-                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-            >,
-            T::Error: ::std::fmt::Display,
-        {
-            self.settings = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for settings: {}", e));
-            self
-        }
-    }
-    impl ::std::convert::TryFrom<Function> for super::Function {
-        type Error = super::error::ConversionError;
-        fn try_from(value: Function) -> ::std::result::Result<Self, super::error::ConversionError> {
-            Ok(Self {
-                arguments: value.arguments?,
-                options: value.options?,
-                runner_name: value.runner_name?,
-                settings: value.settings?,
-            })
-        }
-    }
-    impl ::std::convert::From<super::Function> for Function {
-        fn from(value: super::Function) -> Self {
-            Self {
-                arguments: Ok(value.arguments),
-                options: Ok(value.options),
-                runner_name: Ok(value.runner_name),
-                settings: Ok(value.settings),
-            }
-        }
-    }
-    #[derive(Clone, Debug)]
     pub struct FunctionOptions {
         broadcast_results:
             ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
@@ -6282,6 +6251,200 @@ pub mod builder {
         }
     }
     #[derive(Clone, Debug)]
+    pub struct RunJobRunner {
+        arguments: ::std::result::Result<
+            ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+            ::std::string::String,
+        >,
+        name: ::std::result::Result<::std::string::String, ::std::string::String>,
+        options: ::std::result::Result<
+            ::std::option::Option<super::FunctionOptions>,
+            ::std::string::String,
+        >,
+        settings: ::std::result::Result<
+            ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+            ::std::string::String,
+        >,
+    }
+    impl ::std::default::Default for RunJobRunner {
+        fn default() -> Self {
+            Self {
+                arguments: Err("no value supplied for arguments".to_string()),
+                name: Err("no value supplied for name".to_string()),
+                options: Ok(Default::default()),
+                settings: Ok(Default::default()),
+            }
+        }
+    }
+    impl RunJobRunner {
+        pub fn arguments<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<
+                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+            >,
+            T::Error: ::std::fmt::Display,
+        {
+            self.arguments = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for arguments: {}", e));
+            self
+        }
+        pub fn name<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::string::String>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.name = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for name: {}", e));
+            self
+        }
+        pub fn options<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<super::FunctionOptions>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.options = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for options: {}", e));
+            self
+        }
+        pub fn settings<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<
+                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+            >,
+            T::Error: ::std::fmt::Display,
+        {
+            self.settings = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for settings: {}", e));
+            self
+        }
+    }
+    impl ::std::convert::TryFrom<RunJobRunner> for super::RunJobRunner {
+        type Error = super::error::ConversionError;
+        fn try_from(
+            value: RunJobRunner,
+        ) -> ::std::result::Result<Self, super::error::ConversionError> {
+            Ok(Self {
+                arguments: value.arguments?,
+                name: value.name?,
+                options: value.options?,
+                settings: value.settings?,
+            })
+        }
+    }
+    impl ::std::convert::From<super::RunJobRunner> for RunJobRunner {
+        fn from(value: super::RunJobRunner) -> Self {
+            Self {
+                arguments: Ok(value.arguments),
+                name: Ok(value.name),
+                options: Ok(value.options),
+                settings: Ok(value.settings),
+            }
+        }
+    }
+    #[derive(Clone, Debug)]
+    pub struct RunJobWorker {
+        arguments: ::std::result::Result<
+            ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+            ::std::string::String,
+        >,
+        name: ::std::result::Result<::std::string::String, ::std::string::String>,
+    }
+    impl ::std::default::Default for RunJobWorker {
+        fn default() -> Self {
+            Self {
+                arguments: Err("no value supplied for arguments".to_string()),
+                name: Err("no value supplied for name".to_string()),
+            }
+        }
+    }
+    impl RunJobWorker {
+        pub fn arguments<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<
+                ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+            >,
+            T::Error: ::std::fmt::Display,
+        {
+            self.arguments = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for arguments: {}", e));
+            self
+        }
+        pub fn name<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::string::String>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.name = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for name: {}", e));
+            self
+        }
+    }
+    impl ::std::convert::TryFrom<RunJobWorker> for super::RunJobWorker {
+        type Error = super::error::ConversionError;
+        fn try_from(
+            value: RunJobWorker,
+        ) -> ::std::result::Result<Self, super::error::ConversionError> {
+            Ok(Self {
+                arguments: value.arguments?,
+                name: value.name?,
+            })
+        }
+    }
+    impl ::std::convert::From<super::RunJobWorker> for RunJobWorker {
+        fn from(value: super::RunJobWorker) -> Self {
+            Self {
+                arguments: Ok(value.arguments),
+                name: Ok(value.name),
+            }
+        }
+    }
+    #[derive(Clone, Debug)]
+    pub struct RunRunner {
+        runner: ::std::result::Result<super::RunJobRunner, ::std::string::String>,
+    }
+    impl ::std::default::Default for RunRunner {
+        fn default() -> Self {
+            Self {
+                runner: Err("no value supplied for runner".to_string()),
+            }
+        }
+    }
+    impl RunRunner {
+        pub fn runner<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<super::RunJobRunner>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.runner = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for runner: {}", e));
+            self
+        }
+    }
+    impl ::std::convert::TryFrom<RunRunner> for super::RunRunner {
+        type Error = super::error::ConversionError;
+        fn try_from(
+            value: RunRunner,
+        ) -> ::std::result::Result<Self, super::error::ConversionError> {
+            Ok(Self {
+                runner: value.runner?,
+            })
+        }
+    }
+    impl ::std::convert::From<super::RunRunner> for RunRunner {
+        fn from(value: super::RunRunner) -> Self {
+            Self {
+                runner: Ok(value.runner),
+            }
+        }
+    }
+    #[derive(Clone, Debug)]
     pub struct RunTask {
         export: ::std::result::Result<::std::option::Option<super::Export>, ::std::string::String>,
         if_: ::std::result::Result<
@@ -6430,70 +6593,42 @@ pub mod builder {
         }
     }
     #[derive(Clone, Debug)]
-    pub struct RunTaskConfiguration {
-        await_: ::std::result::Result<bool, ::std::string::String>,
-        function: ::std::result::Result<super::Function, ::std::string::String>,
-        return_: ::std::result::Result<super::ProcessReturnType, ::std::string::String>,
+    pub struct RunWorker {
+        worker: ::std::result::Result<super::RunJobWorker, ::std::string::String>,
     }
-    impl ::std::default::Default for RunTaskConfiguration {
+    impl ::std::default::Default for RunWorker {
         fn default() -> Self {
             Self {
-                await_: Ok(super::defaults::default_bool::<true>()),
-                function: Err("no value supplied for function".to_string()),
-                return_: Ok(super::defaults::run_task_configuration_return()),
+                worker: Err("no value supplied for worker".to_string()),
             }
         }
     }
-    impl RunTaskConfiguration {
-        pub fn await_<T>(mut self, value: T) -> Self
+    impl RunWorker {
+        pub fn worker<T>(mut self, value: T) -> Self
         where
-            T: ::std::convert::TryInto<bool>,
+            T: ::std::convert::TryInto<super::RunJobWorker>,
             T::Error: ::std::fmt::Display,
         {
-            self.await_ = value
+            self.worker = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for await_: {}", e));
-            self
-        }
-        pub fn function<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<super::Function>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.function = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for function: {}", e));
-            self
-        }
-        pub fn return_<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<super::ProcessReturnType>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.return_ = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for return_: {}", e));
+                .map_err(|e| format!("error converting supplied value for worker: {}", e));
             self
         }
     }
-    impl ::std::convert::TryFrom<RunTaskConfiguration> for super::RunTaskConfiguration {
+    impl ::std::convert::TryFrom<RunWorker> for super::RunWorker {
         type Error = super::error::ConversionError;
         fn try_from(
-            value: RunTaskConfiguration,
+            value: RunWorker,
         ) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
-                await_: value.await_?,
-                function: value.function?,
-                return_: value.return_?,
+                worker: value.worker?,
             })
         }
     }
-    impl ::std::convert::From<super::RunTaskConfiguration> for RunTaskConfiguration {
-        fn from(value: super::RunTaskConfiguration) -> Self {
+    impl ::std::convert::From<super::RunWorker> for RunWorker {
+        fn from(value: super::RunWorker) -> Self {
             Self {
-                await_: Ok(value.await_),
-                function: Ok(value.function),
-                return_: Ok(value.return_),
+                worker: Ok(value.worker),
             }
         }
     }
@@ -7563,7 +7698,10 @@ pub mod defaults {
     pub(super) fn for_task_configuration_each() -> ::std::string::String {
         "item".to_string()
     }
-    pub(super) fn run_task_configuration_return() -> super::ProcessReturnType {
+    pub(super) fn run_task_configuration_variant0_return() -> super::ProcessReturnType {
+        super::ProcessReturnType::Stdout
+    }
+    pub(super) fn run_task_configuration_variant1_return() -> super::ProcessReturnType {
         super::ProcessReturnType::Stdout
     }
     pub(super) fn schema_variant0_format() -> ::std::string::String {

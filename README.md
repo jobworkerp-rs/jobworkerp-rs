@@ -242,7 +242,7 @@ Additionally, when worker.broadcast_results is enabled:
 
 Model Context Protocol (MCP) is a standard communication protocol between LLM applications and tools. jobworkerp-rs's MCP proxy functionality enables you to:
 
-- Execute functions (LLMs, time information retrieval, web page fetching, etc.) provided by various MCP servers as Runners
+- Execute MCP tools (LLMs, time information retrieval, web page fetching, etc.) provided by various MCP servers as Runners
 - Run MCP tools as asynchronous jobs and retrieve their results
 - Configure multiple MCP servers and combine different tools
 
@@ -307,7 +307,7 @@ For information about the MCP server samples used above, refer to the [official 
 
 ### Workflow Runner
 
-The Workflow Runner is a feature that allows executing multiple jobs in a defined order or executing reusable workflows. This feature is based on [Serverless Workflow](https://serverlessworkflow.io/) (v1.0.0), with some features removed and jobworkerp-rs-specific extensions added (functions for run tasks). ([Details (schema)](runner/schema/workflow.yaml))
+The Workflow Runner is a feature that allows executing multiple jobs in a defined order or executing reusable workflows. This feature is based on [Serverless Workflow](https://serverlessworkflow.io/) (v1.0.0), with some features removed and jobworkerp-rs-specific extensions added (runner and worker for run tasks). ([Details (schema)](runner/schema/workflow.yaml))
 
 - **INLINE_WORKFLOW**: Executes a workflow defined in job arguments ([InlineWorkflowRunner](infra/src/infra/runner/inline_workflow.rs))
   - Can execute a workflow once by passing the entire workflow definition as a job argument
@@ -341,8 +341,8 @@ input:
 do:
   - ListWorker:
       run:
-        function:
-          runnerName: COMMAND
+        runner:
+          name: COMMAND
           arguments:
             command: ls
             args: ["${.}"]
@@ -371,8 +371,8 @@ do:
             if: |-
               $${{%- assign head_char = file | slice: 0, 1 -%}{%- if head_char == "d" %}true{% else %}false{% endif -%}}
             run:
-              function:
-                runnerName: COMMAND
+              runner:
+                name: COMMAND
                 arguments:
                   command: ls
                   args: ["$${/{{file}}}"]
