@@ -13,4 +13,10 @@ message ReusableWorkflowArgs {
   // Additional context information for workflow execution
   // Can be a plain string or JSON formatted string
   optional string workflow_context = 2;
+
+  // # Execution ID
+  // Unique identifier for the workflow execution instance
+  // Used to track and manage the execution state if specified
+  optional string execution_id = 3;
+
 }

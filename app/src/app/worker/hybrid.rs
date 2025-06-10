@@ -326,23 +326,6 @@ impl WorkerApp for HybridWorkerAppImpl {
         ));
         self.list_memory_cache()
             .with_cache(&k, || async move {
-                // not use rdb in normal case
-                // match self.redis_worker_repository().find_all().await {
-                //     Ok(v) if !v.is_empty() => {
-                //         tracing::debug!("worker list from redis: ({:?}, {:?})", limit, offset);
-                //         // soft paging
-                //         let start = offset.unwrap_or(0);
-                //         if let Some(l) = limit {
-                //             Ok(v.into_iter()
-                //                 .skip(start as usize)
-                //                 .take(l as usize)
-                //                 .collect())
-                //         } else {
-                //             Ok(v.into_iter().skip(start as usize).collect())
-                //         }
-                //     }
-                //     // empty
-                //     Ok(_v) => {
                 tracing::debug!("worker list from rdb: ({:?}, {:?})", limit, offset);
                 // fallback to rdb if rdb is enabled
                 let list = self
@@ -355,30 +338,8 @@ impl WorkerApp for HybridWorkerAppImpl {
                     }
                 }
                 Ok(list)
-                // }
-                // Err(err) => {
-                //     tracing::debug!(
-                //         "worker list from rdb (redis error): ({:?}, {:?})",
-                //         limit,
-                //         offset
-                //     );
-                //     tracing::warn!("workers find error from redis: {:?}", err);
-                //     // fallback to rdb if rdb is enabled
-                //     let list = self
-                //         .rdb_worker_repository()
-                //         .find_list(limit, offset)
-                //         .await?;
-                //     if !list.is_empty() {
-                //         for w in list.iter() {
-                //             let _ = self.redis_worker_repository().upsert(w).await;
-                //         }
-                //     }
-                //     Ok(list)
-                // }
             })
             .await
-        // })
-        // .await
     }
 
     async fn find_all_worker_list(&self) -> Result<Vec<Worker>>
