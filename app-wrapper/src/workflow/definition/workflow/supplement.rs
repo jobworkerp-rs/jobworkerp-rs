@@ -1,5 +1,7 @@
 // cannot generate structure by typist (for serverless workflow version 1.0: generated from 1.0-alpha5)
 
+use std::{collections::HashMap, sync::Arc};
+
 use super::*;
 use proto::jobworkerp::data::RetryPolicy as JobworkerpRetryPolicy;
 
@@ -242,11 +244,17 @@ impl Default for WorkflowSchema {
     }
 }
 impl WorkflowSchema {
-    pub fn create_do_task(&self) -> DoTask {
+    pub fn create_do_task(&self, metadata: Arc<HashMap<String, String>>) -> DoTask {
+        // Convert HashMap<String, String> to serde_json::Map<String, Value>
+        let mut meta_map = serde_json::Map::new();
+        for (k, v) in metadata.iter() {
+            meta_map.insert(k.clone(), serde_json::Value::String(v.clone()));
+        }
         DoTask {
             do_: self.do_.clone(),
             input: Some(self.input.clone()),
             output: self.output.clone(),
+            metadata: meta_map,
             ..Default::default()
         }
     }

@@ -180,32 +180,84 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
             .context(format!("error in find: id = {}", id.value))
     }
 
-    async fn find_list(&self, limit: Option<i32>, offset: Option<i64>) -> Result<Vec<Worker>> {
-        self.find_row_list_tx(self.db_pool(), limit, offset)
+    async fn find_list(
+        &self,
+        runner_types: Vec<i32>,
+        channel: Option<String>,
+        limit: Option<i32>,
+        offset: Option<i64>,
+    ) -> Result<Vec<Worker>> {
+        self.find_row_list_tx(self.db_pool(), runner_types, channel, limit, offset)
             .await
             .map(|r| r.iter().flat_map(|r2| r2.to_proto().ok()).collect_vec())
     }
 
+    // Find workers with specified runner types and channel, with optional limit and offset
+    // If runner_types is empty, it will not filter by runner types.
+    // If channel is None, it will not filter by channel.
+    // If limit is None, ignore offset and limit.
     async fn find_row_list_tx<'c, E: Executor<'c, Database = Rdb>>(
         &self,
         tx: E,
+        runner_types: Vec<i32>,
+        channel: Option<String>,
         limit: Option<i32>,
         offset: Option<i64>,
     ) -> Result<Vec<WorkerRow>> {
-        if let Some(l) = limit {
-            sqlx::query_as::<_, WorkerRow>(
-                "SELECT * FROM worker ORDER BY id DESC LIMIT ? OFFSET ?;",
-            )
-            .bind(l)
-            .bind(offset.unwrap_or(0i64))
-            .fetch_all(tx)
-        } else {
-            // fetch all!
-            sqlx::query_as::<_, WorkerRow>("SELECT * FROM worker ORDER BY id DESC;").fetch_all(tx)
+        let mut conditions = Vec::new();
+
+        // Add runner_types condition if not empty
+        if !runner_types.is_empty() {
+            let placeholders = runner_types
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
+            conditions.push(format!("runner_id IN ({})", placeholders));
         }
-        .await
-        .map_err(JobWorkerError::DBError)
-        .context(format!("error in find_list: ({:?}, {:?})", limit, offset))
+
+        // Add channel condition if specified
+        if channel.is_some() {
+            conditions.push("channel = ?".to_string());
+        }
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", conditions.join(" AND "))
+        };
+
+        // Build base query
+        let base_sql = format!("SELECT * FROM worker{}", where_clause);
+        let limit_clause = if let Some(l) = limit {
+            format!(
+                " ORDER BY id DESC LIMIT {} OFFSET {}",
+                l,
+                offset.unwrap_or(0)
+            )
+        } else {
+            " ORDER BY id DESC".to_string()
+        };
+
+        let full_sql = format!("{}{}", base_sql, limit_clause);
+        let mut query = sqlx::query_as::<_, WorkerRow>(&full_sql);
+
+        // Bind parameters
+        if !runner_types.is_empty() {
+            for rt in runner_types.iter() {
+                query = query.bind(*rt);
+            }
+        }
+
+        if let Some(ref ch) = channel {
+            query = query.bind(ch);
+        }
+
+        query
+            .fetch_all(tx)
+            .await
+            .map_err(JobWorkerError::DBError)
+            .context(format!("error in find_list: ({:?}, {:?})", limit, offset))
     }
 
     async fn count(&self) -> Result<i64> {
@@ -259,6 +311,7 @@ mod test {
     use proto::jobworkerp::data::ResponseType;
     use proto::jobworkerp::data::RetryPolicy;
     use proto::jobworkerp::data::RunnerId;
+    use proto::jobworkerp::data::RunnerType;
     use proto::jobworkerp::data::Worker;
     use proto::jobworkerp::data::WorkerData;
     use proto::TestRunnerSettings;
@@ -350,6 +403,200 @@ mod test {
         Ok(())
     }
 
+    async fn _test_find_list_repository(pool: &'static RdbPool) -> Result<()> {
+        let repository = RdbWorkerRepositoryImpl::new(pool);
+        let db = repository.db_pool();
+
+        // Create test data with different runner_types and channels
+        let test_data = vec![
+            WorkerData {
+                name: "worker1".to_string(),
+                description: "description1".to_string(),
+                runner_id: Some(RunnerId { value: 2 }),
+                runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
+                    name: "test1".to_string(),
+                }),
+                retry_policy: None,
+                periodic_interval: 0,
+                channel: Some("channel1".to_string()),
+                queue_type: QueueType::Normal as i32,
+                response_type: ResponseType::NoResult as i32,
+                store_success: false,
+                store_failure: false,
+                use_static: false,
+                broadcast_results: false,
+            },
+            WorkerData {
+                name: "worker2".to_string(),
+                description: "description2".to_string(),
+                runner_id: Some(RunnerId { value: 1 }),
+                runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
+                    name: "test2".to_string(),
+                }),
+                retry_policy: None,
+                periodic_interval: 0,
+                channel: Some("channel2".to_string()),
+                queue_type: QueueType::Normal as i32,
+                response_type: ResponseType::NoResult as i32,
+                store_success: false,
+                store_failure: false,
+                use_static: false,
+                broadcast_results: false,
+            },
+            WorkerData {
+                name: "worker3".to_string(),
+                description: "description3".to_string(),
+                runner_id: Some(RunnerId { value: 2 }),
+                runner_settings: JobqueueAndCodec::serialize_message(&TestRunnerSettings {
+                    name: "test3".to_string(),
+                }),
+                retry_policy: None,
+                periodic_interval: 0,
+                channel: Some("channel1".to_string()),
+                queue_type: QueueType::Normal as i32,
+                response_type: ResponseType::NoResult as i32,
+                store_success: false,
+                store_failure: false,
+                use_static: false,
+                broadcast_results: false,
+            },
+        ];
+
+        // Insert test data
+        let mut worker_ids = Vec::new();
+        for data in &test_data {
+            let mut tx = db.begin().await.context("error in test")?;
+            let id = repository.create(&mut *tx, data).await?;
+            tx.commit().await.context("error in test commit")?;
+            worker_ids.push(id);
+        }
+
+        // Test 1: Find all workers (no filters)
+        let all_workers = repository.find_list(vec![], None, None, None).await?;
+        assert_eq!(all_workers.len(), 3, "Should find all 3 workers");
+
+        // Test 2: Filter by runner_type
+        let runner_type_1_workers = repository
+            .find_list(vec![RunnerType::HttpRequest as i32], None, None, None)
+            .await?;
+        assert_eq!(
+            runner_type_1_workers.len(),
+            2,
+            "Should find 2 workers with runner_type 1"
+        );
+
+        let runner_type_2_workers = repository
+            .find_list(vec![RunnerType::Command as i32], None, None, None)
+            .await?;
+        assert_eq!(
+            runner_type_2_workers.len(),
+            1,
+            "Should find 1 worker with runner_type 2"
+        );
+
+        // Test 3: Filter by channel
+        let channel1_workers = repository
+            .find_list(vec![], Some("channel1".to_string()), None, None)
+            .await?;
+        assert_eq!(
+            channel1_workers.len(),
+            2,
+            "Should find 2 workers with channel1"
+        );
+
+        let channel2_workers = repository
+            .find_list(vec![], Some("channel2".to_string()), None, None)
+            .await?;
+        assert_eq!(
+            channel2_workers.len(),
+            1,
+            "Should find 1 worker with channel2"
+        );
+
+        // Test 4: Filter by both runner_type and channel
+        let filtered_workers = repository
+            .find_list(
+                vec![RunnerType::HttpRequest as i32],
+                Some("channel1".to_string()),
+                None,
+                None,
+            )
+            .await?;
+        assert_eq!(
+            filtered_workers.len(),
+            2,
+            "Should find 2 workers with runner_type 1 and channel1"
+        );
+
+        let filtered_workers_2 = repository
+            .find_list(
+                vec![RunnerType::Command as i32],
+                Some("channel1".to_string()),
+                None,
+                None,
+            )
+            .await?;
+        assert_eq!(
+            filtered_workers_2.len(),
+            0,
+            "Should find 0 workers with runner_type 2 and channel1"
+        );
+
+        // Test 5: Test limit and offset
+        let limited_workers = repository.find_list(vec![], None, Some(2), Some(0)).await?;
+        assert_eq!(
+            limited_workers.len(),
+            2,
+            "Should find 2 workers with limit 2"
+        );
+
+        let offset_workers = repository.find_list(vec![], None, Some(2), Some(1)).await?;
+        assert_eq!(
+            offset_workers.len(),
+            2,
+            "Should find 2 workers with limit 2 offset 1"
+        );
+
+        // Test 6: Multiple runner_types
+        let multiple_runner_types = repository
+            .find_list(
+                vec![RunnerType::HttpRequest as i32, RunnerType::Command as i32],
+                None,
+                None,
+                None,
+            )
+            .await?;
+        assert_eq!(
+            multiple_runner_types.len(),
+            3,
+            "Should find all 3 workers with multiple runner_types"
+        );
+
+        // Test 7: Non-existent channel, type
+        let no_workers = repository
+            .find_list(
+                vec![RunnerType::Docker as i32],
+                Some("nonexistent".to_string()),
+                None,
+                None,
+            )
+            .await?;
+        assert_eq!(
+            no_workers.len(),
+            0,
+            "Should find 0 workers with non-existent channel"
+        );
+
+        // Clean up test data
+        for id in worker_ids {
+            let mut tx = db.begin().await.context("error in test")?;
+            repository.delete_tx(&mut *tx, &id).await?;
+            tx.commit().await.context("error in test delete commit")?;
+        }
+
+        Ok(())
+    }
+
     #[test]
     fn run_test() -> Result<()> {
         use infra_utils::infra::test::setup_test_rdb_from;
@@ -364,7 +611,8 @@ mod test {
                 sqlx::query("DELETE FROM worker;").execute(pool).await?;
                 pool
             };
-            _test_repository(rdb_pool).await
+            _test_repository(rdb_pool).await?;
+            _test_find_list_repository(rdb_pool).await
         })
     }
 }

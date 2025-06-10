@@ -904,6 +904,10 @@ pub mod tests {
             max_cost: 1000000,
             use_metrics: false,
         };
+        let moka_config = infra_utils::infra::cache::MokaCacheConfig {
+            num_counters: 1000000,
+            ttl: Some(Duration::from_secs(60 * 60)),
+        };
         let job_memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
             &mc_config,
             Some(Duration::from_secs(60)),
@@ -941,7 +945,7 @@ pub mod tests {
         let worker_app = HybridWorkerAppImpl::new(
             storage_config.clone(),
             id_generator.clone(),
-            &mc_config,
+            &moka_config,
             repositories.clone(),
             descriptor_cache,
             runner_app,

@@ -754,6 +754,10 @@ mod tests {
             max_cost: 10000,
             use_metrics: false,
         };
+        let moka_config = infra_utils::infra::cache::MokaCacheConfig {
+            num_counters: 10000,
+            ttl: Some(Duration::from_secs(60)),
+        };
         let job_memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
             &mc_config,
             Some(Duration::from_secs(60)),
@@ -786,7 +790,7 @@ mod tests {
         let worker_app = RdbWorkerAppImpl::new(
             storage_config.clone(),
             id_generator.clone(),
-            &mc_config,
+            &moka_config,
             repositories.clone(),
             descriptor_cache,
             runner_app.clone(),

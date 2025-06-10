@@ -1,5 +1,7 @@
 // Note: Auto-generated code package. Do not modify manually.
 
+use std::sync::LazyLock;
+
 use anyhow::{anyhow, Result};
 use infra_utils::infra::net::reqwest::{self, ReqwestClient};
 use jobworkerp_runner::jobworkerp::runner::inline_workflow_args::WorkflowSource;
@@ -17,6 +19,20 @@ pub const WORKER_NAME_METADATA_LABEL: &str = "name";
 pub struct WorkflowLoader {
     pub http_client: reqwest::ReqwestClient,
 }
+
+static WORKFLOW_VALIDATOR: LazyLock<Option<jsonschema::Validator>> = LazyLock::new(|| {
+    let schema_content = include_str!("../../../runner/schema/workflow.yaml");
+    let schema = serde_yaml::from_str(schema_content)
+        .inspect_err(|e| tracing::error!("Failed to parse workflow schema: {:?}", e))
+        .ok()?;
+    std::thread::spawn(move || {
+        jsonschema::draft202012::new(&schema)
+            .inspect_err(|e| tracing::warn!("Failed to create workflow schema validator: {:?}", e))
+    })
+    .join()
+    .ok()?
+    .ok()
+});
 
 impl WorkflowLoader {
     pub fn new(http_client: ReqwestClient) -> Result<Self> {
@@ -37,6 +53,31 @@ impl WorkflowLoader {
                 .map_err(|e| anyhow!("Failed to load workflow from json={} , err: {}", data, e)),
         }
     }
+    async fn validate_schema(&self, instance: &serde_json::Value) -> Result<()> {
+        // validate json schema
+        if let Some(validator) = &*WORKFLOW_VALIDATOR {
+            // XXX WARN ONLY: (buggy? related: github jsonschema pr 509)
+            let mut error_details = Vec::new();
+            for error in validator.iter_errors(instance) {
+                error_details.push(format!("Path: {}, Message: {}", error.instance_path, error));
+            }
+            if error_details.is_empty() {
+                Ok(())
+            } else {
+                tracing::warn!(
+                    "Workflow schema validation failed: {}",
+                    error_details.join("; ")
+                );
+                Err(anyhow!(
+                    "Failed to validate workflow schema: errors: {}",
+                    error_details.join("; ")
+                ))
+            }
+        } else {
+            tracing::warn!("Workflow schema validator is not initialized, skipping validation");
+            Ok(())
+        }
+    }
     pub async fn load_workflow(
         &self,
         url_or_path: Option<&str>,
@@ -44,11 +85,25 @@ impl WorkflowLoader {
     ) -> Result<workflow::WorkflowSchema> {
         let wf = if let Some(url_or_path) = url_or_path {
             tracing::debug!("workflow url_or_path: {}", url_or_path);
-            self.load_url_or_path::<workflow::WorkflowSchema>(url_or_path)
-                .await
+            let json = self
+                .load_url_or_path::<serde_json::Value>(url_or_path)
+                .await?;
+
+            // validate schema
+            // XXX Broken
+            let _ = self.validate_schema(&json).await;
+            // convert to workflow schema
+            serde_json::from_value(json).map_err(|e| {
+                anyhow!(
+                    "Failed to parse workflow schema from url_or_path: {}, error: {}",
+                    url_or_path,
+                    e
+                )
+            })
         } else if let Some(data) = json_or_yaml_data {
             tracing::debug!("workflow string_data: {}", data);
             // load as do_ task list (json or yaml)
+            // TODO: validate schema (prepare Do task only schema)
             let do_task: workflow::DoTask =
                 serde_json::from_str(data).or_else(|_| serde_yaml::from_str(data))?;
             Ok(workflow::WorkflowSchema {
@@ -116,24 +171,21 @@ mod test {
     use infra_utils::infra::net::reqwest::ReqwestClient;
 
     use crate::workflow::definition::workflow::{self, RetryPolicy};
-    // use tracing::Level;
 
     // parse example flow yaml
     #[tokio::test]
     async fn test_parse_example_switch_yaml() -> Result<(), Box<dyn std::error::Error>> {
-        // command_utils::util::tracing::tracing_init_test(Level::DEBUG);
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
         let http_client = ReqwestClient::new(
             Some("test client"),
             Some(Duration::from_secs(30)),
             Some(Duration::from_secs(30)),
             Some(2),
-        )
-        .unwrap();
-        let loader = super::WorkflowLoader::new(http_client).unwrap();
+        )?;
+        let loader = super::WorkflowLoader::new(http_client)?;
         let flow = loader
             .load_workflow(Some("test-files/switch.yaml"), None)
-            .await
-            .unwrap();
+            .await?;
         println!("{:#?}", flow);
         assert_eq!(
             flow.document.title,
@@ -174,7 +226,7 @@ mod test {
 
         let run_task = match &flow.do_.0[0]["ListWorker"] {
             workflow::Task::RunTask(run_task) => run_task,
-            _ => panic!("unexpected task type"),
+            _ => return Err("Expected RunTask but found different task type".into()),
         };
         assert!(run_task.metadata.is_empty());
         assert!(run_task
@@ -237,7 +289,7 @@ mod test {
         }
         let _for_task = match &flow.do_.0[1]["EachFileIteration"] {
             workflow::Task::ForTask(for_task) => for_task,
-            f => panic!("unexpected task type: {:#?}", f),
+            f => return Err(format!("unexpected task type: {:#?}", f).into()),
         };
         // println!("====FOR: {:#?}", _for_task);
 
