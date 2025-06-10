@@ -217,7 +217,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         }
 
         // Add channel condition if specified
-        if let Some(_) = channel {
+        if channel.is_some() {
             conditions.push("channel = ?".to_string());
         }
 
@@ -245,7 +245,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         // Bind parameters
         if !runner_types.is_empty() {
             for rt in runner_types.iter() {
-                query = query.bind(*rt as i32);
+                query = query.bind(*rt);
             }
         }
 
