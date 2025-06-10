@@ -39,8 +39,7 @@ futures-util = { workspace = true }
 genai = "0.3"
 indexmap = "2"
 itertools = { workspace = true }
-# 0.30 is buggy
-jsonschema = {git = "https://github.com/Stranger6667/jsonschema", branch = "master"}
+jsonschema = "0.30"
 #kube-client = "0.86"
 libloading = { workspace = true }
 liquid = "0.26"

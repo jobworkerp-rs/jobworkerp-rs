@@ -40,8 +40,8 @@ impl RdbWorkerAppImpl {
         descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
         runner_app: Arc<RdbRunnerAppImpl>,
     ) -> Self {
-        let memory_cache = infra_utils::infra::cache::MokaCacheImpl::new(&moka_config);
-        let list_memory_cache = infra_utils::infra::cache::MokaCacheImpl::new(&moka_config);
+        let memory_cache = infra_utils::infra::cache::MokaCacheImpl::new(moka_config);
+        let list_memory_cache = infra_utils::infra::cache::MokaCacheImpl::new(moka_config);
         Self {
             storage_config,
             id_generator,

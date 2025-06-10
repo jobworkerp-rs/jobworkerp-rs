@@ -300,12 +300,12 @@ mod tests {
         let workflow_id = Uuid::new_v4();
         let input = Arc::new(serde_json::json!({"test": "input"}));
         let output = Some(Arc::new(serde_json::json!({"test": "output"})));
-        let context_variables = Arc::new(serde_json::Map::from(
+        let context_variables = Arc::new(
             [("var1".to_string(), serde_json::json!("value1"))]
                 .iter()
                 .cloned()
                 .collect::<serde_json::Map<String, serde_json::Value>>(),
-        ));
+        );
 
         use crate::workflow::definition::workflow::{
             Document, TaskList, WorkflowName, WorkflowNamespace, WorkflowVersion,
@@ -325,7 +325,7 @@ mod tests {
                     tags: serde_json::Map::new(),
                     metadata: serde_json::Map::new(),
                 },
-                do_: TaskList::try_from(Vec::new()).unwrap(),
+                do_: TaskList::from(Vec::new()),
                 input: Input {
                     from: Some(crate::workflow::definition::workflow::InputFrom::Variant1(
                         serde_json::json!({"input": "data"})

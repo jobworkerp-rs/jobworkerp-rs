@@ -70,7 +70,7 @@ impl HybridWorkerAppImpl {
         if !runner_types.is_empty() {
             // sort and distinct runner types
             let runner_types = runner_types
-                .into_iter()
+                .iter()
                 .collect::<Vec<_>>()
                 .into_iter()
                 .collect::<std::collections::BTreeSet<_>>();
@@ -84,7 +84,7 @@ impl HybridWorkerAppImpl {
             key.push(':');
         }
         if let Some(c) = channel {
-            key.push_str(&c);
+            key.push_str(c);
             key.push(':');
         }
         if let Some(l) = limit {
@@ -94,7 +94,7 @@ impl HybridWorkerAppImpl {
         if let Some(o) = offset {
             key.push_str(&o.to_string());
         } else {
-            key.push_str("0");
+            key.push('0');
         }
         key
     }
