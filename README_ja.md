@@ -301,7 +301,7 @@ MCPサーバーからの応答はジョブ結果として取得でき、response
 
 ### WorkflowRunner
 
-Workflow Runnerは、定義された順序で複数のジョブを実行したり、再利用可能なワークフローを実行したりするための機能です。この機能は[Serverless Workflow](https://serverlessworkflow.io/) (v1.0.0)をベースにしており、機能の削除およびjobworkerp-rs独自の拡張機能(run taskのfunction)が追加されています。([詳細(schema)](runner/schema/workflow.yaml))
+Workflow Runnerは、定義された順序で複数のジョブを実行したり、再利用可能なワークフローを実行したりするための機能です。この機能は[Serverless Workflow](https://serverlessworkflow.io/) (v1.0.0)をベースにしており、機能の削除およびjobworkerp-rs独自の拡張機能(run taskのrunner, worker)が追加されています。([詳細(schema)](runner/schema/workflow.yaml))
 
 - **INLINE_WORKFLOW**: ジョブの引数で定義されたワークフローを実行する ([InlineWorkflowRunner](infra/src/infra/runner/inline_workflow.rs))
   - ワークフロー定義全体をジョブ引数として渡して一度だけ実行することができる
@@ -335,8 +335,8 @@ input:
 do:
   - ListWorker:
       run:
-        function:
-          runnerName: COMMAND
+        runner:
+          name: COMMAND
           arguments:
             command: ls
             args: ["${.}"]
@@ -365,8 +365,8 @@ do:
             if: |-
               $${{%- assign head_char = file | slice: 0, 1 -%}{%- if head_char == "d" %}true{% else %}false{% endif -%}}
             run:
-              function:
-                runnerName: COMMAND
+              runner:
+                name: COMMAND
                 arguments:
                   command: ls
                   args: ["$${/{{file}}}"]
