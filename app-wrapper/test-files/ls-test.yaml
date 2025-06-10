@@ -13,8 +13,8 @@ input:
 do:
   - ListWorker: # worker name for jobworkerp (if not use static, add random suffix as temporary worker)
       run:
-        function:
-          runnerName: COMMAND # built-in runner type or plugin name
+        runner:
+          name: COMMAND # built-in runner type or plugin name
           # settings: # initialize settings for runner defined with protobuf
           arguments: # arguments for the runner defined with protobuf
             command: ls
@@ -64,8 +64,8 @@ do:
             if: |-
               $${{%- assign head_char = file | slice: 0, 1 -%}{%- if head_char == "d" %}true{% else %}false{% endif -%}}
             run:
-              function:
-                runnerName: COMMAND
+              runner:
+                name: COMMAND
                 # settings:
                 arguments:
                   command: ls
