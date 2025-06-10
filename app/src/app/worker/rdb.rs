@@ -4,12 +4,12 @@ use command_utils::text::TextUtil;
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::worker::rdb::{RdbWorkerRepository, UseRdbWorkerRepository};
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
-use infra_utils::infra::memory::{MemoryCacheConfig, MemoryCacheImpl, UseMemoryCache};
+use infra_utils::infra::cache::{MokaCacheImpl, UseMokaCache};
+use infra_utils::infra::memory::MemoryCacheImpl;
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::app::runner::rdb::RdbRunnerAppImpl;
 use crate::app::runner::{
@@ -24,8 +24,8 @@ use super::{WorkerApp, WorkerAppCacheHelper};
 pub struct RdbWorkerAppImpl {
     storage_config: Arc<StorageConfig>,
     id_generator: Arc<IdGeneratorWrapper>,
-    memory_cache: MemoryCacheImpl<Arc<String>, Worker>,
-    list_memory_cache: MemoryCacheImpl<Arc<String>, Vec<Worker>>,
+    memory_cache: MokaCacheImpl<Arc<String>, Worker>,
+    list_memory_cache: MokaCacheImpl<Arc<String>, Vec<Worker>>,
     repositories: Arc<RdbChanRepositoryModule>,
     descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     runner_app: Arc<RdbRunnerAppImpl>,
@@ -35,19 +35,13 @@ impl RdbWorkerAppImpl {
     pub fn new(
         storage_config: Arc<StorageConfig>,
         id_generator: Arc<IdGeneratorWrapper>,
-        mc_config: &MemoryCacheConfig,
+        moka_config: &infra_utils::infra::cache::MokaCacheConfig,
         repositories: Arc<RdbChanRepositoryModule>,
         descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
         runner_app: Arc<RdbRunnerAppImpl>,
     ) -> Self {
-        let memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
-            mc_config,
-            Some(Duration::from_secs(5 * 60)),
-        );
-        let list_memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
-            mc_config,
-            Some(Duration::from_secs(5 * 60)),
-        );
+        let memory_cache = infra_utils::infra::cache::MokaCacheImpl::new(moka_config);
+        let list_memory_cache = infra_utils::infra::cache::MokaCacheImpl::new(moka_config);
         Self {
             storage_config,
             id_generator,
@@ -167,7 +161,7 @@ impl WorkerApp for RdbWorkerAppImpl {
     {
         let k = Arc::new(Self::find_name_cache_key(name));
         self.memory_cache
-            .with_cache_if_some(&k, None, || async {
+            .with_cache_if_some(&k, || async {
                 self.rdb_worker_repository().find_by_name(name).await
             })
             .await
@@ -179,13 +173,17 @@ impl WorkerApp for RdbWorkerAppImpl {
     {
         let k = Arc::new(Self::find_cache_key(id));
         self.memory_cache
-            .with_cache_if_some(&k, None, || async {
-                self.rdb_worker_repository().find(id).await
-            })
+            .with_cache_if_some(&k, || async { self.rdb_worker_repository().find(id).await })
             .await
     }
 
-    async fn find_list(&self, limit: Option<i32>, offset: Option<i64>) -> Result<Vec<Worker>>
+    async fn find_list(
+        &self,
+        runner_types: Vec<i32>,
+        channel: Option<String>,
+        limit: Option<i32>,
+        offset: Option<i64>,
+    ) -> Result<Vec<Worker>>
     where
         Self: Send + 'static,
     {
@@ -194,7 +192,9 @@ impl WorkerApp for RdbWorkerAppImpl {
         // self.memory_cache
         //     .with_cache(&k, None, || async {
         // not use rdb in normal case
-        self.rdb_worker_repository().find_list(limit, offset).await
+        self.rdb_worker_repository()
+            .find_list(runner_types, channel, limit, offset)
+            .await
         // })
         // .await
     }
@@ -205,8 +205,10 @@ impl WorkerApp for RdbWorkerAppImpl {
     {
         let k = Arc::new(Self::find_all_list_cache_key());
         self.list_memory_cache
-            .with_cache(&k, None, || async {
-                self.rdb_worker_repository().find_list(None, None).await
+            .with_cache(&k, || async {
+                self.rdb_worker_repository()
+                    .find_list(vec![], None, None, None)
+                    .await
             })
             .await
     }
@@ -248,10 +250,10 @@ impl UseIdGenerator for RdbWorkerAppImpl {
 }
 
 impl WorkerAppCacheHelper for RdbWorkerAppImpl {
-    fn memory_cache(&self) -> &MemoryCacheImpl<Arc<String>, Worker> {
+    fn memory_cache(&self) -> &MokaCacheImpl<Arc<String>, Worker> {
         &self.memory_cache
     }
-    fn list_memory_cache(&self) -> &MemoryCacheImpl<Arc<String>, Vec<Worker>> {
+    fn list_memory_cache(&self) -> &MokaCacheImpl<Arc<String>, Vec<Worker>> {
         &self.list_memory_cache
     }
 }
@@ -286,6 +288,7 @@ mod tests {
     use proto::jobworkerp::data::{RunnerId, StorageType, WorkerData};
     use proto::TestRunnerSettings;
     use std::sync::Arc;
+    use std::time::Duration;
 
     async fn create_test_app(use_mock_id: bool) -> Result<RdbWorkerAppImpl> {
         let rdb_module = Arc::new(setup_test_rdb_module().await);
@@ -302,6 +305,10 @@ mod tests {
             num_counters: 10000,
             max_cost: 10000,
             use_metrics: false,
+        };
+        let moka_config = infra_utils::infra::cache::MokaCacheConfig {
+            num_counters: 10000,
+            ttl: Some(Duration::from_secs(60)),
         };
 
         let descriptor_cache = Arc::new(MemoryCacheImpl::new(&mc_config, None));
@@ -325,7 +332,7 @@ mod tests {
         let worker_app = RdbWorkerAppImpl::new(
             storage_config.clone(),
             id_generator.clone(),
-            &mc_config,
+            &moka_config,
             rdb_module,
             descriptor_cache,
             Arc::new(runner_app),
@@ -373,7 +380,7 @@ mod tests {
             assert_eq!(id3.value, id2.value + 1);
 
             // Find worker list and verify count
-            let list = app.find_list(None, None).await?;
+            let list = app.find_list(vec![], None, None, None).await?;
             assert_eq!(list.len(), 3);
             assert_eq!(app.count().await?, 3);
 
@@ -403,7 +410,7 @@ mod tests {
             assert!(deleted);
 
             // Verify it's gone
-            let list = app.find_list(None, None).await?;
+            let list = app.find_list(vec![], None, None, None).await?;
             assert_eq!(list.len(), 2);
             assert_eq!(app.count().await?, 2);
 

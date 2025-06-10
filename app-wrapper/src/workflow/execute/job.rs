@@ -17,7 +17,7 @@ use infra::infra::runner::rows::RunnerWithSchema;
 use infra_utils::infra::memory::MemoryCacheImpl;
 use proto::jobworkerp::data::{
     JobResult, Priority, QueueType, ResponseType, ResultStatus, RetryPolicy, RetryType, Worker,
-    WorkerData,
+    WorkerData, WorkerId,
 };
 use proto::ProtobufHelper;
 
@@ -223,26 +223,47 @@ pub trait UseJobExecutorHelper:
     fn setup_worker_and_enqueue_with_raw_output(
         &self,
         metadata: &mut HashMap<String, String>, // metadata for job
-        worker_data: WorkerData,                // change name (add random postfix) if not static
+        worker_id: Option<WorkerId>, // worker id (use if worker_id. if not exists, use default values)
+        worker_data: WorkerData,     // change name (add random postfix) if not static
         job_args: Vec<u8>,
         job_timeout_sec: u32,
     ) -> impl std::future::Future<Output = Result<Vec<u8>>> + Send {
         async move {
-            let (_jid, res, _stream) = self
-                .job_app()
-                .enqueue_job_with_temp_worker(
-                    Arc::new(metadata.clone()),
-                    worker_data,
-                    job_args,
-                    None,
-                    0,
-                    Priority::Medium as i32,
-                    job_timeout_sec as u64 * 1000,
-                    None,
-                    false,
-                    true,
-                )
-                .await?;
+            let (_jid, res, _stream) = {
+                if let Some(wid) = worker_id {
+                    tracing::debug!("enqueue job with worker: {:?}", wid);
+                    self.job_app()
+                        .enqueue_job(
+                            Arc::new(metadata.clone()),
+                            Some(&wid),
+                            None,
+                            job_args,
+                            None,
+                            0,
+                            Priority::Medium as i32,
+                            job_timeout_sec as u64 * 1000,
+                            None,
+                            false,
+                        )
+                        .await?
+                } else {
+                    tracing::debug!("enqueue job without worker");
+                    self.job_app()
+                        .enqueue_job_with_temp_worker(
+                            Arc::new(metadata.clone()),
+                            worker_data,
+                            job_args,
+                            None,
+                            0,
+                            Priority::Medium as i32,
+                            job_timeout_sec as u64 * 1000,
+                            None,
+                            false,
+                            true,
+                        )
+                        .await?
+                }
+            };
             if let Some(JobResult {
                 id: Some(jid),
                 data: Some(jdata),
@@ -290,10 +311,11 @@ pub trait UseJobExecutorHelper:
                 ..
             }) = self.find_runner_by_name(runner_name).await?
             {
-                // let mut worker = self
-                //     .create_worker_data_from(runner_name, worker_params, runner_settings)
-                //     .await?;
-
+                let wid = if worker_data.use_static {
+                    self.find_or_create_worker(&worker_data).await?.id
+                } else {
+                    None
+                };
                 let descriptors = self.parse_proto_with_cache(&rid, &rdata).await?;
                 let result_descriptor = descriptors
                     .result_descriptor
@@ -301,6 +323,7 @@ pub trait UseJobExecutorHelper:
                 let output = self
                     .setup_worker_and_enqueue_with_raw_output(
                         metadata,
+                        wid,
                         worker_data,
                         job_args,
                         job_timeout_sec,

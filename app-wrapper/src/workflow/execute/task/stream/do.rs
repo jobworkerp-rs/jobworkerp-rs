@@ -118,8 +118,14 @@ impl DoTaskStreamExecutor {
                         Err(mut e) => {
                             let pos = prev.position.read().await;
                             e.position(&pos);
+                            tracing::debug!(
+                                "Error executing task {}: {:?}",
+                                name,
+                                &e
+                            );
+                            Self::record_error(&span, &e.to_string());
                             yield Err(e);
-                            prev.remove_position().await;
+                            // stop stream on error
                             return;
                         }
                     }
@@ -306,7 +312,7 @@ mod tests {
                 context,
             )));
 
-            let do_task = workflow.create_do_task();
+            let do_task = workflow.create_do_task(Arc::new(HashMap::new()));
             let executor = DoTaskStreamExecutor::new(
                 Arc::new(HashMap::new()),
                 do_task,
@@ -446,7 +452,7 @@ mod tests {
                 context,
             )));
 
-            let do_task = workflow.create_do_task();
+            let do_task = workflow.create_do_task(Arc::new(HashMap::new()));
             let executor = DoTaskStreamExecutor::new(
                 Arc::new(HashMap::new()),
                 do_task,
@@ -553,7 +559,7 @@ mod tests {
                     context.clone(),
                 )));
 
-                let do_task = exit_workflow.create_do_task();
+                let do_task = exit_workflow.create_do_task(Arc::new(HashMap::new()));
                 let executor = DoTaskStreamExecutor::new(
                     Arc::new(HashMap::new()),
                     do_task,
@@ -623,7 +629,7 @@ mod tests {
                     context.clone(),
                 )));
 
-                let do_task = end_workflow.create_do_task();
+                let do_task = end_workflow.create_do_task(Arc::new(HashMap::new()));
                 let executor = DoTaskStreamExecutor::new(
                     Arc::new(HashMap::new()),
                     do_task,
@@ -760,7 +766,7 @@ mod tests {
                 context,
             )));
 
-            let do_task = workflow.create_do_task();
+            let do_task = workflow.create_do_task(Arc::new(HashMap::new()));
             let executor = DoTaskStreamExecutor::new(
                 Arc::new(HashMap::new()),
                 do_task,

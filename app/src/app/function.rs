@@ -56,7 +56,10 @@ pub trait FunctionApp:
 
         // Get workers if not excluded
         if !exclude_worker {
-            let workers = self.worker_app().find_list(None, None).await?;
+            let workers = self
+                .worker_app()
+                .find_list(vec![], None, None, None)
+                .await?;
             for worker in workers {
                 if let Some(wid) = worker.id {
                     if let Some(data) = worker.data {

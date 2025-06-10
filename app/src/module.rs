@@ -78,6 +78,7 @@ pub struct AppModule {
 }
 
 impl AppModule {
+    const DEFAULT_CACHE_TTL_SEC: u64 = 60 * 60; // 1 hour
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         config_module: Arc<AppConfigModule>,
@@ -109,6 +110,15 @@ impl AppModule {
         let mc_config = envy::prefixed("MEMORY_CACHE_")
             .from_env::<infra_utils::infra::memory::MemoryCacheConfig>()
             .unwrap_or_default();
+        let moka_config = infra_utils::infra::cache::MokaCacheConfig {
+            num_counters: mc_config.num_counters,
+            ttl: Some(Duration::from_secs(
+                std::env::var("MEMORY_CACHE_TTL_SEC")
+                    .ok()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(Self::DEFAULT_CACHE_TTL_SEC),
+            )),
+        };
         let plugin_dir = env::var("PLUGINS_RUNNER_DIR").unwrap_or("./".to_string());
         let job_queue_config = config_module.job_queue_config.clone();
         let id_generator = Arc::new(IdGeneratorWrapper::new());
@@ -134,7 +144,7 @@ impl AppModule {
                 let worker_app = Arc::new(RdbWorkerAppImpl::new(
                     config_module.storage_config.clone(),
                     id_generator.clone(),
-                    &mc_config,
+                    &moka_config,
                     repositories.clone(),
                     descriptor_cache.clone(),
                     runner_app.clone(),
@@ -248,7 +258,7 @@ impl AppModule {
                 let worker_app = Arc::new(HybridWorkerAppImpl::new(
                     config_module.storage_config.clone(),
                     id_generator.clone(),
-                    &mc_config,
+                    &moka_config,
                     repositories.clone(),
                     descriptor_cache.clone(),
                     runner_app.clone(),
@@ -383,6 +393,10 @@ pub mod test {
             max_cost: 1000000,
             use_metrics: false,
         };
+        let moka_config = infra_utils::infra::cache::MokaCacheConfig {
+            num_counters: 10,
+            ttl: Some(Duration::from_secs(AppModule::DEFAULT_CACHE_TTL_SEC)),
+        };
         // let worker_config = Arc::new(load_worker_config());
         let app_config = Arc::new(AppConfigModule::new_by_env(runner_factory.clone()));
         let descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>> =
@@ -412,7 +426,7 @@ pub mod test {
         let worker_app = Arc::new(HybridWorkerAppImpl::new(
             storage_config.clone(),
             id_generator.clone(),
-            &mc_config,
+            &moka_config,
             repositories.clone(),
             descriptor_cache.clone(),
             runner_app.clone(),
