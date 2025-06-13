@@ -140,6 +140,7 @@ dependencies = [
  "infra-utils",
  "jobworkerp-base",
  "jobworkerp-runner",
+ "moka",
  "num_cpus",
  "once_cell",
  "opentelemetry 0.30.0",
@@ -150,7 +151,6 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sqlx",
- "stretto",
  "strum",
  "strum_macros",
  "tokio",
@@ -198,14 +198,13 @@ dependencies = [
  "regress",
  "reqwest 0.12.20",
  "rmcp",
- "schemars 1.0.0-alpha.21",
+ "schemars 1.0.0-alpha.22",
  "serde",
  "serde_json",
  "serde_with",
  "serde_yaml",
  "signal-hook",
  "signal-hook-tokio",
- "stretto",
  "strum",
  "strum_macros",
  "tempfile",
@@ -1820,9 +1819,9 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hermit-abi"
-version = "0.5.1"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f154ce46856750ed433c8649605bf7ed2de3bc35fd9d2a9f30cddd873c80cb08"
+checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
 name = "hex"
@@ -2566,14 +2565,13 @@ dependencies = [
  "reqwest 0.12.20",
  "rmcp",
  "rustls",
- "schemars 1.0.0-alpha.21",
+ "schemars 1.0.0-alpha.22",
  "serde",
  "serde_json",
  "serde_with",
  "serde_yaml",
  "signal-hook",
  "signal-hook-tokio",
- "stretto",
  "strum",
  "strum_macros",
  "sysinfo",
@@ -2666,7 +2664,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07033963ba89ebaf1584d767badaa2e8fcec21aedea6b8c0346d487d49c28667"
 dependencies = [
  "cfg-if",
- "windows-targets 0.53.0",
+ "windows-targets 0.53.2",
 ]
 
 [[package]]
@@ -2858,9 +2856,9 @@ dependencies = [
 
 [[package]]
 name = "memchr"
-version = "2.7.4"
+version = "2.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78ca9ab1a0babb1e7d5695e3530886289c18cf2f87ec19a575a0abdce112e3a3"
+checksum = "32a282da65faaf38286cf3be983213fcf1d2e2a58700e808f83f4ea9a4804bc0"
 
 [[package]]
 name = "mime"
@@ -3468,7 +3466,7 @@ checksum = "bc838d2a56b5b1a6c25f55575dfc605fabb63bb2365f6c2353ef9159aa69e4a5"
 dependencies = [
  "cfg-if",
  "libc",
- "redox_syscall 0.5.12",
+ "redox_syscall 0.5.13",
  "smallvec",
  "windows-targets 0.52.6",
 ]
@@ -3676,7 +3674,7 @@ dependencies = [
  "jobworkerp-runner",
  "prost",
  "proto",
- "schemars 1.0.0-alpha.21",
+ "schemars 1.0.0-alpha.22",
  "serde",
  "serde_json",
  "tokio",
@@ -4194,9 +4192,9 @@ dependencies = [
 
 [[package]]
 name = "redox_syscall"
-version = "0.5.12"
+version = "0.5.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "928fca9cf2aa042393a8325b9ead81d2f0df4cb12e1e24cef072922ccd99c5af"
+checksum = "0d04b7d0ee6b4a0207a0a7adb104d23ecb0b47d6beae7152d0fa34b692b29fd6"
 dependencies = [
  "bitflags 2.9.1",
 ]
@@ -4701,14 +4699,14 @@ dependencies = [
 
 [[package]]
 name = "schemars"
-version = "1.0.0-alpha.21"
+version = "1.0.0-alpha.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2038a099f2fc8a48cdc0a8a50e106d5563690aab7bbf055be1c343a50887dad2"
+checksum = "50685aed5ffca865a9950a14567c399a4964632436a8e436d9998cc546688019"
 dependencies = [
  "chrono",
  "dyn-clone",
  "ref-cast",
- "schemars_derive 1.0.0-alpha.21",
+ "schemars_derive 1.0.0-alpha.22",
  "serde",
  "serde_json",
 ]
@@ -4727,9 +4725,9 @@ dependencies = [
 
 [[package]]
 name = "schemars_derive"
-version = "1.0.0-alpha.21"
+version = "1.0.0-alpha.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50cbf115b853c2a7748af35f5270fd508da77c351b81dc36178e06cc17a14f17"
+checksum = "f4edce0aa399162842bc2351a1d48448804a69429a684efa64ce03d68d72b187"
 dependencies = [
  "proc-macro2",
  "quote 1.0.40",
@@ -6563,7 +6561,7 @@ version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6994d13118ab492c3c80c1f81928718159254c53c472bf9ce36f8dae4add02a7"
 dependencies = [
- "redox_syscall 0.5.12",
+ "redox_syscall 0.5.13",
  "wasite",
 ]
 
@@ -6591,9 +6589,9 @@ checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "windows"
-version = "0.61.1"
+version = "0.61.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5ee8f3d025738cb02bad7868bbb5f8a6327501e870bf51f1b455b0a2454a419"
+checksum = "9babd3a767a4c1aef6900409f85f5d53ce2544ccdfaa86dad48c91782c6d6893"
 dependencies = [
  "windows-collections",
  "windows-core",
@@ -6659,9 +6657,9 @@ dependencies = [
 
 [[package]]
 name = "windows-link"
-version = "0.1.1"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76840935b766e1b0a05c0066835fb9ec80071d4c09a16f6bd5f7e655e3c14c38"
+checksum = "5e6ad25900d524eaabdbbb96d20b4311e1e7ae1699af4fb28c17ae66c80d798a"
 
 [[package]]
 name = "windows-numerics"
@@ -6762,9 +6760,9 @@ dependencies = [
 
 [[package]]
 name = "windows-targets"
-version = "0.53.0"
+version = "0.53.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1e4c7e8ceaaf9cb7d7507c974735728ab453b67ef8f18febdd7c11fe59dca8b"
+checksum = "c66f69fcc9ce11da9966ddb31a40968cad001c5bedeb5c2b82ede4253ab48aef"
 dependencies = [
  "windows_aarch64_gnullvm 0.53.0",
  "windows_aarch64_msvc 0.53.0",
@@ -6988,7 +6986,6 @@ dependencies = [
  "serde_json",
  "signal-hook",
  "signal-hook-tokio",
- "stretto",
  "strum",
  "tokio",
  "tokio-stream",

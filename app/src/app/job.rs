@@ -18,7 +18,7 @@ use proto::jobworkerp::data::{
     Job, JobId, JobResult, JobResultData, JobResultId, JobStatus, ResponseType, ResultOutputItem,
     WorkerData, WorkerId,
 };
-use std::{collections::HashMap, fmt, sync::Arc, time::Duration};
+use std::{collections::HashMap, fmt, sync::Arc};
 
 pub trait JobCacheKeys {
     // cache keys
@@ -101,7 +101,7 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         stream: Option<BoxStream<'static, ResultOutputItem>>,
     ) -> Result<bool>;
     async fn delete_job(&self, id: &JobId) -> Result<bool>;
-    async fn find_job(&self, id: &JobId, ttl: Option<&Duration>) -> Result<Option<Job>>
+    async fn find_job(&self, id: &JobId) -> Result<Option<Job>>
     where
         Self: Send + 'static;
 
@@ -109,7 +109,6 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         &self,
         limit: Option<&i32>,
         offset: Option<&i64>,
-        ttl: Option<&Duration>,
     ) -> Result<Vec<Job>>
     where
         Self: Send + 'static;
@@ -118,7 +117,6 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         &self,
         limit: Option<&i32>,
         channel: Option<&str>,
-        ttl: Option<&Duration>,
     ) -> Result<Vec<(Job, Option<JobStatus>)>>
     where
         Self: Send + 'static;

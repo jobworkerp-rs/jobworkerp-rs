@@ -5,11 +5,11 @@ use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::protobuf::ProtobufDescriptor;
 use infra::infra::runner::rows::RunnerWithSchema;
-use infra_utils::infra::memory::{MemoryCacheImpl, UseMemoryCache};
+use infra_utils::infra::cache::{MokaCacheImpl, UseMokaCache};
 use jobworkerp_base::error::JobWorkerError;
 use prost_reflect::{DynamicMessage, MessageDescriptor};
 use proto::jobworkerp::data::{RunnerData, RunnerId};
-use std::{fmt, future::Future, sync::Arc, time::Duration};
+use std::{fmt, future::Future, sync::Arc};
 
 #[async_trait]
 pub trait RunnerApp: fmt::Debug + Send + Sync {
@@ -26,19 +26,11 @@ pub trait RunnerApp: fmt::Debug + Send + Sync {
 
     async fn delete_runner(&self, id: &RunnerId) -> Result<bool>;
 
-    async fn find_runner(
-        &self,
-        id: &RunnerId,
-        ttl: Option<&Duration>,
-    ) -> Result<Option<RunnerWithSchema>>
+    async fn find_runner(&self, id: &RunnerId) -> Result<Option<RunnerWithSchema>>
     where
         Self: Send + 'static;
 
-    async fn find_runner_by_name(
-        &self,
-        name: &str,
-        ttl: Option<&Duration>,
-    ) -> Result<Option<RunnerWithSchema>>
+    async fn find_runner_by_name(&self, name: &str) -> Result<Option<RunnerWithSchema>>
     where
         Self: Send + 'static;
 
@@ -46,12 +38,11 @@ pub trait RunnerApp: fmt::Debug + Send + Sync {
         &self,
         limit: Option<&i32>,
         offset: Option<&i64>,
-        ttl: Option<&Duration>,
     ) -> Result<Vec<RunnerWithSchema>>
     where
         Self: Send + 'static;
 
-    async fn find_runner_all_list(&self, ttl: Option<&Duration>) -> Result<Vec<RunnerWithSchema>>
+    async fn find_runner_all_list(&self) -> Result<Vec<RunnerWithSchema>>
     where
         Self: Send + 'static;
 
@@ -73,11 +64,8 @@ pub trait UseRunnerApp: Send + Sync {
 }
 
 pub trait UseRunnerParserWithCache: Send + Sync {
-    fn descriptor_cache(&self) -> &MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>;
+    fn descriptor_cache(&self) -> &MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>;
 
-    fn default_ttl(&self) -> Option<&Duration> {
-        None
-    }
     fn _cache_key(id: &RunnerId) -> Arc<String> {
         Arc::new(format!("runner:{}", id.value))
     }
@@ -85,14 +73,14 @@ pub trait UseRunnerParserWithCache: Send + Sync {
     fn clear_cache_with_descriptor(
         &self,
         runner_id: &RunnerId,
-    ) -> impl std::future::Future<Output = Result<()>> + Send {
+    ) -> impl std::future::Future<Output = Option<RunnerDataWithDescriptor>> + Send {
         async {
             let key = Self::_cache_key(runner_id);
-            self.descriptor_cache().delete_cache_locked(&key).await
+            self.descriptor_cache().delete_cache(&key).await
         }
     }
 
-    fn clear_cache_th_descriptor(&self) -> impl std::future::Future<Output = Result<()>> + Send {
+    fn clear_cache_th_descriptor(&self) -> impl std::future::Future<Output = ()> + Send {
         async { self.descriptor_cache().clear().await }
     }
     // TODO remove if not used
@@ -167,11 +155,11 @@ pub trait UseRunnerParserWithCache: Send + Sync {
         &self,
         runner_id: &RunnerId,
         runner_with_descriptor: &RunnerDataWithDescriptor,
-    ) -> impl std::future::Future<Output = bool> + Send {
+    ) -> impl std::future::Future<Output = ()> + Send {
         async {
             let key = Self::_cache_key(runner_id);
             self.descriptor_cache()
-                .set_and_wait_cache_locked(key, runner_with_descriptor.clone(), self.default_ttl())
+                .set_cache(key, runner_with_descriptor.clone())
                 .await
         }
     }
@@ -183,7 +171,7 @@ pub trait UseRunnerParserWithCache: Send + Sync {
         async {
             let key = Self::_cache_key(runner_id);
             self.descriptor_cache()
-                .with_cache_locked(&key, self.default_ttl(), || async {
+                .with_cache(&key, || async {
                     self.parse_proto_schemas(runner_data.clone())
                 })
                 .await
@@ -217,9 +205,7 @@ pub trait UseRunnerAppParserWithCache:
                 id: _,
                 data: Some(runner_data),
                 ..
-            }) = runner_app
-                .find_runner(runner_id, self.default_ttl())
-                .await?
+            }) = runner_app.find_runner(runner_id).await?
             {
                 self.validate_runner_settings_data_with_schema(
                     runner_id,
@@ -320,20 +306,6 @@ pub trait RunnerCacheHelper {
         Arc::new(["runner_name:", name].join(""))
     }
 
-    // XXX lifetime issue
-    // fn find_list_cache_key(limit: Option<&i32>, offset: Option<&i64>) -> String {
-    //     if let Some(l) = limit {
-    //         [
-    //             "runner_list:",
-    //             l.to_string().as_str(),
-    //             ":",
-    //             offset.unwrap_or(&0i64).to_string().as_str(),
-    //         ]
-    //         .join("")
-    //     } else {
-    //         Self::find_all_list_cache_key()
-    //     }
-    // }
     fn find_all_list_cache_key() -> Arc<String> {
         Arc::new("runner_list:all".to_string())
     }

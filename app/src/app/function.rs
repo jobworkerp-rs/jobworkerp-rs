@@ -48,7 +48,7 @@ pub trait FunctionApp:
 
         // Get runners if not excluded
         if !exclude_runner {
-            let runners = self.runner_app().find_runner_list(None, None, None).await?;
+            let runners = self.runner_app().find_runner_list(None, None).await?;
             for runner in runners {
                 functions.push(Self::convert_runner_to_function_specs(runner));
             }
@@ -64,9 +64,7 @@ pub trait FunctionApp:
                 if let Some(wid) = worker.id {
                     if let Some(data) = worker.data {
                         if let Some(runner_id) = data.runner_id {
-                            if let Some(runner) =
-                                self.runner_app().find_runner(&runner_id, None).await?
-                            {
+                            if let Some(runner) = self.runner_app().find_runner(&runner_id).await? {
                                 // Check if the worker is associated with the runner
                                 if runner.id == Some(runner_id) {
                                     // warn only
@@ -110,9 +108,7 @@ pub trait FunctionApp:
                         0 => {
                             // Create runner ID and find runner
                             let runner_id = proto::jobworkerp::data::RunnerId { value: target.id };
-                            if let Some(runner) =
-                                self.runner_app().find_runner(&runner_id, None).await?
-                            {
+                            if let Some(runner) = self.runner_app().find_runner(&runner_id).await? {
                                 functions.push(Self::convert_runner_to_function_specs(runner));
                             }
                         }
@@ -125,7 +121,7 @@ pub trait FunctionApp:
                                     if let Some(worker_data) = worker.data {
                                         if let Some(rid) = worker_data.runner_id {
                                             if let Some(runner) =
-                                                self.runner_app().find_runner(&rid, None).await?
+                                                self.runner_app().find_runner(&rid).await?
                                             {
                                                 if let Ok(specs) =
                                                     Self::convert_worker_to_function_specs(

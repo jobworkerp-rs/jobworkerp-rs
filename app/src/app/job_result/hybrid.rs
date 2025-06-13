@@ -407,11 +407,6 @@ pub mod tests {
             rdb_chan_module: rdb_module,
         });
         let id_generator = Arc::new(IdGeneratorWrapper::new());
-        let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
-            num_counters: 10000,
-            max_cost: 10000,
-            use_metrics: false,
-        };
         let moka_config = infra_utils::infra::cache::MokaCacheConfig {
             num_counters: 10000,
             ttl: Some(Duration::from_secs(5 * 60)), // 5 minutes
@@ -420,14 +415,17 @@ pub mod tests {
             r#type: StorageType::Scalable,
             restore_at_startup: Some(false),
         });
-        let descriptor_cache = Arc::new(infra_utils::infra::memory::MemoryCacheImpl::new(
-            &mc_config,
-            Some(Duration::from_secs(5 * 60)),
+        // let descriptor_cache = Arc::new(infra_utils::infra::memory::MemoryCacheImpl::new(
+        //     &mc_config,
+        //     Some(Duration::from_secs(5 * 60)),
+        // ));
+        let descriptor_cache = Arc::new(infra_utils::infra::cache::MokaCacheImpl::new(
+            &moka_config,
         ));
         let runner_app = Arc::new(HybridRunnerAppImpl::new(
             TEST_PLUGIN_DIR.to_string(),
             storage_config.clone(),
-            &mc_config,
+            &moka_config,
             repositories.clone(),
             descriptor_cache.clone(),
             id_generator.clone(),

@@ -1,7 +1,3 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
-
 use anyhow::{anyhow, Result};
 use app::app::job::{JobApp, UseJobApp};
 use app::app::job_result::{JobResultApp, UseJobResultApp};
@@ -14,13 +10,15 @@ use command_utils::cache_ok;
 use command_utils::protobuf::ProtobufDescriptor;
 use command_utils::util::scoped_cache::ScopedCache;
 use infra::infra::runner::rows::RunnerWithSchema;
-use infra_utils::infra::memory::MemoryCacheImpl;
+use infra_utils::infra::cache::MokaCacheImpl;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     JobResult, Priority, QueueType, ResponseType, ResultStatus, RetryPolicy, RetryType, RunnerData,
     RunnerId, Worker, WorkerData, WorkerId,
 };
 use proto::ProtobufHelper;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 const DEFAULT_RETRY_POLICY: RetryPolicy = RetryPolicy {
     r#type: RetryType::Exponential as i32,
@@ -60,7 +58,7 @@ impl UseRunnerApp for JobExecutorWrapper {
     }
 }
 impl UseRunnerParserWithCache for JobExecutorWrapper {
-    fn descriptor_cache(&self) -> &MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor> {
+    fn descriptor_cache(&self) -> &MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor> {
         &self.app_module.descriptor_cache
     }
 }
@@ -103,10 +101,7 @@ pub trait UseJobExecutorHelper:
     {
         async move {
             // TODO find by name method
-            let list = self
-                .runner_app()
-                .find_runner_all_list(Some(&Duration::from_secs(60)))
-                .await?;
+            let list = self.runner_app().find_runner_all_list().await?;
             Ok(list
                 .iter()
                 .find(|r| r.data.as_ref().is_some_and(|d| d.name == name))
@@ -471,20 +466,16 @@ pub trait UseJobExecutorHelper:
                     id: Some(rid),
                     data: Some(rdata),
                     ..
-                }) = self
-                    .runner_app()
-                    .find_runner(
-                        worker_data
-                            .runner_id
-                            .as_ref()
-                            .ok_or(JobWorkerError::NotFound(format!(
+                }) =
+                    self.runner_app()
+                        .find_runner(worker_data.runner_id.as_ref().ok_or(
+                            JobWorkerError::NotFound(format!(
                                 "Not found runner for worker {}: {:?}",
                                 worker_name,
                                 worker_data.runner_id.as_ref()
-                            )))?,
-                        None,
-                    )
-                    .await?
+                            )),
+                        )?)
+                        .await?
                 {
                     let job_args = self.transform_job_args(&rid, &rdata, job_args).await?;
                     let output = self
