@@ -9,24 +9,22 @@ use infra::infra::runner::rdb::RunnerRepository;
 use infra::infra::runner::rdb::{RdbRunnerRepositoryImpl, UseRdbRunnerRepository};
 use infra::infra::runner::rows::RunnerWithSchema;
 use infra::infra::IdGeneratorWrapper;
-use infra_utils::infra::lock::RwLockWithKey;
-use infra_utils::infra::memory::{self, MemoryCacheConfig, MemoryCacheImpl, UseMemoryCache};
+use infra_utils::infra::cache::{MokaCacheConfig, MokaCacheImpl, UseMokaCache};
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
+use moka::future::Cache;
 use proto::jobworkerp::data::{RunnerId, RunnerType};
-use std::{sync::Arc, time::Duration};
-use stretto::AsyncCache;
+use std::sync::Arc;
 
 // TODO use redis as cache ? (same implementation as rdb now)
 #[derive(Clone, DebugStub)]
 pub struct HybridRunnerAppImpl {
     plugin_dir: String,
     storage_config: Arc<StorageConfig>,
-    #[debug_stub = "AsyncCache<Arc<String>, Vec<Runner>>"]
-    async_cache: AsyncCache<Arc<String>, Vec<RunnerWithSchema>>,
-    descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
+    #[debug_stub = "MocaCache<Arc<String>, RunnerWithSchema>"]
+    async_cache: MokaCacheImpl<Arc<String>, Vec<RunnerWithSchema>>,
+    descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     repositories: Arc<HybridRepositoryModule>,
-    key_lock: Arc<RwLockWithKey<Arc<String>>>,
     id_generator: Arc<IdGeneratorWrapper>,
 }
 
@@ -34,18 +32,17 @@ impl HybridRunnerAppImpl {
     pub fn new(
         plugin_dir: String,
         storage_config: Arc<StorageConfig>,
-        memory_cache_config: &MemoryCacheConfig,
+        moka_cache_config: &MokaCacheConfig,
         repositories: Arc<HybridRepositoryModule>,
-        descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
+        descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
         id_generator: Arc<IdGeneratorWrapper>,
     ) -> Self {
         Self {
             plugin_dir,
             storage_config,
-            async_cache: memory::new_memory_cache(memory_cache_config),
+            async_cache: MokaCacheImpl::new(moka_cache_config),
             descriptor_cache,
             repositories,
-            key_lock: Arc::new(RwLockWithKey::new(memory_cache_config.max_cost as usize)),
             id_generator,
         }
     }
@@ -92,7 +89,7 @@ impl HybridRunnerAppImpl {
 }
 
 impl UseRunnerParserWithCache for HybridRunnerAppImpl {
-    fn descriptor_cache(&self) -> &MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor> {
+    fn descriptor_cache(&self) -> &MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor> {
         &self.descriptor_cache
     }
 }
@@ -105,9 +102,7 @@ impl RunnerApp for HybridRunnerAppImpl {
             .await?;
         self.runner_repository().add_from_mcp_config_file().await?;
         self.load_runners_from_db().await;
-        let _ = self
-            .delete_cache_locked(&Self::find_all_list_cache_key())
-            .await;
+        let _ = self.delete_cache(&Self::find_all_list_cache_key()).await;
         Ok(true)
     }
 
@@ -154,16 +149,12 @@ impl RunnerApp for HybridRunnerAppImpl {
         Ok(res)
     }
 
-    async fn find_runner(
-        &self,
-        id: &RunnerId,
-        ttl: Option<&Duration>,
-    ) -> Result<Option<RunnerWithSchema>>
+    async fn find_runner(&self, id: &RunnerId) -> Result<Option<RunnerWithSchema>>
     where
         Self: Send + 'static,
     {
         let k = Self::find_cache_key(&id.value);
-        self.with_cache_locked(&k, ttl, || async {
+        self.with_cache(&k, || async {
             let v = self.runner_repository().find(id).await;
             match v {
                 Ok(opt) => Ok(match opt {
@@ -177,16 +168,12 @@ impl RunnerApp for HybridRunnerAppImpl {
         .map(|r| r.first().map(|o| (*o).clone()))
     }
 
-    async fn find_runner_by_name(
-        &self,
-        name: &str,
-        ttl: Option<&Duration>,
-    ) -> Result<Option<RunnerWithSchema>>
+    async fn find_runner_by_name(&self, name: &str) -> Result<Option<RunnerWithSchema>>
     where
         Self: Send + 'static,
     {
         let k = Self::find_name_cache_key(name);
-        self.with_cache_locked(&k, ttl, || async {
+        self.with_cache(&k, || async {
             let v = self.runner_repository().find_by_name(name).await;
             match v {
                 Ok(opt) => Ok(opt.to_vec()),
@@ -202,21 +189,27 @@ impl RunnerApp for HybridRunnerAppImpl {
         &self,
         limit: Option<&i32>,
         offset: Option<&i64>,
-        _ttl: Option<&Duration>,
     ) -> Result<Vec<RunnerWithSchema>>
     where
         Self: Send + 'static,
     {
-        // TODO cache
-        self.runner_repository().find_list(limit, offset).await
+        if let Some(all) = self.find_cache(&Self::find_all_list_cache_key()).await {
+            if let Some(lim) = limit {
+                let offset = offset.map(|o| *o as usize).unwrap_or(0);
+                Ok(all.into_iter().skip(offset).take(*lim as usize).collect())
+            } else {
+                Ok(all)
+            }
+        } else {
+            self.runner_repository().find_list(limit, offset).await
+        }
     }
 
-    async fn find_runner_all_list(&self, ttl: Option<&Duration>) -> Result<Vec<RunnerWithSchema>>
+    async fn find_runner_all_list(&self) -> Result<Vec<RunnerWithSchema>>
     where
         Self: Send + 'static,
     {
-        let k = Arc::new(Self::find_all_list_cache_key());
-        self.with_cache_locked(&k, ttl, || async {
+        self.with_cache(&Self::find_all_list_cache_key(), || async {
             self.runner_repository().find_list(None, None).await
         })
         .await
@@ -269,18 +262,9 @@ impl UseRdbRunnerRepository for HybridRunnerAppImpl {
     }
 }
 
-impl UseMemoryCache<Arc<String>, Vec<RunnerWithSchema>> for HybridRunnerAppImpl {
-    fn cache(&self) -> &AsyncCache<Arc<String>, Vec<RunnerWithSchema>> {
-        &self.async_cache
-    }
-
-    #[doc = " default cache ttl"]
-    fn default_ttl(&self) -> Option<&Duration> {
-        None
-    }
-
-    fn key_lock(&self) -> &RwLockWithKey<Arc<String>> {
-        &self.key_lock
+impl UseMokaCache<Arc<String>, Vec<RunnerWithSchema>> for HybridRunnerAppImpl {
+    fn cache(&self) -> &Cache<Arc<std::string::String>, Vec<RunnerWithSchema>> {
+        &self.async_cache.cache()
     }
 }
 impl RunnerCacheHelper for HybridRunnerAppImpl {}
@@ -296,10 +280,11 @@ mod test {
     use infra::infra::module::redis::test::setup_test_redis_module;
     use infra::infra::module::HybridRepositoryModule;
     use infra::infra::IdGeneratorWrapper;
-    use infra_utils::infra::memory::MemoryCacheImpl;
+    use infra_utils::infra::cache::MokaCacheImpl;
     use infra_utils::infra::test::TEST_RUNTIME;
     use proto::jobworkerp::data::RunnerId;
     use std::sync::Arc;
+    use std::time::Duration;
 
     async fn create_test_app() -> Result<HybridRunnerAppImpl> {
         let rdb_module = setup_test_rdb_module().await;
@@ -308,12 +293,11 @@ mod test {
             redis_module,
             rdb_chan_module: rdb_module,
         });
-        let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
+        let moka_config = infra_utils::infra::cache::MokaCacheConfig {
             num_counters: 1000000,
-            max_cost: 1000000,
-            use_metrics: false,
+            ttl: Some(Duration::from_millis(1000)),
         };
-        let descriptor_cache = Arc::new(MemoryCacheImpl::new(&mc_config, None));
+        let descriptor_cache = Arc::new(MokaCacheImpl::new(&moka_config));
         let storage_config = Arc::new(StorageConfig {
             r#type: StorageType::Scalable,
             restore_at_startup: Some(false),
@@ -321,7 +305,7 @@ mod test {
         let runner_app = HybridRunnerAppImpl::new(
             TEST_PLUGIN_DIR.to_string(),
             storage_config.clone(),
-            &mc_config,
+            &moka_config,
             repositories.clone(),
             descriptor_cache.clone(),
             Arc::new(IdGeneratorWrapper::new()),
@@ -338,9 +322,9 @@ mod test {
     fn test_hybrid_runner() {
         TEST_RUNTIME.block_on(async {
             let app = create_test_app().await.unwrap();
-            let res = app.find_runner(&RunnerId { value: 1 }, None).await.unwrap();
+            let res = app.find_runner(&RunnerId { value: 1 }).await.unwrap();
             assert!(res.is_some());
-            let res = app.find_runner_list(None, None, None).await.unwrap();
+            let res = app.find_runner_list(None, None).await.unwrap();
             assert!(!res.is_empty());
         });
     }

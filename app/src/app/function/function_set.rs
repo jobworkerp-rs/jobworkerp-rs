@@ -5,7 +5,7 @@ use debug_stub_derive::DebugStub;
 use infra::infra::function_set::rdb::{
     FunctionSetRepository, FunctionSetRepositoryImpl, UseFunctionSetRepository,
 };
-use infra_utils::infra::cache::{MokaCache, MokaCacheConfig, MokaCacheImpl, UseMokaCache};
+use infra_utils::infra::cache::{MokaCache, MokaCacheImpl, UseMokaCache};
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::function::data::{FunctionSet, FunctionSetData, FunctionSetId};
@@ -140,15 +140,11 @@ pub struct FunctionSetAppImpl {
 }
 
 impl FunctionSetAppImpl {
-    const DEFAULT_TTL_SEC: u64 = 60; // XXX fix it
     pub fn new(
         function_set_repository: Arc<FunctionSetRepositoryImpl>,
-        mc_config: &infra_utils::infra::memory::MemoryCacheConfig,
+        mc_config: &infra_utils::infra::cache::MokaCacheConfig,
     ) -> Self {
-        let memory_cache = MokaCacheImpl::new(&MokaCacheConfig {
-            num_counters: mc_config.num_counters,
-            ttl: Some(Duration::from_secs(Self::DEFAULT_TTL_SEC)),
-        });
+        let memory_cache = MokaCacheImpl::new(mc_config);
         Self {
             function_set_repository,
             memory_cache,

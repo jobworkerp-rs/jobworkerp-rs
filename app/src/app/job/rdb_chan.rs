@@ -20,7 +20,7 @@ use infra::infra::job_result::pubsub::chan::{
 use infra::infra::job_result::pubsub::{JobResultPublisher, JobResultSubscriber};
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
-use infra_utils::infra::memory::{MemoryCacheImpl, UseMemoryCache};
+use infra_utils::infra::cache::{MokaCacheImpl, UseMokaCache};
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
@@ -28,7 +28,7 @@ use proto::jobworkerp::data::{
     ResultOutputItem, Worker, WorkerData, WorkerId,
 };
 use std::collections::{HashMap, HashSet};
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub struct RdbChanJobAppImpl {
@@ -36,7 +36,7 @@ pub struct RdbChanJobAppImpl {
     id_generator: Arc<IdGeneratorWrapper>,
     repositories: Arc<RdbChanRepositoryModule>,
     worker_app: Arc<dyn WorkerApp + 'static>,
-    memory_cache: MemoryCacheImpl<Arc<String>, Job>,
+    memory_cache: MokaCacheImpl<Arc<String>, Job>,
 }
 
 impl RdbChanJobAppImpl {
@@ -45,7 +45,7 @@ impl RdbChanJobAppImpl {
         id_generator: Arc<IdGeneratorWrapper>,
         repositories: Arc<RdbChanRepositoryModule>,
         worker_app: Arc<dyn WorkerApp + 'static>,
-        memory_cache: MemoryCacheImpl<Arc<String>, Job>,
+        memory_cache: MokaCacheImpl<Arc<String>, Job>,
     ) -> Self {
         Self {
             app_config_module,
@@ -426,24 +426,17 @@ impl JobApp for RdbChanJobAppImpl {
     }
 
     // cannot get job of queue type REDIS (redis is used for queue and job cache)
-    async fn find_job(&self, id: &JobId, ttl: Option<&Duration>) -> Result<Option<Job>>
+    async fn find_job(&self, id: &JobId) -> Result<Option<Job>>
     where
         Self: Send + 'static,
     {
         let k = Arc::new(Self::find_cache_key(id));
         self.memory_cache
-            .with_cache_if_some(&k, ttl, || async {
-                self.rdb_job_repository().find(id).await
-            })
+            .with_cache_if_some(&k, || async { self.rdb_job_repository().find(id).await })
             .await
     }
 
-    async fn find_job_list(
-        &self,
-        limit: Option<&i32>,
-        offset: Option<&i64>,
-        _ttl: Option<&Duration>,
-    ) -> Result<Vec<Job>>
+    async fn find_job_list(&self, limit: Option<&i32>, offset: Option<&i64>) -> Result<Vec<Job>>
     where
         Self: Send + 'static,
     {
@@ -461,7 +454,6 @@ impl JobApp for RdbChanJobAppImpl {
         &self,
         limit: Option<&i32>,
         channel: Option<&str>,
-        _ttl: Option<&Duration>, // not used
     ) -> Result<Vec<(Job, Option<JobStatus>)>>
     where
         Self: Send + 'static,
@@ -737,6 +729,7 @@ mod tests {
         RunnerId, WorkerData,
     };
     use std::sync::Arc;
+    use std::time::Duration;
 
     async fn create_test_app(
         use_mock_id: bool,
@@ -749,19 +742,11 @@ mod tests {
         } else {
             Arc::new(IdGeneratorWrapper::new())
         };
-        let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
-            num_counters: 10000,
-            max_cost: 10000,
-            use_metrics: false,
-        };
         let moka_config = infra_utils::infra::cache::MokaCacheConfig {
             num_counters: 10000,
-            ttl: Some(Duration::from_secs(60)),
+            ttl: Some(Duration::from_millis(100)),
         };
-        let job_memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
-            &mc_config,
-            Some(Duration::from_secs(60)),
-        );
+        let job_memory_cache = infra_utils::infra::cache::MokaCacheImpl::new(&moka_config);
         let storage_config = Arc::new(StorageConfig {
             r#type: StorageType::Standalone,
             restore_at_startup: Some(false),
@@ -775,17 +760,14 @@ mod tests {
             channels: vec!["test".to_string()],
             channel_concurrencies: vec![2],
         });
-        let descriptor_cache = Arc::new(infra_utils::infra::memory::MemoryCacheImpl::new(
-            &mc_config,
-            Some(Duration::from_secs(60)),
-        ));
+        let descriptor_cache =
+            Arc::new(infra_utils::infra::cache::MokaCacheImpl::new(&moka_config));
         let runner_app = Arc::new(RdbRunnerAppImpl::new(
             TEST_PLUGIN_DIR.to_string(),
             storage_config.clone(),
-            &mc_config,
+            &moka_config,
             repositories.clone(),
             descriptor_cache.clone(),
-            id_generator.clone(),
         ));
         let worker_app = RdbWorkerAppImpl::new(
             storage_config.clone(),
@@ -881,7 +863,6 @@ mod tests {
                             .clone()
                             .and_then(|j| j.data.and_then(|d| d.job_id))
                             .unwrap(),
-                        Some(&Duration::from_millis(100)),
                     )
                     .await
                     .unwrap();
@@ -934,7 +915,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
 
             assert_eq!(&job_res.unwrap(), &result);
-            let job0 = app.find_job(&jid, None).await?;
+            let job0 = app.find_job(&jid).await?;
             assert!(job0.is_none());
             assert_eq!(
                 app.job_status_repository().find_status(&jid).await.unwrap(),
@@ -1062,10 +1043,7 @@ mod tests {
             );
             jh.await?;
 
-            let job0 = app
-                .find_job(&job_id, Some(&Duration::from_millis(1)))
-                .await
-                .unwrap();
+            let job0 = app.find_job(&job_id).await.unwrap();
             assert!(job0.is_none());
             assert_eq!(
                 app.job_status_repository()
@@ -1123,10 +1101,7 @@ mod tests {
                 .await?;
             assert!(job_id.value > 0);
             assert!(res.is_none());
-            let job = app
-                .find_job(&job_id, Some(&Duration::from_millis(100)))
-                .await?
-                .unwrap();
+            let job = app.find_job(&job_id).await?.unwrap();
             assert_eq!(job.id.as_ref().unwrap(), &job_id);
             assert_eq!(
                 job.data.as_ref().unwrap().worker_id.as_ref(),
@@ -1179,7 +1154,7 @@ mod tests {
                 .await?
             );
             // not fetched job (because of not use job_dispatcher)
-            assert!(app.find_job(&job_id, None).await?.is_none());
+            assert!(app.find_job(&job_id).await?.is_none());
             assert_eq!(
                 app.job_status_repository()
                     .find_status(&job_id)
@@ -1267,10 +1242,7 @@ mod tests {
             assert!(res2.is_none());
 
             // get job from redis
-            let job = app
-                .find_job(&job_id, Some(&Duration::from_millis(100)))
-                .await?
-                .unwrap();
+            let job = app.find_job(&job_id).await?.unwrap();
             assert_eq!(job.id.as_ref().unwrap(), &job_id);
             assert_eq!(
                 job.data.as_ref().unwrap().worker_id.as_ref(),

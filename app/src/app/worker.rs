@@ -227,7 +227,7 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
             id: _,
             data: Some(runner_data),
             ..
-        }) = self.runner_app().find_runner(&runner_id, None).await?
+        }) = self.runner_app().find_runner(&runner_id).await?
         {
             match proto::jobworkerp::data::StreamingOutputType::try_from(runner_data.output_type)
                 .ok()

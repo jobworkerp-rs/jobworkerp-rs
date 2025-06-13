@@ -7,48 +7,41 @@ use infra::infra::module::rdb::RdbChanRepositoryModule;
 use infra::infra::runner::rdb::RunnerRepository;
 use infra::infra::runner::rdb::{RdbRunnerRepositoryImpl, UseRdbRunnerRepository};
 use infra::infra::runner::rows::RunnerWithSchema;
-use infra::infra::IdGeneratorWrapper;
-use infra_utils::infra::lock::RwLockWithKey;
-use infra_utils::infra::memory::{self, MemoryCacheConfig, MemoryCacheImpl, UseMemoryCache};
+use infra_utils::infra::cache::{MokaCacheConfig, MokaCacheImpl, UseMokaCache};
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
+use moka::future::Cache;
 use proto::jobworkerp::data::{RunnerId, RunnerType};
 use std::{sync::Arc, time::Duration};
-use stretto::AsyncCache;
 
 // TODO merge with hybrid implementation
 #[derive(Clone, DebugStub)]
 pub struct RdbRunnerAppImpl {
     plugin_dir: String,
     storage_config: Arc<StorageConfig>,
-    #[debug_stub = "AsyncCache<Arc<String>, Vec<RunnerWithSchema>>"]
-    async_cache: AsyncCache<Arc<String>, Vec<RunnerWithSchema>>,
-    descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
+    #[debug_stub = "MokaCache<Arc<String>, Vec<RunnerWithSchema>>"]
+    async_cache: Arc<MokaCacheImpl<Arc<String>, Vec<RunnerWithSchema>>>,
+    #[debug_stub = "MokaCache<Arc<String>, RunnerWithSchema>"]
+    descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     repositories: Arc<RdbChanRepositoryModule>,
     cache_ttl: Option<Duration>,
-    #[debug_stub = "Arc<RwLockWithKey<Arc<String>>>"]
-    key_lock: Arc<RwLockWithKey<Arc<String>>>,
-    id_generator: Arc<IdGeneratorWrapper>,
 }
 
 impl RdbRunnerAppImpl {
     pub fn new(
         plugin_dir: String,
         storage_config: Arc<StorageConfig>,
-        memory_cache_config: &MemoryCacheConfig,
+        memory_cache_config: &MokaCacheConfig,
         repositories: Arc<RdbChanRepositoryModule>,
-        descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
-        id_generator: Arc<IdGeneratorWrapper>,
+        descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     ) -> Self {
         Self {
             plugin_dir,
             storage_config,
-            async_cache: memory::new_memory_cache(memory_cache_config),
+            async_cache: Arc::new(MokaCacheImpl::new(memory_cache_config)),
             descriptor_cache,
             repositories,
             cache_ttl: Some(Duration::from_secs(60)), // TODO from setting
-            key_lock: Arc::new(RwLockWithKey::new(memory_cache_config.num_counters)),
-            id_generator,
         }
     }
     // load runners from db in initialization
@@ -100,7 +93,7 @@ impl RdbRunnerAppImpl {
 }
 
 impl UseRunnerParserWithCache for RdbRunnerAppImpl {
-    fn descriptor_cache(&self) -> &MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor> {
+    fn descriptor_cache(&self) -> &MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor> {
         &self.descriptor_cache
     }
 }
@@ -154,16 +147,12 @@ impl RunnerApp for RdbRunnerAppImpl {
         Ok(res)
     }
 
-    async fn find_runner(
-        &self,
-        id: &RunnerId,
-        ttl: Option<&Duration>,
-    ) -> Result<Option<RunnerWithSchema>>
+    async fn find_runner(&self, id: &RunnerId) -> Result<Option<RunnerWithSchema>>
     where
         Self: Send + 'static,
     {
         let k = Self::find_cache_key(&id.value);
-        self.with_cache_locked(&k, ttl, || async {
+        self.with_cache(&k, || async {
             let v = self.runner_repository().find(id).await;
             match v {
                 Ok(opt) => Ok(match opt {
@@ -177,16 +166,12 @@ impl RunnerApp for RdbRunnerAppImpl {
         .map(|r| r.first().map(|o| (*o).clone()))
     }
 
-    async fn find_runner_by_name(
-        &self,
-        name: &str,
-        ttl: Option<&Duration>,
-    ) -> Result<Option<RunnerWithSchema>>
+    async fn find_runner_by_name(&self, name: &str) -> Result<Option<RunnerWithSchema>>
     where
         Self: Send + 'static,
     {
         let k = Self::find_name_cache_key(name);
-        self.with_cache_locked(&k, ttl, || async {
+        self.with_cache(&k, || async {
             let v = self.runner_repository().find_by_name(name).await;
             match v {
                 Ok(opt) => Ok(match opt {
@@ -205,21 +190,28 @@ impl RunnerApp for RdbRunnerAppImpl {
         &self,
         limit: Option<&i32>,
         offset: Option<&i64>,
-        _ttl: Option<&Duration>,
     ) -> Result<Vec<RunnerWithSchema>>
     where
         Self: Send + 'static,
     {
-        // TODO cache
-        self.runner_repository().find_list(limit, offset).await
+        if let Some(all) = self.find_cache(&Self::find_all_list_cache_key()).await {
+            if let Some(lim) = limit {
+                let offset = offset.map(|o| *o as usize).unwrap_or(0);
+                Ok(all.into_iter().skip(offset).take(*lim as usize).collect())
+            } else {
+                Ok(all)
+            }
+        } else {
+            self.runner_repository().find_list(limit, offset).await
+        }
     }
 
-    async fn find_runner_all_list(&self, ttl: Option<&Duration>) -> Result<Vec<RunnerWithSchema>>
+    async fn find_runner_all_list(&self) -> Result<Vec<RunnerWithSchema>>
     where
         Self: Send + 'static,
     {
         let k = Arc::new(Self::find_all_list_cache_key());
-        self.with_cache_locked(&k, ttl, || async {
+        self.with_cache(&k, || async {
             self.runner_repository().find_list(None, None).await
         })
         .await
@@ -272,19 +264,9 @@ impl UseRdbRunnerRepository for RdbRunnerAppImpl {
     }
 }
 
-impl UseMemoryCache<Arc<String>, Vec<RunnerWithSchema>> for RdbRunnerAppImpl {
-    fn cache(&self) -> &AsyncCache<Arc<String>, Vec<RunnerWithSchema>> {
-        &self.async_cache
-    }
-
-    #[doc = " default cache ttl"]
-    fn default_ttl(&self) -> Option<&Duration> {
-        // TODO from setting
-        self.cache_ttl.as_ref()
-    }
-
-    fn key_lock(&self) -> &RwLockWithKey<Arc<String>> {
-        &self.key_lock
+impl UseMokaCache<Arc<String>, Vec<RunnerWithSchema>> for RdbRunnerAppImpl {
+    fn cache(&self) -> &Cache<Arc<String>, Vec<RunnerWithSchema>> {
+        &self.async_cache.cache()
     }
 }
 impl RunnerCacheHelper for RdbRunnerAppImpl {}

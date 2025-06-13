@@ -178,7 +178,7 @@ pub trait RdbJobDispatcher:
             id: _,
             data: runner_data,
             ..
-        }) = self.runner_app().find_runner(rid, None).await?
+        }) = self.runner_app().find_runner(rid).await?
         {
             runner_data.ok_or(JobWorkerError::NotFound(format!(
                 "runner data {:?} is not found.",

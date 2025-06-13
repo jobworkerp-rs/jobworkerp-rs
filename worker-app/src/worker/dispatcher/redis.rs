@@ -241,7 +241,7 @@ pub trait RedisJobDispatcher:
             id: _,
             data: runner_data,
             ..
-        }) = self.runner_app().find_runner(&sid, None).await?
+        }) = self.runner_app().find_runner(&sid).await?
         {
             runner_data.ok_or(JobWorkerError::NotFound(format!(
                 "runner_data {:?} is not found.",

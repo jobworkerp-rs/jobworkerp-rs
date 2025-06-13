@@ -203,7 +203,7 @@ pub trait ChanJobDispatcher:
             return Err(JobWorkerError::NotFound(mes).into());
         };
         let runner_data = if let Some(RunnerWithSchema{id:_, data: runner_data,..}) =
-             self.runner_app().find_runner(sid, None).await?
+             self.runner_app().find_runner(sid).await?
         {
                 runner_data.ok_or(JobWorkerError::NotFound(format!("runner data {:?} is not found.", &sid)))
         } else {
