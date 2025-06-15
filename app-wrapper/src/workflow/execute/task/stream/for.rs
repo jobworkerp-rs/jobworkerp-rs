@@ -4,10 +4,14 @@ use crate::workflow::{
         workflow::{self},
     },
     execute::{
+        checkpoint,
         context::{TaskContext, WorkflowContext},
         expression::UseExpression,
         job::JobExecutorWrapper,
-        task::{stream::do_::DoTaskStreamExecutor, trace::TaskTracing, StreamTaskExecutorTrait},
+        task::{
+            stream::do_::DoTaskStreamExecutor, trace::TaskTracing, ExecutionId,
+            StreamTaskExecutorTrait,
+        },
     },
 };
 use anyhow::Result;
@@ -22,6 +26,11 @@ pub struct ForTaskStreamExecutor {
     task: workflow::ForTask,
     job_executor_wrapper: Arc<JobExecutorWrapper>,
     http_client: reqwest::ReqwestClient,
+    checkpoint_repository: Option<
+        Arc<dyn crate::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId>,
+    >,
+    execution_id: Option<Arc<ExecutionId>>,
+    // Metadata for the task, can be used for logging or tracing
     metadata: Arc<HashMap<String, String>>,
 }
 impl UseExpression for ForTaskStreamExecutor {}
@@ -35,12 +44,18 @@ impl ForTaskStreamExecutor {
         task: workflow::ForTask,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
         http_client: reqwest::ReqwestClient,
+        checkpoint_repository: Option<
+            Arc<dyn crate::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId>,
+        >,
+        execution_id: Option<Arc<ExecutionId>>,
         metadata: Arc<HashMap<String, String>>,
     ) -> Self {
         Self {
             task,
             job_executor_wrapper,
             http_client,
+            checkpoint_repository,
+            execution_id,
             metadata,
         }
     }
@@ -262,6 +277,8 @@ impl ForTaskStreamExecutor {
             let item_name_clone = item_name.to_string();
             let cx = cx.clone();
             let meta = self.metadata.clone();
+            let checkpoint_repository = self.checkpoint_repository.clone();
+            let execution_id = self.execution_id.clone();
 
             // Spawn this task asynchronously
             join_set.spawn(async move {
@@ -302,6 +319,8 @@ impl ForTaskStreamExecutor {
                     do_task_clone,
                     job_executor_wrapper_clone,
                     http_client_clone,
+                    checkpoint_repository.clone(),
+                    execution_id,
                 );
 
                 // Execute the stream and track results
@@ -464,6 +483,8 @@ impl ForTaskStreamExecutor {
                         do_task.clone(), //XXX clone
                         self.job_executor_wrapper.clone(),
                         self.http_client.clone(),
+                        self.checkpoint_repository.clone(),
+                        self.execution_id.clone(),
                     ));
 
                     let tnf = task_name_formatted.clone();

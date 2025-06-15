@@ -1,19 +1,25 @@
 use super::{expression::UseExpression, job::JobExecutorWrapper, task::TaskExecutor};
-use crate::workflow::definition::{
-    transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
-    workflow::{self, Task, WorkflowSchema},
-};
 use crate::workflow::execute::context::{self, TaskContext, WorkflowContext, WorkflowStatus};
+use crate::workflow::execute::task::ExecutionId;
+use crate::workflow::{
+    definition::{
+        transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
+        workflow::{self, Task, WorkflowSchema},
+    },
+    execute::checkpoint::repository::CheckPointRepositoryWithIdImpl,
+};
 use anyhow::Result;
 use app::module::AppModule;
 use async_stream::stream;
 use futures::{Stream, StreamExt};
+use infra_utils::infra::cache::MokaCacheConfig;
 use infra_utils::infra::{net::reqwest::ReqwestClient, trace::Tracing};
 use jobworkerp_base::APP_WORKER_NAME;
 use opentelemetry::{
     trace::{SpanRef, TraceContextExt},
     Context,
 };
+use proto::jobworkerp::data::StorageType;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
 
@@ -23,34 +29,16 @@ pub struct WorkflowExecutor {
     pub http_client: ReqwestClient,
     pub workflow: Arc<WorkflowSchema>,
     pub workflow_context: Arc<RwLock<context::WorkflowContext>>,
+    pub execution_id: Option<Arc<ExecutionId>>,
     pub metadata: Arc<HashMap<String, String>>,
+    pub checkpoint_repository: Option<Arc<CheckPointRepositoryWithIdImpl>>,
 }
 impl UseJqAndTemplateTransformer for WorkflowExecutor {}
 impl UseExpressionTransformer for WorkflowExecutor {}
 impl UseExpression for WorkflowExecutor {}
 impl Tracing for WorkflowExecutor {}
 
-impl WorkflowExecutor {
-    pub fn new(
-        app_module: Arc<AppModule>,
-        http_client: ReqwestClient,
-        workflow: Arc<WorkflowSchema>,
-        input: Arc<serde_json::Value>,
-        context: Arc<serde_json::Value>,
-        metadata: Arc<HashMap<String, String>>,
-    ) -> Self {
-        let workflow_context = Arc::new(RwLock::new(context::WorkflowContext::new(
-            &workflow, input, context,
-        )));
-        let job_executors = Arc::new(JobExecutorWrapper::new(app_module));
-        Self {
-            job_executors,
-            http_client,
-            workflow,
-            workflow_context,
-            metadata,
-        }
-    }
+pub trait WorkflowTracing {
     /// Records workflow input to the current span using OpenTelemetry semantic conventions
     fn record_workflow_input(span: &SpanRef, input: &serde_json::Value) {
         // Record input as pretty-printed JSON - Jaeger will parse and display it nicely
@@ -253,7 +241,67 @@ impl WorkflowExecutor {
             "workflow_executor",
         ));
     }
+}
 
+impl WorkflowTracing for WorkflowExecutor {}
+
+impl WorkflowExecutor {
+    pub fn new(
+        app_module: Arc<AppModule>,
+        http_client: ReqwestClient,
+        workflow: Arc<WorkflowSchema>,
+        input: Arc<serde_json::Value>,
+        execution_id: Option<ExecutionId>,
+        context: Arc<serde_json::Value>,
+        metadata: Arc<HashMap<String, String>>,
+    ) -> Result<Self> {
+        let workflow_context = Arc::new(RwLock::new(context::WorkflowContext::new(
+            &workflow, input, context,
+        )));
+        let checkpoint_repository = if let Some(checkpointing) = &workflow.checkpointing {
+            let workflow::CheckpointConfig { enabled, storage } = checkpointing;
+            if *enabled {
+                match storage {
+                    &Some(workflow::CheckpointConfigStorage::Redis)
+                        if app_module.config_module.storage_type() == StorageType::Scalable =>
+                    {
+                        let redis_pool = app_module
+                                    .repositories
+                                    .redis_module
+                                    .as_ref()
+                                    .map(|r| r.redis_pool)
+                                    .ok_or(anyhow::anyhow!(
+                                        "Redis pool is not available in the app module (even if scalable storage)"
+                                    ))?;
+                        Some(Arc::new(CheckPointRepositoryWithIdImpl::new_redis(
+                            redis_pool, None, // No TTL for Redis storage
+                        )))
+                    }
+                    _ => Some(Arc::new(CheckPointRepositoryWithIdImpl::new_memory(
+                        &MokaCacheConfig {
+                            num_counters: 1000,
+                            ttl: None, // No TTL for memory storage
+                        },
+                    ))),
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let job_executors = Arc::new(JobExecutorWrapper::new(app_module));
+        // let checkpoint_epository = workflow.;
+        Ok(Self {
+            job_executors,
+            http_client,
+            workflow,
+            workflow_context,
+            execution_id: execution_id.map(Arc::new),
+            metadata,
+            checkpoint_repository,
+        })
+    }
     /// Executes the workflow.
     ///
     /// This function sets the workflow status to running, validates the input schema,
@@ -274,6 +322,7 @@ impl WorkflowExecutor {
         let http_client = self.http_client.clone();
         let cxc = cx.clone();
         let metadata = self.metadata.clone();
+        let execution_id = self.execution_id.clone();
 
         stream! {
             // Set workflow to running status
@@ -369,12 +418,13 @@ impl WorkflowExecutor {
             let task_executor = TaskExecutor::new(
                 job_executors,
                 http_client,
+                None,
                 "ROOT",
                 Arc::new(Task::DoTask(workflow.create_do_task(metadata.clone()))),
                 metadata.clone(),
             );
             let mut task_stream = task_executor
-                .execute(ccx, initial_wfc.clone(), Arc::new(task_context))
+                .execute(ccx, initial_wfc.clone(), Arc::new(task_context), execution_id.clone())
                 .await;
 
             tracing::debug!(
@@ -553,6 +603,7 @@ mod tests {
                     output: None,
                     then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Continue)),
                     timeout: None,
+                    checkpoint: false,
                 }),
             );
             let mut map2 = HashMap::new();
@@ -567,6 +618,7 @@ mod tests {
                     output: None,
                     then: Some(FlowDirective::Variant0(FlowDirectiveEnum::End)),
                     timeout: None,
+                    checkpoint: false,
                 }),
             );
             vec![map1, map2]
@@ -574,6 +626,7 @@ mod tests {
         let task_list = TaskList(task_map_list);
 
         WorkflowSchema {
+            checkpointing: None,
             document: Document {
                 name: WorkflowName::from_str("test-workflow").unwrap(),
                 version: WorkflowVersion::from_str("1.0.0").unwrap(),
@@ -613,9 +666,11 @@ mod tests {
                 http_client,
                 Arc::new(workflow.clone()),
                 input.clone(),
+                None,
                 context.clone(),
                 Arc::new(HashMap::new()),
-            );
+            )
+            .unwrap();
 
             let workflow_stream =
                 executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
@@ -662,9 +717,11 @@ mod tests {
                 http_client,
                 Arc::new(workflow.clone()),
                 input.clone(),
+                None,
                 context.clone(),
                 Arc::new(HashMap::new()),
-            );
+            )
+            .unwrap();
 
             executor.workflow_context.write().await.status = WorkflowStatus::Running;
 

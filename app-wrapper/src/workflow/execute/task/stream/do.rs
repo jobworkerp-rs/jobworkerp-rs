@@ -8,7 +8,7 @@ use crate::workflow::{
         context::{TaskContext, Then, WorkflowContext, WorkflowStatus},
         expression::UseExpression,
         job::JobExecutorWrapper,
-        task::{trace::TaskTracing, TaskExecutor},
+        task::{trace::TaskTracing, ExecutionId, TaskExecutor},
     },
 };
 use anyhow::Result;
@@ -22,6 +22,10 @@ use opentelemetry::trace::TraceContextExt;
 use std::{collections::HashMap, pin::Pin, sync::Arc};
 use tokio::sync::RwLock;
 
+// for DebugStub
+type CheckPointRepo =
+    Arc<dyn crate::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId>;
+
 #[derive(DebugStub, Clone)]
 pub struct DoTaskStreamExecutor {
     // for secret metadata
@@ -32,6 +36,9 @@ pub struct DoTaskStreamExecutor {
     pub job_executor_wrapper: Arc<JobExecutorWrapper>,
     #[debug_stub = "reqwest::HttpClient"]
     pub http_client: reqwest::ReqwestClient,
+    #[debug_stub = "Option<Arc<dyn UseCheckPointRepository>>"]
+    pub checkpoint_repository: Option<CheckPointRepo>,
+    pub execution_id: Option<Arc<ExecutionId>>,
 }
 impl UseJqAndTemplateTransformer for DoTaskStreamExecutor {}
 impl UseExpression for DoTaskStreamExecutor {}
@@ -44,12 +51,18 @@ impl DoTaskStreamExecutor {
         task: workflow::DoTask,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
         http_client: reqwest::ReqwestClient,
+        checkpoint_repository: Option<
+            Arc<dyn crate::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId>,
+        >,
+        execution_id: Option<Arc<ExecutionId>>,
     ) -> Self {
         Self {
             metadata,
             task,
             job_executor_wrapper,
             http_client,
+            checkpoint_repository,
+            execution_id,
         }
     }
 
@@ -97,6 +110,7 @@ impl DoTaskStreamExecutor {
                 let mut stream = TaskExecutor::new(
                     job_exec.clone(),
                     http_client.clone(),
+                    self.checkpoint_repository.clone(),
                     &name,
                     task.clone(),
                     req_meta.clone(),
@@ -105,6 +119,7 @@ impl DoTaskStreamExecutor {
                     ccx.clone(),
                     workflow_context.clone(),
                     Arc::new(prev.clone()),
+                    self.execution_id.clone(),
                 )
                 .await;
 
@@ -251,6 +266,7 @@ mod tests {
                     output: None,
                     then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Continue)),
                     timeout: None,
+                    checkpoint: false,
                 }),
             );
             let mut map2 = HashMap::new();
@@ -265,6 +281,7 @@ mod tests {
                     output: None,
                     then: Some(FlowDirective::Variant0(FlowDirectiveEnum::End)),
                     timeout: None,
+                    checkpoint: false,
                 }),
             );
             vec![map1, map2]
@@ -272,6 +289,7 @@ mod tests {
         let task_list = TaskList(task_map_list);
 
         WorkflowSchema {
+            checkpointing: None,
             document: Document {
                 name: WorkflowName::from_str("test-workflow").unwrap(),
                 version: WorkflowVersion::from_str("1.0.0").unwrap(),
@@ -318,6 +336,8 @@ mod tests {
                 do_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),
                 http_client,
+                None,
+                None,
             );
 
             let task_context = TaskContext::new(
@@ -383,6 +403,7 @@ mod tests {
                             output: None,
                             then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Continue)),
                             timeout: None,
+                            checkpoint: false,
                         }),
                     );
                     map
@@ -400,6 +421,7 @@ mod tests {
                             output: None,
                             then: Some(FlowDirective::Variant1("task4".to_string())),
                             timeout: None,
+                            checkpoint: false,
                         }),
                     );
                     map
@@ -417,6 +439,7 @@ mod tests {
                             output: None,
                             then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Exit)),
                             timeout: None,
+                            checkpoint: false,
                         }),
                     );
                     map
@@ -434,6 +457,7 @@ mod tests {
                             output: None,
                             then: Some(FlowDirective::Variant0(FlowDirectiveEnum::End)),
                             timeout: None,
+                            checkpoint: false,
                         }),
                     );
                     map
@@ -458,6 +482,8 @@ mod tests {
                 do_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),
                 http_client,
+                None,
+                None,
             );
 
             let task_context = TaskContext::new(
@@ -530,6 +556,7 @@ mod tests {
                                 output: None,
                                 then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Exit)),
                                 timeout: None,
+                                checkpoint: false,
                             }),
                         );
                         map
@@ -547,6 +574,7 @@ mod tests {
                                 output: None,
                                 then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Continue)),
                                 timeout: None,
+                                checkpoint: false,
                             }),
                         );
                         map
@@ -565,6 +593,8 @@ mod tests {
                     do_task,
                     Arc::new(JobExecutorWrapper::new(app_module.clone())),
                     http_client.clone(),
+                    None,
+                    None,
                 );
 
                 let task_context = TaskContext::new(
@@ -618,6 +648,7 @@ mod tests {
                             output: None,
                             then: Some(FlowDirective::Variant0(FlowDirectiveEnum::End)),
                             timeout: None,
+                            checkpoint: false,
                         }),
                     );
                     map
@@ -635,6 +666,8 @@ mod tests {
                     do_task,
                     Arc::new(JobExecutorWrapper::new(app_module.clone())),
                     http_client.clone(),
+                    None,
+                    None,
                 );
 
                 let task_context = TaskContext::new(
@@ -693,6 +726,7 @@ mod tests {
             let context = Arc::new(serde_json::json!({}));
 
             let workflow = Arc::new(WorkflowSchema {
+                checkpointing: None,
                 document: Document {
                     name: WorkflowName::from_str("test-workflow").unwrap(),
                     version: WorkflowVersion::from_str("1.0.0").unwrap(),
@@ -718,6 +752,7 @@ mod tests {
                                 output: None,
                                 then: Some(FlowDirective::Variant1("jump_target".to_string())),
                                 timeout: None,
+                                checkpoint: false,
                             }),
                         );
                         map
@@ -735,6 +770,7 @@ mod tests {
                                 output: None,
                                 then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Exit)),
                                 timeout: None,
+                                checkpoint: false,
                             }),
                         );
                         map
@@ -752,6 +788,7 @@ mod tests {
                                 output: None,
                                 then: Some(FlowDirective::Variant0(FlowDirectiveEnum::End)),
                                 timeout: None,
+                                checkpoint: false,
                             }),
                         );
                         map
@@ -772,6 +809,8 @@ mod tests {
                 do_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),
                 http_client,
+                None,
+                None,
             );
 
             let task_context = TaskContext::new(

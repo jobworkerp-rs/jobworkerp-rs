@@ -62,9 +62,10 @@ pub async fn execute(
         http_client,
         workflow.clone(),
         input,
+        None, // no checkpointing
         context,
         Arc::new(metadata.clone()),
-    );
+    )?;
     // Get the stream of workflow context updates
     let workflow_stream = workflow_executor.execute_workflow(Arc::new(cx));
     pin_mut!(workflow_stream);

@@ -4,7 +4,7 @@ use crate::workflow::{
     execute::{
         context::{TaskContext, WorkflowContext},
         job::JobExecutorWrapper,
-        task::{Result, TaskExecutorTrait},
+        task::{ExecutionId, Result, TaskExecutorTrait},
     },
 };
 use crate::workflow::{
@@ -21,13 +21,19 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 use tokio_stream::StreamMap;
 
+// for DebugStub
+type CheckPointRepo =
+    Arc<dyn crate::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId>;
+
 #[derive(DebugStub, Clone)]
 pub struct ForkTaskExecutor {
     #[debug_stub = "AppModule"]
     pub job_executor_wrapper: Arc<JobExecutorWrapper>,
     #[debug_stub = "reqwest::HttpClient"]
     pub http_client: reqwest::ReqwestClient,
+    pub checkpoint_repository: Option<CheckPointRepo>,
     task: workflow::ForkTask,
+    execution_id: Option<Arc<ExecutionId>>,
     metadata: Arc<HashMap<String, String>>,
 }
 
@@ -37,12 +43,18 @@ impl ForkTaskExecutor {
         task: workflow::ForkTask,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
         http_client: reqwest::ReqwestClient,
+        checkpoint_repository: Option<
+            Arc<dyn crate::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId>,
+        >,
+        execution_id: Option<Arc<ExecutionId>>,
         metadata: Arc<HashMap<String, String>>,
     ) -> Self {
         Self {
             job_executor_wrapper,
             http_client,
+            checkpoint_repository,
             task,
+            execution_id,
             metadata,
         }
     }
@@ -51,16 +63,26 @@ impl ForkTaskExecutor {
         name: &str,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
         http_client: reqwest::ReqwestClient,
+        checkpoint_repository: Option<
+            Arc<dyn crate::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId>,
+        >,
         workflow_context: Arc<RwLock<WorkflowContext>>,
         prev_context: Arc<TaskContext>,
         task: Arc<Task>,
+        execution_id: Option<Arc<ExecutionId>>,
         metadata: Arc<HashMap<String, String>>,
         cx: Arc<opentelemetry::Context>,
     ) -> futures::stream::BoxStream<'static, Result<TaskContext, Box<workflow::Error>>> {
-        let task_executor =
-            TaskExecutor::new(job_executor_wrapper, http_client, name, task, metadata);
+        let task_executor = TaskExecutor::new(
+            job_executor_wrapper,
+            http_client,
+            checkpoint_repository,
+            name,
+            task,
+            metadata,
+        );
         task_executor
-            .execute(cx, workflow_context, prev_context.clone())
+            .execute(cx, workflow_context, prev_context.clone(), execution_id)
             .await
     }
 }
@@ -97,15 +119,18 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
                     let name = branch_name.to_string();
                     let task_clone = Arc::new(task.clone());
                     let metadata_clone = Arc::clone(&self.metadata);
+                    let execution_id = self.execution_id.clone();
                     let cxc = cx.clone();
                     let future = Box::pin(async move {
                         Self::execute_task(
                             &name,
                             self.job_executor_wrapper.clone(),
                             self.http_client.clone(),
+                            self.checkpoint_repository.clone(),
                             workflow_context_clone,
                             task_context_clone,
                             task_clone,
+                            execution_id,
                             metadata_clone,
                             cxc,
                         )
@@ -239,6 +264,7 @@ mod tests {
             output: None,
             then: None,
             timeout: None,
+            checkpoint: false,
         })
     }
 
@@ -302,11 +328,18 @@ mod tests {
                 output: None,
                 then: None,
                 timeout: None,
+                checkpoint: false,
             };
 
             // TaskExecutor, ForkTaskExecutor
-            let fork_task_executor =
-                ForkTaskExecutor::new(fork_task, job_executor_wrapper, http_client, metadata);
+            let fork_task_executor = ForkTaskExecutor::new(
+                fork_task,
+                job_executor_wrapper,
+                http_client,
+                None,
+                None,
+                metadata,
+            );
 
             let input = json!({"initial": "value"});
             let task_context = MockTaskContext::create(input.clone());
@@ -382,10 +415,17 @@ mod tests {
                 output: None,
                 then: None,
                 timeout: None,
+                checkpoint: false,
             };
 
-            let fork_task_executor =
-                ForkTaskExecutor::new(fork_task, job_executor_wrapper, http_client, metadata);
+            let fork_task_executor = ForkTaskExecutor::new(
+                fork_task,
+                job_executor_wrapper,
+                http_client,
+                None,
+                None,
+                metadata,
+            );
 
             // execute
             let task_context = MockTaskContext::create(json!({"initial": "value"}));
@@ -440,6 +480,7 @@ mod tests {
                     output: None,
                     then: None,
                     timeout: None,
+                    checkpoint: false,
                 });
 
             let mut task_map1 = HashMap::new();
@@ -463,10 +504,17 @@ mod tests {
                 output: None,
                 then: None,
                 timeout: None,
+                checkpoint: false,
             };
 
-            let fork_task_executor =
-                ForkTaskExecutor::new(fork_task, job_executor_wrapper, http_client, metadata);
+            let fork_task_executor = ForkTaskExecutor::new(
+                fork_task,
+                job_executor_wrapper,
+                http_client,
+                None,
+                None,
+                metadata,
+            );
 
             // execute
             let task_context = MockTaskContext::create(json!({"initial": "value"}));

@@ -149,6 +149,7 @@ mod tests {
             output: None,
             metadata: Map::new(),
             timeout: None,
+            checkpoint: false,
         }
     }
 

@@ -1,3 +1,4 @@
+use crate::workflow::execute::task::ExecutionId;
 use crate::workflow::{definition::WorkflowLoader, execute::workflow::WorkflowExecutor};
 use anyhow::Result;
 use app::module::AppModule;
@@ -132,6 +133,7 @@ impl RunnerTrait for InlineWorkflowRunner {
             let cx = opentelemetry::Context::current_with_span(span);
             let arg = InlineWorkflowArgs::decode(args)?;
             tracing::debug!("workflow args: {:#?}", arg);
+            let execution_id = ExecutionId::new_opt(arg.execution_id.clone());
             if self.canceled {
                 return Err(anyhow::anyhow!(
                     "canceled by user: {}, {:?}",
@@ -185,9 +187,10 @@ impl RunnerTrait for InlineWorkflowRunner {
                 http_client,
                 Arc::new(workflow),
                 Arc::new(input_json),
+                execution_id,
                 context_json.clone(),
                 Arc::new(metadata.clone()),
-            );
+            )?;
 
             // Get the stjream of workflow context updates
             let workflow_stream = executor.execute_workflow(Arc::new(cx));
@@ -262,6 +265,7 @@ impl RunnerTrait for InlineWorkflowRunner {
                 arg
             ));
         }
+        let execution_id = ExecutionId::new_opt(arg.execution_id);
         let input_json = serde_json::from_str(&arg.input)
             .unwrap_or_else(|_| serde_json::Value::String(arg.input.clone()));
         tracing::debug!(
@@ -304,9 +308,10 @@ impl RunnerTrait for InlineWorkflowRunner {
             http_client,
             Arc::new(workflow),
             Arc::new(input_json),
+            execution_id,
             context_json.clone(),
             metadata_arc.clone(),
-        ));
+        )?);
         let workflow_stream = executor.execute_workflow(Arc::new(cx));
         self.workflow_executor = Some(executor.clone());
 
