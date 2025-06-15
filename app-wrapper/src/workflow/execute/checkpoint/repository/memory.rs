@@ -122,16 +122,6 @@ mod tests {
 
         // Verify workflow context
         assert_eq!(checkpoint.workflow.id, retrieved_checkpoint.workflow.id);
-        assert_eq!(
-            checkpoint.workflow.definition.document.name,
-            retrieved_checkpoint.workflow.definition.document.name
-        );
-
-        // Verify task context
-        assert_eq!(
-            checkpoint.task.flow_directive,
-            retrieved_checkpoint.task.flow_directive
-        );
 
         // Verify position
         assert_eq!(
@@ -299,7 +289,6 @@ mod tests {
     fn create_test_checkpoint_context() -> CheckPointContext {
         let workflow_id = Uuid::new_v4();
         let input = Arc::new(serde_json::json!({"test": "input"}));
-        let output = Some(Arc::new(serde_json::json!({"test": "output"})));
         let context_variables = Arc::new(
             [("var1".to_string(), serde_json::json!("value1"))]
                 .iter()
@@ -307,49 +296,18 @@ mod tests {
                 .collect::<serde_json::Map<String, serde_json::Value>>(),
         );
 
-        use crate::workflow::definition::workflow::{
-            Document, TaskList, WorkflowName, WorkflowNamespace, WorkflowVersion,
-        };
-
         // Create WorkflowCheckPointContext directly with minimal fields
         let workflow_checkpoint = WorkflowCheckPointContext {
             id: workflow_id,
-            definition: Arc::new(WorkflowSchema {
-                document: Document {
-                    dsl: WorkflowDsl::from_str("0.0.1").unwrap(),
-                    name: WorkflowName::try_from("test-workflow").unwrap(),
-                    namespace: WorkflowNamespace::try_from("default").unwrap(),
-                    version: WorkflowVersion::try_from("1.0.0").unwrap(),
-                    title: Some("Test Workflow".to_string()),
-                    summary: Some("Test workflow description".to_string()),
-                    tags: serde_json::Map::new(),
-                    metadata: serde_json::Map::new(),
-                },
-                do_: TaskList::from(Vec::new()),
-                input: Input {
-                    from: Some(crate::workflow::definition::workflow::InputFrom::Variant1(
-                        serde_json::json!({"input": "data"})
-                            .as_object()
-                            .unwrap()
-                            .clone(),
-                    )),
-                    ..Default::default()
-                },
-                output: None,
-            }),
             input: input.clone(),
-            output: output.clone(),
             context_variables: context_variables.clone(),
         };
 
         // Create TaskCheckPointContext directly
         let task_checkpoint = TaskCheckPointContext {
-            raw_input: input.clone(),
             input: input.clone(),
-            raw_output: Arc::new(serde_json::json!({"raw": "output"})),
             output: Arc::new(serde_json::json!({"processed": "output"})),
             context_variables: context_variables.clone(),
-            flow_directive: Then::Continue,
         };
 
         // Create WorkflowPosition directly

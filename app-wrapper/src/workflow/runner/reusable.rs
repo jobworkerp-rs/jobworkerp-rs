@@ -1,4 +1,5 @@
 use crate::workflow::definition::workflow::WorkflowSchema;
+use crate::workflow::execute::task::ExecutionId;
 use crate::workflow::execute::workflow::WorkflowExecutor;
 use anyhow::Result;
 use app::module::AppModule;
@@ -131,6 +132,8 @@ impl RunnerTrait for ReusableWorkflowRunner {
             // let _ = span.enter();
             let cx = opentelemetry::Context::current_with_span(span);
             let arg = ProstMessageCodec::deserialize_message::<ReusableWorkflowArgs>(args)?;
+            let execution_id = ExecutionId::new_opt(arg.execution_id.clone());
+
             tracing::debug!("Workflow args: {:#?}", &arg);
             if let Some(workflow) = self.workflow.as_ref() {
                 tracing::debug!("Workflow: {:#?}", workflow);
@@ -154,9 +157,10 @@ impl RunnerTrait for ReusableWorkflowRunner {
                     self.http_client.clone(),
                     workflow.clone(),
                     Arc::new(input_json),
+                    execution_id,
                     context_json,
                     Arc::new(metadata.clone()),
-                );
+                )?;
 
                 // Get the stream of workflow context updates
                 let workflow_stream = executor.execute_workflow(Arc::new(cx));
@@ -219,6 +223,7 @@ impl RunnerTrait for ReusableWorkflowRunner {
         let arg = ProstMessageCodec::deserialize_message::<ReusableWorkflowArgs>(args)?;
         tracing::debug!("workflow args: {:#?}", arg);
         let metadata_arc = Arc::new(metadata.clone());
+        let execution_id = ExecutionId::new_opt(arg.execution_id.clone());
 
         if self.canceled {
             return Err(anyhow::anyhow!(
@@ -257,9 +262,10 @@ impl RunnerTrait for ReusableWorkflowRunner {
             self.http_client.clone(),
             workflow,
             Arc::new(input_json),
+            execution_id,
             context_json.clone(),
             metadata_arc.clone(),
-        ));
+        )?);
         let workflow_stream = executor.execute_workflow(Arc::new(cx));
         self.workflow_executor = Some(executor.clone());
 

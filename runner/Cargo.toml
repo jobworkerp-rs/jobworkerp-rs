@@ -64,8 +64,8 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
 tonic = { workspace = true }
-tonic-reflection = "0.13"
-prost-reflect = "0.15"
+tonic-reflection = { workspace = true }
+prost-reflect = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 

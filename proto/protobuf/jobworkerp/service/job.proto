@@ -22,7 +22,7 @@ message JobRequest {
     jobworkerp.data.WorkerId worker_id = 1;
     string worker_name = 2;
   }
-  // argument for the job
+  // argument for the job(protobuf serialized)
   bytes args = 3;
   // prevent from registering the same keys job in queue at the same time
   optional string uniq_key = 4;

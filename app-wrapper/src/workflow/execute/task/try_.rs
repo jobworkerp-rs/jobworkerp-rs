@@ -3,7 +3,7 @@ use crate::workflow::{
     execute::{
         context::{TaskContext, WorkflowContext},
         job::JobExecutorWrapper,
-        task::{Result, TaskExecutor, TaskExecutorTrait},
+        task::{ExecutionId, Result, TaskExecutor, TaskExecutorTrait},
     },
 };
 use crate::workflow::{
@@ -21,6 +21,10 @@ pub struct TryTaskExecutor {
     task: workflow::TryTask,
     job_executors: Arc<JobExecutorWrapper>,
     http_client: reqwest::ReqwestClient,
+    checkpoint_repository: Option<
+        Arc<dyn crate::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId>,
+    >,
+    execution_id: Option<Arc<ExecutionId>>, // execution id for checkpoint
     metadata: Arc<std::collections::HashMap<String, String>>,
 }
 impl TryTaskExecutor {
@@ -28,12 +32,18 @@ impl TryTaskExecutor {
         task: workflow::TryTask,
         job_executors: Arc<JobExecutorWrapper>,
         http_client: reqwest::ReqwestClient,
+        checkpoint_repository: Option<
+            Arc<dyn crate::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId>,
+        >,
+        execution_id: Option<Arc<ExecutionId>>,
         metadata: Arc<std::collections::HashMap<String, String>>,
     ) -> Self {
         Self {
             task,
             job_executors,
             http_client,
+            checkpoint_repository,
+            execution_id,
             metadata,
         }
     }
@@ -169,13 +179,19 @@ impl TryTaskExecutor {
         let task_executor = TaskExecutor::new(
             self.job_executors.clone(),
             self.http_client.clone(),
+            self.checkpoint_repository.clone(),
             task_name,
             Arc::new(workflow::Task::DoTask(do_tasks)),
             self.metadata.clone(),
         );
 
         let mut stream = task_executor
-            .execute(cx, workflow_context.clone(), Arc::new(task_context))
+            .execute(
+                cx,
+                workflow_context.clone(),
+                Arc::new(task_context),
+                self.execution_id.clone(),
+            )
             .await;
         let mut last_context = None;
         while let Some(task_context) = stream.next().await {
@@ -497,6 +513,8 @@ mod tests {
             try_task.clone(),
             job_executors.clone(),
             http_client,
+            None,
+            None,
             Arc::new(Default::default()),
         );
 

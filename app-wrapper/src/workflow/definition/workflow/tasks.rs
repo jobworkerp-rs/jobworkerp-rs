@@ -3,6 +3,8 @@ use super::*;
 /////////////////////////
 /// add task trait
 pub trait TaskTrait {
+    #[doc = "Set checkpoint for the task, if true the task will be checkpointed."]
+    fn checkpoint(&self) -> bool;
     #[doc = "Export task output to context."]
     fn export(&self) -> ::std::option::Option<&Export>;
     #[doc = "A runtime expression, if any, used to determine whether or not the task should be run."]
@@ -20,6 +22,9 @@ pub trait TaskTrait {
 }
 
 impl TaskTrait for DoTask {
+    fn checkpoint(&self) -> bool {
+        self.checkpoint
+    }
     fn export(&self) -> ::std::option::Option<&Export> {
         self.export.as_ref()
     }
@@ -50,6 +55,9 @@ impl TaskTrait for DoTask {
 }
 
 impl TaskTrait for ForTask {
+    fn checkpoint(&self) -> bool {
+        self.checkpoint
+    }
     fn export(&self) -> ::std::option::Option<&Export> {
         self.export.as_ref()
     }
@@ -81,6 +89,9 @@ impl TaskTrait for ForTask {
 }
 
 impl TaskTrait for ForkTask {
+    fn checkpoint(&self) -> bool {
+        self.checkpoint
+    }
     fn export(&self) -> ::std::option::Option<&Export> {
         self.export.as_ref()
     }
@@ -112,6 +123,9 @@ impl TaskTrait for ForkTask {
 }
 
 impl TaskTrait for RaiseTask {
+    fn checkpoint(&self) -> bool {
+        self.checkpoint
+    }
     fn export(&self) -> ::std::option::Option<&Export> {
         self.export.as_ref()
     }
@@ -146,6 +160,9 @@ impl TaskTrait for RunTask {
     fn export(&self) -> ::std::option::Option<&Export> {
         self.export.as_ref()
     }
+    fn checkpoint(&self) -> bool {
+        self.checkpoint
+    }
 
     fn if_(&self) -> ::std::option::Option<&::std::string::String> {
         self.if_.as_ref()
@@ -173,6 +190,9 @@ impl TaskTrait for RunTask {
     }
 }
 impl TaskTrait for SetTask {
+    fn checkpoint(&self) -> bool {
+        self.checkpoint
+    }
     fn export(&self) -> ::std::option::Option<&Export> {
         self.export.as_ref()
     }
@@ -203,6 +223,9 @@ impl TaskTrait for SetTask {
     }
 }
 impl TaskTrait for SwitchTask {
+    fn checkpoint(&self) -> bool {
+        self.checkpoint
+    }
     fn export(&self) -> ::std::option::Option<&Export> {
         self.export.as_ref()
     }
@@ -232,6 +255,9 @@ impl TaskTrait for SwitchTask {
     }
 }
 impl TaskTrait for TryTask {
+    fn checkpoint(&self) -> bool {
+        self.checkpoint
+    }
     fn export(&self) -> ::std::option::Option<&Export> {
         self.export.as_ref()
     }
@@ -287,6 +313,9 @@ impl TaskTrait for WaitTask {
 
     fn timeout(&self) -> ::std::option::Option<&TaskTimeout> {
         self.timeout.as_ref()
+    }
+    fn checkpoint(&self) -> bool {
+        self.checkpoint
     }
 }
 
@@ -402,6 +431,22 @@ impl TaskTrait for Task {
             Task::WaitTask(t) => t.timeout(),
         }
     }
+
+    fn checkpoint(&self) -> bool {
+        match self {
+            // Task::CallTask(t) => t.checkpoint(),
+            Task::ForkTask(t) => t.checkpoint,
+            // Task::EmitTask(t) => t.checkpoint(),
+            Task::ForTask(t) => t.checkpoint,
+            Task::DoTask(t) => t.checkpoint,
+            Task::RaiseTask(t) => t.checkpoint,
+            Task::RunTask(t) => t.checkpoint,
+            Task::SetTask(t) => t.checkpoint,
+            Task::SwitchTask(t) => t.checkpoint,
+            Task::TryTask(t) => t.checkpoint,
+            Task::WaitTask(t) => t.checkpoint,
+        }
+    }
 }
 
 //////////////////////////////////////////
@@ -424,6 +469,7 @@ impl Default for DoTask {
             output: Default::default(),
             then: Default::default(),
             timeout: Default::default(),
+            checkpoint: Default::default(),
         }
     }
 }
@@ -438,6 +484,7 @@ impl Default for SetTask {
             set: Default::default(),
             then: Default::default(),
             timeout: Default::default(),
+            checkpoint: Default::default(),
         }
     }
 }
@@ -453,6 +500,7 @@ impl Default for TryTask {
             output: Default::default(),
             then: Default::default(),
             timeout: Default::default(),
+            checkpoint: Default::default(),
         }
     }
 }

@@ -28,7 +28,7 @@ use proto::jobworkerp::data::{
     ResponseType, ResultOutputItem, Worker, WorkerData, WorkerId,
 };
 use std::collections::{HashMap, HashSet};
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub struct HybridJobAppImpl {
@@ -878,6 +878,7 @@ pub mod tests {
     use jobworkerp_runner::runner::plugins::Plugins;
     use proto::jobworkerp::data::RunnerId;
     use std::sync::Arc;
+    use std::time::Duration;
 
     const TEST_RUNNER_ID: RunnerId = RunnerId { value: 100000000 };
 
