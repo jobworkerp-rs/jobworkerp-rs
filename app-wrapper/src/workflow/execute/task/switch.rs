@@ -15,12 +15,14 @@ use crate::workflow::{
 use std::sync::Arc;
 use tokio::sync::RwLock;
 pub struct SwitchTaskExecutor {
+    workflow_context: Arc<RwLock<WorkflowContext>>,
     switch_task: SwitchTask,
 }
 
 impl SwitchTaskExecutor {
-    pub fn new(switch_task: &SwitchTask) -> Self {
+    pub fn new(workflow_context: Arc<RwLock<WorkflowContext>>, switch_task: &SwitchTask) -> Self {
         Self {
+            workflow_context,
             switch_task: switch_task.clone(),
         }
     }
@@ -35,7 +37,6 @@ impl TaskExecutorTrait<'_> for SwitchTaskExecutor {
         &self,
         _cx: Arc<opentelemetry::Context>,
         _task_id: &str,
-        workflow_context: Arc<RwLock<WorkflowContext>>,
         mut task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
         tracing::debug!("SwitchTaskExecutor: {}", _task_id);
@@ -45,7 +46,7 @@ impl TaskExecutorTrait<'_> for SwitchTaskExecutor {
         // find match case
         let mut matched = false;
         let expression = match Self::expression(
-            &*workflow_context.read().await,
+            &*self.workflow_context.read().await,
             Arc::new(task_context.clone()),
         )
         .await
@@ -171,8 +172,8 @@ mod tests {
                 ("default".to_string(), None, "default-route".to_string()),
             ]);
 
-            let executor = SwitchTaskExecutor::new(&switch_task);
             let workflow_context = Arc::new(RwLock::new(WorkflowContext::new_empty()));
+            let executor = SwitchTaskExecutor::new(workflow_context, &switch_task);
 
             let input = json!({ "number": 15 });
             let task_context = TaskContext::new(
@@ -182,12 +183,7 @@ mod tests {
             );
 
             let result = executor
-                .execute(
-                    Arc::new(Context::current()),
-                    "test_switch",
-                    workflow_context,
-                    task_context,
-                )
+                .execute(Arc::new(Context::current()), "test_switch", task_context)
                 .await
                 .unwrap();
 
@@ -217,8 +213,8 @@ mod tests {
                 ("default".to_string(), None, "default-route".to_string()),
             ]);
 
-            let executor = SwitchTaskExecutor::new(&switch_task);
             let workflow_context = Arc::new(RwLock::new(WorkflowContext::new_empty()));
+            let executor = SwitchTaskExecutor::new(workflow_context, &switch_task);
 
             let input = json!({ "number": 20 });
             let task_context = TaskContext::new(
@@ -228,12 +224,7 @@ mod tests {
             );
 
             let result = executor
-                .execute(
-                    Arc::new(Context::current()),
-                    "test_switch",
-                    workflow_context,
-                    task_context,
-                )
+                .execute(Arc::new(Context::current()), "test_switch", task_context)
                 .await
                 .unwrap();
 
@@ -263,8 +254,8 @@ mod tests {
                 ("default".to_string(), None, "default-route".to_string()),
             ]);
 
-            let executor = SwitchTaskExecutor::new(&switch_task);
             let workflow_context = Arc::new(RwLock::new(WorkflowContext::new_empty()));
+            let executor = SwitchTaskExecutor::new(workflow_context, &switch_task);
 
             let input = json!({ "number": 10 });
             let task_context = TaskContext::new(
@@ -274,12 +265,7 @@ mod tests {
             );
 
             let result = executor
-                .execute(
-                    Arc::new(Context::current()),
-                    "test_switch",
-                    workflow_context,
-                    task_context,
-                )
+                .execute(Arc::new(Context::current()), "test_switch", task_context)
                 .await
                 .unwrap();
 
@@ -306,8 +292,8 @@ mod tests {
 
             switch_task.if_ = Some("${.enabled}".to_string());
 
-            let executor = SwitchTaskExecutor::new(&switch_task);
             let workflow_context = Arc::new(RwLock::new(WorkflowContext::new_empty()));
+            let executor = SwitchTaskExecutor::new(workflow_context, &switch_task);
 
             let input = json!({ "number": 15, "enabled": true });
             let task_context = TaskContext::new(
@@ -317,12 +303,7 @@ mod tests {
             );
 
             let result = executor
-                .execute(
-                    Arc::new(Context::current()),
-                    "test_switch",
-                    workflow_context,
-                    task_context,
-                )
+                .execute(Arc::new(Context::current()), "test_switch", task_context)
                 .await
                 .unwrap();
 
@@ -351,8 +332,8 @@ mod tests {
                 ),
             ]);
 
-            let executor = SwitchTaskExecutor::new(&switch_task);
             let workflow_context = Arc::new(RwLock::new(WorkflowContext::new_empty()));
+            let executor = SwitchTaskExecutor::new(workflow_context, &switch_task);
 
             let input = json!({ "number": 10 });
             let task_context = TaskContext::new(
@@ -362,12 +343,7 @@ mod tests {
             );
 
             let result = executor
-                .execute(
-                    Arc::new(Context::current()),
-                    "test_switch",
-                    workflow_context,
-                    task_context,
-                )
+                .execute(Arc::new(Context::current()), "test_switch", task_context)
                 .await
                 .unwrap();
 

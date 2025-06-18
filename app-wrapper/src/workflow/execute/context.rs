@@ -1,16 +1,20 @@
-use crate::workflow::definition::{
-    transform::UseJqAndTemplateTransformer,
-    workflow::{self, FlowDirective, Task, WorkflowSchema},
+use crate::workflow::{
+    definition::{
+        transform::UseJqAndTemplateTransformer,
+        workflow::{self, tasks::TaskTrait, FlowDirective, Task, WorkflowSchema},
+    },
+    execute::checkpoint,
 };
 use chrono::{DateTime, FixedOffset};
 use command_utils::util::stack::StackWithHistory;
-use std::{collections::BTreeMap, fmt, ops::Deref, sync::Arc};
+use std::{collections::BTreeMap, fmt, ops::Deref, str::FromStr, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct WorkflowContext {
     pub id: Uuid,
+    pub name: String,
     #[serde(skip)]
     pub definition: Arc<workflow::WorkflowSchema>,
     pub input: Arc<serde_json::Value>,
@@ -19,6 +23,8 @@ pub struct WorkflowContext {
     pub output: Option<Arc<serde_json::Value>>,
     pub position: WorkflowPosition,
     #[serde(skip)]
+    pub checkpoint_position: Option<WorkflowPosition>,
+    #[serde(skip)]
     pub context_variables: Arc<Mutex<serde_json::Map<String, serde_json::Value>>>,
 }
 impl WorkflowContext {
@@ -26,6 +32,7 @@ impl WorkflowContext {
         workflow: &workflow::WorkflowSchema,
         input: Arc<serde_json::Value>,
         context: Arc<serde_json::Value>,
+        checkpoint_position: Option<WorkflowPosition>,
     ) -> Self {
         let uuid = Uuid::now_v7();
         let started_at = uuid
@@ -34,12 +41,14 @@ impl WorkflowContext {
             .unwrap_or_else(command_utils::util::datetime::now);
         Self {
             id: uuid,
+            name: workflow.document.name.deref().to_string(),
             definition: Arc::new(workflow.clone()),
             input,
             status: WorkflowStatus::Pending,
             started_at,
             output: None,
             position: WorkflowPosition::new(vec![]),
+            checkpoint_position,
             context_variables: context
                 .as_object()
                 .map(|o| Arc::new(Mutex::new(o.clone())))
@@ -55,12 +64,14 @@ impl WorkflowContext {
             .unwrap_or_else(command_utils::util::datetime::now);
         Self {
             id: uuid,
+            name: "default-workflow".to_string(), // TODO
             definition: Arc::new(WorkflowSchema::default()),
             input: Arc::new(serde_json::Value::Null),
             status: WorkflowStatus::Pending,
             started_at,
             output: None,
             position: WorkflowPosition::new(vec![]),
+            checkpoint_position: None,
             context_variables: Arc::new(Mutex::new(serde_json::Map::new())),
         }
     }
@@ -127,6 +138,55 @@ impl WorkflowContext {
         // overwrite
         self.context_variables.lock().await.remove(key);
     }
+    // return None if not necessary to checkpoint
+    pub async fn match_checkpoint(&self, task: &workflow::Task) -> Option<bool> {
+        if let Some(ref pos) = self.checkpoint_position {
+            if let Some(last) = pos.last_name() {
+                Some(task.task_type() == last.as_str())
+            } else {
+                // if last is not a string, then it is not a task name
+                Some(false)
+            }
+        } else {
+            None
+        }
+    }
+    pub async fn match_checkpoint_by_relative_path(
+        &self,
+        sub_path: &[serde_json::Value],
+    ) -> Option<bool> {
+        if let Some(ref pos) = self.checkpoint_position {
+            let current = self.position.full();
+            let target = pos.full();
+            // current + sub_path should match begining of target
+            if current.len() + sub_path.len() <= target.len() {
+                let mut match_found = true;
+                for (i, v) in current.iter().enumerate() {
+                    if target.get(i).is_none() || target[i] != *v {
+                        match_found = false;
+                        break;
+                    }
+                }
+                if match_found {
+                    // check if the rest of the target matches
+                    for (i, v) in target[current.len()..].iter().enumerate() {
+                        if i < sub_path.len() && v != &sub_path[i] {
+                            return Some(false);
+                        }
+                    }
+                    Some(true)
+                } else {
+                    Some(false)
+                }
+            } else {
+                // current + sub_path is longer than target, so no match
+                Some(false)
+            }
+        } else {
+            // no checkpoint position, so no match
+            None
+        }
+    }
 }
 // not implement: validation, secret, auth, event
 #[derive(Debug, Clone)]
@@ -163,6 +223,24 @@ impl TaskContext {
             started_at: command_utils::util::datetime::now(),
             completed_at: None,
             flow_directive: Then::Continue,
+            position: Arc::new(RwLock::new(WorkflowPosition::new(vec![]))),
+        }
+    }
+    pub fn new_from_cp(
+        task: Option<Arc<workflow::Task>>,
+        checkpoint: &checkpoint::TaskCheckPointContext,
+    ) -> Self {
+        Self {
+            definition: task.clone(),
+            raw_input: checkpoint.input.clone(),
+            input: checkpoint.input.clone(),
+            raw_output: checkpoint.output.clone(),
+            output: checkpoint.output.clone(),
+            context_variables: Arc::new(Mutex::new((*checkpoint.context_variables).clone())),
+            started_at: command_utils::util::datetime::now(),
+            completed_at: None,
+            flow_directive: Then::from_str(checkpoint.flow_directive.as_str())
+                .unwrap_or(Then::Continue),
             position: Arc::new(RwLock::new(WorkflowPosition::new(vec![]))),
         }
     }
@@ -331,6 +409,28 @@ impl Then {
         }
     }
 }
+impl FromStr for Then {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "continue" => Ok(Then::Continue),
+            "exit" => Ok(Then::Exit),
+            "end" => Ok(Then::End),
+            _ => Ok(Then::TaskName(s.to_string())),
+        }
+    }
+}
+impl fmt::Display for Then {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Then::Continue => write!(f, "continue"),
+            Then::Exit => write!(f, "exit"),
+            Then::End => write!(f, "end"),
+            Then::TaskName(name) => write!(f, "{}", name),
+        }
+    }
+}
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 pub enum WorkflowStatus {
@@ -384,7 +484,7 @@ impl From<jobworkerp_runner::jobworkerp::runner::workflow_result::WorkflowStatus
     }
 }
 
-#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize, PartialEq)]
 pub struct WorkflowPosition {
     pub path: StackWithHistory<serde_json::Value>,
 }
@@ -394,6 +494,49 @@ impl WorkflowPosition {
         Self {
             path: StackWithHistory::new_with(path),
         }
+    }
+    /// Parse a JSON Pointer string (RFC 6901) into WorkflowPosition
+    /// Each segment is converted to serde_json::Value (String or Number)
+    pub fn parse(path: &str) -> anyhow::Result<Self> {
+        if !path.starts_with('/') && !path.is_empty() {
+            return Err(anyhow::anyhow!(
+                "JSON pointer must start with '/' or be empty"
+            ));
+        }
+        fn unescape_to_value(segment: &str) -> anyhow::Result<serde_json::Value> {
+            let mut s = String::new();
+            let mut chars = segment.chars().peekable();
+            while let Some(c) = chars.next() {
+                if c == '~' {
+                    match chars.next() {
+                        Some('0') => s.push('~'),
+                        Some('1') => s.push('/'),
+                        Some(other) => {
+                            s.push('~');
+                            s.push(other);
+                        }
+                        None => s.push('~'),
+                    }
+                } else {
+                    s.push(c);
+                }
+            }
+            // Try to parse as number, otherwise as string
+            if let Ok(n) = s.parse::<i64>() {
+                Ok(serde_json::Value::Number(n.into()))
+            } else {
+                Ok(serde_json::Value::String(s))
+            }
+        }
+        let segments = if path.is_empty() {
+            Vec::new()
+        } else {
+            path[1..]
+                .split('/')
+                .map(unescape_to_value)
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        Ok(Self::new(segments))
     }
     pub fn push(&mut self, name: String) {
         self.path.push(serde_json::Value::String(name));
@@ -408,6 +551,40 @@ impl WorkflowPosition {
     }
     pub fn current(&self) -> Option<&serde_json::Value> {
         self.path.last()
+    }
+    pub fn last(&self) -> Option<&serde_json::Value> {
+        self.path.last()
+    }
+    pub fn last_name(&self) -> Option<String> {
+        self.path.last().and_then(|v| {
+            if let serde_json::Value::String(s) = v {
+                Some(s.clone())
+            } else {
+                None
+            }
+        })
+    }
+    pub fn full(&self) -> Vec<serde_json::Value> {
+        self.path.snapshot().to_vec()
+    }
+    // return the path relative to base_path
+    // return empty vector if self.path is equal to base_path
+    // if base_path is not a prefix of self.path, return None
+    pub fn relative_path(&self, base_path: &[serde_json::Value]) -> Option<Vec<serde_json::Value>> {
+        if self.path.len() < base_path.len() {
+            return None; // self.path is shorter than base_path
+        }
+        // return the path relative to base_path
+        let mut relative = Vec::new();
+        for (i, v) in self.path.snapshot().iter().enumerate() {
+            if i < base_path.len() && v != &base_path[i] {
+                return None;
+            } else if i >= base_path.len() {
+                // only push if we are beyond the base_path
+                relative.push(v.clone());
+            }
+        }
+        Some(relative)
     }
     pub fn n_prev(&self, n: usize) -> Vec<serde_json::Value> {
         self.path.state_before_operations(n)
@@ -425,5 +602,303 @@ impl WorkflowPosition {
 impl std::fmt::Display for WorkflowPosition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.as_json_pointer())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_empty() {
+        let pos = WorkflowPosition::parse("").unwrap();
+        assert_eq!(pos.path.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_simple() {
+        let mut pos = WorkflowPosition::parse("/foo/bar").unwrap();
+        assert_eq!(
+            pos.path.pop(),
+            Some(serde_json::Value::String("bar".to_string()))
+        );
+        assert_eq!(
+            pos.path.pop(),
+            Some(serde_json::Value::String("foo".to_string()))
+        );
+        assert_eq!(pos.path.pop(), None);
+    }
+
+    #[test]
+    fn test_parse_number() {
+        let mut pos = WorkflowPosition::parse("/foo/42").unwrap();
+        assert_eq!(pos.path.pop(), Some(serde_json::Value::Number(42.into())));
+        assert_eq!(
+            pos.path.pop(),
+            Some(serde_json::Value::String("foo".to_string()))
+        );
+        assert_eq!(pos.path.pop(), None);
+    }
+
+    #[test]
+    fn test_parse_escaped() {
+        // ~0 -> ~, ~1 -> /
+        let mut pos = WorkflowPosition::parse("/~0foo/~1bar/~0~1baz").unwrap();
+        assert_eq!(
+            pos.path.pop(),
+            Some(serde_json::Value::String("~/baz".to_string()))
+        );
+        assert_eq!(
+            pos.path.pop(),
+            Some(serde_json::Value::String("/bar".to_string()))
+        );
+        assert_eq!(
+            pos.path.pop(),
+            Some(serde_json::Value::String("~foo".to_string()))
+        );
+        assert_eq!(pos.path.pop(), None);
+    }
+
+    #[test]
+    fn test_parse_mixed() {
+        let mut pos = WorkflowPosition::parse("/foo/0/~01/~10/~0~1").unwrap();
+        assert_eq!(
+            pos.path.pop(),
+            Some(serde_json::Value::String("~/".to_string()))
+        );
+        assert_eq!(
+            pos.path.pop(),
+            Some(serde_json::Value::String("/0".to_string()))
+        );
+        assert_eq!(
+            pos.path.pop(),
+            Some(serde_json::Value::String("~1".to_string()))
+        );
+        assert_eq!(pos.path.pop(), Some(serde_json::Value::Number(0.into())));
+        assert_eq!(
+            pos.path.pop(),
+            Some(serde_json::Value::String("foo".to_string()))
+        );
+        assert_eq!(pos.path.pop(), None);
+    }
+
+    #[test]
+    fn test_parse_invalid() {
+        // not starting with / and not empty
+        assert!(WorkflowPosition::parse("foo/bar").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_match_checkpoint_by_relative_path_no_checkpoint() {
+        let mut context = WorkflowContext::new_empty();
+        context.checkpoint_position = None;
+
+        let sub_path = vec![
+            serde_json::Value::String("task1".to_string()),
+            serde_json::Value::Number(0.into()),
+        ];
+
+        let result = context.match_checkpoint_by_relative_path(&sub_path).await;
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn test_match_checkpoint_by_relative_path_exact_match() {
+        let mut context = WorkflowContext::new_empty();
+        context.position = WorkflowPosition::new(vec![
+            serde_json::Value::String("workflow".to_string()),
+            serde_json::Value::String("step1".to_string()),
+        ]);
+        context.checkpoint_position = Some(WorkflowPosition::new(vec![
+            serde_json::Value::String("workflow".to_string()),
+            serde_json::Value::String("step1".to_string()),
+            serde_json::Value::String("task1".to_string()),
+            serde_json::Value::Number(0.into()),
+        ]));
+
+        let sub_path = vec![
+            serde_json::Value::String("task1".to_string()),
+            serde_json::Value::Number(0.into()),
+        ];
+
+        let result = context.match_checkpoint_by_relative_path(&sub_path).await;
+        assert_eq!(result, Some(true));
+        // check relative path
+        let relative_path = context
+            .checkpoint_position
+            .as_ref()
+            .unwrap()
+            .relative_path(&context.position.full())
+            .unwrap();
+        assert_eq!(relative_path, sub_path);
+    }
+
+    #[tokio::test]
+    async fn test_match_checkpoint_by_relative_path_partial_match() {
+        let mut context = WorkflowContext::new_empty();
+        context.position = WorkflowPosition::new(vec![
+            serde_json::Value::String("workflow".to_string()),
+            serde_json::Value::String("step1".to_string()),
+        ]);
+        context.checkpoint_position = Some(WorkflowPosition::new(vec![
+            serde_json::Value::String("workflow".to_string()),
+            serde_json::Value::String("step1".to_string()),
+            serde_json::Value::String("task1".to_string()),
+            serde_json::Value::Number(0.into()),
+            serde_json::Value::String("subtask".to_string()),
+        ]));
+
+        let sub_path = vec![
+            serde_json::Value::String("task1".to_string()),
+            serde_json::Value::Number(0.into()),
+        ];
+
+        let result = context.match_checkpoint_by_relative_path(&sub_path).await;
+        assert_eq!(result, Some(true));
+
+        // check relative path same position
+        let relative_path = context
+            .position
+            .relative_path(&context.position.full())
+            .unwrap();
+        assert_eq!(relative_path, Vec::<serde_json::Value>::new());
+    }
+
+    #[tokio::test]
+    async fn test_match_checkpoint_by_relative_path_mismatch() {
+        let mut context = WorkflowContext::new_empty();
+        context.position = WorkflowPosition::new(vec![
+            serde_json::Value::String("workflow".to_string()),
+            serde_json::Value::String("step1".to_string()),
+        ]);
+        context.checkpoint_position = Some(WorkflowPosition::new(vec![
+            serde_json::Value::String("workflow".to_string()),
+            serde_json::Value::String("step1".to_string()),
+            serde_json::Value::String("task2".to_string()), // different task
+            serde_json::Value::Number(0.into()),
+        ]));
+
+        let sub_path = vec![
+            serde_json::Value::String("task1".to_string()),
+            serde_json::Value::Number(0.into()),
+        ];
+
+        let result = context.match_checkpoint_by_relative_path(&sub_path).await;
+        assert_eq!(result, Some(false));
+    }
+
+    #[tokio::test]
+    async fn test_match_checkpoint_by_relative_path_current_position_mismatch() {
+        let mut context = WorkflowContext::new_empty();
+        context.position = WorkflowPosition::new(vec![
+            serde_json::Value::String("workflow".to_string()),
+            serde_json::Value::String("step2".to_string()), // different step
+        ]);
+        context.checkpoint_position = Some(WorkflowPosition::new(vec![
+            serde_json::Value::String("workflow".to_string()),
+            serde_json::Value::String("step1".to_string()),
+            serde_json::Value::String("task1".to_string()),
+            serde_json::Value::Number(0.into()),
+        ]));
+
+        let sub_path = vec![
+            serde_json::Value::String("task1".to_string()),
+            serde_json::Value::Number(0.into()),
+        ];
+
+        let result = context.match_checkpoint_by_relative_path(&sub_path).await;
+        assert_eq!(result, Some(false));
+
+        // check relative path same position
+        let relative_path = context
+            .checkpoint_position
+            .as_ref()
+            .unwrap()
+            .relative_path(&context.position.full());
+        assert_eq!(relative_path, None);
+    }
+
+    #[tokio::test]
+    async fn test_match_checkpoint_by_relative_path_longer_than_target() {
+        let mut context = WorkflowContext::new_empty();
+        context.position = WorkflowPosition::new(vec![
+            serde_json::Value::String("workflow".to_string()),
+            serde_json::Value::String("step1".to_string()),
+        ]);
+        context.checkpoint_position = Some(WorkflowPosition::new(vec![
+            serde_json::Value::String("workflow".to_string()),
+            serde_json::Value::String("step1".to_string()),
+            serde_json::Value::String("task1".to_string()),
+        ]));
+
+        let sub_path = vec![
+            serde_json::Value::String("task1".to_string()),
+            serde_json::Value::Number(0.into()),
+            serde_json::Value::String("extra".to_string()), // longer than target
+        ];
+
+        let result = context.match_checkpoint_by_relative_path(&sub_path).await;
+        assert_eq!(result, Some(false));
+    }
+
+    #[tokio::test]
+    async fn test_match_checkpoint_by_relative_path_empty_sub_path() {
+        let mut context = WorkflowContext::new_empty();
+        context.position = WorkflowPosition::new(vec![
+            serde_json::Value::String("workflow".to_string()),
+            serde_json::Value::String("step1".to_string()),
+        ]);
+        context.checkpoint_position = Some(WorkflowPosition::new(vec![
+            serde_json::Value::String("workflow".to_string()),
+            serde_json::Value::String("step1".to_string()),
+        ]));
+
+        let sub_path = vec![];
+
+        let result = context.match_checkpoint_by_relative_path(&sub_path).await;
+        assert_eq!(result, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_match_checkpoint_by_relative_path_empty_current_position() {
+        let mut context = WorkflowContext::new_empty();
+        context.position = WorkflowPosition::new(vec![]);
+        context.checkpoint_position = Some(WorkflowPosition::new(vec![
+            serde_json::Value::String("task1".to_string()),
+            serde_json::Value::Number(0.into()),
+        ]));
+
+        let sub_path = vec![
+            serde_json::Value::String("task1".to_string()),
+            serde_json::Value::Number(0.into()),
+        ];
+
+        let result = context.match_checkpoint_by_relative_path(&sub_path).await;
+        assert_eq!(result, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_match_checkpoint_by_relative_path_mixed_types() {
+        let mut context = WorkflowContext::new_empty();
+        context.position = WorkflowPosition::new(vec![
+            serde_json::Value::String("workflow".to_string()),
+            serde_json::Value::Number(1.into()),
+        ]);
+        context.checkpoint_position = Some(WorkflowPosition::new(vec![
+            serde_json::Value::String("workflow".to_string()),
+            serde_json::Value::Number(1.into()),
+            serde_json::Value::String("task".to_string()),
+            serde_json::Value::Number(42.into()),
+            serde_json::Value::Bool(true),
+        ]));
+
+        let sub_path = vec![
+            serde_json::Value::String("task".to_string()),
+            serde_json::Value::Number(42.into()),
+            serde_json::Value::Bool(true),
+        ];
+
+        let result = context.match_checkpoint_by_relative_path(&sub_path).await;
+        assert_eq!(result, Some(true));
     }
 }

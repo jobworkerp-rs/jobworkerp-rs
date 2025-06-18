@@ -2,7 +2,7 @@ use super::super::StreamTaskExecutorTrait;
 use crate::workflow::{
     definition::{
         transform::UseJqAndTemplateTransformer,
-        workflow::{self, Task},
+        workflow::{self, tasks::TaskTrait, Task},
     },
     execute::{
         context::{TaskContext, Then, WorkflowContext, WorkflowStatus},
@@ -19,7 +19,7 @@ use indexmap::IndexMap;
 use infra_utils::infra::{net::reqwest, trace::Tracing};
 use jobworkerp_base::APP_WORKER_NAME;
 use opentelemetry::trace::TraceContextExt;
-use std::{collections::HashMap, pin::Pin, sync::Arc};
+use std::{collections::HashMap, pin::Pin, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 
 // for DebugStub
@@ -28,6 +28,8 @@ type CheckPointRepo =
 
 #[derive(DebugStub, Clone)]
 pub struct DoTaskStreamExecutor {
+    workflow_context: Arc<RwLock<WorkflowContext>>,
+    default_timeout: Duration, // default timeout for tasks
     // for secret metadata
     #[debug_stub = "HashMap<String, String>"]
     metadata: Arc<HashMap<String, String>>,
@@ -46,7 +48,10 @@ impl Tracing for DoTaskStreamExecutor {}
 impl TaskTracing for DoTaskStreamExecutor {}
 
 impl DoTaskStreamExecutor {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
+        workflow_context: Arc<RwLock<WorkflowContext>>,
+        default_timeout: Duration,
         metadata: Arc<HashMap<String, String>>,
         task: workflow::DoTask,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
@@ -57,6 +62,8 @@ impl DoTaskStreamExecutor {
         execution_id: Option<Arc<ExecutionId>>,
     ) -> Self {
         Self {
+            workflow_context,
+            default_timeout,
             metadata,
             task,
             job_executor_wrapper,
@@ -65,12 +72,61 @@ impl DoTaskStreamExecutor {
             execution_id,
         }
     }
+    async fn find_checkpoint_task(
+        &self,
+        parent_task_context: &TaskContext,
+        task_map: Arc<IndexMap<String, (u32, Arc<Task>)>>,
+    ) -> Option<u32> {
+        let checkpoint_pos = self
+            .workflow_context
+            .read()
+            .await
+            .checkpoint_position
+            .clone();
+        if let Some(pos) = checkpoint_pos {
+            let relative_path =
+                pos.relative_path(&parent_task_context.position.read().await.full());
+            if let Some(rpath) = relative_path {
+                // Check if the relative path is valid
+                if rpath.len() < 2 {
+                    tracing::warn!(
+                        "Invalid checkpoint position: {:?}, ignore checkpoint",
+                        &rpath
+                    );
+                    return None;
+                }
+                // Find the task in the task map
+                for (name, (index, _task)) in task_map.iter() {
+                    if rpath[0]
+                        == serde_json::value::Value::Number(serde_json::Number::from(*index))
+                        && rpath[1] == serde_json::value::Value::String(name.clone())
+                    {
+                        return Some(*index);
+                    }
+                }
+                // If the task is not found, log a warning
+                tracing::warn!(
+                    "No task found for checkpoint position: {:?}, ignore checkpoint",
+                    &rpath
+                );
+                None
+            } else {
+                tracing::warn!(
+                    "No relative path '{:?}' from '{}' found for checkpoint, ignoring.",
+                    &relative_path,
+                    &pos.as_json_pointer()
+                );
+                None
+            }
+        } else {
+            None // no checkpoint position
+        }
+    }
 
     fn execute_task_stream(
         &self,
         cx: Arc<opentelemetry::Context>,
         task_map: Arc<IndexMap<String, (u32, Arc<Task>)>>,
-        workflow_context: Arc<RwLock<WorkflowContext>>,
         parent_task_context: TaskContext,
     ) -> Pin<Box<dyn futures::Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send + '_>>
     {
@@ -83,9 +139,30 @@ impl DoTaskStreamExecutor {
             let mut iter = task_map.iter();
             let mut current_pair = iter.next().map(|(k, v)| (k.clone(), v.clone()));
             // position name will be added in execute_task_stream
-            prev.add_position_name("do".to_string()).await;
+            prev.add_position_name(self.task.task_type().to_string()).await;
+            let pos_opt = if self.checkpoint_repository.is_some() {
+                // Find the checkpoint position
+                self.find_checkpoint_task(&prev, task_map.clone()).await
+            } else {
+                None // no checkpoint repository
+            };
 
             while let Some((name, (pos, task))) = current_pair {
+                if let Some(p) = pos_opt {
+                // skip for checkpoint
+                    if pos < p {
+                        tracing::warn!(
+                            "Skipping task {} at position {}, expected position {}",
+                            name,
+                            pos,
+                            pos_opt.unwrap_or_default()
+                        );
+                        current_pair = iter.next().map(|(k, v)| (k.clone(), v.clone()));
+                        continue;
+                    }
+                } else {
+                    tracing::info!("Starting from the beginning of task list.");
+                }
                 let span = Self::start_child_otel_span(
                     &cx,
                     APP_WORKER_NAME,
@@ -99,7 +176,7 @@ impl DoTaskStreamExecutor {
 
                 prev.add_position_index(pos).await;
                 // Stop if not running
-                if workflow_context.read().await.status != WorkflowStatus::Running {
+                if self.workflow_context.read().await.status != WorkflowStatus::Running {
                     prev.remove_position().await;
                     break;
                 }
@@ -108,6 +185,8 @@ impl DoTaskStreamExecutor {
 
                 tracing::info!("Executing task: {}", &name);
                 let mut stream = TaskExecutor::new(
+                    self.workflow_context.clone(),
+                    self.default_timeout,
                     job_exec.clone(),
                     http_client.clone(),
                     self.checkpoint_repository.clone(),
@@ -117,7 +196,6 @@ impl DoTaskStreamExecutor {
                 )
                 .execute(
                     ccx.clone(),
-                    workflow_context.clone(),
                     Arc::new(prev.clone()),
                     self.execution_id.clone(),
                 )
@@ -181,7 +259,7 @@ impl DoTaskStreamExecutor {
                     }
                     Then::End => {
                         // End of workflow
-                        workflow_context.write().await.status = WorkflowStatus::Completed;
+                        self.workflow_context.write().await.status = WorkflowStatus::Completed;
                         None
                     }
                     Then::Exit => {
@@ -216,7 +294,6 @@ impl StreamTaskExecutorTrait<'_> for DoTaskStreamExecutor {
         &self,
         cx: Arc<opentelemetry::Context>,
         task_name: Arc<String>,
-        workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
     ) -> impl futures::Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send {
         let task_context = task_context.clone();
@@ -234,7 +311,7 @@ impl StreamTaskExecutorTrait<'_> for DoTaskStreamExecutor {
             },
         ));
 
-        self.execute_task_stream(cx, task_map, workflow_context, task_context)
+        self.execute_task_stream(cx, task_map, task_context)
     }
 }
 
@@ -328,10 +405,13 @@ mod tests {
                 &workflow,
                 input.clone(),
                 context,
+                None,
             )));
 
             let do_task = workflow.create_do_task(Arc::new(HashMap::new()));
             let executor = DoTaskStreamExecutor::new(
+                workflow_context.clone(),
+                Duration::from_secs(1200), // 20 minutes
                 Arc::new(HashMap::new()),
                 do_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),
@@ -350,7 +430,6 @@ mod tests {
             let mut task_stream = executor.execute_stream(
                 Arc::new(opentelemetry::Context::current()),
                 Arc::new("test".to_string()),
-                workflow_context,
                 task_context,
             );
 
@@ -474,10 +553,13 @@ mod tests {
                 &workflow,
                 input.clone(),
                 context,
+                None,
             )));
 
             let do_task = workflow.create_do_task(Arc::new(HashMap::new()));
             let executor = DoTaskStreamExecutor::new(
+                workflow_context.clone(),
+                Duration::from_secs(1200), // 20 minutes
                 Arc::new(HashMap::new()),
                 do_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),
@@ -496,7 +578,6 @@ mod tests {
             let mut task_stream = executor.execute_stream(
                 Arc::new(opentelemetry::Context::current()),
                 Arc::new("test".to_string()),
-                workflow_context,
                 task_context,
             );
 
@@ -585,10 +666,13 @@ mod tests {
                     &exit_workflow,
                     input.clone(),
                     context.clone(),
+                    None,
                 )));
 
                 let do_task = exit_workflow.create_do_task(Arc::new(HashMap::new()));
                 let executor = DoTaskStreamExecutor::new(
+                    workflow_context.clone(),
+                    Duration::from_secs(1200), // 20 minutes
                     Arc::new(HashMap::new()),
                     do_task,
                     Arc::new(JobExecutorWrapper::new(app_module.clone())),
@@ -607,7 +691,6 @@ mod tests {
                 let mut task_stream = executor.execute_stream(
                     Arc::new(opentelemetry::Context::current()),
                     Arc::new("test".to_string()),
-                    workflow_context.clone(),
                     task_context,
                 );
 
@@ -658,10 +741,13 @@ mod tests {
                     &end_workflow,
                     input.clone(),
                     context.clone(),
+                    None,
                 )));
 
                 let do_task = end_workflow.create_do_task(Arc::new(HashMap::new()));
                 let executor = DoTaskStreamExecutor::new(
+                    workflow_context.clone(),
+                    Duration::from_secs(1200), // 20 minutes
                     Arc::new(HashMap::new()),
                     do_task,
                     Arc::new(JobExecutorWrapper::new(app_module.clone())),
@@ -680,7 +766,6 @@ mod tests {
                 let mut task_stream = executor.execute_stream(
                     Arc::new(opentelemetry::Context::current()),
                     Arc::new("test".to_string()),
-                    workflow_context.clone(),
                     task_context,
                 );
 
@@ -801,10 +886,13 @@ mod tests {
                 &workflow,
                 input.clone(),
                 context,
+                None,
             )));
 
             let do_task = workflow.create_do_task(Arc::new(HashMap::new()));
             let executor = DoTaskStreamExecutor::new(
+                workflow_context.clone(),
+                Duration::from_secs(1200), // 20 minutes
                 Arc::new(HashMap::new()),
                 do_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),
@@ -823,7 +911,6 @@ mod tests {
             let mut task_stream = executor.execute_stream(
                 Arc::new(opentelemetry::Context::current()),
                 Arc::new("test".to_string()),
-                workflow_context.clone(),
                 task_context,
             );
 

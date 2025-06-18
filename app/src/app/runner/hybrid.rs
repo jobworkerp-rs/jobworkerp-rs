@@ -264,7 +264,7 @@ impl UseRdbRunnerRepository for HybridRunnerAppImpl {
 
 impl UseMokaCache<Arc<String>, Vec<RunnerWithSchema>> for HybridRunnerAppImpl {
     fn cache(&self) -> &Cache<Arc<std::string::String>, Vec<RunnerWithSchema>> {
-        &self.async_cache.cache()
+        self.async_cache.cache()
     }
 }
 impl RunnerCacheHelper for HybridRunnerAppImpl {}

@@ -51,5 +51,6 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+app-wrapper = { path = "../app-wrapper", features = ["test-utils"] }
 app = { path = "../app", features = ["test-utils"] }
 infra = { path = "../infra", features = ["test-utils"] }

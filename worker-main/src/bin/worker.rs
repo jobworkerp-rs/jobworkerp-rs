@@ -45,10 +45,22 @@ pub async fn main() -> Result<()> {
 
     let config_module = Arc::new(AppConfigModule::new_by_env(runner_spec_factory));
     let app_module = Arc::new(AppModule::new_by_env(config_module).await?);
+    let app_wrapper_module = Arc::new(app_wrapper::modules::AppWrapperModule::new_by_env(
+        app_module
+            .repositories
+            .redis_module
+            .as_ref()
+            .map(|r| r.redis_pool),
+    ));
+
     // reload jobs from rdb (if necessary) on start worker
     app_module.on_start_worker().await?;
 
-    let runner_factory = Arc::new(RunnerFactory::new(app_module.clone(), mcp_clients));
+    let runner_factory = Arc::new(RunnerFactory::new(
+        app_module.clone(),
+        app_wrapper_module,
+        mcp_clients,
+    ));
     let jh = tokio::spawn(jobworkerp_main::start_worker(
         app_module,
         runner_factory,

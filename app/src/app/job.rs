@@ -105,11 +105,7 @@ pub trait JobApp: fmt::Debug + Send + Sync {
     where
         Self: Send + 'static;
 
-    async fn find_job_list(
-        &self,
-        limit: Option<&i32>,
-        offset: Option<&i64>,
-    ) -> Result<Vec<Job>>
+    async fn find_job_list(&self, limit: Option<&i32>, offset: Option<&i64>) -> Result<Vec<Job>>
     where
         Self: Send + 'static;
 
