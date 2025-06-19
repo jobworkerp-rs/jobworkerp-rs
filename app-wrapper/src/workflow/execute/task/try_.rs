@@ -14,10 +14,12 @@ use crate::workflow::{
     execute::expression::UseExpression,
 };
 use infra_utils::infra::net::reqwest;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tokio::{sync::RwLock, time::Instant};
 
 pub struct TryTaskExecutor {
+    workflow_context: Arc<RwLock<WorkflowContext>>,
+    default_timeout: Duration,
     task: workflow::TryTask,
     job_executors: Arc<JobExecutorWrapper>,
     http_client: reqwest::ReqwestClient,
@@ -28,7 +30,10 @@ pub struct TryTaskExecutor {
     metadata: Arc<std::collections::HashMap<String, String>>,
 }
 impl TryTaskExecutor {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
+        workflow_context: Arc<RwLock<WorkflowContext>>,
+        default_timeout: Duration,
         task: workflow::TryTask,
         job_executors: Arc<JobExecutorWrapper>,
         http_client: reqwest::ReqwestClient,
@@ -39,6 +44,8 @@ impl TryTaskExecutor {
         metadata: Arc<std::collections::HashMap<String, String>>,
     ) -> Self {
         Self {
+            workflow_context,
+            default_timeout,
             task,
             job_executors,
             http_client,
@@ -59,7 +66,6 @@ impl TaskExecutorTrait<'_> for TryTaskExecutor {
         &self,
         cx: Arc<opentelemetry::Context>,
         task_name: &str,
-        workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
     ) -> impl std::future::Future<Output = Result<TaskContext, Box<workflow::Error>>> + Send {
         async move {
@@ -75,7 +81,6 @@ impl TaskExecutorTrait<'_> for TryTaskExecutor {
                         cx.clone(),
                         task_name,
                         &self.task.try_,
-                        workflow_context.clone(),
                         task_context.clone(), // XXX now clone (heavy)
                     )
                     .await
@@ -87,7 +92,7 @@ impl TaskExecutorTrait<'_> for TryTaskExecutor {
                         let catch_config = &self.task.catch;
                         match Self::execute_catch_block(
                             catch_config,
-                            workflow_context.clone(),
+                            self.workflow_context.clone(),
                             task_context,
                             error,
                         )
@@ -128,7 +133,7 @@ impl TaskExecutorTrait<'_> for TryTaskExecutor {
             // `do` in the end of retries
             if let Some(do_tasks) = &self.task.catch.do_ {
                 // TODO return task_context in workflow::Error for catch block (to error recovering)
-                self.execute_task_list(cx, "[try_do]", do_tasks, workflow_context, res.clone()) // XXX clone
+                self.execute_task_list(cx, "[try_do]", do_tasks, res.clone()) // XXX clone
                     .await
             } else {
                 // go out of 'try'
@@ -145,7 +150,6 @@ impl TryTaskExecutor {
         cx: Arc<opentelemetry::Context>,
         task_name: &str,
         task_list: &workflow::TaskList,
-        workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
         use futures::StreamExt;
@@ -177,6 +181,8 @@ impl TryTaskExecutor {
             ..Default::default()
         };
         let task_executor = TaskExecutor::new(
+            self.workflow_context.clone(),
+            self.default_timeout,
             self.job_executors.clone(),
             self.http_client.clone(),
             self.checkpoint_repository.clone(),
@@ -186,12 +192,7 @@ impl TryTaskExecutor {
         );
 
         let mut stream = task_executor
-            .execute(
-                cx,
-                workflow_context.clone(),
-                Arc::new(task_context),
-                self.execution_id.clone(),
-            )
+            .execute(cx, Arc::new(task_context), self.execution_id.clone())
             .await;
         let mut last_context = None;
         while let Some(task_context) = stream.next().await {
@@ -501,6 +502,7 @@ mod tests {
             &flow,
             Arc::new(serde_json::Value::Object(Default::default())),
             Arc::new(serde_json::Value::Object(Default::default())),
+            None,
         )));
         workflow_context.write().await.status = WorkflowStatus::Running;
         let task_context = TaskContext::new(
@@ -510,6 +512,8 @@ mod tests {
         );
 
         let try_executor = TryTaskExecutor::new(
+            workflow_context.clone(),
+            Duration::from_secs(60), // default timeout
             try_task.clone(),
             job_executors.clone(),
             http_client,
@@ -796,13 +800,11 @@ mod tests {
                 ..Default::default()
             };
 
-            let (executor, workflow_context, task_context) = setup_test(Some(try_task)).await;
+            let (executor, _workflow_context, task_context) = setup_test(Some(try_task)).await;
 
             // Execute TryTaskExecutor
             let cx = Arc::new(opentelemetry::Context::current());
-            let result = executor
-                .execute(cx, "test-task", workflow_context, task_context)
-                .await;
+            let result = executor.execute(cx, "test-task", task_context).await;
 
             assert!(result.is_ok(), "TryTask should succeed");
             let context = result.unwrap();

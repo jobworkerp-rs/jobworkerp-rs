@@ -1,7 +1,7 @@
-use std::sync::Arc;
-
 use crate::workflow::execute::context::{TaskContext, WorkflowContext, WorkflowPosition};
-use uuid::Uuid;
+use anyhow::Result;
+use jobworkerp_runner::jobworkerp::runner::{inline_workflow_args, reusable_workflow_args};
+use std::sync::Arc;
 
 pub mod repository;
 
@@ -20,18 +20,76 @@ impl CheckPointContext {
             position,
         }
     }
+    pub fn from_inline(checkpoint: &inline_workflow_args::Checkpoint) -> Result<Self> {
+        match checkpoint.data.as_ref() {
+            Some(d) => Ok(CheckPointContext {
+                workflow: d
+                    .workflow
+                    .as_ref()
+                    .map(|w| WorkflowCheckPointContext {
+                        name: w.name.clone(),
+                        input: serde_json::from_str(&w.input).unwrap_or_default(),
+                        context_variables: serde_json::from_str(&w.context_variables)
+                            .unwrap_or_default(),
+                    })
+                    .ok_or(anyhow::anyhow!("Workflow context is missing"))?,
+                task: d
+                    .task
+                    .as_ref()
+                    .map(|t| TaskCheckPointContext {
+                        input: serde_json::from_str(&t.input).unwrap_or_default(),
+                        output: serde_json::from_str(&t.output).unwrap_or_default(),
+                        context_variables: serde_json::from_str(&t.context_variables)
+                            .unwrap_or_default(),
+                        flow_directive: t.flow_directive.clone(),
+                    })
+                    .ok_or(anyhow::anyhow!("Task context is missing"))?,
+                position: WorkflowPosition::parse(&checkpoint.position)?,
+            }),
+            None => Err(anyhow::anyhow!("Checkpoint data is missing")),
+        }
+    }
+    pub fn from_reusable(checkpoint: &reusable_workflow_args::Checkpoint) -> Result<Self> {
+        match checkpoint.data.as_ref() {
+            Some(d) => Ok(CheckPointContext {
+                workflow: d
+                    .workflow
+                    .as_ref()
+                    .map(|w| WorkflowCheckPointContext {
+                        name: w.name.clone(),
+                        input: serde_json::from_str(&w.input).unwrap_or_default(),
+                        context_variables: serde_json::from_str(&w.context_variables)
+                            .unwrap_or_default(),
+                    })
+                    .ok_or(anyhow::anyhow!("Workflow context is missing"))?,
+                task: d
+                    .task
+                    .as_ref()
+                    .map(|t| TaskCheckPointContext {
+                        input: serde_json::from_str(&t.input).unwrap_or_default(),
+                        output: serde_json::from_str(&t.output).unwrap_or_default(),
+                        context_variables: serde_json::from_str(&t.context_variables)
+                            .unwrap_or_default(),
+                        flow_directive: t.flow_directive.clone(),
+                    })
+                    .ok_or(anyhow::anyhow!("Task context is missing"))?,
+                position: WorkflowPosition::parse(&checkpoint.position)?,
+            }),
+            None => Err(anyhow::anyhow!("Checkpoint data is missing")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct WorkflowCheckPointContext {
-    pub id: Uuid,
+    pub name: String,
     pub input: Arc<serde_json::Value>,
     pub context_variables: Arc<serde_json::Map<String, serde_json::Value>>,
 }
 impl WorkflowCheckPointContext {
     pub async fn new(workflow: &WorkflowContext) -> Self {
         Self {
-            id: workflow.id.clone(),
+            name: workflow.name.clone(),
             input: workflow.input.clone(),
             context_variables: Arc::new(workflow.context_variables.lock().await.clone()),
         }
@@ -42,6 +100,7 @@ pub struct TaskCheckPointContext {
     pub input: Arc<serde_json::Value>,
     pub output: Arc<serde_json::Value>,
     pub context_variables: Arc<serde_json::Map<String, serde_json::Value>>,
+    pub flow_directive: String,
 }
 impl TaskCheckPointContext {
     pub async fn new(task: &TaskContext) -> Self {
@@ -49,6 +108,7 @@ impl TaskCheckPointContext {
             input: task.input.clone(),
             output: task.output.clone(),
             context_variables: Arc::new(task.context_variables.lock().await.clone()),
+            flow_directive: task.flow_directive.to_string(),
         }
     }
 }

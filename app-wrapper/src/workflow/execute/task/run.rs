@@ -8,16 +8,17 @@ use crate::workflow::{
         context::{TaskContext, WorkflowContext},
         expression::UseExpression,
         job::{JobExecutorWrapper, UseJobExecutorHelper},
-        DEFAULT_REQUEST_TIMEOUT_SEC,
     },
 };
 use anyhow::Result;
 use infra_utils::infra::trace::Tracing;
 use proto::jobworkerp::data::{QueueType, ResponseType, WorkerData};
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 
 pub struct RunTaskExecutor {
+    workflow_context: Arc<RwLock<WorkflowContext>>,
+    default_task_timeout: Duration,
     task: workflow::RunTask,
     job_executor_wrapper: Arc<JobExecutorWrapper>,
     metadata: Arc<HashMap<String, String>>,
@@ -28,11 +29,15 @@ impl UseExpressionTransformer for RunTaskExecutor {}
 impl Tracing for RunTaskExecutor {}
 impl RunTaskExecutor {
     pub fn new(
+        workflow_context: Arc<RwLock<WorkflowContext>>,
+        default_task_timeout: Duration,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
         task: workflow::RunTask,
         metadata: Arc<HashMap<String, String>>,
     ) -> Self {
         Self {
+            workflow_context,
+            default_task_timeout,
             task,
             job_executor_wrapper,
             metadata,
@@ -101,7 +106,7 @@ impl RunTaskExecutor {
                 settings,
                 worker_data,
                 job_args,
-                DEFAULT_REQUEST_TIMEOUT_SEC,
+                self.default_task_timeout.as_secs() as u32,
             )
             .await
 
@@ -121,7 +126,6 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
         &self,
         cx: Arc<opentelemetry::Context>,
         task_name: &str,
-        workflow_context: Arc<RwLock<WorkflowContext>>,
         mut task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
         // TODO: add other task types
@@ -138,7 +142,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
         let timeout_sec = if let Some(workflow::TaskTimeout::Timeout(duration)) = timeout {
             (duration.after.to_millis() / 1000) as u32
         } else {
-            DEFAULT_REQUEST_TIMEOUT_SEC // no timeout
+            self.default_task_timeout.as_secs() as u32
         };
 
         // merge metadata: create new metadata with both self.metadata and task metadata
@@ -157,7 +161,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
         task_context.add_position_name("run".to_string()).await;
 
         let expression = Self::expression(
-            &*(workflow_context.read().await),
+            &*(self.workflow_context.read().await),
             Arc::new(task_context.clone()),
         )
         .await;

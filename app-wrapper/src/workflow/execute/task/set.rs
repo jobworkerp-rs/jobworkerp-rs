@@ -13,11 +13,15 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 pub struct SetTaskExecutor {
+    workflow_context: Arc<RwLock<WorkflowContext>>,
     task: workflow::SetTask,
 }
 impl SetTaskExecutor {
-    pub fn new(task: workflow::SetTask) -> Self {
-        Self { task }
+    pub fn new(workflow_context: Arc<RwLock<WorkflowContext>>, task: workflow::SetTask) -> Self {
+        Self {
+            workflow_context,
+            task,
+        }
     }
 }
 
@@ -30,13 +34,12 @@ impl TaskExecutorTrait<'_> for SetTaskExecutor {
         &self,
         _cx: Arc<opentelemetry::Context>,
         task_name: &str,
-        workflow_context: Arc<RwLock<WorkflowContext>>,
         mut task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
         tracing::debug!("SetTaskExecutor: {}", task_name);
         task_context.add_position_name("set".to_string()).await;
         let expression = Self::expression(
-            &*workflow_context.read().await,
+            &*self.workflow_context.read().await,
             Arc::new(task_context.clone()),
         )
         .await;
@@ -68,7 +71,7 @@ impl TaskExecutorTrait<'_> for SetTaskExecutor {
         match set_values.as_ref() {
             serde_json::Value::Object(map) => {
                 for (key, value) in map.iter() {
-                    workflow_context
+                    self.workflow_context
                         .write()
                         .await
                         .add_context_value(key.clone(), value.clone())

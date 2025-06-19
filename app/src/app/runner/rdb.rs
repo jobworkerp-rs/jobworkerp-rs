@@ -266,7 +266,7 @@ impl UseRdbRunnerRepository for RdbRunnerAppImpl {
 
 impl UseMokaCache<Arc<String>, Vec<RunnerWithSchema>> for RdbRunnerAppImpl {
     fn cache(&self) -> &Cache<Arc<String>, Vec<RunnerWithSchema>> {
-        &self.async_cache.cache()
+        self.async_cache.cache()
     }
 }
 impl RunnerCacheHelper for RdbRunnerAppImpl {}

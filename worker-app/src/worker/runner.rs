@@ -345,15 +345,23 @@ mod tests {
     impl MockJobRunner {
         async fn new() -> Self {
             let app_module = Arc::new(app::module::test::create_hybrid_test_app().await.unwrap());
+            let app_wrapper_module = Arc::new(
+                app_wrapper::modules::test::create_test_app_wrapper_module(app_module.clone()),
+            );
             let mcp_clients =
                 Arc::new(jobworkerp_runner::runner::mcp::proxy::McpServerFactory::default());
             MockJobRunner {
                 runner_factory: Arc::new(RunnerFactory::new(
                     app_module.clone(),
+                    app_wrapper_module.clone(),
                     mcp_clients.clone(),
                 )),
                 runner_pool: RunnerFactoryWithPoolMap::new(
-                    Arc::new(RunnerFactory::new(app_module, mcp_clients)),
+                    Arc::new(RunnerFactory::new(
+                        app_module,
+                        app_wrapper_module,
+                        mcp_clients,
+                    )),
                     Arc::new(WorkerConfig::default()),
                 ),
                 id_generator: IdGeneratorWrapper::new_mock(),

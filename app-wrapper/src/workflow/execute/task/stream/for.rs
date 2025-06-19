@@ -1,10 +1,9 @@
 use crate::workflow::{
     definition::{
         transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
-        workflow::{self},
+        workflow::{self, tasks::TaskTrait},
     },
     execute::{
-        checkpoint,
         context::{TaskContext, WorkflowContext},
         expression::UseExpression,
         job::JobExecutorWrapper,
@@ -19,10 +18,12 @@ use futures::stream::{self, Stream, StreamExt};
 use infra_utils::infra::{net::reqwest, trace::Tracing};
 use jobworkerp_base::APP_WORKER_NAME;
 use opentelemetry::trace::TraceContextExt;
-use std::{collections::HashMap, pin::Pin, sync::Arc};
+use std::{collections::HashMap, pin::Pin, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, Mutex, RwLock};
 
 pub struct ForTaskStreamExecutor {
+    workflow_context: Arc<RwLock<WorkflowContext>>,
+    default_timeout: Duration,
     task: workflow::ForTask,
     job_executor_wrapper: Arc<JobExecutorWrapper>,
     http_client: reqwest::ReqwestClient,
@@ -40,7 +41,10 @@ impl Tracing for ForTaskStreamExecutor {}
 impl TaskTracing for ForTaskStreamExecutor {}
 
 impl ForTaskStreamExecutor {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
+        workflow_context: Arc<RwLock<WorkflowContext>>,
+        default_timeout: Duration,
         task: workflow::ForTask,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
         http_client: reqwest::ReqwestClient,
@@ -51,6 +55,8 @@ impl ForTaskStreamExecutor {
         metadata: Arc<HashMap<String, String>>,
     ) -> Self {
         Self {
+            workflow_context,
+            default_timeout,
             task,
             job_executor_wrapper,
             http_client,
@@ -67,7 +73,6 @@ impl ForTaskStreamExecutor {
         i: usize,
         item_name: &str,
         index_name: &str,
-        workflow_context: &Arc<RwLock<WorkflowContext>>,
         task_context: &TaskContext,
         while_: &Option<String>,
     ) -> Result<(TaskContext, serde_json::Value), Box<workflow::Error>> {
@@ -87,7 +92,7 @@ impl ForTaskStreamExecutor {
             .await;
 
         let expression = match Self::expression(
-            &*(workflow_context.read().await),
+            &*(self.workflow_context.read().await),
             Arc::new(task_context.clone()),
         )
         .await
@@ -124,7 +129,6 @@ impl ForTaskStreamExecutor {
     async fn initialize_execution(
         &self,
         task_name: &str,
-        workflow_context: &Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
     ) -> Result<(TaskContext, serde_json::Value, workflow::DoTask), Box<workflow::Error>> {
         tracing::debug!("ForStreamTaskExecutor: {}", task_name);
@@ -135,10 +139,12 @@ impl ForTaskStreamExecutor {
             ..
         } = &self.task;
 
-        task_context.add_position_name("for".to_string()).await;
+        task_context
+            .add_position_name(self.task.task_type().to_string())
+            .await;
 
         let expression = match Self::expression(
-            &*(workflow_context.read().await),
+            &*(self.workflow_context.read().await),
             Arc::new(task_context.clone()),
         )
         .await
@@ -186,7 +192,6 @@ impl ForTaskStreamExecutor {
         items: &[serde_json::Value],
         item_name: &str,
         index_name: &str,
-        workflow_context: &Arc<RwLock<WorkflowContext>>,
         task_context: &TaskContext,
         do_task: workflow::DoTask,
         task_name: &str,
@@ -211,15 +216,7 @@ impl ForTaskStreamExecutor {
 
         for (i, item) in items.iter().enumerate() {
             match self
-                .prepare_for_item(
-                    item,
-                    i,
-                    item_name,
-                    index_name,
-                    workflow_context,
-                    task_context,
-                    while_,
-                )
+                .prepare_for_item(item, i, item_name, index_name, task_context, while_)
                 .await
             {
                 Ok((prepared_context, while_cond)) => {
@@ -272,13 +269,14 @@ impl ForTaskStreamExecutor {
             let do_task_clone = do_task.clone();
             let job_executor_wrapper_clone = self.job_executor_wrapper.clone();
             let http_client_clone = self.http_client.clone();
-            let workflow_context = workflow_context.clone();
+            let workflow_context = self.workflow_context.clone();
             let task_name_formatted = Arc::new(format!("{}_{}", task_name, i));
             let item_name_clone = item_name.to_string();
             let cx = cx.clone();
             let meta = self.metadata.clone();
             let checkpoint_repository = self.checkpoint_repository.clone();
             let execution_id = self.execution_id.clone();
+            let default_timeout = self.default_timeout;
 
             // Spawn this task asynchronously
             join_set.spawn(async move {
@@ -315,6 +313,8 @@ impl ForTaskStreamExecutor {
 
                 // Create executor for this task
                 let do_stream_executor = DoTaskStreamExecutor::new(
+                    workflow_context.clone(),
+                    default_timeout,
                     meta.clone(),
                     do_task_clone,
                     job_executor_wrapper_clone,
@@ -325,12 +325,7 @@ impl ForTaskStreamExecutor {
 
                 // Execute the stream and track results
                 let stream = do_stream_executor
-                    .execute_stream(
-                        ccx,
-                        task_name_formatted.clone(),
-                        workflow_context.clone(),
-                        prepared_context,
-                    )
+                    .execute_stream(ccx, task_name_formatted.clone(), prepared_context)
                     .boxed();
 
                 tokio::pin!(stream);
@@ -408,7 +403,6 @@ impl ForTaskStreamExecutor {
         items: Vec<serde_json::Value>,
         item_name: String,
         index_name: String,
-        workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
         do_task: workflow::DoTask,
         task_name: String,
@@ -443,15 +437,7 @@ impl ForTaskStreamExecutor {
 
         for (i, item) in items.iter().enumerate() {
             match self
-                .prepare_for_item(
-                    item,
-                    i,
-                    &item_name,
-                    &index_name,
-                    &workflow_context,
-                    &task_context,
-                    &while_,
-                )
+                .prepare_for_item(item, i, &item_name, &index_name, &task_context, &while_)
                 .await
             {
                 Ok((prepared_context, while_cond)) => {
@@ -479,6 +465,8 @@ impl ForTaskStreamExecutor {
                     // Create a do task executor for this item
                     let task_name_formatted = Arc::new(format!("{}_{}", task_name, i));
                     let do_stream_executor = Arc::new(DoTaskStreamExecutor::new(
+                        self.workflow_context.clone(),
+                        self.default_timeout,
                         self.metadata.clone(),
                         do_task.clone(), //XXX clone
                         self.job_executor_wrapper.clone(),
@@ -491,7 +479,6 @@ impl ForTaskStreamExecutor {
                     keeps.push((tnf.clone(), do_stream_executor.clone()));
 
                     let tnf_clone = tnf.clone();
-                    let workflow_context_clone = workflow_context.clone();
                     let do_stream_executor_clone = do_stream_executor.clone();
                     let cxc = Arc::new(cx);
 
@@ -501,7 +488,6 @@ impl ForTaskStreamExecutor {
                         let mut inner_stream = do_stream_executor_clone.execute_stream(
                             cxc.clone(),
                             tnf_clone,
-                            workflow_context_clone,
                             prepared_context,
                         );
                         while let Some(item) = inner_stream.next().await {
@@ -572,7 +558,6 @@ impl StreamTaskExecutorTrait<'_> for ForTaskStreamExecutor {
         &self,
         cx: Arc<opentelemetry::Context>,
         task_name: Arc<String>,
-        workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
     ) -> impl futures::Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send {
         let this = self;
@@ -581,7 +566,7 @@ impl StreamTaskExecutorTrait<'_> for ForTaskStreamExecutor {
         Box::pin(async_stream::stream! {
             // Initialize execution
             let init_result = this
-                .initialize_execution(&task_name, &workflow_context, task_context)
+                .initialize_execution(&task_name, task_context)
                 .await;
 
             // Handle initialization errors
@@ -633,7 +618,6 @@ impl StreamTaskExecutorTrait<'_> for ForTaskStreamExecutor {
                                 &items,
                                 item_name,
                                 index_name,
-                                &workflow_context,
                                 &task_context,
                                 do_task,
                                 &task_name,
@@ -659,7 +643,6 @@ impl StreamTaskExecutorTrait<'_> for ForTaskStreamExecutor {
                                 items,
                                 item_name.to_string(),
                                 index_name.to_string(),
-                                workflow_context,
                                 task_context.clone(),
                                 do_task,
                                 task_name,

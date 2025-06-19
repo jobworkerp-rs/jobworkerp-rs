@@ -84,3 +84,10 @@ regex = { workspace = true }
 mockall = { workspace = true }
 app = { path = "../app", features = ["test-utils"] }
 infra = { path = "../infra", features = ["test-utils"] }
+
+[features]
+default = []
+test-utils = [
+    "app/test-utils",
+    "infra/test-utils",
+]

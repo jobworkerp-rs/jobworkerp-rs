@@ -419,9 +419,8 @@ pub mod tests {
         //     &mc_config,
         //     Some(Duration::from_secs(5 * 60)),
         // ));
-        let descriptor_cache = Arc::new(infra_utils::infra::cache::MokaCacheImpl::new(
-            &moka_config,
-        ));
+        let descriptor_cache =
+            Arc::new(infra_utils::infra::cache::MokaCacheImpl::new(&moka_config));
         let runner_app = Arc::new(HybridRunnerAppImpl::new(
             TEST_PLUGIN_DIR.to_string(),
             storage_config.clone(),

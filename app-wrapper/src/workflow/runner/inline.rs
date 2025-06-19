@@ -1,3 +1,4 @@
+use crate::workflow::execute::checkpoint::CheckPointContext;
 use crate::workflow::execute::task::ExecutionId;
 use crate::workflow::{definition::WorkflowLoader, execute::workflow::WorkflowExecutor};
 use anyhow::Result;
@@ -19,10 +20,11 @@ use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use schemars::JsonSchema;
 use std::collections::HashMap;
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct InlineWorkflowRunner {
+    app_wrapper_module: Arc<crate::modules::AppWrapperModule>,
     app_module: Arc<AppModule>,
     http_client: ReqwestClient,
     workflow_executor: Option<Arc<WorkflowExecutor>>,
@@ -31,22 +33,22 @@ pub struct InlineWorkflowRunner {
 impl Tracing for InlineWorkflowRunner {}
 impl InlineWorkflowRunner {
     // for workflow file reqwest
-    const DEFAULT_REQUEST_TIMEOUT_SEC: u32 = 120; // 2 minutes
-    const DEFAULT_USER_AGENT: &str = "simple-workflow/1.0";
 
-    pub fn new(app_module: Arc<AppModule>) -> Result<Self> {
+    pub fn new(
+        app_wrapper_module: Arc<crate::modules::AppWrapperModule>,
+        app_module: Arc<AppModule>,
+    ) -> Result<Self> {
+        let workflow_config = app_wrapper_module.config_module.workflow_config.clone();
+        // TODO connection pool and use as global client (move to app module)
         let http_client = ReqwestClient::new(
-            Some(Self::DEFAULT_USER_AGENT),
-            Some(Duration::from_secs(
-                Self::DEFAULT_REQUEST_TIMEOUT_SEC as u64,
-            )),
-            Some(Duration::from_secs(
-                Self::DEFAULT_REQUEST_TIMEOUT_SEC as u64,
-            )),
+            Some(workflow_config.http_user_agent.as_str()),
+            Some(workflow_config.http_timeout_sec),
+            Some(workflow_config.http_timeout_sec),
             Some(2),
         )?;
 
         Ok(InlineWorkflowRunner {
+            app_wrapper_module,
             app_module,
             http_client,
             workflow_executor: None,
@@ -161,14 +163,15 @@ impl RunnerTrait for InlineWorkflowRunner {
                 "workflow context_json: {}",
                 serde_json::to_string_pretty(&context_json).unwrap_or_default()
             );
+            let workflow_config = self
+                .app_wrapper_module
+                .config_module
+                .workflow_config
+                .clone();
             let http_client = ReqwestClient::new(
-                Some(Self::DEFAULT_USER_AGENT),
-                Some(Duration::from_secs(
-                    Self::DEFAULT_REQUEST_TIMEOUT_SEC as u64,
-                )),
-                Some(Duration::from_secs(
-                    Self::DEFAULT_REQUEST_TIMEOUT_SEC as u64,
-                )),
+                Some(workflow_config.http_user_agent.as_str()),
+                Some(workflow_config.http_timeout_sec),
+                Some(workflow_config.http_timeout_sec),
                 Some(2),
             )?;
             let source = arg.workflow_source.as_ref().ok_or({
@@ -182,16 +185,23 @@ impl RunnerTrait for InlineWorkflowRunner {
                 .await
                 .inspect_err(|e| tracing::error!("Failed to load workflow: {:#?}", e))?;
             tracing::debug!("workflow: {:#?}", workflow);
-            let executor = WorkflowExecutor::new(
+            let chpoint = if let Some(ch) = arg.from_checkpoint.as_ref() {
+                Some(CheckPointContext::from_inline(ch)?)
+            } else {
+                None
+            };
+            let executor = WorkflowExecutor::init(
+                self.app_wrapper_module.clone(),
                 self.app_module.clone(),
                 http_client,
                 Arc::new(workflow),
                 Arc::new(input_json),
-                execution_id,
+                execution_id.clone(),
                 context_json.clone(),
                 Arc::new(metadata.clone()),
-            )?;
-
+                chpoint,
+            )
+            .await?;
             // Get the stjream of workflow context updates
             let workflow_stream = executor.execute_workflow(Arc::new(cx));
             pin_mut!(workflow_stream);
@@ -302,16 +312,35 @@ impl RunnerTrait for InlineWorkflowRunner {
             .inspect_err(|e| tracing::error!("Failed to load workflow: {:#?}", e))?;
         tracing::debug!("workflow: {:#?}", workflow);
 
+        let chpoint = if let Some(ch) = arg.from_checkpoint.as_ref() {
+            Some(CheckPointContext::from_inline(ch)?)
+        } else {
+            None
+        };
+
         let metadata_arc = Arc::new(metadata.clone());
-        let executor = Arc::new(WorkflowExecutor::new(
-            app_module,
-            http_client,
-            Arc::new(workflow),
-            Arc::new(input_json),
-            execution_id,
-            context_json.clone(),
-            metadata_arc.clone(),
-        )?);
+        let executor = Arc::new(
+            WorkflowExecutor::init(
+                self.app_wrapper_module.clone(),
+                app_module,
+                http_client,
+                Arc::new(workflow),
+                Arc::new(input_json),
+                execution_id.clone(),
+                context_json.clone(),
+                metadata_arc.clone(),
+                chpoint,
+            )
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to initialize WorkflowExecutor: {:?}", e);
+                JobWorkerError::RuntimeError(format!(
+                    "Failed to initialize WorkflowExecutor: {:?}",
+                    e
+                ))
+            })?,
+        );
+
         let workflow_stream = executor.execute_workflow(Arc::new(cx));
         self.workflow_executor = Some(executor.clone());
 

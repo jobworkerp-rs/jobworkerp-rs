@@ -19,6 +19,8 @@ pub trait TaskTrait {
     fn then(&self) -> ::std::option::Option<&FlowDirective>;
     #[doc = "The task's timeout configuration, if any."]
     fn timeout(&self) -> ::std::option::Option<&TaskTimeout>;
+    #[doc = "Returns the type of the task as a static string."]
+    fn task_type(&self) -> &'static str;
 }
 
 impl TaskTrait for DoTask {
@@ -51,6 +53,9 @@ impl TaskTrait for DoTask {
 
     fn timeout(&self) -> ::std::option::Option<&TaskTimeout> {
         self.timeout.as_ref()
+    }
+    fn task_type(&self) -> &'static str {
+        "do"
     }
 }
 
@@ -86,6 +91,9 @@ impl TaskTrait for ForTask {
         // Convert TaskTimeout to CallTaskAsyncApiTimeout if needed
         self.timeout.as_ref()
     }
+    fn task_type(&self) -> &'static str {
+        "for"
+    }
 }
 
 impl TaskTrait for ForkTask {
@@ -119,6 +127,9 @@ impl TaskTrait for ForkTask {
     fn timeout(&self) -> ::std::option::Option<&TaskTimeout> {
         // Convert TaskTimeout to CallTaskAsyncApiTimeout if needed
         self.timeout.as_ref()
+    }
+    fn task_type(&self) -> &'static str {
+        "fork"
     }
 }
 
@@ -154,6 +165,9 @@ impl TaskTrait for RaiseTask {
         // Convert TaskTimeout to CallTaskAsyncApiTimeout if needed
         self.timeout.as_ref()
     }
+    fn task_type(&self) -> &'static str {
+        "raise"
+    }
 }
 
 impl TaskTrait for RunTask {
@@ -188,6 +202,9 @@ impl TaskTrait for RunTask {
         // Convert TaskTimeout to CallTaskAsyncApiTimeout if needed
         self.timeout.as_ref()
     }
+    fn task_type(&self) -> &'static str {
+        "run"
+    }
 }
 impl TaskTrait for SetTask {
     fn checkpoint(&self) -> bool {
@@ -221,6 +238,9 @@ impl TaskTrait for SetTask {
         // Convert TaskTimeout to CallTaskAsyncApiTimeout if needed
         self.timeout.as_ref()
     }
+    fn task_type(&self) -> &'static str {
+        "set"
+    }
 }
 impl TaskTrait for SwitchTask {
     fn checkpoint(&self) -> bool {
@@ -252,6 +272,9 @@ impl TaskTrait for SwitchTask {
 
     fn timeout(&self) -> ::std::option::Option<&TaskTimeout> {
         self.timeout.as_ref()
+    }
+    fn task_type(&self) -> &'static str {
+        "switch"
     }
 }
 impl TaskTrait for TryTask {
@@ -285,6 +308,9 @@ impl TaskTrait for TryTask {
     fn timeout(&self) -> ::std::option::Option<&TaskTimeout> {
         self.timeout.as_ref()
     }
+    fn task_type(&self) -> &'static str {
+        "try"
+    }
 }
 impl TaskTrait for WaitTask {
     fn export(&self) -> ::std::option::Option<&Export> {
@@ -316,6 +342,9 @@ impl TaskTrait for WaitTask {
     }
     fn checkpoint(&self) -> bool {
         self.checkpoint
+    }
+    fn task_type(&self) -> &'static str {
+        "wait"
     }
 }
 
@@ -445,6 +474,20 @@ impl TaskTrait for Task {
             Task::SwitchTask(t) => t.checkpoint,
             Task::TryTask(t) => t.checkpoint,
             Task::WaitTask(t) => t.checkpoint,
+        }
+    }
+
+    fn task_type(&self) -> &'static str {
+        match self {
+            Task::ForkTask(_) => "fork",
+            Task::ForTask(_) => "for",
+            Task::DoTask(_) => "do",
+            Task::RaiseTask(_) => "raise",
+            Task::RunTask(_) => "run",
+            Task::SetTask(_) => "set",
+            Task::SwitchTask(_) => "switch",
+            Task::TryTask(_) => "try",
+            Task::WaitTask(_) => "wait",
         }
     }
 }

@@ -1,4 +1,5 @@
 use crate::llm::chat::LLMChatRunnerImpl;
+use crate::modules::AppWrapperModule;
 use crate::workflow::runner::reusable::ReusableWorkflowRunner;
 use crate::{
     llm::completion::LLMCompletionRunnerImpl, workflow::runner::inline::InlineWorkflowRunner,
@@ -23,15 +24,21 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub struct RunnerFactory {
     app_module: Arc<AppModule>,
+    app_wrapper_module: Arc<AppWrapperModule>,
     plugins: Arc<Plugins>,
     pub mcp_clients: Arc<McpServerFactory>,
 }
 
 // same as RunnerSpecFactory
 impl RunnerFactory {
-    pub fn new(app_module: Arc<AppModule>, mcp_clients: Arc<McpServerFactory>) -> Self {
+    pub fn new(
+        app_module: Arc<AppModule>,
+        app_wrapper_module: Arc<AppWrapperModule>,
+        mcp_clients: Arc<McpServerFactory>,
+    ) -> Self {
         Self {
             app_module: app_module.clone(),
+            app_wrapper_module: app_wrapper_module.clone(),
             plugins: app_module.config_module.runner_factory.plugins.clone(),
             mcp_clients,
         }
@@ -71,7 +78,10 @@ impl RunnerFactory {
                 Some(Box::new(SlackPostMessageRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
             }
             Some(RunnerType::InlineWorkflow) => {
-                match InlineWorkflowRunner::new(self.app_module.clone()) {
+                match InlineWorkflowRunner::new(
+                    self.app_wrapper_module.clone(),
+                    self.app_module.clone(),
+                ) {
                     Ok(runner) => Some(Box::new(runner) as Box<dyn RunnerTrait + Send + Sync>),
                     Err(err) => {
                         tracing::error!("Failed to create InlineWorkflowRunner: {}", err);
@@ -80,7 +90,10 @@ impl RunnerFactory {
                 }
             }
             Some(RunnerType::ReusableWorkflow) => {
-                match ReusableWorkflowRunner::new(self.app_module.clone()) {
+                match ReusableWorkflowRunner::new(
+                    self.app_wrapper_module.clone(),
+                    self.app_module.clone(),
+                ) {
                     Ok(runner) => Some(Box::new(runner) as Box<dyn RunnerTrait + Send + Sync>),
                     Err(err) => {
                         tracing::error!("Failed to create ReusableWorkflowRunner: {}", err);

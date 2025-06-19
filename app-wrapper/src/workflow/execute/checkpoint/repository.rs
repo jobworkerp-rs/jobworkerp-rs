@@ -21,10 +21,13 @@ where
         &self,
         execution_id: &ExecutionId,
         workflow_name: &str,
-        position: &String,
         checkpoint: &CheckPointContext,
     ) -> anyhow::Result<()> {
-        let key = self.generate_key(&execution_id, workflow_name, position);
+        let key = self.generate_key(
+            execution_id,
+            workflow_name,
+            &checkpoint.position.as_json_pointer(),
+        );
         self.checkpoint_repository()
             .save_checkpoint(&key, checkpoint)
             .await
@@ -36,7 +39,7 @@ where
         workflow_name: &str,
         position: &String,
     ) -> anyhow::Result<Option<CheckPointContext>> {
-        let key = self.generate_key(&execution_id, workflow_name, position);
+        let key = self.generate_key(execution_id, workflow_name, position);
         self.checkpoint_repository().get_checkpoint(&key).await
     }
 
@@ -46,7 +49,7 @@ where
         workflow_name: &str,
         position: &String,
     ) -> anyhow::Result<()> {
-        let key = self.generate_key(&execution_id, workflow_name, position);
+        let key = self.generate_key(execution_id, workflow_name, position);
         self.checkpoint_repository().delete_checkpoint(&key).await
     }
 
@@ -112,6 +115,7 @@ impl UseCheckPointRepository for CheckPointRepositoryWithIdImpl {
         self.repository.as_ref()
     }
 }
+impl CheckPointRepositoryWithId for CheckPointRepositoryWithIdImpl {}
 
 pub struct CheckPointId {
     pub value: String,
@@ -123,9 +127,13 @@ impl CheckPointId {
             value: format!("{}:{}", workflow_id, position.as_json_pointer()),
         }
     }
-    pub fn from_str(value: &str) -> Self {
-        Self {
+}
+impl std::str::FromStr for CheckPointId {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(Self {
             value: value.to_string(),
-        }
+        })
     }
 }

@@ -38,16 +38,15 @@ message InlineWorkflowArgs {
           3; // Context variables for the workflow execution (usually JSON)
     }
     message TaskCheckPointContext {
-      string raw_input =
-          1; // Raw input data for the task execution (usually JSON)
-      string input =
-          2; // Processed input data for the task execution (usually JSON)
-      string raw_output =
-          3; // Raw output data from the task execution (usually JSON)
-      string output =
-          4; // Processed output data from the task execution (usually JSON)
-      string context_variables =
-          5; // Context variables for the task execution (usually JSON)
+      // Processed input data for the task execution (usually JSON)
+      string input = 1;
+      // Processed output data from the task execution (usually JSON)
+      string output = 2;
+      // Context variables for the task execution (usually JSON)
+      string context_variables = 3;
+      // Flow directive for the task execution (e.g. "continue", "end", "exit",
+      // and task name)
+      string flow_directive = 4;
     }
     message CheckPointContext {
       WorkflowCheckPointContext workflow = 1; // Workflow checkpoint context
@@ -55,8 +54,7 @@ message InlineWorkflowArgs {
     }
 
     // # Checkpoint Data
-    // overwrite the data for the checkpoint if specified.
-    // This is JSON formatted string
+    // overwrite the context data for the checkpoint if specified.
     // Must conform to the schema defined in the workflow definition
     // (Can be a plain string or JSON formatted string, runtime expression
     // available) If not specified, the data from the workflow input will be

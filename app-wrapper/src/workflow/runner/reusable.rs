@@ -1,4 +1,5 @@
 use crate::workflow::definition::workflow::WorkflowSchema;
+use crate::workflow::execute::checkpoint::CheckPointContext;
 use crate::workflow::execute::task::ExecutionId;
 use crate::workflow::execute::workflow::WorkflowExecutor;
 use anyhow::Result;
@@ -22,10 +23,11 @@ use prost::Message;
 use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use std::collections::HashMap;
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct ReusableWorkflowRunner {
+    app_wrapper_module: Arc<crate::modules::AppWrapperModule>,
     app_module: Arc<AppModule>,
     http_client: ReqwestClient,
     workflow_executor: Option<Arc<WorkflowExecutor>>,
@@ -33,23 +35,20 @@ pub struct ReusableWorkflowRunner {
     canceled: bool,
 }
 impl ReusableWorkflowRunner {
-    // for workflow file reqwest
-    const DEFAULT_REQUEST_TIMEOUT_SEC: u32 = 120; // 2 minutes
-    const DEFAULT_USER_AGENT: &str = "simple-workflow/1.0";
-
-    pub fn new(app_module: Arc<AppModule>) -> Result<Self> {
+    pub fn new(
+        app_wrapper_module: Arc<crate::modules::AppWrapperModule>,
+        app_module: Arc<AppModule>,
+    ) -> Result<Self> {
+        let workflow_config = app_wrapper_module.config_module.workflow_config.clone();
         let http_client = ReqwestClient::new(
-            Some(Self::DEFAULT_USER_AGENT),
-            Some(Duration::from_secs(
-                Self::DEFAULT_REQUEST_TIMEOUT_SEC as u64,
-            )),
-            Some(Duration::from_secs(
-                Self::DEFAULT_REQUEST_TIMEOUT_SEC as u64,
-            )),
+            Some(workflow_config.http_user_agent.as_str()),
+            Some(workflow_config.http_timeout_sec),
+            Some(workflow_config.http_timeout_sec),
             Some(2),
         )?;
 
         Ok(ReusableWorkflowRunner {
+            app_wrapper_module,
             app_module,
             http_client,
             workflow_executor: None,
@@ -152,18 +151,27 @@ impl RunnerTrait for ReusableWorkflowRunner {
                         .map(serde_json::from_str)
                         .unwrap_or_else(|| Ok(serde_json::Value::Object(Default::default())))?,
                 );
-                let executor = WorkflowExecutor::new(
+                let chpoint = if let Some(ch) = arg.from_checkpoint.as_ref() {
+                    Some(CheckPointContext::from_reusable(ch)?)
+                } else {
+                    None
+                };
+                let executor = WorkflowExecutor::init(
+                    self.app_wrapper_module.clone(),
                     self.app_module.clone(),
                     self.http_client.clone(),
                     workflow.clone(),
                     Arc::new(input_json),
-                    execution_id,
+                    execution_id.clone(),
                     context_json,
                     Arc::new(metadata.clone()),
-                )?;
+                    chpoint,
+                )
+                .await?;
 
                 // Get the stream of workflow context updates
                 let workflow_stream = executor.execute_workflow(Arc::new(cx));
+
                 pin_mut!(workflow_stream);
 
                 // Store the final workflow context
@@ -257,15 +265,25 @@ impl RunnerTrait for ReusableWorkflowRunner {
             tracing::error!("workflow is not loaded");
             anyhow::anyhow!("workflow is not loaded")
         })?;
-        let executor = Arc::new(WorkflowExecutor::new(
-            self.app_module.clone(),
-            self.http_client.clone(),
-            workflow,
-            Arc::new(input_json),
-            execution_id,
-            context_json.clone(),
-            metadata_arc.clone(),
-        )?);
+        let chpoint = if let Some(ch) = arg.from_checkpoint.as_ref() {
+            Some(CheckPointContext::from_reusable(ch)?)
+        } else {
+            None
+        };
+        let executor = Arc::new(
+            WorkflowExecutor::init(
+                self.app_wrapper_module.clone(),
+                self.app_module.clone(),
+                self.http_client.clone(),
+                workflow,
+                Arc::new(input_json),
+                execution_id.clone(),
+                context_json.clone(),
+                metadata_arc.clone(),
+                chpoint,
+            )
+            .await?,
+        );
         let workflow_stream = executor.execute_workflow(Arc::new(cx));
         self.workflow_executor = Some(executor.clone());
 

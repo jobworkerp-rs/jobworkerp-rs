@@ -1,6 +1,6 @@
 use super::TaskExecutor;
 use crate::workflow::{
-    definition::workflow::Task,
+    definition::workflow::{tasks::TaskTrait, Task},
     execute::{
         context::{TaskContext, WorkflowContext},
         job::JobExecutorWrapper,
@@ -17,7 +17,7 @@ use crate::workflow::{
 use debug_stub_derive::DebugStub;
 use futures::{future, Future, StreamExt};
 use infra_utils::infra::{net::reqwest, trace::Tracing};
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 use tokio_stream::StreamMap;
 
@@ -27,6 +27,8 @@ type CheckPointRepo =
 
 #[derive(DebugStub, Clone)]
 pub struct ForkTaskExecutor {
+    workflow_context: Arc<RwLock<WorkflowContext>>,
+    default_task_timeout: Duration,
     #[debug_stub = "AppModule"]
     pub job_executor_wrapper: Arc<JobExecutorWrapper>,
     #[debug_stub = "reqwest::HttpClient"]
@@ -39,7 +41,10 @@ pub struct ForkTaskExecutor {
 
 impl Tracing for ForkTaskExecutor {}
 impl ForkTaskExecutor {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
+        workflow_context: Arc<RwLock<WorkflowContext>>,
+        default_task_timeout: Duration,
         task: workflow::ForkTask,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
         http_client: reqwest::ReqwestClient,
@@ -50,6 +55,8 @@ impl ForkTaskExecutor {
         metadata: Arc<HashMap<String, String>>,
     ) -> Self {
         Self {
+            workflow_context,
+            default_task_timeout,
             job_executor_wrapper,
             http_client,
             checkpoint_repository,
@@ -70,10 +77,13 @@ impl ForkTaskExecutor {
         prev_context: Arc<TaskContext>,
         task: Arc<Task>,
         execution_id: Option<Arc<ExecutionId>>,
+        default_task_timeout: Duration,
         metadata: Arc<HashMap<String, String>>,
         cx: Arc<opentelemetry::Context>,
     ) -> futures::stream::BoxStream<'static, Result<TaskContext, Box<workflow::Error>>> {
         let task_executor = TaskExecutor::new(
+            workflow_context,
+            default_task_timeout,
             job_executor_wrapper,
             http_client,
             checkpoint_repository,
@@ -82,7 +92,7 @@ impl ForkTaskExecutor {
             metadata,
         );
         task_executor
-            .execute(cx, workflow_context, prev_context.clone(), execution_id)
+            .execute(cx, prev_context.clone(), execution_id)
             .await
     }
 }
@@ -97,13 +107,16 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
         &'a self,
         cx: Arc<opentelemetry::Context>,
         task_name: &'a str,
-        workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
     ) -> impl Future<Output = Result<TaskContext, Box<workflow::Error>>> + Send {
         async move {
             tracing::debug!("ForkTaskExecutor: {}", task_name);
 
-            task_context.add_position_name("fork".to_string()).await;
+            task_context
+                .add_position_name(self.task.task_type().to_string())
+                .await;
+            // XXX position is incorrect in fork task(idx, branch_name are ignored because of parallel execution(ignore checkpoint))
+            //     (not copy large context, just use position from task_context)
             let position = task_context.position.clone();
             let branches = &self.task.fork.branches;
             let compete = self.task.fork.compete;
@@ -114,13 +127,15 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
 
             for branch_item in branches.0.iter() {
                 for (branch_name, task) in branch_item.iter() {
-                    let workflow_context_clone = Arc::clone(&workflow_context);
+                    // XXX need position for each branch?
+                    let workflow_context_clone = Arc::clone(&self.workflow_context);
                     let task_context_clone = Arc::clone(&task_context_ref);
                     let name = branch_name.to_string();
                     let task_clone = Arc::new(task.clone());
                     let metadata_clone = Arc::clone(&self.metadata);
                     let execution_id = self.execution_id.clone();
                     let cxc = cx.clone();
+                    let default_task_timeout = self.default_task_timeout;
                     let future = Box::pin(async move {
                         Self::execute_task(
                             &name,
@@ -131,6 +146,7 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
                             task_context_clone,
                             task_clone,
                             execution_id,
+                            default_task_timeout,
                             metadata_clone,
                             cxc,
                         )
@@ -286,6 +302,7 @@ mod tests {
                 &crate::workflow::definition::workflow::WorkflowSchema::default(),
                 Arc::new(json!({"winput": "test"})),
                 Arc::new(json!({})),
+                None,
             )));
 
             // create branches
@@ -333,6 +350,8 @@ mod tests {
 
             // TaskExecutor, ForkTaskExecutor
             let fork_task_executor = ForkTaskExecutor::new(
+                workflow_context.clone(),
+                Duration::from_secs(1200), // default task timeout
                 fork_task,
                 job_executor_wrapper,
                 http_client,
@@ -344,12 +363,7 @@ mod tests {
             let input = json!({"initial": "value"});
             let task_context = MockTaskContext::create(input.clone());
             let result = fork_task_executor
-                .execute(
-                    Arc::new(Context::current()),
-                    "fork_test",
-                    workflow_context,
-                    task_context,
-                )
+                .execute(Arc::new(Context::current()), "fork_test", task_context)
                 .await;
 
             assert!(result.is_ok());
@@ -384,6 +398,7 @@ mod tests {
                 &crate::workflow::definition::workflow::WorkflowSchema::default(),
                 Arc::new(json!({})),
                 Arc::new(json!({})),
+                None,
             )));
 
             let mut branches_map = Vec::new();
@@ -419,6 +434,8 @@ mod tests {
             };
 
             let fork_task_executor = ForkTaskExecutor::new(
+                workflow_context,
+                Duration::from_secs(1200), // default task timeout
                 fork_task,
                 job_executor_wrapper,
                 http_client,
@@ -433,7 +450,6 @@ mod tests {
                 .execute(
                     Arc::new(opentelemetry::Context::current()),
                     "fork_test",
-                    workflow_context,
                     task_context,
                 )
                 .await;
@@ -460,6 +476,7 @@ mod tests {
                 &crate::workflow::definition::workflow::WorkflowSchema::default(),
                 Arc::new(json!({})),
                 Arc::new(json!({})),
+                None,
             )));
 
             let mut branches_map = Vec::new();
@@ -508,6 +525,8 @@ mod tests {
             };
 
             let fork_task_executor = ForkTaskExecutor::new(
+                workflow_context,
+                Duration::from_secs(1200), // default task timeout
                 fork_task,
                 job_executor_wrapper,
                 http_client,
@@ -522,7 +541,6 @@ mod tests {
                 .execute(
                     Arc::new(opentelemetry::Context::current()),
                     "fork_test",
-                    workflow_context,
                     task_context,
                 )
                 .await;

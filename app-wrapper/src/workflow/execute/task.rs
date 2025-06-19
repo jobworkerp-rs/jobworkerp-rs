@@ -10,7 +10,7 @@ use crate::workflow::{
     },
     execute::{
         checkpoint::{repository::CheckPointRepositoryWithId, CheckPointContext},
-        context::{Then, WorkflowStatus},
+        context::{Then, WorkflowPosition, WorkflowStatus},
     },
 };
 use anyhow::Result;
@@ -26,10 +26,11 @@ use set::SetTaskExecutor;
 use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
+    time::Duration,
 };
 use stream::{do_::DoTaskStreamExecutor, for_::ForTaskStreamExecutor};
 use switch::SwitchTaskExecutor;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use try_::TryTaskExecutor;
 
 pub mod call;
@@ -48,6 +49,8 @@ type CheckPointRepo =
 
 #[derive(DebugStub, Clone)]
 pub struct TaskExecutor {
+    workflow_context: Arc<RwLock<WorkflowContext>>,
+    default_task_timeout: Duration,
     #[debug_stub = "AppModule"]
     pub job_executor_wrapper: Arc<JobExecutorWrapper>,
     #[debug_stub = "reqwest::HttpClient"]
@@ -63,7 +66,10 @@ impl UseJqAndTemplateTransformer for TaskExecutor {}
 impl UseExpressionTransformer for TaskExecutor {}
 
 impl TaskExecutor {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
+        workflow_context: Arc<RwLock<WorkflowContext>>,
+        default_task_timeout: Duration,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
         http_client: reqwest::ReqwestClient,
         checkpoint_repository: Option<Arc<dyn CheckPointRepositoryWithId>>,
@@ -73,6 +79,8 @@ impl TaskExecutor {
     ) -> Self {
         // command_utils::util::tracing::tracing_init_test(Level::DEBUG);
         Self {
+            workflow_context,
+            default_task_timeout,
             job_executor_wrapper,
             http_client,
             checkpoint_repository,
@@ -81,29 +89,159 @@ impl TaskExecutor {
             metadata,
         }
     }
+    async fn load_checkpoint(
+        &self,
+        execution_id: &Option<Arc<ExecutionId>>,
+        current_position: &RwLock<WorkflowPosition>,
+    ) -> Result<Option<TaskContext>, Box<workflow::Error>> {
+        if let (Some(execution_id), Some(checkpoint_repository), Some(pos)) = (
+            &execution_id,
+            &self.checkpoint_repository,
+            &self.workflow_context.read().await.checkpoint_position,
+        ) {
+            // Load checkpoint if available
+            let workflow_name = self.workflow_context.read().await.name.to_string();
+            match checkpoint_repository
+                .get_checkpoint_with_id(execution_id, &workflow_name, &pos.as_json_pointer())
+                .await
+            {
+                Ok(Some(checkpoint)) => {
+                    tracing::debug!(
+                        "Loaded checkpoint for workflow: {}, execution_id={}",
+                        &workflow_name,
+                        &execution_id.value
+                    );
+                    let mut lock = self.workflow_context.write().await;
+                    lock.position = checkpoint.position.clone();
+                    lock.input = checkpoint.workflow.input.clone();
+                    lock.context_variables =
+                        Arc::new(Mutex::new((*checkpoint.workflow.context_variables).clone()));
+                    drop(lock);
+                    Ok(Some(TaskContext::new_from_cp(None, &checkpoint.task)))
+                }
+                Ok(None) => {
+                    tracing::warn!(
+                        "No checkpoint found for workflow: {}, execution_id={}",
+                        &workflow_name,
+                        &execution_id.value
+                    );
+                    Ok(None)
+                }
+                Err(e) => {
+                    tracing::error!("Failed to load checkpoint: {:#?}", e);
+                    // yield Err(Box::new(e));
+                    Err(workflow::errors::ErrorFactory::new().service_unavailable(
+                    format!("Failed to load checkpoint from execution_id: {}, workflow: {}, position: {}, error: {:#?}",
+                      execution_id.value, workflow_name, &pos.as_json_pointer(), e),
+                Some(current_position.read().await.as_error_instance()),
+                    Some(format!("{:?}", e)),
+                ))
+                }
+            }
+        } else {
+            // normal execution without checkpoint
+            Ok(None)
+        }
+    }
+    // if true, load checkpoint for this task, and should skip the task execution
+    // if false, do not load checkpoint for this task, and should execute the task
+    // if None, no checkpoint is available, normal execution
+    async fn reach_for_checkpoint(
+        &self,
+        execution_id: &Option<Arc<ExecutionId>>,
+        current_position: &RwLock<WorkflowPosition>,
+        task_name: &str,
+    ) -> Option<bool> {
+        // Check if the task should be skipped based on the `from_position`
+        if let Some(cp_position) = &self.workflow_context.read().await.checkpoint_position {
+            let rel_path = cp_position.relative_path(&current_position.read().await.full());
+            if rel_path.is_some_and(|rp| {
+                rp.len() == 1 && rp[0] == serde_json::Value::String(task_name.to_string())
+            }) && execution_id.is_some()
+            {
+                tracing::info!(
+                    "recover checkpoint for task {}: no `from_position` provided",
+                    self.task_name
+                );
+                Some(true)
+            } else {
+                // skip task execution until the `from_position` is reached
+                Some(false)
+            }
+        } else {
+            None
+        }
+    }
     // input is the output of the previous task
     // return the output of the task, and next task("continue", "exit", "end", or taskName)
     // TODO timeout implementation
     pub async fn execute(
         &self,
         cx: Arc<opentelemetry::Context>,
-        workflow_context: Arc<RwLock<WorkflowContext>>,
         parent_task: Arc<TaskContext>,
         execution_id: Option<Arc<ExecutionId>>,
     ) -> futures::stream::BoxStream<'static, Result<TaskContext, Box<workflow::Error>>> {
+        let position = parent_task.position.clone();
+        // enter task (add task name to position stack)
+        // XXX Do not forget to remove the position after task execution (difficult to debug)
+        position.write().await.push(self.task_name.clone());
+
         let input = parent_task.output.clone();
         let mut task_context = TaskContext::new(
             Some(self.task.clone()),
             input.clone(),
             parent_task.context_variables.clone(),
         );
-        task_context.position = parent_task.position.clone();
-        // enter task (add task name to position stack)
-        // XXX Do not forget to remove the position after task execution (difficult to debug)
-        task_context.add_position_name(self.task_name.clone()).await;
+        task_context.position = position.clone();
+
+        // skip task execution if checkpoint recovery is needed
+        let reach_checkpoint = self
+            .reach_for_checkpoint(&execution_id, &position, &self.task_name)
+            .await;
+
+        // overwrite task_context with checkpoint data if checkpoint recovery is needed
+        if let Some(reached) = reach_checkpoint {
+            tracing::info!(
+                "Skip task execution for {}: checkpoint recovery",
+                self.task_name
+            );
+            // If we skip the task, we still need to create a TaskContext with the input
+            let mut task_context = if reached {
+                match self.load_checkpoint(&execution_id, &position).await {
+                    Ok(Some(cp)) => cp,
+                    Ok(None) => {
+                        tracing::error!(
+                            "No checkpoint found for task in cp recovery: {}, execution_id: {:?}",
+                            self.task_name,
+                            execution_id
+                        );
+                        return futures::stream::once(futures::future::ready(Err(
+                            workflow::errors::ErrorFactory::new().not_found(
+                                format!(
+                                    "No checkpoint found for task: {}, execution_id: {:?}",
+                                    self.task_name, execution_id
+                                ),
+                                None,
+                                None,
+                            ),
+                        )))
+                        .boxed();
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to load checkpoint: {:#?}", e);
+                        return futures::stream::once(futures::future::ready(Err(e))).boxed();
+                    }
+                }
+            } else {
+                // not reached checkpoint, continue execution (skipping task)
+                task_context
+            };
+            task_context.set_completed_at();
+            return futures::stream::once(futures::future::ready(Ok(task_context))).boxed();
+        }
 
         let expression = Self::expression(
-            &*workflow_context.read().await,
+            &*self.workflow_context.read().await,
             Arc::new(task_context.clone()),
         )
         .await;
@@ -169,12 +307,7 @@ impl TaskExecutor {
         let err_pos = task_context.position.read().await.as_error_instance();
 
         let res = self
-            .execute_task(
-                cx,
-                workflow_context.clone(),
-                task_context,
-                execution_id.clone(),
-            )
+            .execute_task(cx, task_context, execution_id.clone())
             .await;
         // remove task position after execution (last task context)
         Box::pin(stream! {
@@ -204,7 +337,7 @@ impl TaskExecutor {
                         tc.remove_position().await; // remove task name from position stack
                         yield Ok(tc);
                     } else {
-                        tracing::debug!("Final item is an error: {:#?}", final_item);
+                        tracing::info!("Final item is an error: {:#?}", final_item);
                         // If the final item is an error, yield it as is
                         yield final_item;
                     }
@@ -314,6 +447,41 @@ impl TaskExecutor {
             }
             tracing::debug!("Transformed export: {:#?}", &export);
         }
+        // Determine next task
+        task_context.flow_directive = match task.then() {
+            Some(flow) => match Then::create(task_context.output.clone(), flow, expression) {
+                Ok(v) => v,
+                Err(mut e) => {
+                    tracing::error!("Failed to evaluate `then' condition: {:#?}", e);
+                    task_context.add_position_name("then".to_string()).await;
+                    let pos = task_context.position.read().await;
+                    e.position(&pos);
+                    return Err(e);
+                }
+            },
+            None => Then::Continue,
+        };
+        // Save checkpoint if necessary
+        Self::save_checkpoint(
+            checkpoint_repository.clone(),
+            workflow_context.clone(),
+            &task_context,
+            &task,
+            &execution_id,
+        )
+        .await?;
+
+        task_context.set_completed_at();
+        Ok(task_context)
+    }
+
+    async fn save_checkpoint(
+        checkpoint_repository: Option<Arc<dyn CheckPointRepositoryWithId>>,
+        workflow_context: Arc<RwLock<WorkflowContext>>,
+        task_context: &TaskContext,
+        task: &Task,
+        execution_id: &Option<Arc<ExecutionId>>,
+    ) -> Result<(), Box<workflow::Error>> {
         if let Some(checkpoint_repository) = &checkpoint_repository {
             if task.checkpoint() {
                 if let Some(execution_id) = &execution_id {
@@ -323,12 +491,11 @@ impl TaskExecutor {
                     tracing::debug!("Saving checkpoint for task: {}", &point);
                     // Save checkpoint
                     let wf_context = workflow_context.read().await;
-                    let checkpoint = CheckPointContext::new(&wf_context, &task_context).await;
+                    let checkpoint = CheckPointContext::new(&wf_context, task_context).await;
                     if let Err(e) = checkpoint_repository
                         .save_checkpoint_with_id(
                             execution_id.as_ref(),
                             &wf_context.definition.document.name,
-                            &point,
                             &checkpoint,
                         )
                         .await
@@ -344,37 +511,23 @@ impl TaskExecutor {
                         );
                         return Err(e);
                     }
+                    Ok(())
                 } else {
-                    tracing::warn!("Execution ID is not set, skipping checkpoint save");
+                    tracing::warn!("Execution ID is not set, skip saving checkpoint");
+                    Ok(())
                 }
             } else {
-                tracing::debug!("Task does not require checkpoint, skipping save");
+                // not necessary to save
+                Ok(())
             }
+        } else {
+            Ok(())
         }
-
-        // Determine next task
-        task_context.flow_directive = match task.then() {
-            Some(flow) => match Then::create(task_context.output.clone(), flow, expression) {
-                Ok(v) => v,
-                Err(mut e) => {
-                    tracing::error!("Failed to evaluate `then' condition: {:#?}", e);
-                    task_context.add_position_name("then".to_string()).await;
-                    let pos = task_context.position.read().await;
-                    e.position(&pos);
-                    return Err(e);
-                }
-            },
-            None => Then::Continue,
-        };
-
-        task_context.set_completed_at();
-        Ok(task_context)
     }
 
     async fn execute_task(
         &self,
         cx: Arc<opentelemetry::Context>,
-        workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
         execution_id: Option<Arc<ExecutionId>>,
     ) -> futures::stream::BoxStream<'static, Result<TaskContext, Box<workflow::Error>>> {
@@ -386,6 +539,8 @@ impl TaskExecutor {
         let task_enum = (*self.task).clone(); // XXX hard clone
         let original_task = self.task.clone(); // XXX hard clone
         let checkpoint_repository = self.checkpoint_repository.clone();
+        let default_task_timeout = self.default_task_timeout;
+        let workflow_context = self.workflow_context.clone();
 
         // Dispatch based on owned Task
         // need to update output context after task execution (not streaming task depends on the other kind tasks)
@@ -395,10 +550,13 @@ impl TaskExecutor {
                 let job_executor_wrapper_clone = job_executor_wrapper.clone();
                 let http_client_clone = http_client.clone();
                 let metadata_clone = self.metadata.clone();
+                let default_task_timeout = self.default_task_timeout;
 
                 Box::pin(stream! {
                     // lifetime issue workaround: executor needs to be created inside the stream
                     let executor = DoTaskStreamExecutor::new(
+                        workflow_context.clone(),
+                        default_task_timeout,
                         metadata_clone,
                         task_clone,
                         job_executor_wrapper_clone,
@@ -407,7 +565,7 @@ impl TaskExecutor {
                         execution_id.clone(),
                     );
 
-                    let mut base_stream = executor.execute_stream(cx, task_name, workflow_context, task_context);
+                    let mut base_stream = executor.execute_stream(cx, task_name, task_context);
                     while let Some(item) = base_stream.next().await {
                         yield item
                     }
@@ -422,6 +580,8 @@ impl TaskExecutor {
                 Box::pin(stream! {
                     // lifetime issue workaround: executor needs to be created inside the stream
                     let executor = ForTaskStreamExecutor::new(
+                        workflow_context.clone(),
+                        default_task_timeout,
                         task_clone,
                         job_executor_wrapper_clone,
                         http_client_clone,
@@ -430,7 +590,7 @@ impl TaskExecutor {
                         metadata_clone,
                     );
 
-                    let mut base_stream = executor.execute_stream(cx, task_name, workflow_context, task_context);
+                    let mut base_stream = executor.execute_stream(cx, task_name, task_context);
                     while let Some(item) = base_stream.next().await {
                         yield item
                     }
@@ -439,6 +599,8 @@ impl TaskExecutor {
             Task::ForkTask(task) => {
                 // ForkTask: single-shot execution
                 let fork_executor = ForkTaskExecutor::new(
+                    workflow_context.clone(),
+                    default_task_timeout,
                     task,
                     job_executor_wrapper.clone(),
                     http_client.clone(),
@@ -448,12 +610,7 @@ impl TaskExecutor {
                 );
                 futures::stream::once(async move {
                     match fork_executor
-                        .execute(
-                            cx,
-                            task_name.as_str(),
-                            workflow_context.clone(),
-                            task_context.clone(),
-                        )
+                        .execute(cx, task_name.as_str(), task_context.clone())
                         .await
                     {
                         Ok(ctx) => {
@@ -487,15 +644,10 @@ impl TaskExecutor {
                 .boxed()
             }
             Task::RaiseTask(task) => {
-                let task_executor = RaiseTaskExecutor::new(task);
+                let task_executor = RaiseTaskExecutor::new(workflow_context.clone(), task);
                 futures::stream::once(async move {
                     match task_executor
-                        .execute(
-                            cx,
-                            task_name.as_str(),
-                            workflow_context.clone(),
-                            task_context.clone(),
-                        )
+                        .execute(cx, task_name.as_str(), task_context.clone())
                         .await
                     {
                         Ok(ctx) => {
@@ -520,16 +672,16 @@ impl TaskExecutor {
                 .boxed()
             }
             Task::RunTask(task) => {
-                let task_executor =
-                    RunTaskExecutor::new(job_executor_wrapper.clone(), task, self.metadata.clone());
+                let task_executor = RunTaskExecutor::new(
+                    workflow_context.clone(),
+                    default_task_timeout,
+                    job_executor_wrapper.clone(),
+                    task,
+                    self.metadata.clone(),
+                );
                 futures::stream::once(async move {
                     match task_executor
-                        .execute(
-                            cx,
-                            task_name.as_str(),
-                            workflow_context.clone(),
-                            task_context.clone(),
-                        )
+                        .execute(cx, task_name.as_str(), task_context.clone())
                         .await
                     {
                         Ok(ctx) => {
@@ -554,15 +706,10 @@ impl TaskExecutor {
                 .boxed()
             }
             Task::SetTask(task) => {
-                let task_executor = SetTaskExecutor::new(task);
+                let task_executor = SetTaskExecutor::new(workflow_context.clone(), task);
                 futures::stream::once(async move {
                     match task_executor
-                        .execute(
-                            cx,
-                            task_name.as_str(),
-                            workflow_context.clone(),
-                            task_context.clone(),
-                        )
+                        .execute(cx, task_name.as_str(), task_context.clone())
                         .await
                     {
                         Ok(ctx) => {
@@ -587,15 +734,10 @@ impl TaskExecutor {
                 .boxed()
             }
             Task::SwitchTask(task) => {
-                let task_executor = SwitchTaskExecutor::new(&task);
+                let task_executor = SwitchTaskExecutor::new(workflow_context.clone(), &task);
                 futures::stream::once(async move {
                     match task_executor
-                        .execute(
-                            cx,
-                            task_name.as_str(),
-                            workflow_context.clone(),
-                            task_context.clone(),
-                        )
+                        .execute(cx, task_name.as_str(), task_context.clone())
                         .await
                     {
                         Ok(ctx) => {
@@ -621,6 +763,8 @@ impl TaskExecutor {
             }
             Task::TryTask(task) => {
                 let task_executor = TryTaskExecutor::new(
+                    workflow_context.clone(),
+                    default_task_timeout,
                     task,
                     job_executor_wrapper.clone(),
                     http_client.clone(),
@@ -630,12 +774,7 @@ impl TaskExecutor {
                 );
                 futures::stream::once(async move {
                     match task_executor
-                        .execute(
-                            cx,
-                            task_name.as_str(),
-                            workflow_context.clone(),
-                            task_context.clone(),
-                        )
+                        .execute(cx, task_name.as_str(), task_context.clone())
                         .await
                     {
                         Ok(ctx) => {
@@ -663,12 +802,7 @@ impl TaskExecutor {
                 let task_executor = WaitTaskExecutor::new(task);
                 futures::stream::once(async move {
                     match task_executor
-                        .execute(
-                            cx,
-                            task_name.as_str(),
-                            workflow_context.clone(),
-                            task_context.clone(),
-                        )
+                        .execute(cx, task_name.as_str(), task_context.clone())
                         .await
                     {
                         Ok(ctx) => {
@@ -701,7 +835,6 @@ pub trait TaskExecutorTrait<'a>: Send + Sync {
         &'a self,
         cx: Arc<opentelemetry::Context>,
         task_name: &'a str,
-        workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
     ) -> impl std::future::Future<Output = Result<TaskContext, Box<workflow::Error>>> + Send;
 }
@@ -711,17 +844,20 @@ pub trait StreamTaskExecutorTrait<'a>: Send + Sync {
         &'a self,
         cx: Arc<opentelemetry::Context>,
         task_name: Arc<String>,
-        workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
     ) -> impl futures::Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send;
 }
 
 pub struct RaiseTaskExecutor {
+    workflow_context: Arc<RwLock<WorkflowContext>>,
     task: workflow::RaiseTask,
 }
 impl RaiseTaskExecutor {
-    pub fn new(task: workflow::RaiseTask) -> Self {
-        Self { task }
+    pub fn new(workflow_context: Arc<RwLock<WorkflowContext>>, task: workflow::RaiseTask) -> Self {
+        Self {
+            workflow_context,
+            task,
+        }
     }
 }
 impl TaskExecutorTrait<'_> for RaiseTaskExecutor {
@@ -729,7 +865,6 @@ impl TaskExecutorTrait<'_> for RaiseTaskExecutor {
         &self,
         _cx: Arc<opentelemetry::Context>,
         _task_name: &str,
-        workflow_context: Arc<RwLock<WorkflowContext>>,
         task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
         tracing::error!("RaiseTaskExecutor raise error: {:?}", self.task.raise.error);
@@ -737,7 +872,7 @@ impl TaskExecutorTrait<'_> for RaiseTaskExecutor {
         let pos = task_context.position.clone();
         let mut pos = pos.write().await;
         pos.push("raise".to_string());
-        workflow_context.write().await.status = WorkflowStatus::Faulted;
+        self.workflow_context.write().await.status = WorkflowStatus::Faulted;
         Err(workflow::errors::ErrorFactory::create(
             workflow::errors::ErrorCode::Locked,
             Some(format!("Raise error!: {:?}", self.task.raise.error)),
@@ -761,7 +896,6 @@ impl TaskExecutorTrait<'_> for WaitTaskExecutor {
         &self,
         cx: Arc<opentelemetry::Context>,
         task_name: &str,
-        _workflow_context: Arc<RwLock<WorkflowContext>>,
         mut task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
         // let span = Self::child_tracing_span(&cx, APP_NAME, task_name.to_string());
@@ -795,10 +929,8 @@ impl ExecutionId {
     pub fn new_opt(value: Option<String>) -> Option<Self> {
         if value.as_ref().is_some_and(|v| v.is_empty()) {
             None
-        } else if let Some(value) = value {
-            Some(Self { value })
         } else {
-            None
+            value.map(|v| Self { value: v })
         }
     }
 }
