@@ -10,7 +10,6 @@ use infra::infra::worker::rdb::{RdbWorkerRepository, UseRdbWorkerRepository};
 use infra::infra::worker::redis::{RedisWorkerRepository, UseRedisWorkerRepository};
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use infra_utils::infra::cache::{MokaCacheConfig, MokaCacheImpl, UseMokaCache};
-use infra_utils::infra::memory::MemoryCacheImpl;
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
@@ -33,7 +32,7 @@ pub struct HybridWorkerAppImpl {
     moka_cache: MokaCacheImpl<Arc<String>, Worker>,
     list_memory_cache: MokaCacheImpl<Arc<String>, Vec<Worker>>,
     repositories: Arc<HybridRepositoryModule>,
-    descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
+    descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     runner_app: Arc<dyn RunnerApp + 'static>,
 }
 
@@ -43,7 +42,7 @@ impl HybridWorkerAppImpl {
         id_generator: Arc<IdGeneratorWrapper>,
         moka_config: &MokaCacheConfig,
         repositories: Arc<HybridRepositoryModule>,
-        descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
+        descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
         runner_app: Arc<dyn RunnerApp + 'static>,
     ) -> Self {
         let list_memory_cache = infra_utils::infra::cache::MokaCacheImpl::new(moka_config);
@@ -435,7 +434,7 @@ impl UseRunnerApp for HybridWorkerAppImpl {
     }
 }
 impl UseRunnerParserWithCache for HybridWorkerAppImpl {
-    fn descriptor_cache(&self) -> &MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor> {
+    fn descriptor_cache(&self) -> &MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor> {
         &self.descriptor_cache
     }
 }
@@ -465,7 +464,7 @@ mod tests {
     use infra::infra::module::redis::test::setup_test_redis_module;
     use infra::infra::module::HybridRepositoryModule;
     use infra::infra::IdGeneratorWrapper;
-    use infra_utils::infra::memory::MemoryCacheImpl;
+    use infra_utils::infra::cache::MokaCacheImpl;
     use infra_utils::infra::test::TEST_RUNTIME;
     use proto::jobworkerp::data::{RunnerId, StorageType, WorkerData};
     use proto::TestRunnerSettings;
@@ -485,16 +484,11 @@ mod tests {
         } else {
             Arc::new(IdGeneratorWrapper::new())
         };
-        let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
-            num_counters: 10000,
-            max_cost: 10000,
-            use_metrics: false,
-        };
         let moka_config = infra_utils::infra::cache::MokaCacheConfig {
             num_counters: 10000,
-            ttl: Some(Duration::from_secs(60 * 60)), // 1 hour
+            ttl: Some(Duration::from_secs(10)),
         };
-        let descriptor_cache = Arc::new(MemoryCacheImpl::new(&mc_config, None));
+        let descriptor_cache = Arc::new(MokaCacheImpl::new(&moka_config));
         let storage_config = Arc::new(StorageConfig {
             r#type: StorageType::Scalable,
             restore_at_startup: Some(false),
@@ -502,7 +496,7 @@ mod tests {
         let runner_app = HybridRunnerAppImpl::new(
             TEST_PLUGIN_DIR.to_string(),
             storage_config.clone(),
-            &mc_config,
+            &moka_config,
             repositories.clone(),
             descriptor_cache.clone(),
             id_generator.clone(),

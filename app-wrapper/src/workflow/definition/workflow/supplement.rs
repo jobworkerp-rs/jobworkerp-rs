@@ -236,6 +236,7 @@ impl RetryPolicy {
 impl Default for WorkflowSchema {
     fn default() -> Self {
         Self {
+            checkpointing: Default::default(),
             do_: Default::default(),
             document: Default::default(),
             input: Default::default(),

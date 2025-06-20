@@ -1,9 +1,15 @@
 use super::{expression::UseExpression, job::JobExecutorWrapper, task::TaskExecutor};
+use crate::modules::AppWrapperModule;
 use crate::workflow::definition::{
     transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
     workflow::{self, Task, WorkflowSchema},
 };
-use crate::workflow::execute::context::{self, TaskContext, WorkflowContext, WorkflowStatus};
+use crate::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId;
+use crate::workflow::execute::checkpoint::CheckPointContext;
+use crate::workflow::execute::context::{
+    self, TaskContext, WorkflowContext, WorkflowPosition, WorkflowStatus,
+};
+use crate::workflow::execute::task::ExecutionId;
 use anyhow::Result;
 use app::module::AppModule;
 use async_stream::stream;
@@ -14,43 +20,468 @@ use opentelemetry::{
     trace::{SpanRef, TraceContextExt},
     Context,
 };
+use proto::jobworkerp::data::StorageType;
+use std::time::Duration;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
 
 #[derive(Debug, Clone)]
 pub struct WorkflowExecutor {
+    pub default_task_timeout_sec: u64,
     pub job_executors: Arc<JobExecutorWrapper>,
     pub http_client: ReqwestClient,
     pub workflow: Arc<WorkflowSchema>,
     pub workflow_context: Arc<RwLock<context::WorkflowContext>>,
+    pub execution_id: Option<Arc<ExecutionId>>,
     pub metadata: Arc<HashMap<String, String>>,
+    pub checkpoint_repository: Option<Arc<dyn CheckPointRepositoryWithId>>,
 }
 impl UseJqAndTemplateTransformer for WorkflowExecutor {}
 impl UseExpressionTransformer for WorkflowExecutor {}
 impl UseExpression for WorkflowExecutor {}
 impl Tracing for WorkflowExecutor {}
 
+const DEFAULT_TASK_TIMEOUT_SEC: u64 = 1200; // 20 minutes
+const ROOT_TASK_NAME: &str = "ROOT";
+
+impl WorkflowTracing for WorkflowExecutor {}
+
 impl WorkflowExecutor {
-    pub fn new(
+    // Initializes a new WorkflowExecutor instance. (with update checkpoint context)
+    #[allow(clippy::too_many_arguments)]
+    pub async fn init(
+        app_wrapper_module: Arc<AppWrapperModule>,
         app_module: Arc<AppModule>,
         http_client: ReqwestClient,
         workflow: Arc<WorkflowSchema>,
         input: Arc<serde_json::Value>,
+        execution_id: Option<ExecutionId>,
         context: Arc<serde_json::Value>,
         metadata: Arc<HashMap<String, String>>,
-    ) -> Self {
+        checkpoint: Option<CheckPointContext>,
+    ) -> Result<Self, Box<workflow::Error>> {
+        let checkpoint_repository: Option<Arc<dyn CheckPointRepositoryWithId>> =
+            if let Some(checkpointing) = &workflow.checkpointing {
+                let workflow::CheckpointConfig { enabled, storage } = checkpointing;
+                if *enabled {
+                    match storage {
+                        &Some(workflow::CheckpointConfigStorage::Redis)
+                            if app_module.config_module.storage_type() == StorageType::Scalable =>
+                        {
+                            app_wrapper_module
+                                .repositories
+                                .redis_checkpoint_repository
+                                .clone()
+                        }
+                        _ => Some(
+                            app_wrapper_module
+                                .repositories
+                                .memory_checkpoint_repository
+                                .clone(),
+                        ),
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+        // update checkpoint context if provided, and extract the position
+        if let (Some(chpoint), Some(execution_id), Some(repo)) = (
+            &checkpoint,
+            execution_id.as_ref(),
+            checkpoint_repository.as_ref(),
+        ) {
+            repo.save_checkpoint_with_id(
+                execution_id,
+                &workflow.document.name.to_string(),
+                chpoint,
+            )
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to save checkpoint: {:#?}", e);
+                workflow::errors::ErrorFactory::new().service_unavailable(
+                    format!("Failed to execute by jobworkerp: {:?}", e),
+                    Some(
+                        WorkflowPosition::new(vec![
+                            serde_json::to_value(ROOT_TASK_NAME).unwrap_or(serde_json::Value::Null)
+                        ])
+                        .as_error_instance(),
+                    ),
+                    Some(format!("{:?}", e)),
+                )
+            })?;
+        } else {
+            tracing::warn!("Execution ID is not provided, ignore checkpointing");
+        }
         let workflow_context = Arc::new(RwLock::new(context::WorkflowContext::new(
-            &workflow, input, context,
+            &workflow,
+            input,
+            context,
+            checkpoint.map(|cp| cp.position),
         )));
+
         let job_executors = Arc::new(JobExecutorWrapper::new(app_module));
-        Self {
+        // let checkpoint_epository = workflow.;
+        Ok(Self {
+            default_task_timeout_sec: app_wrapper_module
+                .config_module
+                .workflow_config
+                .task_default_timeout_sec
+                .unwrap_or(DEFAULT_TASK_TIMEOUT_SEC),
             job_executors,
             http_client,
             workflow,
             workflow_context,
+            execution_id: execution_id.map(Arc::new),
             metadata,
+            checkpoint_repository,
+        })
+    }
+    pub async fn update_checkpoint_context(
+        &self,
+        execution_id: &ExecutionId,
+        checkpoint: &CheckPointContext,
+    ) -> Result<()> {
+        if let Some(repo) = self.checkpoint_repository.as_ref() {
+            repo.save_checkpoint_with_id(
+                execution_id,
+                &self.workflow.document.name.to_string(),
+                checkpoint,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+    /// Executes the workflow.
+    ///
+    /// This function sets the workflow status to running, validates the input schema,
+    /// transforms the input, executes the tasks, and provides a stream of workflow contexts
+    /// updated after each task execution.
+    ///
+    /// # Returns
+    /// A `Stream<Item = Result<Arc<RwLock<WorkflowContext>>>>` containing the updated workflow context
+    /// after each task execution.
+    pub fn execute_workflow(
+        &self,
+        cx: Arc<opentelemetry::Context>,
+    ) -> impl Stream<Item = Result<Arc<RwLock<WorkflowContext>>, Box<workflow::Error>>> + 'static
+    {
+        let initial_wfc = self.workflow_context.clone();
+        let workflow = self.workflow.clone();
+        let job_executors = self.job_executors.clone();
+        let http_client = self.http_client.clone();
+        let cxc = cx.clone();
+        let metadata = self.metadata.clone();
+        let execution_id = self.execution_id.clone();
+        let default_task_timeout = Duration::from_secs(self.default_task_timeout_sec);
+        let checkpoint_repository = self.checkpoint_repository.clone();
+
+        stream! {
+            // Set workflow to running status
+            {
+                let mut lock = initial_wfc.write().await;
+                lock.status = WorkflowStatus::Running;
+            }
+            let span =
+                Self::start_child_otel_span(&cxc, APP_WORKER_NAME, "execute_workflow".to_string());
+            let ccx = Context::current_with_span(span);
+            let span = ccx.span();
+            let ccx = Arc::new(ccx.clone());
+            let cp_task_context = if let (Some(execution_id), Some(checkpoint_repository), Some(pos)) =
+              (&execution_id, &checkpoint_repository, &initial_wfc.read().await.checkpoint_position)
+            {
+                // Load checkpoint if available
+                let workflow_name = workflow.document.name.to_string();
+                match checkpoint_repository.get_checkpoint_with_id(
+                    execution_id,
+                    &workflow_name,
+                    &pos.as_json_pointer(),
+                ).await {
+                    Ok(Some(checkpoint)) => {
+                        tracing::debug!("Loaded checkpoint for workflow: {}, execution_id={}", &workflow_name, &execution_id.value);
+                        let mut lock = initial_wfc.write().await;
+                        lock.position = checkpoint.position.clone();
+                        lock.input = checkpoint.workflow.input.clone();
+                        lock.context_variables = Arc::new(Mutex::new((*checkpoint.workflow.context_variables).clone()));
+                        drop(lock);
+                        Some(TaskContext::new_from_cp(
+                            None,
+                            &checkpoint.task
+                        ))
+                    }
+                    Ok(None) => {
+                        tracing::warn!("No checkpoint found for workflow: {}, execution_id={}", &workflow_name, &execution_id.value);
+                        None
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to load checkpoint: {:#?}", e);
+                        // yield Err(Box::new(e));
+                yield Err(workflow::errors::ErrorFactory::new().service_unavailable(
+                    format!("Failed to load checkpoint from execution_id: {}, workflow: {}, position: {}, error: {:#?}",
+                      execution_id.value, workflow_name, &pos.as_json_pointer(), e),
+                    Some(
+                        WorkflowPosition::new(vec![
+                            serde_json::to_value(ROOT_TASK_NAME).unwrap_or(serde_json::Value::Null)
+                        ])
+                        .as_error_instance(),
+                    ),
+                    Some(format!("{:?}", e)),
+                ));
+
+                        return;
+                    }
+                }
+            } else {
+                // normal execution without checkpoint
+                None
+            };
+
+            let input = {
+                let lock = initial_wfc.read().await;
+                // Record workflow metadata and input
+                Self::record_workflow_metadata(&span, &workflow, &lock.id.to_string());
+                Self::record_workflow_input(&span, &lock.input);
+                lock.input.clone()
+            };
+
+            // Validate input schema
+            if let Some(schema) = workflow.input.schema.as_ref() {
+                if let Some(schema) = schema.json_schema() {
+                    match jsonschema::validate(schema, &input).map_err(|e| {
+                        anyhow::anyhow!("Failed to validate workflow input schema: {:#?}", e)
+                    }) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::debug!("Failed to validate workflow input schema: {:#?}", e);
+                            let mut wf = initial_wfc.write().await;
+                            wf.status = WorkflowStatus::Faulted;
+                            let error_output =
+                                Arc::new(serde_json::json!({"error": e.to_string()}));
+                            Self::record_workflow_output(&span, &error_output, &wf.status);
+                            wf.output = Some(error_output);
+                            drop(wf);
+                            yield Ok(initial_wfc.clone());
+                            return;
+                        }
+                    }
+                }
+            }
+
+            let mut task_context = cp_task_context.unwrap_or(TaskContext::new(
+                None,
+                input.clone(),
+                Arc::new(Mutex::new(serde_json::Map::new())),
+            ));
+
+            let wfr = initial_wfc.read().await;
+            let expression_result =
+                WorkflowExecutor::expression(&wfr, Arc::new(task_context.clone())).await;
+            drop(wfr);
+
+            let expression = match expression_result {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::debug!("Failed to create expression: {:#?}", e);
+                    let mut wf = initial_wfc.write().await;
+                    wf.status = WorkflowStatus::Faulted;
+                    let error_output = Arc::new(serde_json::json!({"error": e.to_string()}));
+                    Self::record_workflow_output(&span, &error_output, &wf.status);
+                    wf.output = Some(error_output);
+                    drop(wf);
+                    yield Ok(initial_wfc.clone());
+                    return;
+                }
+            };
+
+            // Transform input
+            let transformed_input = if let Some(from) = workflow.input.from.as_ref() {
+                match WorkflowExecutor::transform_input(input.clone(), from, &expression) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::debug!("Failed to transform input: {:#?}", e);
+                        let mut wf = initial_wfc.write().await;
+                        wf.status = WorkflowStatus::Faulted;
+                        let error_output = Arc::new(serde_json::json!({"error": e.to_string()}));
+                        Self::record_workflow_output(&span, &error_output, &wf.status);
+                        wf.output = Some(error_output);
+                        drop(wf);
+                        yield Ok(initial_wfc.clone());
+                        return;
+                    }
+                }
+            } else {
+                input.clone()
+            };
+            task_context.set_input(transformed_input);
+
+
+            // run workflow tasks as do_task
+            let task_executor = TaskExecutor::new(
+                initial_wfc.clone(),
+                default_task_timeout,
+                job_executors,
+                http_client,
+                checkpoint_repository.clone(),
+                ROOT_TASK_NAME,
+                Arc::new(Task::DoTask(workflow.create_do_task(metadata.clone()))),
+                metadata.clone(),
+            );
+            let mut task_stream = task_executor
+                .execute(ccx, Arc::new(task_context), execution_id.clone())
+                .await;
+
+            tracing::debug!(
+                "Task stream created for workflow: {}, id={}",
+                workflow.document.name.as_str(),
+                initial_wfc.read().await.id.to_string()
+            );
+            while let Some(tc_result) = task_stream.next().await {
+                match tc_result {
+                    Ok(tc) => {
+                        // Update and yield workflow context
+                        let mut wf = initial_wfc.write().await;
+                        wf.output = Some(tc.output.clone());
+                        wf.position = tc.position.read().await.clone(); // XXX clone
+                        drop(wf);
+                        yield Ok(initial_wfc.clone());
+                    }
+                    Err(e) => {
+                        tracing::debug!("Failed to execute task list: {:#?}", e);
+                        let mut wf = initial_wfc.write().await;
+                        wf.status = WorkflowStatus::Faulted;
+                        let error_output = Arc::new(serde_json::json!({"error": e.to_string()}));
+                        Self::record_workflow_output(&span, &error_output, &wf.status);
+                        wf.output = Some(error_output);
+                        drop(wf);
+                        Self::record_error(&span, &e.to_string());
+                        yield Err(e);
+                    }
+                }
+            }
+
+            // Process final task context for output transformation
+            let lock = initial_wfc.read().await;
+            if lock.status == WorkflowStatus::Running {
+                drop(lock);
+
+                // Transform output if specified
+                if let Some(output) = workflow.output.as_ref() {
+                    if let Some(as_) = output.as_.as_ref() {
+                        let wfr = initial_wfc.read().await;
+                        let expression_result = WorkflowExecutor::expression(
+                            &wfr,
+                            Arc::new(TaskContext::new(
+                                None,
+                                wfr.input.clone(),
+                                Arc::new(Mutex::new(serde_json::Map::new())),
+                            )),
+                        )
+                        .await;
+                        drop(wfr);
+
+                        if let Ok(expression) = expression_result {
+                            let mut lock = initial_wfc.write().await;
+                            if let Some(output_value) = lock.output.clone() {
+                                match WorkflowExecutor::transform_output(
+                                    output_value,
+                                    as_,
+                                    &expression,
+                                ) {
+                                    Ok(transformed_output) => {
+                                        lock.output = Some(transformed_output);
+                                    }
+                                    Err(e) => {
+                                        tracing::debug!("Failed to transform output: {:#?}", e);
+                                        lock.status = WorkflowStatus::Faulted;
+                                        let error_output =
+                                            Arc::new(serde_json::json!({"error": e.to_string()}));
+                                        Self::record_workflow_output(
+                                            &span,
+                                            &error_output,
+                                            &lock.status,
+                                        );
+                                        lock.output = Some(error_output);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let mut lock = initial_wfc.write().await;
+                // Mark workflow as completed if it's still running
+                if lock.status == WorkflowStatus::Running {
+                    lock.status = WorkflowStatus::Completed;
+                }
+
+                // Record final output
+                if let Some(output) = lock.output.as_ref() {
+                    Self::record_workflow_output(&span, output, &lock.status);
+                }
+
+                drop(lock);
+
+                // Yield final workflow context
+                yield Ok(initial_wfc.clone());
+            }
+
+            // Log workflow status
+            let lock = initial_wfc.read().await;
+            match lock.status {
+                WorkflowStatus::Completed | WorkflowStatus::Running => {
+                    tracing::info!(
+                        "Workflow completed: id={}, doc={:#?}",
+                        &lock.id,
+                        &lock.definition.document
+                    );
+                }
+                WorkflowStatus::Faulted => {
+                    tracing::error!(
+                        "Workflow faulted: id={}, doc={:#?}",
+                        lock.id,
+                        lock.definition.document
+                    );
+                }
+                WorkflowStatus::Cancelled => {
+                    tracing::warn!(
+                        "Workflow canceled: id={}, doc={:#?}",
+                        lock.id,
+                        lock.definition.document
+                    );
+                }
+                WorkflowStatus::Pending | WorkflowStatus::Waiting => {
+                    tracing::warn!(
+                        "Workflow is ended in waiting yet: id={}, doc={:#?}",
+                        lock.id,
+                        lock.definition.document
+                    );
+                }
+            }
         }
     }
+
+    /// Cancels the workflow if it is running, pending, or waiting.
+    ///
+    /// This function sets the workflow status to `Cancelled` and logs the cancellation.
+    pub async fn cancel(&self) {
+        let mut lock = self.workflow_context.write().await;
+        tracing::info!(
+            "Cancel workflow: {}, id={}",
+            self.workflow.document.name.to_string(),
+            self.workflow_context.read().await.id.to_string()
+        );
+        if lock.status == WorkflowStatus::Running
+            || lock.status == WorkflowStatus::Pending
+            || lock.status == WorkflowStatus::Waiting
+        {
+            lock.status = WorkflowStatus::Cancelled;
+        }
+    }
+}
+
+pub trait WorkflowTracing {
     /// Records workflow input to the current span using OpenTelemetry semantic conventions
     fn record_workflow_input(span: &SpanRef, input: &serde_json::Value) {
         // Record input as pretty-printed JSON - Jaeger will parse and display it nicely
@@ -253,282 +684,12 @@ impl WorkflowExecutor {
             "workflow_executor",
         ));
     }
-
-    /// Executes the workflow.
-    ///
-    /// This function sets the workflow status to running, validates the input schema,
-    /// transforms the input, executes the tasks, and provides a stream of workflow contexts
-    /// updated after each task execution.
-    ///
-    /// # Returns
-    /// A `Stream<Item = Result<Arc<RwLock<WorkflowContext>>>>` containing the updated workflow context
-    /// after each task execution.
-    pub fn execute_workflow(
-        &self,
-        cx: Arc<opentelemetry::Context>,
-    ) -> impl Stream<Item = Result<Arc<RwLock<WorkflowContext>>, Box<workflow::Error>>> + 'static
-    {
-        let initial_wfc = self.workflow_context.clone();
-        let workflow = self.workflow.clone();
-        let job_executors = self.job_executors.clone();
-        let http_client = self.http_client.clone();
-        let cxc = cx.clone();
-        let metadata = self.metadata.clone();
-
-        stream! {
-            // Set workflow to running status
-            {
-                let mut lock = initial_wfc.write().await;
-                lock.status = WorkflowStatus::Running;
-            }
-            let span =
-                Self::start_child_otel_span(&cxc, APP_WORKER_NAME, "execute_workflow".to_string());
-            let ccx = Context::current_with_span(span);
-            let span = ccx.span();
-            let ccx = Arc::new(ccx.clone());
-
-            let input = {
-                let lock = initial_wfc.read().await;
-                // Record workflow metadata and input
-                Self::record_workflow_metadata(&span, &workflow, &lock.id.to_string());
-                Self::record_workflow_input(&span, &lock.input);
-                lock.input.clone()
-            };
-
-            // Validate input schema
-            if let Some(schema) = workflow.input.schema.as_ref() {
-                if let Some(schema) = schema.json_schema() {
-                    match jsonschema::validate(schema, &input).map_err(|e| {
-                        anyhow::anyhow!("Failed to validate workflow input schema: {:#?}", e)
-                    }) {
-                        Ok(_) => {}
-                        Err(e) => {
-                            tracing::debug!("Failed to validate workflow input schema: {:#?}", e);
-                            let mut wf = initial_wfc.write().await;
-                            wf.status = WorkflowStatus::Faulted;
-                            let error_output =
-                                Arc::new(serde_json::json!({"error": e.to_string()}));
-                            Self::record_workflow_output(&span, &error_output, &wf.status);
-                            wf.output = Some(error_output);
-                            drop(wf);
-                            yield Ok(initial_wfc.clone());
-                            return;
-                        }
-                    }
-                }
-            }
-
-            let mut task_context = TaskContext::new(
-                None,
-                input.clone(),
-                Arc::new(Mutex::new(serde_json::Map::new())),
-            );
-
-            let wfr = initial_wfc.read().await;
-            let expression_result =
-                WorkflowExecutor::expression(&wfr, Arc::new(task_context.clone())).await;
-            drop(wfr);
-
-            let expression = match expression_result {
-                Ok(e) => e,
-                Err(e) => {
-                    tracing::debug!("Failed to create expression: {:#?}", e);
-                    let mut wf = initial_wfc.write().await;
-                    wf.status = WorkflowStatus::Faulted;
-                    let error_output = Arc::new(serde_json::json!({"error": e.to_string()}));
-                    Self::record_workflow_output(&span, &error_output, &wf.status);
-                    wf.output = Some(error_output);
-                    drop(wf);
-                    yield Ok(initial_wfc.clone());
-                    return;
-                }
-            };
-
-            // Transform input
-            let transformed_input = if let Some(from) = workflow.input.from.as_ref() {
-                match WorkflowExecutor::transform_input(input.clone(), from, &expression) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::debug!("Failed to transform input: {:#?}", e);
-                        let mut wf = initial_wfc.write().await;
-                        wf.status = WorkflowStatus::Faulted;
-                        let error_output = Arc::new(serde_json::json!({"error": e.to_string()}));
-                        Self::record_workflow_output(&span, &error_output, &wf.status);
-                        wf.output = Some(error_output);
-                        drop(wf);
-                        yield Ok(initial_wfc.clone());
-                        return;
-                    }
-                }
-            } else {
-                input.clone()
-            };
-            task_context.set_input(transformed_input);
-
-            // run workflow tasks as do_task
-            let task_executor = TaskExecutor::new(
-                job_executors,
-                http_client,
-                "ROOT",
-                Arc::new(Task::DoTask(workflow.create_do_task(metadata.clone()))),
-                metadata.clone(),
-            );
-            let mut task_stream = task_executor
-                .execute(ccx, initial_wfc.clone(), Arc::new(task_context))
-                .await;
-
-            tracing::debug!(
-                "Task stream created for workflow: {}, id={}",
-                workflow.document.name.as_str(),
-                initial_wfc.read().await.id.to_string()
-            );
-            while let Some(tc_result) = task_stream.next().await {
-                match tc_result {
-                    Ok(tc) => {
-                        // Update and yield workflow context
-                        let mut wf = initial_wfc.write().await;
-                        wf.output = Some(tc.output.clone());
-                        wf.position = tc.position.read().await.clone(); // XXX clone
-                        drop(wf);
-                        yield Ok(initial_wfc.clone());
-                    }
-                    Err(e) => {
-                        tracing::debug!("Failed to execute task list: {:#?}", e);
-                        let mut wf = initial_wfc.write().await;
-                        wf.status = WorkflowStatus::Faulted;
-                        let error_output = Arc::new(serde_json::json!({"error": e.to_string()}));
-                        Self::record_workflow_output(&span, &error_output, &wf.status);
-                        wf.output = Some(error_output);
-                        drop(wf);
-                        Self::record_error(&span, &e.to_string());
-                        yield Err(e);
-                    }
-                }
-            }
-
-            // Process final task context for output transformation
-            let lock = initial_wfc.read().await;
-            if lock.status == WorkflowStatus::Running {
-                drop(lock);
-
-                // Transform output if specified
-                if let Some(output) = workflow.output.as_ref() {
-                    if let Some(as_) = output.as_.as_ref() {
-                        let wfr = initial_wfc.read().await;
-                        let expression_result = WorkflowExecutor::expression(
-                            &wfr,
-                            Arc::new(TaskContext::new(
-                                None,
-                                wfr.input.clone(),
-                                Arc::new(Mutex::new(serde_json::Map::new())),
-                            )),
-                        )
-                        .await;
-                        drop(wfr);
-
-                        if let Ok(expression) = expression_result {
-                            let mut lock = initial_wfc.write().await;
-                            if let Some(output_value) = lock.output.clone() {
-                                match WorkflowExecutor::transform_output(
-                                    output_value,
-                                    as_,
-                                    &expression,
-                                ) {
-                                    Ok(transformed_output) => {
-                                        lock.output = Some(transformed_output);
-                                    }
-                                    Err(e) => {
-                                        tracing::debug!("Failed to transform output: {:#?}", e);
-                                        lock.status = WorkflowStatus::Faulted;
-                                        let error_output =
-                                            Arc::new(serde_json::json!({"error": e.to_string()}));
-                                        Self::record_workflow_output(
-                                            &span,
-                                            &error_output,
-                                            &lock.status,
-                                        );
-                                        lock.output = Some(error_output);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                let mut lock = initial_wfc.write().await;
-                // Mark workflow as completed if it's still running
-                if lock.status == WorkflowStatus::Running {
-                    lock.status = WorkflowStatus::Completed;
-                }
-
-                // Record final output
-                if let Some(output) = lock.output.as_ref() {
-                    Self::record_workflow_output(&span, output, &lock.status);
-                }
-
-                drop(lock);
-
-                // Yield final workflow context
-                yield Ok(initial_wfc.clone());
-            }
-
-            // Log workflow status
-            let lock = initial_wfc.read().await;
-            match lock.status {
-                WorkflowStatus::Completed | WorkflowStatus::Running => {
-                    tracing::info!(
-                        "Workflow completed: id={}, doc={:#?}",
-                        &lock.id,
-                        &lock.definition.document
-                    );
-                }
-                WorkflowStatus::Faulted => {
-                    tracing::error!(
-                        "Workflow faulted: id={}, doc={:#?}",
-                        lock.id,
-                        lock.definition.document
-                    );
-                }
-                WorkflowStatus::Cancelled => {
-                    tracing::warn!(
-                        "Workflow canceled: id={}, doc={:#?}",
-                        lock.id,
-                        lock.definition.document
-                    );
-                }
-                WorkflowStatus::Pending | WorkflowStatus::Waiting => {
-                    tracing::warn!(
-                        "Workflow is ended in waiting yet: id={}, doc={:#?}",
-                        lock.id,
-                        lock.definition.document
-                    );
-                }
-            }
-        }
-    }
-
-    /// Cancels the workflow if it is running, pending, or waiting.
-    ///
-    /// This function sets the workflow status to `Cancelled` and logs the cancellation.
-    pub async fn cancel(&self) {
-        let mut lock = self.workflow_context.write().await;
-        tracing::info!(
-            "Cancel workflow: {}, id={}",
-            self.workflow.document.name.to_string(),
-            self.workflow_context.read().await.id.to_string()
-        );
-        if lock.status == WorkflowStatus::Running
-            || lock.status == WorkflowStatus::Pending
-            || lock.status == WorkflowStatus::Waiting
-        {
-            lock.status = WorkflowStatus::Cancelled;
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::test::create_test_app_wrapper_module;
     use crate::workflow::definition::workflow::{
         Document, FlowDirective, FlowDirectiveEnum, Input, Output, SetTask, Task, TaskList,
         WorkflowName, WorkflowSchema, WorkflowVersion,
@@ -553,6 +714,7 @@ mod tests {
                     output: None,
                     then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Continue)),
                     timeout: None,
+                    checkpoint: false,
                 }),
             );
             let mut map2 = HashMap::new();
@@ -567,6 +729,7 @@ mod tests {
                     output: None,
                     then: Some(FlowDirective::Variant0(FlowDirectiveEnum::End)),
                     timeout: None,
+                    checkpoint: false,
                 }),
             );
             vec![map1, map2]
@@ -574,6 +737,7 @@ mod tests {
         let task_list = TaskList(task_map_list);
 
         WorkflowSchema {
+            checkpointing: None,
             document: Document {
                 name: WorkflowName::from_str("test-workflow").unwrap(),
                 version: WorkflowVersion::from_str("1.0.0").unwrap(),
@@ -596,6 +760,7 @@ mod tests {
     fn test_execute_workflow() {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
             let http_client = ReqwestClient::new(
                 Some("test"),
                 Some(std::time::Duration::from_secs(1)),
@@ -608,14 +773,19 @@ mod tests {
             let input = Arc::new(serde_json::json!({"test": "input"}));
             let context = Arc::new(serde_json::json!({}));
 
-            let executor = WorkflowExecutor::new(
+            let executor = WorkflowExecutor::init(
+                app_wrapper_module,
                 app_module,
                 http_client,
                 Arc::new(workflow.clone()),
                 input.clone(),
+                None,
                 context.clone(),
                 Arc::new(HashMap::new()),
-            );
+                None,
+            )
+            .await
+            .unwrap();
 
             let workflow_stream =
                 executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
@@ -645,6 +815,7 @@ mod tests {
     fn test_cancel_workflow() {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
             let http_client = ReqwestClient::new(
                 Some("test"),
                 Some(std::time::Duration::from_secs(1)),
@@ -657,14 +828,19 @@ mod tests {
             let input = Arc::new(serde_json::json!({"test": "input"}));
             let context = Arc::new(serde_json::json!({}));
 
-            let executor = WorkflowExecutor::new(
+            let executor = WorkflowExecutor::init(
+                app_wrapper_module,
                 app_module,
                 http_client,
                 Arc::new(workflow.clone()),
                 input.clone(),
+                None,
                 context.clone(),
                 Arc::new(HashMap::new()),
-            );
+                None,
+            )
+            .await
+            .unwrap();
 
             executor.workflow_context.write().await.status = WorkflowStatus::Running;
 

@@ -118,11 +118,15 @@ mod test {
             let redis_client = setup_test_redis_client()?;
             let worker_config = Arc::new(load_worker_config());
             let app_module = Arc::new(app::module::test::create_hybrid_test_app().await?);
+            let app_wrapper_module = Arc::new(
+                app_wrapper::modules::test::create_test_app_wrapper_module(app_module.clone()),
+            );
             let worker_app2 = app_module.worker_app.clone();
             worker_app2.delete_all().await?;
 
             let runner_factory = Arc::new(RunnerFactory::new(
                 app_module.clone(),
+                app_wrapper_module.clone(),
                 Arc::new(McpServerFactory::default()),
             ));
             // XXX empty runner map (must confirm deletion: use mock?)

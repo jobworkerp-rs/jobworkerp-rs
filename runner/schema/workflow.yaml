@@ -23,6 +23,20 @@ description: >-
 type: object
 required: [document, input, do]
 properties:
+  checkpointing:
+    type: object
+    title: Checkpoint Config
+    description: Configures checkpoint/restart feature.
+    properties:
+      enabled:
+        type: boolean
+        description: Enable checkpoint feature.
+        default: false
+      storage:
+        type: string
+        enum: ["memory", "redis"]
+        description": "Checkpoint storage backend.(if enabled)"
+    required: ["enabled"]
   document:
     type: object
     title: Document
@@ -134,6 +148,11 @@ $defs:
         title: TaskMetadata
         description: Holds additional information about the task.
         additionalProperties: true
+      checkpoint:
+        type: boolean
+        title: Checkpoint
+        description: If true, save workflow state after this task. Used for checkpoint/restart.
+        default: false
   task:
     title: Task
     description: A discrete unit of work that contributes to achieving the overall objectives defined by the workflow.

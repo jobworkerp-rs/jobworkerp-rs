@@ -131,15 +131,12 @@ pub trait UseRedisCheckPointRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::{
-        definition::workflow::{Input, WorkflowDsl, WorkflowSchema},
-        execute::{
-            checkpoint::{TaskCheckPointContext, WorkflowCheckPointContext},
-            context::{Then, WorkflowPosition},
-        },
+    use crate::workflow::execute::{
+        checkpoint::{TaskCheckPointContext, WorkflowCheckPointContext},
+        context::WorkflowPosition,
     };
     use command_utils::util::stack::StackWithHistory;
-    use std::{str::FromStr, sync::Arc};
+    use std::sync::Arc;
     use uuid::Uuid;
 
     #[tokio::test]
@@ -159,17 +156,7 @@ mod tests {
         let retrieved_checkpoint = retrieved.unwrap();
 
         // Verify workflow context
-        assert_eq!(checkpoint.workflow.id, retrieved_checkpoint.workflow.id);
-        assert_eq!(
-            checkpoint.workflow.definition.document.name,
-            retrieved_checkpoint.workflow.definition.document.name
-        );
-
-        // Verify task context
-        assert_eq!(
-            checkpoint.task.flow_directive,
-            retrieved_checkpoint.task.flow_directive
-        );
+        assert_eq!(checkpoint.workflow.name, retrieved_checkpoint.workflow.name);
 
         // Verify position
         assert_eq!(
@@ -240,15 +227,21 @@ mod tests {
 
         // Create second checkpoint with different workflow ID
         let mut checkpoint2 = create_test_checkpoint_context();
-        checkpoint2.workflow.id = Uuid::new_v4();
+        checkpoint2.workflow.name = Uuid::new_v4().to_string();
         repo.save_checkpoint(key, &checkpoint2).await?;
 
         // Verify the checkpoint was updated (overwritten)
         let retrieved = repo.get_checkpoint(key).await?;
         assert!(retrieved.is_some());
         let retrieved_checkpoint = retrieved.unwrap();
-        assert_eq!(checkpoint2.workflow.id, retrieved_checkpoint.workflow.id);
-        assert_ne!(checkpoint1.workflow.id, retrieved_checkpoint.workflow.id);
+        assert_eq!(
+            checkpoint2.workflow.name,
+            retrieved_checkpoint.workflow.name
+        );
+        assert_ne!(
+            checkpoint1.workflow.name,
+            retrieved_checkpoint.workflow.name
+        );
 
         // Cleanup
         repo.delete_checkpoint(key).await?;
@@ -295,58 +288,28 @@ mod tests {
     }
 
     fn create_test_checkpoint_context() -> CheckPointContext {
-        let workflow_id = Uuid::new_v4();
+        let workflow_name = Uuid::new_v4();
         let input = Arc::new(serde_json::json!({"test": "input"}));
-        let output = Some(Arc::new(serde_json::json!({"test": "output"})));
         let context_variables = Arc::new(
             [("var1".to_string(), serde_json::json!("value1"))]
                 .iter()
                 .cloned()
                 .collect::<serde_json::Map<String, serde_json::Value>>(),
         );
-        use crate::workflow::definition::workflow::{
-            Document, TaskList, WorkflowName, WorkflowNamespace, WorkflowVersion,
-        };
 
         // Create WorkflowCheckPointContext directly with minimal fields
         let workflow_checkpoint = WorkflowCheckPointContext {
-            id: workflow_id,
-            definition: Arc::new(WorkflowSchema {
-                document: Document {
-                    dsl: WorkflowDsl::from_str("0.0.1").unwrap(),
-                    name: WorkflowName::try_from("test-workflow").unwrap(),
-                    namespace: WorkflowNamespace::try_from("default").unwrap(),
-                    version: WorkflowVersion::try_from("1.0.0").unwrap(),
-                    title: Some("Test Workflow".to_string()),
-                    summary: Some("Test workflow description".to_string()),
-                    tags: serde_json::Map::new(),
-                    metadata: serde_json::Map::new(),
-                },
-                do_: TaskList::from(Vec::new()),
-                input: Input {
-                    from: Some(crate::workflow::definition::workflow::InputFrom::Variant1(
-                        serde_json::json!({"input": "data"})
-                            .as_object()
-                            .unwrap()
-                            .clone(),
-                    )),
-                    ..Default::default()
-                },
-                output: None,
-            }),
+            name: workflow_name.to_string(),
             input: input.clone(),
-            output: output.clone(),
             context_variables: context_variables.clone(),
         };
 
         // Create TaskCheckPointContext directly
         let task_checkpoint = TaskCheckPointContext {
-            raw_input: input.clone(),
             input: input.clone(),
-            raw_output: Arc::new(serde_json::json!({"raw": "output"})),
             output: Arc::new(serde_json::json!({"processed": "output"})),
             context_variables: context_variables.clone(),
-            flow_directive: Then::Continue,
+            flow_directive: "exit".to_string(),
         };
 
         // Create WorkflowPosition directly

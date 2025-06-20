@@ -68,7 +68,7 @@ pub trait FunctionCallHelper:
         name: &'a str,
     ) -> impl Future<Output = Result<Option<(RunnerWithSchema, Option<String>)>>> + Send + 'a {
         async move {
-            match self.runner_app().find_runner_by_name(name, None).await {
+            match self.runner_app().find_runner_by_name(name).await {
                 Ok(Some(runner)) => {
                     tracing::debug!("found runner: {:?}", &runner);
                     Ok(Some((runner, None)))
@@ -81,7 +81,7 @@ pub trait FunctionCallHelper:
                             &tool_name
                         );
                         self.runner_app()
-                            .find_runner_by_name(&server_name, None)
+                            .find_runner_by_name(&server_name)
                             .await
                             .map(|res| res.map(|r| (r, Some(tool_name))))
                     }
@@ -207,10 +207,7 @@ pub trait FunctionCallHelper:
                 arguments_schema: _arguments_schema,
                 output_schema: _output_schema,
                 tools: _tools,
-            }) = self
-                .runner_app()
-                .find_runner_by_name(runner_name, None)
-                .await?
+            }) = self.runner_app().find_runner_by_name(runner_name).await?
             // TODO local cache? (2 times request in this function)
             {
                 let runner_settings_descriptor =
@@ -262,7 +259,7 @@ pub trait FunctionCallHelper:
     ) -> impl Future<Output = Result<Option<Value>>> + Send + 'a {
         async move {
             let runner = if let Some(runner_id) = temp_worker_data.runner_id.as_ref() {
-                self.runner_app().find_runner(runner_id, None).await?
+                self.runner_app().find_runner(runner_id).await?
             } else {
                 None
             };

@@ -77,6 +77,131 @@ impl CatchErrors {
         Default::default()
     }
 }
+#[doc = "Configures checkpoint/restart feature."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"Checkpoint Config\","]
+#[doc = "  \"description\": \"Configures checkpoint/restart feature.\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"enabled\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"enabled\": {"]
+#[doc = "      \"description\": \"Enable checkpoint feature.\","]
+#[doc = "      \"default\": false,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"storage\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"memory\","]
+#[doc = "        \"redis\""]
+#[doc = "      ],"]
+#[doc = "      \"description\\\"\": \"Checkpoint storage backend.(if enabled)\""]
+#[doc = "    }"]
+#[doc = "  }"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+pub struct CheckpointConfig {
+    #[doc = "Enable checkpoint feature."]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub storage: ::std::option::Option<CheckpointConfigStorage>,
+}
+impl ::std::convert::From<&CheckpointConfig> for CheckpointConfig {
+    fn from(value: &CheckpointConfig) -> Self {
+        value.clone()
+    }
+}
+impl CheckpointConfig {
+    pub fn builder() -> builder::CheckpointConfig {
+        Default::default()
+    }
+}
+#[doc = "CheckpointConfigStorage"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"memory\","]
+#[doc = "    \"redis\""]
+#[doc = "  ],"]
+#[doc = "  \"description\\\"\": \"Checkpoint storage backend.(if enabled)\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum CheckpointConfigStorage {
+    #[serde(rename = "memory")]
+    Memory,
+    #[serde(rename = "redis")]
+    Redis,
+}
+impl ::std::convert::From<&Self> for CheckpointConfigStorage {
+    fn from(value: &CheckpointConfigStorage) -> Self {
+        value.clone()
+    }
+}
+impl ::std::fmt::Display for CheckpointConfigStorage {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Memory => write!(f, "memory"),
+            Self::Redis => write!(f, "redis"),
+        }
+    }
+}
+impl ::std::str::FromStr for CheckpointConfigStorage {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "memory" => Ok(Self::Memory),
+            "redis" => Ok(Self::Redis),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for CheckpointConfigStorage {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for CheckpointConfigStorage {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for CheckpointConfigStorage {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
 #[doc = "DoTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -88,6 +213,12 @@ impl CatchErrors {
 #[doc = "    \"do\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
+#[doc = "    \"checkpoint\": {"]
+#[doc = "      \"title\": \"Checkpoint\","]
+#[doc = "      \"description\": \"If true, save workflow state after this task. Used for checkpoint/restart.\","]
+#[doc = "      \"default\": false,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
 #[doc = "    \"do\": {"]
 #[doc = "      \"title\": \"DoTaskConfiguration\","]
 #[doc = "      \"description\": \"The configuration of the tasks to perform sequentially.\","]
@@ -146,6 +277,9 @@ impl CatchErrors {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct DoTask {
+    #[doc = "If true, save workflow state after this task. Used for checkpoint/restart."]
+    #[serde(default)]
+    pub checkpoint: bool,
     #[doc = "The configuration of the tasks to perform sequentially."]
     #[serde(rename = "do")]
     pub do_: TaskList,
@@ -338,7 +472,7 @@ impl Document {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq, Eq)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum Duration {
     Inline {
@@ -928,6 +1062,12 @@ impl ::std::convert::TryFrom<::std::string::String> for FlowDirectiveEnum {
 #[doc = "    \"for\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
+#[doc = "    \"checkpoint\": {"]
+#[doc = "      \"title\": \"Checkpoint\","]
+#[doc = "      \"description\": \"If true, save workflow state after this task. Used for checkpoint/restart.\","]
+#[doc = "      \"default\": false,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
 #[doc = "    \"do\": {"]
 #[doc = "      \"title\": \"ForTaskDo\","]
 #[doc = "      \"$ref\": \"#/$defs/taskList\""]
@@ -1023,6 +1163,9 @@ impl ::std::convert::TryFrom<::std::string::String> for FlowDirectiveEnum {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct ForTask {
+    #[doc = "If true, save workflow state after this task. Used for checkpoint/restart."]
+    #[serde(default)]
+    pub checkpoint: bool,
     #[serde(rename = "do")]
     pub do_: TaskList,
     #[doc = "Export task output to context."]
@@ -1140,6 +1283,12 @@ impl ForTaskConfiguration {
 #[doc = "    \"fork\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
+#[doc = "    \"checkpoint\": {"]
+#[doc = "      \"title\": \"Checkpoint\","]
+#[doc = "      \"description\": \"If true, save workflow state after this task. Used for checkpoint/restart.\","]
+#[doc = "      \"default\": false,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
 #[doc = "    \"export\": {"]
 #[doc = "      \"title\": \"TaskBaseExport\","]
 #[doc = "      \"description\": \"Export task output to context.\","]
@@ -1213,6 +1362,9 @@ impl ForTaskConfiguration {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct ForkTask {
+    #[doc = "If true, save workflow state after this task. Used for checkpoint/restart."]
+    #[serde(default)]
+    pub checkpoint: bool,
     #[doc = "Export task output to context."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub export: ::std::option::Option<Export>,
@@ -1850,6 +2002,12 @@ impl ::std::default::Default for ProcessReturnType {
 #[doc = "    \"raise\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
+#[doc = "    \"checkpoint\": {"]
+#[doc = "      \"title\": \"Checkpoint\","]
+#[doc = "      \"description\": \"If true, save workflow state after this task. Used for checkpoint/restart.\","]
+#[doc = "      \"default\": false,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
 #[doc = "    \"export\": {"]
 #[doc = "      \"title\": \"TaskBaseExport\","]
 #[doc = "      \"description\": \"Export task output to context.\","]
@@ -1928,6 +2086,9 @@ impl ::std::default::Default for ProcessReturnType {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct RaiseTask {
+    #[doc = "If true, save workflow state after this task. Used for checkpoint/restart."]
+    #[serde(default)]
+    pub checkpoint: bool,
     #[doc = "Export task output to context."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub export: ::std::option::Option<Export>,
@@ -2100,7 +2261,7 @@ impl ::std::convert::From<Error> for RaiseTaskError {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq, Eq)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub enum RetryBackoff {
     #[serde(rename = "constant")]
     Constant(::serde_json::Map<::std::string::String, ::serde_json::Value>),
@@ -2146,7 +2307,7 @@ impl ::std::convert::From<&Self> for RetryBackoff {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq, Eq)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct RetryLimit {
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub attempt: ::std::option::Option<RetryLimitAttempt>,
@@ -2192,7 +2353,7 @@ impl RetryLimit {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq, Eq)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct RetryLimitAttempt {
     #[doc = "The maximum amount of retry attempts, if any."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -2593,6 +2754,12 @@ impl RunRunner {
 #[doc = "    \"run\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
+#[doc = "    \"checkpoint\": {"]
+#[doc = "      \"title\": \"Checkpoint\","]
+#[doc = "      \"description\": \"If true, save workflow state after this task. Used for checkpoint/restart.\","]
+#[doc = "      \"default\": false,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
 #[doc = "    \"export\": {"]
 #[doc = "      \"title\": \"TaskBaseExport\","]
 #[doc = "      \"description\": \"Export task output to context.\","]
@@ -2680,6 +2847,9 @@ impl RunRunner {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct RunTask {
+    #[doc = "If true, save workflow state after this task. Used for checkpoint/restart."]
+    #[serde(default)]
+    pub checkpoint: bool,
     #[doc = "Export task output to context."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub export: ::std::option::Option<Export>,
@@ -2923,6 +3093,12 @@ impl ::std::convert::From<&Self> for Schema {
 #[doc = "    \"set\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
+#[doc = "    \"checkpoint\": {"]
+#[doc = "      \"title\": \"Checkpoint\","]
+#[doc = "      \"description\": \"If true, save workflow state after this task. Used for checkpoint/restart.\","]
+#[doc = "      \"default\": false,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
 #[doc = "    \"export\": {"]
 #[doc = "      \"title\": \"TaskBaseExport\","]
 #[doc = "      \"description\": \"Export task output to context.\","]
@@ -2982,6 +3158,9 @@ impl ::std::convert::From<&Self> for Schema {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct SetTask {
+    #[doc = "If true, save workflow state after this task. Used for checkpoint/restart."]
+    #[serde(default)]
+    pub checkpoint: bool,
     #[doc = "Export task output to context."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub export: ::std::option::Option<Export>,
@@ -3076,6 +3255,12 @@ impl SwitchCase {
 #[doc = "    \"switch\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
+#[doc = "    \"checkpoint\": {"]
+#[doc = "      \"title\": \"Checkpoint\","]
+#[doc = "      \"description\": \"If true, save workflow state after this task. Used for checkpoint/restart.\","]
+#[doc = "      \"default\": false,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
 #[doc = "    \"export\": {"]
 #[doc = "      \"title\": \"TaskBaseExport\","]
 #[doc = "      \"description\": \"Export task output to context.\","]
@@ -3161,6 +3346,9 @@ impl SwitchCase {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct SwitchTask {
+    #[doc = "If true, save workflow state after this task. Used for checkpoint/restart."]
+    #[serde(default)]
+    pub checkpoint: bool,
     #[doc = "Export task output to context."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub export: ::std::option::Option<Export>,
@@ -3312,6 +3500,12 @@ impl ::std::convert::From<WaitTask> for Task {
 #[doc = "  \"description\": \"An object inherited by all tasks.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"properties\": {"]
+#[doc = "    \"checkpoint\": {"]
+#[doc = "      \"title\": \"Checkpoint\","]
+#[doc = "      \"description\": \"If true, save workflow state after this task. Used for checkpoint/restart.\","]
+#[doc = "      \"default\": false,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
 #[doc = "    \"export\": {"]
 #[doc = "      \"title\": \"TaskBaseExport\","]
 #[doc = "      \"description\": \"Export task output to context.\","]
@@ -3364,6 +3558,9 @@ impl ::std::convert::From<WaitTask> for Task {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct TaskBase {
+    #[doc = "If true, save workflow state after this task. Used for checkpoint/restart."]
+    #[serde(default)]
+    pub checkpoint: bool,
     #[doc = "Export task output to context."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub export: ::std::option::Option<Export>,
@@ -3397,6 +3594,7 @@ impl ::std::convert::From<&TaskBase> for TaskBase {
 impl ::std::default::Default for TaskBase {
     fn default() -> Self {
         Self {
+            checkpoint: Default::default(),
             export: Default::default(),
             if_: Default::default(),
             input: Default::default(),
@@ -3603,6 +3801,12 @@ impl Timeout {
 #[doc = "      },"]
 #[doc = "      \"unevaluatedProperties\": false"]
 #[doc = "    },"]
+#[doc = "    \"checkpoint\": {"]
+#[doc = "      \"title\": \"Checkpoint\","]
+#[doc = "      \"description\": \"If true, save workflow state after this task. Used for checkpoint/restart.\","]
+#[doc = "      \"default\": false,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
 #[doc = "    \"export\": {"]
 #[doc = "      \"title\": \"TaskBaseExport\","]
 #[doc = "      \"description\": \"Export task output to context.\","]
@@ -3661,6 +3865,9 @@ impl Timeout {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct TryTask {
     pub catch: TryTaskCatch,
+    #[doc = "If true, save workflow state after this task. Used for checkpoint/restart."]
+    #[serde(default)]
+    pub checkpoint: bool,
     #[doc = "Export task output to context."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub export: ::std::option::Option<Export>,
@@ -3922,6 +4129,12 @@ impl ::std::fmt::Display for UriTemplate {
 #[doc = "    \"wait\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
+#[doc = "    \"checkpoint\": {"]
+#[doc = "      \"title\": \"Checkpoint\","]
+#[doc = "      \"description\": \"If true, save workflow state after this task. Used for checkpoint/restart.\","]
+#[doc = "      \"default\": false,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
 #[doc = "    \"export\": {"]
 #[doc = "      \"title\": \"TaskBaseExport\","]
 #[doc = "      \"description\": \"Export task output to context.\","]
@@ -3979,6 +4192,9 @@ impl ::std::fmt::Display for UriTemplate {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct WaitTask {
+    #[doc = "If true, save workflow state after this task. Used for checkpoint/restart."]
+    #[serde(default)]
+    pub checkpoint: bool,
     #[doc = "Export task output to context."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub export: ::std::option::Option<Export>,
@@ -4279,6 +4495,29 @@ impl<'de> ::serde::Deserialize<'de> for WorkflowNamespace {
 #[doc = "    \"input\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
+#[doc = "    \"checkpointing\": {"]
+#[doc = "      \"title\": \"Checkpoint Config\","]
+#[doc = "      \"description\": \"Configures checkpoint/restart feature.\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"enabled\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"enabled\": {"]
+#[doc = "          \"description\": \"Enable checkpoint feature.\","]
+#[doc = "          \"default\": false,"]
+#[doc = "          \"type\": \"boolean\""]
+#[doc = "        },"]
+#[doc = "        \"storage\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"enum\": ["]
+#[doc = "            \"memory\","]
+#[doc = "            \"redis\""]
+#[doc = "          ],"]
+#[doc = "          \"description\\\"\": \"Checkpoint storage backend.(if enabled)\""]
+#[doc = "        }"]
+#[doc = "      }"]
+#[doc = "    },"]
 #[doc = "    \"do\": {"]
 #[doc = "      \"title\": \"Do\","]
 #[doc = "      \"description\": \"Defines the task(s) the workflow must perform.\","]
@@ -4363,6 +4602,8 @@ impl<'de> ::serde::Deserialize<'de> for WorkflowNamespace {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct WorkflowSchema {
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub checkpointing: ::std::option::Option<CheckpointConfig>,
     #[doc = "Defines the task(s) the workflow must perform."]
     #[serde(rename = "do")]
     pub do_: TaskList,
@@ -4504,7 +4745,65 @@ pub mod builder {
         }
     }
     #[derive(Clone, Debug)]
+    pub struct CheckpointConfig {
+        enabled: ::std::result::Result<bool, ::std::string::String>,
+        storage: ::std::result::Result<
+            ::std::option::Option<super::CheckpointConfigStorage>,
+            ::std::string::String,
+        >,
+    }
+    impl ::std::default::Default for CheckpointConfig {
+        fn default() -> Self {
+            Self {
+                enabled: Err("no value supplied for enabled".to_string()),
+                storage: Ok(Default::default()),
+            }
+        }
+    }
+    impl CheckpointConfig {
+        pub fn enabled<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.enabled = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for enabled: {}", e));
+            self
+        }
+        pub fn storage<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<super::CheckpointConfigStorage>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.storage = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for storage: {}", e));
+            self
+        }
+    }
+    impl ::std::convert::TryFrom<CheckpointConfig> for super::CheckpointConfig {
+        type Error = super::error::ConversionError;
+        fn try_from(
+            value: CheckpointConfig,
+        ) -> ::std::result::Result<Self, super::error::ConversionError> {
+            Ok(Self {
+                enabled: value.enabled?,
+                storage: value.storage?,
+            })
+        }
+    }
+    impl ::std::convert::From<super::CheckpointConfig> for CheckpointConfig {
+        fn from(value: super::CheckpointConfig) -> Self {
+            Self {
+                enabled: Ok(value.enabled),
+                storage: Ok(value.storage),
+            }
+        }
+    }
+    #[derive(Clone, Debug)]
     pub struct DoTask {
+        checkpoint: ::std::result::Result<bool, ::std::string::String>,
         do_: ::std::result::Result<super::TaskList, ::std::string::String>,
         export: ::std::result::Result<::std::option::Option<super::Export>, ::std::string::String>,
         if_: ::std::result::Result<
@@ -4527,6 +4826,7 @@ pub mod builder {
     impl ::std::default::Default for DoTask {
         fn default() -> Self {
             Self {
+                checkpoint: Ok(Default::default()),
                 do_: Err("no value supplied for do_".to_string()),
                 export: Ok(Default::default()),
                 if_: Ok(Default::default()),
@@ -4539,6 +4839,16 @@ pub mod builder {
         }
     }
     impl DoTask {
+        pub fn checkpoint<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.checkpoint = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+            self
+        }
         pub fn do_<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<super::TaskList>,
@@ -4626,6 +4936,7 @@ pub mod builder {
         type Error = super::error::ConversionError;
         fn try_from(value: DoTask) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
+                checkpoint: value.checkpoint?,
                 do_: value.do_?,
                 export: value.export?,
                 if_: value.if_?,
@@ -4640,6 +4951,7 @@ pub mod builder {
     impl ::std::convert::From<super::DoTask> for DoTask {
         fn from(value: super::DoTask) -> Self {
             Self {
+                checkpoint: Ok(value.checkpoint),
                 do_: Ok(value.do_),
                 export: Ok(value.export),
                 if_: Ok(value.if_),
@@ -5125,6 +5437,7 @@ pub mod builder {
     }
     #[derive(Clone, Debug)]
     pub struct ForTask {
+        checkpoint: ::std::result::Result<bool, ::std::string::String>,
         do_: ::std::result::Result<super::TaskList, ::std::string::String>,
         export: ::std::result::Result<::std::option::Option<super::Export>, ::std::string::String>,
         for_: ::std::result::Result<super::ForTaskConfiguration, ::std::string::String>,
@@ -5153,6 +5466,7 @@ pub mod builder {
     impl ::std::default::Default for ForTask {
         fn default() -> Self {
             Self {
+                checkpoint: Ok(Default::default()),
                 do_: Err("no value supplied for do_".to_string()),
                 export: Ok(Default::default()),
                 for_: Err("no value supplied for for_".to_string()),
@@ -5168,6 +5482,16 @@ pub mod builder {
         }
     }
     impl ForTask {
+        pub fn checkpoint<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.checkpoint = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+            self
+        }
         pub fn do_<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<super::TaskList>,
@@ -5285,6 +5609,7 @@ pub mod builder {
         type Error = super::error::ConversionError;
         fn try_from(value: ForTask) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
+                checkpoint: value.checkpoint?,
                 do_: value.do_?,
                 export: value.export?,
                 for_: value.for_?,
@@ -5302,6 +5627,7 @@ pub mod builder {
     impl ::std::convert::From<super::ForTask> for ForTask {
         fn from(value: super::ForTask) -> Self {
             Self {
+                checkpoint: Ok(value.checkpoint),
                 do_: Ok(value.do_),
                 export: Ok(value.export),
                 for_: Ok(value.for_),
@@ -5386,6 +5712,7 @@ pub mod builder {
     }
     #[derive(Clone, Debug)]
     pub struct ForkTask {
+        checkpoint: ::std::result::Result<bool, ::std::string::String>,
         export: ::std::result::Result<::std::option::Option<super::Export>, ::std::string::String>,
         fork: ::std::result::Result<super::ForkTaskConfiguration, ::std::string::String>,
         if_: ::std::result::Result<
@@ -5408,6 +5735,7 @@ pub mod builder {
     impl ::std::default::Default for ForkTask {
         fn default() -> Self {
             Self {
+                checkpoint: Ok(Default::default()),
                 export: Ok(Default::default()),
                 fork: Err("no value supplied for fork".to_string()),
                 if_: Ok(Default::default()),
@@ -5420,6 +5748,16 @@ pub mod builder {
         }
     }
     impl ForkTask {
+        pub fn checkpoint<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.checkpoint = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+            self
+        }
         pub fn export<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<::std::option::Option<super::Export>>,
@@ -5507,6 +5845,7 @@ pub mod builder {
         type Error = super::error::ConversionError;
         fn try_from(value: ForkTask) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
+                checkpoint: value.checkpoint?,
                 export: value.export?,
                 fork: value.fork?,
                 if_: value.if_?,
@@ -5521,6 +5860,7 @@ pub mod builder {
     impl ::std::convert::From<super::ForkTask> for ForkTask {
         fn from(value: super::ForkTask) -> Self {
             Self {
+                checkpoint: Ok(value.checkpoint),
                 export: Ok(value.export),
                 fork: Ok(value.fork),
                 if_: Ok(value.if_),
@@ -5892,6 +6232,7 @@ pub mod builder {
     }
     #[derive(Clone, Debug)]
     pub struct RaiseTask {
+        checkpoint: ::std::result::Result<bool, ::std::string::String>,
         export: ::std::result::Result<::std::option::Option<super::Export>, ::std::string::String>,
         if_: ::std::result::Result<
             ::std::option::Option<::std::string::String>,
@@ -5914,6 +6255,7 @@ pub mod builder {
     impl ::std::default::Default for RaiseTask {
         fn default() -> Self {
             Self {
+                checkpoint: Ok(Default::default()),
                 export: Ok(Default::default()),
                 if_: Ok(Default::default()),
                 input: Ok(Default::default()),
@@ -5926,6 +6268,16 @@ pub mod builder {
         }
     }
     impl RaiseTask {
+        pub fn checkpoint<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.checkpoint = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+            self
+        }
         pub fn export<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<::std::option::Option<super::Export>>,
@@ -6015,6 +6367,7 @@ pub mod builder {
             value: RaiseTask,
         ) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
+                checkpoint: value.checkpoint?,
                 export: value.export?,
                 if_: value.if_?,
                 input: value.input?,
@@ -6029,6 +6382,7 @@ pub mod builder {
     impl ::std::convert::From<super::RaiseTask> for RaiseTask {
         fn from(value: super::RaiseTask) -> Self {
             Self {
+                checkpoint: Ok(value.checkpoint),
                 export: Ok(value.export),
                 if_: Ok(value.if_),
                 input: Ok(value.input),
@@ -6446,6 +6800,7 @@ pub mod builder {
     }
     #[derive(Clone, Debug)]
     pub struct RunTask {
+        checkpoint: ::std::result::Result<bool, ::std::string::String>,
         export: ::std::result::Result<::std::option::Option<super::Export>, ::std::string::String>,
         if_: ::std::result::Result<
             ::std::option::Option<::std::string::String>,
@@ -6468,6 +6823,7 @@ pub mod builder {
     impl ::std::default::Default for RunTask {
         fn default() -> Self {
             Self {
+                checkpoint: Ok(Default::default()),
                 export: Ok(Default::default()),
                 if_: Ok(Default::default()),
                 input: Ok(Default::default()),
@@ -6480,6 +6836,16 @@ pub mod builder {
         }
     }
     impl RunTask {
+        pub fn checkpoint<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.checkpoint = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+            self
+        }
         pub fn export<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<::std::option::Option<super::Export>>,
@@ -6567,6 +6933,7 @@ pub mod builder {
         type Error = super::error::ConversionError;
         fn try_from(value: RunTask) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
+                checkpoint: value.checkpoint?,
                 export: value.export?,
                 if_: value.if_?,
                 input: value.input?,
@@ -6581,6 +6948,7 @@ pub mod builder {
     impl ::std::convert::From<super::RunTask> for RunTask {
         fn from(value: super::RunTask) -> Self {
             Self {
+                checkpoint: Ok(value.checkpoint),
                 export: Ok(value.export),
                 if_: Ok(value.if_),
                 input: Ok(value.input),
@@ -6634,6 +7002,7 @@ pub mod builder {
     }
     #[derive(Clone, Debug)]
     pub struct SetTask {
+        checkpoint: ::std::result::Result<bool, ::std::string::String>,
         export: ::std::result::Result<::std::option::Option<super::Export>, ::std::string::String>,
         if_: ::std::result::Result<
             ::std::option::Option<::std::string::String>,
@@ -6659,6 +7028,7 @@ pub mod builder {
     impl ::std::default::Default for SetTask {
         fn default() -> Self {
             Self {
+                checkpoint: Ok(Default::default()),
                 export: Ok(Default::default()),
                 if_: Ok(Default::default()),
                 input: Ok(Default::default()),
@@ -6671,6 +7041,16 @@ pub mod builder {
         }
     }
     impl SetTask {
+        pub fn checkpoint<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.checkpoint = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+            self
+        }
         pub fn export<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<::std::option::Option<super::Export>>,
@@ -6760,6 +7140,7 @@ pub mod builder {
         type Error = super::error::ConversionError;
         fn try_from(value: SetTask) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
+                checkpoint: value.checkpoint?,
                 export: value.export?,
                 if_: value.if_?,
                 input: value.input?,
@@ -6774,6 +7155,7 @@ pub mod builder {
     impl ::std::convert::From<super::SetTask> for SetTask {
         fn from(value: super::SetTask) -> Self {
             Self {
+                checkpoint: Ok(value.checkpoint),
                 export: Ok(value.export),
                 if_: Ok(value.if_),
                 input: Ok(value.input),
@@ -6844,6 +7226,7 @@ pub mod builder {
     }
     #[derive(Clone, Debug)]
     pub struct SwitchTask {
+        checkpoint: ::std::result::Result<bool, ::std::string::String>,
         export: ::std::result::Result<::std::option::Option<super::Export>, ::std::string::String>,
         if_: ::std::result::Result<
             ::std::option::Option<::std::string::String>,
@@ -6869,6 +7252,7 @@ pub mod builder {
     impl ::std::default::Default for SwitchTask {
         fn default() -> Self {
             Self {
+                checkpoint: Ok(Default::default()),
                 export: Ok(Default::default()),
                 if_: Ok(Default::default()),
                 input: Ok(Default::default()),
@@ -6881,6 +7265,16 @@ pub mod builder {
         }
     }
     impl SwitchTask {
+        pub fn checkpoint<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.checkpoint = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+            self
+        }
         pub fn export<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<::std::option::Option<super::Export>>,
@@ -6974,6 +7368,7 @@ pub mod builder {
             value: SwitchTask,
         ) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
+                checkpoint: value.checkpoint?,
                 export: value.export?,
                 if_: value.if_?,
                 input: value.input?,
@@ -6988,6 +7383,7 @@ pub mod builder {
     impl ::std::convert::From<super::SwitchTask> for SwitchTask {
         fn from(value: super::SwitchTask) -> Self {
             Self {
+                checkpoint: Ok(value.checkpoint),
                 export: Ok(value.export),
                 if_: Ok(value.if_),
                 input: Ok(value.input),
@@ -7001,6 +7397,7 @@ pub mod builder {
     }
     #[derive(Clone, Debug)]
     pub struct TaskBase {
+        checkpoint: ::std::result::Result<bool, ::std::string::String>,
         export: ::std::result::Result<::std::option::Option<super::Export>, ::std::string::String>,
         if_: ::std::result::Result<
             ::std::option::Option<::std::string::String>,
@@ -7022,6 +7419,7 @@ pub mod builder {
     impl ::std::default::Default for TaskBase {
         fn default() -> Self {
             Self {
+                checkpoint: Ok(Default::default()),
                 export: Ok(Default::default()),
                 if_: Ok(Default::default()),
                 input: Ok(Default::default()),
@@ -7033,6 +7431,16 @@ pub mod builder {
         }
     }
     impl TaskBase {
+        pub fn checkpoint<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.checkpoint = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+            self
+        }
         pub fn export<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<::std::option::Option<super::Export>>,
@@ -7110,6 +7518,7 @@ pub mod builder {
         type Error = super::error::ConversionError;
         fn try_from(value: TaskBase) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
+                checkpoint: value.checkpoint?,
                 export: value.export?,
                 if_: value.if_?,
                 input: value.input?,
@@ -7123,6 +7532,7 @@ pub mod builder {
     impl ::std::convert::From<super::TaskBase> for TaskBase {
         fn from(value: super::TaskBase) -> Self {
             Self {
+                checkpoint: Ok(value.checkpoint),
                 export: Ok(value.export),
                 if_: Ok(value.if_),
                 input: Ok(value.input),
@@ -7174,6 +7584,7 @@ pub mod builder {
     #[derive(Clone, Debug)]
     pub struct TryTask {
         catch: ::std::result::Result<super::TryTaskCatch, ::std::string::String>,
+        checkpoint: ::std::result::Result<bool, ::std::string::String>,
         export: ::std::result::Result<::std::option::Option<super::Export>, ::std::string::String>,
         if_: ::std::result::Result<
             ::std::option::Option<::std::string::String>,
@@ -7197,6 +7608,7 @@ pub mod builder {
         fn default() -> Self {
             Self {
                 catch: Err("no value supplied for catch".to_string()),
+                checkpoint: Ok(Default::default()),
                 export: Ok(Default::default()),
                 if_: Ok(Default::default()),
                 input: Ok(Default::default()),
@@ -7217,6 +7629,16 @@ pub mod builder {
             self.catch = value
                 .try_into()
                 .map_err(|e| format!("error converting supplied value for catch: {}", e));
+            self
+        }
+        pub fn checkpoint<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.checkpoint = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
             self
         }
         pub fn export<T>(mut self, value: T) -> Self
@@ -7307,6 +7729,7 @@ pub mod builder {
         fn try_from(value: TryTask) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
                 catch: value.catch?,
+                checkpoint: value.checkpoint?,
                 export: value.export?,
                 if_: value.if_?,
                 input: value.input?,
@@ -7322,6 +7745,7 @@ pub mod builder {
         fn from(value: super::TryTask) -> Self {
             Self {
                 catch: Ok(value.catch),
+                checkpoint: Ok(value.checkpoint),
                 export: Ok(value.export),
                 if_: Ok(value.if_),
                 input: Ok(value.input),
@@ -7458,6 +7882,7 @@ pub mod builder {
     }
     #[derive(Clone, Debug)]
     pub struct WaitTask {
+        checkpoint: ::std::result::Result<bool, ::std::string::String>,
         export: ::std::result::Result<::std::option::Option<super::Export>, ::std::string::String>,
         if_: ::std::result::Result<
             ::std::option::Option<::std::string::String>,
@@ -7480,6 +7905,7 @@ pub mod builder {
     impl ::std::default::Default for WaitTask {
         fn default() -> Self {
             Self {
+                checkpoint: Ok(Default::default()),
                 export: Ok(Default::default()),
                 if_: Ok(Default::default()),
                 input: Ok(Default::default()),
@@ -7492,6 +7918,16 @@ pub mod builder {
         }
     }
     impl WaitTask {
+        pub fn checkpoint<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.checkpoint = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+            self
+        }
         pub fn export<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<::std::option::Option<super::Export>>,
@@ -7579,6 +8015,7 @@ pub mod builder {
         type Error = super::error::ConversionError;
         fn try_from(value: WaitTask) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
+                checkpoint: value.checkpoint?,
                 export: value.export?,
                 if_: value.if_?,
                 input: value.input?,
@@ -7593,6 +8030,7 @@ pub mod builder {
     impl ::std::convert::From<super::WaitTask> for WaitTask {
         fn from(value: super::WaitTask) -> Self {
             Self {
+                checkpoint: Ok(value.checkpoint),
                 export: Ok(value.export),
                 if_: Ok(value.if_),
                 input: Ok(value.input),
@@ -7606,6 +8044,10 @@ pub mod builder {
     }
     #[derive(Clone, Debug)]
     pub struct WorkflowSchema {
+        checkpointing: ::std::result::Result<
+            ::std::option::Option<super::CheckpointConfig>,
+            ::std::string::String,
+        >,
         do_: ::std::result::Result<super::TaskList, ::std::string::String>,
         document: ::std::result::Result<super::Document, ::std::string::String>,
         input: ::std::result::Result<super::Input, ::std::string::String>,
@@ -7614,6 +8056,7 @@ pub mod builder {
     impl ::std::default::Default for WorkflowSchema {
         fn default() -> Self {
             Self {
+                checkpointing: Ok(Default::default()),
                 do_: Err("no value supplied for do_".to_string()),
                 document: Err("no value supplied for document".to_string()),
                 input: Err("no value supplied for input".to_string()),
@@ -7622,6 +8065,16 @@ pub mod builder {
         }
     }
     impl WorkflowSchema {
+        pub fn checkpointing<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<super::CheckpointConfig>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.checkpointing = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for checkpointing: {}", e));
+            self
+        }
         pub fn do_<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<super::TaskList>,
@@ -7669,6 +8122,7 @@ pub mod builder {
             value: WorkflowSchema,
         ) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
+                checkpointing: value.checkpointing?,
                 do_: value.do_?,
                 document: value.document?,
                 input: value.input?,
@@ -7679,6 +8133,7 @@ pub mod builder {
     impl ::std::convert::From<super::WorkflowSchema> for WorkflowSchema {
         fn from(value: super::WorkflowSchema) -> Self {
             Self {
+                checkpointing: Ok(value.checkpointing),
                 do_: Ok(value.do_),
                 document: Ok(value.document),
                 input: Ok(value.input),

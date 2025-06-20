@@ -107,6 +107,7 @@ impl WorkflowLoader {
             let do_task: workflow::DoTask =
                 serde_json::from_str(data).or_else(|_| serde_yaml::from_str(data))?;
             Ok(workflow::WorkflowSchema {
+                checkpointing: None,
                 do_: do_task.do_,
                 input: do_task.input.unwrap_or_default(),
                 output: do_task.output,

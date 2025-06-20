@@ -29,4 +29,51 @@ message InlineWorkflowArgs {
   // Unique identifier for the workflow execution instance
   // Used to track and manage the execution state if specified
   optional string execution_id = 5;
+
+  message Checkpoint {
+    message WorkflowCheckPointContext {
+      string name = 1;  // Unique name for the workflow
+      string input = 2; // Input data for the workflow execution (usually JSON)
+      string context_variables =
+          3; // Context variables for the workflow execution (usually JSON)
+    }
+    message TaskCheckPointContext {
+      // Processed input data for the task execution (usually JSON)
+      string input = 1;
+      // Processed output data from the task execution (usually JSON)
+      string output = 2;
+      // Context variables for the task execution (usually JSON)
+      string context_variables = 3;
+      // Flow directive for the task execution (e.g. "continue", "end", "exit",
+      // and task name)
+      string flow_directive = 4;
+    }
+    message CheckPointContext {
+      WorkflowCheckPointContext workflow = 1; // Workflow checkpoint context
+      TaskCheckPointContext task = 2;         // Task checkpoint context
+    }
+
+    // # Checkpoint Data
+    // overwrite the context data for the checkpoint if specified.
+    // Must conform to the schema defined in the workflow definition
+    // (Can be a plain string or JSON formatted string, runtime expression
+    // available) If not specified, the data from the workflow input will be
+    // used If specified, it will override the input data for this checkpoint
+    optional CheckPointContext data = 1;
+
+    // # Checkpoint Position
+    // The position as json pointer in the workflow where this checkpoint is
+    // defined This is used to identify the checkpoint in the workflow execution
+    // Must be a valid position string as defined in the workflow definition
+    // (Can be a plain string or JSON formatted string, runtime expression
+    // available) If not specified, the position will be set to the start of the
+    // workflow
+    string position = 2;
+  }
+  // # Checkpoint
+  // Optional checkpoint data for the workflow execution
+  // If not specified, the workflow will start from the beginning
+  // If specified, the workflow will start from the specified checkpoint
+  // If the checkpoint is not found, the workflow will start from the beginning
+  optional Checkpoint from_checkpoint = 6;
 }
