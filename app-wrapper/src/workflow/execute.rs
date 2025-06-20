@@ -22,9 +22,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-// enough time for heavy task like llm but not too long
-const DEFAULT_REQUEST_TIMEOUT_SEC: u32 = 1200; // 20 minutes
-
 struct TracingImpl;
 impl infra_utils::infra::trace::Tracing for TracingImpl {}
 /// Executes a workflow schema.
@@ -42,6 +39,7 @@ impl infra_utils::infra::trace::Tracing for TracingImpl {}
 /// # Returns
 /// A Result containing an Arc<RwLock<WorkflowContext>>.
 pub async fn execute(
+    app_wrapper_module: Arc<crate::modules::AppWrapperModule>,
     app_module: Arc<AppModule>,
     http_client: ReqwestClient,
     workflow: Arc<WorkflowSchema>,
@@ -57,14 +55,18 @@ pub async fn execute(
         TracingImpl::otel_span_from_metadata(&metadata, "workflow-execute", "execute_workflow");
     let cx = opentelemetry::Context::current_with_span(span);
 
-    let workflow_executor = WorkflowExecutor::new(
+    let workflow_executor = WorkflowExecutor::init(
+        app_wrapper_module,
         app_module,
         http_client,
         workflow.clone(),
         input,
+        None, // no checkpointing
         context,
         Arc::new(metadata.clone()),
-    );
+        None,
+    )
+    .await?;
     // Get the stream of workflow context updates
     let workflow_stream = workflow_executor.execute_workflow(Arc::new(cx));
     pin_mut!(workflow_stream);

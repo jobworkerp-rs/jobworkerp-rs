@@ -149,9 +149,14 @@ mod tests {
     #[test]
     fn test_runner_pool() -> Result<()> {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
-            let app_module = app::module::test::create_hybrid_test_app().await.unwrap();
-            let runner_factory =
-                RunnerFactory::new(Arc::new(app_module), Arc::new(McpServerFactory::default()));
+            let app_module = Arc::new(app::module::test::create_hybrid_test_app().await.unwrap());
+            let app_wrapper_module =
+                app_wrapper::modules::test::create_test_app_wrapper_module(app_module.clone());
+            let runner_factory = RunnerFactory::new(
+                app_module,
+                Arc::new(app_wrapper_module),
+                Arc::new(McpServerFactory::default()),
+            );
             runner_factory.load_plugins_from(TEST_PLUGIN_DIR).await;
             let factory = RunnerFactoryWithPool::new(
                 Arc::new(RunnerData {
@@ -193,9 +198,15 @@ mod tests {
     fn test_runner_pool_non_static_err() -> Result<()> {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             // dotenvy::dotenv()?;
-            let app_module = app::module::test::create_hybrid_test_app().await.unwrap();
-            let runner_factory =
-                RunnerFactory::new(Arc::new(app_module), Arc::new(McpServerFactory::default()));
+            let app_module = Arc::new(app::module::test::create_hybrid_test_app().await.unwrap());
+            let app_wrapper_module = Arc::new(
+                app_wrapper::modules::test::create_test_app_wrapper_module(app_module.clone()),
+            );
+            let runner_factory = RunnerFactory::new(
+                app_module,
+                app_wrapper_module,
+                Arc::new(McpServerFactory::default()),
+            );
             runner_factory.load_plugins_from(TEST_PLUGIN_DIR).await;
             assert!(RunnerFactoryWithPool::new(
                 Arc::new(RunnerData {

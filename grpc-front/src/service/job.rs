@@ -15,18 +15,14 @@ use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
 use proto::jobworkerp::data::{Job, JobId};
+use std::fmt::Debug;
 use std::sync::Arc;
-use std::{fmt::Debug, time::Duration};
 use tonic::metadata::MetadataValue;
 use tonic::Response;
 
 pub trait JobGrpc {
     fn app(&self) -> &Arc<dyn JobApp + 'static>;
 }
-
-const DEFAULT_TTL: Duration = Duration::from_secs(30);
-const LIST_TTL: Duration = Duration::from_secs(5);
-
 pub trait RequestValidator {
     // almost no timeout (1 year after)
     const DEFAULT_TIMEOUT: u64 = 1000 * 60 * 60 * 24 * 365;
@@ -255,7 +251,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
     ) -> Result<tonic::Response<OptionalJobResponse>, tonic::Status> {
         let _s = Self::trace_request("job", "find", &request);
         let req = request.get_ref();
-        match self.app().find_job(req, None).await {
+        match self.app().find_job(req).await {
             Ok(res) => Ok(Response::new(OptionalJobResponse { data: res })),
             Err(e) => Err(handle_error(&e)),
         }
@@ -270,15 +266,10 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
     ) -> Result<tonic::Response<Self::FindListStream>, tonic::Status> {
         let _s = Self::trace_request("job", "find_list", &request);
         let req = request.get_ref();
-        let ttl = if req.limit.is_some() {
-            &LIST_TTL
-        } else {
-            &DEFAULT_TTL
-        };
         // TODO streaming?
         match self
             .app()
-            .find_job_list(req.limit.as_ref(), req.offset.as_ref(), Some(ttl))
+            .find_job_list(req.limit.as_ref(), req.offset.as_ref())
             .await
         {
             Ok(list) => Ok(Response::new(Box::pin(stream! {
@@ -302,15 +293,10 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
     ) -> Result<tonic::Response<Self::FindQueueListStream>, tonic::Status> {
         let _s = Self::trace_request("job", "find_queue_list", &request);
         let req = request.get_ref();
-        let ttl = if req.limit.is_some() {
-            &LIST_TTL
-        } else {
-            &DEFAULT_TTL
-        };
         // TODO streaming?
         match self
             .app()
-            .find_job_queue_list(req.limit.as_ref(), req.channel.as_deref(), Some(ttl))
+            .find_job_queue_list(req.limit.as_ref(), req.channel.as_deref())
             .await
         {
             Ok(list) => Ok(Response::new(Box::pin(stream! {

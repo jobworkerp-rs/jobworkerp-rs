@@ -17,7 +17,7 @@ use anyhow::Result;
 use infra::infra::module::rdb::RdbChanRepositoryModule;
 use infra::infra::module::{HybridRepositoryModule, RedisRdbOptionalRepositoryModule};
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig};
-use infra_utils::infra::memory::MemoryCacheImpl;
+use infra_utils::infra::cache::{MokaCacheConfig, MokaCacheImpl};
 use jobworkerp_runner::runner::factory::RunnerSpecFactory;
 use proto::jobworkerp::data::StorageType;
 use std::env;
@@ -74,7 +74,7 @@ pub struct AppModule {
     pub runner_app: Arc<dyn RunnerApp + 'static>,
     pub function_set_app: Arc<FunctionSetAppImpl>,
     pub function_app: Arc<FunctionAppImpl>,
-    pub descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
+    pub descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
 }
 
 impl AppModule {
@@ -89,7 +89,7 @@ impl AppModule {
         runner_app: Arc<dyn RunnerApp + 'static>,
         function_set_app: Arc<FunctionSetAppImpl>, // not dyn (1 impl, trait)
         function_app: Arc<FunctionAppImpl>,
-        descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
+        descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     ) -> Self {
         Self {
             config_module,
@@ -119,10 +119,14 @@ impl AppModule {
                     .unwrap_or(Self::DEFAULT_CACHE_TTL_SEC),
             )),
         };
+        let descriptor_moka_config = infra_utils::infra::cache::MokaCacheConfig {
+            num_counters: mc_config.num_counters,
+            ttl: None, // no ttl for descriptor cache
+        };
         let plugin_dir = env::var("PLUGINS_RUNNER_DIR").unwrap_or("./".to_string());
         let job_queue_config = config_module.job_queue_config.clone();
         let id_generator = Arc::new(IdGeneratorWrapper::new());
-        let descriptor_cache = Arc::new(MemoryCacheImpl::new(&mc_config, None));
+        let descriptor_cache = Arc::new(MokaCacheImpl::new(&descriptor_moka_config));
         match config_module.storage_type() {
             StorageType::Standalone => {
                 let repositories = Arc::new(
@@ -136,10 +140,9 @@ impl AppModule {
                 let runner_app = Arc::new(RdbRunnerAppImpl::new(
                     plugin_dir.clone(),
                     config_module.storage_config.clone(),
-                    &mc_config,
+                    &moka_config,
                     repositories.clone(),
                     descriptor_cache.clone(),
-                    id_generator.clone(),
                 ));
                 let worker_app = Arc::new(RdbWorkerAppImpl::new(
                     config_module.storage_config.clone(),
@@ -160,14 +163,17 @@ impl AppModule {
                     id_generator.clone(),
                     repositories.clone(),
                     worker_app.clone(),
-                    infra_utils::infra::memory::MemoryCacheImpl::new(
-                        &mc_config,
-                        Some(Duration::from_secs(5)),
-                    ),
+                    infra_utils::infra::cache::MokaCacheImpl::new(&MokaCacheConfig {
+                        num_counters: 10000,
+                        ttl: Some(Duration::from_secs(5)),
+                    }),
                 ));
                 let function_set_app = Arc::new(FunctionSetAppImpl::new(
                     repositories.function_set_repository.clone(),
-                    &mc_config,
+                    &MokaCacheConfig {
+                        num_counters: mc_config.num_counters,
+                        ttl: Some(Duration::from_secs(60)),
+                    },
                 ));
                 let function_app = Arc::new(FunctionAppImpl::new(
                     function_set_app.clone(),
@@ -250,7 +256,7 @@ impl AppModule {
                 let runner_app = Arc::new(HybridRunnerAppImpl::new(
                     plugin_dir,
                     config_module.storage_config.clone(),
-                    &mc_config,
+                    &moka_config,
                     repositories.clone(),
                     descriptor_cache.clone(),
                     id_generator.clone(),
@@ -268,10 +274,10 @@ impl AppModule {
                     id_generator.clone(),
                     repositories.clone(),
                     worker_app.clone(),
-                    infra_utils::infra::memory::MemoryCacheImpl::new(
-                        &mc_config,
-                        Some(Duration::from_secs(60)),
-                    ),
+                    infra_utils::infra::cache::MokaCacheImpl::new(&MokaCacheConfig {
+                        num_counters: 10000,
+                        ttl: Some(Duration::from_secs(60)),
+                    }),
                 ));
                 let job_result_app = Arc::new(HybridJobResultAppImpl::new(
                     config_module.storage_config.clone(),
@@ -281,7 +287,10 @@ impl AppModule {
                 ));
                 let function_set_app = Arc::new(FunctionSetAppImpl::new(
                     repositories.rdb_chan_module.function_set_repository.clone(),
-                    &mc_config,
+                    &MokaCacheConfig {
+                        num_counters: mc_config.num_counters,
+                        ttl: Some(Duration::from_secs(60)),
+                    },
                 ));
                 let function_app = Arc::new(FunctionAppImpl::new(
                     function_set_app.clone(),
@@ -356,7 +365,7 @@ pub mod test {
         test::new_for_test_config_rdb,
         IdGeneratorWrapper,
     };
-    use infra_utils::infra::memory::MemoryCacheImpl;
+    use infra_utils::infra::cache::MokaCacheConfig;
     use jobworkerp_runner::runner::{
         factory::RunnerSpecFactory, mcp::proxy::McpServerFactory, plugins::Plugins,
     };
@@ -399,24 +408,13 @@ pub mod test {
         };
         // let worker_config = Arc::new(load_worker_config());
         let app_config = Arc::new(AppConfigModule::new_by_env(runner_factory.clone()));
-        let descriptor_cache: Arc<MemoryCacheImpl<Arc<String>, RunnerDataWithDescriptor>> =
-            Arc::new(MemoryCacheImpl::new(
-                &infra_utils::infra::memory::MemoryCacheConfig {
-                    num_counters: 10,
-                    max_cost: 1000000,
-                    use_metrics: false,
-                },
-                Some(Duration::from_secs(60)),
-            ));
+        let descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>> =
+            Arc::new(MokaCacheImpl::new(&moka_config));
 
         let runner_app = Arc::new(HybridRunnerAppImpl::new(
             TEST_PLUGIN_DIR.to_string(),
             storage_config.clone(),
-            &infra_utils::infra::memory::MemoryCacheConfig {
-                num_counters: 10,
-                max_cost: 1000000,
-                use_metrics: false,
-            },
+            &moka_config,
             repositories.clone(),
             descriptor_cache.clone(),
             id_generator.clone(),
@@ -431,10 +429,10 @@ pub mod test {
             descriptor_cache.clone(),
             runner_app.clone(),
         ));
-        let job_memory_cache = infra_utils::infra::memory::MemoryCacheImpl::new(
-            &mc_config,
-            Some(Duration::from_secs(60)),
-        );
+        let job_memory_cache = infra_utils::infra::cache::MokaCacheImpl::new(&MokaCacheConfig {
+            num_counters: 10000,
+            ttl: Some(Duration::from_secs(5)),
+        });
 
         let job_app = Arc::new(HybridJobAppImpl::new(
             app_config.clone(),
@@ -452,7 +450,10 @@ pub mod test {
         ));
         let function_set_app = Arc::new(FunctionSetAppImpl::new(
             repositories.rdb_chan_module.function_set_repository.clone(),
-            &mc_config,
+            &MokaCacheConfig {
+                num_counters: mc_config.num_counters,
+                ttl: Some(Duration::from_secs(60)),
+            },
         ));
         let function_app = Arc::new(FunctionAppImpl::new(
             function_set_app.clone(),

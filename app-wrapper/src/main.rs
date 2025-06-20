@@ -67,6 +67,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(RunnerSpecFactory::new(plugins.clone(), mcp_clients.clone()));
     let config_module = Arc::new(AppConfigModule::new_by_env(runner_spec_factory));
     let app_module = Arc::new(app::module::AppModule::new_by_env(config_module).await?);
+    let app_wrapper = Arc::new(app_wrapper::modules::AppWrapperModule::new_by_env(
+        app_module
+            .repositories
+            .redis_module
+            .as_ref()
+            .map(|r| r.redis_pool),
+    ));
     let http_client = ReqwestClient::new(
         Some(DEFAULT_USER_AGENT),
         Some(Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SEC as u64)),
@@ -75,6 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     match app_wrapper::workflow::execute::execute(
+        app_wrapper.clone(),
         app_module.clone(),
         http_client,
         serde_json::from_str(args.workflow.as_str())?,

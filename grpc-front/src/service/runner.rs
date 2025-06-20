@@ -1,5 +1,5 @@
+use std::fmt::Debug;
 use std::sync::Arc;
-use std::{fmt::Debug, time::Duration};
 
 use crate::proto::jobworkerp::data::{Runner, RunnerId};
 use crate::proto::jobworkerp::service::runner_service_server::RunnerService;
@@ -20,8 +20,6 @@ pub trait RunnerGrpc {
     fn app(&self) -> &Arc<dyn RunnerApp + 'static>;
 }
 
-const DEFAULT_TTL: Duration = Duration::from_secs(30);
-const LIST_TTL: Duration = Duration::from_secs(5);
 const MAX_RESERVED_RUNNER_ID: i64 = 65535;
 
 #[tonic::async_trait]
@@ -76,7 +74,7 @@ impl<T: RunnerGrpc + Tracing + Send + Debug + Sync + 'static> RunnerService for 
     ) -> Result<tonic::Response<OptionalRunnerResponse>, tonic::Status> {
         let _s = Self::trace_request("runner", "find", &request);
         let req = request.get_ref();
-        match self.app().find_runner(req, Some(&DEFAULT_TTL)).await {
+        match self.app().find_runner(req).await {
             Ok(Some(res)) => Ok(Response::new(OptionalRunnerResponse {
                 data: Some(res.into_proto()),
             })),
@@ -91,11 +89,7 @@ impl<T: RunnerGrpc + Tracing + Send + Debug + Sync + 'static> RunnerService for 
     ) -> std::result::Result<tonic::Response<OptionalRunnerResponse>, tonic::Status> {
         let _s = Self::trace_request("runner", "find", &request);
         let req = request.get_ref();
-        match self
-            .app()
-            .find_runner_by_name(req.name.as_str(), Some(&DEFAULT_TTL))
-            .await
-        {
+        match self.app().find_runner_by_name(req.name.as_str()).await {
             Ok(Some(res)) => Ok(Response::new(OptionalRunnerResponse {
                 data: Some(res.into_proto()),
             })),
@@ -111,14 +105,9 @@ impl<T: RunnerGrpc + Tracing + Send + Debug + Sync + 'static> RunnerService for 
     ) -> Result<tonic::Response<Self::FindListStream>, tonic::Status> {
         let _s = Self::trace_request("runner", "find_list", &request);
         let req = request.get_ref();
-        let ttl = if req.limit.is_some() {
-            LIST_TTL
-        } else {
-            DEFAULT_TTL
-        };
         match self
             .app()
-            .find_runner_list(req.limit.as_ref(), req.offset.as_ref(), Some(&ttl))
+            .find_runner_list(req.limit.as_ref(), req.offset.as_ref())
             .await
         {
             Ok(list) => {

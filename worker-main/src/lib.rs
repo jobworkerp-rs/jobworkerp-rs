@@ -61,9 +61,21 @@ pub async fn boot_all_in_one() -> Result<()> {
     let app_config_module = Arc::new(AppConfigModule::new_by_env(runner_spec_factory.clone()));
 
     let app_module = Arc::new(AppModule::new_by_env(app_config_module).await?);
+    let app_wrapper_module = Arc::new(app_wrapper::modules::AppWrapperModule::new_by_env(
+        app_module
+            .repositories
+            .redis_module
+            .as_ref()
+            .map(|r| r.redis_pool),
+    ));
+
     app_module.on_start_all_in_one().await?;
 
-    let runner_factory = Arc::new(RunnerFactory::new(app_module.clone(), mcp_clients));
+    let runner_factory = Arc::new(RunnerFactory::new(
+        app_module.clone(),
+        app_wrapper_module.clone(),
+        mcp_clients,
+    ));
 
     tracing::info!("start worker");
     let jh = tokio::spawn(start_worker(
