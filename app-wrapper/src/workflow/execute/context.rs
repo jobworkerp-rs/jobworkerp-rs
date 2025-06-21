@@ -564,8 +564,8 @@ impl WorkflowPosition {
             }
         })
     }
-    pub fn full(&self) -> Vec<serde_json::Value> {
-        self.path.snapshot().to_vec()
+    pub fn full(&self) -> &[serde_json::Value] {
+        self.path.snapshot()
     }
     // return the path relative to base_path
     // return empty vector if self.path is equal to base_path
@@ -728,7 +728,7 @@ mod tests {
             .checkpoint_position
             .as_ref()
             .unwrap()
-            .relative_path(&context.position.full())
+            .relative_path(context.position.full())
             .unwrap();
         assert_eq!(relative_path, sub_path);
     }
@@ -759,7 +759,7 @@ mod tests {
         // check relative path same position
         let relative_path = context
             .position
-            .relative_path(&context.position.full())
+            .relative_path(context.position.full())
             .unwrap();
         assert_eq!(relative_path, Vec::<serde_json::Value>::new());
     }
@@ -814,7 +814,7 @@ mod tests {
             .checkpoint_position
             .as_ref()
             .unwrap()
-            .relative_path(&context.position.full());
+            .relative_path(context.position.full());
         assert_eq!(relative_path, None);
     }
 
