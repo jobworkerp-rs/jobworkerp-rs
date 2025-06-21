@@ -84,8 +84,11 @@ impl DoTaskStreamExecutor {
             .checkpoint_position
             .clone();
         if let Some(pos) = checkpoint_pos {
-            let relative_path =
-                pos.relative_path(&parent_task_context.position.read().await.full());
+            tracing::debug!(
+                "Finding checkpoint task for position: {}",
+                pos.as_json_pointer()
+            );
+            let relative_path = pos.relative_path(parent_task_context.position.read().await.full());
             if let Some(rpath) = relative_path {
                 // Check if the relative path is valid
                 if rpath.len() < 2 {
@@ -101,6 +104,12 @@ impl DoTaskStreamExecutor {
                         == serde_json::value::Value::Number(serde_json::Number::from(*index))
                         && rpath[1] == serde_json::value::Value::String(name.clone())
                     {
+                        tracing::debug!(
+                            "Found task '{}' at index {} for checkpoint position: {:?}",
+                            name,
+                            index,
+                            &rpath
+                        );
                         return Some(*index);
                     }
                 }
@@ -119,6 +128,7 @@ impl DoTaskStreamExecutor {
                 None
             }
         } else {
+            tracing::debug!("No checkpoint position found, ignoring.");
             None // no checkpoint position
         }
     }
@@ -160,8 +170,6 @@ impl DoTaskStreamExecutor {
                         current_pair = iter.next().map(|(k, v)| (k.clone(), v.clone()));
                         continue;
                     }
-                } else {
-                    tracing::info!("Starting from the beginning of task list.");
                 }
                 let span = Self::start_child_otel_span(
                     &cx,
