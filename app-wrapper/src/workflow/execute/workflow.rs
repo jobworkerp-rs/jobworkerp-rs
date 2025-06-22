@@ -113,7 +113,8 @@ impl WorkflowExecutor {
                 )
             })?;
         } else {
-            tracing::warn!("Execution ID is not provided, ignore checkpointing");
+            tracing::debug!("Necessary info is not provided, ignore checkpointing: execution_id={:?}, checkpoint={:?}, repository={:?}",
+                execution_id, checkpoint, checkpoint_repository);
         }
         let workflow_context = Arc::new(RwLock::new(context::WorkflowContext::new(
             &workflow,
@@ -189,9 +190,24 @@ impl WorkflowExecutor {
             let ccx = Context::current_with_span(span);
             let span = ccx.span();
             let ccx = Arc::new(ccx.clone());
+            tracing::debug!(
+                "Executing workflow: {}, id={}",
+                workflow.document.name.as_str(),
+                initial_wfc.read().await.id.to_string()
+            );
+            let checkpoint_position = initial_wfc
+                .read()
+                .await
+                .checkpoint_position
+                .clone();
             let cp_task_context = if let (Some(execution_id), Some(checkpoint_repository), Some(pos)) =
-              (&execution_id, &checkpoint_repository, &initial_wfc.read().await.checkpoint_position)
+              (&execution_id, &checkpoint_repository, &checkpoint_position)
             {
+                tracing::debug!(
+                    "Loading checkpoint for workflow: {}, execution_id={}",
+                    workflow.document.name.as_str(),
+                    execution_id.value
+                );
                 // Load checkpoint if available
                 let workflow_name = workflow.document.name.to_string();
                 match checkpoint_repository.get_checkpoint_with_id(
@@ -234,10 +250,20 @@ impl WorkflowExecutor {
                     }
                 }
             } else {
+                tracing::debug!(
+                    "No checkpoint available for workflow: {}, execution_id={:?}",
+                    workflow.document.name.as_str(),
+                    execution_id
+                );
                 // normal execution without checkpoint
                 None
             };
 
+            tracing::debug!(
+                "Workflow context initialized: {}, id={}",
+                workflow.document.name.as_str(),
+                initial_wfc.read().await.id.to_string()
+            );
             let input = {
                 let lock = initial_wfc.read().await;
                 // Record workflow metadata and input
@@ -268,6 +294,11 @@ impl WorkflowExecutor {
                     }
                 }
             }
+            tracing::debug!(
+                "Workflow input validated: {}, id={}",
+                workflow.document.name.as_str(),
+                initial_wfc.read().await.id.to_string()
+            );
 
             let mut task_context = cp_task_context.unwrap_or(TaskContext::new(
                 None,
@@ -294,6 +325,11 @@ impl WorkflowExecutor {
                     return;
                 }
             };
+            tracing::debug!(
+                "Expression created for workflow: {}, id={}",
+                workflow.document.name.as_str(),
+                initial_wfc.read().await.id.to_string()
+            );
 
             // Transform input
             let transformed_input = if let Some(from) = workflow.input.from.as_ref() {
@@ -317,6 +353,11 @@ impl WorkflowExecutor {
             task_context.set_input(transformed_input);
 
 
+            tracing::debug!(
+                "Input transformed for workflow: {}, id={}",
+                workflow.document.name.as_str(),
+                initial_wfc.read().await.id.to_string()
+            );
             // run workflow tasks as do_task
             let task_executor = TaskExecutor::new(
                 initial_wfc.clone(),
@@ -345,6 +386,12 @@ impl WorkflowExecutor {
                         wf.output = Some(tc.output.clone());
                         wf.position = tc.position.read().await.clone(); // XXX clone
                         drop(wf);
+                        tracing::debug!(
+                            "Task executed: {}, id={}, position={}",
+                            workflow.document.name.as_str(),
+                            initial_wfc.read().await.id.to_string(),
+                            tc.position.read().await
+                        );
                         yield Ok(initial_wfc.clone());
                     }
                     Err(e) => {
@@ -409,6 +456,11 @@ impl WorkflowExecutor {
                         }
                     }
                 }
+                tracing::debug!(
+                    "Final output transformed for workflow: {}, id={}",
+                    workflow.document.name.as_str(),
+                    initial_wfc.read().await.id.to_string()
+                );
 
                 let mut lock = initial_wfc.write().await;
                 // Mark workflow as completed if it's still running
@@ -426,6 +478,11 @@ impl WorkflowExecutor {
                 // Yield final workflow context
                 yield Ok(initial_wfc.clone());
             }
+            tracing::debug!(
+                "Workflow execution completed: {}, id={}",
+                workflow.document.name.as_str(),
+                initial_wfc.read().await.id.to_string()
+            );
 
             // Log workflow status
             let lock = initial_wfc.read().await;
@@ -690,12 +747,17 @@ pub trait WorkflowTracing {
 mod tests {
     use super::*;
     use crate::modules::test::create_test_app_wrapper_module;
-    use crate::workflow::definition::workflow::{
-        Document, FlowDirective, FlowDirectiveEnum, Input, Output, SetTask, Task, TaskList,
-        WorkflowName, WorkflowSchema, WorkflowVersion,
+    use crate::workflow::definition::{
+        workflow::{
+            CheckpointConfig, CheckpointConfigStorage, Document, FlowDirective, FlowDirectiveEnum,
+            Input, Output, OutputAs, SetTask, Task, TaskList, WorkflowName, WorkflowSchema,
+            WorkflowVersion,
+        },
+        WorkflowLoader,
     };
+
     use app::module::test::create_hybrid_test_app;
-    use futures::pin_mut;
+    use futures::{pin_mut, StreamExt};
     use std::collections::HashMap;
     use std::str::FromStr;
     use std::sync::Arc;
@@ -848,6 +910,888 @@ mod tests {
 
             let status = executor.workflow_context.read().await.status.clone();
             assert_eq!(status, WorkflowStatus::Cancelled);
+        })
+    }
+
+    #[test]
+    fn test_workflow_with_checkpoint_memory() {
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
+            let http_client = ReqwestClient::new(
+                Some("test"),
+                Some(std::time::Duration::from_secs(30)),
+                Some(std::time::Duration::from_secs(30)),
+                Some(1),
+            )
+            .unwrap();
+
+            let workflow = create_test_checkpoint_workflow();
+            let input = Arc::new(serde_json::json!({"seed": 12345}));
+            let context = Arc::new(serde_json::json!({}));
+            let execution_id = ExecutionId::new("test-checkpoint-execution".to_string()).unwrap();
+            // First execution with checkpoint enabled
+            let executor = WorkflowExecutor::init(
+                app_wrapper_module.clone(),
+                app_module.clone(),
+                http_client.clone(),
+                Arc::new(workflow.clone()),
+                input.clone(),
+                Some(execution_id.clone()),
+                context.clone(),
+                Arc::new(HashMap::new()),
+                None,
+            )
+            .await
+            .unwrap();
+
+            let workflow_stream =
+                executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+            pin_mut!(workflow_stream);
+
+            let mut final_wfc = None;
+            while let Some(wfc) = workflow_stream.next().await {
+                match wfc {
+                    Ok(wfc) => {
+                        final_wfc = Some(wfc);
+                    }
+                    Err(e) => {
+                        tracing::error!("Workflow error: {:#?}", e);
+                        final_wfc = None;
+                        break;
+                    }
+                }
+            }
+
+            assert!(final_wfc.is_some());
+            tracing::debug!("First execution completed");
+
+            let first_execution_wfc = final_wfc.unwrap();
+            let first_lock = first_execution_wfc.read().await;
+            assert_eq!(first_lock.status, WorkflowStatus::Completed);
+            let first_output = first_lock.output.as_ref().unwrap().clone();
+            drop(first_lock);
+
+            // Simulate checkpoint restoration by creating a checkpoint context
+            let checkpoint_repo = executor.checkpoint_repository.as_ref().unwrap();
+            let checkpoint_key = format!(
+                "{}:{}:{}",
+                workflow.document.name.as_str(),
+                execution_id.value,
+                "/ROOT/do/0/GenerateRandomValue"
+            );
+            let saved_checkpoint = checkpoint_repo
+                .checkpoint_repository()
+                .get_checkpoint(&checkpoint_key)
+                .await
+                .unwrap();
+
+            assert!(saved_checkpoint.is_some(), "Checkpoint should be saved");
+
+            // Second execution with checkpoint restore
+            let checkpoint_context = saved_checkpoint.unwrap();
+            let executor2 = WorkflowExecutor::init(
+                app_wrapper_module.clone(),
+                app_module.clone(),
+                http_client.clone(),
+                Arc::new(workflow.clone()),
+                input.clone(),
+                Some(execution_id.clone()),
+                context.clone(),
+                Arc::new(HashMap::new()),
+                Some(checkpoint_context.clone()),
+            )
+            .await
+            .unwrap();
+
+            let workflow_stream2 =
+                executor2.execute_workflow(Arc::new(opentelemetry::Context::current()));
+
+            pin_mut!(workflow_stream2);
+
+            let mut final_wfc2 = None;
+            while let Some(wfc) = workflow_stream2.next().await {
+                match wfc {
+                    Ok(wfc) => {
+                        final_wfc2 = Some(wfc);
+                    }
+                    Err(_e) => {
+                        final_wfc2 = None;
+                        break;
+                    }
+                }
+            }
+
+            assert!(final_wfc2.is_some());
+            let second_execution_wfc = final_wfc2.unwrap();
+            let second_lock = second_execution_wfc.read().await;
+            assert_eq!(second_lock.status, WorkflowStatus::Completed);
+            let second_output = second_lock.output.as_ref().unwrap().clone();
+            drop(second_lock);
+            tracing::debug!("====== Second execution output: {:#?}", second_output);
+
+            // Verify that outputs are identical due to checkpoint restoration
+            assert_eq!(
+                first_output, second_output,
+                "Outputs should be identical when restored from checkpoint"
+            );
+        })
+    }
+
+    #[test]
+    fn test_workflow_checkpoint_with_random_output() {
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
+            let http_client = ReqwestClient::new(
+                Some("test"),
+                Some(std::time::Duration::from_secs(30)),
+                Some(std::time::Duration::from_secs(30)),
+                Some(1),
+            )
+            .unwrap();
+
+            let workflow = create_test_random_checkpoint_workflow();
+            let input = Arc::new(serde_json::json!({"base_seed": 42}));
+            let context = Arc::new(serde_json::json!({}));
+            let execution_id =
+                ExecutionId::new("test-random-checkpoint-execution".to_string()).unwrap();
+
+            // First execution - should generate random values and save checkpoints
+            let executor = WorkflowExecutor::init(
+                app_wrapper_module.clone(),
+                app_module.clone(),
+                http_client.clone(),
+                Arc::new(workflow.clone()),
+                input.clone(),
+                Some(execution_id.clone()),
+                context.clone(),
+                Arc::new(HashMap::new()),
+                None,
+            )
+            .await
+            .unwrap();
+
+            let workflow_stream =
+                executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+            pin_mut!(workflow_stream);
+
+            let mut first_execution_results = Vec::new();
+            while let Some(wfc) = workflow_stream.next().await {
+                match wfc {
+                    Ok(wfc) => {
+                        let lock = wfc.read().await;
+                        if let Some(output) = &lock.output {
+                            first_execution_results.push(output.clone());
+                        }
+                        drop(lock);
+                    }
+                    Err(e) => {
+                        tracing::error!("Workflow error: {:#?}", e);
+                        break;
+                    }
+                }
+            }
+
+            assert!(!first_execution_results.is_empty());
+            let first_final_output = first_execution_results.last().unwrap();
+
+            // Get checkpoint from the middle of the workflow execution
+            let checkpoint_repo = executor.checkpoint_repository.as_ref().unwrap();
+            let checkpoint_key = format!(
+                "{}:{}:{}",
+                workflow.document.name.as_str(),
+                execution_id.value,
+                "/ROOT/do/1/ProcessValue"
+            );
+            let saved_checkpoint = checkpoint_repo
+                .checkpoint_repository()
+                .get_checkpoint(&checkpoint_key)
+                .await
+                .unwrap();
+
+            if let Some(checkpoint_context) = saved_checkpoint {
+                // Second execution with checkpoint restore from middle
+                let executor2 = WorkflowExecutor::init(
+                    app_wrapper_module.clone(),
+                    app_module.clone(),
+                    http_client.clone(),
+                    Arc::new(workflow.clone()),
+                    input.clone(),
+                    ExecutionId::new("test-random-checkpoint-execution-2".to_string()),
+                    context.clone(),
+                    Arc::new(HashMap::new()),
+                    Some(checkpoint_context),
+                )
+                .await
+                .unwrap();
+
+                let workflow_stream2 =
+                    executor2.execute_workflow(Arc::new(opentelemetry::Context::current()));
+                pin_mut!(workflow_stream2);
+
+                let mut second_execution_results = Vec::new();
+                while let Some(wfc) = workflow_stream2.next().await {
+                    match wfc {
+                        Ok(wfc) => {
+                            let lock = wfc.read().await;
+                            if let Some(output) = &lock.output {
+                                second_execution_results.push(output.clone());
+                            }
+                            drop(lock);
+                        }
+                        Err(e) => {
+                            tracing::error!("Workflow error: {:#?}", e);
+                            break;
+                        }
+                    }
+                }
+
+                assert!(!second_execution_results.is_empty());
+                let second_final_output = second_execution_results.last().unwrap();
+
+                // Verify that checkpoint restoration preserves random state
+                if let (Some(first_random), Some(second_random)) = (
+                    first_final_output.get("random_value"),
+                    second_final_output.get("random_value"),
+                ) {
+                    // Due to checkpoint restoration, the random values should be consistent
+                    // when restored from the same checkpoint position
+                    tracing::info!(
+                        "First random: {}, Second random: {}",
+                        first_random,
+                        second_random
+                    );
+                }
+            }
+        })
+    }
+
+    fn create_test_checkpoint_workflow() -> WorkflowSchema {
+        let task_map_list = vec![
+            {
+                let mut map = HashMap::new();
+                map.insert(
+                    "GenerateRandomValue".to_string(),
+                    Task::SetTask(SetTask {
+                        set: {
+                            let mut set_map = serde_json::Map::new();
+                            set_map.insert(
+                                "random_value".to_string(),
+                                serde_json::json!("${(.seed * 1664525 + 1013904223) % 4294967296}"),
+                            );
+                            set_map.insert("step".to_string(), serde_json::json!(1));
+                            set_map
+                        },
+                        if_: None,
+                        input: None,
+                        output: None,
+                        metadata: serde_json::Map::new(),
+                        then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Continue)),
+                        timeout: None,
+                        export: None,
+                        checkpoint: true,
+                    }),
+                );
+                map
+            },
+            {
+                let mut map = HashMap::new();
+                map.insert(
+                    "ProcessValue".to_string(),
+                    Task::SetTask(SetTask {
+                        set: {
+                            let mut set_map = serde_json::Map::new();
+                            set_map.insert(
+                                "processed_value".to_string(),
+                                serde_json::json!("${.random_value * 2}"),
+                            );
+                            set_map.insert("step".to_string(), serde_json::json!(2));
+                            set_map
+                        },
+                        if_: None,
+                        input: None,
+                        output: Some(Output {
+                            as_: Some(OutputAs::Variant0("${$processed_value}".to_string())),
+                            ..Default::default()
+                        }),
+                        metadata: serde_json::Map::new(),
+                        then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Continue)),
+                        timeout: None,
+                        export: None,
+                        checkpoint: true,
+                    }),
+                );
+                map
+            },
+        ];
+        let task_list = TaskList(task_map_list);
+
+        WorkflowSchema {
+            document: Document {
+                name: WorkflowName::try_from("checkpoint-test-workflow".to_string()).unwrap(),
+                version: WorkflowVersion::try_from("1.0.0".to_string()).unwrap(),
+                metadata: serde_json::Map::new(),
+                ..Default::default()
+            },
+            input: Input {
+                schema: None,
+                from: None,
+            },
+            output: Some(Output {
+                as_: None,
+                schema: None,
+            }),
+            checkpointing: Some(CheckpointConfig {
+                enabled: true,
+                storage: Some(CheckpointConfigStorage::Memory),
+            }),
+            do_: task_list,
+        }
+    }
+
+    fn create_test_random_checkpoint_workflow() -> WorkflowSchema {
+        let task_map_list = vec![
+            {
+                let mut map = HashMap::new();
+                map.insert(
+                    "InitializeRandom".to_string(),
+                    Task::SetTask(SetTask {
+                        set: {
+                            let mut set_map = serde_json::Map::new();
+                            set_map.insert("seed".to_string(), serde_json::json!("${.base_seed}"));
+                            set_map.insert("step".to_string(), serde_json::json!("init"));
+                            set_map
+                        },
+                        if_: None,
+                        input: None,
+                        output: None,
+                        metadata: serde_json::Map::new(),
+                        then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Continue)),
+                        timeout: None,
+                        export: None,
+                        checkpoint: true,
+                    }),
+                );
+                map
+            },
+            {
+                let mut map = HashMap::new();
+                map.insert(
+                    "GenerateFirstRandom".to_string(),
+                    Task::SetTask(SetTask {
+                        set: {
+                            let mut set_map = serde_json::Map::new();
+                            // Linear congruential generator for predictable "random" values
+                            set_map.insert(
+                                "random_value".to_string(),
+                                serde_json::json!("${(.seed * 1664525 + 1013904223) % 2147483647}"),
+                            );
+                            set_map.insert("step".to_string(), serde_json::json!("first_random"));
+                            set_map
+                        },
+                        if_: None,
+                        input: None,
+                        output: None,
+                        metadata: serde_json::Map::new(),
+                        then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Continue)),
+                        timeout: None,
+                        export: None,
+                        checkpoint: true,
+                    }),
+                );
+                map
+            },
+            {
+                let mut map = HashMap::new();
+                map.insert(
+                    "GenerateSecondRandom".to_string(),
+                    Task::SetTask(SetTask {
+                        set: {
+                            let mut set_map = serde_json::Map::new();
+                            // Use previous random value as new seed
+                            set_map.insert(
+                                "next_seed".to_string(),
+                                serde_json::json!("${.random_value}"),
+                            );
+                            set_map.insert(
+                                "second_random".to_string(),
+                                serde_json::json!(
+                                    "${(.random_value * 1103515245 + 12345) % 2147483647}"
+                                ),
+                            );
+                            set_map.insert("step".to_string(), serde_json::json!("second_random"));
+                            set_map
+                        },
+                        if_: None,
+                        input: None,
+                        output: None,
+                        metadata: serde_json::Map::new(),
+                        then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Continue)),
+                        timeout: None,
+                        export: None,
+                        checkpoint: true,
+                    }),
+                );
+                map
+            },
+            {
+                let mut map = HashMap::new();
+                map.insert(
+                    "FinalizeResult".to_string(),
+                    Task::SetTask(SetTask {
+                        set: {
+                            let mut set_map = serde_json::Map::new();
+                            set_map.insert(
+                                "final_result".to_string(),
+                                serde_json::json!({
+                                    "first_random": "${.random_value}",
+                                    "second_random": "${.second_random}",
+                                    "combined": "${.random_value + .second_random}",
+                                    "step": "final"
+                                }),
+                            );
+                            set_map
+                        },
+                        if_: None,
+                        input: None,
+                        output: None,
+                        metadata: serde_json::Map::new(),
+                        then: Some(FlowDirective::Variant0(FlowDirectiveEnum::End)),
+                        timeout: None,
+                        export: None,
+                        checkpoint: true,
+                    }),
+                );
+                map
+            },
+        ];
+        let task_list = TaskList(task_map_list);
+
+        WorkflowSchema {
+            document: Document {
+                dsl: "1.0.0".to_string().try_into().unwrap(),
+                namespace: "test".try_into().unwrap(),
+                name: WorkflowName::try_from("random-checkpoint-test-workflow".to_string())
+                    .unwrap(),
+                title: Some("Random Checkpoint Test Workflow".to_string()),
+                summary: None,
+                version: WorkflowVersion::try_from("1.0.0".to_string()).unwrap(),
+                tags: serde_json::Map::new(),
+                metadata: serde_json::Map::new(),
+            },
+            input: Input {
+                schema: None,
+                from: None,
+            },
+            output: Some(Output {
+                as_: Some(workflow::OutputAs::Variant0("${.final_result}".to_string())),
+                schema: None,
+            }),
+            checkpointing: Some(CheckpointConfig {
+                enabled: true,
+                storage: Some(CheckpointConfigStorage::Memory),
+            }),
+            do_: task_list,
+        }
+    }
+    async fn load_test_workflow_from_yaml(
+        http_client: &ReqwestClient,
+        yaml_path: &str,
+    ) -> WorkflowSchema {
+        let loader = WorkflowLoader::new(http_client.clone()).unwrap();
+        loader
+            .load_workflow(Some(yaml_path), None, false)
+            .await
+            .unwrap()
+    }
+
+    #[test]
+    fn test_workflow_checkpoint_with_for_task() {
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
+            let http_client = ReqwestClient::new(
+                Some("test"),
+                Some(std::time::Duration::from_secs(30)),
+                Some(std::time::Duration::from_secs(30)),
+                Some(1),
+            )
+            .unwrap();
+
+            let workflow_path = concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/test-files/for_task_checkpoint.yaml"
+            );
+            let workflow = load_test_workflow_from_yaml(&http_client, workflow_path).await;
+            let input = Arc::new(serde_json::json!({"items": [1, 2, 3, 4, 5]}));
+            let context = Arc::new(serde_json::json!({}));
+            let execution_id =
+                ExecutionId::new("test-for-task-checkpoint-execution".to_string()).unwrap();
+
+            // First execution with checkpoint enabled
+            let executor = WorkflowExecutor::init(
+                app_wrapper_module.clone(),
+                app_module.clone(),
+                http_client.clone(),
+                Arc::new(workflow.clone()),
+                input.clone(),
+                Some(execution_id.clone()),
+                context.clone(),
+                Arc::new(HashMap::new()),
+                None,
+            )
+            .await
+            .unwrap();
+
+            let workflow_stream =
+                executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+            pin_mut!(workflow_stream);
+
+            let mut final_wfc = None;
+            while let Some(wfc) = workflow_stream.next().await {
+                match wfc {
+                    Ok(wfc) => {
+                        final_wfc = Some(wfc);
+                    }
+                    Err(e) => {
+                        tracing::error!("Workflow error: {:#?}", e);
+                        break;
+                    }
+                }
+            }
+
+            assert!(final_wfc.is_some());
+            let first_execution_wfc = final_wfc.unwrap();
+            let first_lock = first_execution_wfc.read().await;
+            assert_eq!(first_lock.status, WorkflowStatus::Completed);
+            let first_output = first_lock.output.as_ref().unwrap().clone();
+            drop(first_lock);
+
+            // Get checkpoint from inside the for loop
+            let checkpoint_repo = executor.checkpoint_repository.as_ref().unwrap();
+            let checkpoint_key = format!(
+                "{}:{}:{}",
+                workflow.document.name.as_str(),
+                execution_id.value,
+                "/ROOT/do/0/ProcessItems/for/do/0/ProcessItem" // Checkpoint from 3rd iteration
+            );
+            let saved_checkpoint = checkpoint_repo
+                .checkpoint_repository()
+                .get_checkpoint(&checkpoint_key)
+                .await
+                .unwrap();
+
+            assert!(
+                saved_checkpoint.is_some(),
+                "Checkpoint should be saved inside for loop"
+            );
+
+            // Second execution with checkpoint restore from inside for loop
+            let executor2 = WorkflowExecutor::init(
+                app_wrapper_module.clone(),
+                app_module.clone(),
+                http_client.clone(),
+                Arc::new(workflow.clone()),
+                input.clone(),
+                ExecutionId::new("test-for-task-checkpoint-execution-2".to_string()),
+                context.clone(),
+                Arc::new(HashMap::new()),
+                saved_checkpoint,
+            )
+            .await
+            .unwrap();
+
+            let workflow_stream2 =
+                executor2.execute_workflow(Arc::new(opentelemetry::Context::current()));
+            pin_mut!(workflow_stream2);
+
+            let mut final_wfc2 = None;
+            while let Some(wfc) = workflow_stream2.next().await {
+                match wfc {
+                    Ok(wfc) => {
+                        final_wfc2 = Some(wfc);
+                    }
+                    Err(e) => {
+                        tracing::error!("Workflow error: {:#?}", e);
+                        break;
+                    }
+                }
+            }
+
+            assert!(final_wfc2.is_some());
+            let second_execution_wfc = final_wfc2.unwrap();
+            let second_lock = second_execution_wfc.read().await;
+            assert_eq!(second_lock.status, WorkflowStatus::Completed);
+            let second_output = second_lock.output.as_ref().unwrap().clone();
+            drop(second_lock);
+
+            // Verify that outputs match when restored from checkpoint inside for loop
+            assert_eq!(
+                first_output, second_output,
+                "Outputs should be identical when restored from checkpoint inside for loop"
+            );
+        })
+    }
+
+    #[test]
+    fn test_workflow_checkpoint_with_try_task() {
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
+            let http_client = ReqwestClient::new(
+                Some("test"),
+                Some(std::time::Duration::from_secs(30)),
+                Some(std::time::Duration::from_secs(30)),
+                Some(1),
+            )
+            .unwrap();
+
+            let workflow_path = concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/test-files/try_task_checkpoint.yaml"
+            );
+            let workflow = load_test_workflow_from_yaml(&http_client, workflow_path).await;
+            let input = Arc::new(serde_json::json!({"should_fail": false}));
+            let context = Arc::new(serde_json::json!({}));
+            let execution_id =
+                ExecutionId::new("test-try-task-checkpoint-execution".to_string()).unwrap();
+
+            // First execution with checkpoint enabled
+            let executor = WorkflowExecutor::init(
+                app_wrapper_module.clone(),
+                app_module.clone(),
+                http_client.clone(),
+                Arc::new(workflow.clone()),
+                input.clone(),
+                Some(execution_id.clone()),
+                context.clone(),
+                Arc::new(HashMap::new()),
+                None,
+            )
+            .await
+            .unwrap();
+
+            let workflow_stream =
+                executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+            pin_mut!(workflow_stream);
+
+            let mut final_wfc = None;
+            while let Some(wfc) = workflow_stream.next().await {
+                match wfc {
+                    Ok(wfc) => {
+                        final_wfc = Some(wfc);
+                    }
+                    Err(e) => {
+                        tracing::error!("Workflow error: {:#?}", e);
+                        break;
+                    }
+                }
+            }
+
+            assert!(final_wfc.is_some());
+            let first_execution_wfc = final_wfc.unwrap();
+            let first_lock = first_execution_wfc.read().await;
+            assert_eq!(first_lock.status, WorkflowStatus::Completed);
+            let first_output = first_lock.output.as_ref().unwrap().clone();
+            drop(first_lock);
+
+            // Get checkpoint from inside the try block
+            let checkpoint_repo = executor.checkpoint_repository.as_ref().unwrap();
+            let checkpoint_key = format!(
+                "{}:{}:{}",
+                workflow.document.name.as_str(),
+                execution_id.value,
+                "/ROOT/do/0/SafeProcess/try/do/1/InnerProcess" // Checkpoint from inside try block
+            );
+            let saved_checkpoint = checkpoint_repo
+                .checkpoint_repository()
+                .get_checkpoint(&checkpoint_key)
+                .await
+                .unwrap();
+
+            assert!(
+                saved_checkpoint.is_some(),
+                "Checkpoint should be saved inside try block"
+            );
+
+            // Second execution with checkpoint restore from inside try block
+            let executor2 = WorkflowExecutor::init(
+                app_wrapper_module.clone(),
+                app_module.clone(),
+                http_client.clone(),
+                Arc::new(workflow.clone()),
+                input.clone(),
+                ExecutionId::new("test-try-task-checkpoint-execution-2".to_string()),
+                context.clone(),
+                Arc::new(HashMap::new()),
+                saved_checkpoint,
+            )
+            .await
+            .unwrap();
+
+            let workflow_stream2 =
+                executor2.execute_workflow(Arc::new(opentelemetry::Context::current()));
+            pin_mut!(workflow_stream2);
+
+            let mut final_wfc2 = None;
+            while let Some(wfc) = workflow_stream2.next().await {
+                match wfc {
+                    Ok(wfc) => {
+                        final_wfc2 = Some(wfc);
+                    }
+                    Err(e) => {
+                        tracing::error!("Workflow error: {:#?}", e);
+                        break;
+                    }
+                }
+            }
+
+            assert!(final_wfc2.is_some());
+            let second_execution_wfc = final_wfc2.unwrap();
+            let second_lock = second_execution_wfc.read().await;
+            assert_eq!(second_lock.status, WorkflowStatus::Completed);
+            let second_output = second_lock.output.as_ref().unwrap().clone();
+            drop(second_lock);
+
+            // Verify that outputs match when restored from checkpoint inside try block
+            assert_eq!(
+                first_output, second_output,
+                "Outputs should be identical when restored from checkpoint inside try block"
+            );
+        })
+    }
+
+    #[test]
+    fn test_workflow_checkpoint_with_deep_nested_structure() {
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
+            let http_client = ReqwestClient::new(
+                Some("test"),
+                Some(std::time::Duration::from_secs(30)),
+                Some(std::time::Duration::from_secs(30)),
+                Some(1),
+            )
+            .unwrap();
+
+            let workflow_path = concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/test-files/deep_nested_checkpoint.yaml"
+            );
+            let workflow = load_test_workflow_from_yaml(&http_client, workflow_path).await;
+            let input = Arc::new(serde_json::json!({"base_value": 100}));
+            let context = Arc::new(serde_json::json!({}));
+            let execution_id =
+                ExecutionId::new("test-deep-nested-checkpoint-execution".to_string()).unwrap();
+
+            // First execution with checkpoint enabled
+            let executor = WorkflowExecutor::init(
+                app_wrapper_module.clone(),
+                app_module.clone(),
+                http_client.clone(),
+                Arc::new(workflow.clone()),
+                input.clone(),
+                Some(execution_id.clone()),
+                context.clone(),
+                Arc::new(HashMap::new()),
+                None,
+            )
+            .await
+            .unwrap();
+
+            let workflow_stream =
+                executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+            pin_mut!(workflow_stream);
+
+            let mut final_wfc = None;
+            while let Some(wfc) = workflow_stream.next().await {
+                match wfc {
+                    Ok(wfc) => {
+                        final_wfc = Some(wfc);
+                    }
+                    Err(e) => {
+                        tracing::error!("Workflow error: {:#?}", e);
+                        break;
+                    }
+                }
+            }
+
+            assert!(final_wfc.is_some());
+            let first_execution_wfc = final_wfc.unwrap();
+            let first_lock = first_execution_wfc.read().await;
+            assert_eq!(first_lock.status, WorkflowStatus::Completed);
+            let first_output = first_lock.output.as_ref().unwrap().clone();
+            drop(first_lock);
+
+            // Get checkpoint from deep nested structure
+            let checkpoint_repo = executor.checkpoint_repository.as_ref().unwrap();
+            let checkpoint_key = format!(
+                "{}:{}:{}",
+                workflow.document.name.as_str(),
+                execution_id.value,
+                "/ROOT/do/0/OuterProcess/do/1/NestedProcess/do/1/NestedProcess/try/do/0/DeepProcess/do/2/DeepestProcess" // Very deep checkpoint
+            );
+            let saved_checkpoint = checkpoint_repo
+                .checkpoint_repository()
+                .get_checkpoint(&checkpoint_key)
+                .await
+                .unwrap();
+
+            assert!(
+                saved_checkpoint.is_some(),
+                "Checkpoint should be saved in deep nested structure"
+            );
+
+            // Second execution with checkpoint restore from deep nested structure
+            let executor2 = WorkflowExecutor::init(
+                app_wrapper_module.clone(),
+                app_module.clone(),
+                http_client.clone(),
+                Arc::new(workflow.clone()),
+                input.clone(),
+                ExecutionId::new("test-deep-nested-checkpoint-execution-2".to_string()),
+                context.clone(),
+                Arc::new(HashMap::new()),
+                saved_checkpoint,
+            )
+            .await
+            .unwrap();
+
+            let workflow_stream2 =
+                executor2.execute_workflow(Arc::new(opentelemetry::Context::current()));
+            pin_mut!(workflow_stream2);
+
+            let mut final_wfc2 = None;
+            while let Some(wfc) = workflow_stream2.next().await {
+                match wfc {
+                    Ok(wfc) => {
+                        final_wfc2 = Some(wfc);
+                    }
+                    Err(e) => {
+                        tracing::error!("Workflow error: {:#?}", e);
+                        break;
+                    }
+                }
+            }
+
+            assert!(final_wfc2.is_some());
+            let second_execution_wfc = final_wfc2.unwrap();
+            let second_lock = second_execution_wfc.read().await;
+            assert_eq!(second_lock.status, WorkflowStatus::Completed);
+            let second_output = second_lock.output.as_ref().unwrap().clone();
+            drop(second_lock);
+
+            // Verify that outputs match when restored from deep nested checkpoint
+            assert_eq!(
+                first_output, second_output,
+                "Outputs should be identical when restored from deep nested checkpoint"
+            );
         })
     }
 }

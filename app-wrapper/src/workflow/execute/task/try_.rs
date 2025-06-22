@@ -3,7 +3,10 @@ use crate::workflow::{
     execute::{
         context::{TaskContext, WorkflowContext},
         job::JobExecutorWrapper,
-        task::{ExecutionId, Result, TaskExecutor, TaskExecutorTrait},
+        task::{
+            stream::do_::DoTaskStreamExecutor, ExecutionId, Result, StreamTaskExecutorTrait,
+            TaskExecutorTrait,
+        },
     },
 };
 use crate::workflow::{
@@ -178,22 +181,24 @@ impl TryTaskExecutor {
                 as_: Some(workflow::OutputAs::Variant0("${.}".to_string())), // raw jq
                 schema: None,
             }),
+            metadata: self.task.metadata.clone(),
             ..Default::default()
         };
-        let task_executor = TaskExecutor::new(
+        let do_stream_executor = Arc::new(DoTaskStreamExecutor::new(
             self.workflow_context.clone(),
             self.default_timeout,
+            self.metadata.clone(),
+            do_tasks,
             self.job_executors.clone(),
             self.http_client.clone(),
             self.checkpoint_repository.clone(),
-            task_name,
-            Arc::new(workflow::Task::DoTask(do_tasks)),
-            self.metadata.clone(),
-        );
+            self.execution_id.clone(),
+        ));
 
-        let mut stream = task_executor
-            .execute(cx, Arc::new(task_context), self.execution_id.clone())
-            .await;
+        let mut stream = do_stream_executor
+            .execute_stream(cx, Arc::new(task_name.to_string()), task_context)
+            .boxed();
+
         let mut last_context = None;
         while let Some(task_context) = stream.next().await {
             match task_context {
@@ -212,10 +217,7 @@ impl TryTaskExecutor {
             }
         }
         match last_context {
-            Some(context) => {
-                // remove position from context
-                Ok(context)
-            }
+            Some(context) => Ok(context),
             None => Err(Box::new(workflow::Error {
                 type_: workflow::UriTemplate("task-execution-error".to_string()),
                 status: 400,
@@ -298,6 +300,7 @@ impl TryTaskExecutor {
             return Err(error); // no recover
         }
 
+        task_context.add_position_name("catch".to_string()).await;
         // add error to task context
         let default_error_name = "error".to_string();
         let error_name = catch_config.as_.as_ref().unwrap_or(&default_error_name);
@@ -368,6 +371,7 @@ impl TryTaskExecutor {
                 return Err(error);
             }
         }
+        task_context.remove_position().await;
         // will eval retry condition
         Ok(task_context)
     }
@@ -469,7 +473,7 @@ mod tests {
 
         let loader = WorkflowLoader::new(http_client.clone()).unwrap();
         let flow = loader
-            .load_workflow(Some("test-files/ls-test.yaml"), None)
+            .load_workflow(Some("test-files/ls-test.yaml"), None, false)
             .await
             .unwrap();
 

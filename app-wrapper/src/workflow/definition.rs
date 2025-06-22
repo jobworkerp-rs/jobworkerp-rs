@@ -44,11 +44,11 @@ impl WorkflowLoader {
     ) -> Result<workflow::WorkflowSchema> {
         match source {
             WorkflowSource::WorkflowUrl(url) => self
-                .load_workflow(Some(url.as_str()), None)
+                .load_workflow(Some(url.as_str()), None, false)
                 .await
                 .map_err(|e| anyhow!("Failed to load workflow from url={} , err: {}", url, e)),
             WorkflowSource::WorkflowData(data) => self
-                .load_workflow(None, Some(data.as_str()))
+                .load_workflow(None, Some(data.as_str()), false)
                 .await
                 .map_err(|e| anyhow!("Failed to load workflow from json={} , err: {}", data, e)),
         }
@@ -82,6 +82,7 @@ impl WorkflowLoader {
         &self,
         url_or_path: Option<&str>,
         json_or_yaml_data: Option<&str>,
+        validate: bool,
     ) -> Result<workflow::WorkflowSchema> {
         let wf = if let Some(url_or_path) = url_or_path {
             tracing::debug!("workflow url_or_path: {}", url_or_path);
@@ -89,9 +90,12 @@ impl WorkflowLoader {
                 .load_url_or_path::<serde_json::Value>(url_or_path)
                 .await?;
 
+            // tracing::trace!("workflow json: {:#?}", json);
             // validate schema
             // XXX Broken
-            let _ = self.validate_schema(&json).await;
+            if validate {
+                let _ = self.validate_schema(&json).await;
+            }
             // convert to workflow schema
             serde_json::from_value(json).map_err(|e| {
                 anyhow!(
@@ -185,7 +189,7 @@ mod test {
         )?;
         let loader = super::WorkflowLoader::new(http_client)?;
         let flow = loader
-            .load_workflow(Some("test-files/switch.yaml"), None)
+            .load_workflow(Some("test-files/switch.yaml"), None, false)
             .await?;
         println!("{:#?}", flow);
         assert_eq!(
@@ -214,7 +218,7 @@ mod test {
         )?;
         let loader = super::WorkflowLoader::new(http_client)?;
         let flow = loader
-            .load_workflow(Some("test-files/ls-test.yaml"), None)
+            .load_workflow(Some("test-files/ls-test.yaml"), None, false)
             .await?;
         println!("{:#?}", flow);
         assert_eq!(flow.document.title, Some("Workflow test (ls)".to_string()));

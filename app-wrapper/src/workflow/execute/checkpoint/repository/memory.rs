@@ -119,7 +119,11 @@ mod tests {
 
         // Verify workflow context
         assert_eq!(checkpoint.workflow.name, retrieved_checkpoint.workflow.name);
-
+        // Verify task context
+        assert_eq!(
+            checkpoint.task.flow_directive,
+            retrieved_checkpoint.task.flow_directive
+        );
         // Verify position
         assert_eq!(
             checkpoint.position.path.len(),

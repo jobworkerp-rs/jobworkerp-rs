@@ -37,7 +37,7 @@ where
         &self,
         execution_id: &ExecutionId,
         workflow_name: &str,
-        position: &String,
+        position: &str,
     ) -> anyhow::Result<Option<CheckPointContext>> {
         let key = self.generate_key(execution_id, workflow_name, position);
         self.checkpoint_repository().get_checkpoint(&key).await
@@ -47,7 +47,7 @@ where
         &self,
         execution_id: &ExecutionId,
         workflow_name: &str,
-        position: &String,
+        position: &str,
     ) -> anyhow::Result<()> {
         let key = self.generate_key(execution_id, workflow_name, position);
         self.checkpoint_repository().delete_checkpoint(&key).await
@@ -58,7 +58,7 @@ where
         &self,
         execution_id: &ExecutionId,
         workflow_name: &str,
-        position: &String,
+        position: &str,
     ) -> String {
         format!("{}:{}:{}", workflow_name, execution_id.value, position)
     }

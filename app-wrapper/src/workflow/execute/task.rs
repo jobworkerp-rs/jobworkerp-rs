@@ -94,11 +94,15 @@ impl TaskExecutor {
         execution_id: &Option<Arc<ExecutionId>>,
         current_position: &RwLock<WorkflowPosition>,
     ) -> Result<Option<TaskContext>, Box<workflow::Error>> {
-        if let (Some(execution_id), Some(checkpoint_repository), Some(pos)) = (
-            &execution_id,
-            &self.checkpoint_repository,
-            &self.workflow_context.read().await.checkpoint_position,
-        ) {
+        let cp_position = self
+            .workflow_context
+            .read()
+            .await
+            .checkpoint_position
+            .clone();
+        if let (Some(execution_id), Some(checkpoint_repository), Some(pos)) =
+            (&execution_id, &self.checkpoint_repository, &cp_position)
+        {
             // Load checkpoint if available
             let workflow_name = self.workflow_context.read().await.name.to_string();
             match checkpoint_repository
@@ -107,9 +111,10 @@ impl TaskExecutor {
             {
                 Ok(Some(checkpoint)) => {
                     tracing::debug!(
-                        "Loaded checkpoint for workflow: {}, execution_id={}",
+                        "Loaded checkpoint for workflow: {}, execution_id={}, position={}",
                         &workflow_name,
-                        &execution_id.value
+                        &execution_id.value,
+                        &pos.as_json_pointer()
                     );
                     let mut lock = self.workflow_context.write().await;
                     lock.position = checkpoint.position.clone();
@@ -150,26 +155,43 @@ impl TaskExecutor {
         &self,
         execution_id: &Option<Arc<ExecutionId>>,
         current_position: &RwLock<WorkflowPosition>,
-        task_name: &str,
     ) -> Option<bool> {
         // Check if the task should be skipped based on the `from_position`
         if let Some(cp_position) = &self.workflow_context.read().await.checkpoint_position {
-            let rel_path = cp_position.relative_path(&current_position.read().await.full());
-            if rel_path.is_some_and(|rp| {
-                rp.len() == 1 && rp[0] == serde_json::Value::String(task_name.to_string())
-            }) && execution_id.is_some()
-            {
+            let rel_path = cp_position.relative_path(current_position.read().await.full());
+            if rel_path.as_ref().is_some_and(|rp| rp.is_empty()) && execution_id.is_some() {
                 tracing::info!(
                     "recover checkpoint for task {}: no `from_position` provided",
                     self.task_name
                 );
                 Some(true)
             } else {
+                tracing::info!(
+                    "position {}: not reached checkpoint position: {} (relative: {:?}), execution_id: {:?}",
+                    current_position.read().await.as_json_pointer(),
+                    cp_position.as_json_pointer(),
+                    rel_path
+                        .as_ref(),
+                    execution_id
+                );
                 // skip task execution until the `from_position` is reached
                 Some(false)
             }
         } else {
             None
+        }
+    }
+    async fn can_execute_next(&self, current_position: &RwLock<WorkflowPosition>) -> bool {
+        // Check if the task should be skipped based on the `from_position`
+        // (should check checkpoint recovery or not before this)
+        if let Some(cp_position) = &self.workflow_context.read().await.checkpoint_position {
+            // lock workflow context
+            cp_position
+                .relative_path(current_position.read().await.full())
+                .is_some()
+        } else {
+            // no checkpoint position, can execute next task (normal execution)
+            true
         }
     }
     // input is the output of the previous task
@@ -195,20 +217,29 @@ impl TaskExecutor {
         task_context.position = position.clone();
 
         // skip task execution if checkpoint recovery is needed
-        let reach_checkpoint = self
-            .reach_for_checkpoint(&execution_id, &position, &self.task_name)
-            .await;
+        let reach_checkpoint = self.reach_for_checkpoint(&execution_id, &position).await;
 
         // overwrite task_context with checkpoint data if checkpoint recovery is needed
-        if let Some(reached) = reach_checkpoint {
-            tracing::info!(
-                "Skip task execution for {}: checkpoint recovery",
-                self.task_name
+        let mut task_context = if let Some(reached) = reach_checkpoint {
+            tracing::debug!(
+                "Task {}: reached checkpoint: {}, execution_id: {:?}",
+                self.task_name,
+                reached,
+                execution_id
             );
             // If we skip the task, we still need to create a TaskContext with the input
             let mut task_context = if reached {
                 match self.load_checkpoint(&execution_id, &position).await {
-                    Ok(Some(cp)) => cp,
+                    Ok(Some(cp)) => {
+                        tracing::debug!(
+                            "Loaded checkpoint for task: {}, execution_id: {:?}",
+                            self.task_name,
+                            execution_id
+                        );
+                        // remove checkpoint position workflow_context (continue execution)
+                        self.workflow_context.write().await.checkpoint_position = None;
+                        cp
+                    }
                     Ok(None) => {
                         tracing::error!(
                             "No checkpoint found for task in cp recovery: {}, execution_id: {:?}",
@@ -236,9 +267,30 @@ impl TaskExecutor {
                 // not reached checkpoint, continue execution (skipping task)
                 task_context
             };
-            task_context.set_completed_at();
-            return futures::stream::once(futures::future::ready(Ok(task_context))).boxed();
-        }
+            if !self.can_execute_next(&position).await {
+                tracing::info!(
+                    "Skip task execution for {}: not reached checkpoint position: {}",
+                    self.task_name,
+                    self.workflow_context
+                        .read()
+                        .await
+                        .checkpoint_position
+                        .as_ref()
+                        .map_or("None".to_string(), |p| p.as_json_pointer().to_string())
+                );
+                task_context.set_completed_at();
+                return futures::stream::once(futures::future::ready(Ok(task_context))).boxed();
+            }
+            task_context
+        } else {
+            tracing::trace!(
+                "Task {}: no checkpoint recovery needed, execution_id: {:?}",
+                self.task_name,
+                execution_id
+            );
+            // normal execution, no checkpoint recovery
+            task_context
+        };
 
         let expression = Self::expression(
             &*self.workflow_context.read().await,
