@@ -1,0 +1,55 @@
+document:
+  dsl: "1.0.0"
+  namespace: "test"
+  name: "deep-nested-checkpoint-test-workflow"
+  title: "Deep Nested Checkpoint Test Workflow"
+  version: "1.0.0"
+  metadata: {}
+
+input:
+  schema:
+    document:
+      type: object
+      description: "Input for deep nested checkpoint test"
+      default: {"base_value": 100}
+
+checkpointing:
+  enabled: true
+  storage: "memory"
+
+do:
+  - OuterProcess:
+      do:
+        - OuterInit:
+            set:
+              outer_value: "${.base_value}"
+            checkpoint: true
+        - NestedProcess:
+            do:
+              - NestedInit:
+                  set:
+                    nested_value: "${$outer_value * 2}"
+                  checkpoint: true
+              - NestedProcess:
+                  try:
+                    - DeepProcess:
+                        do:
+                          - Level3Init:
+                              set:
+                                level3_value: "${$nested_value * 3}"
+                              checkpoint: true
+                          - Level3Process:
+                              set:
+                                level3_processed: "${$level3_value + 100}"
+                              checkpoint: true
+                          - DeepestProcess:
+                              set:
+                                deepest_result: "${$level3_processed * 2}"
+                              checkpoint: true
+                  catch:
+                    as: "nested_error"
+                    do:
+                      - ErrorRecovery:
+                          set:
+                            error_recovered: "deep_error_recovered"
+                          checkpoint: true
