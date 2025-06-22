@@ -415,10 +415,6 @@ pub mod tests {
             r#type: StorageType::Scalable,
             restore_at_startup: Some(false),
         });
-        // let descriptor_cache = Arc::new(infra_utils::infra::memory::MemoryCacheImpl::new(
-        //     &mc_config,
-        //     Some(Duration::from_secs(5 * 60)),
-        // ));
         let descriptor_cache =
             Arc::new(infra_utils::infra::cache::MokaCacheImpl::new(&moka_config));
         let runner_app = Arc::new(HybridRunnerAppImpl::new(

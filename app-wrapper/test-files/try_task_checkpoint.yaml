@@ -1,0 +1,37 @@
+document:
+  dsl: "1.0.0"
+  namespace: "test"
+  name: "try-task-checkpoint-test-workflow"
+  title: "Try Task Checkpoint Test Workflow"
+  version: "1.0.0"
+  metadata: {}
+
+input:
+  schema:
+    document:
+      type: object
+      description: "Input for try task checkpoint test"
+      default: {"should_fail": false}
+
+checkpointing:
+  enabled: true
+  storage: "memory"
+
+do:
+  - SafeProcess:
+      try:
+        - RiskyOperation:
+            set:
+              risky_result: "${if .should_fail then error(\"Test error\") else \"success\" end}"
+            checkpoint: true
+        - InnerProcess:
+            set:
+              inner_result: "${$risky_result + \"_processed\"}"
+            checkpoint: true
+      catch:
+        as: "error"
+        do:
+          - HandleError:
+              set:
+                error_handled: "error_recovered"
+              checkpoint: true

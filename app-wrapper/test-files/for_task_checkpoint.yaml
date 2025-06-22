@@ -1,0 +1,31 @@
+document:
+  dsl: "1.0.0"
+  namespace: "test"
+  name: "for-task-checkpoint-test-workflow"
+  title: "For Task Checkpoint Test Workflow"
+  version: "1.0.0"
+  metadata: {}
+
+input:
+  schema:
+    document:
+      type: object
+      description: "Input for for task checkpoint test"
+      default: {"items": [1, 2, 3, 4, 5]}
+
+checkpointing:
+  enabled: true
+  storage: "memory"
+
+do:
+  - ProcessItems:
+      for:
+        in: "${.items}"
+        each: "item"
+        at: "index"
+      do:
+        - ProcessItem:
+            set:
+              processed_item: "${$item * 10}"
+              item_index: "${$index}"
+            checkpoint: true
