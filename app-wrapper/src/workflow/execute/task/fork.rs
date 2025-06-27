@@ -3,7 +3,6 @@ use crate::workflow::{
     definition::workflow::{tasks::TaskTrait, Task},
     execute::{
         context::{TaskContext, WorkflowContext},
-        job::JobExecutorWrapper,
         task::{ExecutionId, Result, TaskExecutorTrait},
     },
 };
@@ -14,6 +13,7 @@ use crate::workflow::{
     },
     execute::expression::UseExpression,
 };
+use app::app::job::execute::JobExecutorWrapper;
 use debug_stub_derive::DebugStub;
 use futures::{future, Future, StreamExt};
 use infra_utils::infra::{net::reqwest, trace::Tracing};
@@ -249,7 +249,6 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
 mod tests {
     use super::*;
     use crate::workflow::definition::workflow::Task as WorkflowTask;
-    use crate::workflow::execute::job::JobExecutorWrapper;
     use app::module::test::create_hybrid_test_app;
     use infra_utils::infra::net::reqwest;
     use opentelemetry::Context;

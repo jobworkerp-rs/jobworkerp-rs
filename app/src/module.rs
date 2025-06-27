@@ -180,6 +180,8 @@ impl AppModule {
                     runner_app.clone(),
                     worker_app.clone(),
                     job_app.clone(),
+                    job_result_app.clone(),
+                    descriptor_cache.clone(),
                     &mc_config,
                 ));
                 Ok(AppModule {
@@ -297,6 +299,8 @@ impl AppModule {
                     runner_app.clone(),
                     worker_app.clone(),
                     job_app.clone(),
+                    job_result_app.clone(),
+                    descriptor_cache.clone(),
                     &mc_config,
                 ));
                 Ok(AppModule {
@@ -460,6 +464,8 @@ pub mod test {
             runner_app.clone(),
             worker_app.clone(),
             job_app.clone(),
+            job_result_app.clone(),
+            descriptor_cache.clone(),
             &mc_config,
         ));
 

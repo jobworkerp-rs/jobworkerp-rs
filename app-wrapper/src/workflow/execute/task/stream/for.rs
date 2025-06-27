@@ -6,7 +6,6 @@ use crate::workflow::{
     execute::{
         context::{TaskContext, WorkflowContext},
         expression::UseExpression,
-        job::JobExecutorWrapper,
         task::{
             stream::do_::DoTaskStreamExecutor, trace::TaskTracing, ExecutionId,
             StreamTaskExecutorTrait,
@@ -14,6 +13,7 @@ use crate::workflow::{
     },
 };
 use anyhow::Result;
+use app::app::job::execute::JobExecutorWrapper;
 use futures::stream::{self, Stream, StreamExt};
 use infra_utils::infra::{net::reqwest, trace::Tracing};
 use jobworkerp_base::APP_WORKER_NAME;

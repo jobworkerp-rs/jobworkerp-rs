@@ -1,14 +1,10 @@
-use crate::app::{job::UseJobApp, runner::UseRunnerApp, worker::UseWorkerApp};
+use crate::app::job::execute::UseJobExecutor;
 use anyhow::Result;
 use command_utils::{protobuf::ProtobufDescriptor, util::datetime};
 use infra::infra::runner::rows::RunnerWithSchema;
 use jobworkerp_base::error::JobWorkerError;
-use proto::{
-    jobworkerp::data::{
-        JobResult, Priority, QueueType, ResponseType, RetryPolicy, RetryType, RunnerData, RunnerId,
-        RunnerType, WorkerData,
-    },
-    ProtobufHelper,
+use proto::jobworkerp::data::{
+    Priority, QueueType, ResponseType, RetryPolicy, RetryType, RunnerId, RunnerType, WorkerData,
 };
 use serde_json::{Map, Value};
 use std::{
@@ -50,9 +46,7 @@ pub trait McpNameConverter {
     }
 }
 
-pub trait FunctionCallHelper:
-    UseJobApp + UseRunnerApp + UseWorkerApp + ProtobufHelper + McpNameConverter + Send + Sync
-{
+pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
     const DEFAULT_RETRY_POLICY: RetryPolicy = RetryPolicy {
         r#type: RetryType::Exponential as i32,
         interval: 1000,
@@ -121,13 +115,17 @@ pub trait FunctionCallHelper:
         }
     }
 
-    fn handle_runner_call<'a>(
+    fn handle_runner_call_from_llm<'a>(
         &'a self,
         meta: Arc<HashMap<String, String>>,
         arguments: Option<Map<String, Value>>,
         runner: RunnerWithSchema,
         tool_name_opt: Option<String>,
-    ) -> impl Future<Output = Result<Option<Value>>> + Send + 'a {
+        worker_params: Option<serde_json::Value>,
+        unique_key: Option<String>,
+        timeout_sec: u32,
+        streaming: bool, // TODO if true, use streaming job
+    ) -> impl Future<Output = Result<Value>> + Send + 'a {
         async move {
             tracing::debug!("found runner: {:?}, tool: {:?}", &runner, &tool_name_opt);
             let (settings, arguments) = Self::prepare_runner_call_arguments(
@@ -136,19 +134,24 @@ pub trait FunctionCallHelper:
                 tool_name_opt,
             )
             .await;
-
             if let RunnerWithSchema {
                 id: Some(_id),
                 data: Some(runner_data),
                 ..
             } = &runner
             {
+                let worker_data = self
+                    .create_worker_data(&runner, settings, worker_params)
+                    .await?;
+
                 self.setup_worker_and_enqueue_with_json(
                     meta,
                     runner_data.name.as_str(),
-                    settings,
-                    None,
+                    worker_data,
                     arguments,
+                    unique_key,
+                    timeout_sec,
+                    streaming,
                 )
                 .await
             } else {
@@ -158,11 +161,14 @@ pub trait FunctionCallHelper:
         }
     }
 
-    fn handle_worker_call<'a>(
+    // for LLM_CHAT, mcp proxy
+    fn handle_worker_call_for_llm<'a>(
         &'a self,
         meta: Arc<HashMap<String, String>>,
         name: &'a str,
         arguments: Option<Map<String, Value>>,
+        unique_key: Option<String>,
+        streaming: bool, // TODO if true, use streaming job
     ) -> impl Future<Output = Result<Value>> + Send + 'a {
         async move {
             tracing::info!("runner not found, run as worker: {:?}", &name);
@@ -185,77 +191,52 @@ pub trait FunctionCallHelper:
             } else {
                 request_args
             };
-            self.enqueue_with_json(meta, &worker_data, Value::Object(args))
-                .await
-                .map(|r| r.unwrap_or_default())
+            self.enqueue_temp_worker_with_json(
+                meta,
+                &worker_data,
+                Value::Object(args),
+                unique_key,
+                streaming,
+            )
+            .await
+            .map(|r| r.unwrap_or_default())
         }
     }
-
-    fn setup_worker_and_enqueue_with_json<'a>(
-        &'a self,
-        meta: Arc<HashMap<String, String>>, // metadata for job
-        runner_name: &'a str,               // runner(runner) name
-        runner_settings: Option<serde_json::Value>, // runner_settings data
-        worker_params: Option<serde_json::Value>, // worker parameters (if not exists, use default values)
-        job_args: serde_json::Value,              // enqueue job args
-    ) -> impl Future<Output = Result<Option<serde_json::Value>>> + Send + 'a {
+    fn create_worker_data(
+        &self,
+        runner: &RunnerWithSchema,
+        runner_settings: Option<serde_json::Value>,
+        worker_params: Option<serde_json::Value>,
+    ) -> impl Future<Output = Result<WorkerData>> + Send {
         async move {
-            if let Some(RunnerWithSchema {
-                id: Some(_sid),
-                data: Some(sdata),
-                settings_schema: _settings_schema,
-                arguments_schema: _arguments_schema,
-                output_schema: _output_schema,
-                tools: _tools,
-            }) = self.runner_app().find_runner_by_name(runner_name).await?
-            // TODO local cache? (2 times request in this function)
-            {
-                let runner_settings_descriptor =
-                    Self::parse_runner_settings_schema_descriptor(&sdata).map_err(|e| {
-                        JobWorkerError::InvalidParameter(format!(
-                            "Failed to parse runner_settings schema descriptor: {:#?}",
-                            e
-                        ))
-                    })?;
+            let settings = self
+                .setup_runner_and_settings(&runner, runner_settings)
+                .await?;
 
-                let runner_settings = if let Some(ope_desc) = runner_settings_descriptor {
-                    tracing::debug!("runner settings schema exists: {:#?}", &runner_settings);
-                    runner_settings
-                        .map(|j| ProtobufDescriptor::json_value_to_message(ope_desc, &j, true))
-                        .unwrap_or(Ok(vec![]))
-                        .map_err(|e| {
-                            JobWorkerError::InvalidParameter(format!(
-                                "Failed to parse runner_settings schema: {:#?}",
-                                e
-                            ))
-                        })?
-                } else {
-                    tracing::debug!("runner settings schema empty");
-                    vec![]
-                };
-                tracing::debug!("job args: {:#?}", &job_args);
-                let worker_data = Self::create_default_worker_data(
-                    _sid,
-                    runner_name,
-                    runner_settings,
-                    worker_params,
-                );
-                self.enqueue_with_json(
-                    meta,
-                    &worker_data,
-                    job_args, // enqueue job args
-                )
-                .await
+            if let RunnerWithSchema {
+                id: Some(sid),
+                data: Some(sdata),
+                ..
+            } = runner
+            {
+                let worker_data =
+                    Self::create_default_worker_data(*sid, &sdata.name, settings, worker_params);
+                Ok(worker_data)
             } else {
-                Err(JobWorkerError::NotFound(format!("Not found runner: {}", runner_name)).into())
+                Err(
+                    JobWorkerError::InvalidParameter(format!("illegal runner: {:#?}", runner))
+                        .into(),
+                )
             }
         }
     }
-    fn enqueue_with_json<'a>(
+    fn enqueue_temp_worker_with_json<'a>(
         &'a self,
         meta: Arc<HashMap<String, String>>,
         temp_worker_data: &'a WorkerData,
         arguments: Value,
+        uniq_key: Option<String>,
+        _streaming: bool, // TODO if true, use streaming job
     ) -> impl Future<Output = Result<Option<Value>>> + Send + 'a {
         async move {
             let runner = if let Some(runner_id) = temp_worker_data.runner_id.as_ref() {
@@ -286,7 +267,7 @@ pub trait FunctionCallHelper:
                             meta,
                             temp_worker_data.clone(),
                             job_args,
-                            None,
+                            uniq_key,
                             0,
                             Priority::Medium as i32,
                             (self.timeout_sec() * 1000) as u64,
@@ -377,15 +358,22 @@ pub trait FunctionCallHelper:
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
                 store_failure: obj
-                    .get("store_success")
+                    .get("store_failure")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true), //
                 use_static: obj
                     .get("use_static")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
-                retry_policy: Some(Self::DEFAULT_RETRY_POLICY), //TODO
-                broadcast_results: true,
+                retry_policy: obj
+                    .get("retry_policy")
+                    .and_then(|v| v.as_object())
+                    .and_then(|o| serde_json::from_value(Value::Object(o.clone())).ok()) // ignore parse errors
+                    .or_else(|| Some(Self::DEFAULT_RETRY_POLICY.clone())),
+                broadcast_results: obj
+                    .get("broadcast_results")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true),
             }
         } else {
             // default values
@@ -489,55 +477,29 @@ pub trait FunctionCallHelper:
 
         arguments
     }
-    fn parse_job_result(job_result: JobResult, runner_data: &RunnerData) -> Result<Option<Value>> {
-        let output = job_result
-            .data
-            .as_ref()
-            .and_then(|r| r.output.as_ref().map(|o| &o.items));
-        if let Some(output) = output {
-            let result_descriptor = Self::parse_job_result_schema_descriptor(runner_data)?;
-            if let Some(desc) = result_descriptor {
-                match ProtobufDescriptor::get_message_from_bytes(desc, output) {
-                    Ok(m) => {
-                        let j = ProtobufDescriptor::message_to_json_value(&m)?;
-                        tracing::debug!(
-                            "Result schema exists. decode message with proto: {:#?}",
-                            j
-                        );
-                        Ok(Some(j))
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to parse result schema: {:#?}", e);
-                        Err(JobWorkerError::RuntimeError(format!(
-                            "Failed to parse result schema: {:#?}",
-                            e
-                        )))
-                    }
-                }
-            } else {
-                let text = String::from_utf8_lossy(output);
-                tracing::debug!("No result schema: {}", text);
-                Ok(Some(serde_json::Value::String(text.to_string())))
-            }
-            .map_err(|e| {
-                JobWorkerError::RuntimeError(format!("Failed to parse output: {:#?}", e)).into()
-            })
-        } else {
-            tracing::warn!("No output found");
-            Ok(None)
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
+    use infra_utils::infra::cache::{MokaCacheConfig, MokaCacheImpl};
+    use proto::ProtobufHelper;
+
     use super::*;
-    use crate::module::test::create_hybrid_test_app;
-    use std::sync::Arc;
+    use crate::{
+        app::{
+            job::UseJobApp,
+            job_result::UseJobResultApp,
+            runner::{RunnerDataWithDescriptor, UseRunnerApp, UseRunnerParserWithCache},
+            worker::UseWorkerApp,
+        },
+        module::test::create_hybrid_test_app,
+    };
+    use std::{sync::Arc, time::Duration};
 
     // Create a test implementation of FunctionCallHelper using the app
     struct TestFunctionCallHelper {
         app: crate::module::AppModule,
+        descriptor_cache: MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>,
     }
 
     // Implement required traits
@@ -559,6 +521,18 @@ mod tests {
         }
     }
 
+    impl UseJobResultApp for TestFunctionCallHelper {
+        fn job_result_app(&self) -> &Arc<dyn crate::app::job_result::JobResultApp + 'static> {
+            &self.app.job_result_app
+        }
+    }
+    impl UseJobExecutor for TestFunctionCallHelper {}
+    impl UseRunnerParserWithCache for TestFunctionCallHelper {
+        fn descriptor_cache(&self) -> &MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor> {
+            &self.descriptor_cache
+        }
+    }
+
     impl ProtobufHelper for TestFunctionCallHelper {}
 
     impl McpNameConverter for TestFunctionCallHelper {}
@@ -575,7 +549,14 @@ mod tests {
             // tokio::time::sleep(std::time::Duration::from_secs(10)).await;
             // Get test app instance
             let app = create_hybrid_test_app().await.unwrap();
-            let _helper = TestFunctionCallHelper { app };
+            let descriptor_cache = MokaCacheImpl::new(&MokaCacheConfig {
+                num_counters: 10000,
+                ttl: Some(Duration::from_secs(60)), // 1 minute TTL for test
+            });
+            let _helper = TestFunctionCallHelper {
+                app,
+                descriptor_cache,
+            };
 
             // Case 1: tool_name already exists and matches the value
             let tool_name = "test_tool".to_string();
@@ -615,7 +596,14 @@ mod tests {
             // tokio::time::sleep(std::time::Duration::from_secs(10)).await;
             // Get test app instance
             let app = create_hybrid_test_app().await.unwrap();
-            let _helper = TestFunctionCallHelper { app };
+            let descriptor_cache = MokaCacheImpl::new(&MokaCacheConfig {
+                num_counters: 10000,
+                ttl: Some(Duration::from_secs(60)), // 1 minute TTL for test
+            });
+            let _helper = TestFunctionCallHelper {
+                app,
+                descriptor_cache,
+            };
 
             // Case 3: tool_name doesn't exist
             let tool_name = "new_tool".to_string();

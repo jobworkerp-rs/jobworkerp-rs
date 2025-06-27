@@ -265,7 +265,7 @@ mod test {
                 })
             );
             assert_eq!(serde_json::Value::Object(settings), serde_json::json!({}));
-            let opts = workflow::FunctionOptions {
+            let opts = workflow::WorkerOptions {
                 channel: Some("workflow".to_string()),
                 store_failure: Some(true),
                 store_success: Some(true),

@@ -6,17 +6,22 @@ use super::{
     function::function_set::UseFunctionSetApp, runner::UseRunnerApp, worker::UseWorkerApp,
 };
 use crate::app::function::function_set::FunctionSetApp as BaseFunctionSetApp;
+use crate::app::job::execute::UseJobExecutor;
+use crate::app::job_result::UseJobResultApp;
+use crate::app::runner::{RunnerDataWithDescriptor, UseRunnerParserWithCache};
 use anyhow::Result;
+use async_stream::stream;
 use async_trait::async_trait;
 use core::fmt;
 use helper::{workflow::ReusableWorkflowHelper, FunctionCallHelper, McpNameConverter};
 use infra::infra::runner::rows::RunnerWithSchema;
-use infra_utils::infra::cache::UseMokaCache;
+use infra_utils::infra::cache::{MokaCacheImpl, UseMokaCache};
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::ReusableWorkflowRunnerSettings;
 use proto::jobworkerp::data::{RunnerType, StreamingOutputType, WorkerData, WorkerId};
 use proto::jobworkerp::function::data::{
-    function_specs, FunctionSchema, FunctionSpecs, McpToolList,
+    function_specs, FunctionResult, FunctionSchema, FunctionSpecs, McpToolList, WorkerOptions,
 };
 use proto::ProtobufHelper;
 use std::collections::HashMap;
@@ -157,11 +162,293 @@ pub trait FunctionApp:
             Ok(Vec::new())
         }
     }
-    async fn call_function(
+    fn handle_runner_for_front<'a>(
+        &'a self,
+        metadata: Arc<HashMap<String, String>>,
+        runner_name: &'a str,
+        runner_settings: Option<serde_json::Value>,
+        worker_options: Option<WorkerOptions>,
+        arg_json: serde_json::Value,
+        uniq_key: Option<String>,
+        timeout_sec: u32,
+        streaming: bool,
+    ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<FunctionResult>> + Send + 'a>> {
+        use futures::{stream, StreamExt};
+
+        let future = async move {
+            tracing::debug!(
+                "handle_runner_for_front: runner_name: {:?}, uniq_key: {:?}, streaming: {}",
+                runner_name,
+                uniq_key,
+                streaming
+            );
+
+            let runner = self
+                .runner_app()
+                .find_runner_by_name(runner_name)
+                .await?
+                .ok_or(JobWorkerError::NotFound(format!(
+                    "Runner with name '{}' not found",
+                    runner_name
+                )))?;
+            // XXX serialize worker options to JSON... (transform function for WorkerOptions)
+            let worker_params = worker_options
+                .map(|wo| serde_json::to_value(wo))
+                .unwrap_or_else(|| Ok(serde_json::json!({})))?;
+            let worker_data = self
+                .create_worker_data(&runner, runner_settings, Some(worker_params))
+                .await?;
+            if let RunnerWithSchema {
+                id: Some(_id),
+                data: Some(runner_data),
+                ..
+            } = &runner
+            {
+                match self
+                    .setup_worker_and_enqueue_with_json_full_output(
+                        metadata,
+                        runner_data.name.as_str(),
+                        worker_data,
+                        arg_json,
+                        uniq_key,
+                        timeout_sec,
+                        streaming,
+                    )
+                    .await
+                {
+                    Ok((jid, jres, stream_opt)) => {
+                        let job_id = jid.value.to_string();
+                        let started_at = chrono::Utc::now().timestamp_millis();
+
+                        // Use runner name directly since we have it
+                        let runner_name = Some(runner_data.name.clone());
+
+                        // Use the common stream processing method
+                        Ok(self.process_job_result_to_stream(
+                            job_id,
+                            started_at,
+                            jres,
+                            stream_opt,
+                            runner_name,
+                        ))
+                    }
+                    Err(e) => {
+                        tracing::error!("Error setting up worker and enqueueing job: {:?}", e);
+                        Err(e.into())
+                    }
+                }
+            } else {
+                tracing::error!("Runner not found");
+                Err(JobWorkerError::NotFound("Runner not found".to_string()).into())
+            }
+        };
+
+        Box::pin(
+            stream::once(future)
+                .then(|result| async move {
+                    match result {
+                        Ok(stream) => stream,
+                        Err(e) => Box::pin(stream::once(async move { Err(e) })),
+                    }
+                })
+                .flatten(),
+        )
+    }
+
+    // for LLM_CHAT, mcp proxy
+    fn handle_worker_call_for_front<'a>(
+        &'a self,
+        meta: Arc<HashMap<String, String>>,
+        name: &'a str,
+        arguments: serde_json::Value,
+        unique_key: Option<String>,
+        job_timeout_sec: u32,
+        streaming: bool, // TODO if true, use streaming job
+    ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<FunctionResult>> + Send + 'a>> {
+        use futures::StreamExt;
+
+        Box::pin(stream! {
+            tracing::info!("runner not found, run as worker: {:?}", &name);
+
+            let result = self
+                .enqueue_with_worker_name(
+                    meta.clone(),
+                    &name,
+                    &arguments,
+                    unique_key,
+                    job_timeout_sec,
+                    streaming,
+                )
+                .await;
+
+            match result {
+                Ok((jid, jres, stream_opt)) => {
+                    let job_id = jid.value.to_string();
+                    let started_at = chrono::Utc::now().timestamp_millis();
+
+                    // Find worker to get runner information for decoding
+                    let worker_opt = self.worker_app().find_by_name(name).await.ok().flatten();
+                    let runner_name = if let Some(worker) = &worker_opt {
+                        if let Some(worker_data) = &worker.data {
+                            if let Some(runner_id) = &worker_data.runner_id {
+                                self.runner_app().find_runner(runner_id).await.ok().flatten()
+                                    .and_then(|r| r.data.map(|rd| rd.name))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    // Use the common stream processing method
+                    let stream = self.process_job_result_to_stream(
+                        job_id,
+                        started_at,
+                        jres,
+                        stream_opt,
+                        runner_name,
+                    );
+
+                    // Yield all results from the stream
+                    let mut stream = std::pin::pin!(stream);
+                    while let Some(result) = stream.next().await {
+                        yield result;
+                    }
+                }
+                Err(e) => {
+                    yield Err(e);
+                }
+            }
+        })
+    }
+
+    // Common method to process job execution results into FunctionResult stream
+    fn process_job_result_to_stream<'a>(
+        &'a self,
+        job_id: String,
+        started_at: i64,
+        jres: Option<proto::jobworkerp::data::JobResult>,
+        stream_opt: Option<
+            futures::stream::BoxStream<'static, proto::jobworkerp::data::ResultOutputItem>,
+        >,
+        runner_name: Option<String>,
+    ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<FunctionResult>> + Send + 'a>> {
+        use futures::StreamExt;
+        use proto::jobworkerp::data::{result_output_item, ResultStatus};
+        use proto::jobworkerp::function::data::FunctionExecutionInfo;
+
+        Box::pin(stream! {
+                // Handle streaming case
+            if let Some(mut result_stream) = stream_opt {
+                while let Some(item) = result_stream.next().await {
+                    match item.item {
+                        Some(result_output_item::Item::Data(data)) => {
+                            // Decode the data using runner information
+                            let decoded_output = if let Some(ref rname) = runner_name {
+                                self.decode_job_result_output(None, Some(rname), &data).await?
+                            } else {
+                                Err(JobWorkerError::NotFound(
+                                    "Runner name not found for decoding".to_string(),
+                                ))?
+                            };
+
+                            // Yield intermediate result without metadata
+                            yield Ok(FunctionResult {
+                                output: decoded_output.to_string(),
+                                status: Some(ResultStatus::Success as i32),
+                                error_message: None,
+                                error_code: None,
+                                last_info: None,
+                            });
+                        }
+                        Some(result_output_item::Item::End(trailer)) => {
+                            // Yield final result with metadata
+                            let completed_at = chrono::Utc::now().timestamp_millis();
+
+                            yield Ok(FunctionResult {
+                                output: "".to_string(),
+                                status: Some(ResultStatus::Success as i32),
+                                error_message: None,
+                                error_code: None,
+                                last_info: Some(FunctionExecutionInfo {
+                                    job_id: job_id.clone(),
+                                    started_at,
+                                    completed_at: Some(completed_at),
+                                    execution_time_ms: Some(completed_at - started_at),
+                                    metadata: trailer.metadata,
+                                }),
+                            });
+                            break;
+                        }
+                        None => {
+                            // Skip empty items
+                        }
+                    }
+                }
+            } else if let Some(job_result) = jres {
+                // Handle non-streaming case with direct result
+                let completed_at = chrono::Utc::now().timestamp_millis();
+
+                if let Some(result_data) = job_result.data {
+                    let status = result_data.status();
+                    let raw_output = if let Some(output_data) = result_data.output {
+                        output_data.items
+                    } else {
+                        Vec::new()
+                    };
+
+                    // Decode the output using runner information
+                    let decoded_output = if let Some(ref rname) = runner_name {
+                        match self.decode_job_result_output(None, Some(rname), &raw_output).await {
+                            Ok(decoded) => decoded.to_string(),
+                            Err(_) => String::from_utf8_lossy(&raw_output).to_string(),
+                        }
+                    } else {
+                        String::from_utf8_lossy(&raw_output).to_string()
+                    };
+
+                    // error result
+                    let (error_message, error_code) = if status != ResultStatus::Success {
+                        (
+                            Some("Job execution failed".to_string()),
+                            Some("EXECUTION_ERROR".to_string()),
+                        )
+                    } else {
+                        (None, None)
+                    };
+
+                    yield Ok(FunctionResult {
+                        output: decoded_output,
+                        status: Some(status as i32),
+                        error_message,
+                        error_code,
+                        last_info: Some(FunctionExecutionInfo {
+                            job_id,
+                            started_at,
+                            completed_at: Some(completed_at),
+                            execution_time_ms: Some(completed_at - started_at),
+                            metadata: HashMap::new(),
+                        }),
+                    });
+                } else {
+                    yield Err(JobWorkerError::RuntimeError(format!("Job result data is empty")).into());
+                }
+            } else {
+                yield Err(JobWorkerError::RuntimeError(format!("No result or stream available")).into());
+            }
+        })
+    }
+
+    // for LLM function calling (LLM_CHAT runner)
+    async fn call_function_for_llm(
         &self,
         meta: Arc<HashMap<String, String>>,
         name: &str,
         arguments: Option<serde_json::Map<String, serde_json::Value>>,
+        timeout_sec: u32,
     ) -> Result<serde_json::Value> {
         tracing::debug!("call_tool: {}: {:?}", name, &arguments);
 
@@ -177,11 +464,23 @@ pub trait FunctionApp:
                 self.handle_reusable_workflow(name, arguments, rid, rdata)
                     .await
             }
-            Ok(Some((runner, tool_name_opt))) => self
-                .handle_runner_call(meta, arguments, runner, tool_name_opt)
+            Ok(Some((runner, tool_name_opt))) => {
+                self.handle_runner_call_from_llm(
+                    meta,
+                    arguments,
+                    runner,
+                    tool_name_opt,
+                    None,
+                    None,
+                    timeout_sec,
+                    false,
+                ) // XXX default worker params, non streaming
                 .await
-                .map(|r| r.unwrap_or_default()),
-            Ok(None) => self.handle_worker_call(meta, name, arguments).await,
+            }
+            Ok(None) => {
+                self.handle_worker_call_for_llm(meta, name, arguments, None, false)
+                    .await
+            }
             Err(e) => {
                 tracing::error!("error: {:#?}", &e);
                 Err(e)
@@ -196,7 +495,9 @@ pub struct FunctionAppImpl {
     runner_app: Arc<dyn crate::app::runner::RunnerApp>,
     worker_app: Arc<dyn crate::app::worker::WorkerApp>,
     job_app: Arc<dyn crate::app::job::JobApp>,
+    job_result_app: Arc<dyn crate::app::job_result::JobResultApp>,
     function_cache: infra_utils::infra::cache::MokaCacheImpl<Arc<String>, Vec<FunctionSpecs>>,
+    descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
 }
 
 impl FunctionAppImpl {
@@ -205,6 +506,8 @@ impl FunctionAppImpl {
         runner_app: Arc<dyn crate::app::runner::RunnerApp>,
         worker_app: Arc<dyn crate::app::worker::WorkerApp>,
         job_app: Arc<dyn crate::app::job::JobApp>,
+        job_result_app: Arc<dyn crate::app::job_result::JobResultApp>,
+        descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
         mc_config: &infra_utils::infra::memory::MemoryCacheConfig,
     ) -> Self {
         let function_cache = infra_utils::infra::cache::MokaCacheImpl::new(
@@ -218,7 +521,9 @@ impl FunctionAppImpl {
             runner_app,
             worker_app,
             job_app,
+            job_result_app,
             function_cache,
+            descriptor_cache,
         }
     }
 }
@@ -245,6 +550,11 @@ impl UseJobApp for FunctionAppImpl {
         &self.job_app
     }
 }
+impl UseJobResultApp for FunctionAppImpl {
+    fn job_result_app(&self) -> &Arc<dyn crate::app::job_result::JobResultApp + 'static> {
+        &self.job_result_app
+    }
+}
 
 impl infra_utils::infra::cache::UseMokaCache<Arc<String>, Vec<FunctionSpecs>> for FunctionAppImpl {
     fn cache(&self) -> &infra_utils::infra::cache::MokaCache<Arc<String>, Vec<FunctionSpecs>> {
@@ -255,6 +565,12 @@ impl FunctionSpecConverter for FunctionAppImpl {}
 impl ProtobufHelper for FunctionAppImpl {}
 impl ReusableWorkflowHelper for FunctionAppImpl {}
 impl McpNameConverter for FunctionAppImpl {}
+impl UseRunnerParserWithCache for FunctionAppImpl {
+    fn descriptor_cache(&self) -> &MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor> {
+        &self.descriptor_cache
+    }
+}
+impl UseJobExecutor for FunctionAppImpl {}
 impl FunctionCallHelper for FunctionAppImpl {
     fn timeout_sec(&self) -> u32 {
         30 * 60 // 30 minutes
