@@ -1,3 +1,4 @@
+pub mod execute;
 pub mod hybrid;
 pub mod rdb_chan;
 // pub mod redis;

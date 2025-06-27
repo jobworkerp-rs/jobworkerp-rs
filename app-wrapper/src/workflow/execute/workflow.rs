@@ -1,4 +1,4 @@
-use super::{expression::UseExpression, job::JobExecutorWrapper, task::TaskExecutor};
+use super::{expression::UseExpression, task::TaskExecutor};
 use crate::modules::AppWrapperModule;
 use crate::workflow::definition::{
     transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
@@ -11,6 +11,7 @@ use crate::workflow::execute::context::{
 };
 use crate::workflow::execute::task::ExecutionId;
 use anyhow::Result;
+use app::app::job::execute::JobExecutorWrapper;
 use app::module::AppModule;
 use async_stream::stream;
 use futures::{Stream, StreamExt};

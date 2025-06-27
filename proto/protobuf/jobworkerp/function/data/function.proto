@@ -27,11 +27,10 @@ message FunctionSpecs {
   // # Function Description
   // Human-readable explanation of what the function does
   string description = 5;
-  // # Stream Output Flag
-  // When true, the function supports streaming output mode
-  // Enables JobService/EnqueueForStream and JobResultService/ListenStream
-  // If not specified, the function should support both streaming and
-  // non-streaming modes
+  // # Stream Output Type
+  // When STREAMING or BOTH, the function supports streaming output mode
+  // (Enables JobService/EnqueueForStream and JobResultService/ListenStream)
+  // Default: NON_STREAMING
   jobworkerp.data.StreamingOutputType output_type = 6;
 
   // # Function Input/Output Definition
@@ -112,4 +111,84 @@ message ToolAnnotations {
   // of a memory tool is not.
   // Default: true
   optional bool open_world_hint = 5;
+}
+
+// # Worker options
+// Configuration for worker execution (partial jobworkerp.data.WorkerData)
+message WorkerOptions {
+  // # Retry Policy
+  // Configuration for job retry behavior on failure
+  jobworkerp.data.RetryPolicy retry_policy = 1;
+  // # Channel Name
+  // Message channel for job (if empty, default channel will be used)
+  optional string channel = 2;
+  // # with backup flag
+  // If true, enqueued job will be backed up to database in execution
+  // (if true, set Queue Type WithBackup)
+  bool with_backup = 3;
+  // # Store Success Flag
+  // If true, job results will be stored in database when execution succeeds
+  bool store_success = 4;
+  // # Store Failure Flag
+  // If true, job results will be stored in database when execution fails
+  bool store_failure = 5;
+  // # Static Execution Flag
+  // If true, keep a fixed number instance of this worker running at a time in
+  // memory
+  bool use_static = 6;
+  // # Output Broadcast Flag
+  // Broadcast job results to all result listeners or not.
+  // If false, cannot use JobResultService/{Listen, ListenStream,
+  // ListenByWorker}.
+  bool broadcast_results = 7;
+}
+
+// # Function Call Options
+// Options for function call execution
+message FunctionCallOptions {
+  // Timeout in milliseconds
+  optional int64 timeout_ms = 1;
+  // Enable streaming output
+  optional bool streaming = 2;
+  // Custom metadata for request context
+  map<string, string> metadata = 3;
+}
+
+// # Function Execution Metadata
+// Contains metadata about function execution
+message FunctionExecutionInfo {
+  // Job ID assigned to this execution
+  string job_id = 1;
+  // Execution start time (Unix timestamp in milliseconds)
+  int64 started_at = 2;
+  // Execution completion time (Unix timestamp in milliseconds)
+  optional int64 completed_at = 3;
+  // Total execution time in milliseconds
+  optional int64 execution_time_ms = 4;
+  // Additional metadata for the execution(trail)
+  map<string, string> metadata = 5;
+}
+
+// # Function Result Data
+// Contains the execution result and metadata of a function call
+message FunctionResult {
+  // # Result Output
+  // Function execution output data (JSON string)
+  string output = 1;
+
+  // # Result Status
+  // Execution status of the function (success, failure, etc.)
+  optional jobworkerp.data.ResultStatus status = 2;
+
+  // # Error Message
+  // Detailed error message when execution fails
+  optional string error_message = 3;
+
+  // # Error Code
+  // Error code for programmatic error handling
+  optional string error_code = 4;
+
+  // # Execution last info
+  // Additional information about the execution in last of stream
+  optional FunctionExecutionInfo last_info = 5;
 }

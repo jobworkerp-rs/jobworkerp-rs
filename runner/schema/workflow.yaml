@@ -10,7 +10,7 @@ description: >-
   Partial Serverless Workflow DSL with function(tool) support. 
 
   Runtime expressions:
-  - jq expressions using ${..} syntax (e.g. ${.key.ckey}, ${$task.input})
+  - jq expressions using ${..} syntax (e.g. ${.key.ckey} (input filter), ${$task.input} (context vars))
   - liquid templates using $${..} syntax
   - Available only in fields marked in their descriptions
 
@@ -298,6 +298,7 @@ $defs:
         oneOf:
           - $ref: "#/$defs/runWorker"
           - $ref: "#/$defs/runRunner"
+          - $ref: "#/$defs/runFunction"
   runRunner:
     required: [runner]
     properties:
@@ -310,57 +311,59 @@ $defs:
           name:
             type: string
             title: RunnerName
-            description: The name of the runner(runtime environment) that executes job (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND, PLUGIN, MCP_SERVER, LLM_CHAT etc.)
+            description: The name of the runner(runtime environment) that executes job (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND, LLM_CHAT, mcp server names, plugin names etc.)
           settings:
             type: object
             title: InitializeSettings
             description: The initialization settings, if any. Runtime expression can be used to transform each value (not keys, no mixed plain text).
           options:
-            type: object
-            title: FunctionOptions
-            description: The options to use when running the configured function.
-            properties:
-              channel:
-                type: string
-                title: FunctionChannel
-                description: The channel to use when running the function. (Channel controls execution concurrency)
-              withBackup:
-                type: boolean
-                title: FunctionWithBackup
-                description: Whether to backup the function call (queue) to database when queueing and running the function.
-              storeSuccess:
-                type: boolean
-                title: StoreSuccessResult
-                description: Whether to store successful results to database.
-              storeFailure:
-                type: boolean
-                title: StoreFailureResult
-                description: Whether to store failure results to database.
-              useStatic:
-                type: boolean
-                title: UseStaticFunction
-                description: Whether to use a static function (persist in database, pool initialized function).
-              retry:
-                $ref: "#/$defs/retryPolicy"
-                title: RetryPolicyDefinition
-                description: The retry policy to use, if any, when catching errors.
-              broadcastResults:
-                type: boolean
-                title: BroadcastResultsToListener
-                description: Whether to broadcast results to listeners.
+            $ref: "#/$defs/workerOptions"
           arguments:
             type: object
-            title: FunctionArguments
-            description: A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation.
+            title: JobArguments
+            description: A key/value mapping of arguments to use when running the runner as job. Runtime expressions are supported for value transformation.
             additionalProperties: true
         required: [name, arguments]
+  workerOptions:
+    type: object
+    title: WorkerOptions
+    description: The options to use when running the worker.
+    properties:
+      channel:
+        type: string
+        title: Channel
+        description: The channel to use when running the worker. (as Worker. Channel controls execution concurrency)
+      withBackup:
+        type: boolean
+        title: WithBackup
+        description: Whether to backup the enqueued job to database in queueing and running.
+      storeSuccess:
+        type: boolean
+        title: StoreSuccessResult
+        description: Whether to store successful results to database.
+      storeFailure:
+        type: boolean
+        title: StoreFailureResult
+        description: Whether to store failure results to database.
+      useStatic:
+        type: boolean
+        title: UseStaticWorker
+        description: Whether to use a static worker (persist in database, pool initialized worker).
+      retry:
+        $ref: "#/$defs/retryPolicy"
+        title: RetryPolicyDefinition
+        description: The retry policy to use, if any, when catching errors.
+      broadcastResults:
+        type: boolean
+        title: BroadcastResultsToListener
+        description: Whether to broadcast results to listeners.
   runWorker:
     required: [worker]
     properties:
       worker:
         type: object
         title: RunJobWorker
-        description: Executes a job using a specified worker (runner with settings).
+        description: Executes a job using a specified worker (cunfigured runner with settings and options).
         unevaluatedProperties: false
         properties:
           name:
@@ -373,6 +376,51 @@ $defs:
             description: A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation.
             additionalProperties: true
         required: [name, arguments]
+  runFunction:
+    required: [function]
+    properties:
+      function:
+        type: object
+        title: RunJobFunction
+        description: Executes a job using a specified function(runner or worker).
+        unevaluatedProperties: false
+        # Either runnerName or workerName must be specified
+        oneOf:
+          - type: object
+            title: RunnerFunction
+            description: Execute using a runner with optional settings
+            properties:
+              runnerName:
+                type: string
+                description: The name of the runner that executes job
+              settings:
+                type: object
+                description: The initialization settings JSON, if any. (ref. jobworkerp.data.RunnerData.runner_settings_proto schema) Runtime expression can be used to transform each value (not keys, no mixed plain text).
+              options:
+                $ref: "#/$defs/workerOptions"
+              arguments:
+                type: object
+                description: A key/value mapping of arguments JSON (ref. jobworkerp.data.RunnerData.job_args_proto schema) to use when running the function. Runtime expressions are supported for value transformation.
+                additionalProperties: true
+            required:
+              - runnerName
+              - arguments
+            additionalProperties: false
+          - type: object
+            title: WorkerFunction
+            description: Execute using a pre-configured worker
+            properties:
+              workerName:
+                type: string
+                description: The name of the worker that executes job
+              arguments:
+                type: object
+                description: A key/value mapping of arguments JSON to use when running the function. Runtime expressions are supported for value transformation.
+                additionalProperties: true
+            required:
+              - workerName
+              - arguments
+            additionalProperties: false
   setTask:
     type: object
     $ref: "#/$defs/taskBase"

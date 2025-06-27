@@ -1,7 +1,6 @@
 use super::{
     context::{TaskContext, WorkflowContext},
     expression::UseExpression,
-    job::JobExecutorWrapper,
 };
 use crate::workflow::{
     definition::{
@@ -14,6 +13,7 @@ use crate::workflow::{
     },
 };
 use anyhow::Result;
+use app::app::job::execute::JobExecutorWrapper;
 use async_stream::stream;
 use debug_stub_derive::DebugStub;
 use fork::ForkTaskExecutor;
