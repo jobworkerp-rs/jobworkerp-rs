@@ -172,7 +172,7 @@ impl OllamaChatService {
                     content,
                     tool_calls: vec![],
                     images: Some(vec![]),
-                    thinking: None,  // TODO String? bool? args.options.and_then(|o| o.extract_reasoning_content), 
+                    thinking: None, // TODO String? bool? args.options.and_then(|o| o.extract_reasoning_content),
                 }
             })
             .collect()

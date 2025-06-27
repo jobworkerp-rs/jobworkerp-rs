@@ -162,6 +162,7 @@ pub trait FunctionApp:
             Ok(Vec::new())
         }
     }
+    #[allow(clippy::too_many_arguments)]
     fn handle_runner_for_front<'a>(
         &'a self,
         metadata: Arc<HashMap<String, String>>,
@@ -193,7 +194,7 @@ pub trait FunctionApp:
                 )))?;
             // XXX serialize worker options to JSON... (transform function for WorkerOptions)
             let worker_params = worker_options
-                .map(|wo| serde_json::to_value(wo))
+                .map(serde_json::to_value)
                 .unwrap_or_else(|| Ok(serde_json::json!({})))?;
             let worker_data = self
                 .create_worker_data(&runner, runner_settings, Some(worker_params))
@@ -234,7 +235,7 @@ pub trait FunctionApp:
                     }
                     Err(e) => {
                         tracing::error!("Error setting up worker and enqueueing job: {:?}", e);
-                        Err(e.into())
+                        Err(e)
                     }
                 }
             } else {
@@ -273,7 +274,7 @@ pub trait FunctionApp:
             let result = self
                 .enqueue_with_worker_name(
                     meta.clone(),
-                    &name,
+                    name,
                     &arguments,
                     unique_key,
                     job_timeout_sec,
@@ -434,10 +435,10 @@ pub trait FunctionApp:
                         }),
                     });
                 } else {
-                    yield Err(JobWorkerError::RuntimeError(format!("Job result data is empty")).into());
+                    yield Err(JobWorkerError::RuntimeError("Job result data is empty".to_string()).into());
                 }
             } else {
-                yield Err(JobWorkerError::RuntimeError(format!("No result or stream available")).into());
+                yield Err(JobWorkerError::RuntimeError("No result or stream available".to_string()).into());
             }
         })
     }

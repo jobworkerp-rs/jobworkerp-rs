@@ -20,6 +20,7 @@ use tonic::Response;
 pub trait FunctionGrpc {
     fn function_app(&self) -> &Arc<FunctionAppImpl>;
 
+    #[allow(clippy::result_large_err)]
     fn validate_function_call_request(
         &self,
         req: &FunctionCallRequest,
@@ -111,9 +112,8 @@ impl<T: FunctionGrpc + Tracing + Send + Debug + Sync + 'static> FunctionService 
 
         // Clone the function app to avoid lifetime issues
         let function_app = self.function_app().clone();
-        let args_json = serde_json::to_value(req.args_json).map_err(|e| {
-            tonic::Status::invalid_argument(format!("Invalid args_json: {}", e))
-        })?;
+        let args_json = serde_json::to_value(req.args_json)
+            .map_err(|e| tonic::Status::invalid_argument(format!("Invalid args_json: {}", e)))?;
         let uniq_key = req.uniq_key;
 
         // Extract parameters from request and create the stream
@@ -127,7 +127,7 @@ impl<T: FunctionGrpc + Tracing + Send + Debug + Sync + 'static> FunctionService 
                 } else {
                    (None, None)
                 };
-                
+
                 Box::pin(stream! {
                     let result_stream = function_app.handle_runner_for_front(
                         meta,
@@ -139,7 +139,7 @@ impl<T: FunctionGrpc + Tracing + Send + Debug + Sync + 'static> FunctionService 
                         timeout_sec,
                         streaming,
                     );
-                    
+
                     for await result in result_stream {
                         yield result;
                     }
@@ -155,15 +155,16 @@ impl<T: FunctionGrpc + Tracing + Send + Debug + Sync + 'static> FunctionService 
                         timeout_sec,
                         streaming,
                     );
-                    
+
                     for await result in result_stream {
                         yield result;
                     }
                 }) as BoxStream<'static, Result<FunctionResult, anyhow::Error>>
             }
+
             None => return Err(tonic::Status::invalid_argument("name must be specified")),
         };
-        
+
         Ok(Response::new(Box::pin(stream.map(|result| match result {
             Ok(res) => Ok(res),
             Err(e) => Err(handle_error(&e)),
