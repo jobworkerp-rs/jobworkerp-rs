@@ -8,7 +8,6 @@ use crate::module::AppModule;
 use anyhow::{anyhow, Result};
 use command_utils::cache_ok;
 use command_utils::protobuf::ProtobufDescriptor;
-use command_utils::util::result::Flatten;
 use command_utils::util::scoped_cache::ScopedCache;
 use futures::stream::BoxStream;
 use infra::infra::runner::rows::RunnerWithSchema;
@@ -202,6 +201,7 @@ pub trait UseJobExecutor:
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn enqueue_with_worker_or_temp(
         &self,
         metadata: Arc<HashMap<String, String>>, // metadata for job
@@ -266,7 +266,7 @@ pub trait UseJobExecutor:
                 ..
             } = runner
             {
-                let descriptors = self.parse_proto_with_cache(&rid, &rdata).await?;
+                let descriptors = self.parse_proto_with_cache(rid, rdata).await?;
                 let runner_settings_descriptor = descriptors
                     .runner_settings_descriptor
                     .and_then(|d| d.get_messages().first().cloned());
@@ -288,6 +288,7 @@ pub trait UseJobExecutor:
             }
         }
     }
+    #[allow(clippy::too_many_arguments)]
     fn setup_worker_and_enqueue_with_json_full_output(
         &self,
         metadata: Arc<HashMap<String, String>>, // metadata for job
@@ -334,6 +335,7 @@ pub trait UseJobExecutor:
             }
         }
     }
+    #[allow(clippy::too_many_arguments)]
     fn setup_worker_and_enqueue_with_json(
         &self,
         metadata: Arc<HashMap<String, String>>, // metadata for job
@@ -376,7 +378,7 @@ pub trait UseJobExecutor:
                     .ok_or(anyhow::anyhow!(
                         "Failed to enqueue job or job result not found"
                     ))
-                    .flatten()?;
+                    .and_then(|output| output)?;
                 self.transform_raw_output(&rid, &rdata, &output).await
             } else {
                 Err(anyhow::anyhow!("Not found runner: {}", runner_name))

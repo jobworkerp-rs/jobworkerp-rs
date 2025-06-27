@@ -115,6 +115,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn handle_runner_call_from_llm<'a>(
         &'a self,
         meta: Arc<HashMap<String, String>>,
@@ -210,7 +211,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
     ) -> impl Future<Output = Result<WorkerData>> + Send {
         async move {
             let settings = self
-                .setup_runner_and_settings(&runner, runner_settings)
+                .setup_runner_and_settings(runner, runner_settings)
                 .await?;
 
             if let RunnerWithSchema {
@@ -369,7 +370,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                     .get("retry_policy")
                     .and_then(|v| v.as_object())
                     .and_then(|o| serde_json::from_value(Value::Object(o.clone())).ok()) // ignore parse errors
-                    .or_else(|| Some(Self::DEFAULT_RETRY_POLICY.clone())),
+                    .or(Some(Self::DEFAULT_RETRY_POLICY)),
                 broadcast_results: obj
                     .get("broadcast_results")
                     .and_then(|v| v.as_bool())
