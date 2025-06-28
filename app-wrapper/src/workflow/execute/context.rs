@@ -427,7 +427,7 @@ impl fmt::Display for Then {
             Then::Continue => write!(f, "continue"),
             Then::Exit => write!(f, "exit"),
             Then::End => write!(f, "end"),
-            Then::TaskName(name) => write!(f, "{}", name),
+            Then::TaskName(name) => write!(f, "{name}"),
         }
     }
 }

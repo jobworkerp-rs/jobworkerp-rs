@@ -117,7 +117,7 @@ pub trait OllamaTracingHelper {
         arguments: serde_json::Value,
         metadata: &HashMap<String, String>, // request metadata
     ) -> OtelSpanAttributes {
-        let mut span_builder = OtelSpanBuilder::new(format!("ollama.tool.{}", function_name))
+        let mut span_builder = OtelSpanBuilder::new(format!("ollama.tool.{function_name}"))
             .span_type(OtelSpanType::Span)
             .system("ollama")
             .operation_name("tool_calls")
@@ -291,7 +291,7 @@ pub trait OllamaTracingHelper {
                         });
 
                         let mut response_span_builder =
-                            OtelSpanBuilder::new(format!("ollama.tool.{}.response", function_name))
+                            OtelSpanBuilder::new(format!("ollama.tool.{function_name}.response"))
                                 .span_type(OtelSpanType::Event)
                                 .observation_output(observation_output)
                                 .completion_output(completion_output)

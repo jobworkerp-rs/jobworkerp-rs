@@ -185,8 +185,7 @@ impl RunnerTrait for ReusableWorkflowRunner {
                         }
                         Err(e) => {
                             return Err(JobWorkerError::RuntimeError(format!(
-                                "Failed to execute workflow: {:?}",
-                                e
+                                "Failed to execute workflow: {e:?}"
                             ))
                             .into());
                         }
@@ -322,7 +321,7 @@ impl RunnerTrait for ReusableWorkflowRunner {
                             output: "".to_string(),
                             position: e.as_ref().instance.clone().unwrap_or_default(),
                             status: WorkflowStatus::Faulted as i32,
-                            error_message: Some(format!("Failed to execute workflow: {}", e)),
+                            error_message: Some(format!("Failed to execute workflow: {e}")),
                         };
 
                         let buf = workflow_result.encode_to_vec();

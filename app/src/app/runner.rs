@@ -91,10 +91,7 @@ pub trait UseRunnerParserWithCache: Send + Sync {
         } else {
             let ope_d =
                 ProtobufDescriptor::new(&runner_data.runner_settings_proto).map_err(|e| {
-                    JobWorkerError::ParseError(format!(
-                        "schema runner_settings_proto error:{:?}",
-                        e
-                    ))
+                    JobWorkerError::ParseError(format!("schema runner_settings_proto error:{e:?}"))
                 })?;
             let _ope_m = ope_d
                 .get_messages()
@@ -111,7 +108,7 @@ pub trait UseRunnerParserWithCache: Send + Sync {
             None
         } else {
             let arg_d = ProtobufDescriptor::new(&runner_data.job_args_proto).map_err(|e| {
-                JobWorkerError::ParseError(format!("schema job_args_proto error:{:?}", e))
+                JobWorkerError::ParseError(format!("schema job_args_proto error:{e:?}"))
             })?;
             let _arg_m = arg_d
                 .get_messages()
@@ -128,16 +125,15 @@ pub trait UseRunnerParserWithCache: Send + Sync {
                 None
             } else {
                 let result_d = ProtobufDescriptor::new(result_output_proto).map_err(|e| {
-                    JobWorkerError::ParseError(format!("schema result_output_proto error:{:?}", e))
+                    JobWorkerError::ParseError(format!("schema result_output_proto error:{e:?}"))
                 })?;
                 let _result_m =
                     result_d
                         .get_messages()
                         .first()
                         .ok_or(JobWorkerError::InvalidParameter(format!(
-                            "illegal RunnerData: message name is not found from {}",
-                            result_output_proto
-                        )))?;
+                        "illegal RunnerData: message name is not found from {result_output_proto}"
+                    )))?;
                 Some(result_d)
             }
         } else {

@@ -39,7 +39,7 @@ impl ToolConverter {
                         })
                     }
                     function_specs::Schema::McpTools(mcp) => {
-                        let mes = format!("error: expect workflow but got mcp: {:?}", mcp);
+                        let mes = format!("error: expect workflow but got mcp: {mcp:?}");
                         tracing::error!(mes);
                         None
                     }
@@ -396,9 +396,7 @@ mod tests {
         for field in required_fields {
             assert!(
                 required_values.contains(&field.to_string()),
-                "Field '{}' should be in required list: {:?}",
-                field,
-                required_values
+                "Field '{field}' should be in required list: {required_values:?}"
             );
         }
     }
@@ -418,8 +416,7 @@ mod tests {
         let properties = properties.unwrap();
         assert!(
             properties.contains_key(property_name),
-            "Schema should contain property '{}'",
-            property_name
+            "Schema should contain property '{property_name}'"
         );
 
         let actual_property = &properties[property_name];
@@ -439,8 +436,7 @@ mod tests {
                 for (key, exp_val) in exp_obj {
                     assert!(
                         act_obj.contains_key(key),
-                        "Expected key '{}' not found in actual",
-                        key
+                        "Expected key '{key}' not found in actual"
                     );
                     assert_json_subset(exp_val, &act_obj[key]);
                 }
@@ -457,7 +453,7 @@ mod tests {
                 }
             }
             (exp, act) => {
-                assert_eq!(exp, act, "Expected value {:?} but got {:?}", exp, act);
+                assert_eq!(exp, act, "Expected value {exp:?} but got {act:?}");
             }
         }
     }
@@ -573,7 +569,7 @@ mod tests {
             .iter()
             .find(|t| t.function.name == "test_single")
             .unwrap();
-        println!("single Tool: {:#?}", tool);
+        println!("single Tool: {tool:#?}");
         assert_eq!(tool.function.name, "test_single");
         assert_eq!(tool.function.description, "desc_single");
 
@@ -611,7 +607,7 @@ mod tests {
             .iter()
             .find(|t| t.function.name == "test_workflow")
             .unwrap();
-        println!("workflow Tool: {:#?}", tool);
+        println!("workflow Tool: {tool:#?}");
         assert_eq!(tool.function.name, "test_workflow");
         assert_eq!(tool.function.description, CREATION_TOOL_DESCRIPTION);
 
@@ -659,7 +655,7 @@ mod tests {
             .iter()
             .find(|t| t.function.name == "test_mcp___inner")
             .unwrap();
-        println!("mcp Tool: {:#?}", tool);
+        println!("mcp Tool: {tool:#?}");
         assert_eq!(tool.function.name, "test_mcp___inner");
         assert_eq!(tool.function.description, "desc_inner");
 

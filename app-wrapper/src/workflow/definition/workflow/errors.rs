@@ -63,11 +63,11 @@ impl UriTemplate {
                 pattern.push_str("(.*)");
                 pattern.push_str(&regex::escape(&part[idx + 1..]));
             } else {
-                pattern.push_str(&regex::escape(&format!("{{{}", part)));
+                pattern.push_str(&regex::escape(&format!("{{{part}")));
             }
         }
 
-        match regex::Regex::new(&format!("^{}$", pattern)) {
+        match regex::Regex::new(&format!("^{pattern}$")) {
             Ok(re) => re.is_match(in_str),
             Err(_) => false,
         }

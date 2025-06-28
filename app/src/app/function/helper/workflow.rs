@@ -32,7 +32,7 @@ pub trait ReusableWorkflowHelper: UseJobApp + UseWorkerApp + ProtobufHelper + Se
                 Err(e) => {
                     tracing::error!("Failed to create workflow: {}", e);
                     Err(
-                        JobWorkerError::RuntimeError(format!("Failed to create workflow: {}", e))
+                        JobWorkerError::RuntimeError(format!("Failed to create workflow: {e}"))
                             .into(),
                     )
                 }
@@ -98,7 +98,7 @@ pub trait ReusableWorkflowHelper: UseJobApp + UseWorkerApp + ProtobufHelper + Se
                 if let Some(w) = self.worker_app().find_by_name(&workflow_name).await? {
                     tracing::info!("Workflow already exists: {:?}", w);
                     Err(
-                        JobWorkerError::AlreadyExists(format!("Workflow already exists: {:?}", w))
+                        JobWorkerError::AlreadyExists(format!("Workflow already exists: {w:?}"))
                             .into(),
                     )
                 } else {

@@ -125,8 +125,7 @@ impl RunnerApp for HybridRunnerAppImpl {
                     .await
             }
             _ => Err(JobWorkerError::InvalidParameter(format!(
-                "invalid runner type: {}",
-                runner_type
+                "invalid runner type: {runner_type}"
             ))
             .into()),
         }?;
@@ -243,7 +242,7 @@ impl RunnerApp for HybridRunnerAppImpl {
                 id: runner_id.value,
                 name: name.to_string(),
                 description: runner_data.runner_data.description.clone(),
-                definition: format!("./target/debug/lib{}.so", name),
+                definition: format!("./target/debug/lib{name}.so"),
                 r#type: RunnerType::Plugin as i32,
             })
             .await?;

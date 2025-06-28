@@ -30,8 +30,7 @@ pub trait RequestValidator {
     fn validate_create(&self, req: &JobRequest) -> Result<(), tonic::Status> {
         if req.worker.is_none() {
             return Err(tonic::Status::invalid_argument(format!(
-                "worker_id or worker_name is required: {:?}",
-                req
+                "worker_id or worker_name is required: {req:?}"
             )));
         }
         // run_after_time should be positive or none
@@ -45,8 +44,7 @@ pub trait RequestValidator {
                 "worker_name should not be empty",
             )),
             None => Err(tonic::Status::invalid_argument(format!(
-                "worker_name or worker_id is required: {:?}",
-                req
+                "worker_name or worker_id is required: {req:?}"
             ))),
             _ => Ok(()),
         }?;

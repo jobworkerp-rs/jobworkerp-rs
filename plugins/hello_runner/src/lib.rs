@@ -127,7 +127,7 @@ impl PluginRunner for HelloPlugin {
         tracing::info!("HelloPlugin load!");
         // setup with settings (if needed)
         HelloRunnerSettings::decode(settings.as_slice())?;
-        println!("==== HelloPlugin loaded: {:?}", settings);
+        println!("==== HelloPlugin loaded: {settings:?}");
 
         Ok(())
     }

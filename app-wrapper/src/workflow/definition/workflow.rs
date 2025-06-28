@@ -4845,7 +4845,7 @@ pub mod builder {
         {
             self.with = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for with: {}", e));
+                .map_err(|e| format!("error converting supplied value for with: {e}"));
             self
         }
     }
@@ -4888,7 +4888,7 @@ pub mod builder {
         {
             self.enabled = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for enabled: {}", e));
+                .map_err(|e| format!("error converting supplied value for enabled: {e}"));
             self
         }
         pub fn storage<T>(mut self, value: T) -> Self
@@ -4898,7 +4898,7 @@ pub mod builder {
         {
             self.storage = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for storage: {}", e));
+                .map_err(|e| format!("error converting supplied value for storage: {e}"));
             self
         }
     }
@@ -4966,7 +4966,7 @@ pub mod builder {
         {
             self.checkpoint = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+                .map_err(|e| format!("error converting supplied value for checkpoint: {e}"));
             self
         }
         pub fn do_<T>(mut self, value: T) -> Self
@@ -4976,7 +4976,7 @@ pub mod builder {
         {
             self.do_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for do_: {}", e));
+                .map_err(|e| format!("error converting supplied value for do_: {e}"));
             self
         }
         pub fn export<T>(mut self, value: T) -> Self
@@ -4986,7 +4986,7 @@ pub mod builder {
         {
             self.export = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for export: {}", e));
+                .map_err(|e| format!("error converting supplied value for export: {e}"));
             self
         }
         pub fn if_<T>(mut self, value: T) -> Self
@@ -4996,7 +4996,7 @@ pub mod builder {
         {
             self.if_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for if_: {}", e));
+                .map_err(|e| format!("error converting supplied value for if_: {e}"));
             self
         }
         pub fn input<T>(mut self, value: T) -> Self
@@ -5006,7 +5006,7 @@ pub mod builder {
         {
             self.input = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for input: {}", e));
+                .map_err(|e| format!("error converting supplied value for input: {e}"));
             self
         }
         pub fn metadata<T>(mut self, value: T) -> Self
@@ -5018,7 +5018,7 @@ pub mod builder {
         {
             self.metadata = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
+                .map_err(|e| format!("error converting supplied value for metadata: {e}"));
             self
         }
         pub fn output<T>(mut self, value: T) -> Self
@@ -5028,7 +5028,7 @@ pub mod builder {
         {
             self.output = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for output: {}", e));
+                .map_err(|e| format!("error converting supplied value for output: {e}"));
             self
         }
         pub fn then<T>(mut self, value: T) -> Self
@@ -5038,7 +5038,7 @@ pub mod builder {
         {
             self.then = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for then: {}", e));
+                .map_err(|e| format!("error converting supplied value for then: {e}"));
             self
         }
         pub fn timeout<T>(mut self, value: T) -> Self
@@ -5048,7 +5048,7 @@ pub mod builder {
         {
             self.timeout = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for timeout: {}", e));
+                .map_err(|e| format!("error converting supplied value for timeout: {e}"));
             self
         }
     }
@@ -5128,7 +5128,7 @@ pub mod builder {
         {
             self.dsl = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for dsl: {}", e));
+                .map_err(|e| format!("error converting supplied value for dsl: {e}"));
             self
         }
         pub fn metadata<T>(mut self, value: T) -> Self
@@ -5140,7 +5140,7 @@ pub mod builder {
         {
             self.metadata = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
+                .map_err(|e| format!("error converting supplied value for metadata: {e}"));
             self
         }
         pub fn name<T>(mut self, value: T) -> Self
@@ -5150,7 +5150,7 @@ pub mod builder {
         {
             self.name = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for name: {}", e));
+                .map_err(|e| format!("error converting supplied value for name: {e}"));
             self
         }
         pub fn namespace<T>(mut self, value: T) -> Self
@@ -5160,7 +5160,7 @@ pub mod builder {
         {
             self.namespace = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for namespace: {}", e));
+                .map_err(|e| format!("error converting supplied value for namespace: {e}"));
             self
         }
         pub fn summary<T>(mut self, value: T) -> Self
@@ -5170,7 +5170,7 @@ pub mod builder {
         {
             self.summary = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for summary: {}", e));
+                .map_err(|e| format!("error converting supplied value for summary: {e}"));
             self
         }
         pub fn tags<T>(mut self, value: T) -> Self
@@ -5182,7 +5182,7 @@ pub mod builder {
         {
             self.tags = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for tags: {}", e));
+                .map_err(|e| format!("error converting supplied value for tags: {e}"));
             self
         }
         pub fn title<T>(mut self, value: T) -> Self
@@ -5192,7 +5192,7 @@ pub mod builder {
         {
             self.title = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for title: {}", e));
+                .map_err(|e| format!("error converting supplied value for title: {e}"));
             self
         }
         pub fn version<T>(mut self, value: T) -> Self
@@ -5202,7 +5202,7 @@ pub mod builder {
         {
             self.version = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for version: {}", e));
+                .map_err(|e| format!("error converting supplied value for version: {e}"));
             self
         }
     }
@@ -5271,7 +5271,7 @@ pub mod builder {
         {
             self.detail = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for detail: {}", e));
+                .map_err(|e| format!("error converting supplied value for detail: {e}"));
             self
         }
         pub fn instance<T>(mut self, value: T) -> Self
@@ -5281,7 +5281,7 @@ pub mod builder {
         {
             self.instance = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for instance: {}", e));
+                .map_err(|e| format!("error converting supplied value for instance: {e}"));
             self
         }
         pub fn status<T>(mut self, value: T) -> Self
@@ -5291,7 +5291,7 @@ pub mod builder {
         {
             self.status = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for status: {}", e));
+                .map_err(|e| format!("error converting supplied value for status: {e}"));
             self
         }
         pub fn title<T>(mut self, value: T) -> Self
@@ -5301,7 +5301,7 @@ pub mod builder {
         {
             self.title = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for title: {}", e));
+                .map_err(|e| format!("error converting supplied value for title: {e}"));
             self
         }
         pub fn type_<T>(mut self, value: T) -> Self
@@ -5311,7 +5311,7 @@ pub mod builder {
         {
             self.type_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for type_: {}", e));
+                .map_err(|e| format!("error converting supplied value for type_: {e}"));
             self
         }
     }
@@ -5377,7 +5377,7 @@ pub mod builder {
         {
             self.details = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for details: {}", e));
+                .map_err(|e| format!("error converting supplied value for details: {e}"));
             self
         }
         pub fn instance<T>(mut self, value: T) -> Self
@@ -5387,7 +5387,7 @@ pub mod builder {
         {
             self.instance = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for instance: {}", e));
+                .map_err(|e| format!("error converting supplied value for instance: {e}"));
             self
         }
         pub fn status<T>(mut self, value: T) -> Self
@@ -5397,7 +5397,7 @@ pub mod builder {
         {
             self.status = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for status: {}", e));
+                .map_err(|e| format!("error converting supplied value for status: {e}"));
             self
         }
         pub fn title<T>(mut self, value: T) -> Self
@@ -5407,7 +5407,7 @@ pub mod builder {
         {
             self.title = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for title: {}", e));
+                .map_err(|e| format!("error converting supplied value for title: {e}"));
             self
         }
         pub fn type_<T>(mut self, value: T) -> Self
@@ -5417,7 +5417,7 @@ pub mod builder {
         {
             self.type_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for type_: {}", e));
+                .map_err(|e| format!("error converting supplied value for type_: {e}"));
             self
         }
     }
@@ -5467,7 +5467,7 @@ pub mod builder {
         {
             self.as_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for as_: {}", e));
+                .map_err(|e| format!("error converting supplied value for as_: {e}"));
             self
         }
         pub fn schema<T>(mut self, value: T) -> Self
@@ -5477,7 +5477,7 @@ pub mod builder {
         {
             self.schema = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for schema: {}", e));
+                .map_err(|e| format!("error converting supplied value for schema: {e}"));
             self
         }
     }
@@ -5522,7 +5522,7 @@ pub mod builder {
         {
             self.endpoint = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for endpoint: {}", e));
+                .map_err(|e| format!("error converting supplied value for endpoint: {e}"));
             self
         }
         pub fn name<T>(mut self, value: T) -> Self
@@ -5532,7 +5532,7 @@ pub mod builder {
         {
             self.name = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for name: {}", e));
+                .map_err(|e| format!("error converting supplied value for name: {e}"));
             self
         }
     }
@@ -5609,7 +5609,7 @@ pub mod builder {
         {
             self.checkpoint = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+                .map_err(|e| format!("error converting supplied value for checkpoint: {e}"));
             self
         }
         pub fn do_<T>(mut self, value: T) -> Self
@@ -5619,7 +5619,7 @@ pub mod builder {
         {
             self.do_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for do_: {}", e));
+                .map_err(|e| format!("error converting supplied value for do_: {e}"));
             self
         }
         pub fn export<T>(mut self, value: T) -> Self
@@ -5629,7 +5629,7 @@ pub mod builder {
         {
             self.export = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for export: {}", e));
+                .map_err(|e| format!("error converting supplied value for export: {e}"));
             self
         }
         pub fn for_<T>(mut self, value: T) -> Self
@@ -5639,7 +5639,7 @@ pub mod builder {
         {
             self.for_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for for_: {}", e));
+                .map_err(|e| format!("error converting supplied value for for_: {e}"));
             self
         }
         pub fn if_<T>(mut self, value: T) -> Self
@@ -5649,7 +5649,7 @@ pub mod builder {
         {
             self.if_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for if_: {}", e));
+                .map_err(|e| format!("error converting supplied value for if_: {e}"));
             self
         }
         pub fn in_parallel<T>(mut self, value: T) -> Self
@@ -5659,7 +5659,7 @@ pub mod builder {
         {
             self.in_parallel = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for in_parallel: {}", e));
+                .map_err(|e| format!("error converting supplied value for in_parallel: {e}"));
             self
         }
         pub fn input<T>(mut self, value: T) -> Self
@@ -5669,7 +5669,7 @@ pub mod builder {
         {
             self.input = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for input: {}", e));
+                .map_err(|e| format!("error converting supplied value for input: {e}"));
             self
         }
         pub fn metadata<T>(mut self, value: T) -> Self
@@ -5681,7 +5681,7 @@ pub mod builder {
         {
             self.metadata = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
+                .map_err(|e| format!("error converting supplied value for metadata: {e}"));
             self
         }
         pub fn output<T>(mut self, value: T) -> Self
@@ -5691,7 +5691,7 @@ pub mod builder {
         {
             self.output = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for output: {}", e));
+                .map_err(|e| format!("error converting supplied value for output: {e}"));
             self
         }
         pub fn then<T>(mut self, value: T) -> Self
@@ -5701,7 +5701,7 @@ pub mod builder {
         {
             self.then = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for then: {}", e));
+                .map_err(|e| format!("error converting supplied value for then: {e}"));
             self
         }
         pub fn timeout<T>(mut self, value: T) -> Self
@@ -5711,7 +5711,7 @@ pub mod builder {
         {
             self.timeout = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for timeout: {}", e));
+                .map_err(|e| format!("error converting supplied value for timeout: {e}"));
             self
         }
         pub fn while_<T>(mut self, value: T) -> Self
@@ -5721,7 +5721,7 @@ pub mod builder {
         {
             self.while_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for while_: {}", e));
+                .map_err(|e| format!("error converting supplied value for while_: {e}"));
             self
         }
     }
@@ -5785,7 +5785,7 @@ pub mod builder {
         {
             self.at = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for at: {}", e));
+                .map_err(|e| format!("error converting supplied value for at: {e}"));
             self
         }
         pub fn each<T>(mut self, value: T) -> Self
@@ -5795,7 +5795,7 @@ pub mod builder {
         {
             self.each = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for each: {}", e));
+                .map_err(|e| format!("error converting supplied value for each: {e}"));
             self
         }
         pub fn in_<T>(mut self, value: T) -> Self
@@ -5805,7 +5805,7 @@ pub mod builder {
         {
             self.in_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for in_: {}", e));
+                .map_err(|e| format!("error converting supplied value for in_: {e}"));
             self
         }
     }
@@ -5875,7 +5875,7 @@ pub mod builder {
         {
             self.checkpoint = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+                .map_err(|e| format!("error converting supplied value for checkpoint: {e}"));
             self
         }
         pub fn export<T>(mut self, value: T) -> Self
@@ -5885,7 +5885,7 @@ pub mod builder {
         {
             self.export = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for export: {}", e));
+                .map_err(|e| format!("error converting supplied value for export: {e}"));
             self
         }
         pub fn fork<T>(mut self, value: T) -> Self
@@ -5895,7 +5895,7 @@ pub mod builder {
         {
             self.fork = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for fork: {}", e));
+                .map_err(|e| format!("error converting supplied value for fork: {e}"));
             self
         }
         pub fn if_<T>(mut self, value: T) -> Self
@@ -5905,7 +5905,7 @@ pub mod builder {
         {
             self.if_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for if_: {}", e));
+                .map_err(|e| format!("error converting supplied value for if_: {e}"));
             self
         }
         pub fn input<T>(mut self, value: T) -> Self
@@ -5915,7 +5915,7 @@ pub mod builder {
         {
             self.input = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for input: {}", e));
+                .map_err(|e| format!("error converting supplied value for input: {e}"));
             self
         }
         pub fn metadata<T>(mut self, value: T) -> Self
@@ -5927,7 +5927,7 @@ pub mod builder {
         {
             self.metadata = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
+                .map_err(|e| format!("error converting supplied value for metadata: {e}"));
             self
         }
         pub fn output<T>(mut self, value: T) -> Self
@@ -5937,7 +5937,7 @@ pub mod builder {
         {
             self.output = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for output: {}", e));
+                .map_err(|e| format!("error converting supplied value for output: {e}"));
             self
         }
         pub fn then<T>(mut self, value: T) -> Self
@@ -5947,7 +5947,7 @@ pub mod builder {
         {
             self.then = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for then: {}", e));
+                .map_err(|e| format!("error converting supplied value for then: {e}"));
             self
         }
         pub fn timeout<T>(mut self, value: T) -> Self
@@ -5957,7 +5957,7 @@ pub mod builder {
         {
             self.timeout = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for timeout: {}", e));
+                .map_err(|e| format!("error converting supplied value for timeout: {e}"));
             self
         }
     }
@@ -6013,7 +6013,7 @@ pub mod builder {
         {
             self.branches = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for branches: {}", e));
+                .map_err(|e| format!("error converting supplied value for branches: {e}"));
             self
         }
         pub fn compete<T>(mut self, value: T) -> Self
@@ -6023,7 +6023,7 @@ pub mod builder {
         {
             self.compete = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for compete: {}", e));
+                .map_err(|e| format!("error converting supplied value for compete: {e}"));
             self
         }
     }
@@ -6067,7 +6067,7 @@ pub mod builder {
         {
             self.from = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for from: {}", e));
+                .map_err(|e| format!("error converting supplied value for from: {e}"));
             self
         }
         pub fn schema<T>(mut self, value: T) -> Self
@@ -6077,7 +6077,7 @@ pub mod builder {
         {
             self.schema = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for schema: {}", e));
+                .map_err(|e| format!("error converting supplied value for schema: {e}"));
             self
         }
     }
@@ -6119,7 +6119,7 @@ pub mod builder {
         {
             self.as_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for as_: {}", e));
+                .map_err(|e| format!("error converting supplied value for as_: {e}"));
             self
         }
         pub fn schema<T>(mut self, value: T) -> Self
@@ -6129,7 +6129,7 @@ pub mod builder {
         {
             self.schema = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for schema: {}", e));
+                .map_err(|e| format!("error converting supplied value for schema: {e}"));
             self
         }
     }
@@ -6173,7 +6173,7 @@ pub mod builder {
         {
             self.code = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for code: {}", e));
+                .map_err(|e| format!("error converting supplied value for code: {e}"));
             self
         }
         pub fn stderr<T>(mut self, value: T) -> Self
@@ -6183,7 +6183,7 @@ pub mod builder {
         {
             self.stderr = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for stderr: {}", e));
+                .map_err(|e| format!("error converting supplied value for stderr: {e}"));
             self
         }
         pub fn stdout<T>(mut self, value: T) -> Self
@@ -6193,7 +6193,7 @@ pub mod builder {
         {
             self.stdout = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for stdout: {}", e));
+                .map_err(|e| format!("error converting supplied value for stdout: {e}"));
             self
         }
     }
@@ -6263,7 +6263,7 @@ pub mod builder {
         {
             self.checkpoint = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+                .map_err(|e| format!("error converting supplied value for checkpoint: {e}"));
             self
         }
         pub fn export<T>(mut self, value: T) -> Self
@@ -6273,7 +6273,7 @@ pub mod builder {
         {
             self.export = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for export: {}", e));
+                .map_err(|e| format!("error converting supplied value for export: {e}"));
             self
         }
         pub fn if_<T>(mut self, value: T) -> Self
@@ -6283,7 +6283,7 @@ pub mod builder {
         {
             self.if_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for if_: {}", e));
+                .map_err(|e| format!("error converting supplied value for if_: {e}"));
             self
         }
         pub fn input<T>(mut self, value: T) -> Self
@@ -6293,7 +6293,7 @@ pub mod builder {
         {
             self.input = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for input: {}", e));
+                .map_err(|e| format!("error converting supplied value for input: {e}"));
             self
         }
         pub fn metadata<T>(mut self, value: T) -> Self
@@ -6305,7 +6305,7 @@ pub mod builder {
         {
             self.metadata = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
+                .map_err(|e| format!("error converting supplied value for metadata: {e}"));
             self
         }
         pub fn output<T>(mut self, value: T) -> Self
@@ -6315,7 +6315,7 @@ pub mod builder {
         {
             self.output = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for output: {}", e));
+                .map_err(|e| format!("error converting supplied value for output: {e}"));
             self
         }
         pub fn raise<T>(mut self, value: T) -> Self
@@ -6325,7 +6325,7 @@ pub mod builder {
         {
             self.raise = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for raise: {}", e));
+                .map_err(|e| format!("error converting supplied value for raise: {e}"));
             self
         }
         pub fn then<T>(mut self, value: T) -> Self
@@ -6335,7 +6335,7 @@ pub mod builder {
         {
             self.then = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for then: {}", e));
+                .map_err(|e| format!("error converting supplied value for then: {e}"));
             self
         }
         pub fn timeout<T>(mut self, value: T) -> Self
@@ -6345,7 +6345,7 @@ pub mod builder {
         {
             self.timeout = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for timeout: {}", e));
+                .map_err(|e| format!("error converting supplied value for timeout: {e}"));
             self
         }
     }
@@ -6401,7 +6401,7 @@ pub mod builder {
         {
             self.error = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for error: {}", e));
+                .map_err(|e| format!("error converting supplied value for error: {e}"));
             self
         }
     }
@@ -6444,7 +6444,7 @@ pub mod builder {
         {
             self.attempt = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for attempt: {}", e));
+                .map_err(|e| format!("error converting supplied value for attempt: {e}"));
             self
         }
     }
@@ -6487,7 +6487,7 @@ pub mod builder {
         {
             self.count = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for count: {}", e));
+                .map_err(|e| format!("error converting supplied value for count: {e}"));
             self
         }
         pub fn duration<T>(mut self, value: T) -> Self
@@ -6497,7 +6497,7 @@ pub mod builder {
         {
             self.duration = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for duration: {}", e));
+                .map_err(|e| format!("error converting supplied value for duration: {e}"));
             self
         }
     }
@@ -6547,7 +6547,7 @@ pub mod builder {
         {
             self.backoff = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for backoff: {}", e));
+                .map_err(|e| format!("error converting supplied value for backoff: {e}"));
             self
         }
         pub fn delay<T>(mut self, value: T) -> Self
@@ -6557,7 +6557,7 @@ pub mod builder {
         {
             self.delay = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for delay: {}", e));
+                .map_err(|e| format!("error converting supplied value for delay: {e}"));
             self
         }
         pub fn limit<T>(mut self, value: T) -> Self
@@ -6567,7 +6567,7 @@ pub mod builder {
         {
             self.limit = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for limit: {}", e));
+                .map_err(|e| format!("error converting supplied value for limit: {e}"));
             self
         }
     }
@@ -6611,7 +6611,7 @@ pub mod builder {
         {
             self.function = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for function: {}", e));
+                .map_err(|e| format!("error converting supplied value for function: {e}"));
             self
         }
     }
@@ -6668,7 +6668,7 @@ pub mod builder {
         {
             self.arguments = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for arguments: {}", e));
+                .map_err(|e| format!("error converting supplied value for arguments: {e}"));
             self
         }
         pub fn name<T>(mut self, value: T) -> Self
@@ -6678,7 +6678,7 @@ pub mod builder {
         {
             self.name = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for name: {}", e));
+                .map_err(|e| format!("error converting supplied value for name: {e}"));
             self
         }
         pub fn options<T>(mut self, value: T) -> Self
@@ -6688,7 +6688,7 @@ pub mod builder {
         {
             self.options = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for options: {}", e));
+                .map_err(|e| format!("error converting supplied value for options: {e}"));
             self
         }
         pub fn settings<T>(mut self, value: T) -> Self
@@ -6700,7 +6700,7 @@ pub mod builder {
         {
             self.settings = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for settings: {}", e));
+                .map_err(|e| format!("error converting supplied value for settings: {e}"));
             self
         }
     }
@@ -6753,7 +6753,7 @@ pub mod builder {
         {
             self.arguments = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for arguments: {}", e));
+                .map_err(|e| format!("error converting supplied value for arguments: {e}"));
             self
         }
         pub fn name<T>(mut self, value: T) -> Self
@@ -6763,7 +6763,7 @@ pub mod builder {
         {
             self.name = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for name: {}", e));
+                .map_err(|e| format!("error converting supplied value for name: {e}"));
             self
         }
     }
@@ -6805,7 +6805,7 @@ pub mod builder {
         {
             self.runner = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for runner: {}", e));
+                .map_err(|e| format!("error converting supplied value for runner: {e}"));
             self
         }
     }
@@ -6871,7 +6871,7 @@ pub mod builder {
         {
             self.checkpoint = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+                .map_err(|e| format!("error converting supplied value for checkpoint: {e}"));
             self
         }
         pub fn export<T>(mut self, value: T) -> Self
@@ -6881,7 +6881,7 @@ pub mod builder {
         {
             self.export = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for export: {}", e));
+                .map_err(|e| format!("error converting supplied value for export: {e}"));
             self
         }
         pub fn if_<T>(mut self, value: T) -> Self
@@ -6891,7 +6891,7 @@ pub mod builder {
         {
             self.if_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for if_: {}", e));
+                .map_err(|e| format!("error converting supplied value for if_: {e}"));
             self
         }
         pub fn input<T>(mut self, value: T) -> Self
@@ -6901,7 +6901,7 @@ pub mod builder {
         {
             self.input = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for input: {}", e));
+                .map_err(|e| format!("error converting supplied value for input: {e}"));
             self
         }
         pub fn metadata<T>(mut self, value: T) -> Self
@@ -6913,7 +6913,7 @@ pub mod builder {
         {
             self.metadata = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
+                .map_err(|e| format!("error converting supplied value for metadata: {e}"));
             self
         }
         pub fn output<T>(mut self, value: T) -> Self
@@ -6923,7 +6923,7 @@ pub mod builder {
         {
             self.output = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for output: {}", e));
+                .map_err(|e| format!("error converting supplied value for output: {e}"));
             self
         }
         pub fn run<T>(mut self, value: T) -> Self
@@ -6933,7 +6933,7 @@ pub mod builder {
         {
             self.run = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for run: {}", e));
+                .map_err(|e| format!("error converting supplied value for run: {e}"));
             self
         }
         pub fn then<T>(mut self, value: T) -> Self
@@ -6943,7 +6943,7 @@ pub mod builder {
         {
             self.then = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for then: {}", e));
+                .map_err(|e| format!("error converting supplied value for then: {e}"));
             self
         }
         pub fn timeout<T>(mut self, value: T) -> Self
@@ -6953,7 +6953,7 @@ pub mod builder {
         {
             self.timeout = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for timeout: {}", e));
+                .map_err(|e| format!("error converting supplied value for timeout: {e}"));
             self
         }
     }
@@ -7007,7 +7007,7 @@ pub mod builder {
         {
             self.worker = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for worker: {}", e));
+                .map_err(|e| format!("error converting supplied value for worker: {e}"));
             self
         }
     }
@@ -7076,7 +7076,7 @@ pub mod builder {
         {
             self.checkpoint = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+                .map_err(|e| format!("error converting supplied value for checkpoint: {e}"));
             self
         }
         pub fn export<T>(mut self, value: T) -> Self
@@ -7086,7 +7086,7 @@ pub mod builder {
         {
             self.export = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for export: {}", e));
+                .map_err(|e| format!("error converting supplied value for export: {e}"));
             self
         }
         pub fn if_<T>(mut self, value: T) -> Self
@@ -7096,7 +7096,7 @@ pub mod builder {
         {
             self.if_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for if_: {}", e));
+                .map_err(|e| format!("error converting supplied value for if_: {e}"));
             self
         }
         pub fn input<T>(mut self, value: T) -> Self
@@ -7106,7 +7106,7 @@ pub mod builder {
         {
             self.input = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for input: {}", e));
+                .map_err(|e| format!("error converting supplied value for input: {e}"));
             self
         }
         pub fn metadata<T>(mut self, value: T) -> Self
@@ -7118,7 +7118,7 @@ pub mod builder {
         {
             self.metadata = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
+                .map_err(|e| format!("error converting supplied value for metadata: {e}"));
             self
         }
         pub fn output<T>(mut self, value: T) -> Self
@@ -7128,7 +7128,7 @@ pub mod builder {
         {
             self.output = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for output: {}", e));
+                .map_err(|e| format!("error converting supplied value for output: {e}"));
             self
         }
         pub fn set<T>(mut self, value: T) -> Self
@@ -7140,7 +7140,7 @@ pub mod builder {
         {
             self.set = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for set: {}", e));
+                .map_err(|e| format!("error converting supplied value for set: {e}"));
             self
         }
         pub fn then<T>(mut self, value: T) -> Self
@@ -7150,7 +7150,7 @@ pub mod builder {
         {
             self.then = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for then: {}", e));
+                .map_err(|e| format!("error converting supplied value for then: {e}"));
             self
         }
         pub fn timeout<T>(mut self, value: T) -> Self
@@ -7160,7 +7160,7 @@ pub mod builder {
         {
             self.timeout = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for timeout: {}", e));
+                .map_err(|e| format!("error converting supplied value for timeout: {e}"));
             self
         }
     }
@@ -7219,7 +7219,7 @@ pub mod builder {
         {
             self.then = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for then: {}", e));
+                .map_err(|e| format!("error converting supplied value for then: {e}"));
             self
         }
         pub fn when<T>(mut self, value: T) -> Self
@@ -7229,7 +7229,7 @@ pub mod builder {
         {
             self.when = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for when: {}", e));
+                .map_err(|e| format!("error converting supplied value for when: {e}"));
             self
         }
     }
@@ -7300,7 +7300,7 @@ pub mod builder {
         {
             self.checkpoint = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+                .map_err(|e| format!("error converting supplied value for checkpoint: {e}"));
             self
         }
         pub fn export<T>(mut self, value: T) -> Self
@@ -7310,7 +7310,7 @@ pub mod builder {
         {
             self.export = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for export: {}", e));
+                .map_err(|e| format!("error converting supplied value for export: {e}"));
             self
         }
         pub fn if_<T>(mut self, value: T) -> Self
@@ -7320,7 +7320,7 @@ pub mod builder {
         {
             self.if_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for if_: {}", e));
+                .map_err(|e| format!("error converting supplied value for if_: {e}"));
             self
         }
         pub fn input<T>(mut self, value: T) -> Self
@@ -7330,7 +7330,7 @@ pub mod builder {
         {
             self.input = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for input: {}", e));
+                .map_err(|e| format!("error converting supplied value for input: {e}"));
             self
         }
         pub fn metadata<T>(mut self, value: T) -> Self
@@ -7342,7 +7342,7 @@ pub mod builder {
         {
             self.metadata = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
+                .map_err(|e| format!("error converting supplied value for metadata: {e}"));
             self
         }
         pub fn output<T>(mut self, value: T) -> Self
@@ -7352,7 +7352,7 @@ pub mod builder {
         {
             self.output = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for output: {}", e));
+                .map_err(|e| format!("error converting supplied value for output: {e}"));
             self
         }
         pub fn switch<T>(mut self, value: T) -> Self
@@ -7366,7 +7366,7 @@ pub mod builder {
         {
             self.switch = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for switch: {}", e));
+                .map_err(|e| format!("error converting supplied value for switch: {e}"));
             self
         }
         pub fn then<T>(mut self, value: T) -> Self
@@ -7376,7 +7376,7 @@ pub mod builder {
         {
             self.then = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for then: {}", e));
+                .map_err(|e| format!("error converting supplied value for then: {e}"));
             self
         }
         pub fn timeout<T>(mut self, value: T) -> Self
@@ -7386,7 +7386,7 @@ pub mod builder {
         {
             self.timeout = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for timeout: {}", e));
+                .map_err(|e| format!("error converting supplied value for timeout: {e}"));
             self
         }
     }
@@ -7466,7 +7466,7 @@ pub mod builder {
         {
             self.checkpoint = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+                .map_err(|e| format!("error converting supplied value for checkpoint: {e}"));
             self
         }
         pub fn export<T>(mut self, value: T) -> Self
@@ -7476,7 +7476,7 @@ pub mod builder {
         {
             self.export = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for export: {}", e));
+                .map_err(|e| format!("error converting supplied value for export: {e}"));
             self
         }
         pub fn if_<T>(mut self, value: T) -> Self
@@ -7486,7 +7486,7 @@ pub mod builder {
         {
             self.if_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for if_: {}", e));
+                .map_err(|e| format!("error converting supplied value for if_: {e}"));
             self
         }
         pub fn input<T>(mut self, value: T) -> Self
@@ -7496,7 +7496,7 @@ pub mod builder {
         {
             self.input = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for input: {}", e));
+                .map_err(|e| format!("error converting supplied value for input: {e}"));
             self
         }
         pub fn metadata<T>(mut self, value: T) -> Self
@@ -7508,7 +7508,7 @@ pub mod builder {
         {
             self.metadata = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
+                .map_err(|e| format!("error converting supplied value for metadata: {e}"));
             self
         }
         pub fn output<T>(mut self, value: T) -> Self
@@ -7518,7 +7518,7 @@ pub mod builder {
         {
             self.output = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for output: {}", e));
+                .map_err(|e| format!("error converting supplied value for output: {e}"));
             self
         }
         pub fn then<T>(mut self, value: T) -> Self
@@ -7528,7 +7528,7 @@ pub mod builder {
         {
             self.then = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for then: {}", e));
+                .map_err(|e| format!("error converting supplied value for then: {e}"));
             self
         }
         pub fn timeout<T>(mut self, value: T) -> Self
@@ -7538,7 +7538,7 @@ pub mod builder {
         {
             self.timeout = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for timeout: {}", e));
+                .map_err(|e| format!("error converting supplied value for timeout: {e}"));
             self
         }
     }
@@ -7590,7 +7590,7 @@ pub mod builder {
         {
             self.after = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for after: {}", e));
+                .map_err(|e| format!("error converting supplied value for after: {e}"));
             self
         }
     }
@@ -7656,7 +7656,7 @@ pub mod builder {
         {
             self.catch = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for catch: {}", e));
+                .map_err(|e| format!("error converting supplied value for catch: {e}"));
             self
         }
         pub fn checkpoint<T>(mut self, value: T) -> Self
@@ -7666,7 +7666,7 @@ pub mod builder {
         {
             self.checkpoint = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+                .map_err(|e| format!("error converting supplied value for checkpoint: {e}"));
             self
         }
         pub fn export<T>(mut self, value: T) -> Self
@@ -7676,7 +7676,7 @@ pub mod builder {
         {
             self.export = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for export: {}", e));
+                .map_err(|e| format!("error converting supplied value for export: {e}"));
             self
         }
         pub fn if_<T>(mut self, value: T) -> Self
@@ -7686,7 +7686,7 @@ pub mod builder {
         {
             self.if_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for if_: {}", e));
+                .map_err(|e| format!("error converting supplied value for if_: {e}"));
             self
         }
         pub fn input<T>(mut self, value: T) -> Self
@@ -7696,7 +7696,7 @@ pub mod builder {
         {
             self.input = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for input: {}", e));
+                .map_err(|e| format!("error converting supplied value for input: {e}"));
             self
         }
         pub fn metadata<T>(mut self, value: T) -> Self
@@ -7708,7 +7708,7 @@ pub mod builder {
         {
             self.metadata = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
+                .map_err(|e| format!("error converting supplied value for metadata: {e}"));
             self
         }
         pub fn output<T>(mut self, value: T) -> Self
@@ -7718,7 +7718,7 @@ pub mod builder {
         {
             self.output = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for output: {}", e));
+                .map_err(|e| format!("error converting supplied value for output: {e}"));
             self
         }
         pub fn then<T>(mut self, value: T) -> Self
@@ -7728,7 +7728,7 @@ pub mod builder {
         {
             self.then = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for then: {}", e));
+                .map_err(|e| format!("error converting supplied value for then: {e}"));
             self
         }
         pub fn timeout<T>(mut self, value: T) -> Self
@@ -7738,7 +7738,7 @@ pub mod builder {
         {
             self.timeout = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for timeout: {}", e));
+                .map_err(|e| format!("error converting supplied value for timeout: {e}"));
             self
         }
         pub fn try_<T>(mut self, value: T) -> Self
@@ -7748,7 +7748,7 @@ pub mod builder {
         {
             self.try_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for try_: {}", e));
+                .map_err(|e| format!("error converting supplied value for try_: {e}"));
             self
         }
     }
@@ -7827,7 +7827,7 @@ pub mod builder {
         {
             self.as_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for as_: {}", e));
+                .map_err(|e| format!("error converting supplied value for as_: {e}"));
             self
         }
         pub fn do_<T>(mut self, value: T) -> Self
@@ -7837,7 +7837,7 @@ pub mod builder {
         {
             self.do_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for do_: {}", e));
+                .map_err(|e| format!("error converting supplied value for do_: {e}"));
             self
         }
         pub fn errors<T>(mut self, value: T) -> Self
@@ -7847,7 +7847,7 @@ pub mod builder {
         {
             self.errors = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for errors: {}", e));
+                .map_err(|e| format!("error converting supplied value for errors: {e}"));
             self
         }
         pub fn except_when<T>(mut self, value: T) -> Self
@@ -7857,7 +7857,7 @@ pub mod builder {
         {
             self.except_when = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for except_when: {}", e));
+                .map_err(|e| format!("error converting supplied value for except_when: {e}"));
             self
         }
         pub fn retry<T>(mut self, value: T) -> Self
@@ -7867,7 +7867,7 @@ pub mod builder {
         {
             self.retry = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for retry: {}", e));
+                .map_err(|e| format!("error converting supplied value for retry: {e}"));
             self
         }
         pub fn when<T>(mut self, value: T) -> Self
@@ -7877,7 +7877,7 @@ pub mod builder {
         {
             self.when = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for when: {}", e));
+                .map_err(|e| format!("error converting supplied value for when: {e}"));
             self
         }
     }
@@ -7953,7 +7953,7 @@ pub mod builder {
         {
             self.checkpoint = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+                .map_err(|e| format!("error converting supplied value for checkpoint: {e}"));
             self
         }
         pub fn export<T>(mut self, value: T) -> Self
@@ -7963,7 +7963,7 @@ pub mod builder {
         {
             self.export = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for export: {}", e));
+                .map_err(|e| format!("error converting supplied value for export: {e}"));
             self
         }
         pub fn if_<T>(mut self, value: T) -> Self
@@ -7973,7 +7973,7 @@ pub mod builder {
         {
             self.if_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for if_: {}", e));
+                .map_err(|e| format!("error converting supplied value for if_: {e}"));
             self
         }
         pub fn input<T>(mut self, value: T) -> Self
@@ -7983,7 +7983,7 @@ pub mod builder {
         {
             self.input = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for input: {}", e));
+                .map_err(|e| format!("error converting supplied value for input: {e}"));
             self
         }
         pub fn metadata<T>(mut self, value: T) -> Self
@@ -7995,7 +7995,7 @@ pub mod builder {
         {
             self.metadata = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
+                .map_err(|e| format!("error converting supplied value for metadata: {e}"));
             self
         }
         pub fn output<T>(mut self, value: T) -> Self
@@ -8005,7 +8005,7 @@ pub mod builder {
         {
             self.output = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for output: {}", e));
+                .map_err(|e| format!("error converting supplied value for output: {e}"));
             self
         }
         pub fn then<T>(mut self, value: T) -> Self
@@ -8015,7 +8015,7 @@ pub mod builder {
         {
             self.then = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for then: {}", e));
+                .map_err(|e| format!("error converting supplied value for then: {e}"));
             self
         }
         pub fn timeout<T>(mut self, value: T) -> Self
@@ -8025,7 +8025,7 @@ pub mod builder {
         {
             self.timeout = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for timeout: {}", e));
+                .map_err(|e| format!("error converting supplied value for timeout: {e}"));
             self
         }
         pub fn wait<T>(mut self, value: T) -> Self
@@ -8035,7 +8035,7 @@ pub mod builder {
         {
             self.wait = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for wait: {}", e));
+                .map_err(|e| format!("error converting supplied value for wait: {e}"));
             self
         }
     }
@@ -8104,12 +8104,9 @@ pub mod builder {
             T: ::std::convert::TryInto<::std::option::Option<bool>>,
             T::Error: ::std::fmt::Display,
         {
-            self.broadcast_results = value.try_into().map_err(|e| {
-                format!(
-                    "error converting supplied value for broadcast_results: {}",
-                    e
-                )
-            });
+            self.broadcast_results = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for broadcast_results: {e}"));
             self
         }
         pub fn channel<T>(mut self, value: T) -> Self
@@ -8119,7 +8116,7 @@ pub mod builder {
         {
             self.channel = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for channel: {}", e));
+                .map_err(|e| format!("error converting supplied value for channel: {e}"));
             self
         }
         pub fn retry<T>(mut self, value: T) -> Self
@@ -8129,7 +8126,7 @@ pub mod builder {
         {
             self.retry = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for retry: {}", e));
+                .map_err(|e| format!("error converting supplied value for retry: {e}"));
             self
         }
         pub fn store_failure<T>(mut self, value: T) -> Self
@@ -8139,7 +8136,7 @@ pub mod builder {
         {
             self.store_failure = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for store_failure: {}", e));
+                .map_err(|e| format!("error converting supplied value for store_failure: {e}"));
             self
         }
         pub fn store_success<T>(mut self, value: T) -> Self
@@ -8149,7 +8146,7 @@ pub mod builder {
         {
             self.store_success = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for store_success: {}", e));
+                .map_err(|e| format!("error converting supplied value for store_success: {e}"));
             self
         }
         pub fn use_static<T>(mut self, value: T) -> Self
@@ -8159,7 +8156,7 @@ pub mod builder {
         {
             self.use_static = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for use_static: {}", e));
+                .map_err(|e| format!("error converting supplied value for use_static: {e}"));
             self
         }
         pub fn with_backup<T>(mut self, value: T) -> Self
@@ -8169,7 +8166,7 @@ pub mod builder {
         {
             self.with_backup = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for with_backup: {}", e));
+                .map_err(|e| format!("error converting supplied value for with_backup: {e}"));
             self
         }
     }
@@ -8232,7 +8229,7 @@ pub mod builder {
         {
             self.checkpointing = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for checkpointing: {}", e));
+                .map_err(|e| format!("error converting supplied value for checkpointing: {e}"));
             self
         }
         pub fn do_<T>(mut self, value: T) -> Self
@@ -8242,7 +8239,7 @@ pub mod builder {
         {
             self.do_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for do_: {}", e));
+                .map_err(|e| format!("error converting supplied value for do_: {e}"));
             self
         }
         pub fn document<T>(mut self, value: T) -> Self
@@ -8252,7 +8249,7 @@ pub mod builder {
         {
             self.document = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for document: {}", e));
+                .map_err(|e| format!("error converting supplied value for document: {e}"));
             self
         }
         pub fn input<T>(mut self, value: T) -> Self
@@ -8262,7 +8259,7 @@ pub mod builder {
         {
             self.input = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for input: {}", e));
+                .map_err(|e| format!("error converting supplied value for input: {e}"));
             self
         }
         pub fn output<T>(mut self, value: T) -> Self
@@ -8272,7 +8269,7 @@ pub mod builder {
         {
             self.output = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for output: {}", e));
+                .map_err(|e| format!("error converting supplied value for output: {e}"));
             self
         }
     }

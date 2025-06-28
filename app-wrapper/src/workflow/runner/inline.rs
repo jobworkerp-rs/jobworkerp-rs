@@ -225,8 +225,7 @@ impl RunnerTrait for InlineWorkflowRunner {
                     }
                     Err(e) => {
                         return Err(JobWorkerError::RuntimeError(format!(
-                            "Failed to execute workflow: {:?}",
-                            e
+                            "Failed to execute workflow: {e:?}"
                         ))
                         .into());
                     }
@@ -335,8 +334,7 @@ impl RunnerTrait for InlineWorkflowRunner {
             .map_err(|e| {
                 tracing::error!("Failed to initialize WorkflowExecutor: {:?}", e);
                 JobWorkerError::RuntimeError(format!(
-                    "Failed to initialize WorkflowExecutor: {:?}",
-                    e
+                    "Failed to initialize WorkflowExecutor: {e:?}"
                 ))
             })?,
         );
@@ -382,7 +380,7 @@ impl RunnerTrait for InlineWorkflowRunner {
                             output: "".to_string(),
                             position: e.instance.clone().unwrap_or_default(),
                             status: WorkflowStatus::Faulted as i32,
-                            error_message: Some(format!("Failed to execute workflow: {:?}", e)),
+                            error_message: Some(format!("Failed to execute workflow: {e:?}")),
                         };
 
                         // Encode the error workflow result and return it as a data item

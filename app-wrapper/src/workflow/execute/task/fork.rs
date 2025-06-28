@@ -191,7 +191,7 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
                                     .service_unavailable(
                                         "All tasks failed in compete mode".to_string(),
                                         Some(position.read().await.as_error_instance()),
-                                        Some(format!("{:#?}", all_errors)),
+                                        Some(format!("{all_errors:#?}")),
                                     ));
                             }
                         }
@@ -202,7 +202,7 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
                 Err(workflow::errors::ErrorFactory::new().service_unavailable(
                     "All tasks failed in compete mode".to_string(),
                     Some(position.read().await.as_error_instance()),
-                    Some(format!("{:#?}", all_errors)),
+                    Some(format!("{all_errors:#?}")),
                 ))
             } else {
                 // Normal mode: collect results from all tasks

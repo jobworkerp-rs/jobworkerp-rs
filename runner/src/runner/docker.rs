@@ -321,7 +321,7 @@ impl RunnerTrait for DockerExecRunner {
                     docker.start_exec(&exec, None).await?
                 {
                     while let Some(Ok(msg)) = output.next().await {
-                        out.push(format!("{}\n", msg).into_bytes().to_vec());
+                        out.push(format!("{msg}\n").into_bytes().to_vec());
                     }
                     Ok(out.concat())
                 } else {
@@ -583,7 +583,7 @@ impl RunnerTrait for DockerRunner {
                     match String::from_utf8(output.into_bytes().to_vec()) {
                         Ok(o) => {
                             tracing::info!("{}", &o);
-                            logs.push(format!("{}\n", o).into_bytes().to_vec())
+                            logs.push(format!("{o}\n").into_bytes().to_vec())
                             // logs.push(o);
                         }
                         Err(e) => tracing::error!("error in decoding logs: {:?}", e),
