@@ -406,7 +406,7 @@ pub trait UseJobExecutor:
                 .find_by_name(worker_name)
                 .await?
                 .ok_or_else(|| {
-                    JobWorkerError::WorkerNotFound(format!("Not found worker: {}", worker_name))
+                    JobWorkerError::WorkerNotFound(format!("Not found worker: {worker_name}"))
                 })?;
             if let Worker {
                 id: Some(wid),
@@ -466,7 +466,7 @@ pub trait UseJobExecutor:
                 .find_by_name(worker_name)
                 .await?
                 .ok_or_else(|| {
-                    JobWorkerError::WorkerNotFound(format!("Not found worker: {}", worker_name))
+                    JobWorkerError::WorkerNotFound(format!("Not found worker: {worker_name}"))
                 })?;
             if let Worker {
                 id: Some(wid),
@@ -638,8 +638,7 @@ pub trait UseJobExecutor:
                     Err(e) => {
                         tracing::warn!("Failed to parse result schema: {:#?}", e);
                         Err(JobWorkerError::RuntimeError(format!(
-                            "Failed to parse result schema: {:#?}",
-                            e
+                            "Failed to parse result schema: {e:#?}"
                         )))
                     }
                 }
@@ -649,7 +648,7 @@ pub trait UseJobExecutor:
                 Ok(Some(serde_json::Value::String(text.to_string())))
             }
             .map_err(|e| {
-                JobWorkerError::RuntimeError(format!("Failed to parse output: {:#?}", e)).into()
+                JobWorkerError::RuntimeError(format!("Failed to parse output: {e:#?}")).into()
             })
         } else {
             tracing::warn!("No output found");

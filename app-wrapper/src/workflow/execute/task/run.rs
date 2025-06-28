@@ -239,7 +239,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         Err(workflow::errors::ErrorFactory::new().service_unavailable(
                             "Failed to execute by jobworkerp".to_string(),
                             Some(pos),
-                            Some(format!("{:?}", e)),
+                            Some(format!("{e:?}")),
                         ))
                     }
                 }?;
@@ -316,7 +316,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         Err(workflow::errors::ErrorFactory::new().service_unavailable(
                             "Failed to execute by jobworkerp".to_string(),
                             Some(pos),
-                            Some(format!("{:?}", e)),
+                            Some(format!("{e:?}")),
                         ))
                     }
                 }?;
@@ -376,7 +376,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         Err(workflow::errors::ErrorFactory::new().service_unavailable(
                             "Failed to execute by jobworkerp".to_string(),
                             Some(pos),
-                            Some(format!("{:?}", e)),
+                            Some(format!("{e:?}")),
                         ))
                     }
                 }?;
@@ -454,7 +454,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         Err(workflow::errors::ErrorFactory::new().service_unavailable(
                             "Failed to execute by jobworkerp".to_string(),
                             Some(pos),
-                            Some(format!("{:?}", e)),
+                            Some(format!("{e:?}")),
                         ))
                     }
                 }?;

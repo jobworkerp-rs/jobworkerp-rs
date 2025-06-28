@@ -162,7 +162,7 @@ impl Plugins {
                     }),
             }
         } else {
-            Err(JobWorkerError::InvalidParameter(format!("not a file: {:?}", path)).into())
+            Err(JobWorkerError::InvalidParameter(format!("not a file: {path:?}")).into())
         }
     }
     pub fn runner_plugins(&self) -> Arc<TokioRwLock<RunnerPluginLoader>> {

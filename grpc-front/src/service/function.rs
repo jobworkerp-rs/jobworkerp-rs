@@ -113,7 +113,7 @@ impl<T: FunctionGrpc + Tracing + Send + Debug + Sync + 'static> FunctionService 
         // Clone the function app to avoid lifetime issues
         let function_app = self.function_app().clone();
         let args_json = serde_json::to_value(req.args_json)
-            .map_err(|e| tonic::Status::invalid_argument(format!("Invalid args_json: {}", e)))?;
+            .map_err(|e| tonic::Status::invalid_argument(format!("Invalid args_json: {e}")))?;
         let uniq_key = req.uniq_key;
 
         // Extract parameters from request and create the stream
@@ -121,7 +121,7 @@ impl<T: FunctionGrpc + Tracing + Send + Debug + Sync + 'static> FunctionService 
             Some(crate::proto::jobworkerp::function::service::function_call_request::Name::RunnerName(name)) => {
                 let (runner_settings, worker_options) = if let Some(params) = req.runner_parameters{
                     (Some(serde_json::to_value(params.settings_json).map_err(
-                        |e| tonic::Status::invalid_argument(format!("Invalid settings_json: {}", e))
+                        |e| tonic::Status::invalid_argument(format!("Invalid settings_json: {e}"))
                     )?),
                      params.worker_options)
                 } else {

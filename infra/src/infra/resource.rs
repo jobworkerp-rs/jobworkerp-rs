@@ -40,8 +40,7 @@ pub fn load_db_url_config_from_env() -> Result<RdbConfig> {
                 .map(RdbConfig::Url)
         })
         .map_err(|e| {
-            JobWorkerError::RuntimeError(format!("cannot read redis config from env: {:?}", e))
-                .into()
+            JobWorkerError::RuntimeError(format!("cannot read redis config from env: {e:?}")).into()
         })
 }
 
@@ -56,8 +55,7 @@ pub fn load_db_config_from_env() -> Result<RdbConfig> {
                 .map(RdbConfig::Separate)
         })
         .map_err(|e| {
-            JobWorkerError::RuntimeError(format!("cannot read redis config from env: {:?}", e))
-                .into()
+            JobWorkerError::RuntimeError(format!("cannot read redis config from env: {e:?}")).into()
         })
 }
 
@@ -110,7 +108,6 @@ pub fn load_redis_config_from_env() -> Result<RedisConfig> {
     envy::prefixed("REDIS_")
         .from_env::<RedisConfig>()
         .map_err(|e| {
-            JobWorkerError::RuntimeError(format!("cannot read redis config from env: {:?}", e))
-                .into()
+            JobWorkerError::RuntimeError(format!("cannot read redis config from env: {e:?}")).into()
         })
 }

@@ -157,7 +157,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
             .fetch_optional(self.db_pool())
             .await
             .map_err(JobWorkerError::DBError)
-            .context(format!("error in find: name = {}", name))
+            .context(format!("error in find: name = {name}"))
             .map(|r| r.and_then(|r2| r2.to_proto().ok()))
     }
 
@@ -213,7 +213,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
                 .map(|_| "?")
                 .collect::<Vec<_>>()
                 .join(",");
-            conditions.push(format!("runner_id IN ({})", placeholders));
+            conditions.push(format!("runner_id IN ({placeholders})"));
         }
 
         // Add channel condition if specified
@@ -228,7 +228,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         };
 
         // Build base query
-        let base_sql = format!("SELECT * FROM worker{}", where_clause);
+        let base_sql = format!("SELECT * FROM worker{where_clause}");
         let limit_clause = if let Some(l) = limit {
             format!(
                 " ORDER BY id DESC LIMIT {} OFFSET {}",
@@ -239,7 +239,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
             " ORDER BY id DESC".to_string()
         };
 
-        let full_sql = format!("{}{}", base_sql, limit_clause);
+        let full_sql = format!("{base_sql}{limit_clause}");
         let mut query = sqlx::query_as::<_, WorkerRow>(&full_sql);
 
         // Bind parameters
@@ -257,7 +257,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
             .fetch_all(tx)
             .await
             .map_err(JobWorkerError::DBError)
-            .context(format!("error in find_list: ({:?}, {:?})", limit, offset))
+            .context(format!("error in find_list: ({limit:?}, {offset:?})"))
     }
 
     async fn count(&self) -> Result<i64> {

@@ -18,9 +18,9 @@ fn setup_python_env(server_path: &Path) -> HashMap<String, String> {
     let server_path_str = server_path.to_string_lossy();
 
     let new_pythonpath = if current_pythonpath.is_empty() {
-        format!("{}", server_path_str)
+        format!("{server_path_str}")
     } else {
-        format!("{}:{}", current_pythonpath, server_path_str)
+        format!("{current_pythonpath}:{server_path_str}")
     };
 
     envs.insert("PYTHONPATH".to_string(), new_pythonpath);
@@ -130,7 +130,7 @@ async fn test_time_mcp_server() -> Result<()> {
     let mut clients = factory.test_all().await?;
     assert_eq!(clients.len(), 1);
     let client = clients.pop().unwrap();
-    println!("Time server tools: {:?}", client);
+    println!("Time server tools: {client:?}");
     // remove client for test
     client.cancel().await?;
 
@@ -143,7 +143,7 @@ async fn test_time_mcp_server() -> Result<()> {
         .await?;
 
     // Display results
-    println!("Time server result: {:?}", result);
+    println!("Time server result: {result:?}");
 
     // Validate results
     assert!(!result.content.is_empty());

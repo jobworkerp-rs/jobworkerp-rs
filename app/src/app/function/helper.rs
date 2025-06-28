@@ -38,7 +38,7 @@ pub trait McpNameConverter {
                     server_name.unwrap_or_default().to_string(),
                     v.into_iter()
                         .map(|s| s.to_string())
-                        .reduce(|acc, n| format!("{}{}{}", acc, delimiter, n))
+                        .reduce(|acc, n| format!("{acc}{delimiter}{n}"))
                         .unwrap_or_default(),
                 ))
             }
@@ -116,8 +116,8 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn handle_runner_call_from_llm<'a>(
-        &'a self,
+    fn handle_runner_call_from_llm(
+        &self,
         meta: Arc<HashMap<String, String>>,
         arguments: Option<Map<String, Value>>,
         runner: RunnerWithSchema,
@@ -126,7 +126,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         unique_key: Option<String>,
         timeout_sec: u32,
         streaming: bool, // TODO if true, use streaming job
-    ) -> impl Future<Output = Result<Value>> + Send + 'a {
+    ) -> impl Future<Output = Result<Value>> + Send + '_ {
         async move {
             tracing::debug!("found runner: {:?}, tool: {:?}", &runner, &tool_name_opt);
             let (settings, arguments) = Self::prepare_runner_call_arguments(
@@ -182,10 +182,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                 })?
                 .ok_or_else(|| {
                     tracing::warn!("worker not found");
-                    JobWorkerError::WorkerNotFound(format!(
-                        "worker or mcp tool not found: {}",
-                        name
-                    ))
+                    JobWorkerError::WorkerNotFound(format!("worker or mcp tool not found: {name}"))
                 })?;
             let args = if let Some(tool_name) = tool_name_opt {
                 Self::correct_mcp_worker_args(tool_name, request_args.clone())?
@@ -224,10 +221,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                     Self::create_default_worker_data(*sid, &sdata.name, settings, worker_params);
                 Ok(worker_data)
             } else {
-                Err(
-                    JobWorkerError::InvalidParameter(format!("illegal runner: {:#?}", runner))
-                        .into(),
-                )
+                Err(JobWorkerError::InvalidParameter(format!("illegal runner: {runner:#?}")).into())
             }
         }
     }
@@ -460,7 +454,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
             .cloned()
             .unwrap_or(Value::Null);
 
-        let arguments = if worker_data.runner_id.is_some_and(|id| id.value < 0) {
+        if worker_data.runner_id.is_some_and(|id| id.value < 0) {
             tracing::info!("worker is reusable workflow");
             serde_json::json!({
                 "input": args.to_string(),
@@ -474,9 +468,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
             )
         } else {
             args
-        };
-
-        arguments
+        }
     }
 }
 

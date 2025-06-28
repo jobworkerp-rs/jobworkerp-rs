@@ -156,66 +156,65 @@ pub trait RunnerResultHandler {
         match err.downcast_ref::<JobWorkerError>() {
             Some(JobWorkerError::RuntimeError(mes)) => (
                 ResultStatus::ErrorAndRetry,
-                Some(format!("runtime error: {:?}", mes)),
+                Some(format!("runtime error: {mes:?}")),
             ),
             Some(JobWorkerError::TimeoutError(mes)) => (
                 ResultStatus::ErrorAndRetry,
-                Some(format!("timeout error: {:?}", mes)),
+                Some(format!("timeout error: {mes:?}")),
             ),
             Some(JobWorkerError::CodecError(e)) => (
                 ResultStatus::OtherError,
-                Some(format!("codec error: {:?}", e)),
+                Some(format!("codec error: {e:?}")),
             ),
-            Some(JobWorkerError::NotFound(mes)) => (
-                ResultStatus::OtherError,
-                Some(format!("not found: {}", mes)),
-            ),
+            Some(JobWorkerError::NotFound(mes)) => {
+                (ResultStatus::OtherError, Some(format!("not found: {mes}")))
+            }
             Some(JobWorkerError::LockError(e)) => (
                 ResultStatus::ErrorAndRetry,
-                Some(format!("invalid parameter: {:?}", e)),
+                Some(format!("invalid parameter: {e:?}")),
             ),
             Some(JobWorkerError::InvalidParameter(e)) => (
                 ResultStatus::OtherError,
-                Some(format!("invalid parameter: {:?}", e)),
+                Some(format!("invalid parameter: {e:?}")),
             ),
             Some(JobWorkerError::WorkerNotFound(e)) => (
                 ResultStatus::OtherError,
-                Some(format!("worker not found: {:?}", e)),
+                Some(format!("worker not found: {e:?}")),
             ),
             Some(JobWorkerError::ChanError(e)) => (
                 ResultStatus::ErrorAndRetry, // ?
-                Some(format!("chan error: {:?}", e)),
+                Some(format!("chan error: {e:?}")),
             ),
             Some(JobWorkerError::RedisError(e)) => (
                 ResultStatus::ErrorAndRetry,
-                Some(format!("redis error: {:?}", e)),
+                Some(format!("redis error: {e:?}")),
             ),
             Some(JobWorkerError::DBError(err)) => {
                 // TODO not retryable case
                 (
                     ResultStatus::ErrorAndRetry,
-                    Some(format!("db error: {:?}", err)),
+                    Some(format!("db error: {err:?}")),
                 )
             }
             Some(JobWorkerError::GenerateIdError(mes)) => {
                 // should not used (worker already created error)
                 (
                     ResultStatus::OtherError,
-                    Some(format!("generate id error: {:?}", mes)),
+                    Some(format!("generate id error: {mes:?}")),
                 )
             }
             Some(JobWorkerError::AlreadyExists(mes)) => {
                 // should not used (worker already created error)
                 (
                     ResultStatus::OtherError,
-                    Some(format!("conflict error: {:?}", mes)),
+                    Some(format!("conflict error: {mes:?}")),
                 )
             }
             Some(JobWorkerError::TonicServerError(err)) => {
                 // tonic server error should not occur
                 (
                     ResultStatus::OtherError,
-                    Some(format!("unexpected error: {:?}", err)),
+                    Some(format!("unexpected error: {err:?}")),
                 )
             }
             Some(JobWorkerError::TonicClientError(status)) => {
@@ -240,20 +239,20 @@ pub trait RunnerResultHandler {
                     | tonic::Code::Internal => ResultStatus::FatalError,
                     tonic::Code::Unknown => ResultStatus::OtherError,
                 };
-                (st, Some(format!("client error: {:?}", status)))
+                (st, Some(format!("client error: {status:?}")))
             }
             Some(JobWorkerError::SerdeJsonError(e)) => {
                 // parse error by serde (cannot retry)
                 (
                     ResultStatus::OtherError,
-                    Some(format!("parse arg json error: {:?}", e)),
+                    Some(format!("parse arg json error: {e:?}")),
                 )
             }
             Some(JobWorkerError::ParseError(e)) => {
                 // parse error (cannot retry)
                 (
                     ResultStatus::OtherError,
-                    Some(format!("parse error: {:?}", e)),
+                    Some(format!("parse error: {e:?}")),
                 )
             }
             // Some(JobWorkerError::KubeClientError(e)) => {
@@ -267,7 +266,7 @@ pub trait RunnerResultHandler {
                 // docker error (cannot retry?) // TODO
                 (
                     ResultStatus::OtherError,
-                    Some(format!("docker error: {:?}", e)),
+                    Some(format!("docker error: {e:?}")),
                 )
             }
             Some(JobWorkerError::ReqwestError(err)) => {
@@ -275,22 +274,22 @@ pub trait RunnerResultHandler {
                 if err.is_timeout() || err.is_status() && err.status().unwrap().is_server_error() {
                     (
                         ResultStatus::ErrorAndRetry,
-                        Some(format!("request error: {:?}", err)),
+                        Some(format!("request error: {err:?}")),
                     )
                 } else {
                     (
                         ResultStatus::OtherError,
-                        Some(format!("reqwest unknown error: {:?}", err)),
+                        Some(format!("reqwest unknown error: {err:?}")),
                     )
                 }
             }
             Some(JobWorkerError::OtherError(msg)) => (
                 ResultStatus::OtherError,
-                Some(format!("other error: {:?}", msg)),
+                Some(format!("other error: {msg:?}")),
             ),
             None => (
                 ResultStatus::OtherError,
-                Some(format!("unknown error: {:?}", err)),
+                Some(format!("unknown error: {err:?}")),
             ),
         }
     }

@@ -94,7 +94,7 @@ where
             Ok(Some(v)) => ProstMessageCodec::deserialize_message::<RunnerWithSchema>(v.as_slice())
                 .map(Some)
                 .map_err(|e| {
-                    JobWorkerError::InvalidParameter(format!("cannot deserialize runner: {:?}", e))
+                    JobWorkerError::InvalidParameter(format!("cannot deserialize runner: {e:?}"))
                         .into()
                 }),
             Ok(None) => Ok(None),

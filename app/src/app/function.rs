@@ -189,8 +189,7 @@ pub trait FunctionApp:
                 .find_runner_by_name(runner_name)
                 .await?
                 .ok_or(JobWorkerError::NotFound(format!(
-                    "Runner with name '{}' not found",
-                    runner_name
+                    "Runner with name '{runner_name}' not found"
                 )))?;
             // XXX serialize worker options to JSON... (transform function for WorkerOptions)
             let worker_params = worker_options

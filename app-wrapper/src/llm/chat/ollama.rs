@@ -262,7 +262,7 @@ impl OllamaChatService {
             ollama_clone
                 .send_chat_messages(req)
                 .await
-                .map_err(|e| JobWorkerError::OtherError(format!("Chat API error: {}", e)))
+                .map_err(|e| JobWorkerError::OtherError(format!("Chat API error: {e}")))
         };
 
         // Execute chat API call and get both result and context
@@ -369,7 +369,7 @@ impl OllamaChatService {
                         DEFAULT_TIMEOUT_SEC,
                     )
                     .await
-                    .map_err(|e| JobWorkerError::OtherError(format!("Tool execution error: {}", e)))
+                    .map_err(|e| JobWorkerError::OtherError(format!("Tool execution error: {e}")))
             };
 
             // Execute individual tool call as child span and get updated context

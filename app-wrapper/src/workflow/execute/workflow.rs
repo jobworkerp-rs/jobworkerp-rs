@@ -103,14 +103,14 @@ impl WorkflowExecutor {
             .map_err(|e| {
                 tracing::error!("Failed to save checkpoint: {:#?}", e);
                 workflow::errors::ErrorFactory::new().service_unavailable(
-                    format!("Failed to execute by jobworkerp: {:?}", e),
+                    format!("Failed to execute by jobworkerp: {e:?}"),
                     Some(
                         WorkflowPosition::new(vec![
                             serde_json::to_value(ROOT_TASK_NAME).unwrap_or(serde_json::Value::Null)
                         ])
                         .as_error_instance(),
                     ),
-                    Some(format!("{:?}", e)),
+                    Some(format!("{e:?}")),
                 )
             })?;
         } else {
@@ -244,7 +244,7 @@ impl WorkflowExecutor {
                         ])
                         .as_error_instance(),
                     ),
-                    Some(format!("{:?}", e)),
+                    Some(format!("{e:?}")),
                 ));
 
                         return;
@@ -567,7 +567,7 @@ pub trait WorkflowTracing {
                 if !keys.is_empty() {
                     span.set_attribute(opentelemetry::KeyValue::new(
                         "input.object.keys",
-                        format!("{:?}", keys),
+                        format!("{keys:?}"),
                     ));
                 }
             }
@@ -622,7 +622,7 @@ pub trait WorkflowTracing {
         ));
         span.set_attribute(opentelemetry::KeyValue::new(
             "operation.status",
-            format!("{:?}", status),
+            format!("{status:?}"),
         ));
 
         // Set span status based on workflow status
@@ -653,7 +653,7 @@ pub trait WorkflowTracing {
                 if !keys.is_empty() {
                     span.set_attribute(opentelemetry::KeyValue::new(
                         "output.object.keys",
-                        format!("{:?}", keys),
+                        format!("{keys:?}"),
                     ));
                 }
 

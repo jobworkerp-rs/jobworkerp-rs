@@ -96,8 +96,8 @@ pub trait JobRunner:
         let end = datetime::now_millis();
         let error_message = if let Some(e) = err {
             let mes = format!(
-                "error in loading runner for worker:{:?}, error:{:?}",
-                worker_data.name, e
+                "error in loading runner for worker:{:?}, error:{e:?}",
+                worker_data.name
             );
             tracing::warn!(mes);
             mes
@@ -134,7 +134,7 @@ pub trait JobRunner:
             // 1min
             if wait > 60000 {
                 // logic error!
-                tracing::error!("wait too long time: {}ms, job: {:?}", wait, &job);
+                tracing::error!("wait too long time: {wait}ms, job: {job:?}");
             }
             tokio::time::sleep(Duration::from_millis(wait as u64)).await;
         }
@@ -208,14 +208,14 @@ pub trait JobRunner:
                     runner_impl.run_stream(args, metadata),
                 ).catch_unwind() => {
                     r.map_err(|e| {
-                        let msg = format!("Caught panic from runner {}: {:?}", &name, e);
+                        let msg = format!("Caught panic from runner {name}: {e:?}");
                         tracing::error!(msg);
                         anyhow!(msg)
                     }).flatten()
                 },
                 _ = tokio::time::sleep(Duration::from_millis(data.timeout)) => {
                     runner_impl.cancel().await;
-                    tracing::warn!("timeout: {}ms, the job will be dropped: {:?}", data.timeout, &job);
+                    tracing::warn!("timeout: {}ms, the job will be dropped: {job:?}", data.timeout);
                     Err(JobWorkerError::TimeoutError(format!("timeout: {}ms", data.timeout)).into())
                 }
             }
@@ -224,7 +224,7 @@ pub trait JobRunner:
                 .catch_unwind()
                 .await
                 .map_err(|e| {
-                    let msg = format!("Caught panic from runner {}: {:?}", &name, e);
+                    let msg = format!("Caught panic from runner {name}: {e:?}");
                     tracing::error!(msg);
                     anyhow!(msg)
                 })
@@ -241,21 +241,19 @@ pub trait JobRunner:
         let metadata = job.metadata.clone();
         let args = &data.args; // XXX unwrap, clone
         let name = runner_impl.name();
-        let res = if data.timeout > 0 {
+        if data.timeout > 0 {
             tokio::select! {
                 r = AssertUnwindSafe(
                         runner_impl.run(args, metadata)
-                ).catch_unwind() => {
-                    r.map_err(|e| {
-                        let msg = format!("Caught panic from runner {}: {:?}", &name, e);
-                        tracing::error!(msg);
-                        anyhow!(msg)
-                    })
-                    .inspect_err(|e| tracing::warn!("error in running runner: {} : {:?}", &name, e))
+                ).catch_unwind() => {                r.map_err(|e| {
+                    let msg = format!("Caught panic from runner {name}: {e:?}");
+                    tracing::error!(msg);
+                    anyhow!(msg)
+                })                    .inspect_err(|e| tracing::warn!("error in running runner: {name} : {e:?}"))
                 },
                 _ = tokio::time::sleep(Duration::from_millis(data.timeout)) => {
                     runner_impl.cancel().await;
-                    tracing::warn!("timeout: {}ms, the job will be dropped: {:?}", data.timeout, &job);
+                    tracing::warn!("timeout: {}ms, the job will be dropped: {job:?}", data.timeout);
                     Err(JobWorkerError::TimeoutError(format!("timeout: {}ms", data.timeout)).into())
                 }
             }
@@ -264,13 +262,12 @@ pub trait JobRunner:
                 .catch_unwind()
                 .await
                 .map_err(|e| {
-                    let msg = format!("Caught panic from runner {}: {:?}", &name, e);
+                    let msg = format!("Caught panic from runner {name}: {e:?}");
                     tracing::error!(msg);
                     anyhow!(msg)
                 })
-                .inspect_err(|e| tracing::warn!("error in running runner: {} : {:?}", &name, e))
-        };
-        res
+                .inspect_err(|e| tracing::warn!("error in running runner: {name} : {e:?}"))
+        }
     }
     // calculate job status and create JobResult (not increment retry count now)
     #[inline]

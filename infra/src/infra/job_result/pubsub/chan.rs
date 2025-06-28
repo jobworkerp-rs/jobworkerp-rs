@@ -159,7 +159,7 @@ impl JobResultSubscriber for ChanJobResultPubSubRepositoryImpl {
                 result = stream_future =>
                     result.inspect_err(|e| tracing::error!("receive_from_chan_err:{:?}", e))?,
                 _ = tokio::time::sleep(Duration::from_millis(timeout_ms)) => {
-                    return Err(JobWorkerError::RuntimeError(format!("subscribe_result_stream timeout after {}ms", timeout_ms)).into());
+                    return Err(JobWorkerError::RuntimeError(format!("subscribe_result_stream timeout after {timeout_ms}ms")).into());
                 }
             }
         } else {

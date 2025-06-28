@@ -60,10 +60,7 @@ impl RunnerSpecFactory {
     ) -> Result<McpServerProxy> {
         if self.mcp_clients.find_server_config(name).await.is_some() {
             tracing::debug!("MCP server {} already exists", name);
-            Err(
-                JobWorkerError::AlreadyExists(format!("MCP server {} already exists.", name))
-                    .into(),
-            )
+            Err(JobWorkerError::AlreadyExists(format!("MCP server {name} already exists.")).into())
         } else {
             let config = McpServerConfig {
                 name: name.to_string(),

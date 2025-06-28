@@ -139,7 +139,7 @@ impl TaskExecutor {
                     format!("Failed to load checkpoint from execution_id: {}, workflow: {}, position: {}, error: {:#?}",
                       execution_id.value, workflow_name, &pos.as_json_pointer(), e),
                 Some(current_position.read().await.as_error_instance()),
-                    Some(format!("{:?}", e)),
+                    Some(format!("{e:?}")),
                 ))
                 }
             }

@@ -38,7 +38,7 @@ impl SlackMessageClientImpl {
         match self
             .client
             .post(parsed_url)
-            .header("Authorization", format!("Bearer {}", token))
+            .header("Authorization", format!("Bearer {token}"))
             .header("Content-type", "application/json; charset=utf-8")
             .body(json.to_string())
             .send()
