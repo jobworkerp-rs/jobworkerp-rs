@@ -2,7 +2,6 @@ use crate::workflow::{
     definition::workflow::{DoTask, Input, TryTaskCatch},
     execute::{
         context::{TaskContext, WorkflowContext},
-        job::JobExecutorWrapper,
         task::{
             stream::do_::DoTaskStreamExecutor, ExecutionId, Result, StreamTaskExecutorTrait,
             TaskExecutorTrait,
@@ -16,6 +15,7 @@ use crate::workflow::{
     },
     execute::expression::UseExpression,
 };
+use app::app::job::execute::JobExecutorWrapper;
 use infra_utils::infra::net::reqwest;
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::RwLock, time::Instant};

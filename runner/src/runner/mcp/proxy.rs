@@ -74,7 +74,7 @@ impl McpServerProxy {
         let tools = self
             .with_cache(&k, || async {
                 self.transport.peer().list_all_tools().await.map_err(|e| {
-                    let mes = format!("Failed to load tools: {}", e);
+                    let mes = format!("Failed to load tools: {e}");
                     tracing::error!(mes);
                     anyhow::anyhow!(mes)
                 })
@@ -108,7 +108,7 @@ impl McpServerProxy {
             QuitReason::Closed => Ok(false),
             QuitReason::JoinError(join_error) => {
                 tracing::error!("tokio thread Join error: {:?}", join_error);
-                Err(JobWorkerError::RuntimeError(format!("Join error: {}", join_error)).into())
+                Err(JobWorkerError::RuntimeError(format!("Join error: {join_error}")).into())
             }
         }
     }
@@ -249,12 +249,7 @@ impl McpServerFactory {
         Ok(server)
     }
     pub async fn find_all(&self) -> Vec<McpServerConfig> {
-        self.mcp_configs
-            .read()
-            .await
-            .iter()
-            .map(|(_, client)| client.clone())
-            .collect()
+        self.mcp_configs.read().await.values().cloned().collect()
     }
     // boot up and connection test for all mcp servers
     pub async fn test_all(&self) -> Result<Vec<McpServerProxy>> {

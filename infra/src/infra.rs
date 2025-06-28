@@ -83,8 +83,7 @@ pub fn load_job_queue_config_from_env() -> Result<JobQueueConfig> {
     envy::prefixed("JOB_QUEUE_")
         .from_env::<JobQueueConfig>()
         .map_err(|e| {
-            JobWorkerError::RuntimeError(format!("cannot read redis config from env: {:?}", e))
-                .into()
+            JobWorkerError::RuntimeError(format!("cannot read redis config from env: {e:?}")).into()
         })
 }
 

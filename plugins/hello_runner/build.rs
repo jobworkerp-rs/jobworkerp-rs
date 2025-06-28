@@ -19,7 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ],
             &["protobuf"],
         )
-        .unwrap_or_else(|e| panic!("Failed to compile protos {:?}", e));
+        .unwrap_or_else(|e| panic!("Failed to compile protos {e:?}"));
 
     Ok(())
 }

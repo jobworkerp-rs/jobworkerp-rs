@@ -3,7 +3,6 @@ use command_utils::util::json_schema::SchemaCombiner;
 use proto::jobworkerp::data::RunnerType;
 use proto::jobworkerp::function::data::{function_specs, FunctionSpecs};
 use rmcp::model::{ListToolsResult, Tool};
-use rmcp::schemars::schema::RootSchema;
 use rmcp::Error as McpError;
 use serde_json;
 use tracing;
@@ -40,7 +39,7 @@ impl ToolConverter {
                         })
                     }
                     function_specs::Schema::McpTools(mcp) => {
-                        let mes = format!("error: expect workflow but got mcp: {:?}", mcp);
+                        let mes = format!("error: expect workflow but got mcp: {mcp:?}");
                         tracing::error!(mes);
                         None
                     }
@@ -178,10 +177,10 @@ impl ToolConverter {
                         // ReusableWorkflow: use settings as JSON Schema
                         let name = tool.name.clone();
                         let description = CREATION_TOOL_DESCRIPTION.to_string();
-                        let params_schema: Option<RootSchema> = function
+                        let params_schema: Option<schemars::Schema> = function
                             .settings
                             .as_ref()
-                            .and_then(|s| serde_json::from_str::<RootSchema>(s).ok());
+                            .and_then(|s| serde_json::from_str(s).ok());
                         params_schema
                             .map(|parameters| ToolInfo {
                                 tool_type: ollama_rs::generation::tools::ToolType::Function,
@@ -197,10 +196,10 @@ impl ToolConverter {
                     Some(function_specs::Schema::SingleSchema(function)) => {
                         let name = tool.name.clone();
                         let description = tool.description.clone();
-                        let params_schema: Option<RootSchema> = function
+                        let params_schema: Option<schemars::Schema> = function
                             .settings
                             .as_ref()
-                            .and_then(|s| serde_json::from_str::<RootSchema>(s).ok());
+                            .and_then(|s| serde_json::from_str(s).ok());
                         params_schema
                             .map(|parameters| ToolInfo {
                                 tool_type: ollama_rs::generation::tools::ToolType::Function,
@@ -220,8 +219,8 @@ impl ToolConverter {
                             let name =
                                 Self::combine_names(tool.name.as_str(), mcp_tool.name.as_str());
                             let description = mcp_tool.description.clone().unwrap_or_default();
-                            let params_schema: Option<RootSchema> =
-                                serde_json::from_str::<RootSchema>(&mcp_tool.input_schema).ok();
+                            let params_schema: Option<schemars::Schema> =
+                                serde_json::from_str(&mcp_tool.input_schema).ok();
                             params_schema.map(|parameters| ToolInfo {
                                 tool_type: ollama_rs::generation::tools::ToolType::Function,
                                 function: ollama_rs::generation::tools::ToolFunctionInfo {
@@ -397,9 +396,7 @@ mod tests {
         for field in required_fields {
             assert!(
                 required_values.contains(&field.to_string()),
-                "Field '{}' should be in required list: {:?}",
-                field,
-                required_values
+                "Field '{field}' should be in required list: {required_values:?}"
             );
         }
     }
@@ -419,8 +416,7 @@ mod tests {
         let properties = properties.unwrap();
         assert!(
             properties.contains_key(property_name),
-            "Schema should contain property '{}'",
-            property_name
+            "Schema should contain property '{property_name}'"
         );
 
         let actual_property = &properties[property_name];
@@ -440,8 +436,7 @@ mod tests {
                 for (key, exp_val) in exp_obj {
                     assert!(
                         act_obj.contains_key(key),
-                        "Expected key '{}' not found in actual",
-                        key
+                        "Expected key '{key}' not found in actual"
                     );
                     assert_json_subset(exp_val, &act_obj[key]);
                 }
@@ -458,7 +453,7 @@ mod tests {
                 }
             }
             (exp, act) => {
-                assert_eq!(exp, act, "Expected value {:?} but got {:?}", exp, act);
+                assert_eq!(exp, act, "Expected value {exp:?} but got {act:?}");
             }
         }
     }
@@ -574,12 +569,12 @@ mod tests {
             .iter()
             .find(|t| t.function.name == "test_single")
             .unwrap();
-        println!("single Tool: {:#?}", tool);
+        println!("single Tool: {tool:#?}");
         assert_eq!(tool.function.name, "test_single");
         assert_eq!(tool.function.description, "desc_single");
 
-        // Convert RootSchema to Value for easier inspection and comparison
-        let schema_value = serde_json::to_value(&tool.function.parameters.schema).unwrap();
+        // Convert Schema to Value for easier inspection and comparison
+        let schema_value = tool.function.parameters.clone().to_value();
 
         // Verify schema is an object with the right type
         let schema_obj = schema_value.as_object().unwrap();
@@ -612,12 +607,12 @@ mod tests {
             .iter()
             .find(|t| t.function.name == "test_workflow")
             .unwrap();
-        println!("workflow Tool: {:#?}", tool);
+        println!("workflow Tool: {tool:#?}");
         assert_eq!(tool.function.name, "test_workflow");
         assert_eq!(tool.function.description, CREATION_TOOL_DESCRIPTION);
 
-        // Convert RootSchema to Value for easier inspection and comparison
-        let schema_value = serde_json::to_value(&tool.function.parameters.schema).unwrap();
+        // Convert Schema to Value for easier inspection and comparison
+        let schema_value = tool.function.parameters.clone().to_value();
         let schema_obj = schema_value.as_object().unwrap();
 
         // Verify schema is an object
@@ -660,12 +655,12 @@ mod tests {
             .iter()
             .find(|t| t.function.name == "test_mcp___inner")
             .unwrap();
-        println!("mcp Tool: {:#?}", tool);
+        println!("mcp Tool: {tool:#?}");
         assert_eq!(tool.function.name, "test_mcp___inner");
         assert_eq!(tool.function.description, "desc_inner");
 
-        // Convert RootSchema to Value for easier inspection and comparison
-        let schema_value = serde_json::to_value(&tool.function.parameters.schema).unwrap();
+        // Convert Schema to Value for easier inspection and comparison
+        let schema_value = tool.function.parameters.clone().to_value();
         let schema_obj = schema_value.as_object().unwrap();
 
         // Verify schema is an object

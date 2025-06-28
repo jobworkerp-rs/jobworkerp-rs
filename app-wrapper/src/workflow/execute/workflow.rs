@@ -1,4 +1,4 @@
-use super::{expression::UseExpression, job::JobExecutorWrapper, task::TaskExecutor};
+use super::{expression::UseExpression, task::TaskExecutor};
 use crate::modules::AppWrapperModule;
 use crate::workflow::definition::{
     transform::{UseExpressionTransformer, UseJqAndTemplateTransformer},
@@ -11,6 +11,7 @@ use crate::workflow::execute::context::{
 };
 use crate::workflow::execute::task::ExecutionId;
 use anyhow::Result;
+use app::app::job::execute::JobExecutorWrapper;
 use app::module::AppModule;
 use async_stream::stream;
 use futures::{Stream, StreamExt};
@@ -102,14 +103,14 @@ impl WorkflowExecutor {
             .map_err(|e| {
                 tracing::error!("Failed to save checkpoint: {:#?}", e);
                 workflow::errors::ErrorFactory::new().service_unavailable(
-                    format!("Failed to execute by jobworkerp: {:?}", e),
+                    format!("Failed to execute by jobworkerp: {e:?}"),
                     Some(
                         WorkflowPosition::new(vec![
                             serde_json::to_value(ROOT_TASK_NAME).unwrap_or(serde_json::Value::Null)
                         ])
                         .as_error_instance(),
                     ),
-                    Some(format!("{:?}", e)),
+                    Some(format!("{e:?}")),
                 )
             })?;
         } else {
@@ -243,7 +244,7 @@ impl WorkflowExecutor {
                         ])
                         .as_error_instance(),
                     ),
-                    Some(format!("{:?}", e)),
+                    Some(format!("{e:?}")),
                 ));
 
                         return;
@@ -566,7 +567,7 @@ pub trait WorkflowTracing {
                 if !keys.is_empty() {
                     span.set_attribute(opentelemetry::KeyValue::new(
                         "input.object.keys",
-                        format!("{:?}", keys),
+                        format!("{keys:?}"),
                     ));
                 }
             }
@@ -621,7 +622,7 @@ pub trait WorkflowTracing {
         ));
         span.set_attribute(opentelemetry::KeyValue::new(
             "operation.status",
-            format!("{:?}", status),
+            format!("{status:?}"),
         ));
 
         // Set span status based on workflow status
@@ -652,7 +653,7 @@ pub trait WorkflowTracing {
                 if !keys.is_empty() {
                     span.set_attribute(opentelemetry::KeyValue::new(
                         "output.object.keys",
-                        format!("{:?}", keys),
+                        format!("{keys:?}"),
                     ));
                 }
 

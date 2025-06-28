@@ -529,7 +529,7 @@ mod test {
         )]);
         let result = DefaultTransformer::transform_ref_value(input.clone(), &value, &context)
             .map_err(|e| {
-                eprintln!("Failed to transform value: {:#?}", e);
+                eprintln!("Failed to transform value: {e:#?}");
                 e
             })
             .unwrap();
@@ -731,8 +731,7 @@ mod test {
         let re = regex::Regex::new(r"^/home/user/日記/(\d{4})/(\d{1,2})/$").unwrap();
         assert!(
             re.is_match(&result_text),
-            "Result '{}' doesn't match the expected format",
-            result_text
+            "Result '{result_text}' doesn't match the expected format"
         );
 
         // Extract and verify year and month are valid numbers

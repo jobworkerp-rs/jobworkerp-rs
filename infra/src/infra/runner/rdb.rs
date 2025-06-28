@@ -124,7 +124,7 @@ pub trait RunnerRepository:
         } else {
             tracing::warn!("Plugin runner {} already exists", name);
             Err(
-                JobWorkerError::AlreadyExists(format!("Plugin runner {} already exists", name))
+                JobWorkerError::AlreadyExists(format!("Plugin runner {name} already exists"))
                     .into(),
             )
         }
@@ -163,7 +163,7 @@ pub trait RunnerRepository:
             Ok(id)
         } else {
             tracing::warn!("MCP server {} already exists", name);
-            Err(JobWorkerError::AlreadyExists(format!("MCP server {} already exists", name)).into())
+            Err(JobWorkerError::AlreadyExists(format!("MCP server {name} already exists")).into())
         }
     }
 
@@ -371,7 +371,7 @@ pub trait RunnerRepository:
             .fetch_optional(tx)
             .await
             .map_err(JobWorkerError::DBError)
-            .context(format!("error in find: name = {}", name))
+            .context(format!("error in find: name = {name}"))
     }
 
     async fn find_list(
@@ -413,7 +413,7 @@ pub trait RunnerRepository:
         }
         .await
         .map_err(JobWorkerError::DBError)
-        .context(format!("error in find_list: ({:?}, {:?})", limit, offset))
+        .context(format!("error in find_list: ({limit:?}, {offset:?})"))
     }
 
     async fn count_list_tx<'c, E: Executor<'c, Database = Rdb>>(&self, tx: E) -> Result<i64> {
@@ -677,7 +677,7 @@ mod test {
                 .iter()
                 .filter(|row| row.r#type == RunnerType::McpServer as i32)
                 .collect();
-            println!("McpServer rows: {:?}", mcp_servers);
+            println!("McpServer rows: {mcp_servers:?}");
 
             assert_eq!(mcp_servers.len(), 2);
 

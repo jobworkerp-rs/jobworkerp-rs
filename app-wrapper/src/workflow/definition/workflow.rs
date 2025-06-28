@@ -38,14 +38,14 @@ pub mod error {
         }
     }
 }
-#[doc = "static error filter"]
+#[doc = "Static error filter configuration."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"CatchErrors\","]
-#[doc = "  \"description\": \"static error filter\","]
+#[doc = "  \"description\": \"Static error filter configuration.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"properties\": {"]
 #[doc = "    \"with\": {"]
@@ -77,31 +77,31 @@ impl CatchErrors {
         Default::default()
     }
 }
-#[doc = "Configures checkpoint/restart feature."]
+#[doc = "Checkpoint and restart configuration."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"Checkpoint Config\","]
-#[doc = "  \"description\": \"Configures checkpoint/restart feature.\","]
+#[doc = "  \"description\": \"Checkpoint and restart configuration.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"enabled\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
 #[doc = "    \"enabled\": {"]
-#[doc = "      \"description\": \"Enable checkpoint feature.\","]
+#[doc = "      \"description\": \"Enable checkpoint functionality.\","]
 #[doc = "      \"default\": false,"]
 #[doc = "      \"type\": \"boolean\""]
 #[doc = "    },"]
 #[doc = "    \"storage\": {"]
+#[doc = "      \"description\": \"Storage backend for checkpoints.\","]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"enum\": ["]
 #[doc = "        \"memory\","]
 #[doc = "        \"redis\""]
-#[doc = "      ],"]
-#[doc = "      \"description\\\"\": \"Checkpoint storage backend.(if enabled)\""]
+#[doc = "      ]"]
 #[doc = "    }"]
 #[doc = "  }"]
 #[doc = "}"]
@@ -109,8 +109,9 @@ impl CatchErrors {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct CheckpointConfig {
-    #[doc = "Enable checkpoint feature."]
+    #[doc = "Enable checkpoint functionality."]
     pub enabled: bool,
+    #[doc = "Storage backend for checkpoints."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub storage: ::std::option::Option<CheckpointConfigStorage>,
 }
@@ -124,18 +125,18 @@ impl CheckpointConfig {
         Default::default()
     }
 }
-#[doc = "CheckpointConfigStorage"]
+#[doc = "Storage backend for checkpoints."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
+#[doc = "  \"description\": \"Storage backend for checkpoints.\","]
 #[doc = "  \"type\": \"string\","]
 #[doc = "  \"enum\": ["]
 #[doc = "    \"memory\","]
 #[doc = "    \"redis\""]
-#[doc = "  ],"]
-#[doc = "  \"description\\\"\": \"Checkpoint storage backend.(if enabled)\""]
+#[doc = "  ]"]
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
@@ -215,45 +216,45 @@ impl ::std::convert::TryFrom<::std::string::String> for CheckpointConfigStorage 
 #[doc = "  \"properties\": {"]
 #[doc = "    \"checkpoint\": {"]
 #[doc = "      \"title\": \"Checkpoint\","]
-#[doc = "      \"description\": \"If true, save workflow state after this task. Used for checkpoint/restart.\","]
+#[doc = "      \"description\": \"Save workflow state after this task for checkpoint/restart.\","]
 #[doc = "      \"default\": false,"]
 #[doc = "      \"type\": \"boolean\""]
 #[doc = "    },"]
 #[doc = "    \"do\": {"]
 #[doc = "      \"title\": \"DoTaskConfiguration\","]
-#[doc = "      \"description\": \"The configuration of the tasks to perform sequentially.\","]
+#[doc = "      \"description\": \"Tasks to execute in sequence.\","]
 #[doc = "      \"$ref\": \"#/$defs/taskList\""]
 #[doc = "    },"]
 #[doc = "    \"export\": {"]
 #[doc = "      \"title\": \"TaskBaseExport\","]
-#[doc = "      \"description\": \"Export task output to context.\","]
+#[doc = "      \"description\": \"Export task output to workflow context.\","]
 #[doc = "      \"$ref\": \"#/$defs/export\""]
 #[doc = "    },"]
 #[doc = "    \"for\": false,"]
 #[doc = "    \"if\": {"]
 #[doc = "      \"title\": \"TaskBaseIf\","]
-#[doc = "      \"description\": \"A runtime expression, if any, used to determine whether or not the task should be run.\","]
+#[doc = "      \"description\": \"Runtime expression to conditionally execute this task.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"input\": {"]
 #[doc = "      \"title\": \"TaskBaseInput\","]
-#[doc = "      \"description\": \"Configure the task's input.\","]
+#[doc = "      \"description\": \"Task input configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/input\""]
 #[doc = "    },"]
 #[doc = "    \"metadata\": {"]
 #[doc = "      \"title\": \"TaskMetadata\","]
-#[doc = "      \"description\": \"Holds additional information about the task.\","]
+#[doc = "      \"description\": \"Additional task metadata.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"additionalProperties\": true"]
 #[doc = "    },"]
 #[doc = "    \"output\": {"]
 #[doc = "      \"title\": \"TaskBaseOutput\","]
-#[doc = "      \"description\": \"Configure the task's output.\","]
+#[doc = "      \"description\": \"Task output configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/output\""]
 #[doc = "    },"]
 #[doc = "    \"then\": {"]
 #[doc = "      \"title\": \"TaskBaseThen\","]
-#[doc = "      \"description\": \"The flow directive to be performed upon completion of the task.\","]
+#[doc = "      \"description\": \"Flow control directive executed after task completion.\","]
 #[doc = "      \"$ref\": \"#/$defs/flowDirective\""]
 #[doc = "    },"]
 #[doc = "    \"timeout\": {"]
@@ -261,12 +262,12 @@ impl ::std::convert::TryFrom<::std::string::String> for CheckpointConfigStorage 
 #[doc = "      \"oneOf\": ["]
 #[doc = "        {"]
 #[doc = "          \"title\": \"TaskTimeoutDefinition\","]
-#[doc = "          \"description\": \"The task's timeout configuration, if any.\","]
+#[doc = "          \"description\": \"Task timeout configuration.\","]
 #[doc = "          \"$ref\": \"#/$defs/timeout\""]
 #[doc = "        },"]
 #[doc = "        {"]
 #[doc = "          \"title\": \"TaskTimeoutReference\","]
-#[doc = "          \"description\": \"The name of the task's timeout, if any.\","]
+#[doc = "          \"description\": \"Reference to named timeout configuration.\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      ]"]
@@ -277,32 +278,32 @@ impl ::std::convert::TryFrom<::std::string::String> for CheckpointConfigStorage 
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct DoTask {
-    #[doc = "If true, save workflow state after this task. Used for checkpoint/restart."]
+    #[doc = "Save workflow state after this task for checkpoint/restart."]
     #[serde(default)]
     pub checkpoint: bool,
-    #[doc = "The configuration of the tasks to perform sequentially."]
+    #[doc = "Tasks to execute in sequence."]
     #[serde(rename = "do")]
     pub do_: TaskList,
-    #[doc = "Export task output to context."]
+    #[doc = "Export task output to workflow context."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub export: ::std::option::Option<Export>,
-    #[doc = "A runtime expression, if any, used to determine whether or not the task should be run."]
+    #[doc = "Runtime expression to conditionally execute this task."]
     #[serde(
         rename = "if",
         default,
         skip_serializing_if = "::std::option::Option::is_none"
     )]
     pub if_: ::std::option::Option<::std::string::String>,
-    #[doc = "Configure the task's input."]
+    #[doc = "Task input configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub input: ::std::option::Option<Input>,
-    #[doc = "Holds additional information about the task."]
+    #[doc = "Additional task metadata."]
     #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
     pub metadata: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-    #[doc = "Configure the task's output."]
+    #[doc = "Task output configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub output: ::std::option::Option<Output>,
-    #[doc = "The flow directive to be performed upon completion of the task."]
+    #[doc = "Flow control directive executed after task completion."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub then: ::std::option::Option<FlowDirective>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -318,14 +319,14 @@ impl DoTask {
         Default::default()
     }
 }
-#[doc = "Documents the workflow."]
+#[doc = "Workflow metadata and identification."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"Document\","]
-#[doc = "  \"description\": \"Documents the workflow.\","]
+#[doc = "  \"description\": \"Workflow metadata and identification.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"dsl\","]
@@ -336,49 +337,49 @@ impl DoTask {
 #[doc = "  \"properties\": {"]
 #[doc = "    \"dsl\": {"]
 #[doc = "      \"title\": \"WorkflowDSL\","]
-#[doc = "      \"description\": \"The version of the DSL used by the workflow.\","]
+#[doc = "      \"description\": \"DSL version used by this workflow.\","]
 #[doc = "      \"default\": \"0.0.1\","]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"pattern\": \"^(0|[1-9]\\\\d*)\\\\.(0|[1-9]\\\\d*)\\\\.(0|[1-9]\\\\d*)(?:-((?:0|[1-9]\\\\d*|\\\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\\\.(?:0|[1-9]\\\\d*|\\\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\\\+([0-9a-zA-Z-]+(?:\\\\.[0-9a-zA-Z-]+)*))?$\""]
 #[doc = "    },"]
 #[doc = "    \"metadata\": {"]
 #[doc = "      \"title\": \"WorkflowMetadata\","]
-#[doc = "      \"description\": \"Holds additional information about the workflow.\","]
+#[doc = "      \"description\": \"Additional workflow metadata.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"additionalProperties\": true"]
 #[doc = "    },"]
 #[doc = "    \"name\": {"]
 #[doc = "      \"title\": \"WorkflowName\","]
-#[doc = "      \"description\": \"The workflow's name.\","]
+#[doc = "      \"description\": \"Workflow name.\","]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"pattern\": \"^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$\""]
 #[doc = "    },"]
 #[doc = "    \"namespace\": {"]
 #[doc = "      \"title\": \"WorkflowNamespace\","]
-#[doc = "      \"description\": \"The workflow's namespace.\","]
+#[doc = "      \"description\": \"Workflow namespace.\","]
 #[doc = "      \"default\": \"default\","]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"pattern\": \"^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$\""]
 #[doc = "    },"]
 #[doc = "    \"summary\": {"]
 #[doc = "      \"title\": \"WorkflowSummary\","]
-#[doc = "      \"description\": \"The workflow's Markdown summary.\","]
+#[doc = "      \"description\": \"Workflow summary in Markdown format.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"tags\": {"]
 #[doc = "      \"title\": \"WorkflowTags\","]
-#[doc = "      \"description\": \"A key/value mapping of the workflow's tags, if any.\","]
+#[doc = "      \"description\": \"Key/value tags for workflow classification.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"additionalProperties\": true"]
 #[doc = "    },"]
 #[doc = "    \"title\": {"]
 #[doc = "      \"title\": \"WorkflowTitle\","]
-#[doc = "      \"description\": \"The workflow's title.\","]
+#[doc = "      \"description\": \"Workflow title.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"version\": {"]
 #[doc = "      \"title\": \"WorkflowVersion\","]
-#[doc = "      \"description\": \"The workflow's semantic version.\","]
+#[doc = "      \"description\": \"Workflow semantic version.\","]
 #[doc = "      \"default\": \"0.0.1\","]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"pattern\": \"^(0|[1-9]\\\\d*)\\\\.(0|[1-9]\\\\d*)\\\\.(0|[1-9]\\\\d*)(?:-((?:0|[1-9]\\\\d*|\\\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\\\.(?:0|[1-9]\\\\d*|\\\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\\\+([0-9a-zA-Z-]+(?:\\\\.[0-9a-zA-Z-]+)*))?$\""]
@@ -390,25 +391,25 @@ impl DoTask {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct Document {
-    #[doc = "The version of the DSL used by the workflow."]
+    #[doc = "DSL version used by this workflow."]
     pub dsl: WorkflowDsl,
-    #[doc = "Holds additional information about the workflow."]
+    #[doc = "Additional workflow metadata."]
     #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
     pub metadata: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-    #[doc = "The workflow's name."]
+    #[doc = "Workflow name."]
     pub name: WorkflowName,
-    #[doc = "The workflow's namespace."]
+    #[doc = "Workflow namespace."]
     pub namespace: WorkflowNamespace,
-    #[doc = "The workflow's Markdown summary."]
+    #[doc = "Workflow summary in Markdown format."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub summary: ::std::option::Option<::std::string::String>,
-    #[doc = "A key/value mapping of the workflow's tags, if any."]
+    #[doc = "Key/value tags for workflow classification."]
     #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
     pub tags: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-    #[doc = "The workflow's title."]
+    #[doc = "Workflow title."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub title: ::std::option::Option<::std::string::String>,
-    #[doc = "The workflow's semantic version."]
+    #[doc = "Workflow semantic version."]
     pub version: WorkflowVersion,
 }
 impl ::std::convert::From<&Document> for Document {
@@ -430,33 +431,33 @@ impl Document {
 #[doc = "  \"oneOf\": ["]
 #[doc = "    {"]
 #[doc = "      \"title\": \"DurationInline\","]
-#[doc = "      \"description\": \"The inline definition of a duration.\","]
+#[doc = "      \"description\": \"Inline duration specification using individual time units.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"minProperties\": 1,"]
 #[doc = "      \"properties\": {"]
 #[doc = "        \"days\": {"]
 #[doc = "          \"title\": \"DurationDays\","]
-#[doc = "          \"description\": \"Number of days, if any.\","]
+#[doc = "          \"description\": \"Number of days.\","]
 #[doc = "          \"type\": \"integer\""]
 #[doc = "        },"]
 #[doc = "        \"hours\": {"]
 #[doc = "          \"title\": \"DurationHours\","]
-#[doc = "          \"description\": \"Number of days, if any.\","]
+#[doc = "          \"description\": \"Number of hours.\","]
 #[doc = "          \"type\": \"integer\""]
 #[doc = "        },"]
 #[doc = "        \"milliseconds\": {"]
 #[doc = "          \"title\": \"DurationMilliseconds\","]
-#[doc = "          \"description\": \"Number of milliseconds, if any.\","]
+#[doc = "          \"description\": \"Number of milliseconds.\","]
 #[doc = "          \"type\": \"integer\""]
 #[doc = "        },"]
 #[doc = "        \"minutes\": {"]
 #[doc = "          \"title\": \"DurationMinutes\","]
-#[doc = "          \"description\": \"Number of minutes, if any.\","]
+#[doc = "          \"description\": \"Number of minutes.\","]
 #[doc = "          \"type\": \"integer\""]
 #[doc = "        },"]
 #[doc = "        \"seconds\": {"]
 #[doc = "          \"title\": \"DurationSeconds\","]
-#[doc = "          \"description\": \"Number of seconds, if any.\","]
+#[doc = "          \"description\": \"Number of seconds.\","]
 #[doc = "          \"type\": \"integer\""]
 #[doc = "        }"]
 #[doc = "      },"]
@@ -464,7 +465,7 @@ impl Document {
 #[doc = "    },"]
 #[doc = "    {"]
 #[doc = "      \"title\": \"DurationExpression\","]
-#[doc = "      \"description\": \"The ISO 8601 expression of a duration.\","]
+#[doc = "      \"description\": \"Duration expressed in ISO 8601 format.\","]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"pattern\": \"^P(?!$)(\\\\d+(?:\\\\.\\\\d+)?Y)?(\\\\d+(?:\\\\.\\\\d+)?M)?(\\\\d+(?:\\\\.\\\\d+)?W)?(\\\\d+(?:\\\\.\\\\d+)?D)?(T(?=\\\\d)(\\\\d+(?:\\\\.\\\\d+)?H)?(\\\\d+(?:\\\\.\\\\d+)?M)?(\\\\d+(?:\\\\.\\\\d+)?S)?)?$\""]
 #[doc = "    }"]
@@ -472,23 +473,23 @@ impl Document {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum Duration {
     Inline {
-        #[doc = "Number of days, if any."]
+        #[doc = "Number of days."]
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         days: ::std::option::Option<i64>,
-        #[doc = "Number of days, if any."]
+        #[doc = "Number of hours."]
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         hours: ::std::option::Option<i64>,
-        #[doc = "Number of milliseconds, if any."]
+        #[doc = "Number of milliseconds."]
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         milliseconds: ::std::option::Option<i64>,
-        #[doc = "Number of minutes, if any."]
+        #[doc = "Number of minutes."]
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         minutes: ::std::option::Option<i64>,
-        #[doc = "Number of seconds, if any."]
+        #[doc = "Number of seconds."]
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         seconds: ::std::option::Option<i64>,
     },
@@ -504,14 +505,14 @@ impl ::std::convert::From<DurationExpression> for Duration {
         Self::Expression(value)
     }
 }
-#[doc = "The ISO 8601 expression of a duration."]
+#[doc = "Duration expressed in ISO 8601 format."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"DurationExpression\","]
-#[doc = "  \"description\": \"The ISO 8601 expression of a duration.\","]
+#[doc = "  \"description\": \"Duration expressed in ISO 8601 format.\","]
 #[doc = "  \"type\": \"string\","]
 #[doc = "  \"pattern\": \"^P(?!$)(\\\\d+(?:\\\\.\\\\d+)?Y)?(\\\\d+(?:\\\\.\\\\d+)?M)?(\\\\d+(?:\\\\.\\\\d+)?W)?(\\\\d+(?:\\\\.\\\\d+)?D)?(T(?=\\\\d)(\\\\d+(?:\\\\.\\\\d+)?H)?(\\\\d+(?:\\\\.\\\\d+)?M)?(\\\\d+(?:\\\\.\\\\d+)?S)?)?$\""]
 #[doc = "}"]
@@ -577,14 +578,14 @@ impl<'de> ::serde::Deserialize<'de> for DurationExpression {
             })
     }
 }
-#[doc = "Represents an endpoint."]
+#[doc = "Endpoint configuration."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"Endpoint\","]
-#[doc = "  \"description\": \"Represents an endpoint.\","]
+#[doc = "  \"description\": \"Endpoint configuration.\","]
 #[doc = "  \"oneOf\": ["]
 #[doc = "    {"]
 #[doc = "      \"$ref\": \"#/$defs/uriTemplate\""]
@@ -598,7 +599,7 @@ impl<'de> ::serde::Deserialize<'de> for DurationExpression {
 #[doc = "      \"properties\": {"]
 #[doc = "        \"uri\": {"]
 #[doc = "          \"title\": \"EndpointUri\","]
-#[doc = "          \"description\": \"The endpoint's URI.\","]
+#[doc = "          \"description\": \"Endpoint URI.\","]
 #[doc = "          \"$ref\": \"#/$defs/uriTemplate\""]
 #[doc = "        }"]
 #[doc = "      },"]
@@ -613,7 +614,7 @@ impl<'de> ::serde::Deserialize<'de> for DurationExpression {
 pub enum Endpoint {
     UriTemplate(UriTemplate),
     EndpointConfiguration {
-        #[doc = "The endpoint's URI."]
+        #[doc = "Endpoint URI."]
         uri: UriTemplate,
     },
 }
@@ -627,14 +628,14 @@ impl ::std::convert::From<UriTemplate> for Endpoint {
         Self::UriTemplate(value)
     }
 }
-#[doc = "Represents an error."]
+#[doc = "Error definition."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"Error\","]
-#[doc = "  \"description\": \"Represents an error.\","]
+#[doc = "  \"description\": \"Error definition.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"status\","]
@@ -643,28 +644,28 @@ impl ::std::convert::From<UriTemplate> for Endpoint {
 #[doc = "  \"properties\": {"]
 #[doc = "    \"detail\": {"]
 #[doc = "      \"title\": \"ErrorDetails\","]
-#[doc = "      \"description\": \"A human-readable explanation specific to this occurrence of the error.\","]
+#[doc = "      \"description\": \"Detailed error explanation.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"instance\": {"]
 #[doc = "      \"title\": \"ErrorInstance\","]
-#[doc = "      \"description\": \"A JSON Pointer used to reference the component the error originates from.\","]
+#[doc = "      \"description\": \"JSON Pointer to error source component.\","]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"format\": \"json-pointer\""]
 #[doc = "    },"]
 #[doc = "    \"status\": {"]
 #[doc = "      \"title\": \"ErrorStatus\","]
-#[doc = "      \"description\": \"The status code generated by the origin for this occurrence of the error.\","]
+#[doc = "      \"description\": \"HTTP status code for this error.\","]
 #[doc = "      \"type\": \"integer\""]
 #[doc = "    },"]
 #[doc = "    \"title\": {"]
 #[doc = "      \"title\": \"ErrorTitle\","]
-#[doc = "      \"description\": \"A short, human-readable summary of the error.\","]
+#[doc = "      \"description\": \"Brief error summary.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"type\": {"]
 #[doc = "      \"title\": \"ErrorType\","]
-#[doc = "      \"description\": \"A URI reference that identifies the error type.\","]
+#[doc = "      \"description\": \"URI identifying error type.\","]
 #[doc = "      \"$ref\": \"#/$defs/uriTemplate\""]
 #[doc = "    }"]
 #[doc = "  },"]
@@ -674,18 +675,18 @@ impl ::std::convert::From<UriTemplate> for Endpoint {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct Error {
-    #[doc = "A human-readable explanation specific to this occurrence of the error."]
+    #[doc = "Detailed error explanation."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub detail: ::std::option::Option<::std::string::String>,
-    #[doc = "A JSON Pointer used to reference the component the error originates from."]
+    #[doc = "JSON Pointer to error source component."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub instance: ::std::option::Option<::std::string::String>,
-    #[doc = "The status code generated by the origin for this occurrence of the error."]
+    #[doc = "HTTP status code for this error."]
     pub status: i64,
-    #[doc = "A short, human-readable summary of the error."]
+    #[doc = "Brief error summary."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub title: ::std::option::Option<::std::string::String>,
-    #[doc = "A URI reference that identifies the error type."]
+    #[doc = "URI identifying error type."]
     #[serde(rename = "type")]
     pub type_: UriTemplate,
 }
@@ -699,35 +700,35 @@ impl Error {
         Default::default()
     }
 }
-#[doc = "Error filtering base on static values. For error filtering on dynamic values, use catch.when property"]
+#[doc = "Static error filtering configuration. For dynamic filtering, use catch.when property."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"ErrorFilter\","]
-#[doc = "  \"description\": \"Error filtering base on static values. For error filtering on dynamic values, use catch.when property\","]
+#[doc = "  \"description\": \"Static error filtering configuration. For dynamic filtering, use catch.when property.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"minProperties\": 1,"]
 #[doc = "  \"properties\": {"]
 #[doc = "    \"details\": {"]
-#[doc = "      \"description\": \"if present, means this value should be used for filtering\","]
+#[doc = "      \"description\": \"Filter by error details.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"instance\": {"]
-#[doc = "      \"description\": \"if present, means this value should be used for filtering\","]
+#[doc = "      \"description\": \"Filter by error instance path.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"status\": {"]
-#[doc = "      \"description\": \"if present, means this value should be used for filtering\","]
+#[doc = "      \"description\": \"Filter by error status code.\","]
 #[doc = "      \"type\": \"integer\""]
 #[doc = "    },"]
 #[doc = "    \"title\": {"]
-#[doc = "      \"description\": \"if present, means this value should be used for filtering\","]
+#[doc = "      \"description\": \"Filter by error title.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"type\": {"]
-#[doc = "      \"description\": \"if present, means this value should be used for filtering\","]
+#[doc = "      \"description\": \"Filter by error type value.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    }"]
 #[doc = "  }"]
@@ -736,19 +737,19 @@ impl Error {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct ErrorFilter {
-    #[doc = "if present, means this value should be used for filtering"]
+    #[doc = "Filter by error details."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub details: ::std::option::Option<::std::string::String>,
-    #[doc = "if present, means this value should be used for filtering"]
+    #[doc = "Filter by error instance path."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub instance: ::std::option::Option<::std::string::String>,
-    #[doc = "if present, means this value should be used for filtering"]
+    #[doc = "Filter by error status code."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub status: ::std::option::Option<i64>,
-    #[doc = "if present, means this value should be used for filtering"]
+    #[doc = "Filter by error title."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub title: ::std::option::Option<::std::string::String>,
-    #[doc = "if present, means this value should be used for filtering"]
+    #[doc = "Filter by error type value."]
     #[serde(
         rename = "type",
         default,
@@ -777,19 +778,19 @@ impl ErrorFilter {
         Default::default()
     }
 }
-#[doc = "Set the content of the context. ."]
+#[doc = "Export configuration for context variables."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"Export\","]
-#[doc = "  \"description\": \"Set the content of the context. .\","]
+#[doc = "  \"description\": \"Export configuration for context variables.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"properties\": {"]
 #[doc = "    \"as\": {"]
 #[doc = "      \"title\": \"ExportAs\","]
-#[doc = "      \"description\": \"A runtime expression, if any, used to export the output data to the context.\","]
+#[doc = "      \"description\": \"Runtime expression to export data to context.\","]
 #[doc = "      \"oneOf\": ["]
 #[doc = "        {"]
 #[doc = "          \"type\": \"string\""]
@@ -801,7 +802,7 @@ impl ErrorFilter {
 #[doc = "    },"]
 #[doc = "    \"schema\": {"]
 #[doc = "      \"title\": \"ExportSchema\","]
-#[doc = "      \"description\": \"The schema used to describe and validate the workflow context.\","]
+#[doc = "      \"description\": \"Schema for context validation.\","]
 #[doc = "      \"$ref\": \"#/$defs/schema\""]
 #[doc = "    }"]
 #[doc = "  },"]
@@ -811,14 +812,14 @@ impl ErrorFilter {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct Export {
-    #[doc = "A runtime expression, if any, used to export the output data to the context."]
+    #[doc = "Runtime expression to export data to context."]
     #[serde(
         rename = "as",
         default,
         skip_serializing_if = "::std::option::Option::is_none"
     )]
     pub as_: ::std::option::Option<ExportAs>,
-    #[doc = "The schema used to describe and validate the workflow context."]
+    #[doc = "Schema for context validation."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub schema: ::std::option::Option<Schema>,
 }
@@ -840,14 +841,14 @@ impl Export {
         Default::default()
     }
 }
-#[doc = "A runtime expression, if any, used to export the output data to the context."]
+#[doc = "Runtime expression to export data to context."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"ExportAs\","]
-#[doc = "  \"description\": \"A runtime expression, if any, used to export the output data to the context.\","]
+#[doc = "  \"description\": \"Runtime expression to export data to context.\","]
 #[doc = "  \"oneOf\": ["]
 #[doc = "    {"]
 #[doc = "      \"type\": \"string\""]
@@ -877,14 +878,14 @@ impl ::std::convert::From<::serde_json::Map<::std::string::String, ::serde_json:
         Self::Variant1(value)
     }
 }
-#[doc = "Represents an external resource."]
+#[doc = "External resource configuration."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"ExternalResource\","]
-#[doc = "  \"description\": \"Represents an external resource.\","]
+#[doc = "  \"description\": \"External resource configuration.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"endpoint\""]
@@ -892,12 +893,12 @@ impl ::std::convert::From<::serde_json::Map<::std::string::String, ::serde_json:
 #[doc = "  \"properties\": {"]
 #[doc = "    \"endpoint\": {"]
 #[doc = "      \"title\": \"ExternalResourceEndpoint\","]
-#[doc = "      \"description\": \"The endpoint of the external resource.\","]
+#[doc = "      \"description\": \"Resource endpoint.\","]
 #[doc = "      \"$ref\": \"#/$defs/endpoint\""]
 #[doc = "    },"]
 #[doc = "    \"name\": {"]
 #[doc = "      \"title\": \"ExternalResourceName\","]
-#[doc = "      \"description\": \"The name of the external resource, if any.\","]
+#[doc = "      \"description\": \"Resource name.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    }"]
 #[doc = "  },"]
@@ -907,9 +908,9 @@ impl ::std::convert::From<::serde_json::Map<::std::string::String, ::serde_json:
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct ExternalResource {
-    #[doc = "The endpoint of the external resource."]
+    #[doc = "Resource endpoint."]
     pub endpoint: Endpoint,
-    #[doc = "The name of the external resource, if any."]
+    #[doc = "Resource name."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub name: ::std::option::Option<::std::string::String>,
 }
@@ -923,14 +924,14 @@ impl ExternalResource {
         Default::default()
     }
 }
-#[doc = "Represents different transition options that determine the next execution path within a workflow."]
+#[doc = "Control flow directive for workflow execution path."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"FlowDirective\","]
-#[doc = "  \"description\": \"Represents different transition options that determine the next execution path within a workflow.\","]
+#[doc = "  \"description\": \"Control flow directive for workflow execution path.\","]
 #[doc = "  \"oneOf\": ["]
 #[doc = "    {"]
 #[doc = "      \"title\": \"FlowDirectiveEnum\","]
@@ -943,7 +944,7 @@ impl ExternalResource {
 #[doc = "      ]"]
 #[doc = "    },"]
 #[doc = "    {"]
-#[doc = "      \"description\": \"A runtime expression that evaluates to a task name, determining which task to execute next in the workflow.\","]
+#[doc = "      \"description\": \"Runtime expression evaluating to target task name.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    }"]
 #[doc = "  ]"]
@@ -1064,7 +1065,7 @@ impl ::std::convert::TryFrom<::std::string::String> for FlowDirectiveEnum {
 #[doc = "  \"properties\": {"]
 #[doc = "    \"checkpoint\": {"]
 #[doc = "      \"title\": \"Checkpoint\","]
-#[doc = "      \"description\": \"If true, save workflow state after this task. Used for checkpoint/restart.\","]
+#[doc = "      \"description\": \"Save workflow state after this task for checkpoint/restart.\","]
 #[doc = "      \"default\": false,"]
 #[doc = "      \"type\": \"boolean\""]
 #[doc = "    },"]
@@ -1074,12 +1075,12 @@ impl ::std::convert::TryFrom<::std::string::String> for FlowDirectiveEnum {
 #[doc = "    },"]
 #[doc = "    \"export\": {"]
 #[doc = "      \"title\": \"TaskBaseExport\","]
-#[doc = "      \"description\": \"Export task output to context.\","]
+#[doc = "      \"description\": \"Export task output to workflow context.\","]
 #[doc = "      \"$ref\": \"#/$defs/export\""]
 #[doc = "    },"]
 #[doc = "    \"for\": {"]
 #[doc = "      \"title\": \"ForTaskConfiguration\","]
-#[doc = "      \"description\": \"The definition of the loop that iterates over a range of values.\","]
+#[doc = "      \"description\": \"Loop iteration configuration.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"required\": ["]
 #[doc = "        \"in\""]
@@ -1087,19 +1088,19 @@ impl ::std::convert::TryFrom<::std::string::String> for FlowDirectiveEnum {
 #[doc = "      \"properties\": {"]
 #[doc = "        \"at\": {"]
 #[doc = "          \"title\": \"ForAt\","]
-#[doc = "          \"description\": \"The name of the variable used to store the index of the current item being enumerated.\","]
+#[doc = "          \"description\": \"Variable name for current index.\","]
 #[doc = "          \"default\": \"index\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        },"]
 #[doc = "        \"each\": {"]
 #[doc = "          \"title\": \"ForEach\","]
-#[doc = "          \"description\": \"The name of the variable used to store the current item being enumerated.\","]
+#[doc = "          \"description\": \"Variable name for current item.\","]
 #[doc = "          \"default\": \"item\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        },"]
 #[doc = "        \"in\": {"]
 #[doc = "          \"title\": \"ForIn\","]
-#[doc = "          \"description\": \"A runtime expression used to get the collection to enumerate.\","]
+#[doc = "          \"description\": \"Runtime expression returning collection to iterate.\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      },"]
@@ -1107,34 +1108,34 @@ impl ::std::convert::TryFrom<::std::string::String> for FlowDirectiveEnum {
 #[doc = "    },"]
 #[doc = "    \"if\": {"]
 #[doc = "      \"title\": \"TaskBaseIf\","]
-#[doc = "      \"description\": \"A runtime expression, if any, used to determine whether or not the task should be run.\","]
+#[doc = "      \"description\": \"Runtime expression to conditionally execute this task.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"inParallel\": {"]
 #[doc = "      \"title\": \"ForInParallel\","]
-#[doc = "      \"description\": \"Indicates whether or not the subtasks should be executed in parallel.\","]
+#[doc = "      \"description\": \"Execute subtasks in parallel.\","]
 #[doc = "      \"default\": false,"]
 #[doc = "      \"type\": \"boolean\""]
 #[doc = "    },"]
 #[doc = "    \"input\": {"]
 #[doc = "      \"title\": \"TaskBaseInput\","]
-#[doc = "      \"description\": \"Configure the task's input.\","]
+#[doc = "      \"description\": \"Task input configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/input\""]
 #[doc = "    },"]
 #[doc = "    \"metadata\": {"]
 #[doc = "      \"title\": \"TaskMetadata\","]
-#[doc = "      \"description\": \"Holds additional information about the task.\","]
+#[doc = "      \"description\": \"Additional task metadata.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"additionalProperties\": true"]
 #[doc = "    },"]
 #[doc = "    \"output\": {"]
 #[doc = "      \"title\": \"TaskBaseOutput\","]
-#[doc = "      \"description\": \"Configure the task's output.\","]
+#[doc = "      \"description\": \"Task output configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/output\""]
 #[doc = "    },"]
 #[doc = "    \"then\": {"]
 #[doc = "      \"title\": \"TaskBaseThen\","]
-#[doc = "      \"description\": \"The flow directive to be performed upon completion of the task.\","]
+#[doc = "      \"description\": \"Flow control directive executed after task completion.\","]
 #[doc = "      \"$ref\": \"#/$defs/flowDirective\""]
 #[doc = "    },"]
 #[doc = "    \"timeout\": {"]
@@ -1142,19 +1143,19 @@ impl ::std::convert::TryFrom<::std::string::String> for FlowDirectiveEnum {
 #[doc = "      \"oneOf\": ["]
 #[doc = "        {"]
 #[doc = "          \"title\": \"TaskTimeoutDefinition\","]
-#[doc = "          \"description\": \"The task's timeout configuration, if any.\","]
+#[doc = "          \"description\": \"Task timeout configuration.\","]
 #[doc = "          \"$ref\": \"#/$defs/timeout\""]
 #[doc = "        },"]
 #[doc = "        {"]
 #[doc = "          \"title\": \"TaskTimeoutReference\","]
-#[doc = "          \"description\": \"The name of the task's timeout, if any.\","]
+#[doc = "          \"description\": \"Reference to named timeout configuration.\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      ]"]
 #[doc = "    },"]
 #[doc = "    \"while\": {"]
 #[doc = "      \"title\": \"While\","]
-#[doc = "      \"description\": \"A runtime expression that represents the condition, if any, that must be met for the iteration to continue.\","]
+#[doc = "      \"description\": \"Runtime expression for loop continuation condition.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    }"]
 #[doc = "  }"]
@@ -1163,41 +1164,41 @@ impl ::std::convert::TryFrom<::std::string::String> for FlowDirectiveEnum {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct ForTask {
-    #[doc = "If true, save workflow state after this task. Used for checkpoint/restart."]
+    #[doc = "Save workflow state after this task for checkpoint/restart."]
     #[serde(default)]
     pub checkpoint: bool,
     #[serde(rename = "do")]
     pub do_: TaskList,
-    #[doc = "Export task output to context."]
+    #[doc = "Export task output to workflow context."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub export: ::std::option::Option<Export>,
     #[serde(rename = "for")]
     pub for_: ForTaskConfiguration,
-    #[doc = "A runtime expression, if any, used to determine whether or not the task should be run."]
+    #[doc = "Runtime expression to conditionally execute this task."]
     #[serde(
         rename = "if",
         default,
         skip_serializing_if = "::std::option::Option::is_none"
     )]
     pub if_: ::std::option::Option<::std::string::String>,
-    #[doc = "Indicates whether or not the subtasks should be executed in parallel."]
+    #[doc = "Execute subtasks in parallel."]
     #[serde(rename = "inParallel", default)]
     pub in_parallel: bool,
-    #[doc = "Configure the task's input."]
+    #[doc = "Task input configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub input: ::std::option::Option<Input>,
-    #[doc = "Holds additional information about the task."]
+    #[doc = "Additional task metadata."]
     #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
     pub metadata: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-    #[doc = "Configure the task's output."]
+    #[doc = "Task output configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub output: ::std::option::Option<Output>,
-    #[doc = "The flow directive to be performed upon completion of the task."]
+    #[doc = "Flow control directive executed after task completion."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub then: ::std::option::Option<FlowDirective>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub timeout: ::std::option::Option<TaskTimeout>,
-    #[doc = "A runtime expression that represents the condition, if any, that must be met for the iteration to continue."]
+    #[doc = "Runtime expression for loop continuation condition."]
     #[serde(
         rename = "while",
         default,
@@ -1215,14 +1216,14 @@ impl ForTask {
         Default::default()
     }
 }
-#[doc = "The definition of the loop that iterates over a range of values."]
+#[doc = "Loop iteration configuration."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"ForTaskConfiguration\","]
-#[doc = "  \"description\": \"The definition of the loop that iterates over a range of values.\","]
+#[doc = "  \"description\": \"Loop iteration configuration.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"in\""]
@@ -1230,19 +1231,19 @@ impl ForTask {
 #[doc = "  \"properties\": {"]
 #[doc = "    \"at\": {"]
 #[doc = "      \"title\": \"ForAt\","]
-#[doc = "      \"description\": \"The name of the variable used to store the index of the current item being enumerated.\","]
+#[doc = "      \"description\": \"Variable name for current index.\","]
 #[doc = "      \"default\": \"index\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"each\": {"]
 #[doc = "      \"title\": \"ForEach\","]
-#[doc = "      \"description\": \"The name of the variable used to store the current item being enumerated.\","]
+#[doc = "      \"description\": \"Variable name for current item.\","]
 #[doc = "      \"default\": \"item\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"in\": {"]
 #[doc = "      \"title\": \"ForIn\","]
-#[doc = "      \"description\": \"A runtime expression used to get the collection to enumerate.\","]
+#[doc = "      \"description\": \"Runtime expression returning collection to iterate.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    }"]
 #[doc = "  },"]
@@ -1252,13 +1253,13 @@ impl ForTask {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct ForTaskConfiguration {
-    #[doc = "The name of the variable used to store the index of the current item being enumerated."]
+    #[doc = "Variable name for current index."]
     #[serde(default = "defaults::for_task_configuration_at")]
     pub at: ::std::string::String,
-    #[doc = "The name of the variable used to store the current item being enumerated."]
+    #[doc = "Variable name for current item."]
     #[serde(default = "defaults::for_task_configuration_each")]
     pub each: ::std::string::String,
-    #[doc = "A runtime expression used to get the collection to enumerate."]
+    #[doc = "Runtime expression returning collection to iterate."]
     #[serde(rename = "in")]
     pub in_: ::std::string::String,
 }
@@ -1285,18 +1286,18 @@ impl ForTaskConfiguration {
 #[doc = "  \"properties\": {"]
 #[doc = "    \"checkpoint\": {"]
 #[doc = "      \"title\": \"Checkpoint\","]
-#[doc = "      \"description\": \"If true, save workflow state after this task. Used for checkpoint/restart.\","]
+#[doc = "      \"description\": \"Save workflow state after this task for checkpoint/restart.\","]
 #[doc = "      \"default\": false,"]
 #[doc = "      \"type\": \"boolean\""]
 #[doc = "    },"]
 #[doc = "    \"export\": {"]
 #[doc = "      \"title\": \"TaskBaseExport\","]
-#[doc = "      \"description\": \"Export task output to context.\","]
+#[doc = "      \"description\": \"Export task output to workflow context.\","]
 #[doc = "      \"$ref\": \"#/$defs/export\""]
 #[doc = "    },"]
 #[doc = "    \"fork\": {"]
 #[doc = "      \"title\": \"ForkTaskConfiguration\","]
-#[doc = "      \"description\": \"The configuration of the branches to perform concurrently.\","]
+#[doc = "      \"description\": \"Concurrent branch configuration.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"required\": ["]
 #[doc = "        \"branches\""]
@@ -1308,7 +1309,7 @@ impl ForTaskConfiguration {
 #[doc = "        },"]
 #[doc = "        \"compete\": {"]
 #[doc = "          \"title\": \"ForkCompete\","]
-#[doc = "          \"description\": \"Indicates whether or not the concurrent tasks are racing against each other, with a single possible winner, which sets the composite task's output.\","]
+#[doc = "          \"description\": \"Enable competition mode where first completed task wins.\","]
 #[doc = "          \"default\": false,"]
 #[doc = "          \"type\": \"boolean\""]
 #[doc = "        }"]
@@ -1317,28 +1318,28 @@ impl ForTaskConfiguration {
 #[doc = "    },"]
 #[doc = "    \"if\": {"]
 #[doc = "      \"title\": \"TaskBaseIf\","]
-#[doc = "      \"description\": \"A runtime expression, if any, used to determine whether or not the task should be run.\","]
+#[doc = "      \"description\": \"Runtime expression to conditionally execute this task.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"input\": {"]
 #[doc = "      \"title\": \"TaskBaseInput\","]
-#[doc = "      \"description\": \"Configure the task's input.\","]
+#[doc = "      \"description\": \"Task input configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/input\""]
 #[doc = "    },"]
 #[doc = "    \"metadata\": {"]
 #[doc = "      \"title\": \"TaskMetadata\","]
-#[doc = "      \"description\": \"Holds additional information about the task.\","]
+#[doc = "      \"description\": \"Additional task metadata.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"additionalProperties\": true"]
 #[doc = "    },"]
 #[doc = "    \"output\": {"]
 #[doc = "      \"title\": \"TaskBaseOutput\","]
-#[doc = "      \"description\": \"Configure the task's output.\","]
+#[doc = "      \"description\": \"Task output configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/output\""]
 #[doc = "    },"]
 #[doc = "    \"then\": {"]
 #[doc = "      \"title\": \"TaskBaseThen\","]
-#[doc = "      \"description\": \"The flow directive to be performed upon completion of the task.\","]
+#[doc = "      \"description\": \"Flow control directive executed after task completion.\","]
 #[doc = "      \"$ref\": \"#/$defs/flowDirective\""]
 #[doc = "    },"]
 #[doc = "    \"timeout\": {"]
@@ -1346,12 +1347,12 @@ impl ForTaskConfiguration {
 #[doc = "      \"oneOf\": ["]
 #[doc = "        {"]
 #[doc = "          \"title\": \"TaskTimeoutDefinition\","]
-#[doc = "          \"description\": \"The task's timeout configuration, if any.\","]
+#[doc = "          \"description\": \"Task timeout configuration.\","]
 #[doc = "          \"$ref\": \"#/$defs/timeout\""]
 #[doc = "        },"]
 #[doc = "        {"]
 #[doc = "          \"title\": \"TaskTimeoutReference\","]
-#[doc = "          \"description\": \"The name of the task's timeout, if any.\","]
+#[doc = "          \"description\": \"Reference to named timeout configuration.\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      ]"]
@@ -1362,30 +1363,30 @@ impl ForTaskConfiguration {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct ForkTask {
-    #[doc = "If true, save workflow state after this task. Used for checkpoint/restart."]
+    #[doc = "Save workflow state after this task for checkpoint/restart."]
     #[serde(default)]
     pub checkpoint: bool,
-    #[doc = "Export task output to context."]
+    #[doc = "Export task output to workflow context."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub export: ::std::option::Option<Export>,
     pub fork: ForkTaskConfiguration,
-    #[doc = "A runtime expression, if any, used to determine whether or not the task should be run."]
+    #[doc = "Runtime expression to conditionally execute this task."]
     #[serde(
         rename = "if",
         default,
         skip_serializing_if = "::std::option::Option::is_none"
     )]
     pub if_: ::std::option::Option<::std::string::String>,
-    #[doc = "Configure the task's input."]
+    #[doc = "Task input configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub input: ::std::option::Option<Input>,
-    #[doc = "Holds additional information about the task."]
+    #[doc = "Additional task metadata."]
     #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
     pub metadata: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-    #[doc = "Configure the task's output."]
+    #[doc = "Task output configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub output: ::std::option::Option<Output>,
-    #[doc = "The flow directive to be performed upon completion of the task."]
+    #[doc = "Flow control directive executed after task completion."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub then: ::std::option::Option<FlowDirective>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -1401,14 +1402,14 @@ impl ForkTask {
         Default::default()
     }
 }
-#[doc = "The configuration of the branches to perform concurrently."]
+#[doc = "Concurrent branch configuration."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"ForkTaskConfiguration\","]
-#[doc = "  \"description\": \"The configuration of the branches to perform concurrently.\","]
+#[doc = "  \"description\": \"Concurrent branch configuration.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"branches\""]
@@ -1420,7 +1421,7 @@ impl ForkTask {
 #[doc = "    },"]
 #[doc = "    \"compete\": {"]
 #[doc = "      \"title\": \"ForkCompete\","]
-#[doc = "      \"description\": \"Indicates whether or not the concurrent tasks are racing against each other, with a single possible winner, which sets the composite task's output.\","]
+#[doc = "      \"description\": \"Enable competition mode where first completed task wins.\","]
 #[doc = "      \"default\": false,"]
 #[doc = "      \"type\": \"boolean\""]
 #[doc = "    }"]
@@ -1432,7 +1433,7 @@ impl ForkTask {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct ForkTaskConfiguration {
     pub branches: TaskList,
-    #[doc = "Indicates whether or not the concurrent tasks are racing against each other, with a single possible winner, which sets the composite task's output."]
+    #[doc = "Enable competition mode where first completed task wins."]
     #[serde(default)]
     pub compete: bool,
 }
@@ -1446,135 +1447,19 @@ impl ForkTaskConfiguration {
         Default::default()
     }
 }
-#[doc = "The options to use when running the configured function."]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"title\": \"FunctionOptions\","]
-#[doc = "  \"description\": \"The options to use when running the configured function.\","]
-#[doc = "  \"type\": \"object\","]
-#[doc = "  \"properties\": {"]
-#[doc = "    \"broadcastResults\": {"]
-#[doc = "      \"title\": \"BroadcastResultsToListener\","]
-#[doc = "      \"description\": \"Whether to broadcast results to listeners.\","]
-#[doc = "      \"type\": \"boolean\""]
-#[doc = "    },"]
-#[doc = "    \"channel\": {"]
-#[doc = "      \"title\": \"FunctionChannel\","]
-#[doc = "      \"description\": \"The channel to use when running the function. (Channel controls execution concurrency)\","]
-#[doc = "      \"type\": \"string\""]
-#[doc = "    },"]
-#[doc = "    \"retry\": {"]
-#[doc = "      \"title\": \"RetryPolicyDefinition\","]
-#[doc = "      \"description\": \"The retry policy to use, if any, when catching errors.\","]
-#[doc = "      \"$ref\": \"#/$defs/retryPolicy\""]
-#[doc = "    },"]
-#[doc = "    \"storeFailure\": {"]
-#[doc = "      \"title\": \"StoreFailureResult\","]
-#[doc = "      \"description\": \"Whether to store failure results to database.\","]
-#[doc = "      \"type\": \"boolean\""]
-#[doc = "    },"]
-#[doc = "    \"storeSuccess\": {"]
-#[doc = "      \"title\": \"StoreSuccessResult\","]
-#[doc = "      \"description\": \"Whether to store successful results to database.\","]
-#[doc = "      \"type\": \"boolean\""]
-#[doc = "    },"]
-#[doc = "    \"useStatic\": {"]
-#[doc = "      \"title\": \"UseStaticFunction\","]
-#[doc = "      \"description\": \"Whether to use a static function (persist in database, pool initialized function).\","]
-#[doc = "      \"type\": \"boolean\""]
-#[doc = "    },"]
-#[doc = "    \"withBackup\": {"]
-#[doc = "      \"title\": \"FunctionWithBackup\","]
-#[doc = "      \"description\": \"Whether to backup the function call (queue) to database when queueing and running the function.\","]
-#[doc = "      \"type\": \"boolean\""]
-#[doc = "    }"]
-#[doc = "  }"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
-pub struct FunctionOptions {
-    #[doc = "Whether to broadcast results to listeners."]
-    #[serde(
-        rename = "broadcastResults",
-        default,
-        skip_serializing_if = "::std::option::Option::is_none"
-    )]
-    pub broadcast_results: ::std::option::Option<bool>,
-    #[doc = "The channel to use when running the function. (Channel controls execution concurrency)"]
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub channel: ::std::option::Option<::std::string::String>,
-    #[doc = "The retry policy to use, if any, when catching errors."]
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub retry: ::std::option::Option<RetryPolicy>,
-    #[doc = "Whether to store failure results to database."]
-    #[serde(
-        rename = "storeFailure",
-        default,
-        skip_serializing_if = "::std::option::Option::is_none"
-    )]
-    pub store_failure: ::std::option::Option<bool>,
-    #[doc = "Whether to store successful results to database."]
-    #[serde(
-        rename = "storeSuccess",
-        default,
-        skip_serializing_if = "::std::option::Option::is_none"
-    )]
-    pub store_success: ::std::option::Option<bool>,
-    #[doc = "Whether to use a static function (persist in database, pool initialized function)."]
-    #[serde(
-        rename = "useStatic",
-        default,
-        skip_serializing_if = "::std::option::Option::is_none"
-    )]
-    pub use_static: ::std::option::Option<bool>,
-    #[doc = "Whether to backup the function call (queue) to database when queueing and running the function."]
-    #[serde(
-        rename = "withBackup",
-        default,
-        skip_serializing_if = "::std::option::Option::is_none"
-    )]
-    pub with_backup: ::std::option::Option<bool>,
-}
-impl ::std::convert::From<&FunctionOptions> for FunctionOptions {
-    fn from(value: &FunctionOptions) -> Self {
-        value.clone()
-    }
-}
-impl ::std::default::Default for FunctionOptions {
-    fn default() -> Self {
-        Self {
-            broadcast_results: Default::default(),
-            channel: Default::default(),
-            retry: Default::default(),
-            store_failure: Default::default(),
-            store_success: Default::default(),
-            use_static: Default::default(),
-            with_backup: Default::default(),
-        }
-    }
-}
-impl FunctionOptions {
-    pub fn builder() -> builder::FunctionOptions {
-        Default::default()
-    }
-}
-#[doc = "Configures the input of a workflow or task."]
+#[doc = "Input configuration for workflow or task."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"Input\","]
-#[doc = "  \"description\": \"Configures the input of a workflow or task.\","]
+#[doc = "  \"description\": \"Input configuration for workflow or task.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"properties\": {"]
 #[doc = "    \"from\": {"]
 #[doc = "      \"title\": \"InputFrom\","]
-#[doc = "      \"description\": \"A runtime expression, if any, used to mutate and/or filter the input of the workflow or task.\","]
+#[doc = "      \"description\": \"Runtime expression to transform input data.\","]
 #[doc = "      \"oneOf\": ["]
 #[doc = "        {"]
 #[doc = "          \"type\": \"string\""]
@@ -1586,7 +1471,7 @@ impl FunctionOptions {
 #[doc = "    },"]
 #[doc = "    \"schema\": {"]
 #[doc = "      \"title\": \"InputSchema\","]
-#[doc = "      \"description\": \"The schema used to describe and validate the input of the workflow or task.\","]
+#[doc = "      \"description\": \"Schema for input validation.\","]
 #[doc = "      \"$ref\": \"#/$defs/schema\""]
 #[doc = "    }"]
 #[doc = "  },"]
@@ -1596,10 +1481,10 @@ impl FunctionOptions {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct Input {
-    #[doc = "A runtime expression, if any, used to mutate and/or filter the input of the workflow or task."]
+    #[doc = "Runtime expression to transform input data."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub from: ::std::option::Option<InputFrom>,
-    #[doc = "The schema used to describe and validate the input of the workflow or task."]
+    #[doc = "Schema for input validation."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub schema: ::std::option::Option<Schema>,
 }
@@ -1621,14 +1506,14 @@ impl Input {
         Default::default()
     }
 }
-#[doc = "A runtime expression, if any, used to mutate and/or filter the input of the workflow or task."]
+#[doc = "Runtime expression to transform input data."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"InputFrom\","]
-#[doc = "  \"description\": \"A runtime expression, if any, used to mutate and/or filter the input of the workflow or task.\","]
+#[doc = "  \"description\": \"Runtime expression to transform input data.\","]
 #[doc = "  \"oneOf\": ["]
 #[doc = "    {"]
 #[doc = "      \"type\": \"string\""]
@@ -1658,19 +1543,19 @@ impl ::std::convert::From<::serde_json::Map<::std::string::String, ::serde_json:
         Self::Variant1(value)
     }
 }
-#[doc = "Configures the output of a workflow or task."]
+#[doc = "Output configuration for workflow or task."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"Output\","]
-#[doc = "  \"description\": \"Configures the output of a workflow or task.\","]
+#[doc = "  \"description\": \"Output configuration for workflow or task.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"properties\": {"]
 #[doc = "    \"as\": {"]
 #[doc = "      \"title\": \"OutputAs\","]
-#[doc = "      \"description\": \"A runtime expression, if any, used to mutate and/or filter the output of the workflow or task.\","]
+#[doc = "      \"description\": \"Runtime expression to transform output data.\","]
 #[doc = "      \"oneOf\": ["]
 #[doc = "        {"]
 #[doc = "          \"type\": \"string\""]
@@ -1682,7 +1567,7 @@ impl ::std::convert::From<::serde_json::Map<::std::string::String, ::serde_json:
 #[doc = "    },"]
 #[doc = "    \"schema\": {"]
 #[doc = "      \"title\": \"OutputSchema\","]
-#[doc = "      \"description\": \"The schema used to describe and validate the output of the workflow or task.\","]
+#[doc = "      \"description\": \"Schema for output validation.\","]
 #[doc = "      \"$ref\": \"#/$defs/schema\""]
 #[doc = "    }"]
 #[doc = "  },"]
@@ -1692,14 +1577,14 @@ impl ::std::convert::From<::serde_json::Map<::std::string::String, ::serde_json:
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct Output {
-    #[doc = "A runtime expression, if any, used to mutate and/or filter the output of the workflow or task."]
+    #[doc = "Runtime expression to transform output data."]
     #[serde(
         rename = "as",
         default,
         skip_serializing_if = "::std::option::Option::is_none"
     )]
     pub as_: ::std::option::Option<OutputAs>,
-    #[doc = "The schema used to describe and validate the output of the workflow or task."]
+    #[doc = "Schema for output validation."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub schema: ::std::option::Option<Schema>,
 }
@@ -1721,14 +1606,14 @@ impl Output {
         Default::default()
     }
 }
-#[doc = "A runtime expression, if any, used to mutate and/or filter the output of the workflow or task."]
+#[doc = "Runtime expression to transform output data."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"OutputAs\","]
-#[doc = "  \"description\": \"A runtime expression, if any, used to mutate and/or filter the output of the workflow or task.\","]
+#[doc = "  \"description\": \"Runtime expression to transform output data.\","]
 #[doc = "  \"oneOf\": ["]
 #[doc = "    {"]
 #[doc = "      \"type\": \"string\""]
@@ -1758,14 +1643,14 @@ impl ::std::convert::From<::serde_json::Map<::std::string::String, ::serde_json:
         Self::Variant1(value)
     }
 }
-#[doc = "A plain string."]
+#[doc = "Plain string without runtime expressions."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"PlainString\","]
-#[doc = "  \"description\": \"A plain string.\","]
+#[doc = "  \"description\": \"Plain string without runtime expressions.\","]
 #[doc = "  \"type\": \"string\","]
 #[doc = "  \"pattern\": \"^\\\\s*[^\\\\$\\\\{].*[^\\\\$\\\\{]\\\\s*$\""]
 #[doc = "}"]
@@ -1837,14 +1722,14 @@ impl<'de> ::serde::Deserialize<'de> for PlainString {
             })
     }
 }
-#[doc = "The object returned by a run task when its return type has been set 'all'."]
+#[doc = "Process execution result when return type is 'all'."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"ProcessResult\","]
-#[doc = "  \"description\": \"The object returned by a run task when its return type has been set 'all'.\","]
+#[doc = "  \"description\": \"Process execution result when return type is 'all'.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"code\","]
@@ -1854,17 +1739,17 @@ impl<'de> ::serde::Deserialize<'de> for PlainString {
 #[doc = "  \"properties\": {"]
 #[doc = "    \"code\": {"]
 #[doc = "      \"title\": \"ProcessExitCode\","]
-#[doc = "      \"description\": \"The process's exit code.\","]
+#[doc = "      \"description\": \"Process exit code.\","]
 #[doc = "      \"type\": \"integer\""]
 #[doc = "    },"]
 #[doc = "    \"stderr\": {"]
 #[doc = "      \"title\": \"ProcessStandardError\","]
-#[doc = "      \"description\": \"The content of the process's STDERR.\","]
+#[doc = "      \"description\": \"Process STDERR content.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"stdout\": {"]
 #[doc = "      \"title\": \"ProcessStandardOutput\","]
-#[doc = "      \"description\": \"The content of the process's STDOUT.\","]
+#[doc = "      \"description\": \"Process STDOUT content.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    }"]
 #[doc = "  },"]
@@ -1874,11 +1759,11 @@ impl<'de> ::serde::Deserialize<'de> for PlainString {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct ProcessResult {
-    #[doc = "The process's exit code."]
+    #[doc = "Process exit code."]
     pub code: i64,
-    #[doc = "The content of the process's STDERR."]
+    #[doc = "Process STDERR content."]
     pub stderr: ::std::string::String,
-    #[doc = "The content of the process's STDOUT."]
+    #[doc = "Process STDOUT content."]
     pub stdout: ::std::string::String,
 }
 impl ::std::convert::From<&ProcessResult> for ProcessResult {
@@ -1891,14 +1776,14 @@ impl ProcessResult {
         Default::default()
     }
 }
-#[doc = "Configures the output of the process."]
+#[doc = "Process output type to return."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"ProcessReturnType\","]
-#[doc = "  \"description\": \"Configures the output of the process.\","]
+#[doc = "  \"description\": \"Process output type to return.\","]
 #[doc = "  \"default\": \"stdout\","]
 #[doc = "  \"type\": \"string\","]
 #[doc = "  \"enum\": ["]
@@ -2004,39 +1889,39 @@ impl ::std::default::Default for ProcessReturnType {
 #[doc = "  \"properties\": {"]
 #[doc = "    \"checkpoint\": {"]
 #[doc = "      \"title\": \"Checkpoint\","]
-#[doc = "      \"description\": \"If true, save workflow state after this task. Used for checkpoint/restart.\","]
+#[doc = "      \"description\": \"Save workflow state after this task for checkpoint/restart.\","]
 #[doc = "      \"default\": false,"]
 #[doc = "      \"type\": \"boolean\""]
 #[doc = "    },"]
 #[doc = "    \"export\": {"]
 #[doc = "      \"title\": \"TaskBaseExport\","]
-#[doc = "      \"description\": \"Export task output to context.\","]
+#[doc = "      \"description\": \"Export task output to workflow context.\","]
 #[doc = "      \"$ref\": \"#/$defs/export\""]
 #[doc = "    },"]
 #[doc = "    \"if\": {"]
 #[doc = "      \"title\": \"TaskBaseIf\","]
-#[doc = "      \"description\": \"A runtime expression, if any, used to determine whether or not the task should be run.\","]
+#[doc = "      \"description\": \"Runtime expression to conditionally execute this task.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"input\": {"]
 #[doc = "      \"title\": \"TaskBaseInput\","]
-#[doc = "      \"description\": \"Configure the task's input.\","]
+#[doc = "      \"description\": \"Task input configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/input\""]
 #[doc = "    },"]
 #[doc = "    \"metadata\": {"]
 #[doc = "      \"title\": \"TaskMetadata\","]
-#[doc = "      \"description\": \"Holds additional information about the task.\","]
+#[doc = "      \"description\": \"Additional task metadata.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"additionalProperties\": true"]
 #[doc = "    },"]
 #[doc = "    \"output\": {"]
 #[doc = "      \"title\": \"TaskBaseOutput\","]
-#[doc = "      \"description\": \"Configure the task's output.\","]
+#[doc = "      \"description\": \"Task output configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/output\""]
 #[doc = "    },"]
 #[doc = "    \"raise\": {"]
 #[doc = "      \"title\": \"RaiseTaskConfiguration\","]
-#[doc = "      \"description\": \"The definition of the error to raise.\","]
+#[doc = "      \"description\": \"Error to raise.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"required\": ["]
 #[doc = "        \"error\""]
@@ -2047,12 +1932,12 @@ impl ::std::default::Default for ProcessReturnType {
 #[doc = "          \"oneOf\": ["]
 #[doc = "            {"]
 #[doc = "              \"title\": \"RaiseErrorDefinition\","]
-#[doc = "              \"description\": \"Defines the error to raise.\","]
+#[doc = "              \"description\": \"Inline error definition.\","]
 #[doc = "              \"$ref\": \"#/$defs/error\""]
 #[doc = "            },"]
 #[doc = "            {"]
 #[doc = "              \"title\": \"RaiseErrorReference\","]
-#[doc = "              \"description\": \"The name of the error to raise\","]
+#[doc = "              \"description\": \"Reference to named error definition.\","]
 #[doc = "              \"type\": \"string\""]
 #[doc = "            }"]
 #[doc = "          ]"]
@@ -2062,7 +1947,7 @@ impl ::std::default::Default for ProcessReturnType {
 #[doc = "    },"]
 #[doc = "    \"then\": {"]
 #[doc = "      \"title\": \"TaskBaseThen\","]
-#[doc = "      \"description\": \"The flow directive to be performed upon completion of the task.\","]
+#[doc = "      \"description\": \"Flow control directive executed after task completion.\","]
 #[doc = "      \"$ref\": \"#/$defs/flowDirective\""]
 #[doc = "    },"]
 #[doc = "    \"timeout\": {"]
@@ -2070,12 +1955,12 @@ impl ::std::default::Default for ProcessReturnType {
 #[doc = "      \"oneOf\": ["]
 #[doc = "        {"]
 #[doc = "          \"title\": \"TaskTimeoutDefinition\","]
-#[doc = "          \"description\": \"The task's timeout configuration, if any.\","]
+#[doc = "          \"description\": \"Task timeout configuration.\","]
 #[doc = "          \"$ref\": \"#/$defs/timeout\""]
 #[doc = "        },"]
 #[doc = "        {"]
 #[doc = "          \"title\": \"TaskTimeoutReference\","]
-#[doc = "          \"description\": \"The name of the task's timeout, if any.\","]
+#[doc = "          \"description\": \"Reference to named timeout configuration.\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      ]"]
@@ -2086,30 +1971,30 @@ impl ::std::default::Default for ProcessReturnType {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct RaiseTask {
-    #[doc = "If true, save workflow state after this task. Used for checkpoint/restart."]
+    #[doc = "Save workflow state after this task for checkpoint/restart."]
     #[serde(default)]
     pub checkpoint: bool,
-    #[doc = "Export task output to context."]
+    #[doc = "Export task output to workflow context."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub export: ::std::option::Option<Export>,
-    #[doc = "A runtime expression, if any, used to determine whether or not the task should be run."]
+    #[doc = "Runtime expression to conditionally execute this task."]
     #[serde(
         rename = "if",
         default,
         skip_serializing_if = "::std::option::Option::is_none"
     )]
     pub if_: ::std::option::Option<::std::string::String>,
-    #[doc = "Configure the task's input."]
+    #[doc = "Task input configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub input: ::std::option::Option<Input>,
-    #[doc = "Holds additional information about the task."]
+    #[doc = "Additional task metadata."]
     #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
     pub metadata: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-    #[doc = "Configure the task's output."]
+    #[doc = "Task output configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub output: ::std::option::Option<Output>,
     pub raise: RaiseTaskConfiguration,
-    #[doc = "The flow directive to be performed upon completion of the task."]
+    #[doc = "Flow control directive executed after task completion."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub then: ::std::option::Option<FlowDirective>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -2125,14 +2010,14 @@ impl RaiseTask {
         Default::default()
     }
 }
-#[doc = "The definition of the error to raise."]
+#[doc = "Error to raise."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"RaiseTaskConfiguration\","]
-#[doc = "  \"description\": \"The definition of the error to raise.\","]
+#[doc = "  \"description\": \"Error to raise.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"error\""]
@@ -2143,12 +2028,12 @@ impl RaiseTask {
 #[doc = "      \"oneOf\": ["]
 #[doc = "        {"]
 #[doc = "          \"title\": \"RaiseErrorDefinition\","]
-#[doc = "          \"description\": \"Defines the error to raise.\","]
+#[doc = "          \"description\": \"Inline error definition.\","]
 #[doc = "          \"$ref\": \"#/$defs/error\""]
 #[doc = "        },"]
 #[doc = "        {"]
 #[doc = "          \"title\": \"RaiseErrorReference\","]
-#[doc = "          \"description\": \"The name of the error to raise\","]
+#[doc = "          \"description\": \"Reference to named error definition.\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      ]"]
@@ -2182,12 +2067,12 @@ impl RaiseTaskConfiguration {
 #[doc = "  \"oneOf\": ["]
 #[doc = "    {"]
 #[doc = "      \"title\": \"RaiseErrorDefinition\","]
-#[doc = "      \"description\": \"Defines the error to raise.\","]
+#[doc = "      \"description\": \"Inline error definition.\","]
 #[doc = "      \"$ref\": \"#/$defs/error\""]
 #[doc = "    },"]
 #[doc = "    {"]
 #[doc = "      \"title\": \"RaiseErrorReference\","]
-#[doc = "      \"description\": \"The name of the error to raise\","]
+#[doc = "      \"description\": \"Reference to named error definition.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    }"]
 #[doc = "  ]"]
@@ -2210,14 +2095,14 @@ impl ::std::convert::From<Error> for RaiseTaskError {
         Self::Error(value)
     }
 }
-#[doc = "The retry duration backoff."]
+#[doc = "Backoff strategy for retry durations."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"RetryBackoff\","]
-#[doc = "  \"description\": \"The retry duration backoff.\","]
+#[doc = "  \"description\": \"Backoff strategy for retry durations.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"oneOf\": ["]
 #[doc = "    {"]
@@ -2227,7 +2112,7 @@ impl ::std::convert::From<Error> for RaiseTaskError {
 #[doc = "      ],"]
 #[doc = "      \"properties\": {"]
 #[doc = "        \"constant\": {"]
-#[doc = "          \"description\": \"The definition of the constant backoff to use, if any. value is empty object.\","]
+#[doc = "          \"description\": \"Constant backoff configuration (empty object).\","]
 #[doc = "          \"type\": \"object\""]
 #[doc = "        }"]
 #[doc = "      }"]
@@ -2239,7 +2124,7 @@ impl ::std::convert::From<Error> for RaiseTaskError {
 #[doc = "      ],"]
 #[doc = "      \"properties\": {"]
 #[doc = "        \"exponential\": {"]
-#[doc = "          \"description\": \"The definition of the exponential backoff to use, if any. value is empty object.\","]
+#[doc = "          \"description\": \"Exponential backoff configuration (empty object).\","]
 #[doc = "          \"type\": \"object\""]
 #[doc = "        }"]
 #[doc = "      }"]
@@ -2251,7 +2136,7 @@ impl ::std::convert::From<Error> for RaiseTaskError {
 #[doc = "      ],"]
 #[doc = "      \"properties\": {"]
 #[doc = "        \"linear\": {"]
-#[doc = "          \"description\": \"The definition of the linear backoff to use, if any. value is empty object.\","]
+#[doc = "          \"description\": \"Linear backoff configuration (empty object).\","]
 #[doc = "          \"type\": \"object\""]
 #[doc = "        }"]
 #[doc = "      }"]
@@ -2275,14 +2160,14 @@ impl ::std::convert::From<&Self> for RetryBackoff {
         value.clone()
     }
 }
-#[doc = "The retry limit, if any."]
+#[doc = "Retry limits configuration."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"RetryLimit\","]
-#[doc = "  \"description\": \"The retry limit, if any.\","]
+#[doc = "  \"description\": \"Retry limits configuration.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"properties\": {"]
 #[doc = "    \"attempt\": {"]
@@ -2291,12 +2176,12 @@ impl ::std::convert::From<&Self> for RetryBackoff {
 #[doc = "      \"properties\": {"]
 #[doc = "        \"count\": {"]
 #[doc = "          \"title\": \"RetryLimitAttemptCount\","]
-#[doc = "          \"description\": \"The maximum amount of retry attempts, if any.\","]
+#[doc = "          \"description\": \"Maximum retry attempts.\","]
 #[doc = "          \"type\": \"integer\""]
 #[doc = "        },"]
 #[doc = "        \"duration\": {"]
 #[doc = "          \"title\": \"RetryLimitAttemptDuration\","]
-#[doc = "          \"description\": \"The maximum duration for each retry attempt.\","]
+#[doc = "          \"description\": \"Maximum duration per retry attempt.\","]
 #[doc = "          \"$ref\": \"#/$defs/duration\""]
 #[doc = "        }"]
 #[doc = "      },"]
@@ -2340,12 +2225,12 @@ impl RetryLimit {
 #[doc = "  \"properties\": {"]
 #[doc = "    \"count\": {"]
 #[doc = "      \"title\": \"RetryLimitAttemptCount\","]
-#[doc = "      \"description\": \"The maximum amount of retry attempts, if any.\","]
+#[doc = "      \"description\": \"Maximum retry attempts.\","]
 #[doc = "      \"type\": \"integer\""]
 #[doc = "    },"]
 #[doc = "    \"duration\": {"]
 #[doc = "      \"title\": \"RetryLimitAttemptDuration\","]
-#[doc = "      \"description\": \"The maximum duration for each retry attempt.\","]
+#[doc = "      \"description\": \"Maximum duration per retry attempt.\","]
 #[doc = "      \"$ref\": \"#/$defs/duration\""]
 #[doc = "    }"]
 #[doc = "  },"]
@@ -2355,10 +2240,10 @@ impl RetryLimit {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct RetryLimitAttempt {
-    #[doc = "The maximum amount of retry attempts, if any."]
+    #[doc = "Maximum retry attempts."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub count: ::std::option::Option<i64>,
-    #[doc = "The maximum duration for each retry attempt."]
+    #[doc = "Maximum duration per retry attempt."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub duration: ::std::option::Option<Duration>,
 }
@@ -2380,19 +2265,19 @@ impl RetryLimitAttempt {
         Default::default()
     }
 }
-#[doc = "Defines a retry policy."]
+#[doc = "Retry policy configuration."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"RetryPolicy\","]
-#[doc = "  \"description\": \"Defines a retry policy.\","]
+#[doc = "  \"description\": \"Retry policy configuration.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"properties\": {"]
 #[doc = "    \"backoff\": {"]
 #[doc = "      \"title\": \"RetryBackoff\","]
-#[doc = "      \"description\": \"The retry duration backoff.\","]
+#[doc = "      \"description\": \"Backoff strategy for retry durations.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"oneOf\": ["]
 #[doc = "        {"]
@@ -2402,7 +2287,7 @@ impl RetryLimitAttempt {
 #[doc = "          ],"]
 #[doc = "          \"properties\": {"]
 #[doc = "            \"constant\": {"]
-#[doc = "              \"description\": \"The definition of the constant backoff to use, if any. value is empty object.\","]
+#[doc = "              \"description\": \"Constant backoff configuration (empty object).\","]
 #[doc = "              \"type\": \"object\""]
 #[doc = "            }"]
 #[doc = "          }"]
@@ -2414,7 +2299,7 @@ impl RetryLimitAttempt {
 #[doc = "          ],"]
 #[doc = "          \"properties\": {"]
 #[doc = "            \"exponential\": {"]
-#[doc = "              \"description\": \"The definition of the exponential backoff to use, if any. value is empty object.\","]
+#[doc = "              \"description\": \"Exponential backoff configuration (empty object).\","]
 #[doc = "              \"type\": \"object\""]
 #[doc = "            }"]
 #[doc = "          }"]
@@ -2426,7 +2311,7 @@ impl RetryLimitAttempt {
 #[doc = "          ],"]
 #[doc = "          \"properties\": {"]
 #[doc = "            \"linear\": {"]
-#[doc = "              \"description\": \"The definition of the linear backoff to use, if any. value is empty object.\","]
+#[doc = "              \"description\": \"Linear backoff configuration (empty object).\","]
 #[doc = "              \"type\": \"object\""]
 #[doc = "            }"]
 #[doc = "          }"]
@@ -2436,12 +2321,12 @@ impl RetryLimitAttempt {
 #[doc = "    },"]
 #[doc = "    \"delay\": {"]
 #[doc = "      \"title\": \"RetryDelay\","]
-#[doc = "      \"description\": \"The duration to wait between retry attempts.\","]
+#[doc = "      \"description\": \"Delay between retry attempts.\","]
 #[doc = "      \"$ref\": \"#/$defs/duration\""]
 #[doc = "    },"]
 #[doc = "    \"limit\": {"]
 #[doc = "      \"title\": \"RetryLimit\","]
-#[doc = "      \"description\": \"The retry limit, if any.\","]
+#[doc = "      \"description\": \"Retry limits configuration.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"properties\": {"]
 #[doc = "        \"attempt\": {"]
@@ -2450,12 +2335,12 @@ impl RetryLimitAttempt {
 #[doc = "          \"properties\": {"]
 #[doc = "            \"count\": {"]
 #[doc = "              \"title\": \"RetryLimitAttemptCount\","]
-#[doc = "              \"description\": \"The maximum amount of retry attempts, if any.\","]
+#[doc = "              \"description\": \"Maximum retry attempts.\","]
 #[doc = "              \"type\": \"integer\""]
 #[doc = "            },"]
 #[doc = "            \"duration\": {"]
 #[doc = "              \"title\": \"RetryLimitAttemptDuration\","]
-#[doc = "              \"description\": \"The maximum duration for each retry attempt.\","]
+#[doc = "              \"description\": \"Maximum duration per retry attempt.\","]
 #[doc = "              \"$ref\": \"#/$defs/duration\""]
 #[doc = "            }"]
 #[doc = "          },"]
@@ -2471,10 +2356,10 @@ impl RetryLimitAttempt {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct RetryPolicy {
-    #[doc = "The retry duration backoff."]
+    #[doc = "Backoff strategy for retry durations."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub backoff: ::std::option::Option<RetryBackoff>,
-    #[doc = "The duration to wait between retry attempts."]
+    #[doc = "Delay between retry attempts."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub delay: ::std::option::Option<Duration>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -2499,6 +2384,184 @@ impl RetryPolicy {
         Default::default()
     }
 }
+#[doc = "RunFunction"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"required\": ["]
+#[doc = "    \"function\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"function\": {"]
+#[doc = "      \"title\": \"RunJobFunction\","]
+#[doc = "      \"description\": \"Executes a job using a specified function(runner or worker).\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"oneOf\": ["]
+#[doc = "        {"]
+#[doc = "          \"title\": \"RunnerFunction\","]
+#[doc = "          \"description\": \"Execute using a runner with optional settings\","]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"arguments\","]
+#[doc = "            \"runnerName\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"arguments\": {"]
+#[doc = "              \"description\": \"A key/value mapping of arguments JSON (ref. jobworkerp.data.RunnerData.job_args_proto schema) to use when running the function. Runtime expressions are supported for value transformation.\","]
+#[doc = "              \"type\": \"object\","]
+#[doc = "              \"additionalProperties\": true"]
+#[doc = "            },"]
+#[doc = "            \"options\": {"]
+#[doc = "              \"$ref\": \"#/$defs/workerOptions\""]
+#[doc = "            },"]
+#[doc = "            \"runnerName\": {"]
+#[doc = "              \"description\": \"The name of the runner that executes job\","]
+#[doc = "              \"type\": \"string\""]
+#[doc = "            },"]
+#[doc = "            \"settings\": {"]
+#[doc = "              \"description\": \"The initialization settings JSON, if any. (ref. jobworkerp.data.RunnerData.runner_settings_proto schema) Runtime expression can be used to transform each value (not keys, no mixed plain text).\","]
+#[doc = "              \"type\": \"object\""]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"title\": \"WorkerFunction\","]
+#[doc = "          \"description\": \"Execute using a pre-configured worker\","]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"required\": ["]
+#[doc = "            \"arguments\","]
+#[doc = "            \"workerName\""]
+#[doc = "          ],"]
+#[doc = "          \"properties\": {"]
+#[doc = "            \"arguments\": {"]
+#[doc = "              \"description\": \"A key/value mapping of arguments JSON to use when running the function. Runtime expressions are supported for value transformation.\","]
+#[doc = "              \"type\": \"object\","]
+#[doc = "              \"additionalProperties\": true"]
+#[doc = "            },"]
+#[doc = "            \"workerName\": {"]
+#[doc = "              \"description\": \"The name of the worker that executes job\","]
+#[doc = "              \"type\": \"string\""]
+#[doc = "            }"]
+#[doc = "          },"]
+#[doc = "          \"additionalProperties\": false"]
+#[doc = "        }"]
+#[doc = "      ],"]
+#[doc = "      \"unevaluatedProperties\": false"]
+#[doc = "    }"]
+#[doc = "  }"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+pub struct RunFunction {
+    #[doc = "Executes a job using a specified function(runner or worker)."]
+    pub function: RunJobFunction,
+}
+impl ::std::convert::From<&RunFunction> for RunFunction {
+    fn from(value: &RunFunction) -> Self {
+        value.clone()
+    }
+}
+impl RunFunction {
+    pub fn builder() -> builder::RunFunction {
+        Default::default()
+    }
+}
+#[doc = "Executes a job using a specified function(runner or worker)."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"RunJobFunction\","]
+#[doc = "  \"description\": \"Executes a job using a specified function(runner or worker).\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"oneOf\": ["]
+#[doc = "    {"]
+#[doc = "      \"title\": \"RunnerFunction\","]
+#[doc = "      \"description\": \"Execute using a runner with optional settings\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"arguments\","]
+#[doc = "        \"runnerName\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"arguments\": {"]
+#[doc = "          \"description\": \"A key/value mapping of arguments JSON (ref. jobworkerp.data.RunnerData.job_args_proto schema) to use when running the function. Runtime expressions are supported for value transformation.\","]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"additionalProperties\": true"]
+#[doc = "        },"]
+#[doc = "        \"options\": {"]
+#[doc = "          \"$ref\": \"#/$defs/workerOptions\""]
+#[doc = "        },"]
+#[doc = "        \"runnerName\": {"]
+#[doc = "          \"description\": \"The name of the runner that executes job\","]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        },"]
+#[doc = "        \"settings\": {"]
+#[doc = "          \"description\": \"The initialization settings JSON, if any. (ref. jobworkerp.data.RunnerData.runner_settings_proto schema) Runtime expression can be used to transform each value (not keys, no mixed plain text).\","]
+#[doc = "          \"type\": \"object\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"title\": \"WorkerFunction\","]
+#[doc = "      \"description\": \"Execute using a pre-configured worker\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"arguments\","]
+#[doc = "        \"workerName\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"arguments\": {"]
+#[doc = "          \"description\": \"A key/value mapping of arguments JSON to use when running the function. Runtime expressions are supported for value transformation.\","]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"additionalProperties\": true"]
+#[doc = "        },"]
+#[doc = "        \"workerName\": {"]
+#[doc = "          \"description\": \"The name of the worker that executes job\","]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    }"]
+#[doc = "  ],"]
+#[doc = "  \"unevaluatedProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum RunJobFunction {
+    RunnerFunction {
+        #[doc = "A key/value mapping of arguments JSON (ref. jobworkerp.data.RunnerData.job_args_proto schema) to use when running the function. Runtime expressions are supported for value transformation."]
+        arguments: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        options: ::std::option::Option<WorkerOptions>,
+        #[doc = "The name of the runner that executes job"]
+        #[serde(rename = "runnerName")]
+        runner_name: ::std::string::String,
+        #[doc = "The initialization settings JSON, if any. (ref. jobworkerp.data.RunnerData.runner_settings_proto schema) Runtime expression can be used to transform each value (not keys, no mixed plain text)."]
+        #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
+        settings: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+    },
+    WorkerFunction {
+        #[doc = "A key/value mapping of arguments JSON to use when running the function. Runtime expressions are supported for value transformation."]
+        arguments: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+        #[doc = "The name of the worker that executes job"]
+        #[serde(rename = "workerName")]
+        worker_name: ::std::string::String,
+    },
+}
+impl ::std::convert::From<&Self> for RunJobFunction {
+    fn from(value: &RunJobFunction) -> Self {
+        value.clone()
+    }
+}
 #[doc = "Executes a job using a specified runner."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -2514,61 +2577,22 @@ impl RetryPolicy {
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
 #[doc = "    \"arguments\": {"]
-#[doc = "      \"title\": \"FunctionArguments\","]
-#[doc = "      \"description\": \"A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation.\","]
+#[doc = "      \"title\": \"JobArguments\","]
+#[doc = "      \"description\": \"A key/value mapping of arguments to use when running the runner as job. Runtime expressions are supported for value transformation.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"additionalProperties\": true"]
 #[doc = "    },"]
 #[doc = "    \"name\": {"]
 #[doc = "      \"title\": \"RunnerName\","]
-#[doc = "      \"description\": \"The name of the runner(runtime environment) that executes job (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND, PLUGIN, MCP_SERVER, LLM_CHAT etc.)\","]
+#[doc = "      \"description\": \"The name of the runner (runtime environment) that executes the job (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND, LLM_CHAT, MCP server names, plugin names, etc.)\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"options\": {"]
-#[doc = "      \"title\": \"FunctionOptions\","]
-#[doc = "      \"description\": \"The options to use when running the configured function.\","]
-#[doc = "      \"type\": \"object\","]
-#[doc = "      \"properties\": {"]
-#[doc = "        \"broadcastResults\": {"]
-#[doc = "          \"title\": \"BroadcastResultsToListener\","]
-#[doc = "          \"description\": \"Whether to broadcast results to listeners.\","]
-#[doc = "          \"type\": \"boolean\""]
-#[doc = "        },"]
-#[doc = "        \"channel\": {"]
-#[doc = "          \"title\": \"FunctionChannel\","]
-#[doc = "          \"description\": \"The channel to use when running the function. (Channel controls execution concurrency)\","]
-#[doc = "          \"type\": \"string\""]
-#[doc = "        },"]
-#[doc = "        \"retry\": {"]
-#[doc = "          \"title\": \"RetryPolicyDefinition\","]
-#[doc = "          \"description\": \"The retry policy to use, if any, when catching errors.\","]
-#[doc = "          \"$ref\": \"#/$defs/retryPolicy\""]
-#[doc = "        },"]
-#[doc = "        \"storeFailure\": {"]
-#[doc = "          \"title\": \"StoreFailureResult\","]
-#[doc = "          \"description\": \"Whether to store failure results to database.\","]
-#[doc = "          \"type\": \"boolean\""]
-#[doc = "        },"]
-#[doc = "        \"storeSuccess\": {"]
-#[doc = "          \"title\": \"StoreSuccessResult\","]
-#[doc = "          \"description\": \"Whether to store successful results to database.\","]
-#[doc = "          \"type\": \"boolean\""]
-#[doc = "        },"]
-#[doc = "        \"useStatic\": {"]
-#[doc = "          \"title\": \"UseStaticFunction\","]
-#[doc = "          \"description\": \"Whether to use a static function (persist in database, pool initialized function).\","]
-#[doc = "          \"type\": \"boolean\""]
-#[doc = "        },"]
-#[doc = "        \"withBackup\": {"]
-#[doc = "          \"title\": \"FunctionWithBackup\","]
-#[doc = "          \"description\": \"Whether to backup the function call (queue) to database when queueing and running the function.\","]
-#[doc = "          \"type\": \"boolean\""]
-#[doc = "        }"]
-#[doc = "      }"]
+#[doc = "      \"$ref\": \"#/$defs/workerOptions\""]
 #[doc = "    },"]
 #[doc = "    \"settings\": {"]
 #[doc = "      \"title\": \"InitializeSettings\","]
-#[doc = "      \"description\": \"The initialization settings, if any. Runtime expression can be used to transform each value (not keys, no mixed plain text).\","]
+#[doc = "      \"description\": \"The initialization settings, if any. Runtime expressions can be used to transform each value (not keys, no mixed plain text).\","]
 #[doc = "      \"type\": \"object\""]
 #[doc = "    }"]
 #[doc = "  },"]
@@ -2578,13 +2602,13 @@ impl RetryPolicy {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct RunJobRunner {
-    #[doc = "A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation."]
+    #[doc = "A key/value mapping of arguments to use when running the runner as job. Runtime expressions are supported for value transformation."]
     pub arguments: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-    #[doc = "The name of the runner(runtime environment) that executes job (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND, PLUGIN, MCP_SERVER, LLM_CHAT etc.)"]
+    #[doc = "The name of the runner (runtime environment) that executes the job (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND, LLM_CHAT, MCP server names, plugin names, etc.)"]
     pub name: ::std::string::String,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub options: ::std::option::Option<FunctionOptions>,
-    #[doc = "The initialization settings, if any. Runtime expression can be used to transform each value (not keys, no mixed plain text)."]
+    pub options: ::std::option::Option<WorkerOptions>,
+    #[doc = "The initialization settings, if any. Runtime expressions can be used to transform each value (not keys, no mixed plain text)."]
     #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
     pub settings: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
 }
@@ -2598,14 +2622,14 @@ impl RunJobRunner {
         Default::default()
     }
 }
-#[doc = "Executes a job using a specified worker (runner with settings)."]
+#[doc = "Executes a job using a specified worker (configured runner with settings and options)."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"RunJobWorker\","]
-#[doc = "  \"description\": \"Executes a job using a specified worker (runner with settings).\","]
+#[doc = "  \"description\": \"Executes a job using a specified worker (configured runner with settings and options).\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"arguments\","]
@@ -2620,7 +2644,7 @@ impl RunJobRunner {
 #[doc = "    },"]
 #[doc = "    \"name\": {"]
 #[doc = "      \"title\": \"WorkerName\","]
-#[doc = "      \"description\": \"The name of the worker that executes this function (defined by user)\","]
+#[doc = "      \"description\": \"The name of the worker that executes this job (user-defined).\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    }"]
 #[doc = "  },"]
@@ -2632,7 +2656,7 @@ impl RunJobRunner {
 pub struct RunJobWorker {
     #[doc = "A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation."]
     pub arguments: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-    #[doc = "The name of the worker that executes this function (defined by user)"]
+    #[doc = "The name of the worker that executes this job (user-defined)."]
     pub name: ::std::string::String,
 }
 impl ::std::convert::From<&RunJobWorker> for RunJobWorker {
@@ -2665,61 +2689,22 @@ impl RunJobWorker {
 #[doc = "      ],"]
 #[doc = "      \"properties\": {"]
 #[doc = "        \"arguments\": {"]
-#[doc = "          \"title\": \"FunctionArguments\","]
-#[doc = "          \"description\": \"A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation.\","]
+#[doc = "          \"title\": \"JobArguments\","]
+#[doc = "          \"description\": \"A key/value mapping of arguments to use when running the runner as job. Runtime expressions are supported for value transformation.\","]
 #[doc = "          \"type\": \"object\","]
 #[doc = "          \"additionalProperties\": true"]
 #[doc = "        },"]
 #[doc = "        \"name\": {"]
 #[doc = "          \"title\": \"RunnerName\","]
-#[doc = "          \"description\": \"The name of the runner(runtime environment) that executes job (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND, PLUGIN, MCP_SERVER, LLM_CHAT etc.)\","]
+#[doc = "          \"description\": \"The name of the runner (runtime environment) that executes the job (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND, LLM_CHAT, MCP server names, plugin names, etc.)\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        },"]
 #[doc = "        \"options\": {"]
-#[doc = "          \"title\": \"FunctionOptions\","]
-#[doc = "          \"description\": \"The options to use when running the configured function.\","]
-#[doc = "          \"type\": \"object\","]
-#[doc = "          \"properties\": {"]
-#[doc = "            \"broadcastResults\": {"]
-#[doc = "              \"title\": \"BroadcastResultsToListener\","]
-#[doc = "              \"description\": \"Whether to broadcast results to listeners.\","]
-#[doc = "              \"type\": \"boolean\""]
-#[doc = "            },"]
-#[doc = "            \"channel\": {"]
-#[doc = "              \"title\": \"FunctionChannel\","]
-#[doc = "              \"description\": \"The channel to use when running the function. (Channel controls execution concurrency)\","]
-#[doc = "              \"type\": \"string\""]
-#[doc = "            },"]
-#[doc = "            \"retry\": {"]
-#[doc = "              \"title\": \"RetryPolicyDefinition\","]
-#[doc = "              \"description\": \"The retry policy to use, if any, when catching errors.\","]
-#[doc = "              \"$ref\": \"#/$defs/retryPolicy\""]
-#[doc = "            },"]
-#[doc = "            \"storeFailure\": {"]
-#[doc = "              \"title\": \"StoreFailureResult\","]
-#[doc = "              \"description\": \"Whether to store failure results to database.\","]
-#[doc = "              \"type\": \"boolean\""]
-#[doc = "            },"]
-#[doc = "            \"storeSuccess\": {"]
-#[doc = "              \"title\": \"StoreSuccessResult\","]
-#[doc = "              \"description\": \"Whether to store successful results to database.\","]
-#[doc = "              \"type\": \"boolean\""]
-#[doc = "            },"]
-#[doc = "            \"useStatic\": {"]
-#[doc = "              \"title\": \"UseStaticFunction\","]
-#[doc = "              \"description\": \"Whether to use a static function (persist in database, pool initialized function).\","]
-#[doc = "              \"type\": \"boolean\""]
-#[doc = "            },"]
-#[doc = "            \"withBackup\": {"]
-#[doc = "              \"title\": \"FunctionWithBackup\","]
-#[doc = "              \"description\": \"Whether to backup the function call (queue) to database when queueing and running the function.\","]
-#[doc = "              \"type\": \"boolean\""]
-#[doc = "            }"]
-#[doc = "          }"]
+#[doc = "          \"$ref\": \"#/$defs/workerOptions\""]
 #[doc = "        },"]
 #[doc = "        \"settings\": {"]
 #[doc = "          \"title\": \"InitializeSettings\","]
-#[doc = "          \"description\": \"The initialization settings, if any. Runtime expression can be used to transform each value (not keys, no mixed plain text).\","]
+#[doc = "          \"description\": \"The initialization settings, if any. Runtime expressions can be used to transform each value (not keys, no mixed plain text).\","]
 #[doc = "          \"type\": \"object\""]
 #[doc = "        }"]
 #[doc = "      },"]
@@ -2756,39 +2741,39 @@ impl RunRunner {
 #[doc = "  \"properties\": {"]
 #[doc = "    \"checkpoint\": {"]
 #[doc = "      \"title\": \"Checkpoint\","]
-#[doc = "      \"description\": \"If true, save workflow state after this task. Used for checkpoint/restart.\","]
+#[doc = "      \"description\": \"Save workflow state after this task for checkpoint/restart.\","]
 #[doc = "      \"default\": false,"]
 #[doc = "      \"type\": \"boolean\""]
 #[doc = "    },"]
 #[doc = "    \"export\": {"]
 #[doc = "      \"title\": \"TaskBaseExport\","]
-#[doc = "      \"description\": \"Export task output to context.\","]
+#[doc = "      \"description\": \"Export task output to workflow context.\","]
 #[doc = "      \"$ref\": \"#/$defs/export\""]
 #[doc = "    },"]
 #[doc = "    \"if\": {"]
 #[doc = "      \"title\": \"TaskBaseIf\","]
-#[doc = "      \"description\": \"A runtime expression, if any, used to determine whether or not the task should be run.\","]
+#[doc = "      \"description\": \"Runtime expression to conditionally execute this task.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"input\": {"]
 #[doc = "      \"title\": \"TaskBaseInput\","]
-#[doc = "      \"description\": \"Configure the task's input.\","]
+#[doc = "      \"description\": \"Task input configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/input\""]
 #[doc = "    },"]
 #[doc = "    \"metadata\": {"]
 #[doc = "      \"title\": \"TaskMetadata\","]
-#[doc = "      \"description\": \"Holds additional information about the task.\","]
+#[doc = "      \"description\": \"Additional task metadata.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"additionalProperties\": true"]
 #[doc = "    },"]
 #[doc = "    \"output\": {"]
 #[doc = "      \"title\": \"TaskBaseOutput\","]
-#[doc = "      \"description\": \"Configure the task's output.\","]
+#[doc = "      \"description\": \"Task output configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/output\""]
 #[doc = "    },"]
 #[doc = "    \"run\": {"]
 #[doc = "      \"title\": \"RunTaskConfiguration\","]
-#[doc = "      \"description\": \"The configuration of the process to execute.\","]
+#[doc = "      \"description\": \"Process execution configuration.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"oneOf\": ["]
 #[doc = "        {"]
@@ -2796,18 +2781,21 @@ impl RunRunner {
 #[doc = "        },"]
 #[doc = "        {"]
 #[doc = "          \"$ref\": \"#/$defs/runRunner\""]
+#[doc = "        },"]
+#[doc = "        {"]
+#[doc = "          \"$ref\": \"#/$defs/runFunction\""]
 #[doc = "        }"]
 #[doc = "      ],"]
 #[doc = "      \"properties\": {"]
 #[doc = "        \"await\": {"]
 #[doc = "          \"title\": \"AwaitProcessCompletion\","]
-#[doc = "          \"description\": \"Whether to await the process completion before continuing.\","]
+#[doc = "          \"description\": \"Wait for process completion before continuing.\","]
 #[doc = "          \"default\": true,"]
 #[doc = "          \"type\": \"boolean\""]
 #[doc = "        },"]
 #[doc = "        \"return\": {"]
 #[doc = "          \"title\": \"ProcessReturnType\","]
-#[doc = "          \"description\": \"Configures the output of the process.\","]
+#[doc = "          \"description\": \"Process output type to return.\","]
 #[doc = "          \"default\": \"stdout\","]
 #[doc = "          \"type\": \"string\","]
 #[doc = "          \"enum\": ["]
@@ -2823,7 +2811,7 @@ impl RunRunner {
 #[doc = "    },"]
 #[doc = "    \"then\": {"]
 #[doc = "      \"title\": \"TaskBaseThen\","]
-#[doc = "      \"description\": \"The flow directive to be performed upon completion of the task.\","]
+#[doc = "      \"description\": \"Flow control directive executed after task completion.\","]
 #[doc = "      \"$ref\": \"#/$defs/flowDirective\""]
 #[doc = "    },"]
 #[doc = "    \"timeout\": {"]
@@ -2831,12 +2819,12 @@ impl RunRunner {
 #[doc = "      \"oneOf\": ["]
 #[doc = "        {"]
 #[doc = "          \"title\": \"TaskTimeoutDefinition\","]
-#[doc = "          \"description\": \"The task's timeout configuration, if any.\","]
+#[doc = "          \"description\": \"Task timeout configuration.\","]
 #[doc = "          \"$ref\": \"#/$defs/timeout\""]
 #[doc = "        },"]
 #[doc = "        {"]
 #[doc = "          \"title\": \"TaskTimeoutReference\","]
-#[doc = "          \"description\": \"The name of the task's timeout, if any.\","]
+#[doc = "          \"description\": \"Reference to named timeout configuration.\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      ]"]
@@ -2847,30 +2835,30 @@ impl RunRunner {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct RunTask {
-    #[doc = "If true, save workflow state after this task. Used for checkpoint/restart."]
+    #[doc = "Save workflow state after this task for checkpoint/restart."]
     #[serde(default)]
     pub checkpoint: bool,
-    #[doc = "Export task output to context."]
+    #[doc = "Export task output to workflow context."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub export: ::std::option::Option<Export>,
-    #[doc = "A runtime expression, if any, used to determine whether or not the task should be run."]
+    #[doc = "Runtime expression to conditionally execute this task."]
     #[serde(
         rename = "if",
         default,
         skip_serializing_if = "::std::option::Option::is_none"
     )]
     pub if_: ::std::option::Option<::std::string::String>,
-    #[doc = "Configure the task's input."]
+    #[doc = "Task input configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub input: ::std::option::Option<Input>,
-    #[doc = "Holds additional information about the task."]
+    #[doc = "Additional task metadata."]
     #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
     pub metadata: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-    #[doc = "Configure the task's output."]
+    #[doc = "Task output configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub output: ::std::option::Option<Output>,
     pub run: RunTaskConfiguration,
-    #[doc = "The flow directive to be performed upon completion of the task."]
+    #[doc = "Flow control directive executed after task completion."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub then: ::std::option::Option<FlowDirective>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -2886,14 +2874,14 @@ impl RunTask {
         Default::default()
     }
 }
-#[doc = "The configuration of the process to execute."]
+#[doc = "Process execution configuration."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"RunTaskConfiguration\","]
-#[doc = "  \"description\": \"The configuration of the process to execute.\","]
+#[doc = "  \"description\": \"Process execution configuration.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"oneOf\": ["]
 #[doc = "    {"]
@@ -2901,18 +2889,21 @@ impl RunTask {
 #[doc = "    },"]
 #[doc = "    {"]
 #[doc = "      \"$ref\": \"#/$defs/runRunner\""]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"$ref\": \"#/$defs/runFunction\""]
 #[doc = "    }"]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
 #[doc = "    \"await\": {"]
 #[doc = "      \"title\": \"AwaitProcessCompletion\","]
-#[doc = "      \"description\": \"Whether to await the process completion before continuing.\","]
+#[doc = "      \"description\": \"Wait for process completion before continuing.\","]
 #[doc = "      \"default\": true,"]
 #[doc = "      \"type\": \"boolean\""]
 #[doc = "    },"]
 #[doc = "    \"return\": {"]
 #[doc = "      \"title\": \"ProcessReturnType\","]
-#[doc = "      \"description\": \"Configures the output of the process.\","]
+#[doc = "      \"description\": \"Process output type to return.\","]
 #[doc = "      \"default\": \"stdout\","]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"enum\": ["]
@@ -2932,10 +2923,10 @@ impl RunTask {
 #[serde(untagged)]
 pub enum RunTaskConfiguration {
     Variant0 {
-        #[doc = "Whether to await the process completion before continuing."]
+        #[doc = "Wait for process completion before continuing."]
         #[serde(rename = "await", default = "defaults::default_bool::<true>")]
         await_: bool,
-        #[doc = "Configures the output of the process."]
+        #[doc = "Process output type to return."]
         #[serde(
             rename = "return",
             default = "defaults::run_task_configuration_variant0_return"
@@ -2944,16 +2935,29 @@ pub enum RunTaskConfiguration {
         worker: RunJobWorker,
     },
     Variant1 {
-        #[doc = "Whether to await the process completion before continuing."]
+        #[doc = "Wait for process completion before continuing."]
         #[serde(rename = "await", default = "defaults::default_bool::<true>")]
         await_: bool,
-        #[doc = "Configures the output of the process."]
+        #[doc = "Process output type to return."]
         #[serde(
             rename = "return",
             default = "defaults::run_task_configuration_variant1_return"
         )]
         return_: ProcessReturnType,
         runner: RunJobRunner,
+    },
+    Variant2 {
+        #[doc = "Wait for process completion before continuing."]
+        #[serde(rename = "await", default = "defaults::default_bool::<true>")]
+        await_: bool,
+        #[doc = "Executes a job using a specified function(runner or worker)."]
+        function: RunJobFunction,
+        #[doc = "Process output type to return."]
+        #[serde(
+            rename = "return",
+            default = "defaults::run_task_configuration_variant2_return"
+        )]
+        return_: ProcessReturnType,
     },
 }
 impl ::std::convert::From<&Self> for RunTaskConfiguration {
@@ -2973,7 +2977,7 @@ impl ::std::convert::From<&Self> for RunTaskConfiguration {
 #[doc = "  \"properties\": {"]
 #[doc = "    \"worker\": {"]
 #[doc = "      \"title\": \"RunJobWorker\","]
-#[doc = "      \"description\": \"Executes a job using a specified worker (runner with settings).\","]
+#[doc = "      \"description\": \"Executes a job using a specified worker (configured runner with settings and options).\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"required\": ["]
 #[doc = "        \"arguments\","]
@@ -2988,7 +2992,7 @@ impl ::std::convert::From<&Self> for RunTaskConfiguration {
 #[doc = "        },"]
 #[doc = "        \"name\": {"]
 #[doc = "          \"title\": \"WorkerName\","]
-#[doc = "          \"description\": \"The name of the worker that executes this function (defined by user)\","]
+#[doc = "          \"description\": \"The name of the worker that executes this job (user-defined).\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      },"]
@@ -3012,14 +3016,14 @@ impl RunWorker {
         Default::default()
     }
 }
-#[doc = "Represents the definition of a schema."]
+#[doc = "Schema definition configuration."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"Schema\","]
-#[doc = "  \"description\": \"Represents the definition of a schema.\","]
+#[doc = "  \"description\": \"Schema definition configuration.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"oneOf\": ["]
 #[doc = "    {"]
@@ -3029,7 +3033,7 @@ impl RunWorker {
 #[doc = "      ],"]
 #[doc = "      \"properties\": {"]
 #[doc = "        \"document\": {"]
-#[doc = "          \"description\": \"The schema's inline definition.\""]
+#[doc = "          \"description\": \"Inline schema definition.\""]
 #[doc = "        }"]
 #[doc = "      }"]
 #[doc = "    },"]
@@ -3041,7 +3045,7 @@ impl RunWorker {
 #[doc = "      \"properties\": {"]
 #[doc = "        \"resource\": {"]
 #[doc = "          \"title\": \"SchemaExternalResource\","]
-#[doc = "          \"description\": \"The schema's external resource.\","]
+#[doc = "          \"description\": \"External schema resource.\","]
 #[doc = "          \"$ref\": \"#/$defs/externalResource\""]
 #[doc = "        }"]
 #[doc = "      }"]
@@ -3050,7 +3054,7 @@ impl RunWorker {
 #[doc = "  \"properties\": {"]
 #[doc = "    \"format\": {"]
 #[doc = "      \"title\": \"SchemaFormat\","]
-#[doc = "      \"description\": \"The schema's format. Defaults to 'json'. The (optional) version of the format can be set using `{format}:{version}`.\","]
+#[doc = "      \"description\": \"Schema format (defaults to 'json'). Use `{format}:{version}` for versioning.\","]
 #[doc = "      \"default\": \"json\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    }"]
@@ -3063,17 +3067,17 @@ impl RunWorker {
 #[serde(untagged)]
 pub enum Schema {
     Variant0 {
-        #[doc = "The schema's inline definition."]
+        #[doc = "Inline schema definition."]
         document: ::serde_json::Value,
-        #[doc = "The schema's format. Defaults to 'json'. The (optional) version of the format can be set using `{format}:{version}`."]
+        #[doc = "Schema format (defaults to 'json'). Use `{format}:{version}` for versioning."]
         #[serde(default = "defaults::schema_variant0_format")]
         format: ::std::string::String,
     },
     Variant1 {
-        #[doc = "The schema's format. Defaults to 'json'. The (optional) version of the format can be set using `{format}:{version}`."]
+        #[doc = "Schema format (defaults to 'json'). Use `{format}:{version}` for versioning."]
         #[serde(default = "defaults::schema_variant1_format")]
         format: ::std::string::String,
-        #[doc = "The schema's external resource."]
+        #[doc = "External schema resource."]
         resource: ExternalResource,
     },
 }
@@ -3095,46 +3099,46 @@ impl ::std::convert::From<&Self> for Schema {
 #[doc = "  \"properties\": {"]
 #[doc = "    \"checkpoint\": {"]
 #[doc = "      \"title\": \"Checkpoint\","]
-#[doc = "      \"description\": \"If true, save workflow state after this task. Used for checkpoint/restart.\","]
+#[doc = "      \"description\": \"Save workflow state after this task for checkpoint/restart.\","]
 #[doc = "      \"default\": false,"]
 #[doc = "      \"type\": \"boolean\""]
 #[doc = "    },"]
 #[doc = "    \"export\": {"]
 #[doc = "      \"title\": \"TaskBaseExport\","]
-#[doc = "      \"description\": \"Export task output to context.\","]
+#[doc = "      \"description\": \"Export task output to workflow context.\","]
 #[doc = "      \"$ref\": \"#/$defs/export\""]
 #[doc = "    },"]
 #[doc = "    \"if\": {"]
 #[doc = "      \"title\": \"TaskBaseIf\","]
-#[doc = "      \"description\": \"A runtime expression, if any, used to determine whether or not the task should be run.\","]
+#[doc = "      \"description\": \"Runtime expression to conditionally execute this task.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"input\": {"]
 #[doc = "      \"title\": \"TaskBaseInput\","]
-#[doc = "      \"description\": \"Configure the task's input.\","]
+#[doc = "      \"description\": \"Task input configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/input\""]
 #[doc = "    },"]
 #[doc = "    \"metadata\": {"]
 #[doc = "      \"title\": \"TaskMetadata\","]
-#[doc = "      \"description\": \"Holds additional information about the task.\","]
+#[doc = "      \"description\": \"Additional task metadata.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"additionalProperties\": true"]
 #[doc = "    },"]
 #[doc = "    \"output\": {"]
 #[doc = "      \"title\": \"TaskBaseOutput\","]
-#[doc = "      \"description\": \"Configure the task's output.\","]
+#[doc = "      \"description\": \"Task output configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/output\""]
 #[doc = "    },"]
 #[doc = "    \"set\": {"]
 #[doc = "      \"title\": \"SetTaskConfiguration\","]
-#[doc = "      \"description\": \"The data to set.\","]
+#[doc = "      \"description\": \"Data to set as context variables.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"minProperties\": 1,"]
 #[doc = "      \"additionalProperties\": true"]
 #[doc = "    },"]
 #[doc = "    \"then\": {"]
 #[doc = "      \"title\": \"TaskBaseThen\","]
-#[doc = "      \"description\": \"The flow directive to be performed upon completion of the task.\","]
+#[doc = "      \"description\": \"Flow control directive executed after task completion.\","]
 #[doc = "      \"$ref\": \"#/$defs/flowDirective\""]
 #[doc = "    },"]
 #[doc = "    \"timeout\": {"]
@@ -3142,12 +3146,12 @@ impl ::std::convert::From<&Self> for Schema {
 #[doc = "      \"oneOf\": ["]
 #[doc = "        {"]
 #[doc = "          \"title\": \"TaskTimeoutDefinition\","]
-#[doc = "          \"description\": \"The task's timeout configuration, if any.\","]
+#[doc = "          \"description\": \"Task timeout configuration.\","]
 #[doc = "          \"$ref\": \"#/$defs/timeout\""]
 #[doc = "        },"]
 #[doc = "        {"]
 #[doc = "          \"title\": \"TaskTimeoutReference\","]
-#[doc = "          \"description\": \"The name of the task's timeout, if any.\","]
+#[doc = "          \"description\": \"Reference to named timeout configuration.\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      ]"]
@@ -3158,31 +3162,31 @@ impl ::std::convert::From<&Self> for Schema {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct SetTask {
-    #[doc = "If true, save workflow state after this task. Used for checkpoint/restart."]
+    #[doc = "Save workflow state after this task for checkpoint/restart."]
     #[serde(default)]
     pub checkpoint: bool,
-    #[doc = "Export task output to context."]
+    #[doc = "Export task output to workflow context."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub export: ::std::option::Option<Export>,
-    #[doc = "A runtime expression, if any, used to determine whether or not the task should be run."]
+    #[doc = "Runtime expression to conditionally execute this task."]
     #[serde(
         rename = "if",
         default,
         skip_serializing_if = "::std::option::Option::is_none"
     )]
     pub if_: ::std::option::Option<::std::string::String>,
-    #[doc = "Configure the task's input."]
+    #[doc = "Task input configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub input: ::std::option::Option<Input>,
-    #[doc = "Holds additional information about the task."]
+    #[doc = "Additional task metadata."]
     #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
     pub metadata: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-    #[doc = "Configure the task's output."]
+    #[doc = "Task output configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub output: ::std::option::Option<Output>,
-    #[doc = "The data to set."]
+    #[doc = "Data to set as context variables."]
     pub set: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-    #[doc = "The flow directive to be performed upon completion of the task."]
+    #[doc = "Flow control directive executed after task completion."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub then: ::std::option::Option<FlowDirective>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -3198,14 +3202,14 @@ impl SetTask {
         Default::default()
     }
 }
-#[doc = "The definition of a case within a switch task, defining a condition and corresponding tasks to execute if the condition is met."]
+#[doc = "Case condition and action definition."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"SwitchCase\","]
-#[doc = "  \"description\": \"The definition of a case within a switch task, defining a condition and corresponding tasks to execute if the condition is met.\","]
+#[doc = "  \"description\": \"Case condition and action definition.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"then\""]
@@ -3213,12 +3217,12 @@ impl SetTask {
 #[doc = "  \"properties\": {"]
 #[doc = "    \"then\": {"]
 #[doc = "      \"title\": \"SwitchCaseOutcome\","]
-#[doc = "      \"description\": \"The flow directive to execute when the case matches.\","]
+#[doc = "      \"description\": \"Flow directive for matching case.\","]
 #[doc = "      \"$ref\": \"#/$defs/flowDirective\""]
 #[doc = "    },"]
 #[doc = "    \"when\": {"]
 #[doc = "      \"title\": \"SwitchCaseCondition\","]
-#[doc = "      \"description\": \"A runtime expression used to determine whether or not the case matches.\","]
+#[doc = "      \"description\": \"Runtime expression for case matching.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    }"]
 #[doc = "  },"]
@@ -3228,9 +3232,9 @@ impl SetTask {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct SwitchCase {
-    #[doc = "The flow directive to execute when the case matches."]
+    #[doc = "Flow directive for matching case."]
     pub then: FlowDirective,
-    #[doc = "A runtime expression used to determine whether or not the case matches."]
+    #[doc = "Runtime expression for case matching."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub when: ::std::option::Option<::std::string::String>,
 }
@@ -3257,39 +3261,39 @@ impl SwitchCase {
 #[doc = "  \"properties\": {"]
 #[doc = "    \"checkpoint\": {"]
 #[doc = "      \"title\": \"Checkpoint\","]
-#[doc = "      \"description\": \"If true, save workflow state after this task. Used for checkpoint/restart.\","]
+#[doc = "      \"description\": \"Save workflow state after this task for checkpoint/restart.\","]
 #[doc = "      \"default\": false,"]
 #[doc = "      \"type\": \"boolean\""]
 #[doc = "    },"]
 #[doc = "    \"export\": {"]
 #[doc = "      \"title\": \"TaskBaseExport\","]
-#[doc = "      \"description\": \"Export task output to context.\","]
+#[doc = "      \"description\": \"Export task output to workflow context.\","]
 #[doc = "      \"$ref\": \"#/$defs/export\""]
 #[doc = "    },"]
 #[doc = "    \"if\": {"]
 #[doc = "      \"title\": \"TaskBaseIf\","]
-#[doc = "      \"description\": \"A runtime expression, if any, used to determine whether or not the task should be run.\","]
+#[doc = "      \"description\": \"Runtime expression to conditionally execute this task.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"input\": {"]
 #[doc = "      \"title\": \"TaskBaseInput\","]
-#[doc = "      \"description\": \"Configure the task's input.\","]
+#[doc = "      \"description\": \"Task input configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/input\""]
 #[doc = "    },"]
 #[doc = "    \"metadata\": {"]
 #[doc = "      \"title\": \"TaskMetadata\","]
-#[doc = "      \"description\": \"Holds additional information about the task.\","]
+#[doc = "      \"description\": \"Additional task metadata.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"additionalProperties\": true"]
 #[doc = "    },"]
 #[doc = "    \"output\": {"]
 #[doc = "      \"title\": \"TaskBaseOutput\","]
-#[doc = "      \"description\": \"Configure the task's output.\","]
+#[doc = "      \"description\": \"Task output configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/output\""]
 #[doc = "    },"]
 #[doc = "    \"switch\": {"]
 #[doc = "      \"title\": \"SwitchTaskConfiguration\","]
-#[doc = "      \"description\": \"The definition of the switch to use.\","]
+#[doc = "      \"description\": \"Switch case definitions.\","]
 #[doc = "      \"type\": \"array\","]
 #[doc = "      \"items\": {"]
 #[doc = "        \"title\": \"SwitchItem\","]
@@ -3298,7 +3302,7 @@ impl SwitchCase {
 #[doc = "        \"minProperties\": 1,"]
 #[doc = "        \"additionalProperties\": {"]
 #[doc = "          \"title\": \"SwitchCase\","]
-#[doc = "          \"description\": \"The definition of a case within a switch task, defining a condition and corresponding tasks to execute if the condition is met.\","]
+#[doc = "          \"description\": \"Case condition and action definition.\","]
 #[doc = "          \"type\": \"object\","]
 #[doc = "          \"required\": ["]
 #[doc = "            \"then\""]
@@ -3306,12 +3310,12 @@ impl SwitchCase {
 #[doc = "          \"properties\": {"]
 #[doc = "            \"then\": {"]
 #[doc = "              \"title\": \"SwitchCaseOutcome\","]
-#[doc = "              \"description\": \"The flow directive to execute when the case matches.\","]
+#[doc = "              \"description\": \"Flow directive for matching case.\","]
 #[doc = "              \"$ref\": \"#/$defs/flowDirective\""]
 #[doc = "            },"]
 #[doc = "            \"when\": {"]
 #[doc = "              \"title\": \"SwitchCaseCondition\","]
-#[doc = "              \"description\": \"A runtime expression used to determine whether or not the case matches.\","]
+#[doc = "              \"description\": \"Runtime expression for case matching.\","]
 #[doc = "              \"type\": \"string\""]
 #[doc = "            }"]
 #[doc = "          },"]
@@ -3322,7 +3326,7 @@ impl SwitchCase {
 #[doc = "    },"]
 #[doc = "    \"then\": {"]
 #[doc = "      \"title\": \"TaskBaseThen\","]
-#[doc = "      \"description\": \"The flow directive to be performed upon completion of the task.\","]
+#[doc = "      \"description\": \"Flow control directive executed after task completion.\","]
 #[doc = "      \"$ref\": \"#/$defs/flowDirective\""]
 #[doc = "    },"]
 #[doc = "    \"timeout\": {"]
@@ -3330,12 +3334,12 @@ impl SwitchCase {
 #[doc = "      \"oneOf\": ["]
 #[doc = "        {"]
 #[doc = "          \"title\": \"TaskTimeoutDefinition\","]
-#[doc = "          \"description\": \"The task's timeout configuration, if any.\","]
+#[doc = "          \"description\": \"Task timeout configuration.\","]
 #[doc = "          \"$ref\": \"#/$defs/timeout\""]
 #[doc = "        },"]
 #[doc = "        {"]
 #[doc = "          \"title\": \"TaskTimeoutReference\","]
-#[doc = "          \"description\": \"The name of the task's timeout, if any.\","]
+#[doc = "          \"description\": \"Reference to named timeout configuration.\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      ]"]
@@ -3346,31 +3350,31 @@ impl SwitchCase {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct SwitchTask {
-    #[doc = "If true, save workflow state after this task. Used for checkpoint/restart."]
+    #[doc = "Save workflow state after this task for checkpoint/restart."]
     #[serde(default)]
     pub checkpoint: bool,
-    #[doc = "Export task output to context."]
+    #[doc = "Export task output to workflow context."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub export: ::std::option::Option<Export>,
-    #[doc = "A runtime expression, if any, used to determine whether or not the task should be run."]
+    #[doc = "Runtime expression to conditionally execute this task."]
     #[serde(
         rename = "if",
         default,
         skip_serializing_if = "::std::option::Option::is_none"
     )]
     pub if_: ::std::option::Option<::std::string::String>,
-    #[doc = "Configure the task's input."]
+    #[doc = "Task input configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub input: ::std::option::Option<Input>,
-    #[doc = "Holds additional information about the task."]
+    #[doc = "Additional task metadata."]
     #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
     pub metadata: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-    #[doc = "Configure the task's output."]
+    #[doc = "Task output configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub output: ::std::option::Option<Output>,
-    #[doc = "The definition of the switch to use."]
+    #[doc = "Switch case definitions."]
     pub switch: ::std::vec::Vec<::std::collections::HashMap<::std::string::String, SwitchCase>>,
-    #[doc = "The flow directive to be performed upon completion of the task."]
+    #[doc = "Flow control directive executed after task completion."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub then: ::std::option::Option<FlowDirective>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -3386,14 +3390,14 @@ impl SwitchTask {
         Default::default()
     }
 }
-#[doc = "A discrete unit of work that contributes to achieving the overall objectives defined by the workflow."]
+#[doc = "Single unit of work within a workflow."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"Task\","]
-#[doc = "  \"description\": \"A discrete unit of work that contributes to achieving the overall objectives defined by the workflow.\","]
+#[doc = "  \"description\": \"Single unit of work within a workflow.\","]
 #[doc = "  \"oneOf\": ["]
 #[doc = "    {"]
 #[doc = "      \"$ref\": \"#/$defs/forkTask\""]
@@ -3490,51 +3494,51 @@ impl ::std::convert::From<WaitTask> for Task {
         Self::WaitTask(value)
     }
 }
-#[doc = "An object inherited by all tasks."]
+#[doc = "Base properties inherited by all task types."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"TaskBase\","]
-#[doc = "  \"description\": \"An object inherited by all tasks.\","]
+#[doc = "  \"description\": \"Base properties inherited by all task types.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"properties\": {"]
 #[doc = "    \"checkpoint\": {"]
 #[doc = "      \"title\": \"Checkpoint\","]
-#[doc = "      \"description\": \"If true, save workflow state after this task. Used for checkpoint/restart.\","]
+#[doc = "      \"description\": \"Save workflow state after this task for checkpoint/restart.\","]
 #[doc = "      \"default\": false,"]
 #[doc = "      \"type\": \"boolean\""]
 #[doc = "    },"]
 #[doc = "    \"export\": {"]
 #[doc = "      \"title\": \"TaskBaseExport\","]
-#[doc = "      \"description\": \"Export task output to context.\","]
+#[doc = "      \"description\": \"Export task output to workflow context.\","]
 #[doc = "      \"$ref\": \"#/$defs/export\""]
 #[doc = "    },"]
 #[doc = "    \"if\": {"]
 #[doc = "      \"title\": \"TaskBaseIf\","]
-#[doc = "      \"description\": \"A runtime expression, if any, used to determine whether or not the task should be run.\","]
+#[doc = "      \"description\": \"Runtime expression to conditionally execute this task.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"input\": {"]
 #[doc = "      \"title\": \"TaskBaseInput\","]
-#[doc = "      \"description\": \"Configure the task's input.\","]
+#[doc = "      \"description\": \"Task input configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/input\""]
 #[doc = "    },"]
 #[doc = "    \"metadata\": {"]
 #[doc = "      \"title\": \"TaskMetadata\","]
-#[doc = "      \"description\": \"Holds additional information about the task.\","]
+#[doc = "      \"description\": \"Additional task metadata.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"additionalProperties\": true"]
 #[doc = "    },"]
 #[doc = "    \"output\": {"]
 #[doc = "      \"title\": \"TaskBaseOutput\","]
-#[doc = "      \"description\": \"Configure the task's output.\","]
+#[doc = "      \"description\": \"Task output configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/output\""]
 #[doc = "    },"]
 #[doc = "    \"then\": {"]
 #[doc = "      \"title\": \"TaskBaseThen\","]
-#[doc = "      \"description\": \"The flow directive to be performed upon completion of the task.\","]
+#[doc = "      \"description\": \"Flow control directive executed after task completion.\","]
 #[doc = "      \"$ref\": \"#/$defs/flowDirective\""]
 #[doc = "    },"]
 #[doc = "    \"timeout\": {"]
@@ -3542,12 +3546,12 @@ impl ::std::convert::From<WaitTask> for Task {
 #[doc = "      \"oneOf\": ["]
 #[doc = "        {"]
 #[doc = "          \"title\": \"TaskTimeoutDefinition\","]
-#[doc = "          \"description\": \"The task's timeout configuration, if any.\","]
+#[doc = "          \"description\": \"Task timeout configuration.\","]
 #[doc = "          \"$ref\": \"#/$defs/timeout\""]
 #[doc = "        },"]
 #[doc = "        {"]
 #[doc = "          \"title\": \"TaskTimeoutReference\","]
-#[doc = "          \"description\": \"The name of the task's timeout, if any.\","]
+#[doc = "          \"description\": \"Reference to named timeout configuration.\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      ]"]
@@ -3558,29 +3562,29 @@ impl ::std::convert::From<WaitTask> for Task {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct TaskBase {
-    #[doc = "If true, save workflow state after this task. Used for checkpoint/restart."]
+    #[doc = "Save workflow state after this task for checkpoint/restart."]
     #[serde(default)]
     pub checkpoint: bool,
-    #[doc = "Export task output to context."]
+    #[doc = "Export task output to workflow context."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub export: ::std::option::Option<Export>,
-    #[doc = "A runtime expression, if any, used to determine whether or not the task should be run."]
+    #[doc = "Runtime expression to conditionally execute this task."]
     #[serde(
         rename = "if",
         default,
         skip_serializing_if = "::std::option::Option::is_none"
     )]
     pub if_: ::std::option::Option<::std::string::String>,
-    #[doc = "Configure the task's input."]
+    #[doc = "Task input configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub input: ::std::option::Option<Input>,
-    #[doc = "Holds additional information about the task."]
+    #[doc = "Additional task metadata."]
     #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
     pub metadata: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-    #[doc = "Configure the task's output."]
+    #[doc = "Task output configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub output: ::std::option::Option<Output>,
-    #[doc = "The flow directive to be performed upon completion of the task."]
+    #[doc = "Flow control directive executed after task completion."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub then: ::std::option::Option<FlowDirective>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -3610,14 +3614,14 @@ impl TaskBase {
         Default::default()
     }
 }
-#[doc = "List of named tasks to perform."]
+#[doc = "Ordered list of named tasks."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"TaskList\","]
-#[doc = "  \"description\": \"List of named tasks to perform.\","]
+#[doc = "  \"description\": \"Ordered list of named tasks.\","]
 #[doc = "  \"type\": \"array\","]
 #[doc = "  \"items\": {"]
 #[doc = "    \"title\": \"TaskItem\","]
@@ -3671,12 +3675,12 @@ impl ::std::convert::From<::std::vec::Vec<::std::collections::HashMap<::std::str
 #[doc = "  \"oneOf\": ["]
 #[doc = "    {"]
 #[doc = "      \"title\": \"TaskTimeoutDefinition\","]
-#[doc = "      \"description\": \"The task's timeout configuration, if any.\","]
+#[doc = "      \"description\": \"Task timeout configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/timeout\""]
 #[doc = "    },"]
 #[doc = "    {"]
 #[doc = "      \"title\": \"TaskTimeoutReference\","]
-#[doc = "      \"description\": \"The name of the task's timeout, if any.\","]
+#[doc = "      \"description\": \"Reference to named timeout configuration.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    }"]
 #[doc = "  ]"]
@@ -3699,14 +3703,14 @@ impl ::std::convert::From<Timeout> for TaskTimeout {
         Self::Timeout(value)
     }
 }
-#[doc = "The definition of a timeout."]
+#[doc = "Timeout configuration."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"Timeout\","]
-#[doc = "  \"description\": \"The definition of a timeout.\","]
+#[doc = "  \"description\": \"Timeout configuration.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"after\""]
@@ -3714,7 +3718,7 @@ impl ::std::convert::From<Timeout> for TaskTimeout {
 #[doc = "  \"properties\": {"]
 #[doc = "    \"after\": {"]
 #[doc = "      \"title\": \"TimeoutAfter\","]
-#[doc = "      \"description\": \"The duration after which to timeout.\","]
+#[doc = "      \"description\": \"Timeout duration.\","]
 #[doc = "      \"$ref\": \"#/$defs/duration\""]
 #[doc = "    }"]
 #[doc = "  },"]
@@ -3724,7 +3728,7 @@ impl ::std::convert::From<Timeout> for TaskTimeout {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct Timeout {
-    #[doc = "The duration after which to timeout."]
+    #[doc = "Timeout duration."]
     pub after: Duration,
 }
 impl ::std::convert::From<&Timeout> for Timeout {
@@ -3751,22 +3755,22 @@ impl Timeout {
 #[doc = "  \"properties\": {"]
 #[doc = "    \"catch\": {"]
 #[doc = "      \"title\": \"TryTaskCatch\","]
-#[doc = "      \"description\": \"The object used to define the errors to catch.\","]
+#[doc = "      \"description\": \"Error handling configuration.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"properties\": {"]
 #[doc = "        \"as\": {"]
 #[doc = "          \"title\": \"CatchAs\","]
-#[doc = "          \"description\": \"The name of the runtime expression variable to save the error as. Defaults to 'error'.\","]
+#[doc = "          \"description\": \"Variable name to store caught error (defaults to 'error').\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        },"]
 #[doc = "        \"do\": {"]
 #[doc = "          \"title\": \"TryTaskCatchDo\","]
-#[doc = "          \"description\": \"The definition of the task(s) to run when catching an error.\","]
+#[doc = "          \"description\": \"Tasks to execute when error is caught.\","]
 #[doc = "          \"$ref\": \"#/$defs/taskList\""]
 #[doc = "        },"]
 #[doc = "        \"errors\": {"]
 #[doc = "          \"title\": \"CatchErrors\","]
-#[doc = "          \"description\": \"static error filter\","]
+#[doc = "          \"description\": \"Static error filter configuration.\","]
 #[doc = "          \"type\": \"object\","]
 #[doc = "          \"properties\": {"]
 #[doc = "            \"with\": {"]
@@ -3776,26 +3780,26 @@ impl Timeout {
 #[doc = "        },"]
 #[doc = "        \"exceptWhen\": {"]
 #[doc = "          \"title\": \"CatchExceptWhen\","]
-#[doc = "          \"description\": \"A runtime expression used to determine whether not to catch the filtered error.\","]
+#[doc = "          \"description\": \"Runtime expression to disable error catching.\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        },"]
 #[doc = "        \"retry\": {"]
 #[doc = "          \"oneOf\": ["]
 #[doc = "            {"]
 #[doc = "              \"title\": \"RetryPolicyDefinition\","]
-#[doc = "              \"description\": \"The retry policy to use, if any, when catching errors.\","]
+#[doc = "              \"description\": \"Retry policy configuration.\","]
 #[doc = "              \"$ref\": \"#/$defs/retryPolicy\""]
 #[doc = "            },"]
 #[doc = "            {"]
 #[doc = "              \"title\": \"RetryPolicyReference\","]
-#[doc = "              \"description\": \"The name of the retry policy to use, if any, when catching errors.\","]
+#[doc = "              \"description\": \"Reference to named retry policy.\","]
 #[doc = "              \"type\": \"string\""]
 #[doc = "            }"]
 #[doc = "          ]"]
 #[doc = "        },"]
 #[doc = "        \"when\": {"]
 #[doc = "          \"title\": \"CatchWhen\","]
-#[doc = "          \"description\": \"A runtime expression used to determine whether to catch the filtered error.\","]
+#[doc = "          \"description\": \"Runtime expression to enable error catching.\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      },"]
@@ -3803,39 +3807,39 @@ impl Timeout {
 #[doc = "    },"]
 #[doc = "    \"checkpoint\": {"]
 #[doc = "      \"title\": \"Checkpoint\","]
-#[doc = "      \"description\": \"If true, save workflow state after this task. Used for checkpoint/restart.\","]
+#[doc = "      \"description\": \"Save workflow state after this task for checkpoint/restart.\","]
 #[doc = "      \"default\": false,"]
 #[doc = "      \"type\": \"boolean\""]
 #[doc = "    },"]
 #[doc = "    \"export\": {"]
 #[doc = "      \"title\": \"TaskBaseExport\","]
-#[doc = "      \"description\": \"Export task output to context.\","]
+#[doc = "      \"description\": \"Export task output to workflow context.\","]
 #[doc = "      \"$ref\": \"#/$defs/export\""]
 #[doc = "    },"]
 #[doc = "    \"if\": {"]
 #[doc = "      \"title\": \"TaskBaseIf\","]
-#[doc = "      \"description\": \"A runtime expression, if any, used to determine whether or not the task should be run.\","]
+#[doc = "      \"description\": \"Runtime expression to conditionally execute this task.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"input\": {"]
 #[doc = "      \"title\": \"TaskBaseInput\","]
-#[doc = "      \"description\": \"Configure the task's input.\","]
+#[doc = "      \"description\": \"Task input configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/input\""]
 #[doc = "    },"]
 #[doc = "    \"metadata\": {"]
 #[doc = "      \"title\": \"TaskMetadata\","]
-#[doc = "      \"description\": \"Holds additional information about the task.\","]
+#[doc = "      \"description\": \"Additional task metadata.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"additionalProperties\": true"]
 #[doc = "    },"]
 #[doc = "    \"output\": {"]
 #[doc = "      \"title\": \"TaskBaseOutput\","]
-#[doc = "      \"description\": \"Configure the task's output.\","]
+#[doc = "      \"description\": \"Task output configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/output\""]
 #[doc = "    },"]
 #[doc = "    \"then\": {"]
 #[doc = "      \"title\": \"TaskBaseThen\","]
-#[doc = "      \"description\": \"The flow directive to be performed upon completion of the task.\","]
+#[doc = "      \"description\": \"Flow control directive executed after task completion.\","]
 #[doc = "      \"$ref\": \"#/$defs/flowDirective\""]
 #[doc = "    },"]
 #[doc = "    \"timeout\": {"]
@@ -3843,19 +3847,19 @@ impl Timeout {
 #[doc = "      \"oneOf\": ["]
 #[doc = "        {"]
 #[doc = "          \"title\": \"TaskTimeoutDefinition\","]
-#[doc = "          \"description\": \"The task's timeout configuration, if any.\","]
+#[doc = "          \"description\": \"Task timeout configuration.\","]
 #[doc = "          \"$ref\": \"#/$defs/timeout\""]
 #[doc = "        },"]
 #[doc = "        {"]
 #[doc = "          \"title\": \"TaskTimeoutReference\","]
-#[doc = "          \"description\": \"The name of the task's timeout, if any.\","]
+#[doc = "          \"description\": \"Reference to named timeout configuration.\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      ]"]
 #[doc = "    },"]
 #[doc = "    \"try\": {"]
 #[doc = "      \"title\": \"TryTaskConfiguration\","]
-#[doc = "      \"description\": \"The task(s) to perform.\","]
+#[doc = "      \"description\": \"Tasks to attempt execution.\","]
 #[doc = "      \"$ref\": \"#/$defs/taskList\""]
 #[doc = "    }"]
 #[doc = "  }"]
@@ -3865,34 +3869,34 @@ impl Timeout {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct TryTask {
     pub catch: TryTaskCatch,
-    #[doc = "If true, save workflow state after this task. Used for checkpoint/restart."]
+    #[doc = "Save workflow state after this task for checkpoint/restart."]
     #[serde(default)]
     pub checkpoint: bool,
-    #[doc = "Export task output to context."]
+    #[doc = "Export task output to workflow context."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub export: ::std::option::Option<Export>,
-    #[doc = "A runtime expression, if any, used to determine whether or not the task should be run."]
+    #[doc = "Runtime expression to conditionally execute this task."]
     #[serde(
         rename = "if",
         default,
         skip_serializing_if = "::std::option::Option::is_none"
     )]
     pub if_: ::std::option::Option<::std::string::String>,
-    #[doc = "Configure the task's input."]
+    #[doc = "Task input configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub input: ::std::option::Option<Input>,
-    #[doc = "Holds additional information about the task."]
+    #[doc = "Additional task metadata."]
     #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
     pub metadata: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-    #[doc = "Configure the task's output."]
+    #[doc = "Task output configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub output: ::std::option::Option<Output>,
-    #[doc = "The flow directive to be performed upon completion of the task."]
+    #[doc = "Flow control directive executed after task completion."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub then: ::std::option::Option<FlowDirective>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub timeout: ::std::option::Option<TaskTimeout>,
-    #[doc = "The task(s) to perform."]
+    #[doc = "Tasks to attempt execution."]
     #[serde(rename = "try")]
     pub try_: TaskList,
 }
@@ -3906,29 +3910,29 @@ impl TryTask {
         Default::default()
     }
 }
-#[doc = "The object used to define the errors to catch."]
+#[doc = "Error handling configuration."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"TryTaskCatch\","]
-#[doc = "  \"description\": \"The object used to define the errors to catch.\","]
+#[doc = "  \"description\": \"Error handling configuration.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"properties\": {"]
 #[doc = "    \"as\": {"]
 #[doc = "      \"title\": \"CatchAs\","]
-#[doc = "      \"description\": \"The name of the runtime expression variable to save the error as. Defaults to 'error'.\","]
+#[doc = "      \"description\": \"Variable name to store caught error (defaults to 'error').\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"do\": {"]
 #[doc = "      \"title\": \"TryTaskCatchDo\","]
-#[doc = "      \"description\": \"The definition of the task(s) to run when catching an error.\","]
+#[doc = "      \"description\": \"Tasks to execute when error is caught.\","]
 #[doc = "      \"$ref\": \"#/$defs/taskList\""]
 #[doc = "    },"]
 #[doc = "    \"errors\": {"]
 #[doc = "      \"title\": \"CatchErrors\","]
-#[doc = "      \"description\": \"static error filter\","]
+#[doc = "      \"description\": \"Static error filter configuration.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"properties\": {"]
 #[doc = "        \"with\": {"]
@@ -3938,26 +3942,26 @@ impl TryTask {
 #[doc = "    },"]
 #[doc = "    \"exceptWhen\": {"]
 #[doc = "      \"title\": \"CatchExceptWhen\","]
-#[doc = "      \"description\": \"A runtime expression used to determine whether not to catch the filtered error.\","]
+#[doc = "      \"description\": \"Runtime expression to disable error catching.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"retry\": {"]
 #[doc = "      \"oneOf\": ["]
 #[doc = "        {"]
 #[doc = "          \"title\": \"RetryPolicyDefinition\","]
-#[doc = "          \"description\": \"The retry policy to use, if any, when catching errors.\","]
+#[doc = "          \"description\": \"Retry policy configuration.\","]
 #[doc = "          \"$ref\": \"#/$defs/retryPolicy\""]
 #[doc = "        },"]
 #[doc = "        {"]
 #[doc = "          \"title\": \"RetryPolicyReference\","]
-#[doc = "          \"description\": \"The name of the retry policy to use, if any, when catching errors.\","]
+#[doc = "          \"description\": \"Reference to named retry policy.\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      ]"]
 #[doc = "    },"]
 #[doc = "    \"when\": {"]
 #[doc = "      \"title\": \"CatchWhen\","]
-#[doc = "      \"description\": \"A runtime expression used to determine whether to catch the filtered error.\","]
+#[doc = "      \"description\": \"Runtime expression to enable error catching.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    }"]
 #[doc = "  },"]
@@ -3967,14 +3971,14 @@ impl TryTask {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct TryTaskCatch {
-    #[doc = "The name of the runtime expression variable to save the error as. Defaults to 'error'."]
+    #[doc = "Variable name to store caught error (defaults to 'error')."]
     #[serde(
         rename = "as",
         default,
         skip_serializing_if = "::std::option::Option::is_none"
     )]
     pub as_: ::std::option::Option<::std::string::String>,
-    #[doc = "The definition of the task(s) to run when catching an error."]
+    #[doc = "Tasks to execute when error is caught."]
     #[serde(
         rename = "do",
         default,
@@ -3983,7 +3987,7 @@ pub struct TryTaskCatch {
     pub do_: ::std::option::Option<TaskList>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub errors: ::std::option::Option<CatchErrors>,
-    #[doc = "A runtime expression used to determine whether not to catch the filtered error."]
+    #[doc = "Runtime expression to disable error catching."]
     #[serde(
         rename = "exceptWhen",
         default,
@@ -3992,7 +3996,7 @@ pub struct TryTaskCatch {
     pub except_when: ::std::option::Option<::std::string::String>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub retry: ::std::option::Option<TryTaskCatchRetry>,
-    #[doc = "A runtime expression used to determine whether to catch the filtered error."]
+    #[doc = "Runtime expression to enable error catching."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub when: ::std::option::Option<::std::string::String>,
 }
@@ -4027,12 +4031,12 @@ impl TryTaskCatch {
 #[doc = "  \"oneOf\": ["]
 #[doc = "    {"]
 #[doc = "      \"title\": \"RetryPolicyDefinition\","]
-#[doc = "      \"description\": \"The retry policy to use, if any, when catching errors.\","]
+#[doc = "      \"description\": \"Retry policy configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/retryPolicy\""]
 #[doc = "    },"]
 #[doc = "    {"]
 #[doc = "      \"title\": \"RetryPolicyReference\","]
-#[doc = "      \"description\": \"The name of the retry policy to use, if any, when catching errors.\","]
+#[doc = "      \"description\": \"Reference to named retry policy.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    }"]
 #[doc = "  ]"]
@@ -4131,39 +4135,39 @@ impl ::std::fmt::Display for UriTemplate {
 #[doc = "  \"properties\": {"]
 #[doc = "    \"checkpoint\": {"]
 #[doc = "      \"title\": \"Checkpoint\","]
-#[doc = "      \"description\": \"If true, save workflow state after this task. Used for checkpoint/restart.\","]
+#[doc = "      \"description\": \"Save workflow state after this task for checkpoint/restart.\","]
 #[doc = "      \"default\": false,"]
 #[doc = "      \"type\": \"boolean\""]
 #[doc = "    },"]
 #[doc = "    \"export\": {"]
 #[doc = "      \"title\": \"TaskBaseExport\","]
-#[doc = "      \"description\": \"Export task output to context.\","]
+#[doc = "      \"description\": \"Export task output to workflow context.\","]
 #[doc = "      \"$ref\": \"#/$defs/export\""]
 #[doc = "    },"]
 #[doc = "    \"if\": {"]
 #[doc = "      \"title\": \"TaskBaseIf\","]
-#[doc = "      \"description\": \"A runtime expression, if any, used to determine whether or not the task should be run.\","]
+#[doc = "      \"description\": \"Runtime expression to conditionally execute this task.\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
 #[doc = "    \"input\": {"]
 #[doc = "      \"title\": \"TaskBaseInput\","]
-#[doc = "      \"description\": \"Configure the task's input.\","]
+#[doc = "      \"description\": \"Task input configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/input\""]
 #[doc = "    },"]
 #[doc = "    \"metadata\": {"]
 #[doc = "      \"title\": \"TaskMetadata\","]
-#[doc = "      \"description\": \"Holds additional information about the task.\","]
+#[doc = "      \"description\": \"Additional task metadata.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"additionalProperties\": true"]
 #[doc = "    },"]
 #[doc = "    \"output\": {"]
 #[doc = "      \"title\": \"TaskBaseOutput\","]
-#[doc = "      \"description\": \"Configure the task's output.\","]
+#[doc = "      \"description\": \"Task output configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/output\""]
 #[doc = "    },"]
 #[doc = "    \"then\": {"]
 #[doc = "      \"title\": \"TaskBaseThen\","]
-#[doc = "      \"description\": \"The flow directive to be performed upon completion of the task.\","]
+#[doc = "      \"description\": \"Flow control directive executed after task completion.\","]
 #[doc = "      \"$ref\": \"#/$defs/flowDirective\""]
 #[doc = "    },"]
 #[doc = "    \"timeout\": {"]
@@ -4171,19 +4175,19 @@ impl ::std::fmt::Display for UriTemplate {
 #[doc = "      \"oneOf\": ["]
 #[doc = "        {"]
 #[doc = "          \"title\": \"TaskTimeoutDefinition\","]
-#[doc = "          \"description\": \"The task's timeout configuration, if any.\","]
+#[doc = "          \"description\": \"Task timeout configuration.\","]
 #[doc = "          \"$ref\": \"#/$defs/timeout\""]
 #[doc = "        },"]
 #[doc = "        {"]
 #[doc = "          \"title\": \"TaskTimeoutReference\","]
-#[doc = "          \"description\": \"The name of the task's timeout, if any.\","]
+#[doc = "          \"description\": \"Reference to named timeout configuration.\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      ]"]
 #[doc = "    },"]
 #[doc = "    \"wait\": {"]
 #[doc = "      \"title\": \"WaitTaskConfiguration\","]
-#[doc = "      \"description\": \"The amount of time to wait.\","]
+#[doc = "      \"description\": \"Duration to wait.\","]
 #[doc = "      \"$ref\": \"#/$defs/duration\""]
 #[doc = "    }"]
 #[doc = "  }"]
@@ -4192,34 +4196,34 @@ impl ::std::fmt::Display for UriTemplate {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct WaitTask {
-    #[doc = "If true, save workflow state after this task. Used for checkpoint/restart."]
+    #[doc = "Save workflow state after this task for checkpoint/restart."]
     #[serde(default)]
     pub checkpoint: bool,
-    #[doc = "Export task output to context."]
+    #[doc = "Export task output to workflow context."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub export: ::std::option::Option<Export>,
-    #[doc = "A runtime expression, if any, used to determine whether or not the task should be run."]
+    #[doc = "Runtime expression to conditionally execute this task."]
     #[serde(
         rename = "if",
         default,
         skip_serializing_if = "::std::option::Option::is_none"
     )]
     pub if_: ::std::option::Option<::std::string::String>,
-    #[doc = "Configure the task's input."]
+    #[doc = "Task input configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub input: ::std::option::Option<Input>,
-    #[doc = "Holds additional information about the task."]
+    #[doc = "Additional task metadata."]
     #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
     pub metadata: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-    #[doc = "Configure the task's output."]
+    #[doc = "Task output configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub output: ::std::option::Option<Output>,
-    #[doc = "The flow directive to be performed upon completion of the task."]
+    #[doc = "Flow control directive executed after task completion."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub then: ::std::option::Option<FlowDirective>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub timeout: ::std::option::Option<TaskTimeout>,
-    #[doc = "The amount of time to wait."]
+    #[doc = "Duration to wait."]
     pub wait: Duration,
 }
 impl ::std::convert::From<&WaitTask> for WaitTask {
@@ -4232,14 +4236,130 @@ impl WaitTask {
         Default::default()
     }
 }
-#[doc = "The version of the DSL used by the workflow."]
+#[doc = "The options to use when running the worker."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"WorkerOptions\","]
+#[doc = "  \"description\": \"The options to use when running the worker.\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"broadcastResults\": {"]
+#[doc = "      \"title\": \"BroadcastResultsToListener\","]
+#[doc = "      \"description\": \"Whether to broadcast results to listeners.\","]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"channel\": {"]
+#[doc = "      \"title\": \"Channel\","]
+#[doc = "      \"description\": \"The channel to use when running the worker (controls execution concurrency).\","]
+#[doc = "      \"type\": \"string\""]
+#[doc = "    },"]
+#[doc = "    \"retry\": {"]
+#[doc = "      \"title\": \"RetryPolicyDefinition\","]
+#[doc = "      \"description\": \"The retry policy to use, if any, when catching errors.\","]
+#[doc = "      \"$ref\": \"#/$defs/retryPolicy\""]
+#[doc = "    },"]
+#[doc = "    \"storeFailure\": {"]
+#[doc = "      \"title\": \"StoreFailureResult\","]
+#[doc = "      \"description\": \"Whether to store failure results in the database.\","]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"storeSuccess\": {"]
+#[doc = "      \"title\": \"StoreSuccessResult\","]
+#[doc = "      \"description\": \"Whether to store successful results in the database.\","]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"useStatic\": {"]
+#[doc = "      \"title\": \"UseStaticWorker\","]
+#[doc = "      \"description\": \"Whether to use a static worker (persisted in database with pooled initialization).\","]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"withBackup\": {"]
+#[doc = "      \"title\": \"WithBackup\","]
+#[doc = "      \"description\": \"Whether to backup the enqueued job to the database during queueing and execution.\","]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    }"]
+#[doc = "  }"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+pub struct WorkerOptions {
+    #[doc = "Whether to broadcast results to listeners."]
+    #[serde(
+        rename = "broadcastResults",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub broadcast_results: ::std::option::Option<bool>,
+    #[doc = "The channel to use when running the worker (controls execution concurrency)."]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub channel: ::std::option::Option<::std::string::String>,
+    #[doc = "The retry policy to use, if any, when catching errors."]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub retry: ::std::option::Option<RetryPolicy>,
+    #[doc = "Whether to store failure results in the database."]
+    #[serde(
+        rename = "storeFailure",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub store_failure: ::std::option::Option<bool>,
+    #[doc = "Whether to store successful results in the database."]
+    #[serde(
+        rename = "storeSuccess",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub store_success: ::std::option::Option<bool>,
+    #[doc = "Whether to use a static worker (persisted in database with pooled initialization)."]
+    #[serde(
+        rename = "useStatic",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub use_static: ::std::option::Option<bool>,
+    #[doc = "Whether to backup the enqueued job to the database during queueing and execution."]
+    #[serde(
+        rename = "withBackup",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub with_backup: ::std::option::Option<bool>,
+}
+impl ::std::convert::From<&WorkerOptions> for WorkerOptions {
+    fn from(value: &WorkerOptions) -> Self {
+        value.clone()
+    }
+}
+impl ::std::default::Default for WorkerOptions {
+    fn default() -> Self {
+        Self {
+            broadcast_results: Default::default(),
+            channel: Default::default(),
+            retry: Default::default(),
+            store_failure: Default::default(),
+            store_success: Default::default(),
+            use_static: Default::default(),
+            with_backup: Default::default(),
+        }
+    }
+}
+impl WorkerOptions {
+    pub fn builder() -> builder::WorkerOptions {
+        Default::default()
+    }
+}
+#[doc = "DSL version used by this workflow."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"WorkflowDSL\","]
-#[doc = "  \"description\": \"The version of the DSL used by the workflow.\","]
+#[doc = "  \"description\": \"DSL version used by this workflow.\","]
 #[doc = "  \"default\": \"0.0.1\","]
 #[doc = "  \"type\": \"string\","]
 #[doc = "  \"pattern\": \"^(0|[1-9]\\\\d*)\\\\.(0|[1-9]\\\\d*)\\\\.(0|[1-9]\\\\d*)(?:-((?:0|[1-9]\\\\d*|\\\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\\\.(?:0|[1-9]\\\\d*|\\\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\\\+([0-9a-zA-Z-]+(?:\\\\.[0-9a-zA-Z-]+)*))?$\""]
@@ -4311,14 +4431,14 @@ impl<'de> ::serde::Deserialize<'de> for WorkflowDsl {
             })
     }
 }
-#[doc = "The workflow's name."]
+#[doc = "Workflow name."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"WorkflowName\","]
-#[doc = "  \"description\": \"The workflow's name.\","]
+#[doc = "  \"description\": \"Workflow name.\","]
 #[doc = "  \"type\": \"string\","]
 #[doc = "  \"pattern\": \"^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$\""]
 #[doc = "}"]
@@ -4392,14 +4512,14 @@ impl<'de> ::serde::Deserialize<'de> for WorkflowName {
             })
     }
 }
-#[doc = "The workflow's namespace."]
+#[doc = "Workflow namespace."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"WorkflowNamespace\","]
-#[doc = "  \"description\": \"The workflow's namespace.\","]
+#[doc = "  \"description\": \"Workflow namespace.\","]
 #[doc = "  \"default\": \"default\","]
 #[doc = "  \"type\": \"string\","]
 #[doc = "  \"pattern\": \"^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$\""]
@@ -4479,7 +4599,7 @@ impl<'de> ::serde::Deserialize<'de> for WorkflowNamespace {
             })
     }
 }
-#[doc = "Partial Serverless Workflow DSL with function(tool) support. \nRuntime expressions: - jq expressions using ${..} syntax (e.g. ${.key.ckey}, ${$task.input}) - liquid templates using $${..} syntax - Available only in fields marked in their descriptions\nContext variables in expressions: - Input mode: keys from input data - Output mode: keys from output data - Workflow info: workflow.id, workflow.definition, workflow.input, workflow.context_variables - Current task info: task.definition, task.raw_input, task.raw_output, task.output, task.flow_directive - Raw data: access pre-transformation data via raw_input and raw_output (e.g. ${$task.raw_input})"]
+#[doc = "Workflow schema supporting job execution with functions and tools.\nRuntime expressions are supported in fields marked in descriptions: - jq syntax: ${.key.subkey} for data access, ${$task.input} for context - liquid syntax: $${..} for templates\nAvailable context variables: - Input data: direct key access - Output data: direct key access   - Context vars: set by task.export, setTask (access via $vars for jq) - Workflow: workflow.id, workflow.definition, workflow.input, workflow.context_variables - Task: task.definition, task.input, task.raw_output, task.output, task.flow_directive"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -4487,7 +4607,7 @@ impl<'de> ::serde::Deserialize<'de> for WorkflowNamespace {
 #[doc = "{"]
 #[doc = "  \"$id\": \"https://serverlessworkflow.io/schemas/1.0.0/workflow.yaml\","]
 #[doc = "  \"title\": \"WorkflowSchema\","]
-#[doc = "  \"description\": \"Partial Serverless Workflow DSL with function(tool) support. \\nRuntime expressions: - jq expressions using ${..} syntax (e.g. ${.key.ckey}, ${$task.input}) - liquid templates using $${..} syntax - Available only in fields marked in their descriptions\\nContext variables in expressions: - Input mode: keys from input data - Output mode: keys from output data - Workflow info: workflow.id, workflow.definition, workflow.input, workflow.context_variables - Current task info: task.definition, task.raw_input, task.raw_output, task.output, task.flow_directive - Raw data: access pre-transformation data via raw_input and raw_output (e.g. ${$task.raw_input})\","]
+#[doc = "  \"description\": \"Workflow schema supporting job execution with functions and tools.\\nRuntime expressions are supported in fields marked in descriptions: - jq syntax: ${.key.subkey} for data access, ${$task.input} for context - liquid syntax: $${..} for templates\\nAvailable context variables: - Input data: direct key access - Output data: direct key access   - Context vars: set by task.export, setTask (access via $vars for jq) - Workflow: workflow.id, workflow.definition, workflow.input, workflow.context_variables - Task: task.definition, task.input, task.raw_output, task.output, task.flow_directive\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"do\","]
@@ -4497,35 +4617,35 @@ impl<'de> ::serde::Deserialize<'de> for WorkflowNamespace {
 #[doc = "  \"properties\": {"]
 #[doc = "    \"checkpointing\": {"]
 #[doc = "      \"title\": \"Checkpoint Config\","]
-#[doc = "      \"description\": \"Configures checkpoint/restart feature.\","]
+#[doc = "      \"description\": \"Checkpoint and restart configuration.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"required\": ["]
 #[doc = "        \"enabled\""]
 #[doc = "      ],"]
 #[doc = "      \"properties\": {"]
 #[doc = "        \"enabled\": {"]
-#[doc = "          \"description\": \"Enable checkpoint feature.\","]
+#[doc = "          \"description\": \"Enable checkpoint functionality.\","]
 #[doc = "          \"default\": false,"]
 #[doc = "          \"type\": \"boolean\""]
 #[doc = "        },"]
 #[doc = "        \"storage\": {"]
+#[doc = "          \"description\": \"Storage backend for checkpoints.\","]
 #[doc = "          \"type\": \"string\","]
 #[doc = "          \"enum\": ["]
 #[doc = "            \"memory\","]
 #[doc = "            \"redis\""]
-#[doc = "          ],"]
-#[doc = "          \"description\\\"\": \"Checkpoint storage backend.(if enabled)\""]
+#[doc = "          ]"]
 #[doc = "        }"]
 #[doc = "      }"]
 #[doc = "    },"]
 #[doc = "    \"do\": {"]
 #[doc = "      \"title\": \"Do\","]
-#[doc = "      \"description\": \"Defines the task(s) the workflow must perform.\","]
+#[doc = "      \"description\": \"Tasks to execute in this workflow.\","]
 #[doc = "      \"$ref\": \"#/$defs/taskList\""]
 #[doc = "    },"]
 #[doc = "    \"document\": {"]
 #[doc = "      \"title\": \"Document\","]
-#[doc = "      \"description\": \"Documents the workflow.\","]
+#[doc = "      \"description\": \"Workflow metadata and identification.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"required\": ["]
 #[doc = "        \"dsl\","]
@@ -4536,49 +4656,49 @@ impl<'de> ::serde::Deserialize<'de> for WorkflowNamespace {
 #[doc = "      \"properties\": {"]
 #[doc = "        \"dsl\": {"]
 #[doc = "          \"title\": \"WorkflowDSL\","]
-#[doc = "          \"description\": \"The version of the DSL used by the workflow.\","]
+#[doc = "          \"description\": \"DSL version used by this workflow.\","]
 #[doc = "          \"default\": \"0.0.1\","]
 #[doc = "          \"type\": \"string\","]
 #[doc = "          \"pattern\": \"^(0|[1-9]\\\\d*)\\\\.(0|[1-9]\\\\d*)\\\\.(0|[1-9]\\\\d*)(?:-((?:0|[1-9]\\\\d*|\\\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\\\.(?:0|[1-9]\\\\d*|\\\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\\\+([0-9a-zA-Z-]+(?:\\\\.[0-9a-zA-Z-]+)*))?$\""]
 #[doc = "        },"]
 #[doc = "        \"metadata\": {"]
 #[doc = "          \"title\": \"WorkflowMetadata\","]
-#[doc = "          \"description\": \"Holds additional information about the workflow.\","]
+#[doc = "          \"description\": \"Additional workflow metadata.\","]
 #[doc = "          \"type\": \"object\","]
 #[doc = "          \"additionalProperties\": true"]
 #[doc = "        },"]
 #[doc = "        \"name\": {"]
 #[doc = "          \"title\": \"WorkflowName\","]
-#[doc = "          \"description\": \"The workflow's name.\","]
+#[doc = "          \"description\": \"Workflow name.\","]
 #[doc = "          \"type\": \"string\","]
 #[doc = "          \"pattern\": \"^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$\""]
 #[doc = "        },"]
 #[doc = "        \"namespace\": {"]
 #[doc = "          \"title\": \"WorkflowNamespace\","]
-#[doc = "          \"description\": \"The workflow's namespace.\","]
+#[doc = "          \"description\": \"Workflow namespace.\","]
 #[doc = "          \"default\": \"default\","]
 #[doc = "          \"type\": \"string\","]
 #[doc = "          \"pattern\": \"^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$\""]
 #[doc = "        },"]
 #[doc = "        \"summary\": {"]
 #[doc = "          \"title\": \"WorkflowSummary\","]
-#[doc = "          \"description\": \"The workflow's Markdown summary.\","]
+#[doc = "          \"description\": \"Workflow summary in Markdown format.\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        },"]
 #[doc = "        \"tags\": {"]
 #[doc = "          \"title\": \"WorkflowTags\","]
-#[doc = "          \"description\": \"A key/value mapping of the workflow's tags, if any.\","]
+#[doc = "          \"description\": \"Key/value tags for workflow classification.\","]
 #[doc = "          \"type\": \"object\","]
 #[doc = "          \"additionalProperties\": true"]
 #[doc = "        },"]
 #[doc = "        \"title\": {"]
 #[doc = "          \"title\": \"WorkflowTitle\","]
-#[doc = "          \"description\": \"The workflow's title.\","]
+#[doc = "          \"description\": \"Workflow title.\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        },"]
 #[doc = "        \"version\": {"]
 #[doc = "          \"title\": \"WorkflowVersion\","]
-#[doc = "          \"description\": \"The workflow's semantic version.\","]
+#[doc = "          \"description\": \"Workflow semantic version.\","]
 #[doc = "          \"default\": \"0.0.1\","]
 #[doc = "          \"type\": \"string\","]
 #[doc = "          \"pattern\": \"^(0|[1-9]\\\\d*)\\\\.(0|[1-9]\\\\d*)\\\\.(0|[1-9]\\\\d*)(?:-((?:0|[1-9]\\\\d*|\\\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\\\.(?:0|[1-9]\\\\d*|\\\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\\\+([0-9a-zA-Z-]+(?:\\\\.[0-9a-zA-Z-]+)*))?$\""]
@@ -4588,12 +4708,12 @@ impl<'de> ::serde::Deserialize<'de> for WorkflowNamespace {
 #[doc = "    },"]
 #[doc = "    \"input\": {"]
 #[doc = "      \"title\": \"Input\","]
-#[doc = "      \"description\": \"Configures the workflow's input.\","]
+#[doc = "      \"description\": \"Workflow input configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/input\""]
 #[doc = "    },"]
 #[doc = "    \"output\": {"]
 #[doc = "      \"title\": \"Output\","]
-#[doc = "      \"description\": \"Configures the workflow's output.\","]
+#[doc = "      \"description\": \"Workflow output configuration.\","]
 #[doc = "      \"$ref\": \"#/$defs/output\""]
 #[doc = "    }"]
 #[doc = "  }"]
@@ -4604,13 +4724,13 @@ impl<'de> ::serde::Deserialize<'de> for WorkflowNamespace {
 pub struct WorkflowSchema {
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub checkpointing: ::std::option::Option<CheckpointConfig>,
-    #[doc = "Defines the task(s) the workflow must perform."]
+    #[doc = "Tasks to execute in this workflow."]
     #[serde(rename = "do")]
     pub do_: TaskList,
     pub document: Document,
-    #[doc = "Configures the workflow's input."]
+    #[doc = "Workflow input configuration."]
     pub input: Input,
-    #[doc = "Configures the workflow's output."]
+    #[doc = "Workflow output configuration."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub output: ::std::option::Option<Output>,
 }
@@ -4624,14 +4744,14 @@ impl WorkflowSchema {
         Default::default()
     }
 }
-#[doc = "The workflow's semantic version."]
+#[doc = "Workflow semantic version."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"title\": \"WorkflowVersion\","]
-#[doc = "  \"description\": \"The workflow's semantic version.\","]
+#[doc = "  \"description\": \"Workflow semantic version.\","]
 #[doc = "  \"default\": \"0.0.1\","]
 #[doc = "  \"type\": \"string\","]
 #[doc = "  \"pattern\": \"^(0|[1-9]\\\\d*)\\\\.(0|[1-9]\\\\d*)\\\\.(0|[1-9]\\\\d*)(?:-((?:0|[1-9]\\\\d*|\\\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\\\.(?:0|[1-9]\\\\d*|\\\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\\\+([0-9a-zA-Z-]+(?:\\\\.[0-9a-zA-Z-]+)*))?$\""]
@@ -4725,7 +4845,7 @@ pub mod builder {
         {
             self.with = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for with: {}", e));
+                .map_err(|e| format!("error converting supplied value for with: {e}"));
             self
         }
     }
@@ -4768,7 +4888,7 @@ pub mod builder {
         {
             self.enabled = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for enabled: {}", e));
+                .map_err(|e| format!("error converting supplied value for enabled: {e}"));
             self
         }
         pub fn storage<T>(mut self, value: T) -> Self
@@ -4778,7 +4898,7 @@ pub mod builder {
         {
             self.storage = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for storage: {}", e));
+                .map_err(|e| format!("error converting supplied value for storage: {e}"));
             self
         }
     }
@@ -4846,7 +4966,7 @@ pub mod builder {
         {
             self.checkpoint = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+                .map_err(|e| format!("error converting supplied value for checkpoint: {e}"));
             self
         }
         pub fn do_<T>(mut self, value: T) -> Self
@@ -4856,7 +4976,7 @@ pub mod builder {
         {
             self.do_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for do_: {}", e));
+                .map_err(|e| format!("error converting supplied value for do_: {e}"));
             self
         }
         pub fn export<T>(mut self, value: T) -> Self
@@ -4866,7 +4986,7 @@ pub mod builder {
         {
             self.export = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for export: {}", e));
+                .map_err(|e| format!("error converting supplied value for export: {e}"));
             self
         }
         pub fn if_<T>(mut self, value: T) -> Self
@@ -4876,7 +4996,7 @@ pub mod builder {
         {
             self.if_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for if_: {}", e));
+                .map_err(|e| format!("error converting supplied value for if_: {e}"));
             self
         }
         pub fn input<T>(mut self, value: T) -> Self
@@ -4886,7 +5006,7 @@ pub mod builder {
         {
             self.input = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for input: {}", e));
+                .map_err(|e| format!("error converting supplied value for input: {e}"));
             self
         }
         pub fn metadata<T>(mut self, value: T) -> Self
@@ -4898,7 +5018,7 @@ pub mod builder {
         {
             self.metadata = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
+                .map_err(|e| format!("error converting supplied value for metadata: {e}"));
             self
         }
         pub fn output<T>(mut self, value: T) -> Self
@@ -4908,7 +5028,7 @@ pub mod builder {
         {
             self.output = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for output: {}", e));
+                .map_err(|e| format!("error converting supplied value for output: {e}"));
             self
         }
         pub fn then<T>(mut self, value: T) -> Self
@@ -4918,7 +5038,7 @@ pub mod builder {
         {
             self.then = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for then: {}", e));
+                .map_err(|e| format!("error converting supplied value for then: {e}"));
             self
         }
         pub fn timeout<T>(mut self, value: T) -> Self
@@ -4928,7 +5048,7 @@ pub mod builder {
         {
             self.timeout = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for timeout: {}", e));
+                .map_err(|e| format!("error converting supplied value for timeout: {e}"));
             self
         }
     }
@@ -5008,7 +5128,7 @@ pub mod builder {
         {
             self.dsl = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for dsl: {}", e));
+                .map_err(|e| format!("error converting supplied value for dsl: {e}"));
             self
         }
         pub fn metadata<T>(mut self, value: T) -> Self
@@ -5020,7 +5140,7 @@ pub mod builder {
         {
             self.metadata = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
+                .map_err(|e| format!("error converting supplied value for metadata: {e}"));
             self
         }
         pub fn name<T>(mut self, value: T) -> Self
@@ -5030,7 +5150,7 @@ pub mod builder {
         {
             self.name = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for name: {}", e));
+                .map_err(|e| format!("error converting supplied value for name: {e}"));
             self
         }
         pub fn namespace<T>(mut self, value: T) -> Self
@@ -5040,7 +5160,7 @@ pub mod builder {
         {
             self.namespace = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for namespace: {}", e));
+                .map_err(|e| format!("error converting supplied value for namespace: {e}"));
             self
         }
         pub fn summary<T>(mut self, value: T) -> Self
@@ -5050,7 +5170,7 @@ pub mod builder {
         {
             self.summary = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for summary: {}", e));
+                .map_err(|e| format!("error converting supplied value for summary: {e}"));
             self
         }
         pub fn tags<T>(mut self, value: T) -> Self
@@ -5062,7 +5182,7 @@ pub mod builder {
         {
             self.tags = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for tags: {}", e));
+                .map_err(|e| format!("error converting supplied value for tags: {e}"));
             self
         }
         pub fn title<T>(mut self, value: T) -> Self
@@ -5072,7 +5192,7 @@ pub mod builder {
         {
             self.title = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for title: {}", e));
+                .map_err(|e| format!("error converting supplied value for title: {e}"));
             self
         }
         pub fn version<T>(mut self, value: T) -> Self
@@ -5082,7 +5202,7 @@ pub mod builder {
         {
             self.version = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for version: {}", e));
+                .map_err(|e| format!("error converting supplied value for version: {e}"));
             self
         }
     }
@@ -5151,7 +5271,7 @@ pub mod builder {
         {
             self.detail = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for detail: {}", e));
+                .map_err(|e| format!("error converting supplied value for detail: {e}"));
             self
         }
         pub fn instance<T>(mut self, value: T) -> Self
@@ -5161,7 +5281,7 @@ pub mod builder {
         {
             self.instance = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for instance: {}", e));
+                .map_err(|e| format!("error converting supplied value for instance: {e}"));
             self
         }
         pub fn status<T>(mut self, value: T) -> Self
@@ -5171,7 +5291,7 @@ pub mod builder {
         {
             self.status = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for status: {}", e));
+                .map_err(|e| format!("error converting supplied value for status: {e}"));
             self
         }
         pub fn title<T>(mut self, value: T) -> Self
@@ -5181,7 +5301,7 @@ pub mod builder {
         {
             self.title = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for title: {}", e));
+                .map_err(|e| format!("error converting supplied value for title: {e}"));
             self
         }
         pub fn type_<T>(mut self, value: T) -> Self
@@ -5191,7 +5311,7 @@ pub mod builder {
         {
             self.type_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for type_: {}", e));
+                .map_err(|e| format!("error converting supplied value for type_: {e}"));
             self
         }
     }
@@ -5257,7 +5377,7 @@ pub mod builder {
         {
             self.details = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for details: {}", e));
+                .map_err(|e| format!("error converting supplied value for details: {e}"));
             self
         }
         pub fn instance<T>(mut self, value: T) -> Self
@@ -5267,7 +5387,7 @@ pub mod builder {
         {
             self.instance = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for instance: {}", e));
+                .map_err(|e| format!("error converting supplied value for instance: {e}"));
             self
         }
         pub fn status<T>(mut self, value: T) -> Self
@@ -5277,7 +5397,7 @@ pub mod builder {
         {
             self.status = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for status: {}", e));
+                .map_err(|e| format!("error converting supplied value for status: {e}"));
             self
         }
         pub fn title<T>(mut self, value: T) -> Self
@@ -5287,7 +5407,7 @@ pub mod builder {
         {
             self.title = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for title: {}", e));
+                .map_err(|e| format!("error converting supplied value for title: {e}"));
             self
         }
         pub fn type_<T>(mut self, value: T) -> Self
@@ -5297,7 +5417,7 @@ pub mod builder {
         {
             self.type_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for type_: {}", e));
+                .map_err(|e| format!("error converting supplied value for type_: {e}"));
             self
         }
     }
@@ -5347,7 +5467,7 @@ pub mod builder {
         {
             self.as_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for as_: {}", e));
+                .map_err(|e| format!("error converting supplied value for as_: {e}"));
             self
         }
         pub fn schema<T>(mut self, value: T) -> Self
@@ -5357,7 +5477,7 @@ pub mod builder {
         {
             self.schema = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for schema: {}", e));
+                .map_err(|e| format!("error converting supplied value for schema: {e}"));
             self
         }
     }
@@ -5402,7 +5522,7 @@ pub mod builder {
         {
             self.endpoint = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for endpoint: {}", e));
+                .map_err(|e| format!("error converting supplied value for endpoint: {e}"));
             self
         }
         pub fn name<T>(mut self, value: T) -> Self
@@ -5412,7 +5532,7 @@ pub mod builder {
         {
             self.name = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for name: {}", e));
+                .map_err(|e| format!("error converting supplied value for name: {e}"));
             self
         }
     }
@@ -5489,7 +5609,7 @@ pub mod builder {
         {
             self.checkpoint = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+                .map_err(|e| format!("error converting supplied value for checkpoint: {e}"));
             self
         }
         pub fn do_<T>(mut self, value: T) -> Self
@@ -5499,7 +5619,7 @@ pub mod builder {
         {
             self.do_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for do_: {}", e));
+                .map_err(|e| format!("error converting supplied value for do_: {e}"));
             self
         }
         pub fn export<T>(mut self, value: T) -> Self
@@ -5509,7 +5629,7 @@ pub mod builder {
         {
             self.export = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for export: {}", e));
+                .map_err(|e| format!("error converting supplied value for export: {e}"));
             self
         }
         pub fn for_<T>(mut self, value: T) -> Self
@@ -5519,7 +5639,7 @@ pub mod builder {
         {
             self.for_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for for_: {}", e));
+                .map_err(|e| format!("error converting supplied value for for_: {e}"));
             self
         }
         pub fn if_<T>(mut self, value: T) -> Self
@@ -5529,7 +5649,7 @@ pub mod builder {
         {
             self.if_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for if_: {}", e));
+                .map_err(|e| format!("error converting supplied value for if_: {e}"));
             self
         }
         pub fn in_parallel<T>(mut self, value: T) -> Self
@@ -5539,7 +5659,7 @@ pub mod builder {
         {
             self.in_parallel = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for in_parallel: {}", e));
+                .map_err(|e| format!("error converting supplied value for in_parallel: {e}"));
             self
         }
         pub fn input<T>(mut self, value: T) -> Self
@@ -5549,7 +5669,7 @@ pub mod builder {
         {
             self.input = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for input: {}", e));
+                .map_err(|e| format!("error converting supplied value for input: {e}"));
             self
         }
         pub fn metadata<T>(mut self, value: T) -> Self
@@ -5561,7 +5681,7 @@ pub mod builder {
         {
             self.metadata = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
+                .map_err(|e| format!("error converting supplied value for metadata: {e}"));
             self
         }
         pub fn output<T>(mut self, value: T) -> Self
@@ -5571,7 +5691,7 @@ pub mod builder {
         {
             self.output = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for output: {}", e));
+                .map_err(|e| format!("error converting supplied value for output: {e}"));
             self
         }
         pub fn then<T>(mut self, value: T) -> Self
@@ -5581,7 +5701,7 @@ pub mod builder {
         {
             self.then = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for then: {}", e));
+                .map_err(|e| format!("error converting supplied value for then: {e}"));
             self
         }
         pub fn timeout<T>(mut self, value: T) -> Self
@@ -5591,7 +5711,7 @@ pub mod builder {
         {
             self.timeout = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for timeout: {}", e));
+                .map_err(|e| format!("error converting supplied value for timeout: {e}"));
             self
         }
         pub fn while_<T>(mut self, value: T) -> Self
@@ -5601,7 +5721,7 @@ pub mod builder {
         {
             self.while_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for while_: {}", e));
+                .map_err(|e| format!("error converting supplied value for while_: {e}"));
             self
         }
     }
@@ -5665,7 +5785,7 @@ pub mod builder {
         {
             self.at = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for at: {}", e));
+                .map_err(|e| format!("error converting supplied value for at: {e}"));
             self
         }
         pub fn each<T>(mut self, value: T) -> Self
@@ -5675,7 +5795,7 @@ pub mod builder {
         {
             self.each = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for each: {}", e));
+                .map_err(|e| format!("error converting supplied value for each: {e}"));
             self
         }
         pub fn in_<T>(mut self, value: T) -> Self
@@ -5685,7 +5805,7 @@ pub mod builder {
         {
             self.in_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for in_: {}", e));
+                .map_err(|e| format!("error converting supplied value for in_: {e}"));
             self
         }
     }
@@ -5755,7 +5875,7 @@ pub mod builder {
         {
             self.checkpoint = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+                .map_err(|e| format!("error converting supplied value for checkpoint: {e}"));
             self
         }
         pub fn export<T>(mut self, value: T) -> Self
@@ -5765,7 +5885,7 @@ pub mod builder {
         {
             self.export = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for export: {}", e));
+                .map_err(|e| format!("error converting supplied value for export: {e}"));
             self
         }
         pub fn fork<T>(mut self, value: T) -> Self
@@ -5775,7 +5895,7 @@ pub mod builder {
         {
             self.fork = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for fork: {}", e));
+                .map_err(|e| format!("error converting supplied value for fork: {e}"));
             self
         }
         pub fn if_<T>(mut self, value: T) -> Self
@@ -5785,7 +5905,7 @@ pub mod builder {
         {
             self.if_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for if_: {}", e));
+                .map_err(|e| format!("error converting supplied value for if_: {e}"));
             self
         }
         pub fn input<T>(mut self, value: T) -> Self
@@ -5795,7 +5915,7 @@ pub mod builder {
         {
             self.input = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for input: {}", e));
+                .map_err(|e| format!("error converting supplied value for input: {e}"));
             self
         }
         pub fn metadata<T>(mut self, value: T) -> Self
@@ -5807,7 +5927,7 @@ pub mod builder {
         {
             self.metadata = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
+                .map_err(|e| format!("error converting supplied value for metadata: {e}"));
             self
         }
         pub fn output<T>(mut self, value: T) -> Self
@@ -5817,7 +5937,7 @@ pub mod builder {
         {
             self.output = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for output: {}", e));
+                .map_err(|e| format!("error converting supplied value for output: {e}"));
             self
         }
         pub fn then<T>(mut self, value: T) -> Self
@@ -5827,7 +5947,7 @@ pub mod builder {
         {
             self.then = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for then: {}", e));
+                .map_err(|e| format!("error converting supplied value for then: {e}"));
             self
         }
         pub fn timeout<T>(mut self, value: T) -> Self
@@ -5837,7 +5957,7 @@ pub mod builder {
         {
             self.timeout = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for timeout: {}", e));
+                .map_err(|e| format!("error converting supplied value for timeout: {e}"));
             self
         }
     }
@@ -5893,7 +6013,7 @@ pub mod builder {
         {
             self.branches = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for branches: {}", e));
+                .map_err(|e| format!("error converting supplied value for branches: {e}"));
             self
         }
         pub fn compete<T>(mut self, value: T) -> Self
@@ -5903,7 +6023,7 @@ pub mod builder {
         {
             self.compete = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for compete: {}", e));
+                .map_err(|e| format!("error converting supplied value for compete: {e}"));
             self
         }
     }
@@ -5923,138 +6043,6 @@ pub mod builder {
             Self {
                 branches: Ok(value.branches),
                 compete: Ok(value.compete),
-            }
-        }
-    }
-    #[derive(Clone, Debug)]
-    pub struct FunctionOptions {
-        broadcast_results:
-            ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
-        channel: ::std::result::Result<
-            ::std::option::Option<::std::string::String>,
-            ::std::string::String,
-        >,
-        retry:
-            ::std::result::Result<::std::option::Option<super::RetryPolicy>, ::std::string::String>,
-        store_failure: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
-        store_success: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
-        use_static: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
-        with_backup: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
-    }
-    impl ::std::default::Default for FunctionOptions {
-        fn default() -> Self {
-            Self {
-                broadcast_results: Ok(Default::default()),
-                channel: Ok(Default::default()),
-                retry: Ok(Default::default()),
-                store_failure: Ok(Default::default()),
-                store_success: Ok(Default::default()),
-                use_static: Ok(Default::default()),
-                with_backup: Ok(Default::default()),
-            }
-        }
-    }
-    impl FunctionOptions {
-        pub fn broadcast_results<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<bool>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.broadcast_results = value.try_into().map_err(|e| {
-                format!(
-                    "error converting supplied value for broadcast_results: {}",
-                    e
-                )
-            });
-            self
-        }
-        pub fn channel<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.channel = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for channel: {}", e));
-            self
-        }
-        pub fn retry<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<super::RetryPolicy>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.retry = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for retry: {}", e));
-            self
-        }
-        pub fn store_failure<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<bool>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.store_failure = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for store_failure: {}", e));
-            self
-        }
-        pub fn store_success<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<bool>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.store_success = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for store_success: {}", e));
-            self
-        }
-        pub fn use_static<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<bool>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.use_static = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for use_static: {}", e));
-            self
-        }
-        pub fn with_backup<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<bool>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.with_backup = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for with_backup: {}", e));
-            self
-        }
-    }
-    impl ::std::convert::TryFrom<FunctionOptions> for super::FunctionOptions {
-        type Error = super::error::ConversionError;
-        fn try_from(
-            value: FunctionOptions,
-        ) -> ::std::result::Result<Self, super::error::ConversionError> {
-            Ok(Self {
-                broadcast_results: value.broadcast_results?,
-                channel: value.channel?,
-                retry: value.retry?,
-                store_failure: value.store_failure?,
-                store_success: value.store_success?,
-                use_static: value.use_static?,
-                with_backup: value.with_backup?,
-            })
-        }
-    }
-    impl ::std::convert::From<super::FunctionOptions> for FunctionOptions {
-        fn from(value: super::FunctionOptions) -> Self {
-            Self {
-                broadcast_results: Ok(value.broadcast_results),
-                channel: Ok(value.channel),
-                retry: Ok(value.retry),
-                store_failure: Ok(value.store_failure),
-                store_success: Ok(value.store_success),
-                use_static: Ok(value.use_static),
-                with_backup: Ok(value.with_backup),
             }
         }
     }
@@ -6079,7 +6067,7 @@ pub mod builder {
         {
             self.from = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for from: {}", e));
+                .map_err(|e| format!("error converting supplied value for from: {e}"));
             self
         }
         pub fn schema<T>(mut self, value: T) -> Self
@@ -6089,7 +6077,7 @@ pub mod builder {
         {
             self.schema = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for schema: {}", e));
+                .map_err(|e| format!("error converting supplied value for schema: {e}"));
             self
         }
     }
@@ -6131,7 +6119,7 @@ pub mod builder {
         {
             self.as_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for as_: {}", e));
+                .map_err(|e| format!("error converting supplied value for as_: {e}"));
             self
         }
         pub fn schema<T>(mut self, value: T) -> Self
@@ -6141,7 +6129,7 @@ pub mod builder {
         {
             self.schema = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for schema: {}", e));
+                .map_err(|e| format!("error converting supplied value for schema: {e}"));
             self
         }
     }
@@ -6185,7 +6173,7 @@ pub mod builder {
         {
             self.code = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for code: {}", e));
+                .map_err(|e| format!("error converting supplied value for code: {e}"));
             self
         }
         pub fn stderr<T>(mut self, value: T) -> Self
@@ -6195,7 +6183,7 @@ pub mod builder {
         {
             self.stderr = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for stderr: {}", e));
+                .map_err(|e| format!("error converting supplied value for stderr: {e}"));
             self
         }
         pub fn stdout<T>(mut self, value: T) -> Self
@@ -6205,7 +6193,7 @@ pub mod builder {
         {
             self.stdout = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for stdout: {}", e));
+                .map_err(|e| format!("error converting supplied value for stdout: {e}"));
             self
         }
     }
@@ -6275,7 +6263,7 @@ pub mod builder {
         {
             self.checkpoint = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+                .map_err(|e| format!("error converting supplied value for checkpoint: {e}"));
             self
         }
         pub fn export<T>(mut self, value: T) -> Self
@@ -6285,7 +6273,7 @@ pub mod builder {
         {
             self.export = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for export: {}", e));
+                .map_err(|e| format!("error converting supplied value for export: {e}"));
             self
         }
         pub fn if_<T>(mut self, value: T) -> Self
@@ -6295,7 +6283,7 @@ pub mod builder {
         {
             self.if_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for if_: {}", e));
+                .map_err(|e| format!("error converting supplied value for if_: {e}"));
             self
         }
         pub fn input<T>(mut self, value: T) -> Self
@@ -6305,7 +6293,7 @@ pub mod builder {
         {
             self.input = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for input: {}", e));
+                .map_err(|e| format!("error converting supplied value for input: {e}"));
             self
         }
         pub fn metadata<T>(mut self, value: T) -> Self
@@ -6317,7 +6305,7 @@ pub mod builder {
         {
             self.metadata = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
+                .map_err(|e| format!("error converting supplied value for metadata: {e}"));
             self
         }
         pub fn output<T>(mut self, value: T) -> Self
@@ -6327,7 +6315,7 @@ pub mod builder {
         {
             self.output = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for output: {}", e));
+                .map_err(|e| format!("error converting supplied value for output: {e}"));
             self
         }
         pub fn raise<T>(mut self, value: T) -> Self
@@ -6337,7 +6325,7 @@ pub mod builder {
         {
             self.raise = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for raise: {}", e));
+                .map_err(|e| format!("error converting supplied value for raise: {e}"));
             self
         }
         pub fn then<T>(mut self, value: T) -> Self
@@ -6347,7 +6335,7 @@ pub mod builder {
         {
             self.then = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for then: {}", e));
+                .map_err(|e| format!("error converting supplied value for then: {e}"));
             self
         }
         pub fn timeout<T>(mut self, value: T) -> Self
@@ -6357,7 +6345,7 @@ pub mod builder {
         {
             self.timeout = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for timeout: {}", e));
+                .map_err(|e| format!("error converting supplied value for timeout: {e}"));
             self
         }
     }
@@ -6413,7 +6401,7 @@ pub mod builder {
         {
             self.error = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for error: {}", e));
+                .map_err(|e| format!("error converting supplied value for error: {e}"));
             self
         }
     }
@@ -6456,7 +6444,7 @@ pub mod builder {
         {
             self.attempt = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for attempt: {}", e));
+                .map_err(|e| format!("error converting supplied value for attempt: {e}"));
             self
         }
     }
@@ -6499,7 +6487,7 @@ pub mod builder {
         {
             self.count = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for count: {}", e));
+                .map_err(|e| format!("error converting supplied value for count: {e}"));
             self
         }
         pub fn duration<T>(mut self, value: T) -> Self
@@ -6509,7 +6497,7 @@ pub mod builder {
         {
             self.duration = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for duration: {}", e));
+                .map_err(|e| format!("error converting supplied value for duration: {e}"));
             self
         }
     }
@@ -6559,7 +6547,7 @@ pub mod builder {
         {
             self.backoff = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for backoff: {}", e));
+                .map_err(|e| format!("error converting supplied value for backoff: {e}"));
             self
         }
         pub fn delay<T>(mut self, value: T) -> Self
@@ -6569,7 +6557,7 @@ pub mod builder {
         {
             self.delay = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for delay: {}", e));
+                .map_err(|e| format!("error converting supplied value for delay: {e}"));
             self
         }
         pub fn limit<T>(mut self, value: T) -> Self
@@ -6579,7 +6567,7 @@ pub mod builder {
         {
             self.limit = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for limit: {}", e));
+                .map_err(|e| format!("error converting supplied value for limit: {e}"));
             self
         }
     }
@@ -6605,6 +6593,46 @@ pub mod builder {
         }
     }
     #[derive(Clone, Debug)]
+    pub struct RunFunction {
+        function: ::std::result::Result<super::RunJobFunction, ::std::string::String>,
+    }
+    impl ::std::default::Default for RunFunction {
+        fn default() -> Self {
+            Self {
+                function: Err("no value supplied for function".to_string()),
+            }
+        }
+    }
+    impl RunFunction {
+        pub fn function<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<super::RunJobFunction>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.function = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for function: {e}"));
+            self
+        }
+    }
+    impl ::std::convert::TryFrom<RunFunction> for super::RunFunction {
+        type Error = super::error::ConversionError;
+        fn try_from(
+            value: RunFunction,
+        ) -> ::std::result::Result<Self, super::error::ConversionError> {
+            Ok(Self {
+                function: value.function?,
+            })
+        }
+    }
+    impl ::std::convert::From<super::RunFunction> for RunFunction {
+        fn from(value: super::RunFunction) -> Self {
+            Self {
+                function: Ok(value.function),
+            }
+        }
+    }
+    #[derive(Clone, Debug)]
     pub struct RunJobRunner {
         arguments: ::std::result::Result<
             ::serde_json::Map<::std::string::String, ::serde_json::Value>,
@@ -6612,7 +6640,7 @@ pub mod builder {
         >,
         name: ::std::result::Result<::std::string::String, ::std::string::String>,
         options: ::std::result::Result<
-            ::std::option::Option<super::FunctionOptions>,
+            ::std::option::Option<super::WorkerOptions>,
             ::std::string::String,
         >,
         settings: ::std::result::Result<
@@ -6640,7 +6668,7 @@ pub mod builder {
         {
             self.arguments = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for arguments: {}", e));
+                .map_err(|e| format!("error converting supplied value for arguments: {e}"));
             self
         }
         pub fn name<T>(mut self, value: T) -> Self
@@ -6650,17 +6678,17 @@ pub mod builder {
         {
             self.name = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for name: {}", e));
+                .map_err(|e| format!("error converting supplied value for name: {e}"));
             self
         }
         pub fn options<T>(mut self, value: T) -> Self
         where
-            T: ::std::convert::TryInto<::std::option::Option<super::FunctionOptions>>,
+            T: ::std::convert::TryInto<::std::option::Option<super::WorkerOptions>>,
             T::Error: ::std::fmt::Display,
         {
             self.options = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for options: {}", e));
+                .map_err(|e| format!("error converting supplied value for options: {e}"));
             self
         }
         pub fn settings<T>(mut self, value: T) -> Self
@@ -6672,7 +6700,7 @@ pub mod builder {
         {
             self.settings = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for settings: {}", e));
+                .map_err(|e| format!("error converting supplied value for settings: {e}"));
             self
         }
     }
@@ -6725,7 +6753,7 @@ pub mod builder {
         {
             self.arguments = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for arguments: {}", e));
+                .map_err(|e| format!("error converting supplied value for arguments: {e}"));
             self
         }
         pub fn name<T>(mut self, value: T) -> Self
@@ -6735,7 +6763,7 @@ pub mod builder {
         {
             self.name = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for name: {}", e));
+                .map_err(|e| format!("error converting supplied value for name: {e}"));
             self
         }
     }
@@ -6777,7 +6805,7 @@ pub mod builder {
         {
             self.runner = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for runner: {}", e));
+                .map_err(|e| format!("error converting supplied value for runner: {e}"));
             self
         }
     }
@@ -6843,7 +6871,7 @@ pub mod builder {
         {
             self.checkpoint = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+                .map_err(|e| format!("error converting supplied value for checkpoint: {e}"));
             self
         }
         pub fn export<T>(mut self, value: T) -> Self
@@ -6853,7 +6881,7 @@ pub mod builder {
         {
             self.export = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for export: {}", e));
+                .map_err(|e| format!("error converting supplied value for export: {e}"));
             self
         }
         pub fn if_<T>(mut self, value: T) -> Self
@@ -6863,7 +6891,7 @@ pub mod builder {
         {
             self.if_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for if_: {}", e));
+                .map_err(|e| format!("error converting supplied value for if_: {e}"));
             self
         }
         pub fn input<T>(mut self, value: T) -> Self
@@ -6873,7 +6901,7 @@ pub mod builder {
         {
             self.input = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for input: {}", e));
+                .map_err(|e| format!("error converting supplied value for input: {e}"));
             self
         }
         pub fn metadata<T>(mut self, value: T) -> Self
@@ -6885,7 +6913,7 @@ pub mod builder {
         {
             self.metadata = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
+                .map_err(|e| format!("error converting supplied value for metadata: {e}"));
             self
         }
         pub fn output<T>(mut self, value: T) -> Self
@@ -6895,7 +6923,7 @@ pub mod builder {
         {
             self.output = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for output: {}", e));
+                .map_err(|e| format!("error converting supplied value for output: {e}"));
             self
         }
         pub fn run<T>(mut self, value: T) -> Self
@@ -6905,7 +6933,7 @@ pub mod builder {
         {
             self.run = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for run: {}", e));
+                .map_err(|e| format!("error converting supplied value for run: {e}"));
             self
         }
         pub fn then<T>(mut self, value: T) -> Self
@@ -6915,7 +6943,7 @@ pub mod builder {
         {
             self.then = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for then: {}", e));
+                .map_err(|e| format!("error converting supplied value for then: {e}"));
             self
         }
         pub fn timeout<T>(mut self, value: T) -> Self
@@ -6925,7 +6953,7 @@ pub mod builder {
         {
             self.timeout = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for timeout: {}", e));
+                .map_err(|e| format!("error converting supplied value for timeout: {e}"));
             self
         }
     }
@@ -6979,7 +7007,7 @@ pub mod builder {
         {
             self.worker = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for worker: {}", e));
+                .map_err(|e| format!("error converting supplied value for worker: {e}"));
             self
         }
     }
@@ -7048,7 +7076,7 @@ pub mod builder {
         {
             self.checkpoint = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+                .map_err(|e| format!("error converting supplied value for checkpoint: {e}"));
             self
         }
         pub fn export<T>(mut self, value: T) -> Self
@@ -7058,7 +7086,7 @@ pub mod builder {
         {
             self.export = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for export: {}", e));
+                .map_err(|e| format!("error converting supplied value for export: {e}"));
             self
         }
         pub fn if_<T>(mut self, value: T) -> Self
@@ -7068,7 +7096,7 @@ pub mod builder {
         {
             self.if_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for if_: {}", e));
+                .map_err(|e| format!("error converting supplied value for if_: {e}"));
             self
         }
         pub fn input<T>(mut self, value: T) -> Self
@@ -7078,7 +7106,7 @@ pub mod builder {
         {
             self.input = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for input: {}", e));
+                .map_err(|e| format!("error converting supplied value for input: {e}"));
             self
         }
         pub fn metadata<T>(mut self, value: T) -> Self
@@ -7090,7 +7118,7 @@ pub mod builder {
         {
             self.metadata = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
+                .map_err(|e| format!("error converting supplied value for metadata: {e}"));
             self
         }
         pub fn output<T>(mut self, value: T) -> Self
@@ -7100,7 +7128,7 @@ pub mod builder {
         {
             self.output = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for output: {}", e));
+                .map_err(|e| format!("error converting supplied value for output: {e}"));
             self
         }
         pub fn set<T>(mut self, value: T) -> Self
@@ -7112,7 +7140,7 @@ pub mod builder {
         {
             self.set = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for set: {}", e));
+                .map_err(|e| format!("error converting supplied value for set: {e}"));
             self
         }
         pub fn then<T>(mut self, value: T) -> Self
@@ -7122,7 +7150,7 @@ pub mod builder {
         {
             self.then = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for then: {}", e));
+                .map_err(|e| format!("error converting supplied value for then: {e}"));
             self
         }
         pub fn timeout<T>(mut self, value: T) -> Self
@@ -7132,7 +7160,7 @@ pub mod builder {
         {
             self.timeout = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for timeout: {}", e));
+                .map_err(|e| format!("error converting supplied value for timeout: {e}"));
             self
         }
     }
@@ -7191,7 +7219,7 @@ pub mod builder {
         {
             self.then = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for then: {}", e));
+                .map_err(|e| format!("error converting supplied value for then: {e}"));
             self
         }
         pub fn when<T>(mut self, value: T) -> Self
@@ -7201,7 +7229,7 @@ pub mod builder {
         {
             self.when = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for when: {}", e));
+                .map_err(|e| format!("error converting supplied value for when: {e}"));
             self
         }
     }
@@ -7272,7 +7300,7 @@ pub mod builder {
         {
             self.checkpoint = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+                .map_err(|e| format!("error converting supplied value for checkpoint: {e}"));
             self
         }
         pub fn export<T>(mut self, value: T) -> Self
@@ -7282,7 +7310,7 @@ pub mod builder {
         {
             self.export = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for export: {}", e));
+                .map_err(|e| format!("error converting supplied value for export: {e}"));
             self
         }
         pub fn if_<T>(mut self, value: T) -> Self
@@ -7292,7 +7320,7 @@ pub mod builder {
         {
             self.if_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for if_: {}", e));
+                .map_err(|e| format!("error converting supplied value for if_: {e}"));
             self
         }
         pub fn input<T>(mut self, value: T) -> Self
@@ -7302,7 +7330,7 @@ pub mod builder {
         {
             self.input = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for input: {}", e));
+                .map_err(|e| format!("error converting supplied value for input: {e}"));
             self
         }
         pub fn metadata<T>(mut self, value: T) -> Self
@@ -7314,7 +7342,7 @@ pub mod builder {
         {
             self.metadata = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
+                .map_err(|e| format!("error converting supplied value for metadata: {e}"));
             self
         }
         pub fn output<T>(mut self, value: T) -> Self
@@ -7324,7 +7352,7 @@ pub mod builder {
         {
             self.output = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for output: {}", e));
+                .map_err(|e| format!("error converting supplied value for output: {e}"));
             self
         }
         pub fn switch<T>(mut self, value: T) -> Self
@@ -7338,7 +7366,7 @@ pub mod builder {
         {
             self.switch = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for switch: {}", e));
+                .map_err(|e| format!("error converting supplied value for switch: {e}"));
             self
         }
         pub fn then<T>(mut self, value: T) -> Self
@@ -7348,7 +7376,7 @@ pub mod builder {
         {
             self.then = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for then: {}", e));
+                .map_err(|e| format!("error converting supplied value for then: {e}"));
             self
         }
         pub fn timeout<T>(mut self, value: T) -> Self
@@ -7358,7 +7386,7 @@ pub mod builder {
         {
             self.timeout = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for timeout: {}", e));
+                .map_err(|e| format!("error converting supplied value for timeout: {e}"));
             self
         }
     }
@@ -7438,7 +7466,7 @@ pub mod builder {
         {
             self.checkpoint = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+                .map_err(|e| format!("error converting supplied value for checkpoint: {e}"));
             self
         }
         pub fn export<T>(mut self, value: T) -> Self
@@ -7448,7 +7476,7 @@ pub mod builder {
         {
             self.export = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for export: {}", e));
+                .map_err(|e| format!("error converting supplied value for export: {e}"));
             self
         }
         pub fn if_<T>(mut self, value: T) -> Self
@@ -7458,7 +7486,7 @@ pub mod builder {
         {
             self.if_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for if_: {}", e));
+                .map_err(|e| format!("error converting supplied value for if_: {e}"));
             self
         }
         pub fn input<T>(mut self, value: T) -> Self
@@ -7468,7 +7496,7 @@ pub mod builder {
         {
             self.input = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for input: {}", e));
+                .map_err(|e| format!("error converting supplied value for input: {e}"));
             self
         }
         pub fn metadata<T>(mut self, value: T) -> Self
@@ -7480,7 +7508,7 @@ pub mod builder {
         {
             self.metadata = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
+                .map_err(|e| format!("error converting supplied value for metadata: {e}"));
             self
         }
         pub fn output<T>(mut self, value: T) -> Self
@@ -7490,7 +7518,7 @@ pub mod builder {
         {
             self.output = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for output: {}", e));
+                .map_err(|e| format!("error converting supplied value for output: {e}"));
             self
         }
         pub fn then<T>(mut self, value: T) -> Self
@@ -7500,7 +7528,7 @@ pub mod builder {
         {
             self.then = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for then: {}", e));
+                .map_err(|e| format!("error converting supplied value for then: {e}"));
             self
         }
         pub fn timeout<T>(mut self, value: T) -> Self
@@ -7510,7 +7538,7 @@ pub mod builder {
         {
             self.timeout = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for timeout: {}", e));
+                .map_err(|e| format!("error converting supplied value for timeout: {e}"));
             self
         }
     }
@@ -7562,7 +7590,7 @@ pub mod builder {
         {
             self.after = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for after: {}", e));
+                .map_err(|e| format!("error converting supplied value for after: {e}"));
             self
         }
     }
@@ -7628,7 +7656,7 @@ pub mod builder {
         {
             self.catch = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for catch: {}", e));
+                .map_err(|e| format!("error converting supplied value for catch: {e}"));
             self
         }
         pub fn checkpoint<T>(mut self, value: T) -> Self
@@ -7638,7 +7666,7 @@ pub mod builder {
         {
             self.checkpoint = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+                .map_err(|e| format!("error converting supplied value for checkpoint: {e}"));
             self
         }
         pub fn export<T>(mut self, value: T) -> Self
@@ -7648,7 +7676,7 @@ pub mod builder {
         {
             self.export = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for export: {}", e));
+                .map_err(|e| format!("error converting supplied value for export: {e}"));
             self
         }
         pub fn if_<T>(mut self, value: T) -> Self
@@ -7658,7 +7686,7 @@ pub mod builder {
         {
             self.if_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for if_: {}", e));
+                .map_err(|e| format!("error converting supplied value for if_: {e}"));
             self
         }
         pub fn input<T>(mut self, value: T) -> Self
@@ -7668,7 +7696,7 @@ pub mod builder {
         {
             self.input = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for input: {}", e));
+                .map_err(|e| format!("error converting supplied value for input: {e}"));
             self
         }
         pub fn metadata<T>(mut self, value: T) -> Self
@@ -7680,7 +7708,7 @@ pub mod builder {
         {
             self.metadata = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
+                .map_err(|e| format!("error converting supplied value for metadata: {e}"));
             self
         }
         pub fn output<T>(mut self, value: T) -> Self
@@ -7690,7 +7718,7 @@ pub mod builder {
         {
             self.output = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for output: {}", e));
+                .map_err(|e| format!("error converting supplied value for output: {e}"));
             self
         }
         pub fn then<T>(mut self, value: T) -> Self
@@ -7700,7 +7728,7 @@ pub mod builder {
         {
             self.then = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for then: {}", e));
+                .map_err(|e| format!("error converting supplied value for then: {e}"));
             self
         }
         pub fn timeout<T>(mut self, value: T) -> Self
@@ -7710,7 +7738,7 @@ pub mod builder {
         {
             self.timeout = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for timeout: {}", e));
+                .map_err(|e| format!("error converting supplied value for timeout: {e}"));
             self
         }
         pub fn try_<T>(mut self, value: T) -> Self
@@ -7720,7 +7748,7 @@ pub mod builder {
         {
             self.try_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for try_: {}", e));
+                .map_err(|e| format!("error converting supplied value for try_: {e}"));
             self
         }
     }
@@ -7799,7 +7827,7 @@ pub mod builder {
         {
             self.as_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for as_: {}", e));
+                .map_err(|e| format!("error converting supplied value for as_: {e}"));
             self
         }
         pub fn do_<T>(mut self, value: T) -> Self
@@ -7809,7 +7837,7 @@ pub mod builder {
         {
             self.do_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for do_: {}", e));
+                .map_err(|e| format!("error converting supplied value for do_: {e}"));
             self
         }
         pub fn errors<T>(mut self, value: T) -> Self
@@ -7819,7 +7847,7 @@ pub mod builder {
         {
             self.errors = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for errors: {}", e));
+                .map_err(|e| format!("error converting supplied value for errors: {e}"));
             self
         }
         pub fn except_when<T>(mut self, value: T) -> Self
@@ -7829,7 +7857,7 @@ pub mod builder {
         {
             self.except_when = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for except_when: {}", e));
+                .map_err(|e| format!("error converting supplied value for except_when: {e}"));
             self
         }
         pub fn retry<T>(mut self, value: T) -> Self
@@ -7839,7 +7867,7 @@ pub mod builder {
         {
             self.retry = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for retry: {}", e));
+                .map_err(|e| format!("error converting supplied value for retry: {e}"));
             self
         }
         pub fn when<T>(mut self, value: T) -> Self
@@ -7849,7 +7877,7 @@ pub mod builder {
         {
             self.when = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for when: {}", e));
+                .map_err(|e| format!("error converting supplied value for when: {e}"));
             self
         }
     }
@@ -7925,7 +7953,7 @@ pub mod builder {
         {
             self.checkpoint = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for checkpoint: {}", e));
+                .map_err(|e| format!("error converting supplied value for checkpoint: {e}"));
             self
         }
         pub fn export<T>(mut self, value: T) -> Self
@@ -7935,7 +7963,7 @@ pub mod builder {
         {
             self.export = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for export: {}", e));
+                .map_err(|e| format!("error converting supplied value for export: {e}"));
             self
         }
         pub fn if_<T>(mut self, value: T) -> Self
@@ -7945,7 +7973,7 @@ pub mod builder {
         {
             self.if_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for if_: {}", e));
+                .map_err(|e| format!("error converting supplied value for if_: {e}"));
             self
         }
         pub fn input<T>(mut self, value: T) -> Self
@@ -7955,7 +7983,7 @@ pub mod builder {
         {
             self.input = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for input: {}", e));
+                .map_err(|e| format!("error converting supplied value for input: {e}"));
             self
         }
         pub fn metadata<T>(mut self, value: T) -> Self
@@ -7967,7 +7995,7 @@ pub mod builder {
         {
             self.metadata = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for metadata: {}", e));
+                .map_err(|e| format!("error converting supplied value for metadata: {e}"));
             self
         }
         pub fn output<T>(mut self, value: T) -> Self
@@ -7977,7 +8005,7 @@ pub mod builder {
         {
             self.output = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for output: {}", e));
+                .map_err(|e| format!("error converting supplied value for output: {e}"));
             self
         }
         pub fn then<T>(mut self, value: T) -> Self
@@ -7987,7 +8015,7 @@ pub mod builder {
         {
             self.then = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for then: {}", e));
+                .map_err(|e| format!("error converting supplied value for then: {e}"));
             self
         }
         pub fn timeout<T>(mut self, value: T) -> Self
@@ -7997,7 +8025,7 @@ pub mod builder {
         {
             self.timeout = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for timeout: {}", e));
+                .map_err(|e| format!("error converting supplied value for timeout: {e}"));
             self
         }
         pub fn wait<T>(mut self, value: T) -> Self
@@ -8007,7 +8035,7 @@ pub mod builder {
         {
             self.wait = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for wait: {}", e));
+                .map_err(|e| format!("error converting supplied value for wait: {e}"));
             self
         }
     }
@@ -8043,6 +8071,135 @@ pub mod builder {
         }
     }
     #[derive(Clone, Debug)]
+    pub struct WorkerOptions {
+        broadcast_results:
+            ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+        channel: ::std::result::Result<
+            ::std::option::Option<::std::string::String>,
+            ::std::string::String,
+        >,
+        retry:
+            ::std::result::Result<::std::option::Option<super::RetryPolicy>, ::std::string::String>,
+        store_failure: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+        store_success: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+        use_static: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+        with_backup: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+    }
+    impl ::std::default::Default for WorkerOptions {
+        fn default() -> Self {
+            Self {
+                broadcast_results: Ok(Default::default()),
+                channel: Ok(Default::default()),
+                retry: Ok(Default::default()),
+                store_failure: Ok(Default::default()),
+                store_success: Ok(Default::default()),
+                use_static: Ok(Default::default()),
+                with_backup: Ok(Default::default()),
+            }
+        }
+    }
+    impl WorkerOptions {
+        pub fn broadcast_results<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<bool>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.broadcast_results = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for broadcast_results: {e}"));
+            self
+        }
+        pub fn channel<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.channel = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for channel: {e}"));
+            self
+        }
+        pub fn retry<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<super::RetryPolicy>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.retry = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for retry: {e}"));
+            self
+        }
+        pub fn store_failure<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<bool>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.store_failure = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for store_failure: {e}"));
+            self
+        }
+        pub fn store_success<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<bool>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.store_success = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for store_success: {e}"));
+            self
+        }
+        pub fn use_static<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<bool>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.use_static = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for use_static: {e}"));
+            self
+        }
+        pub fn with_backup<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<bool>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.with_backup = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for with_backup: {e}"));
+            self
+        }
+    }
+    impl ::std::convert::TryFrom<WorkerOptions> for super::WorkerOptions {
+        type Error = super::error::ConversionError;
+        fn try_from(
+            value: WorkerOptions,
+        ) -> ::std::result::Result<Self, super::error::ConversionError> {
+            Ok(Self {
+                broadcast_results: value.broadcast_results?,
+                channel: value.channel?,
+                retry: value.retry?,
+                store_failure: value.store_failure?,
+                store_success: value.store_success?,
+                use_static: value.use_static?,
+                with_backup: value.with_backup?,
+            })
+        }
+    }
+    impl ::std::convert::From<super::WorkerOptions> for WorkerOptions {
+        fn from(value: super::WorkerOptions) -> Self {
+            Self {
+                broadcast_results: Ok(value.broadcast_results),
+                channel: Ok(value.channel),
+                retry: Ok(value.retry),
+                store_failure: Ok(value.store_failure),
+                store_success: Ok(value.store_success),
+                use_static: Ok(value.use_static),
+                with_backup: Ok(value.with_backup),
+            }
+        }
+    }
+    #[derive(Clone, Debug)]
     pub struct WorkflowSchema {
         checkpointing: ::std::result::Result<
             ::std::option::Option<super::CheckpointConfig>,
@@ -8072,7 +8229,7 @@ pub mod builder {
         {
             self.checkpointing = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for checkpointing: {}", e));
+                .map_err(|e| format!("error converting supplied value for checkpointing: {e}"));
             self
         }
         pub fn do_<T>(mut self, value: T) -> Self
@@ -8082,7 +8239,7 @@ pub mod builder {
         {
             self.do_ = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for do_: {}", e));
+                .map_err(|e| format!("error converting supplied value for do_: {e}"));
             self
         }
         pub fn document<T>(mut self, value: T) -> Self
@@ -8092,7 +8249,7 @@ pub mod builder {
         {
             self.document = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for document: {}", e));
+                .map_err(|e| format!("error converting supplied value for document: {e}"));
             self
         }
         pub fn input<T>(mut self, value: T) -> Self
@@ -8102,7 +8259,7 @@ pub mod builder {
         {
             self.input = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for input: {}", e));
+                .map_err(|e| format!("error converting supplied value for input: {e}"));
             self
         }
         pub fn output<T>(mut self, value: T) -> Self
@@ -8112,7 +8269,7 @@ pub mod builder {
         {
             self.output = value
                 .try_into()
-                .map_err(|e| format!("error converting supplied value for output: {}", e));
+                .map_err(|e| format!("error converting supplied value for output: {e}"));
             self
         }
     }
@@ -8157,6 +8314,9 @@ pub mod defaults {
         super::ProcessReturnType::Stdout
     }
     pub(super) fn run_task_configuration_variant1_return() -> super::ProcessReturnType {
+        super::ProcessReturnType::Stdout
+    }
+    pub(super) fn run_task_configuration_variant2_return() -> super::ProcessReturnType {
         super::ProcessReturnType::Stdout
     }
     pub(super) fn schema_variant0_format() -> ::std::string::String {

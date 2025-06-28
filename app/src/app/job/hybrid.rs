@@ -268,11 +268,10 @@ impl HybridJobAppImpl {
                 }
             }
         } else {
-            Err(JobWorkerError::WorkerNotFound(format!(
-                "illegal structure with empty: {:?}",
-                worker
-            ))
-            .into())
+            Err(
+                JobWorkerError::WorkerNotFound(format!("illegal structure with empty: {worker:?}"))
+                    .into(),
+            )
         }
     }
 }

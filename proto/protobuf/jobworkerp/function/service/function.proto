@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package jobworkerp.function.service;
 
+import "jobworkerp/data/common.proto";
 import "jobworkerp/function/data/function.proto";
 
 message FindFunctionRequest {
@@ -13,10 +14,38 @@ message FindFunctionSetRequest {
   // FunctionSet name
   string name = 1;
 }
+// runner parameters to create as a worker
+message RunnerParameters {
+  // Runner Settings in JSON format (from protobuf schema)
+  string settings_json = 1;
+  // Worker options (from protobuf schema)
+  jobworkerp.function.data.WorkerOptions worker_options = 2;
+}
+message FunctionCallRequest {
+  // Runner or Worker name to execute
+  oneof name {
+    string runner_name = 1;
+    string worker_name = 2;
+  }
+  // Runner parameters (only for runner_name is set)
+  optional RunnerParameters runner_parameters = 3;
+
+  // Job Arguments in JSON format (with protobuf schema:
+  // jobworkerp.data.RunnerData.job_args_proto)
+  string args_json = 4;
+
+  // Prevent from registering the same keys job in queue at the same time
+  optional string uniq_key = 5;
+
+  // Execution options
+  optional jobworkerp.function.data.FunctionCallOptions options = 6;
+}
 
 service FunctionService {
   rpc FindList(FindFunctionRequest)
       returns (stream jobworkerp.function.data.FunctionSpecs);
   rpc FindListBySet(FindFunctionSetRequest)
       returns (stream jobworkerp.function.data.FunctionSpecs);
+  rpc Call(FunctionCallRequest)
+      returns (stream jobworkerp.function.data.FunctionResult);
 }

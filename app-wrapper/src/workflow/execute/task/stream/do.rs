@@ -7,11 +7,11 @@ use crate::workflow::{
     execute::{
         context::{TaskContext, Then, WorkflowContext, WorkflowStatus},
         expression::UseExpression,
-        job::JobExecutorWrapper,
         task::{trace::TaskTracing, ExecutionId, TaskExecutor},
     },
 };
 use anyhow::Result;
+use app::app::job::execute::JobExecutorWrapper;
 use async_stream::stream;
 use debug_stub_derive::DebugStub;
 use futures::StreamExt;

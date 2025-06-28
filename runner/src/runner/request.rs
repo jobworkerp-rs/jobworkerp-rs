@@ -33,16 +33,13 @@ impl RequestRunner {
     // settings: base url (+ arg.path)
     pub fn create(&mut self, base_url: &str) -> Result<()> {
         let u = Url::from_str(base_url).map_err(|e| {
-            JobWorkerError::ParseError(format!(
-                "cannot parse url from: {}, error= {:?}",
-                base_url, e
-            ))
+            JobWorkerError::ParseError(format!("cannot parse url from: {base_url}, error= {e:?}"))
         })?;
         // TODO http client option from settings
         let c = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10)) // set default header?
             .build()
-            .map_err(|e| JobWorkerError::OtherError(format!("http client build error: {:?}", e)))?;
+            .map_err(|e| JobWorkerError::OtherError(format!("http client build error: {e:?}")))?;
         self.client = c;
         self.url = Some(u);
         Ok(())
@@ -126,10 +123,10 @@ impl RunnerTrait for RequestRunner {
                     let mut hm = HeaderMap::new();
                     for kv in args.headers.iter() {
                         let k1: HeaderName = kv.key.parse().map_err(|e| {
-                            JobWorkerError::ParseError(format!("header value error: {:?}", e))
+                            JobWorkerError::ParseError(format!("header value error: {e:?}"))
                         })?;
                         let v1 = kv.value.parse().map_err(|e| {
-                            JobWorkerError::ParseError(format!("header value error: {:?}", e))
+                            JobWorkerError::ParseError(format!("header value error: {e:?}"))
                         })?;
                         hm.append(k1, v1);
                     }

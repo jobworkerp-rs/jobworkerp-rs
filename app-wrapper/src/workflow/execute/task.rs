@@ -1,7 +1,6 @@
 use super::{
     context::{TaskContext, WorkflowContext},
     expression::UseExpression,
-    job::JobExecutorWrapper,
 };
 use crate::workflow::{
     definition::{
@@ -14,6 +13,7 @@ use crate::workflow::{
     },
 };
 use anyhow::Result;
+use app::app::job::execute::JobExecutorWrapper;
 use async_stream::stream;
 use debug_stub_derive::DebugStub;
 use fork::ForkTaskExecutor;
@@ -139,7 +139,7 @@ impl TaskExecutor {
                     format!("Failed to load checkpoint from execution_id: {}, workflow: {}, position: {}, error: {:#?}",
                       execution_id.value, workflow_name, &pos.as_json_pointer(), e),
                 Some(current_position.read().await.as_error_instance()),
-                    Some(format!("{:?}", e)),
+                    Some(format!("{e:?}")),
                 ))
                 }
             }

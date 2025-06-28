@@ -60,8 +60,7 @@ impl RdbJobResultAppImpl {
             .find_by_id_or_name(worker_id, worker_name)
             .await?;
         let wd = wd.ok_or(JobWorkerError::WorkerNotFound(format!(
-            "cannot listen job which worker is None: id={:?} or name={:?}",
-            worker_id, worker_name
+            "cannot listen job which worker is None: id={worker_id:?} or name={worker_name:?}"
         )))?;
         if !wd.broadcast_results {
             return Err(JobWorkerError::InvalidParameter(format!(
@@ -233,8 +232,7 @@ impl JobResultApp for RdbJobResultAppImpl {
             .find_by_id_or_name(worker_id, worker_name)
             .await?;
         let wd = wd.ok_or(JobWorkerError::WorkerNotFound(format!(
-            "cannot listen job which worker is None: id={:?}",
-            worker_id
+            "cannot listen job which worker is None: id={worker_id:?}"
         )))?;
         if request_streaming {
             tracing::debug!("listen_result_stream: worker_id={:?}", &worker_id);
@@ -339,8 +337,7 @@ impl JobResultApp for RdbJobResultAppImpl {
             .find_by_id_or_name(worker_id, worker_name)
             .await?;
         let wid = wid.ok_or(JobWorkerError::WorkerNotFound(format!(
-            "cannot listen job which worker is None: id={:?} or name={:?}",
-            worker_id, worker_name
+            "cannot listen job which worker is None: id={worker_id:?} or name={worker_name:?}"
         )))?;
         // let wd = wd.ok_or(JobWorkerError::WorkerNotFound(format!(
         //     "cannot listen job which worker is None: id={:?} or name={:?}",

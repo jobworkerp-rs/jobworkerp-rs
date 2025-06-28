@@ -191,7 +191,7 @@ mod test {
         let flow = loader
             .load_workflow(Some("test-files/switch.yaml"), None, false)
             .await?;
-        println!("{:#?}", flow);
+        println!("{flow:#?}");
         assert_eq!(
             flow.document.title,
             Some("Workflow test (switch)".to_string())
@@ -220,7 +220,7 @@ mod test {
         let flow = loader
             .load_workflow(Some("test-files/ls-test.yaml"), None, false)
             .await?;
-        println!("{:#?}", flow);
+        println!("{flow:#?}");
         assert_eq!(flow.document.title, Some("Workflow test (ls)".to_string()));
         assert_eq!(flow.document.name.as_str(), "ls-test");
         assert!(flow
@@ -265,7 +265,7 @@ mod test {
                 })
             );
             assert_eq!(serde_json::Value::Object(settings), serde_json::json!({}));
-            let opts = workflow::FunctionOptions {
+            let opts = workflow::WorkerOptions {
                 channel: Some("workflow".to_string()),
                 store_failure: Some(true),
                 store_success: Some(true),
@@ -298,7 +298,7 @@ mod test {
         }
         let _for_task = match &flow.do_.0[1]["EachFileIteration"] {
             workflow::Task::ForTask(for_task) => for_task,
-            f => return Err(format!("unexpected task type: {:#?}", f).into()),
+            f => return Err(format!("unexpected task type: {f:#?}").into()),
         };
         // println!("====FOR: {:#?}", _for_task);
 
