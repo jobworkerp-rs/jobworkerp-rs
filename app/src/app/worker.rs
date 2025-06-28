@@ -163,8 +163,7 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
                 // found worker_name: use it
                 self.find_by_name(wname).await?.ok_or(
                     JobWorkerError::InvalidParameter(format!(
-                        "cannot listen job which worker is None: id={}",
-                        wname
+                        "cannot listen job which worker is None: id={wname}"
                     ))
                     .into(),
                 )

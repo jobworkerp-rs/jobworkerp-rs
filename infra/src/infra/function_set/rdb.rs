@@ -49,8 +49,7 @@ pub trait FunctionSetRepository: UseRdbPool + UseIdGenerator + Sync + Send {
         } else {
             // no record?
             Err(JobWorkerError::RuntimeError(format!(
-                "Cannot insert function_set (logic error?): {:?}",
-                function_set
+                "Cannot insert function_set (logic error?): {function_set:?}"
             ))
             .into())
         }
@@ -209,7 +208,7 @@ pub trait FunctionSetRepository: UseRdbPool + UseIdGenerator + Sync + Send {
                 .fetch_optional(tx)
                 .await
                 .map_err(JobWorkerError::DBError)
-                .context(format!("error in find_by_name: name = {}", name))?;
+                .context(format!("error in find_by_name: name = {name}"))?;
 
         Ok(function_set)
     }
@@ -226,7 +225,7 @@ pub trait FunctionSetRepository: UseRdbPool + UseIdGenerator + Sync + Send {
         .fetch_all(tx)
         .await
         .map_err(JobWorkerError::DBError)
-        .context(format!("error finding targets for set_id = {}", set_id))
+        .context(format!("error finding targets for set_id = {set_id}"))
     }
 
     async fn find_list(
@@ -267,7 +266,7 @@ pub trait FunctionSetRepository: UseRdbPool + UseIdGenerator + Sync + Send {
         }
         .await
         .map_err(JobWorkerError::DBError)
-        .context(format!("error in find_list: ({:?}, {:?})", limit, offset))
+        .context(format!("error in find_list: ({limit:?}, {offset:?})"))
     }
 
     async fn count_list_tx<'c, E: Executor<'c, Database = Rdb>>(&self, tx: E) -> Result<i64> {

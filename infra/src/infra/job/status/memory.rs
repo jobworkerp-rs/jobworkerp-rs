@@ -34,7 +34,7 @@ impl JobStatusRepository for MemoryJobStatusRepository {
                 } else if *v == JobStatus::WaitResult as i32 {
                     Some((JobId { value: *id }, JobStatus::WaitResult))
                 } else {
-                    let msg = format!("unknown status: id: {}, status :{}.", id, v);
+                    let msg = format!("unknown status: id: {id}, status :{v}.");
                     tracing::warn!(msg);
                     None
                 }

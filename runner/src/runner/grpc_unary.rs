@@ -51,7 +51,7 @@ impl GrpcUnaryRunner {
         let port = &settings.port;
 
         // Create the base endpoint
-        let mut endpoint = Endpoint::new(format!("{}:{}", host, port))?;
+        let mut endpoint = Endpoint::new(format!("{host}:{port}"))?;
 
         // Apply timeout if specified
         if let Some(timeout_ms) = settings.timeout_ms {
@@ -252,7 +252,7 @@ impl GrpcUnaryRunner {
                     let value_str =
                         base64::engine::general_purpose::STANDARD.encode(value.as_encoded_bytes());
 
-                    result.insert(format!("{}-bin", key), value_str);
+                    result.insert(format!("{key}-bin"), value_str);
                 }
             }
         }
@@ -329,7 +329,7 @@ impl RunnerTrait for GrpcUnaryRunner {
                 client.ready().await.map_err(|e| {
                     tonic::Status::new(
                         tonic::Code::Unknown,
-                        format!("Service was not ready: {:?}", e),
+                        format!("Service was not ready: {e:?}"),
                     )
                 })?;
 
@@ -366,7 +366,7 @@ impl RunnerTrait for GrpcUnaryRunner {
                 }
 
                 if let Some(token) = &self.auth_token {
-                    let token_str = format!("Bearer {}", token);
+                    let token_str = format!("Bearer {token}");
                     if let Ok(val) = MetadataValue::try_from(token_str.as_str()) {
                         metadata_mut.insert(
                             tonic::metadata::MetadataKey::from_static("authorization"),
@@ -503,7 +503,7 @@ mod tests {
                                 #[prost(message, optional, tag = "1")]
                                 data: Option<Runner>,
                             }
-                            println!("Successfully received runner: {:#?}", result);
+                            println!("Successfully received runner: {result:#?}");
                             assert!(result.code == tonic::Code::Ok as i32);
                             assert!(!result.body.is_empty());
                             println!(
@@ -515,8 +515,8 @@ mod tests {
                             );
                         }
                         Err(e) => {
-                            println!("Failed to decode response as Runner: {:?}", e);
-                            println!("Raw response: {:?}", data);
+                            println!("Failed to decode response as Runner: {e:?}");
+                            println!("Raw response: {data:?}");
                             unreachable!()
                         }
                     }
@@ -557,7 +557,7 @@ mod tests {
         let services = {
             let reflection_client = runner.reflection_client.as_ref().unwrap();
             let services = reflection_client.list_services().await?;
-            println!("Available services: {:?}", services);
+            println!("Available services: {services:?}");
             services
         };
 
@@ -572,7 +572,7 @@ mod tests {
             let reflection_client = runner.reflection_client.as_ref().unwrap();
             let message_name = "jobworkerp.function.data.FunctionSetData";
             let template = reflection_client.get_message_template(message_name).await?;
-            println!("FunctionSet template: {}", template);
+            println!("FunctionSet template: {template}");
             template
         };
 
@@ -592,11 +592,11 @@ mod tests {
             // "targets": []
         }
 
-        println!("Creating function set with name: {}", test_set_name);
+        println!("Creating function set with name: {test_set_name}");
 
         // 4. Create the function set
         let create_request = GrpcUnaryArgs {
-            method: format!("/{}/Create", service_name),
+            method: format!("/{service_name}/Create"),
             request: serde_json::to_string(&set_data)?,
             metadata: HashMap::new(),
             timeout: 5000,
@@ -624,7 +624,7 @@ mod tests {
                 .parse_bytes_to_json(response_message, &response.body)
                 .await?;
 
-            println!("Created function set response: {}", json_response);
+            println!("Created function set response: {json_response}");
             json_response
         };
 
@@ -638,14 +638,14 @@ mod tests {
                 .as_str()
                 .ok_or_else(|| anyhow!("Could not find id in response"))?
                 .parse::<i64>()?;
-            println!("Created function set with ID: {}", id);
+            println!("Created function set with ID: {id}");
             id
         };
 
         // 6. Find the created function set by ID
         let find_request = GrpcUnaryArgs {
-            method: format!("/{}/Find", service_name),
-            request: format!(r#"{{"value": {}}}"#, function_set_id),
+            method: format!("/{service_name}/Find"),
+            request: format!(r#"{{"value": {function_set_id}}}"#),
             metadata: HashMap::new(),
             timeout: 5000,
         };
@@ -672,7 +672,7 @@ mod tests {
                 .parse_bytes_to_json(response_message, &response.body)
                 .await?;
 
-            println!("Found function set: {}", json_response);
+            println!("Found function set: {json_response}");
 
             // Verify correct function set was found
             let response_value: serde_json::Value = serde_json::from_str(&json_response)?;
@@ -693,8 +693,8 @@ mod tests {
 
         // 7. Find the created function set by name
         let find_by_name_request = GrpcUnaryArgs {
-            method: format!("/{}/FindByName", service_name),
-            request: format!(r#"{{"name": "{}"}}"#, test_set_name),
+            method: format!("/{service_name}/FindByName"),
+            request: format!(r#"{{"name": "{test_set_name}"}}"#),
             metadata: HashMap::new(),
             timeout: 5000,
         };
@@ -721,7 +721,7 @@ mod tests {
                 .parse_bytes_to_json(response_message, &response.body)
                 .await?;
 
-            println!("Found function set by name: {}", json_response);
+            println!("Found function set by name: {json_response}");
 
             // Verify correct function set was found
             let response_value: serde_json::Value = serde_json::from_str(&json_response)?;
@@ -761,7 +761,7 @@ mod tests {
             }
 
             GrpcUnaryArgs {
-                method: format!("/{}/Update", service_name),
+                method: format!("/{service_name}/Update"),
                 request: serde_json::to_string(&function_set["data"])?,
                 metadata: HashMap::new(),
                 timeout: 5000,
@@ -817,8 +817,8 @@ mod tests {
 
         // 10. Delete the function set
         let delete_request = GrpcUnaryArgs {
-            method: format!("/{}/Delete", service_name),
-            request: format!(r#"{{"value": {}}}"#, function_set_id),
+            method: format!("/{service_name}/Delete"),
+            request: format!(r#"{{"value": {function_set_id}}}"#),
             metadata: HashMap::new(),
             timeout: 5000,
         };

@@ -11,6 +11,10 @@ pub mod jobworkerp {
             pub type FunctionSchema = data::FunctionSchema;
             pub type McpToolList = data::McpToolList;
             pub type McpTool = data::McpTool;
+            pub type WorkerOptions = data::WorkerOptions;
+            pub type FunctionCallOptions = data::FunctionCallOptions;
+            pub type FunctionExecutionInfo = data::FunctionExecutionInfo;
+            pub type FunctionResult = data::FunctionResult;
         }
         pub mod service {
             tonic::include_proto!("jobworkerp.function.service");
@@ -37,6 +41,7 @@ pub mod jobworkerp {
         pub type JobResult = data::JobResult;
         pub type ResultOutput = data::ResultOutput;
         pub type ResultOutputItem = data::ResultOutputItem;
+        pub type ResultStatus = data::ResultStatus;
         pub type JobStatus = data::JobStatus;
         pub type Empty = data::Empty;
     }

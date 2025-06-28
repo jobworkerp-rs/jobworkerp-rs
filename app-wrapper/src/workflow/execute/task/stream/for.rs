@@ -6,7 +6,6 @@ use crate::workflow::{
     execute::{
         context::{TaskContext, WorkflowContext},
         expression::UseExpression,
-        job::JobExecutorWrapper,
         task::{
             stream::do_::DoTaskStreamExecutor, trace::TaskTracing, ExecutionId,
             StreamTaskExecutorTrait,
@@ -14,6 +13,7 @@ use crate::workflow::{
     },
 };
 use anyhow::Result;
+use app::app::job::execute::JobExecutorWrapper;
 use futures::stream::{self, Stream, StreamExt};
 use infra_utils::infra::{net::reqwest, trace::Tracing};
 use jobworkerp_base::APP_WORKER_NAME;
@@ -270,7 +270,7 @@ impl ForTaskStreamExecutor {
             let job_executor_wrapper_clone = self.job_executor_wrapper.clone();
             let http_client_clone = self.http_client.clone();
             let workflow_context = self.workflow_context.clone();
-            let task_name_formatted = Arc::new(format!("{}_{}", task_name, i));
+            let task_name_formatted = Arc::new(format!("{task_name}_{i}"));
             let item_name_clone = item_name.to_string();
             let cx = cx.clone();
             let meta = self.metadata.clone();
@@ -451,7 +451,7 @@ impl ForTaskStreamExecutor {
                     let span = Self::start_child_otel_span(
                         &cx.clone(),
                         APP_WORKER_NAME,
-                        format!("for_task_{}:{}_{}", task_name, item_name, i),
+                        format!("for_task_{task_name}:{item_name}_{i}"),
                     );
                     let cx = opentelemetry::Context::current_with_span(span);
 
@@ -463,7 +463,7 @@ impl ForTaskStreamExecutor {
                     has_items = true;
 
                     // Create a do task executor for this item
-                    let task_name_formatted = Arc::new(format!("{}_{}", task_name, i));
+                    let task_name_formatted = Arc::new(format!("{task_name}_{i}"));
                     let do_stream_executor = Arc::new(DoTaskStreamExecutor::new(
                         self.workflow_context.clone(),
                         self.default_timeout,

@@ -85,8 +85,7 @@ impl RunnerTrait for SlackPostMessageRunner {
                     ProstMessageCodec::deserialize_message::<SlackChatPostMessageArgs>(args)
                         .map_err(|e| {
                             JobWorkerError::InvalidParameter(format!(
-                                "cannot deserialize slack message: {:?}",
-                                e
+                                "cannot deserialize slack message: {e:?}"
                             ))
                         })?;
                 // not validate json structure for slack
@@ -98,8 +97,7 @@ impl RunnerTrait for SlackPostMessageRunner {
                         Ok(ProstMessageCodec::serialize_message(
                             &res.to_proto().map_err(|e| {
                                 JobWorkerError::OtherError(format!(
-                                    "cannot serialize slack result: {:?}",
-                                    e
+                                    "cannot serialize slack result: {e:?}"
                                 ))
                             })?,
                         )?)

@@ -195,7 +195,7 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
                 Ok(res)
             }
             Ok((result, None)) => {
-                println!("no stream. result = {:?}", result);
+                println!("no stream. result = {result:?}");
                 let res_header = result.encode_to_vec();
                 // empty stream
                 let mut res = Response::new(Box::pin(stream! {

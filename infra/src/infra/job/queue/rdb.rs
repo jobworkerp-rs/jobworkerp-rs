@@ -30,11 +30,10 @@ pub trait RdbJobQueueRepository: UseRdbPool + Sync + Send {
             format!(
                 r#"
                 SELECT * FROM job
-                WHERE run_after_time <= ? {} AND grabbed_until_time <= ?
+                WHERE run_after_time <= ? {future_query} AND grabbed_until_time <= ?
                 ORDER BY run_after_time, priority DESC
                 LIMIT ? OFFSET ?
-            "#,
-                future_query
+            "#
             )
         } else {
             let in_clause = worker_ids
@@ -45,30 +44,29 @@ pub trait RdbJobQueueRepository: UseRdbPool + Sync + Send {
             format!(
                 r#"
                 SELECT * FROM job
-                WHERE run_after_time <= ? {} AND grabbed_until_time <= ? AND worker_id IN ({})
+                WHERE run_after_time <= ? {future_query} AND grabbed_until_time <= ? AND worker_id IN ({in_clause})
                 ORDER BY run_after_time, priority DESC
                 LIMIT ? OFFSET ?
-            "#,
-                future_query, in_clause
+            "#
             )
         };
         let mut args = RdbArguments::default();
         args.add(now + mergin_msec as i64).map_err(|e| {
-            JobWorkerError::OtherError(format!("sql args err:{:?}, error:{:?}", now, e))
+            JobWorkerError::OtherError(format!("sql args err:{now:?}, error:{e:?}"))
         })?;
         args.add(now).map_err(|e| {
-            JobWorkerError::OtherError(format!("sql args err:{:?}, error:{:?}", now, e))
+            JobWorkerError::OtherError(format!("sql args err:{now:?}, error:{e:?}"))
         })?;
         for id in &worker_ids {
             args.add(id.value).map_err(|e| {
-                JobWorkerError::OtherError(format!("sql args err:{:?}, error:{:?}", now, e))
+                JobWorkerError::OtherError(format!("sql args err:{now:?}, error:{e:?}"))
             })?;
         }
         args.add(limit as i64).map_err(|e| {
-            JobWorkerError::OtherError(format!("sql args err:{:?}, error:{:?}", now, e))
+            JobWorkerError::OtherError(format!("sql args err:{now:?}, error:{e:?}"))
         })?;
         args.add(offset).map_err(|e| {
-            JobWorkerError::OtherError(format!("sql args err:{:?}, error:{:?}", now, e))
+            JobWorkerError::OtherError(format!("sql args err:{now:?}, error:{e:?}"))
         })?;
         let mut rows = sqlx::query_with::<Rdb, _>(&query, args)
             .fetch_all(self.db_pool())
@@ -264,7 +262,7 @@ mod test {
         let jobs1 = repo
             .fetch_jobs_to_process(0, 5, vec![], 1000, false)
             .await?;
-        println!("{:?}", jobs1);
+        println!("{jobs1:?}");
         assert_eq!(jobs1.len(), 2);
 
         // future only

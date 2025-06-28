@@ -65,7 +65,7 @@ pub trait RdbJobRepository:
             .map_err(JobWorkerError::DBError)?;
             Ok(res.rows_affected() > 0)
         } else {
-            Err(JobWorkerError::RuntimeError(format!("Cannot insert empty job: {:?}", job)).into())
+            Err(JobWorkerError::RuntimeError(format!("Cannot insert empty job: {job:?}")).into())
         }
     }
 
@@ -280,7 +280,7 @@ pub trait RdbJobRepository:
     // XXX id is primitive (use only for restore)
     async fn find_list_in(&self, ids: &[&i64]) -> Result<Vec<Job>> {
         let params = format!("?{}", ", ?".repeat(ids.len() - 1));
-        let query_str = format!("SELECT * FROM job WHERE id IN ( {} )", params);
+        let query_str = format!("SELECT * FROM job WHERE id IN ( {params} )");
         let mut query = sqlx::query_as::<_, JobRow>(query_str.as_str());
         for i in ids.iter() {
             query = query.bind(i);
@@ -289,7 +289,7 @@ pub trait RdbJobRepository:
             .fetch_all(self.db_pool())
             .await
             .map_err(JobWorkerError::DBError)
-            .context(format!("error in find_list_in: ({:?})", ids))
+            .context(format!("error in find_list_in: ({ids:?})"))
             .map(|r| r.iter().map(|r2| r2.to_proto()).collect_vec())
     }
 
@@ -351,7 +351,7 @@ pub trait RdbJobRepository:
         }
         .await
         .map_err(JobWorkerError::DBError)
-        .context(format!("error in find_list: ({:?}, {:?})", limit, offset))
+        .context(format!("error in find_list: ({limit:?}, {offset:?})"))
     }
 
     #[inline]

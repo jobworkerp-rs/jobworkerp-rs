@@ -338,7 +338,7 @@ impl RunnerTrait for CommandRunnerImpl {
                     &e
                 );
                 Err(
-                    JobWorkerError::RuntimeError(std::format!("command worker error: {:?}", e))
+                    JobWorkerError::RuntimeError(std::format!("command worker error: {e:?}"))
                         .into(),
                 )
             }
@@ -747,7 +747,7 @@ impl RunnerTrait for CommandRunnerImpl {
                     let error_result = CommandResult {
                         exit_code: Some(-1), // Conventional error code
                         stdout: None,
-                        stderr: Some(format!("Command error: {}", e)),
+                        stderr: Some(format!("Command error: {e}")),
                         execution_time_ms: Some(0),
                         started_at: Some(started_at),
                         max_memory_usage_kb: None,
@@ -1068,21 +1068,20 @@ mod tests {
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
                     Some(Item::End(_)) => {
-                        eprintln!("[{}ms] END marker received", elapsed);
+                        eprintln!("[{elapsed}ms] END marker received");
                         io::stderr().flush().unwrap();
                         found_end = true;
                         break;
                     }
                     None => {
-                        eprintln!("[{}ms] Empty item received", elapsed);
+                        eprintln!("[{elapsed}ms] Empty item received");
                         io::stderr().flush().unwrap();
                     }
                 }
             }
 
             eprintln!(
-                "Stream processing completed: lines={}, final_result={}, end_marker={}",
-                line_count, found_final_result, found_end
+                "Stream processing completed: lines={line_count}, final_result={found_final_result}, end_marker={found_end}"
             );
             io::stderr().flush().unwrap();
 

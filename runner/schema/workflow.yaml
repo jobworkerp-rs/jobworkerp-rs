@@ -7,100 +7,99 @@ $id: https://serverlessworkflow.io/schemas/1.0.0/workflow.yaml
 $schema: https://json-schema.org/draft/2020-12/schema
 title: WorkflowSchema
 description: >-
-  Partial Serverless Workflow DSL with function(tool) support. 
-
-  Runtime expressions:
-  - jq expressions using ${..} syntax (e.g. ${.key.ckey}, ${$task.input})
-  - liquid templates using $${..} syntax
-  - Available only in fields marked in their descriptions
-
-  Context variables in expressions:
-  - Input mode: keys from input data
-  - Output mode: keys from output data
-  - Workflow info: workflow.id, workflow.definition, workflow.input, workflow.context_variables
-  - Current task info: task.definition, task.raw_input, task.raw_output, task.output, task.flow_directive
-  - Raw data: access pre-transformation data via raw_input and raw_output (e.g. ${$task.raw_input})
+  Workflow schema supporting job execution with functions and tools.
+  
+  Runtime expressions are supported in fields marked in descriptions:
+  - jq syntax: ${.key.subkey} for data access, ${$task.input} for context
+  - liquid syntax: $${..} for templates
+  
+  Available context variables:
+  - Input data: direct key access
+  - Output data: direct key access  
+  - Context vars: set by task.export, setTask (access via $vars for jq)
+  - Workflow: workflow.id, workflow.definition, workflow.input, workflow.context_variables
+  - Task: task.definition, task.input, task.raw_output, task.output, task.flow_directive
 type: object
 required: [document, input, do]
 properties:
   checkpointing:
     type: object
     title: Checkpoint Config
-    description: Configures checkpoint/restart feature.
+    description: Checkpoint and restart configuration.
     properties:
       enabled:
         type: boolean
-        description: Enable checkpoint feature.
+        description: Enable checkpoint functionality.
         default: false
       storage:
         type: string
         enum: ["memory", "redis"]
-        description": "Checkpoint storage backend.(if enabled)"
+        description: "Storage backend for checkpoints."
     required: ["enabled"]
   document:
     type: object
     title: Document
-    description: Documents the workflow.
+    description: Workflow metadata and identification.
     unevaluatedProperties: false
     properties:
       dsl:
         type: string
         pattern: ^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$
         title: WorkflowDSL
-        description: The version of the DSL used by the workflow.
+        description: DSL version used by this workflow.
         default: "0.0.1"
       namespace:
         type: string
         pattern: ^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$
         title: WorkflowNamespace
-        description: The workflow's namespace.
+        description: Workflow namespace.
         default: "default"
       name:
         type: string
         pattern: ^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$
         title: WorkflowName
-        description: The workflow's name.
+        description: Workflow name.
       version:
         type: string
         pattern: ^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$
         title: WorkflowVersion
-        description: The workflow's semantic version.
+        description: Workflow semantic version.
         default: "0.0.1"
       title:
         type: string
         title: WorkflowTitle
-        description: The workflow's title.
+        description: Workflow title.
       summary:
         type: string
         title: WorkflowSummary
-        description: The workflow's Markdown summary.
+        description: Workflow summary in Markdown format.
       tags:
         type: object
         title: WorkflowTags
-        description: A key/value mapping of the workflow's tags, if any.
+        description: Key/value tags for workflow classification.
         additionalProperties: true
       metadata:
         type: object
         title: WorkflowMetadata
-        description: Holds additional information about the workflow.
+        description: Additional workflow metadata.
         additionalProperties: true
     required: [dsl, namespace, name, version]
   input:
     $ref: "#/$defs/input"
     title: Input
-    description: Configures the workflow's input.
+    description: Workflow input configuration.
   do:
     $ref: "#/$defs/taskList"
     title: Do
-    description: Defines the task(s) the workflow must perform.
+    description: Tasks to execute in this workflow.
   output:
     $ref: "#/$defs/output"
     title: Output
-    description: Configures the workflow's output.
+    description: Workflow output configuration.
 $defs:
   taskList:
     title: TaskList
-    description: List of named tasks to perform.
+    description: Ordered list of named tasks.
     type: array
     items:
       type: object
@@ -112,50 +111,50 @@ $defs:
   taskBase:
     type: object
     title: TaskBase
-    description: An object inherited by all tasks.
+    description: Base properties inherited by all task types.
     properties:
       if:
         type: string
         title: TaskBaseIf
-        description: A runtime expression, if any, used to determine whether or not the task should be run.
+        description: Runtime expression to conditionally execute this task.
       input:
         $ref: "#/$defs/input"
         title: TaskBaseInput
-        description: Configure the task's input.
+        description: Task input configuration.
       output:
         $ref: "#/$defs/output"
         title: TaskBaseOutput
-        description: Configure the task's output.
+        description: Task output configuration.
       export:
         $ref: "#/$defs/export"
         title: TaskBaseExport
-        description: Export task output to context.
+        description: Export task output to workflow context.
       timeout:
         title: TaskTimeout
         oneOf:
           - $ref: "#/$defs/timeout"
             title: TaskTimeoutDefinition
-            description: The task's timeout configuration, if any.
+            description: Task timeout configuration.
           - type: string
             title: TaskTimeoutReference
-            description: The name of the task's timeout, if any.
+            description: Reference to named timeout configuration.
       then:
         $ref: "#/$defs/flowDirective"
         title: TaskBaseThen
-        description: The flow directive to be performed upon completion of the task.
+        description: Flow control directive executed after task completion.
       metadata:
         type: object
         title: TaskMetadata
-        description: Holds additional information about the task.
+        description: Additional task metadata.
         additionalProperties: true
       checkpoint:
         type: boolean
         title: Checkpoint
-        description: If true, save workflow state after this task. Used for checkpoint/restart.
+        description: Save workflow state after this task for checkpoint/restart.
         default: false
   task:
     title: Task
-    description: A discrete unit of work that contributes to achieving the overall objectives defined by the workflow.
+    description: Single unit of work within a workflow.
     unevaluatedProperties: false
     oneOf:
       - $ref: "#/$defs/forkTask"
@@ -171,14 +170,14 @@ $defs:
     type: object
     $ref: "#/$defs/taskBase"
     title: ForkTask
-    description: Allows workflows to execute multiple tasks concurrently and optionally race them against each other, with a single possible winner, which sets the task's output.
+    description: Execute multiple tasks concurrently, optionally competing for single result.
     unevaluatedProperties: false
     required: [fork]
     properties:
       fork:
         type: object
         title: ForkTaskConfiguration
-        description: The configuration of the branches to perform concurrently.
+        description: Concurrent branch configuration.
         unevaluatedProperties: false
         required: [branches]
         properties:
@@ -188,13 +187,13 @@ $defs:
           compete:
             type: boolean
             title: ForkCompete
-            description: Indicates whether or not the concurrent tasks are racing against each other, with a single possible winner, which sets the composite task's output.
+            description: Enable competition mode where first completed task wins.
             default: false
   doTask:
     type: object
     $ref: "#/$defs/taskBase"
     title: DoTask
-    description: Allows to execute a list of tasks in sequence.
+    description: Execute tasks sequentially.
     unevaluatedProperties: false
     required: [do]
     allOf:
@@ -202,46 +201,46 @@ $defs:
           do:
             $ref: "#/$defs/taskList"
             title: DoTaskConfiguration
-            description: The configuration of the tasks to perform sequentially.
+            description: Tasks to execute in sequence.
       - not:
           required: [for]
   forTask:
     type: object
     $ref: "#/$defs/taskBase"
     title: ForTask
-    description: Allows workflows to iterate over a collection of items, executing a defined set of subtasks for each item in the collection. This task type is instrumental in handling scenarios such as batch processing, data transformation, and repetitive operations across datasets.
+    description: Iterate over collection, executing subtasks for each item.
     required: [for, do]
     unevaluatedProperties: false
     properties:
       for:
         type: object
         title: ForTaskConfiguration
-        description: The definition of the loop that iterates over a range of values.
+        description: Loop iteration configuration.
         unevaluatedProperties: false
         properties:
           each:
             type: string
             title: ForEach
-            description: The name of the variable used to store the current item being enumerated.
+            description: Variable name for current item.
             default: item
           in:
             type: string
             title: ForIn
-            description: A runtime expression used to get the collection to enumerate.
+            description: Runtime expression returning collection to iterate.
           at:
             type: string
             title: ForAt
-            description: The name of the variable used to store the index of the current item being enumerated.
+            description: Variable name for current index.
             default: index
         required: [in]
       while:
         type: string
         title: While
-        description: A runtime expression that represents the condition, if any, that must be met for the iteration to continue.
+        description: Runtime expression for loop continuation condition.
       inParallel:
         type: boolean
         title: ForInParallel
-        description: Indicates whether or not the subtasks should be executed in parallel.
+        description: Execute subtasks in parallel.
         default: false
       do:
         $ref: "#/$defs/taskList"
@@ -250,14 +249,14 @@ $defs:
     type: object
     $ref: "#/$defs/taskBase"
     title: RaiseTask
-    description: Intentionally triggers and propagates errors.
+    description: Trigger and propagate errors intentionally.
     required: [raise]
     unevaluatedProperties: false
     properties:
       raise:
         type: object
         title: RaiseTaskConfiguration
-        description: The definition of the error to raise.
+        description: Error to raise.
         unevaluatedProperties: false
         properties:
           error:
@@ -265,39 +264,40 @@ $defs:
             oneOf:
               - $ref: "#/$defs/error"
                 title: RaiseErrorDefinition
-                description: Defines the error to raise.
+                description: Inline error definition.
               - type: string
                 title: RaiseErrorReference
-                description: The name of the error to raise
+                description: Reference to named error definition.
         required: [error]
   runTask:
     type: object
     $ref: "#/$defs/taskBase"
     title: RunTask
-    description: Provides the capability to execute external containers, shell commands, scripts, or workflows.
+    description: Execute external processes, commands, or workflows.
     required: [run]
     unevaluatedProperties: false
     properties:
       run:
         type: object
         title: RunTaskConfiguration
-        description: The configuration of the process to execute.
+        description: Process execution configuration.
         unevaluatedProperties: false
         properties:
           await:
             type: boolean
             default: true
             title: AwaitProcessCompletion
-            description: Whether to await the process completion before continuing.
+            description: Wait for process completion before continuing.
           return:
             type: string
             title: ProcessReturnType
-            description: Configures the output of the process.
+            description: Process output type to return.
             enum: [stdout, stderr, code, all, none]
             default: stdout
         oneOf:
           - $ref: "#/$defs/runWorker"
           - $ref: "#/$defs/runRunner"
+          - $ref: "#/$defs/runFunction"
   runRunner:
     required: [runner]
     properties:
@@ -310,95 +310,142 @@ $defs:
           name:
             type: string
             title: RunnerName
-            description: The name of the runner(runtime environment) that executes job (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND, PLUGIN, MCP_SERVER, LLM_CHAT etc.)
+            description: The name of the runner (runtime environment) that executes the job (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND, LLM_CHAT, MCP server names, plugin names, etc.)
           settings:
             type: object
             title: InitializeSettings
-            description: The initialization settings, if any. Runtime expression can be used to transform each value (not keys, no mixed plain text).
+            description: The initialization settings, if any. Runtime expressions can be used to transform each value (not keys, no mixed plain text).
           options:
-            type: object
-            title: FunctionOptions
-            description: The options to use when running the configured function.
-            properties:
-              channel:
-                type: string
-                title: FunctionChannel
-                description: The channel to use when running the function. (Channel controls execution concurrency)
-              withBackup:
-                type: boolean
-                title: FunctionWithBackup
-                description: Whether to backup the function call (queue) to database when queueing and running the function.
-              storeSuccess:
-                type: boolean
-                title: StoreSuccessResult
-                description: Whether to store successful results to database.
-              storeFailure:
-                type: boolean
-                title: StoreFailureResult
-                description: Whether to store failure results to database.
-              useStatic:
-                type: boolean
-                title: UseStaticFunction
-                description: Whether to use a static function (persist in database, pool initialized function).
-              retry:
-                $ref: "#/$defs/retryPolicy"
-                title: RetryPolicyDefinition
-                description: The retry policy to use, if any, when catching errors.
-              broadcastResults:
-                type: boolean
-                title: BroadcastResultsToListener
-                description: Whether to broadcast results to listeners.
+            $ref: "#/$defs/workerOptions"
           arguments:
             type: object
-            title: FunctionArguments
-            description: A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation.
+            title: JobArguments
+            description: A key/value mapping of arguments to use when running the runner as job. Runtime expressions are supported for value transformation.
             additionalProperties: true
         required: [name, arguments]
+  workerOptions:
+    type: object
+    title: WorkerOptions
+    description: The options to use when running the worker.
+    properties:
+      channel:
+        type: string
+        title: Channel
+        description: The channel to use when running the worker (controls execution concurrency).
+      withBackup:
+        type: boolean
+        title: WithBackup
+        description: Whether to backup the enqueued job to the database during queueing and execution.
+      storeSuccess:
+        type: boolean
+        title: StoreSuccessResult
+        description: Whether to store successful results in the database.
+      storeFailure:
+        type: boolean
+        title: StoreFailureResult
+        description: Whether to store failure results in the database.
+      useStatic:
+        type: boolean
+        title: UseStaticWorker
+        description: Whether to use a static worker (persisted in database with pooled initialization).
+      retry:
+        $ref: "#/$defs/retryPolicy"
+        title: RetryPolicyDefinition
+        description: The retry policy to use, if any, when catching errors.
+      broadcastResults:
+        type: boolean
+        title: BroadcastResultsToListener
+        description: Whether to broadcast results to listeners.
   runWorker:
     required: [worker]
     properties:
       worker:
         type: object
         title: RunJobWorker
-        description: Executes a job using a specified worker (runner with settings).
+        description: Executes a job using a specified worker (configured runner with settings and options).
         unevaluatedProperties: false
         properties:
           name:
             type: string
             title: WorkerName
-            description: The name of the worker that executes this function (defined by user)
+            description: The name of the worker that executes this job (user-defined).
           arguments:
             type: object
             title: FunctionArguments
             description: A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation.
             additionalProperties: true
         required: [name, arguments]
+  runFunction:
+    required: [function]
+    properties:
+      function:
+        type: object
+        title: RunJobFunction
+        description: Executes a job using a specified function(runner or worker).
+        unevaluatedProperties: false
+        # Either runnerName or workerName must be specified
+        oneOf:
+          - type: object
+            title: RunnerFunction
+            description: Execute using a runner with optional settings
+            properties:
+              runnerName:
+                type: string
+                description: The name of the runner that executes job
+              settings:
+                type: object
+                description: The initialization settings JSON, if any. (ref. jobworkerp.data.RunnerData.runner_settings_proto schema) Runtime expression can be used to transform each value (not keys, no mixed plain text).
+              options:
+                $ref: "#/$defs/workerOptions"
+              arguments:
+                type: object
+                description: A key/value mapping of arguments JSON (ref. jobworkerp.data.RunnerData.job_args_proto schema) to use when running the function. Runtime expressions are supported for value transformation.
+                additionalProperties: true
+            required:
+              - runnerName
+              - arguments
+            additionalProperties: false
+          - type: object
+            title: WorkerFunction
+            description: Execute using a pre-configured worker
+            properties:
+              workerName:
+                type: string
+                description: The name of the worker that executes job
+              arguments:
+                type: object
+                description: A key/value mapping of arguments JSON to use when running the function. Runtime expressions are supported for value transformation.
+                additionalProperties: true
+            required:
+              - workerName
+              - arguments
+            additionalProperties: false
   setTask:
     type: object
     $ref: "#/$defs/taskBase"
     title: SetTask
-    description: A task used to set data.
+    description: Set data as context variables.
     required: [set]
     unevaluatedProperties: false
     properties:
       set:
         type: object
         title: SetTaskConfiguration
-        description: The data to set.
+        description: Data to set as context variables.
         minProperties: 1
         additionalProperties: true
   switchTask:
     type: object
     $ref: "#/$defs/taskBase"
     title: SwitchTask
-    description: Enables conditional branching within workflows, allowing them to dynamically select different paths based on specified conditions or criteria.
+    description: Conditional branching based on runtime conditions.
     required: [switch]
     unevaluatedProperties: false
     properties:
       switch:
         type: array
         title: SwitchTaskConfiguration
-        description: The definition of the switch to use.
+        description: Switch case definitions.
         minItems: 1
         items:
           type: object
@@ -408,34 +455,34 @@ $defs:
           additionalProperties:
             type: object
             title: SwitchCase
-            description: The definition of a case within a switch task, defining a condition and corresponding tasks to execute if the condition is met.
+            description: Case condition and action definition.
             unevaluatedProperties: false
             required: [then]
             properties:
               when:
                 type: string
                 title: SwitchCaseCondition
-                description: A runtime expression used to determine whether or not the case matches.
+                description: Runtime expression for case matching.
               then:
                 $ref: "#/$defs/flowDirective"
                 title: SwitchCaseOutcome
-                description: The flow directive to execute when the case matches.
+                description: Flow directive for matching case.
   tryTask:
     type: object
     $ref: "#/$defs/taskBase"
     title: TryTask
-    description: Serves as a mechanism within workflows to handle errors gracefully, potentially retrying failed tasks before proceeding with alternate ones.
+    description: Error handling with retry and fallback mechanisms.
     required: [try, catch]
     unevaluatedProperties: false
     properties:
       try:
         $ref: "#/$defs/taskList"
         title: TryTaskConfiguration
-        description: The task(s) to perform.
+        description: Tasks to attempt execution.
       catch:
         type: object
         title: TryTaskCatch
-        description: The object used to define the errors to catch.
+        description: Error handling configuration.
         unevaluatedProperties: false
         properties:
           errors:
@@ -444,53 +491,53 @@ $defs:
             properties:
               with:
                 $ref: "#/$defs/errorFilter"
-            description: static error filter
+            description: Static error filter configuration.
           as:
             type: string
             title: CatchAs
-            description: The name of the runtime expression variable to save the error as. Defaults to 'error'.
+            description: Variable name to store caught error (defaults to 'error').
           when:
             type: string
             title: CatchWhen
-            description: A runtime expression used to determine whether to catch the filtered error.
+            description: Runtime expression to enable error catching.
           exceptWhen:
             type: string
             title: CatchExceptWhen
-            description: A runtime expression used to determine whether not to catch the filtered error.
+            description: Runtime expression to disable error catching.
           retry:
             oneOf:
               - $ref: "#/$defs/retryPolicy"
                 title: RetryPolicyDefinition
-                description: The retry policy to use, if any, when catching errors.
+                description: Retry policy configuration.
               - type: string
                 title: RetryPolicyReference
-                description: The name of the retry policy to use, if any, when catching errors.
+                description: Reference to named retry policy.
           do:
             $ref: "#/$defs/taskList"
             title: TryTaskCatchDo
-            description: The definition of the task(s) to run when catching an error.
+            description: Tasks to execute when error is caught.
   waitTask:
     type: object
     $ref: "#/$defs/taskBase"
     title: WaitTask
-    description: Allows workflows to pause or delay their execution for a specified period of time.
+    description: Pause workflow execution for specified duration.
     required: [wait]
     unevaluatedProperties: false
     properties:
       wait:
         $ref: "#/$defs/duration"
         title: WaitTaskConfiguration
-        description: The amount of time to wait.
+        description: Duration to wait.
   flowDirective:
     title: FlowDirective
-    description: Represents different transition options that determine the next execution path within a workflow.
+    description: Control flow directive for workflow execution path.
     oneOf:
       - title: FlowDirectiveEnum
         type: string
         enum: [continue, exit, end]
         default: continue
       - type: string
-        description: A runtime expression that evaluates to a task name, determining which task to execute next in the workflow.
+        description: Runtime expression evaluating to target task name.
   duration:
     oneOf:
       - type: object
@@ -500,78 +547,78 @@ $defs:
           days:
             type: integer
             title: DurationDays
-            description: Number of days, if any.
+            description: Number of days.
           hours:
             type: integer
             title: DurationHours
-            description: Number of days, if any.
+            description: Number of hours.
           minutes:
             type: integer
             title: DurationMinutes
-            description: Number of minutes, if any.
+            description: Number of minutes.
           seconds:
             type: integer
             title: DurationSeconds
-            description: Number of seconds, if any.
+            description: Number of seconds.
           milliseconds:
             type: integer
             title: DurationMilliseconds
-            description: Number of milliseconds, if any.
+            description: Number of milliseconds.
         title: DurationInline
-        description: The inline definition of a duration.
+        description: Inline duration specification using individual time units.
       - type: string
         pattern: '^P(?!$)(\d+(?:\.\d+)?Y)?(\d+(?:\.\d+)?M)?(\d+(?:\.\d+)?W)?(\d+(?:\.\d+)?D)?(T(?=\d)(\d+(?:\.\d+)?H)?(\d+(?:\.\d+)?M)?(\d+(?:\.\d+)?S)?)?$'
         title: DurationExpression
-        description: The ISO 8601 expression of a duration.
+        description: Duration expressed in ISO 8601 format.
   error:
     type: object
     title: Error
-    description: Represents an error.
+    description: Error definition.
     unevaluatedProperties: false
     properties:
       type:
         title: ErrorType
-        description: A URI reference that identifies the error type.
+        description: URI identifying error type.
         $ref: "#/$defs/uriTemplate"
       status:
         type: integer
         title: ErrorStatus
-        description: The status code generated by the origin for this occurrence of the error.
+        description: HTTP status code for this error.
       instance:
         title: ErrorInstance
-        description: A JSON Pointer used to reference the component the error originates from.
+        description: JSON Pointer to error source component.
         type: string
         format: json-pointer
       title:
-        description: A short, human-readable summary of the error.
+        description: Brief error summary.
         title: ErrorTitle
         type: string
       detail:
         title: ErrorDetails
-        description: A human-readable explanation specific to this occurrence of the error.
+        description: Detailed error explanation.
         type: string
     required: [type, status]
   errorFilter:
     type: object
     title: ErrorFilter
-    description: Error filtering base on static values. For error filtering on dynamic values, use catch.when property
+    description: Static error filtering configuration. For dynamic filtering, use catch.when property.
     minProperties: 1
     properties:
       type:
         type: string
-        description: if present, means this value should be used for filtering
+        description: Filter by error type value.
       status:
         type: integer
-        description: if present, means this value should be used for filtering
+        description: Filter by error status code.
       instance:
         type: string
-        description: if present, means this value should be used for filtering
+        description: Filter by error instance path.
       title:
         type: string
-        description: if present, means this value should be used for filtering
+        description: Filter by error title.
       details:
         type: string
-        description: if present, means this value should be used for filtering
+        description: Filter by error details.
   uriTemplate:
     title: UriTemplate
     anyOf:
@@ -581,7 +628,7 @@ $defs:
         pattern: "^[A-Za-z][A-Za-z0-9+\\-.]*://.*"
   endpoint:
     title: Endpoint
-    description: Represents an endpoint.
+    description: Endpoint configuration.
     oneOf:
       - $ref: "#/$defs/uriTemplate"
       - title: EndpointConfiguration
@@ -590,105 +637,105 @@ $defs:
         properties:
           uri:
             title: EndpointUri
-            description: The endpoint's URI.
+            description: Endpoint URI.
             $ref: "#/$defs/uriTemplate"
         required: [uri]
   externalResource:
     type: object
     title: ExternalResource
-    description: Represents an external resource.
+    description: External resource configuration.
     unevaluatedProperties: false
     properties:
       name:
         type: string
         title: ExternalResourceName
-        description: The name of the external resource, if any.
+        description: Resource name.
       endpoint:
         $ref: "#/$defs/endpoint"
         title: ExternalResourceEndpoint
-        description: The endpoint of the external resource.
+        description: Resource endpoint.
     required: [endpoint]
   input:
     type: object
     title: Input
-    description: Configures the input of a workflow or task.
+    description: Input configuration for workflow or task.
     unevaluatedProperties: false
     properties:
       schema:
         $ref: "#/$defs/schema"
         title: InputSchema
-        description: The schema used to describe and validate the input of the workflow or task.
+        description: Schema for input validation.
       from:
         title: InputFrom
-        description: A runtime expression, if any, used to mutate and/or filter the input of the workflow or task.
+        description: Runtime expression to transform input data.
         oneOf:
           - type: string
           - type: object
   output:
     type: object
     title: Output
-    description: Configures the output of a workflow or task.
+    description: Output configuration for workflow or task.
     unevaluatedProperties: false
     properties:
       schema:
         $ref: "#/$defs/schema"
         title: OutputSchema
-        description: The schema used to describe and validate the output of the workflow or task.
+        description: Schema for output validation.
       as:
         title: OutputAs
-        description: A runtime expression, if any, used to mutate and/or filter the output of the workflow or task.
+        description: Runtime expression to transform output data.
         oneOf:
           - type: string
           - type: object
   export:
     type: object
     title: Export
-    description: Set the content of the context. .
+    description: Export configuration for context variables.
     unevaluatedProperties: false
     properties:
       schema:
         $ref: "#/$defs/schema"
         title: ExportSchema
-        description: The schema used to describe and validate the workflow context.
+        description: Schema for context validation.
       as:
         title: ExportAs
-        description: A runtime expression, if any, used to export the output data to the context.
+        description: Runtime expression to export data to context.
         oneOf:
           - type: string
           - type: object
   retryPolicy:
     type: object
     title: RetryPolicy
-    description: Defines a retry policy.
+    description: Retry policy configuration.
     unevaluatedProperties: false
     properties:
       delay:
         $ref: "#/$defs/duration"
         title: RetryDelay
-        description: The duration to wait between retry attempts.
+        description: Delay between retry attempts.
       backoff:
         type: object
         title: RetryBackoff
-        description: The retry duration backoff.
+        description: Backoff strategy for retry durations.
         unevaluatedProperties: false
         oneOf:
           - title: ConstantBackoff
             properties:
               constant:
                 type: object
-                description: The definition of the constant backoff to use, if any. value is empty object.
+                description: Constant backoff configuration (empty object).
             required: [constant]
           - title: ExponentialBackOff
             properties:
               exponential:
                 type: object
-                description: The definition of the exponential backoff to use, if any. value is empty object.
+                description: Exponential backoff configuration (empty object).
             required: [exponential]
           - title: LinearBackoff
             properties:
               linear:
                 type: object
-                description: The definition of the linear backoff to use, if any. value is empty object.
+                description: Linear backoff configuration (empty object).
             required: [linear]
       limit:
         type: object
@@ -703,68 +750,68 @@ $defs:
               count:
                 type: integer
                 title: RetryLimitAttemptCount
-                description: The maximum amount of retry attempts, if any.
+                description: Maximum retry attempts.
               duration:
                 $ref: "#/$defs/duration"
                 title: RetryLimitAttemptDuration
-                description: The maximum duration for each retry attempt.
-        description: The retry limit, if any.
+                description: Maximum duration per retry attempt.
+        description: Retry limits configuration.
   schema:
     type: object
     title: Schema
-    description: Represents the definition of a schema.
+    description: Schema definition configuration.
     unevaluatedProperties: false
     properties:
       format:
         type: string
         default: json
         title: SchemaFormat
-        description: The schema's format. Defaults to 'json'. The (optional) version of the format can be set using `{format}:{version}`.
+        description: Schema format (defaults to 'json'). Use `{format}:{version}` for versioning.
     oneOf:
       - title: SchemaInline
         properties:
           document:
-            description: The schema's inline definition.
+            description: Inline schema definition.
         required: [document]
       - title: SchemaExternal
         properties:
           resource:
             $ref: "#/$defs/externalResource"
             title: SchemaExternalResource
-            description: The schema's external resource.
+            description: External schema resource.
         required: [resource]
   timeout:
     type: object
     title: Timeout
-    description: The definition of a timeout.
+    description: Timeout configuration.
     unevaluatedProperties: false
     properties:
       after:
         $ref: "#/$defs/duration"
         title: TimeoutAfter
-        description: The duration after which to timeout.
+        description: Timeout duration.
     required: [after]
   processResult:
     type: object
     title: ProcessResult
-    description: The object returned by a run task when its return type has been set 'all'.
+    description: Process execution result when return type is 'all'.
     unevaluatedProperties: false
     properties:
       code:
         type: integer
         title: ProcessExitCode
-        description: The process's exit code.
+        description: Process exit code.
       stdout:
         type: string
         title: ProcessStandardOutput
-        description: The content of the process's STDOUT.
+        description: Process STDOUT content.
       stderr:
         type: string
         title: ProcessStandardError
-        description: The content of the process's STDERR.
+        description: Process STDERR content.
     required: [code, stdout, stderr]
   plainString:
     type: string
     title: PlainString
-    description: A plain string.
+    description: Plain string without runtime expressions.
     pattern: "^\\s*[^\\$\\{].*[^\\$\\{]\\s*$"

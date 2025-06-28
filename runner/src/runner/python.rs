@@ -112,8 +112,7 @@ impl RunnerTrait for PythonCommandRunner {
             .output()
             .await
             .context(format!(
-                "Failed to create virtual environment with uv: {:?}",
-                uv_path
+                "Failed to create virtual environment with uv: {uv_path:?}"
             ))?;
 
         if output.status.success() {
@@ -210,7 +209,7 @@ impl RunnerTrait for PythonCommandRunner {
                         // download from URL
                         let response = reqwest::get(url)
                             .await
-                            .context(format!("Failed to download script from URL: {}", url))?;
+                            .context(format!("Failed to download script from URL: {url}"))?;
 
                         if !response.status().is_success() {
                             Err(anyhow!(
@@ -242,7 +241,7 @@ impl RunnerTrait for PythonCommandRunner {
                     python_command_args::InputData::DataUrl(url) => {
                         let response = reqwest::get(url)
                             .await
-                            .context(format!("Failed to download input data from URL: {}", url))?;
+                            .context(format!("Failed to download input data from URL: {url}"))?;
 
                         if !response.status().is_success() {
                             Err(anyhow!(

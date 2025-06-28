@@ -39,6 +39,9 @@ impl OllamaTracingHelper for OllamaChatService {
 
 impl ThinkTagHelper for OllamaChatService {}
 
+// TODO set from job.timeout
+const DEFAULT_TIMEOUT_SEC: u32 = 300; // Default timeout for Ollama chat requests in seconds
+
 impl OllamaChatService {
     pub fn new(function_app: Arc<FunctionAppImpl>, settings: OllamaRunnerSettings) -> Result<Self> {
         let ollama = Arc::new(Ollama::try_new(
@@ -169,6 +172,7 @@ impl OllamaChatService {
                     content,
                     tool_calls: vec![],
                     images: Some(vec![]),
+                    thinking: None, // TODO String? bool? args.options.and_then(|o| o.extract_reasoning_content),
                 }
             })
             .collect()
@@ -258,7 +262,7 @@ impl OllamaChatService {
             ollama_clone
                 .send_chat_messages(req)
                 .await
-                .map_err(|e| JobWorkerError::OtherError(format!("Chat API error: {}", e)))
+                .map_err(|e| JobWorkerError::OtherError(format!("Chat API error: {e}")))
         };
 
         // Execute chat API call and get both result and context
@@ -358,13 +362,14 @@ impl OllamaChatService {
             let metadata_clone = metadata.clone();
             let tool_action = async move {
                 function_app
-                    .call_function(
+                    .call_function_for_llm(
                         metadata_clone,
                         &function_name,
                         arguments.as_object().cloned(),
+                        DEFAULT_TIMEOUT_SEC,
                     )
                     .await
-                    .map_err(|e| JobWorkerError::OtherError(format!("Tool execution error: {}", e)))
+                    .map_err(|e| JobWorkerError::OtherError(format!("Tool execution error: {e}")))
             };
 
             // Execute individual tool call as child span and get updated context
@@ -404,10 +409,11 @@ impl OllamaChatService {
 
             let tool_result = self
                 .function_app
-                .call_function(
+                .call_function_for_llm(
                     metadata.clone(),
                     call.function.name.as_str(),
                     call.function.arguments.as_object().cloned(),
+                    DEFAULT_TIMEOUT_SEC,
                 )
                 .await?;
 

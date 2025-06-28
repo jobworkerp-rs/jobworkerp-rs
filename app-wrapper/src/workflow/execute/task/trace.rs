@@ -45,7 +45,7 @@ pub trait TaskTracing: Tracing {
             KeyValue::new("workflow.task.output", output_json.clone()),
             KeyValue::new(
                 "workflow.task.flow_directive",
-                format!("{:?}", flow_directive),
+                format!("{flow_directive:?}"),
             ),
             KeyValue::new("workflow.task.duration_ms", execution_duration_ms),
             KeyValue::new("workflow.task.status", "completed"),
@@ -63,7 +63,7 @@ pub trait TaskTracing: Tracing {
             }
             Err(e) => {
                 span.set_status(opentelemetry::trace::Status::error(e.to_string()));
-                span.set_attribute(KeyValue::new("error", format!("{:#?}", e)));
+                span.set_attribute(KeyValue::new("error", format!("{e:#?}")));
             }
         }
     }

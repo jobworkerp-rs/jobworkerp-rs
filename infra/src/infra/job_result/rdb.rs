@@ -184,7 +184,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
         .await
         .map(|r| r.iter().map(|r2| r2.to_proto()).collect_vec())
         .map_err(JobWorkerError::DBError)
-        .context(format!("error in find_list: ({:?}, {:?})", limit, offset))
+        .context(format!("error in find_list: ({limit:?}, {offset:?})"))
     }
 
     async fn count_list_tx<'c, E: Executor<'c, Database = Rdb>>(&self, tx: E) -> Result<i64> {

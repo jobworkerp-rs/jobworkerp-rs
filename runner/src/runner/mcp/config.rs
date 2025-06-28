@@ -69,7 +69,7 @@ mod tests {
             envs = { TEST_ENV = "test_value" }
         "#;
 
-        write!(temp_file, "{}", config_content)?;
+        write!(temp_file, "{config_content}")?;
         temp_file.flush()?;
 
         // load
@@ -131,7 +131,7 @@ mod tests {
 }
 "#;
 
-        write!(temp_file, "{}", config_content)?;
+        write!(temp_file, "{config_content}")?;
         temp_file.flush()?;
 
         // load

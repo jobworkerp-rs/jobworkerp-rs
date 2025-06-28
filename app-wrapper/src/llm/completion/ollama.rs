@@ -381,14 +381,14 @@ We want to verify that all chunks are properly received and processed.
             .iter()
             .filter_map(|res| {
                 res.reasoning_content.as_ref().inspect(|c| {
-                    println!("Reasoning: {}", c);
+                    println!("Reasoning: {c}");
                     std::io::stdout().flush().unwrap();
                     reasoning_text.push_str(c);
                 });
                 res.content.as_ref().and_then(|c| {
                     c.content.as_ref().map(|content| match content {
                         message_content::Content::Text(text) => {
-                            println!("Chunk: {}", text);
+                            println!("Chunk: {text}");
                             if res.done {
                                 println!("Usage: {:?}", res.usage);
                             }
@@ -401,8 +401,8 @@ We want to verify that all chunks are properly received and processed.
             .collect::<Vec<_>>()
             .join("");
 
-        println!("Combined reasoning response: {}", reasoning_text);
-        println!("Combined streaming response: {}", combined_text);
+        println!("Combined reasoning response: {reasoning_text}");
+        println!("Combined streaming response: {combined_text}");
         assert!(combined_text.len() > 10, "Combined response too short");
     }
 
