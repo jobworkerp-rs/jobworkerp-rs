@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use futures::stream::BoxStream;
 use futures::StreamExt;
+use infra_utils::infra::trace::impls::GenericOtelClient;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_completion_result::message_content;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::OllamaRunnerSettings;
 use jobworkerp_runner::jobworkerp::runner::llm::{self, LlmCompletionArgs, LlmCompletionResult};
@@ -11,13 +12,21 @@ use ollama_rs::{
     Ollama,
 };
 use proto::jobworkerp::data::RunnerType;
+use std::collections::HashMap;
+use std::sync::Arc;
 
+use super::super::generic_tracing_helper::{
+    ChatResponse, GenericLLMTracingHelper, LLMMessage, ModelOptions as GenericModelOptions,
+    UsageData,
+};
 use crate::llm::ThinkTagHelper;
 
+#[derive(Clone)]
 pub struct OllamaService {
-    pub ollama: Ollama,
+    pub ollama: Arc<Ollama>,
     pub model: String,
     pub system_prompt: Option<String>,
+    pub otel_client: Option<Arc<GenericOtelClient>>,
 }
 // static DATA: OnceCell<Bytes> = OnceCell::new();
 
@@ -35,9 +44,12 @@ impl OllamaService {
             tracing::debug!("model loaded: result = {:?}", pull);
         }
         Ok(Self {
-            ollama,
+            ollama: Arc::new(ollama),
             model: settings.model,
             system_prompt: settings.system_prompt,
+            otel_client: Some(Arc::new(GenericOtelClient::new(
+                "ollama.completion_service",
+            ))),
         })
     }
     pub fn create_completion_options(args: &LlmCompletionArgs) -> ModelOptions {
@@ -69,8 +81,13 @@ impl OllamaService {
         options
     }
 
+    pub fn with_otel_client(mut self, client: Arc<GenericOtelClient>) -> Self {
+        self.otel_client = Some(client);
+        self
+    }
+
     pub async fn request_stream_generation(
-        &mut self,
+        &self,
         args: LlmCompletionArgs,
     ) -> Result<BoxStream<'static, LlmCompletionResult>> {
         let options = Self::create_completion_options(&args);
@@ -183,12 +200,15 @@ impl OllamaService {
     }
 
     pub async fn request_generation(
-        &mut self,
+        &self,
         args: LlmCompletionArgs,
+        cx: opentelemetry::Context,
+        metadata: HashMap<String, String>,
     ) -> Result<LlmCompletionResult> {
+        let metadata = Arc::new(metadata);
         let options = Self::create_completion_options(&args);
         let mut request = GenerationRequest::new(self.model.clone(), args.prompt);
-        request = request.options(options);
+        request = request.options(options.clone());
         if let Some(system_prompt) = self.system_prompt.clone() {
             request = request.system(system_prompt);
         }
@@ -199,11 +219,16 @@ impl OllamaService {
         {
             request = request.context(completion::GenerationContext(context.data));
         }
-        let res: GenerationResponse = self
-            .ollama
-            .generate(request)
-            .await
-            .map_err(|e| anyhow!("Generation error(generation): {}", e))?;
+
+        // Use tracing-enabled internal call
+        let res = Self::request_generation_internal_with_tracing(
+            Arc::new(self.clone()),
+            request,
+            options,
+            Some(cx.clone()),
+            metadata.clone(),
+        )
+        .await?;
 
         tracing::debug!(
             "END OF generation {}: duration: {}",
@@ -252,6 +277,103 @@ impl OllamaService {
         }
         Ok(result)
     }
+
+    async fn request_generation_internal_with_tracing(
+        self: Arc<Self>,
+        request: GenerationRequest<'_>,
+        _options: ModelOptions,
+        _parent_context: Option<opentelemetry::Context>,
+        _metadata: Arc<HashMap<String, String>>,
+    ) -> Result<GenerationResponse> {
+        // For now, just call the API directly
+        // TODO: Implement proper tracing support
+        let res = self
+            .ollama
+            .generate(request)
+            .await
+            .map_err(|e| anyhow!("Generation error(generation): {}", e))?;
+        Ok(res)
+    }
+}
+
+// Trait implementations for Ollama completion service
+impl LLMMessage for GenerationRequest<'_> {
+    fn get_role(&self) -> &str {
+        "user" // Completion requests are typically user prompts
+    }
+
+    fn get_content(&self) -> &str {
+        &self.prompt
+    }
+}
+
+impl ChatResponse for GenerationResponse {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "content": self.response,
+            "model": "", // GenerationResponse does not have model info
+            "done": self.done,
+            "total_duration": self.total_duration,
+            "prompt_eval_count": self.prompt_eval_count,
+            "eval_count": self.eval_count
+        })
+    }
+}
+
+impl UsageData for llm::llm_completion_result::Usage {
+    fn to_usage_map(&self) -> HashMap<String, i64> {
+        let mut usage = HashMap::new();
+        usage.insert(
+            "prompt_tokens".to_string(),
+            self.prompt_tokens.unwrap_or(0) as i64,
+        );
+        usage.insert(
+            "completion_tokens".to_string(),
+            self.completion_tokens.unwrap_or(0) as i64,
+        );
+        usage.insert(
+            "total_tokens".to_string(),
+            (self.prompt_tokens.unwrap_or(0) + self.completion_tokens.unwrap_or(0)) as i64,
+        );
+        usage
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "prompt_tokens": self.prompt_tokens.unwrap_or(0),
+            "completion_tokens": self.completion_tokens.unwrap_or(0),
+            "total_tokens": self.prompt_tokens.unwrap_or(0) + self.completion_tokens.unwrap_or(0)
+        })
+    }
+}
+
+// Implement traits for OllamaService (completion version)
+impl GenericLLMTracingHelper for OllamaService {
+    fn get_otel_client(&self) -> Option<&Arc<GenericOtelClient>> {
+        self.otel_client.as_ref()
+    }
+
+    fn convert_messages_to_input(&self, messages: &[impl LLMMessage]) -> serde_json::Value {
+        // For completion, we treat the messages as simple text input
+        let messages_text: Vec<String> = messages
+            .iter()
+            .map(|m| format!("{}: {}", m.get_role(), m.get_content()))
+            .collect();
+        serde_json::json!(messages_text)
+    }
+
+    fn convert_model_options_to_parameters(
+        &self,
+        _options: &impl GenericModelOptions,
+    ) -> HashMap<String, serde_json::Value> {
+        // For Ollama completion, we can not directly convert from the generic trait
+        // This would need to be implemented with specific knowledge of the options
+        HashMap::new()
+    }
+
+    fn get_provider_name(&self) -> &str {
+        "ollama"
+    }
 }
 
 #[cfg(test)]
@@ -274,7 +396,7 @@ mod test {
             ),
             pull_model: Some(false),
         };
-        let mut plugin = OllamaService::new(settings).await.unwrap();
+        let plugin = OllamaService::new(settings).await.unwrap();
 
         let user_prompt = r#"
 Translation Test
@@ -299,7 +421,7 @@ The test checks that the response contains the expected content and meets our qu
             ..Default::default()
         };
         let res = plugin
-            .request_generation(request)
+            .request_generation(request, opentelemetry::Context::current(), HashMap::new())
             .await
             .expect("failed to run plugin");
         println!("response: {:?}", res.content);
@@ -326,7 +448,7 @@ The test checks that the response contains the expected content and meets our qu
             ),
             pull_model: Some(false),
         };
-        let mut plugin = OllamaService::new(settings).await.unwrap();
+        let plugin = OllamaService::new(settings).await.unwrap();
 
         let user_prompt = r#"
 Streaming API Test

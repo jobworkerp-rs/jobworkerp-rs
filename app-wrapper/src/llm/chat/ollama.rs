@@ -1,5 +1,6 @@
+use super::super::tracing::ollama_helper::OllamaTracingHelper;
 use super::conversion::ToolConverter;
-use super::tracing_helper::OllamaTracingHelper;
+use crate::llm::tracing::{LLMRequestData, LLMTracingHelper};
 use crate::llm::ThinkTagHelper;
 use anyhow::{anyhow, Result};
 use app::app::function::{FunctionApp, FunctionAppImpl};
@@ -11,7 +12,6 @@ use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatRole;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::OllamaRunnerSettings;
 use jobworkerp_runner::jobworkerp::runner::llm::{self, LlmChatArgs, LlmChatResult};
-use ollama_rs::generation::chat::ChatMessageResponse;
 use ollama_rs::generation::tools::ToolInfo;
 use ollama_rs::{
     generation::chat::{request::ChatMessageRequest, ChatMessage, MessageRole},
@@ -20,7 +20,7 @@ use ollama_rs::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+// use tokio::sync::Mutex;
 
 #[derive(Debug, Clone)]
 pub struct OllamaChatService {
@@ -31,16 +31,67 @@ pub struct OllamaChatService {
     pub otel_client: Option<Arc<GenericOtelClient>>,
 }
 
-impl OllamaTracingHelper for OllamaChatService {
+impl OllamaTracingHelper for OllamaChatService {}
+
+impl crate::llm::tracing::LLMTracingHelper for OllamaChatService {
     fn get_otel_client(&self) -> Option<&Arc<GenericOtelClient>> {
         self.otel_client.as_ref()
+    }
+
+    fn get_provider_name(&self) -> &str {
+        "ollama"
+    }
+
+    fn get_default_model(&self) -> String {
+        self.model.clone()
+    }
+}
+
+impl super::super::generic_tracing_helper::GenericLLMTracingHelper for OllamaChatService {
+    fn get_otel_client(&self) -> Option<&Arc<GenericOtelClient>> {
+        self.otel_client.as_ref()
+    }
+
+    fn convert_messages_to_input(
+        &self,
+        messages: &[impl super::super::generic_tracing_helper::LLMMessage],
+    ) -> serde_json::Value {
+        use super::super::tracing::ollama_helper::OllamaTracingHelper;
+        let ollama_messages: Vec<ChatMessage> = messages
+            .iter()
+            .map(|m| ChatMessage {
+                role: match m.get_role() {
+                    "user" => MessageRole::User,
+                    "assistant" => MessageRole::Assistant,
+                    "system" => MessageRole::System,
+                    "tool" => MessageRole::Tool,
+                    _ => MessageRole::User,
+                },
+                content: m.get_content().to_string(),
+                tool_calls: vec![],
+                images: Some(vec![]),
+                thinking: None,
+            })
+            .collect();
+        Self::convert_messages_to_input_ollama(&ollama_messages)
+    }
+
+    fn convert_model_options_to_parameters(
+        &self,
+        _options: &impl super::super::generic_tracing_helper::ModelOptions,
+    ) -> HashMap<String, serde_json::Value> {
+        HashMap::new()
+    }
+
+    fn get_provider_name(&self) -> &str {
+        "ollama"
     }
 }
 
 impl ThinkTagHelper for OllamaChatService {}
 
 // TODO set from job.timeout
-const DEFAULT_TIMEOUT_SEC: u32 = 300; // Default timeout for Ollama chat requests in seconds
+// const DEFAULT_TIMEOUT_SEC: u32 = 300; // Default timeout for Ollama chat requests in seconds
 
 impl OllamaChatService {
     pub fn new(function_app: Arc<FunctionAppImpl>, settings: OllamaRunnerSettings) -> Result<Self> {
@@ -196,19 +247,55 @@ impl OllamaChatService {
         }
 
         let tools = Arc::new(self.function_list(&args).await?);
+        let mut req =
+            ollama_rs::generation::chat::request::ChatMessageRequest::new(model.clone(), messages);
+        req = req.options(options.clone());
+        if !tools.is_empty() {
+            req = req.tools((*tools).clone());
+        }
 
-        // Use the instance methods for tracing-enabled internal call
-        let res = Self::request_chat_internal_with_tracing(
-            Arc::new(self.clone()),
-            model.clone(),
-            options,
-            Arc::new(Mutex::new(messages)),
-            tools.clone(),
-            Some(cx.clone()), // No parent context for initial call
-            metadata.clone(),
-        )
-        .await?;
+        // OpenTelemetryスパン内でAPIを実行
+        let res = if let Some(client) = LLMTracingHelper::get_otel_client(self) {
+            // トレーシング情報を準備
+            let input = req.extract_input();
+            let options = req.extract_options();
+            let tools = req.extract_tools();
+            let model = req.extract_model().unwrap_or_else(|| self.model.clone());
 
+            let span_attributes = crate::llm::tracing::LLMTracingHelper::create_span_attributes(
+                self,
+                crate::llm::tracing::LLMApiType::Chat,
+                &model,
+                &input,
+                options.as_ref(),
+                &tools,
+                &metadata,
+            );
+
+            // メインスパン内でAPI実行
+            let ollama_clone = self.ollama.clone();
+            use infra_utils::infra::trace::otel_span::GenAIOtelClient;
+            client
+                .with_span_result::<_, _, JobWorkerError>(
+                    span_attributes,
+                    Some(cx.clone()),
+                    async move {
+                        let result = ollama_clone.send_chat_messages(req).await.map_err(|e| {
+                            JobWorkerError::OtherError(format!("Chat API error: {e}"))
+                        })?;
+                        Ok(result)
+                    },
+                )
+                .await?
+        } else {
+            // トレーシングなしでAPI実行
+            self.ollama
+                .send_chat_messages(req)
+                .await
+                .map_err(|e| JobWorkerError::OtherError(format!("Chat API error: {e}")))?
+        };
+
+        // レスポンスの処理（ツールコールは別途実装）
         let text = res.message.content.clone();
         let (prompt, think) = Self::divide_think_tag(text);
 
@@ -221,210 +308,184 @@ impl OllamaChatService {
             usage: None,
         };
 
-        // Record usage if available
-        if let Some(final_data) = &res.final_data {
-            let content = chat_result
-                .content
-                .as_ref()
-                .and_then(|c| c.content.as_ref())
-                .and_then(|content| match content {
-                    message_content::Content::Text(text) => Some(text.as_str()),
-                    _ => None,
-                });
-            let _ = self
-                .trace_usage(&metadata, cx.clone(), "ollama.usage", final_data, content)
-                .await;
-        }
-
         Ok(chat_result)
     }
-    async fn request_chat_internal_with_tracing(
-        self: Arc<Self>,
-        model: String,
-        options: ModelOptions,
-        messages: Arc<Mutex<Vec<ChatMessage>>>,
-        tools: Arc<Vec<ToolInfo>>,
-        parent_context: Option<opentelemetry::Context>,
-        metadata: Arc<HashMap<String, String>>,
-    ) -> Result<ChatMessageResponse> {
-        let mut req = ChatMessageRequest::new(model.clone(), messages.lock().await.clone());
-        req = req.options(options.clone());
-        if tools.is_empty() {
-            tracing::debug!("No tools found");
-        } else {
-            tracing::debug!("Tools found: {:#?}", &tools);
-            req = req.tools((*tools).clone());
-        }
+    // async fn request_chat_internal_with_tracing(
+    //     self: Arc<Self>,
+    //     model: String,
+    //     options: ModelOptions,
+    //     messages: Arc<Mutex<Vec<ChatMessage>>>,
+    //     tools: Arc<Vec<ToolInfo>>,
+    //     parent_context: Option<opentelemetry::Context>,
+    //     metadata: Arc<HashMap<String, String>>,
+    // ) -> Result<ChatMessageResponse> {
+    //     let mut req = ChatMessageRequest::new(model.clone(), messages.lock().await.clone());
+    //     req = req.options(options.clone());
+    //     if tools.is_empty() {
+    //         tracing::debug!("No tools found");
+    //     } else {
+    //         tracing::debug!("Tools found: {:#?}", &tools);
+    //         req = req.tools((*tools).clone());
+    //     }
 
-        let ollama_clone = self.ollama.clone();
-        // closure of Execute chat API call
-        let chat_api_action = async move {
-            ollama_clone
-                .send_chat_messages(req)
-                .await
-                .map_err(|e| JobWorkerError::OtherError(format!("Chat API error: {e}")))
-        };
+    //     let ollama_clone = self.ollama.clone();
+    //     // closure of Execute chat API call
+    //     let chat_api_action = async move {
+    //         ollama_clone
+    //             .send_chat_messages(req)
+    //             .await
+    //             .map_err(|e| JobWorkerError::OtherError(format!("Chat API error: {e}")))
+    //     };
 
-        // Execute chat API call and get both result and context
-        let (res, current_context) = if let Some(_otel_client) = self.get_otel_client() {
-            // Create span attributes for chat API call
-            let span_attributes = self
-                .create_chat_span_from_request(
-                    &model,
-                    messages.clone(),
-                    &options,
-                    &tools,
-                    &metadata,
-                )
-                .await;
+    //     // Execute chat API call and get both result and context
+    //     let (res, current_context) = if let Some(_otel_client) = self.get_otel_client() {
+    //         // Create span attributes for chat API call
+    //         let span_attributes = self
+    //             .create_chat_span_from_request(
+    //                 &model,
+    //                 messages.clone(),
+    //                 &options,
+    //                 &tools,
+    //                 &metadata,
+    //             )
+    //             .await;
 
-            // Execute chat API call with response tracing, getting both result and context
-            self.with_chat_response_tracing(
-                &metadata,
-                parent_context.clone(),
-                span_attributes,
-                chat_api_action,
-            )
-            .await?
-        } else {
-            let result = chat_api_action.await?;
-            let context = opentelemetry::Context::current();
-            (result, context)
-        };
+    //         // Execute chat API call (simplified, removing complex tracing for now)
+    //         let result = chat_api_action.await?;
+    //         let context = opentelemetry::Context::current();
+    //         (result, context)
+    //     } else {
+    //         let result = chat_api_action.await?;
+    //         let context = opentelemetry::Context::current();
+    //         (result, context)
+    //     };
 
-        tracing::debug!("Ollama chat response: {:#?}", &res);
+    //     tracing::debug!("Ollama chat response: {:#?}", &res);
 
-        if res.message.tool_calls.is_empty() {
-            tracing::debug!("No tool calls in response");
-            Ok(res)
-        } else {
-            tracing::debug!("Tool calls in response: {:#?}", &res.message.tool_calls);
+    //     if res.message.tool_calls.is_empty() {
+    //         tracing::debug!("No tool calls in response");
+    //         Ok(res)
+    //     } else {
+    //         tracing::debug!("Tool calls in response: {:#?}", &res.message.tool_calls);
 
-            // Process tool calls with hierarchical tracing (child spans)
-            let tool_calls = res.message.tool_calls.clone();
+    //         // Process tool calls with hierarchical tracing (child spans)
+    //         let tool_calls = res.message.tool_calls.clone();
 
-            // Process tool calls and get updated context for each tool call
-            let mut updated_context = current_context;
-            if self.get_otel_client().is_some() {
-                // Process tool calls with tracing using current context as parent
-                updated_context = self
-                    .process_tool_calls_with_tracing(
-                        messages.clone(),
-                        &tool_calls,
-                        Some(updated_context),
-                        metadata.clone(),
-                    )
-                    .await?;
-            } else {
-                self.process_tool_calls_without_tracing(
-                    messages.clone(),
-                    &tool_calls,
-                    metadata.clone(),
-                )
-                .await?;
-                // Keep current context unchanged when not tracing
-                // updated_context = current_context;
-            }
+    //         // Process tool calls and get updated context for each tool call
+    //         let mut updated_context = current_context;
+    //         if self.get_otel_client().is_some() {
+    //             // Process tool calls with tracing using current context as parent
+    //             updated_context = self
+    //                 .process_tool_calls_with_tracing(
+    //                     messages.clone(),
+    //                     &tool_calls,
+    //                     Some(updated_context),
+    //                     metadata.clone(),
+    //                 )
+    //                 .await?;
+    //         } else {
+    //             self.process_tool_calls_without_tracing(
+    //                 messages.clone(),
+    //                 &tool_calls,
+    //                 metadata.clone(),
+    //             )
+    //             .await?;
+    //             // Keep current context unchanged when not tracing
+    //             // updated_context = current_context;
+    //         }
 
-            // Recursive call with updated context from tool execution
-            Box::pin(self.request_chat_internal_with_tracing(
-                model,
-                options,
-                messages,
-                tools,
-                Some(updated_context),
-                metadata,
-            ))
-            .await
-        }
-    }
+    //         // Recursive call with updated context from tool execution
+    //         Box::pin(self.request_chat_internal_with_tracing(
+    //             model,
+    //             options,
+    //             messages,
+    //             tools,
+    //             Some(updated_context),
+    //             metadata,
+    //         ))
+    //         .await
+    //     }
+    // }
 
-    async fn process_tool_calls_with_tracing(
-        &self,
-        messages: Arc<Mutex<Vec<ChatMessage>>>,
-        tool_calls: &[ollama_rs::generation::tools::ToolCall],
-        parent_context: Option<opentelemetry::Context>,
-        metadata: Arc<HashMap<String, String>>,
-    ) -> Result<opentelemetry::Context> {
-        if parent_context.is_none() && self.get_otel_client().is_some() {
-            tracing::warn!("No parent context provided for tool calls, using current context");
-        }
-        let mut current_context = parent_context.unwrap_or_else(opentelemetry::Context::current);
+    // async fn process_tool_calls_with_tracing(
+    //     &self,
+    //     messages: Arc<Mutex<Vec<ChatMessage>>>,
+    //     tool_calls: &[ollama_rs::generation::tools::ToolCall],
+    //     parent_context: Option<opentelemetry::Context>,
+    //     metadata: Arc<HashMap<String, String>>,
+    // ) -> Result<opentelemetry::Context> {
+    //     if parent_context.is_none() && self.get_otel_client().is_some() {
+    //         tracing::warn!("No parent context provided for tool calls, using current context");
+    //     }
+    //     let mut current_context = parent_context.unwrap_or_else(opentelemetry::Context::current);
 
-        for call in tool_calls {
-            tracing::debug!("Tool call: {:?}", call.function);
+    //     for call in tool_calls {
+    //         tracing::debug!("Tool call: {:?}", call.function);
 
-            // Clone necessary data to avoid lifetime issues
-            let function_name = call.function.name.clone();
-            let arguments = call.function.arguments.clone();
-            let function_app = self.function_app.clone();
+    //         // Clone necessary data to avoid lifetime issues
+    //         let function_name = call.function.name.clone();
+    //         let arguments = call.function.arguments.clone();
+    //         let function_app = self.function_app.clone();
 
-            let metadata_clone = metadata.clone();
-            let tool_action = async move {
-                function_app
-                    .call_function_for_llm(
-                        metadata_clone,
-                        &function_name,
-                        arguments.as_object().cloned(),
-                        DEFAULT_TIMEOUT_SEC,
-                    )
-                    .await
-                    .map_err(|e| JobWorkerError::OtherError(format!("Tool execution error: {e}")))
-            };
+    //         let metadata_clone = metadata.clone();
+    //         let tool_action = async move {
+    //             function_app
+    //                 .call_function_for_llm(
+    //                     metadata_clone,
+    //                     &function_name,
+    //                     arguments.as_object().cloned(),
+    //                     DEFAULT_TIMEOUT_SEC,
+    //                 )
+    //                 .await
+    //                 .map_err(|e| JobWorkerError::OtherError(format!("Tool execution error: {e}")))
+    //         };
 
-            // Execute individual tool call as child span and get updated context
-            let tool_attributes = self.create_tool_call_span_from_call(call, &metadata);
+    //         // Execute individual tool call as child span and get updated context
+    //         let tool_attributes = self.create_tool_call_span_from_call(call, &metadata);
 
-            // Execute tool call with response tracing and get both result and updated context
-            let (tool_result, updated_context) = self
-                .with_tool_response_tracing(
-                    &metadata,
-                    current_context,
-                    tool_attributes,
-                    call,
-                    tool_action,
-                )
-                .await?;
+    //         // Execute tool call with response tracing and get both result and updated context
+    //         let (tool_result, updated_context) = OllamaTracingHelper::with_tool_response_tracing(self, &metadata, current_context, tool_attributes, call, tool_action)
+    //             .await?;
 
-            tracing::debug!("Tool response: {}", &tool_result);
-            messages
-                .lock()
-                .await
-                .push(ChatMessage::tool(tool_result.to_string()));
+    //         tracing::debug!("Tool response: {}", &tool_result);
+    //         messages
+    //             .lock()
+    //             .await
+    //             .push(ChatMessage::tool(tool_result.to_string()));
 
-            // Update context for next tool call
-            current_context = updated_context;
-        }
-        Ok(current_context)
-    }
+    //         // Update context for next tool call
+    //         current_context = updated_context;
+    //     }
+    //     Ok(current_context)
+    // }
 
-    async fn process_tool_calls_without_tracing(
-        &self,
-        messages: Arc<Mutex<Vec<ChatMessage>>>,
-        tool_calls: &[ollama_rs::generation::tools::ToolCall],
-        metadata: Arc<HashMap<String, String>>,
-    ) -> Result<()> {
-        for call in tool_calls {
-            tracing::debug!("Tool call: {:?}", call.function);
+    // async fn process_tool_calls_without_tracing(
+    //     &self,
+    //     messages: Arc<Mutex<Vec<ChatMessage>>>,
+    //     tool_calls: &[ollama_rs::generation::tools::ToolCall],
+    //     metadata: Arc<HashMap<String, String>>,
+    // ) -> Result<()> {
+    //     for call in tool_calls {
+    //         tracing::debug!("Tool call: {:?}", call.function);
 
-            let tool_result = self
-                .function_app
-                .call_function_for_llm(
-                    metadata.clone(),
-                    call.function.name.as_str(),
-                    call.function.arguments.as_object().cloned(),
-                    DEFAULT_TIMEOUT_SEC,
-                )
-                .await?;
+    //         let tool_result = self
+    //             .function_app
+    //             .call_function_for_llm(
+    //                 metadata.clone(),
+    //                 call.function.name.as_str(),
+    //                 call.function.arguments.as_object().cloned(),
+    //                 DEFAULT_TIMEOUT_SEC,
+    //             )
+    //             .await?;
 
-            tracing::debug!("Tool response: {}", &tool_result);
-            messages
-                .lock()
-                .await
-                .push(ChatMessage::tool(tool_result.to_string()));
-        }
-        Ok(())
-    }
+    //         tracing::debug!("Tool response: {}", &tool_result);
+    //         messages
+    //             .lock()
+    //             .await
+    //             .push(ChatMessage::tool(tool_result.to_string()));
+    //     }
+    //     Ok(())
+    // }
 
     pub async fn request_stream_chat(
         &self,

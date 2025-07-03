@@ -260,6 +260,7 @@ impl ToolConverter {
                             name,
                             description,
                             schema: Some(schema),
+                            config: None,
                         })
                         .into_iter()
                         .collect::<Vec<_>>()
@@ -276,6 +277,7 @@ impl ToolConverter {
                             name,
                             description,
                             schema: Some(schema),
+                            config: None,
                         })
                         .into_iter()
                         .collect::<Vec<_>>()
@@ -292,6 +294,7 @@ impl ToolConverter {
                             name,
                             description,
                             schema: Some(schema),
+                            config: None,
                         })
                     })
                     .collect::<Vec<_>>(),
