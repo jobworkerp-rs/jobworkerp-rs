@@ -1,5 +1,7 @@
 pub mod chat;
 pub mod completion;
+pub mod generic_tracing_helper;
+pub mod tracing;
 
 pub trait ThinkTagHelper {
     const START_THINK_TAG: &'static str = "<think>";

@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use app::module::AppModule;
 use async_trait::async_trait;
 use futures::stream::{BoxStream, StreamExt};
-use genai::GenaiService;
+use genai::GenaiChatService;
 use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::APP_WORKER_NAME;
@@ -21,12 +21,11 @@ use std::sync::Arc;
 pub mod conversion;
 pub mod genai;
 pub mod ollama;
-pub mod tracing_helper;
 
 pub struct LLMChatRunnerImpl {
     pub app: Arc<AppModule>,
     pub ollama: Option<OllamaChatService>,
-    pub genai: Option<GenaiService>,
+    pub genai: Option<GenaiChatService>,
 }
 
 impl LLMChatRunnerImpl {
@@ -96,7 +95,7 @@ impl RunnerTrait for LLMChatRunnerImpl {
                     settings,
                 ),
             ) => {
-                let genai = GenaiService::new(self.app.function_app.clone(), settings).await?;
+                let genai = GenaiChatService::new(self.app.function_app.clone(), settings).await?;
                 tracing::info!("{} loaded(genai)", RunnerType::LlmChat.as_str_name());
                 self.genai = Some(genai);
                 Ok(())
@@ -110,36 +109,39 @@ impl RunnerTrait for LLMChatRunnerImpl {
         arg: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        let metadata_clone = metadata.clone();
-        let result = async {
-            let span = Self::otel_span_from_metadata(&metadata, APP_WORKER_NAME, "llm_chat_run");
-            let cx = Context::current_with_span(span);
-            // let span = cx.span();
-            // let span = Self::tracing_span_from_metadata(&metadata, APP_NAME, "llm_chat_run");
-            // let _ = span.enter();
-            // let cx = span.context();
+        let span = Self::otel_span_from_metadata(&metadata, APP_WORKER_NAME, "llm_chat_run");
+        let cx = Context::current_with_span(span);
+        // let span = cx.span();
+        // let span = Self::tracing_span_from_metadata(&metadata, APP_NAME, "llm_chat_run");
+        // let _ = span.enter();
+        // let cx = span.context();
 
-            // TODO process metadata
+        // TODO process metadata
+        let metadata_clone = metadata.clone();
+        let (result, metadata) = async move {
             let args = LlmChatArgs::decode(&mut Cursor::new(arg))
                 .map_err(|e| anyhow!("decode error: {}", e))?;
             if let Some(ollama) = self.ollama.as_mut() {
-                let res = ollama.request_chat(args, cx, metadata_clone).await?;
+                let res = ollama
+                    .request_chat(args, cx, metadata_clone.clone())
+                    .await?;
                 let mut buf = Vec::with_capacity(res.encoded_len());
                 res.encode(&mut buf)
                     .map_err(|e| anyhow!("encode error: {}", e))?;
-                Ok(buf)
+                anyhow::Ok((Ok(buf), metadata_clone))
             } else if let Some(genai) = self.genai.as_mut() {
                 //XXX chat only
-                let res = genai.request_chat(args).await?;
+                let res = genai.request_chat(args, cx, metadata_clone.clone()).await?;
                 let mut buf = Vec::with_capacity(res.encoded_len());
                 res.encode(&mut buf)
                     .map_err(|e| anyhow!("encode error: {}", e))?;
-                Ok(buf)
+                anyhow::Ok((Ok(buf), metadata_clone))
             } else {
-                Err(anyhow!("llm is not initialized"))
+                anyhow::Ok((Err(anyhow!("llm is not initialized")), metadata_clone))
             }
         }
-        .await;
+        .await
+        .unwrap_or_else(|e| (Err(e), HashMap::new()));
         (result, metadata)
     }
 
