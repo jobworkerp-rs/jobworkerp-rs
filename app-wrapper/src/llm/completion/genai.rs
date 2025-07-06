@@ -403,7 +403,7 @@ impl GenericLLMTracingHelper for GenaiCompletionService {
     }
 
     fn convert_messages_to_input(&self, messages: &[impl LLMMessage]) -> serde_json::Value {
-        use super::super::chat::genai::GenaiTracingHelper;
+        use super::super::tracing::genai_helper::GenaiTracingHelper;
         let genai_messages: Vec<ChatMessage> = messages
             .iter()
             .map(|m| ChatMessage {
@@ -412,7 +412,13 @@ impl GenericLLMTracingHelper for GenaiCompletionService {
                     "assistant" => genai::chat::ChatRole::Assistant,
                     "system" => genai::chat::ChatRole::System,
                     "tool" => genai::chat::ChatRole::Tool,
-                    _ => genai::chat::ChatRole::User,
+                    unknown_role => {
+                        tracing::warn!(
+                            "Unknown role string '{}', defaulting to User",
+                            unknown_role
+                        );
+                        genai::chat::ChatRole::User
+                    }
                 },
                 content: GenaiMessageContent::Text(m.get_content().to_string()),
                 options: None,

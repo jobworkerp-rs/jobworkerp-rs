@@ -129,7 +129,7 @@ pub trait LLMTracingHelper: Send + Sync {
                 metadata,
             );
 
-            // メインスパンを作成・開始
+            // Add main span to OpenTelemetry
             if let Some(client) = self.get_otel_client() {
                 let span_name = format!(
                     "{}.{}.completions",
@@ -138,10 +138,10 @@ pub trait LLMTracingHelper: Send + Sync {
                 );
                 tracing::info!("Starting LLM tracing span: {span_name}");
 
-                // メインスパンをOpenTelemetryに送信
+                // Send main span to OpenTelemetry
                 client
                     .with_span_result(span_attributes, parent_context.clone(), async move {
-                        // スパンを開始のみ（終了はfinish_llm_tracingで行う）
+                        // Only start the span (finish is done in finish_llm_tracing)
                         Ok::<(), JobWorkerError>(())
                     })
                     .await
@@ -168,10 +168,10 @@ pub trait LLMTracingHelper: Send + Sync {
         T: LLMResponseData + 'static,
     {
         async move {
-            // レスポンストレーシング実行
+            // Execute response tracing
             self.trace_response(&context, response_data).await?;
 
-            // 使用量トレーシング実行
+            // Execute usage tracing
             if let Some(usage) = response_data.extract_usage() {
                 let content = response_data.extract_content();
                 self.trace_usage_internal(&context, usage.as_ref(), content.as_deref())
@@ -225,7 +225,7 @@ pub trait LLMTracingHelper: Send + Sync {
         .input(input.messages.clone())
         .openinference_span_kind("LLM");
 
-        // Provider固有の詳細設定
+        // Provider-specific detailed settings
         if let Some(opts) = options {
             span_builder = span_builder.model_parameters(opts.parameters.clone());
         }
@@ -249,7 +249,7 @@ pub trait LLMTracingHelper: Send + Sync {
             // span_builder = span_builder.tools(tools_json);
         }
 
-        // メタデータの追加
+        // Add metadata
         if let Some(sid) = metadata.get("session_id").cloned() {
             span_builder = span_builder.session_id(sid);
         }
@@ -476,7 +476,12 @@ impl crate::llm::tracing::LLMRequestData
                 .iter()
                 .map(|m| {
                     serde_json::json!({
-                        "role": format!("{:?}", m.role).to_lowercase(),
+                        "role": match m.role {
+                            ollama_rs::generation::chat::MessageRole::User => "user",
+                            ollama_rs::generation::chat::MessageRole::Assistant => "assistant",
+                            ollama_rs::generation::chat::MessageRole::System => "system",
+                            ollama_rs::generation::chat::MessageRole::Tool => "tool",
+                        },
                         "content": m.content,
                         "tool_calls": if !m.tool_calls.is_empty() {
                             Some(serde_json::json!(m.tool_calls))
@@ -537,14 +542,8 @@ impl crate::llm::tracing::LLMRequestData
 
 impl crate::llm::tracing::LLMResponseData for ChatMessageResponse {
     fn to_trace_output(&self) -> serde_json::Value {
-        serde_json::json!({
-            "content": self.message.content,
-            "model": self.model,
-            "done": self.done,
-            "tool_calls_count": self.message.tool_calls.len(),
-            "tool_calls": self.message.tool_calls,
-            "created_at": self.created_at
-        })
+        // Return only the message content for trace output, not the full structure
+        serde_json::json!(self.message.content)
     }
 
     fn extract_usage(&self) -> Option<Box<dyn crate::llm::tracing::UsageData>> {

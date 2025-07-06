@@ -41,14 +41,7 @@ impl GenericToolInfo for ToolInfo {
 
 impl ChatResponse for ChatMessageResponse {
     fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "content": self.message.content,
-            "model": self.model,
-            "done": self.done,
-            "tool_calls_count": self.message.tool_calls.len(),
-            "tool_calls": self.message.tool_calls,
-            "created_at": self.created_at
-        })
+        serde_json::json!(self.message.content)
     }
 }
 
@@ -80,8 +73,14 @@ pub trait OllamaTracingHelper: GenericLLMTracingHelper {
         serde_json::json!(messages
             .iter()
             .map(|m| {
+                let role_str = match m.role {
+                    ollama_rs::generation::chat::MessageRole::User => "user",
+                    ollama_rs::generation::chat::MessageRole::Assistant => "assistant",
+                    ollama_rs::generation::chat::MessageRole::System => "system",
+                    ollama_rs::generation::chat::MessageRole::Tool => "tool",
+                };
                 let mut msg_json = serde_json::json!({
-                    "role": format!("{:?}", m.role).to_lowercase(),
+                    "role": role_str,
                     "content": m.content
                 });
 
