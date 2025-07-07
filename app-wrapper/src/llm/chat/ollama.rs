@@ -1,11 +1,13 @@
+use super::super::tracing::ollama_helper::OllamaTracingHelper;
 use super::conversion::ToolConverter;
-use super::tracing_helper::OllamaTracingHelper;
+use crate::llm::tracing::LLMTracingHelper;
 use crate::llm::ThinkTagHelper;
 use anyhow::{anyhow, Result};
 use app::app::function::{FunctionApp, FunctionAppImpl};
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use infra_utils::infra::trace::impls::GenericOtelClient;
+use infra_utils::infra::trace::otel_span::GenAIOtelClient;
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatRole;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content;
@@ -21,6 +23,7 @@ use ollama_rs::{
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+// use tokio::sync::Mutex;
 
 #[derive(Debug, Clone)]
 pub struct OllamaChatService {
@@ -31,9 +34,66 @@ pub struct OllamaChatService {
     pub otel_client: Option<Arc<GenericOtelClient>>,
 }
 
-impl OllamaTracingHelper for OllamaChatService {
+impl OllamaTracingHelper for OllamaChatService {}
+
+impl crate::llm::tracing::LLMTracingHelper for OllamaChatService {
     fn get_otel_client(&self) -> Option<&Arc<GenericOtelClient>> {
         self.otel_client.as_ref()
+    }
+
+    fn get_provider_name(&self) -> &str {
+        "ollama"
+    }
+
+    fn get_default_model(&self) -> String {
+        self.model.clone()
+    }
+}
+
+impl super::super::generic_tracing_helper::GenericLLMTracingHelper for OllamaChatService {
+    fn get_otel_client(&self) -> Option<&Arc<GenericOtelClient>> {
+        self.otel_client.as_ref()
+    }
+
+    fn convert_messages_to_input(
+        &self,
+        messages: &[impl super::super::generic_tracing_helper::LLMMessage],
+    ) -> serde_json::Value {
+        use super::super::tracing::ollama_helper::OllamaTracingHelper;
+        let ollama_messages: Vec<ChatMessage> = messages
+            .iter()
+            .map(|m| ChatMessage {
+                role: match m.get_role() {
+                    "user" => MessageRole::User,
+                    "assistant" => MessageRole::Assistant,
+                    "system" => MessageRole::System,
+                    "tool" => MessageRole::Tool,
+                    unknown_role => {
+                        tracing::warn!(
+                            "Unknown role string '{}', defaulting to User",
+                            unknown_role
+                        );
+                        MessageRole::User
+                    }
+                },
+                content: m.get_content().to_string(),
+                tool_calls: vec![],
+                images: Some(vec![]),
+                thinking: None,
+            })
+            .collect();
+        Self::convert_messages_to_input_ollama(&ollama_messages)
+    }
+
+    fn convert_model_options_to_parameters(
+        &self,
+        _options: &impl super::super::generic_tracing_helper::ModelOptions,
+    ) -> HashMap<String, serde_json::Value> {
+        HashMap::new()
+    }
+
+    fn get_provider_name(&self) -> &str {
+        "ollama"
     }
 }
 
@@ -93,11 +153,14 @@ impl OllamaChatService {
 
     fn role_to_enum(role: ChatRole) -> MessageRole {
         match role {
-            ChatRole::RoleSystem => MessageRole::System,
-            ChatRole::RoleUser => MessageRole::User,
-            ChatRole::RoleAssistant => MessageRole::Assistant,
-            ChatRole::RoleTool => MessageRole::Tool,
-            _ => MessageRole::User,
+            ChatRole::System => MessageRole::System,
+            ChatRole::User => MessageRole::User,
+            ChatRole::Assistant => MessageRole::Assistant,
+            ChatRole::Tool => MessageRole::Tool,
+            _ => {
+                tracing::warn!("Unknown ChatRole {:?}, defaulting to User", role);
+                MessageRole::User
+            }
         }
     }
 
@@ -196,19 +259,21 @@ impl OllamaChatService {
         }
 
         let tools = Arc::new(self.function_list(&args).await?);
+        let messages = Arc::new(Mutex::new(messages));
 
-        // Use the instance methods for tracing-enabled internal call
+        // Use internal method with tool call support
         let res = Self::request_chat_internal_with_tracing(
             Arc::new(self.clone()),
-            model.clone(),
+            model,
             options,
-            Arc::new(Mutex::new(messages)),
-            tools.clone(),
-            Some(cx.clone()), // No parent context for initial call
+            messages,
+            tools,
+            Some(cx.clone()),
             metadata.clone(),
         )
         .await?;
 
+        // Convert response to LlmChatResult
         let text = res.message.content.clone();
         let (prompt, think) = Self::divide_think_tag(text);
 
@@ -221,23 +286,9 @@ impl OllamaChatService {
             usage: None,
         };
 
-        // Record usage if available
-        if let Some(final_data) = &res.final_data {
-            let content = chat_result
-                .content
-                .as_ref()
-                .and_then(|c| c.content.as_ref())
-                .and_then(|content| match content {
-                    message_content::Content::Text(text) => Some(text.as_str()),
-                    _ => None,
-                });
-            let _ = self
-                .trace_usage(&metadata, cx.clone(), "ollama.usage", final_data, content)
-                .await;
-        }
-
         Ok(chat_result)
     }
+
     async fn request_chat_internal_with_tracing(
         self: Arc<Self>,
         model: String,
@@ -266,7 +317,7 @@ impl OllamaChatService {
         };
 
         // Execute chat API call and get both result and context
-        let (res, current_context) = if let Some(_otel_client) = self.get_otel_client() {
+        let (res, current_context) = if let Some(otel_client) = self.get_otel_client() {
             // Create span attributes for chat API call
             let span_attributes = self
                 .create_chat_span_from_request(
@@ -278,17 +329,20 @@ impl OllamaChatService {
                 )
                 .await;
 
-            // Execute chat API call with response tracing, getting both result and context
-            self.with_chat_response_tracing(
-                &metadata,
-                parent_context.clone(),
-                span_attributes,
-                chat_api_action,
-            )
-            .await?
+            // Use provided parent_context or current context as parent for the span
+            let parent_ctx = parent_context.unwrap_or_else(opentelemetry::Context::current);
+
+            // Execute chat API call with tracing span
+            let result = otel_client
+                .with_span_result(span_attributes, Some(parent_ctx.clone()), chat_api_action)
+                .await?;
+            let context = parent_ctx;
+
+            (result, context)
         } else {
             let result = chat_api_action.await?;
-            let context = opentelemetry::Context::current();
+            // Use provided parent_context or current context
+            let context = parent_context.unwrap_or_else(opentelemetry::Context::current);
             (result, context)
         };
 
@@ -353,6 +407,11 @@ impl OllamaChatService {
 
         for call in tool_calls {
             tracing::debug!("Tool call: {:?}", call.function);
+            tracing::debug!("Tool arguments: {:?}", call.function.arguments);
+            tracing::debug!(
+                "Tool arguments as object: {:?}",
+                call.function.arguments.as_object()
+            );
 
             // Clone necessary data to avoid lifetime issues
             let function_name = call.function.name.clone();
@@ -361,11 +420,17 @@ impl OllamaChatService {
 
             let metadata_clone = metadata.clone();
             let tool_action = async move {
+                // Handle empty or null arguments by providing an empty object
+                let arguments_obj = arguments.as_object().cloned().unwrap_or_else(|| {
+                    tracing::debug!("Tool call has null arguments, using empty object");
+                    serde_json::Map::new()
+                });
+
                 function_app
                     .call_function_for_llm(
                         metadata_clone,
                         &function_name,
-                        arguments.as_object().cloned(),
+                        Some(arguments_obj),
                         DEFAULT_TIMEOUT_SEC,
                     )
                     .await
@@ -376,15 +441,15 @@ impl OllamaChatService {
             let tool_attributes = self.create_tool_call_span_from_call(call, &metadata);
 
             // Execute tool call with response tracing and get both result and updated context
-            let (tool_result, updated_context) = self
-                .with_tool_response_tracing(
-                    &metadata,
-                    current_context,
-                    tool_attributes,
-                    call,
-                    tool_action,
-                )
-                .await?;
+            let (tool_result, updated_context) = OllamaTracingHelper::with_tool_response_tracing(
+                self,
+                &metadata,
+                current_context,
+                tool_attributes,
+                call,
+                tool_action,
+            )
+            .await?;
 
             tracing::debug!("Tool response: {}", &tool_result);
             messages
@@ -406,13 +471,29 @@ impl OllamaChatService {
     ) -> Result<()> {
         for call in tool_calls {
             tracing::debug!("Tool call: {:?}", call.function);
+            tracing::debug!("Tool arguments: {:?}", call.function.arguments);
+            tracing::debug!(
+                "Tool arguments as object: {:?}",
+                call.function.arguments.as_object()
+            );
+
+            // Handle empty or null arguments by providing an empty object
+            let arguments_obj = call
+                .function
+                .arguments
+                .as_object()
+                .cloned()
+                .unwrap_or_else(|| {
+                    tracing::debug!("Tool call has null arguments, using empty object");
+                    serde_json::Map::new()
+                });
 
             let tool_result = self
                 .function_app
                 .call_function_for_llm(
                     metadata.clone(),
                     call.function.name.as_str(),
-                    call.function.arguments.as_object().cloned(),
+                    Some(arguments_obj),
                     DEFAULT_TIMEOUT_SEC,
                 )
                 .await?;

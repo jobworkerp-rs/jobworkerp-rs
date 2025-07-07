@@ -41,11 +41,11 @@ message LLMChatArgs {
 
   enum ChatRole {
     // The role of the message.
-    ROLE_UNSPECIFIED = 0;
-    ROLE_SYSTEM = 1;    // System message
-    ROLE_USER = 2;      // User message
-    ROLE_ASSISTANT = 3; // Assistant message
-    ROLE_TOOL = 4;      // Assistant message
+    UNSPECIFIED = 0;
+    SYSTEM = 1;    // System message
+    USER = 2;      // User message
+    ASSISTANT = 3; // Assistant message
+    TOOL = 4;      // Tool message
   }
 
   message MessageContent {
