@@ -22,6 +22,16 @@ message FindWorkerListRequest {
 }
 
 
+message ChannelInfo {
+  string name = 1;
+  uint32 concurrency = 2;
+}
+
+message FindChannelListResponse {
+  repeated ChannelInfo channels = 1;
+}
+
+
 service WorkerService {
   rpc Create(jobworkerp.data.WorkerData) returns (CreateWorkerResponse);
   rpc Update(jobworkerp.data.Worker) returns (SuccessResponse);
@@ -30,4 +40,5 @@ service WorkerService {
   rpc FindByName(WorkerNameRequest) returns (OptionalWorkerResponse);
   rpc FindList(FindWorkerListRequest) returns (stream jobworkerp.data.Worker);
   rpc Count(CountCondition) returns (CountResponse);
+  rpc FindChannelList(jobworkerp.data.Empty) returns (FindChannelListResponse);
 }
