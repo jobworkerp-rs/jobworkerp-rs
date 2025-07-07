@@ -1,12 +1,16 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::stream::{BoxStream, StreamExt};
-use genai::GenaiService;
+use genai::GenaiCompletionService;
+use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+use jobworkerp_base::APP_WORKER_NAME;
 use jobworkerp_runner::jobworkerp::runner::llm::{LlmCompletionArgs, LlmRunnerSettings};
 use jobworkerp_runner::runner::llm::LLMCompletionRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use ollama::OllamaService;
+use opentelemetry::trace::TraceContextExt;
+use opentelemetry::Context;
 use prost::Message;
 use proto::jobworkerp::data::{result_output_item, ResultOutputItem, RunnerType};
 use std::collections::HashMap;
@@ -18,7 +22,7 @@ pub mod ollama;
 
 pub struct LLMCompletionRunnerImpl {
     pub ollama: Option<OllamaService>,
-    pub genai: Option<GenaiService>,
+    pub genai: Option<GenaiCompletionService>,
 }
 
 impl LLMCompletionRunnerImpl {
@@ -29,6 +33,8 @@ impl LLMCompletionRunnerImpl {
         }
     }
 }
+
+impl Tracing for LLMCompletionRunnerImpl {}
 
 impl Default for LLMCompletionRunnerImpl {
     fn default() -> Self {
@@ -92,7 +98,7 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                     settings,
                 ),
             ) => {
-                let genai = GenaiService::new(settings).await?;
+                let genai = GenaiCompletionService::new(settings).await?;
                 tracing::info!("{} loaded(genai)", RunnerType::LlmCompletion.as_str_name());
                 self.genai = Some(genai);
                 Ok(())
@@ -106,18 +112,23 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         arg: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        let metadata_clone = metadata.clone();
         let result = async {
+            let span =
+                Self::otel_span_from_metadata(&metadata, APP_WORKER_NAME, "llm_completion_run");
+            let cx = Context::current_with_span(span);
+
             let args = LlmCompletionArgs::decode(&mut Cursor::new(arg))
                 .map_err(|e| anyhow!("decode error: {}", e))?;
             if let Some(ollama) = self.ollama.as_mut() {
-                let res = ollama.request_generation(args).await?;
+                let res = ollama.request_generation(args, cx, metadata_clone).await?;
                 let mut buf = Vec::with_capacity(res.encoded_len());
                 res.encode(&mut buf)
                     .map_err(|e| anyhow!("encode error: {}", e))?;
                 Ok(buf)
             } else if let Some(genai) = self.genai.as_mut() {
                 //XXX chat only
-                let res = genai.request_chat(args).await?;
+                let res = genai.request_chat(args, cx, metadata_clone).await?;
                 let mut buf = Vec::with_capacity(res.encoded_len());
                 res.encode(&mut buf)
                     .map_err(|e| anyhow!("encode error: {}", e))?;

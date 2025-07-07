@@ -196,10 +196,43 @@ impl ToolConverter {
                     Some(function_specs::Schema::SingleSchema(function)) => {
                         let name = tool.name.clone();
                         let description = tool.description.clone();
-                        let params_schema: Option<schemars::Schema> = function
-                            .settings
-                            .as_ref()
-                            .and_then(|s| serde_json::from_str(s).ok());
+
+                        // Use SchemaCombiner to combine settings and arguments schemas
+                        let mut schema_combiner = SchemaCombiner::new();
+
+                        // Add settings schema if present
+                        if let Some(settings) = &function.settings {
+                            let _ = schema_combiner
+                                .add_schema_from_string(
+                                    "settings",
+                                    settings.as_str(),
+                                    Some("Tool init settings".to_string()),
+                                )
+                                .inspect_err(|e| {
+                                    tracing::error!("Failed to parse settings schema: {}", e)
+                                });
+                        }
+
+                        // Add arguments schema
+                        let _ = schema_combiner
+                            .add_schema_from_string(
+                                "arguments",
+                                function.arguments.as_str(),
+                                Some("Tool arguments".to_string()),
+                            )
+                            .inspect_err(|e| {
+                                tracing::error!("Failed to parse arguments schema: {}", e)
+                            });
+
+                        // Generate combined schema and convert to schemars::Schema
+                        let params_schema: Option<schemars::Schema> = schema_combiner
+                            .generate_combined_schema()
+                            .ok()
+                            .and_then(|combined_map| {
+                                let combined_value = serde_json::Value::Object(combined_map);
+                                serde_json::from_value(combined_value).ok()
+                            });
+
                         params_schema
                             .map(|parameters| ToolInfo {
                                 tool_type: ollama_rs::generation::tools::ToolType::Function,
@@ -260,6 +293,7 @@ impl ToolConverter {
                             name,
                             description,
                             schema: Some(schema),
+                            config: None,
                         })
                         .into_iter()
                         .collect::<Vec<_>>()
@@ -267,15 +301,46 @@ impl ToolConverter {
                 Some(function_specs::Schema::SingleSchema(function)) => {
                     let name = tool.name.clone();
                     let description = Some(tool.description.clone());
-                    let schema: Option<Value> = function
-                        .settings
-                        .as_ref()
-                        .and_then(|s| serde_json::from_str::<Value>(s).ok());
+
+                    // Use SchemaCombiner to combine settings and arguments schemas
+                    let mut schema_combiner = SchemaCombiner::new();
+
+                    // Add settings schema if present
+                    if let Some(settings) = &function.settings {
+                        let _ = schema_combiner
+                            .add_schema_from_string(
+                                "settings",
+                                settings.as_str(),
+                                Some("Tool init settings".to_string()),
+                            )
+                            .inspect_err(|e| {
+                                tracing::error!("Failed to parse settings schema: {}", e)
+                            });
+                    }
+
+                    // Add arguments schema
+                    let _ = schema_combiner
+                        .add_schema_from_string(
+                            "arguments",
+                            function.arguments.as_str(),
+                            Some("Tool arguments".to_string()),
+                        )
+                        .inspect_err(|e| {
+                            tracing::error!("Failed to parse arguments schema: {}", e)
+                        });
+
+                    // Generate combined schema
+                    let schema: Option<Value> = schema_combiner
+                        .generate_combined_schema()
+                        .ok()
+                        .map(serde_json::Value::Object);
+
                     schema
                         .map(|schema| Tool {
                             name,
                             description,
                             schema: Some(schema),
+                            config: None,
                         })
                         .into_iter()
                         .collect::<Vec<_>>()
@@ -292,6 +357,7 @@ impl ToolConverter {
                             name,
                             description,
                             schema: Some(schema),
+                            config: None,
                         })
                     })
                     .collect::<Vec<_>>(),
@@ -584,22 +650,59 @@ mod tests {
             "Schema should have type 'object'"
         );
 
-        // Verify schema has properties object with setting_a
+        // Verify schema has properties object with settings and arguments
         let props = schema_obj
             .get("properties")
             .and_then(|p| p.as_object())
             .unwrap();
         assert!(
-            props.contains_key("setting_a"),
-            "Schema should contain setting_a property"
+            props.contains_key("settings"),
+            "Schema should contain settings property"
+        );
+        assert!(
+            props.contains_key("arguments"),
+            "Schema should contain arguments property"
+        );
+
+        // Verify settings has setting_a property
+        let settings = props.get("settings").and_then(|s| s.as_object()).unwrap();
+        let settings_props = settings
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .unwrap();
+        assert!(
+            settings_props.contains_key("setting_a"),
+            "Settings should contain setting_a property"
         );
 
         // Verify setting_a has correct type
-        let setting_a = props.get("setting_a").and_then(|s| s.as_object()).unwrap();
+        let setting_a = settings_props
+            .get("setting_a")
+            .and_then(|s| s.as_object())
+            .unwrap();
         assert_eq!(
             setting_a.get("type").and_then(|t| t.as_str()),
             Some("string"),
             "setting_a should have type string"
+        );
+
+        // Verify arguments has arg_a property
+        let arguments = props.get("arguments").and_then(|s| s.as_object()).unwrap();
+        let args_props = arguments
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .unwrap();
+        assert!(
+            args_props.contains_key("arg_a"),
+            "Arguments should contain arg_a property"
+        );
+
+        // Verify arg_a has correct type
+        let arg_a = args_props.get("arg_a").and_then(|s| s.as_object()).unwrap();
+        assert_eq!(
+            arg_a.get("type").and_then(|t| t.as_str()),
+            Some("boolean"),
+            "arg_a should have type boolean"
         );
 
         // ReusableWorkflow
@@ -687,6 +790,95 @@ mod tests {
     }
 
     #[test]
+    fn test_command_runner_schema_generation() {
+        // Test to verify COMMAND runner generates proper schema with command and args parameters
+        let command_spec = FunctionSpecs {
+            name: "COMMAND".to_string(),
+            description: "Run shell commands".to_string(),
+            schema: Some(function_specs::Schema::SingleSchema(
+                proto::jobworkerp::function::data::FunctionSchema {
+                    // Empty settings schema (as COMMAND runner returns)
+                    settings: Some(r#"{"type": "object", "properties": {}}"#.to_string()),
+                    // CommandArgs schema with "command" and "args" fields
+                    arguments: r#"{"type": "object", "properties": {"command": {"type": "string", "description": "The command to execute"}, "args": {"type": "array", "items": {"type": "string"}, "description": "Command arguments"}, "with_memory_monitoring": {"type": "boolean", "description": "Enable memory monitoring"}}, "required": ["command", "args"]}"#.to_string(),
+                    result_output_schema: Some(r#"{"type": "object", "properties": {"exit_code": {"type": "integer"}, "stdout": {"type": "string"}, "stderr": {"type": "string"}}}"#.to_string()),
+                },
+            )),
+            runner_type: proto::jobworkerp::data::RunnerType::Command as i32,
+            runner_id: None,
+            worker_id: None,
+            output_type: 0,
+        };
+
+        let ollama_tools = ToolConverter::convert_functions_to_ollama_tools(vec![command_spec]);
+
+        assert_eq!(ollama_tools.len(), 1, "Should generate exactly one tool");
+
+        let tool = &ollama_tools[0];
+        assert_eq!(tool.function.name, "COMMAND");
+        assert_eq!(tool.function.description, "Run shell commands");
+
+        // Convert to JSON for easier inspection
+        let schema_value = tool.function.parameters.clone().to_value();
+        let schema_obj = schema_value.as_object().unwrap();
+
+        // Verify the schema has the expected structure
+        let props = schema_obj
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .unwrap();
+
+        // Check for both settings and arguments
+        assert!(
+            props.contains_key("settings"),
+            "Schema should contain settings"
+        );
+        assert!(
+            props.contains_key("arguments"),
+            "Schema should contain arguments"
+        );
+
+        // Check arguments for command and args fields
+        let arguments = props.get("arguments").and_then(|a| a.as_object()).unwrap();
+        let arg_props = arguments
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .unwrap();
+
+        assert!(
+            arg_props.contains_key("command"),
+            "Arguments should contain 'command' field"
+        );
+        assert!(
+            arg_props.contains_key("args"),
+            "Arguments should contain 'args' field"
+        );
+        assert!(
+            arg_props.contains_key("with_memory_monitoring"),
+            "Arguments should contain 'with_memory_monitoring' field"
+        );
+
+        // Verify command field is a string
+        let command_field = arg_props
+            .get("command")
+            .and_then(|c| c.as_object())
+            .unwrap();
+        assert_eq!(
+            command_field.get("type").and_then(|t| t.as_str()),
+            Some("string"),
+            "Command field should be a string"
+        );
+
+        // Verify args field is an array
+        let args_field = arg_props.get("args").and_then(|a| a.as_object()).unwrap();
+        assert_eq!(
+            args_field.get("type").and_then(|t| t.as_str()),
+            Some("array"),
+            "Args field should be an array"
+        );
+    }
+
+    #[test]
     fn test_convert_functions_to_genai_tools() {
         let specs = vec![
             make_single_schema_spec(),
@@ -717,16 +909,53 @@ mod tests {
             .and_then(|p| p.as_object())
             .unwrap();
         assert!(
-            props.contains_key("setting_a"),
-            "Schema should contain setting_a property"
+            props.contains_key("settings"),
+            "Schema should contain settings property"
+        );
+        assert!(
+            props.contains_key("arguments"),
+            "Schema should contain arguments property"
+        );
+
+        // Verify settings has setting_a property
+        let settings = props.get("settings").and_then(|s| s.as_object()).unwrap();
+        let settings_props = settings
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .unwrap();
+        assert!(
+            settings_props.contains_key("setting_a"),
+            "Settings should contain setting_a property"
         );
 
         // Check setting_a type
-        let setting_a = props.get("setting_a").and_then(|s| s.as_object()).unwrap();
+        let setting_a = settings_props
+            .get("setting_a")
+            .and_then(|s| s.as_object())
+            .unwrap();
         assert_eq!(
             setting_a.get("type").and_then(|t| t.as_str()),
             Some("string"),
             "setting_a should have type string"
+        );
+
+        // Verify arguments has arg_a property
+        let arguments = props.get("arguments").and_then(|s| s.as_object()).unwrap();
+        let args_props = arguments
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .unwrap();
+        assert!(
+            args_props.contains_key("arg_a"),
+            "Arguments should contain arg_a property"
+        );
+
+        // Check arg_a type
+        let arg_a = args_props.get("arg_a").and_then(|s| s.as_object()).unwrap();
+        assert_eq!(
+            arg_a.get("type").and_then(|t| t.as_str()),
+            Some("boolean"),
+            "arg_a should have type boolean"
         );
 
         // ReusableWorkflow

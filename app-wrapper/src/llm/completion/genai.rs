@@ -6,6 +6,8 @@ use genai::chat::{
 };
 use genai::resolver::{Endpoint, ServiceTargetResolver};
 use genai::{Client, ServiceTarget};
+use infra_utils::infra::trace::impls::GenericOtelClient;
+use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_completion_result::message_content;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::GenaiRunnerSettings;
 use jobworkerp_runner::jobworkerp::runner::llm::{
@@ -15,17 +17,23 @@ use proto::jobworkerp::data::{result_output_item, ResultOutputItem, Trailer};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::super::generic_tracing_helper::{
+    GenericLLMTracingHelper, LLMMessage, ModelOptions as GenericModelOptions,
+};
+use super::super::tracing::genai_helper::GenaiCompletionTracingHelper;
+
 pub struct GenaiLLMConfig {
     pub model_name: String,
     pub endpoint_url: Option<String>,
 }
 #[derive(Clone)]
-pub struct GenaiService {
+pub struct GenaiCompletionService {
     pub client: Client,
     pub model: String,
     pub system_prompt: Option<String>,
+    pub otel_client: Option<Arc<GenericOtelClient>>,
 }
-impl GenaiService {
+impl GenaiCompletionService {
     pub async fn new(settings: GenaiRunnerSettings) -> Result<Self> {
         let model_name = settings.model.clone();
         let endpoint_url = settings.base_url.clone();
@@ -82,6 +90,7 @@ impl GenaiService {
             client,
             model: settings.model,
             system_prompt: settings.system_prompt,
+            otel_client: Some(Arc::new(GenericOtelClient::new("genai.completion_service"))),
         })
     }
     fn options(&self, args: &LlmCompletionArgs) -> Option<ChatOptions> {
@@ -104,33 +113,40 @@ impl GenaiService {
         messages.push(ChatMessage::user(args.prompt));
         messages
     }
-    pub async fn request_chat(&self, args: LlmCompletionArgs) -> Result<LlmCompletionResult> {
+    pub fn with_otel_client(mut self, client: Arc<GenericOtelClient>) -> Self {
+        self.otel_client = Some(client);
+        self
+    }
+
+    pub async fn request_chat(
+        &self,
+        args: LlmCompletionArgs,
+        cx: opentelemetry::Context,
+        metadata: HashMap<String, String>,
+    ) -> Result<LlmCompletionResult> {
+        let metadata = Arc::new(metadata);
         let options = self.options(&args);
         let messages = self.messages(args);
         let chat_req = ChatRequest::new(messages);
-        tracing::debug!(
-            "Genai LLM: model: {}, Chat request: {:?}, options: {:?}",
-            &self.model,
-            &chat_req,
-            &options,
-        );
-        let res = self
-            .client
-            .exec_chat(&self.model, chat_req, options.as_ref())
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to request generation: {:#?}", e))?;
-        Ok(LlmCompletionResult {
-            content: match res.content {
-                Some(GenaiMessageContent::Text(text)) => {
-                    Some(llm_completion_result::MessageContent {
-                        content: Some(message_content::Content::Text(text)),
-                    })
-                }
-                Some(_) => {
-                    tracing::error!("Unsupported message content type: {:#?}", &res.content);
-                    None
-                }
-                None => None,
+
+        // Use tracing-enabled internal call
+        let res = Self::request_completion_internal_with_tracing(
+            Arc::new(self.clone()),
+            chat_req,
+            options,
+            Some(cx.clone()),
+            metadata.clone(),
+        )
+        .await?;
+
+        let completion_result = LlmCompletionResult {
+            content: if let Some(text) = res.first_text() {
+                Some(llm_completion_result::MessageContent {
+                    content: Some(message_content::Content::Text(text.to_string())),
+                })
+            } else {
+                tracing::error!("No text content found in response: {:#?}", &res.content);
+                None
             },
             reasoning_content: res.reasoning_content,
             done: true,
@@ -141,7 +157,87 @@ impl GenaiService {
                 ..Default::default()
             }),
             ..Default::default()
-        })
+        };
+
+        // Record usage if available
+        let usage = &res.usage;
+        if true {
+            let content = completion_result
+                .content
+                .as_ref()
+                .and_then(|c| c.content.as_ref())
+                .map(|content| match content {
+                    message_content::Content::Text(text) => text.as_str(),
+                    // _ => None,
+                });
+            let _ = GenericLLMTracingHelper::trace_usage(
+                self,
+                &metadata,
+                cx.clone(),
+                "genai.completion.usage",
+                usage,
+                content,
+            )
+            .await;
+        }
+
+        Ok(completion_result)
+    }
+
+    async fn request_completion_internal_with_tracing(
+        self: Arc<Self>,
+        chat_req: ChatRequest,
+        options: Option<ChatOptions>,
+        parent_context: Option<opentelemetry::Context>,
+        metadata: Arc<HashMap<String, String>>,
+    ) -> Result<genai::chat::ChatResponse> {
+        let model = self.model.clone();
+        let model_for_span = model.clone();
+        let chat_req_for_span = chat_req.clone();
+        let options_for_span = options.clone();
+
+        tracing::debug!(
+            "Genai LLM: model: {}, Chat request: {:?}, options: {:?}",
+            &model,
+            &chat_req,
+            &options,
+        );
+
+        let client_clone = self.client.clone();
+        let completion_api_action = async move {
+            client_clone
+                .exec_chat(&model, chat_req, options.as_ref())
+                .await
+                .map_err(|e| JobWorkerError::OtherError(format!("Completion API error: {e}")))
+        };
+
+        // Execute completion API call and get both result and context
+        let (res, _current_context) = if let Some(_otel_client) = self.get_otel_client() {
+            // Create span attributes for completion API call
+            let span_attributes = self
+                .create_completion_span_from_request(
+                    &model_for_span,
+                    &chat_req_for_span,
+                    &options_for_span,
+                    &metadata,
+                )
+                .await;
+
+            // Execute completion API call with response tracing
+            self.with_completion_response_tracing(
+                &metadata,
+                parent_context.clone(),
+                span_attributes,
+                completion_api_action,
+            )
+            .await?
+        } else {
+            let result = completion_api_action.await?;
+            let context = opentelemetry::Context::current();
+            (result, context)
+        };
+
+        Ok(res)
     }
     pub async fn request_chat_stream(
         &self,
@@ -221,6 +317,11 @@ impl GenaiService {
                                 item: Some(result_output_item::Item::Data(bytes)),
                             })
                         },
+                        ChatStreamEvent::ToolCallChunk(_) => {
+                            // Handle tool call chunks - for now, we'll ignore them
+                            // as they're not directly supported in the current LlmCompletionResult structure
+                            None
+                        },
                         ChatStreamEvent::End(end) => {
                             // End event - send LlmCompletionResult with done flag set to true
                             let mut llm_result = LlmCompletionResult {
@@ -237,7 +338,12 @@ impl GenaiService {
                                 });
                             }
                             // Add final content if available
-                            if let Some(GenaiMessageContent::Text(text)) = end.captured_content {
+                            if let Some(text) = end.captured_content.as_ref().and_then(|c| c.first()).and_then(|mc| {
+                                match mc {
+                                    GenaiMessageContent::Text(text) => Some(text.clone()),
+                                    _ => None,
+                                }
+                            }) {
                                 llm_result.content = Some(llm_completion_result::MessageContent {
                                     content: Some(message_content::Content::Text(text)),
                                 });
@@ -289,3 +395,52 @@ impl GenaiService {
         Ok(stream)
     }
 }
+
+// Implement traits for GenaiService (completion version)
+impl GenericLLMTracingHelper for GenaiCompletionService {
+    fn get_otel_client(&self) -> Option<&Arc<GenericOtelClient>> {
+        self.otel_client.as_ref()
+    }
+
+    fn convert_messages_to_input(&self, messages: &[impl LLMMessage]) -> serde_json::Value {
+        use super::super::tracing::genai_helper::GenaiTracingHelper;
+        let genai_messages: Vec<ChatMessage> = messages
+            .iter()
+            .map(|m| ChatMessage {
+                role: match m.get_role() {
+                    "user" => genai::chat::ChatRole::User,
+                    "assistant" => genai::chat::ChatRole::Assistant,
+                    "system" => genai::chat::ChatRole::System,
+                    "tool" => genai::chat::ChatRole::Tool,
+                    unknown_role => {
+                        tracing::warn!(
+                            "Unknown role string '{}', defaulting to User",
+                            unknown_role
+                        );
+                        genai::chat::ChatRole::User
+                    }
+                },
+                content: GenaiMessageContent::Text(m.get_content().to_string()),
+                options: None,
+            })
+            .collect();
+        super::super::chat::genai::GenaiChatService::convert_messages_to_input_genai(
+            &genai_messages,
+        )
+    }
+
+    fn convert_model_options_to_parameters(
+        &self,
+        _options: &impl GenericModelOptions,
+    ) -> HashMap<String, serde_json::Value> {
+        // For GenAI completion, we can't directly convert from the generic trait
+        // This would need to be implemented with specific knowledge of the options
+        HashMap::new()
+    }
+
+    fn get_provider_name(&self) -> &str {
+        "genai"
+    }
+}
+
+impl GenaiCompletionTracingHelper for GenaiCompletionService {}
