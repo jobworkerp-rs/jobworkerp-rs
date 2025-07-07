@@ -3,6 +3,8 @@ use super::super::generic_tracing_helper::{
     ToolInfo as GenericToolInfo, UsageData,
 };
 use super::conversion::ToolConverter;
+use crate::llm::tracing::genai_helper::GenaiTracingHelper;
+use crate::llm::ThinkTagHelper;
 use anyhow::Result;
 use app::app::function::{FunctionApp, FunctionAppImpl};
 use futures::stream::BoxStream;
@@ -22,6 +24,10 @@ use jobworkerp_runner::jobworkerp::runner::llm::{llm_chat_result, LlmChatArgs, L
 use proto::jobworkerp::data::{result_output_item, ResultOutputItem, Trailer};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::Mutex;
+
+// Default timeout for tool calls in seconds
+const DEFAULT_TIMEOUT_SEC: u32 = 300;
 
 pub struct GenaiLLMConfig {
     pub model_name: String,
@@ -35,6 +41,9 @@ pub struct GenaiChatService {
     pub system_prompt: Option<String>,
     pub otel_client: Option<Arc<GenericOtelClient>>,
 }
+
+impl ThinkTagHelper for GenaiChatService {}
+
 impl GenaiChatService {
     pub async fn new(
         function_app: Arc<FunctionAppImpl>,
@@ -86,7 +95,6 @@ impl GenaiChatService {
                 })
             },
         );
-        tracing::debug!("=== Genai LLM: target_resolver: {:?}", &target_resolver,);
         // -- Build the new client with this adapter_config
         let client = Client::builder()
             .with_service_target_resolver(target_resolver)
@@ -116,19 +124,18 @@ impl GenaiChatService {
         role: jobworkerp::runner::llm::llm_chat_args::ChatRole,
     ) -> genai::chat::ChatRole {
         match role {
-            jobworkerp::runner::llm::llm_chat_args::ChatRole::RoleSystem => {
+            jobworkerp::runner::llm::llm_chat_args::ChatRole::System => {
                 genai::chat::ChatRole::System
             }
-            jobworkerp::runner::llm::llm_chat_args::ChatRole::RoleUser => {
-                genai::chat::ChatRole::User
-            }
-            jobworkerp::runner::llm::llm_chat_args::ChatRole::RoleAssistant => {
+            jobworkerp::runner::llm::llm_chat_args::ChatRole::User => genai::chat::ChatRole::User,
+            jobworkerp::runner::llm::llm_chat_args::ChatRole::Assistant => {
                 genai::chat::ChatRole::Assistant
             }
-            jobworkerp::runner::llm::llm_chat_args::ChatRole::RoleTool => {
-                genai::chat::ChatRole::Tool
+            jobworkerp::runner::llm::llm_chat_args::ChatRole::Tool => genai::chat::ChatRole::Tool,
+            _ => {
+                tracing::warn!("Unknown ChatRole {:?}, defaulting to User", role);
+                genai::chat::ChatRole::User
             }
-            _ => genai::chat::ChatRole::User,
         }
     }
     fn trans_messages(&self, args: LlmChatArgs) -> Vec<ChatMessage> {
@@ -216,11 +223,6 @@ impl GenaiChatService {
         }
     }
 
-    pub fn with_otel_client(mut self, client: Arc<GenericOtelClient>) -> Self {
-        self.otel_client = Some(client);
-        self
-    }
-
     pub async fn request_chat(
         &self,
         args: LlmChatArgs,
@@ -229,67 +231,45 @@ impl GenaiChatService {
     ) -> Result<LlmChatResult> {
         let metadata = Arc::new(metadata);
         let options = self.options(&args);
-        let tools = self.function_list(&args).await?;
-        let messages = self.trans_messages(args);
-        let chat_req = ChatRequest::new(messages);
-        let chat_req = if tools.is_empty() {
-            chat_req
-        } else {
-            // Add tools to the chat request
-            chat_req.with_tools(tools.clone())
-        };
+        let tools = Arc::new(self.function_list(&args).await?);
+        let model = args.model.clone().unwrap_or_else(|| self.model.clone());
+        let mut messages = self.trans_messages(args);
 
-        // 新しい統一トレーシングAPIを使用
-        let tracing_context = crate::llm::tracing::LLMTracingHelper::start_llm_tracing(
-            self,
-            crate::llm::tracing::LLMApiType::Chat,
-            &chat_req,
-            &metadata,
+        // Add system prompt if exists
+        if let Some(system_prompt) = self.system_prompt.clone() {
+            messages.retain(|m| !matches!(m.role, genai::chat::ChatRole::System));
+            messages.insert(
+                0,
+                ChatMessage {
+                    role: genai::chat::ChatRole::System,
+                    content: GenaiMessageContent::Text(system_prompt),
+                    options: None,
+                },
+            );
+        }
+
+        let messages = Arc::new(Mutex::new(messages));
+
+        // Use internal method with tool call support
+        let res = Self::request_chat_internal_with_tracing(
+            Arc::new(self.clone()),
+            model,
+            options,
+            messages,
+            tools,
             Some(cx.clone()),
+            metadata.clone(),
         )
         .await?;
 
-        // APIリクエストの実行
-        let api_result = self
-            .client
-            .exec_chat(&self.model, chat_req, options.as_ref())
-            .await
-            .map_err(|e| JobWorkerError::OtherError(format!("Chat API error: {e}")));
-
-        // 結果に応じたトレーシング終了
-        let res = match api_result {
-            Ok(response) => {
-                // 成功時のトレーシング終了
-                let _ = crate::llm::tracing::LLMTracingHelper::finish_llm_tracing(
-                    self,
-                    tracing_context,
-                    &response,
-                )
-                .await;
-                response
-            }
-            Err(error) => {
-                // エラー時のトレーシング終了
-                let _ = crate::llm::tracing::LLMTracingHelper::finish_llm_tracing_with_error(
-                    self,
-                    tracing_context,
-                    &error,
-                )
-                .await;
-                return Err(error.into());
-            }
-        };
+        // Convert response to LlmChatResult
+        let (prompt, think) = Self::divide_think_tag(res.first_text().unwrap_or("").to_string());
 
         let chat_result = LlmChatResult {
-            content: if let Some(text) = res.first_text() {
-                Some(llm_chat_result::MessageContent {
-                    content: Some(message_content::Content::Text(text.to_string())),
-                })
-            } else {
-                tracing::warn!("No text content found in response: {:#?}", &res.content);
-                None
-            },
-            reasoning_content: res.reasoning_content,
+            content: Some(llm_chat_result::MessageContent {
+                content: Some(message_content::Content::Text(prompt)),
+            }),
+            reasoning_content: think,
             done: true,
             usage: Some(llm_chat_result::Usage {
                 model: res.model_iden.model_name.to_string(),
@@ -301,6 +281,233 @@ impl GenaiChatService {
 
         Ok(chat_result)
     }
+
+    async fn request_chat_internal_with_tracing(
+        self: Arc<Self>,
+        model: String,
+        options: Option<ChatOptions>,
+        messages: Arc<Mutex<Vec<ChatMessage>>>,
+        tools: Arc<Vec<Tool>>,
+        parent_context: Option<opentelemetry::Context>,
+        metadata: Arc<HashMap<String, String>>,
+    ) -> Result<genai::chat::ChatResponse> {
+        let current_messages = messages.lock().await.clone();
+        let chat_req = ChatRequest::new(current_messages);
+        let chat_req = if tools.is_empty() {
+            chat_req
+        } else {
+            chat_req.with_tools((*tools).clone())
+        };
+
+        // Execute chat API call
+        let client_clone = self.client.clone();
+        let model_clone = model.clone();
+        let options_clone = options.clone();
+        let chat_req_clone = chat_req.clone();
+        let chat_api_action = async move {
+            client_clone
+                .exec_chat(&model_clone, chat_req_clone, options_clone.as_ref())
+                .await
+                .map_err(|e| JobWorkerError::OtherError(format!("Chat API error: {e}")))
+        };
+
+        // Execute with tracing
+        let (res, current_context) = if let Some(_otel_client) = self.get_otel_client() {
+            // Use existing tracing
+            let tracing_context = crate::llm::tracing::LLMTracingHelper::start_llm_tracing(
+                &*self,
+                crate::llm::tracing::LLMApiType::Chat,
+                &chat_req,
+                &metadata,
+                parent_context.clone(),
+            )
+            .await?;
+
+            let api_result = chat_api_action.await;
+
+            let res = match api_result {
+                Ok(response) => {
+                    let _ = crate::llm::tracing::LLMTracingHelper::finish_llm_tracing(
+                        &*self,
+                        tracing_context,
+                        &response,
+                    )
+                    .await;
+                    response
+                }
+                Err(error) => {
+                    let _ = crate::llm::tracing::LLMTracingHelper::finish_llm_tracing_with_error(
+                        &*self,
+                        tracing_context,
+                        &error,
+                    )
+                    .await;
+                    return Err(error.into());
+                }
+            };
+
+            let context = parent_context.unwrap_or_else(opentelemetry::Context::current);
+            (res, context)
+        } else {
+            let res = chat_api_action.await?;
+            let context = parent_context.unwrap_or_else(opentelemetry::Context::current);
+            (res, context)
+        };
+
+        tracing::debug!("GenAI chat response: {:#?}", &res);
+
+        // Check for tool calls in response
+        if let Some(tool_calls) = Self::extract_tool_calls(&res) {
+            if !tool_calls.is_empty() {
+                tracing::debug!("Tool calls in response: {:#?}", &tool_calls);
+
+                // Process tool calls
+                let updated_context = if self.get_otel_client().is_some() {
+                    self.process_tool_calls_with_tracing(
+                        messages.clone(),
+                        &tool_calls,
+                        Some(current_context),
+                        metadata.clone(),
+                    )
+                    .await?
+                } else {
+                    self.process_tool_calls_without_tracing(
+                        messages.clone(),
+                        &tool_calls,
+                        metadata.clone(),
+                    )
+                    .await?;
+                    current_context
+                };
+
+                // Recursive call with updated context
+                return Box::pin(self.request_chat_internal_with_tracing(
+                    model,
+                    options,
+                    messages,
+                    tools,
+                    Some(updated_context),
+                    metadata,
+                ))
+                .await;
+            }
+        }
+
+        Ok(res)
+    }
+
+    fn extract_tool_calls(
+        response: &genai::chat::ChatResponse,
+    ) -> Option<Vec<genai::chat::ToolCall>> {
+        // Check if response contains tool calls
+        for content in &response.content {
+            if let GenaiMessageContent::ToolCalls(calls) = content {
+                return Some(calls.clone());
+            }
+        }
+        None
+    }
+
+    async fn process_tool_calls_with_tracing(
+        &self,
+        messages: Arc<Mutex<Vec<ChatMessage>>>,
+        tool_calls: &[genai::chat::ToolCall],
+        parent_context: Option<opentelemetry::Context>,
+        metadata: Arc<HashMap<String, String>>,
+    ) -> Result<opentelemetry::Context> {
+        let current_context = parent_context.unwrap_or_else(opentelemetry::Context::current);
+
+        for call in tool_calls {
+            tracing::debug!("Tool call: {:?}", call);
+            tracing::debug!("Tool arguments: {:?}", call.fn_arguments);
+            tracing::debug!(
+                "Tool arguments as object: {:?}",
+                call.fn_arguments.as_object()
+            );
+
+            // Clone necessary data to avoid lifetime issues
+            let function_name = call.fn_name.clone();
+            let arguments = call.fn_arguments.clone();
+            let function_app = self.function_app.clone();
+            let metadata_clone = metadata.clone();
+
+            let tool_action = async move {
+                // Handle empty or null arguments by providing an empty object
+                let arguments_obj = arguments.as_object().cloned().unwrap_or_else(|| {
+                    tracing::debug!("Tool call has null arguments, using empty object");
+                    serde_json::Map::new()
+                });
+
+                function_app
+                    .call_function_for_llm(
+                        metadata_clone,
+                        &function_name,
+                        Some(arguments_obj),
+                        DEFAULT_TIMEOUT_SEC,
+                    )
+                    .await
+                    .map_err(|e| JobWorkerError::OtherError(format!("Tool execution error: {e}")))
+            };
+
+            // For now, execute without detailed tracing (can be enhanced later)
+            let tool_result = tool_action.await?;
+
+            tracing::debug!("Tool response: {}", &tool_result);
+
+            // Add tool result to messages
+            messages.lock().await.push(ChatMessage {
+                role: genai::chat::ChatRole::Tool,
+                content: GenaiMessageContent::Text(tool_result.to_string()),
+                options: None,
+            });
+        }
+
+        Ok(current_context)
+    }
+
+    async fn process_tool_calls_without_tracing(
+        &self,
+        messages: Arc<Mutex<Vec<ChatMessage>>>,
+        tool_calls: &[genai::chat::ToolCall],
+        metadata: Arc<HashMap<String, String>>,
+    ) -> Result<()> {
+        for call in tool_calls {
+            tracing::debug!("Tool call: {:?}", call);
+            tracing::debug!("Tool arguments: {:?}", call.fn_arguments);
+            tracing::debug!(
+                "Tool arguments as object: {:?}",
+                call.fn_arguments.as_object()
+            );
+
+            // Handle empty or null arguments by providing an empty object
+            let arguments_obj = call.fn_arguments.as_object().cloned().unwrap_or_else(|| {
+                tracing::debug!("Tool call has null arguments, using empty object");
+                serde_json::Map::new()
+            });
+
+            let tool_result = self
+                .function_app
+                .call_function_for_llm(
+                    metadata.clone(),
+                    &call.fn_name,
+                    Some(arguments_obj),
+                    DEFAULT_TIMEOUT_SEC,
+                )
+                .await?;
+
+            tracing::debug!("Tool response: {}", &tool_result);
+
+            // Add tool result to messages
+            messages.lock().await.push(ChatMessage {
+                role: genai::chat::ChatRole::Tool,
+                content: GenaiMessageContent::Text(tool_result.to_string()),
+                options: None,
+            });
+        }
+
+        Ok(())
+    }
+
     pub async fn request_chat_stream(
         &self,
         args: LlmChatArgs,
@@ -388,9 +595,12 @@ impl GenaiChatService {
                                     item: Some(result_output_item::Item::Data(bytes)),
                                 })
                             }
-                            ChatStreamEvent::ToolCallChunk(_) => {
-                                // Handle tool call chunks - for now, we'll ignore them
-                                // as they're not directly supported in the current LlmChatResult structure
+                            ChatStreamEvent::ToolCallChunk(c) => {
+                                // Tool calls in streaming should be handled differently
+                                // For now, we'll log and ignore, but this could be enhanced
+                                tracing::warn!(
+                                    "Tool call chunks in streaming not yet supported: {c:?}",
+                                );
                                 None
                             }
                             ChatStreamEvent::End(end) => {
@@ -500,17 +710,8 @@ impl GenericToolInfo for Tool {
 
 impl ChatResponse for genai::chat::ChatResponse {
     fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "content": self.content,
-            "content_text": self.first_text(),
-            "model": self.model_iden.model_name,
-            "usage": {
-                "prompt_tokens": self.usage.prompt_tokens,
-                "completion_tokens": self.usage.completion_tokens,
-                "total_tokens": self.usage.total_tokens.unwrap_or(0)
-            },
-            "reasoning_content": self.reasoning_content
-        })
+        // Return only the message content for trace output, not the full structure
+        serde_json::json!(self.first_text())
     }
 }
 
@@ -541,109 +742,6 @@ impl UsageData for genai::chat::Usage {
     }
 }
 
-/// Trait for OpenTelemetry tracing functionality in GenAI services
-pub trait GenaiTracingHelper: GenericLLMTracingHelper {
-    /// Convert ChatMessage vector to proper tracing input format
-    fn convert_messages_to_input_genai(messages: &[ChatMessage]) -> serde_json::Value {
-        serde_json::json!(messages
-            .iter()
-            .map(|m| {
-                let mut msg_json = serde_json::json!({
-                    "role": m.get_role(),
-                    "content": m.get_content()
-                });
-
-                // Add additional content info for non-text messages
-                match &m.content {
-                    GenaiMessageContent::Parts(parts) => {
-                        msg_json["parts_count"] = serde_json::json!(parts.len());
-                    }
-                    GenaiMessageContent::ToolCalls(calls) => {
-                        msg_json["tool_calls"] = serde_json::json!(calls
-                            .iter()
-                            .map(|tc| serde_json::json!({
-                                "call_id": tc.call_id,
-                                "fn_name": tc.fn_name,
-                                "fn_arguments": tc.fn_arguments
-                            }))
-                            .collect::<Vec<_>>());
-                    }
-                    _ => {}
-                }
-
-                msg_json
-            })
-            .collect::<Vec<_>>())
-    }
-
-    /// Convert ChatOptions to proper model parameters format
-    fn convert_model_options_to_parameters_genai(
-        options: &Option<ChatOptions>,
-    ) -> HashMap<String, serde_json::Value> {
-        let mut parameters = HashMap::new();
-
-        if let Some(opts) = options {
-            if let Some(temp) = opts.temperature {
-                parameters.insert("temperature".to_string(), serde_json::json!(temp));
-            }
-            if let Some(max_tokens) = opts.max_tokens {
-                parameters.insert("max_tokens".to_string(), serde_json::json!(max_tokens));
-            }
-            if let Some(top_p) = opts.top_p {
-                parameters.insert("top_p".to_string(), serde_json::json!(top_p));
-            }
-            if let Some(normalize) = opts.normalize_reasoning_content {
-                parameters.insert(
-                    "normalize_reasoning_content".to_string(),
-                    serde_json::json!(normalize),
-                );
-            }
-        }
-
-        parameters
-    }
-
-    /// Create chat completion span attributes from GenAI request components
-    #[allow(async_fn_in_trait)]
-    async fn create_chat_span_from_request(
-        &self,
-        model: &str,
-        chat_req: &ChatRequest,
-        options: &Option<ChatOptions>,
-        tools: &[Tool],
-        metadata: &HashMap<String, String>,
-    ) -> infra_utils::infra::trace::attr::OtelSpanAttributes {
-        let input_messages = Self::convert_messages_to_input_genai(&chat_req.messages);
-        let model_parameters = Self::convert_model_options_to_parameters_genai(options);
-
-        self.create_chat_completion_span_attributes(
-            model,
-            input_messages,
-            Some(&model_parameters),
-            tools,
-            metadata,
-        )
-    }
-
-    fn trace_usage(
-        &self,
-        metadata: &HashMap<String, String>,
-        parent_context: opentelemetry::Context,
-        name: &str,
-        usage_data: &genai::chat::Usage,
-        content: Option<&str>,
-    ) -> impl std::future::Future<Output = Result<()>> + Send + 'static {
-        GenericLLMTracingHelper::trace_usage(
-            self,
-            metadata,
-            parent_context,
-            name,
-            usage_data,
-            content,
-        )
-    }
-}
-
 // Implement traits for GenaiService
 impl GenericLLMTracingHelper for GenaiChatService {
     fn get_otel_client(&self) -> Option<&Arc<GenericOtelClient>> {
@@ -659,7 +757,13 @@ impl GenericLLMTracingHelper for GenaiChatService {
                     "assistant" => genai::chat::ChatRole::Assistant,
                     "system" => genai::chat::ChatRole::System,
                     "tool" => genai::chat::ChatRole::Tool,
-                    _ => genai::chat::ChatRole::User,
+                    unknown_role => {
+                        tracing::warn!(
+                            "Unknown role string '{}', defaulting to User",
+                            unknown_role
+                        );
+                        genai::chat::ChatRole::User
+                    }
                 },
                 content: GenaiMessageContent::Text(m.get_content().to_string()),
                 options: None,
@@ -684,102 +788,6 @@ impl GenericLLMTracingHelper for GenaiChatService {
 
 impl GenaiTracingHelper for GenaiChatService {}
 
-// GenAI Chat Request 用の LLMRequestData trait 実装
-impl crate::llm::tracing::LLMRequestData for genai::chat::ChatRequest {
-    fn extract_input(&self) -> crate::llm::tracing::LLMInput {
-        crate::llm::tracing::LLMInput {
-            messages: serde_json::json!(self
-                .messages
-                .iter()
-                .map(|m| {
-                    let mut msg_json = serde_json::json!({
-                        "role": match m.role {
-                            genai::chat::ChatRole::User => "user",
-                            genai::chat::ChatRole::Assistant => "assistant",
-                            genai::chat::ChatRole::System => "system",
-                            genai::chat::ChatRole::Tool => "tool",
-                        },
-                        "content": match &m.content {
-                            genai::chat::MessageContent::Text(text) => text,
-                            _ => "",
-                        }
-                    });
-
-                    // Add additional content info for non-text messages
-                    match &m.content {
-                        genai::chat::MessageContent::Parts(parts) => {
-                            msg_json["parts_count"] = serde_json::json!(parts.len());
-                        }
-                        genai::chat::MessageContent::ToolCalls(calls) => {
-                            msg_json["tool_calls"] = serde_json::json!(calls
-                                .iter()
-                                .map(|tc| serde_json::json!({
-                                    "call_id": tc.call_id,
-                                    "fn_name": tc.fn_name,
-                                    "fn_arguments": tc.fn_arguments
-                                }))
-                                .collect::<Vec<_>>());
-                        }
-                        _ => {}
-                    }
-
-                    msg_json
-                })
-                .collect::<Vec<_>>()),
-            prompt: None,
-        }
-    }
-
-    fn extract_options(&self) -> Option<crate::llm::tracing::LLMOptions> {
-        // GenAIの場合、オプションはChatRequestに直接含まれていない
-        // ChatOptionsは別途渡される構造になっているため、ここではNoneを返す
-        None
-    }
-
-    fn extract_tools(&self) -> Vec<crate::llm::tracing::LLMTool> {
-        self.tools.as_ref().map_or(vec![], |tools| {
-            tools
-                .iter()
-                .map(|tool| crate::llm::tracing::LLMTool {
-                    name: tool.name.clone(),
-                    description: tool.description.clone().unwrap_or_default(),
-                    parameters: serde_json::json!(tool),
-                })
-                .collect()
-        })
-    }
-
-    fn extract_model(&self) -> Option<String> {
-        None // GenAIの場合、モデル名はリクエストに含まれていない
-    }
-}
-
-// GenAI Chat Response 用の LLMResponseData trait 実装
-impl crate::llm::tracing::LLMResponseData for genai::chat::ChatResponse {
-    fn to_trace_output(&self) -> serde_json::Value {
-        serde_json::json!({
-            "content": self.content,
-            "content_text": self.first_text(),
-            "model": self.model_iden.model_name,
-            "usage": {
-                "prompt_tokens": self.usage.prompt_tokens,
-                "completion_tokens": self.usage.completion_tokens,
-                "total_tokens": self.usage.total_tokens.unwrap_or(0)
-            },
-            "reasoning_content": self.reasoning_content
-        })
-    }
-
-    fn extract_usage(&self) -> Option<Box<dyn crate::llm::tracing::UsageData>> {
-        Some(Box::new(self.usage.clone()) as Box<dyn crate::llm::tracing::UsageData>)
-    }
-
-    fn extract_content(&self) -> Option<String> {
-        self.first_text().map(|s| s.to_string())
-    }
-}
-
-// 新しい統一LLMTracingHelper実装
 impl crate::llm::tracing::LLMTracingHelper for GenaiChatService {
     fn get_otel_client(&self) -> Option<&Arc<GenericOtelClient>> {
         self.otel_client.as_ref()

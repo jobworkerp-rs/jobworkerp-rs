@@ -202,10 +202,10 @@ impl OllamaService {
     pub async fn request_generation(
         &self,
         args: LlmCompletionArgs,
-        cx: opentelemetry::Context,
-        metadata: HashMap<String, String>,
+        _cx: opentelemetry::Context,        // TODO
+        _metadata: HashMap<String, String>, // TODO
     ) -> Result<LlmCompletionResult> {
-        let metadata = Arc::new(metadata);
+        // let metadata = Arc::new(metadata);
         let options = Self::create_completion_options(&args);
         let mut request = GenerationRequest::new(self.model.clone(), args.prompt);
         request = request.options(options.clone());
@@ -221,14 +221,11 @@ impl OllamaService {
         }
 
         // Use tracing-enabled internal call
-        let res = Self::request_generation_internal_with_tracing(
-            Arc::new(self.clone()),
-            request,
-            options,
-            Some(cx.clone()),
-            metadata.clone(),
-        )
-        .await?;
+        let res = self
+            .ollama
+            .generate(request)
+            .await
+            .map_err(|e| anyhow!("Generation error(generation): {}", e))?;
 
         tracing::debug!(
             "END OF generation {}: duration: {}",
@@ -276,23 +273,6 @@ impl OllamaService {
             });
         }
         Ok(result)
-    }
-
-    async fn request_generation_internal_with_tracing(
-        self: Arc<Self>,
-        request: GenerationRequest<'_>,
-        _options: ModelOptions,
-        _parent_context: Option<opentelemetry::Context>,
-        _metadata: Arc<HashMap<String, String>>,
-    ) -> Result<GenerationResponse> {
-        // For now, just call the API directly
-        // TODO: Implement proper tracing support
-        let res = self
-            .ollama
-            .generate(request)
-            .await
-            .map_err(|e| anyhow!("Generation error(generation): {}", e))?;
-        Ok(res)
     }
 }
 
