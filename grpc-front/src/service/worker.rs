@@ -1,13 +1,13 @@
-use crate::proto::jobworkerp::data::{QueueType, ResponseType};
+use crate::proto::jobworkerp::data::{Empty, QueueType, ResponseType};
 use crate::proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use crate::proto::jobworkerp::service::worker_service_server::WorkerService;
 use crate::proto::jobworkerp::service::{
-    CountCondition, CountResponse, CreateWorkerResponse, FindWorkerListRequest,
-    OptionalWorkerResponse, SuccessResponse, WorkerNameRequest,
+    ChannelInfo, CountCondition, CountResponse, CreateWorkerResponse, FindChannelListResponse,
+    FindWorkerListRequest, OptionalWorkerResponse, SuccessResponse, WorkerNameRequest,
 };
 use crate::service::error_handle::handle_error;
 use app::app::worker::WorkerApp;
-use app::app::{StorageConfig, UseStorageConfig};
+use app::app::{StorageConfig, UseStorageConfig, UseWorkerConfig, WorkerConfig};
 use app::module::AppModule;
 use async_stream::stream;
 use futures::stream::BoxStream;
@@ -22,6 +22,8 @@ use tonic::Response;
 pub trait WorkerGrpc {
     fn app(&self) -> &Arc<dyn WorkerApp + 'static>;
 }
+
+const DEFAULT_CHANNEL_DISPLAY_NAME: &str = "[default]";
 
 pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig {
     fn default_queue_type(&self) -> QueueType {
@@ -148,7 +150,15 @@ pub trait ResponseProcessor: UseJobqueueAndCodec {
 
 #[tonic::async_trait]
 impl<
-        T: WorkerGrpc + RequestValidator + ResponseProcessor + Tracing + Send + Debug + Sync + 'static,
+        T: WorkerGrpc
+            + RequestValidator
+            + ResponseProcessor
+            + UseWorkerConfig
+            + Tracing
+            + Send
+            + Debug
+            + Sync
+            + 'static,
     > WorkerService for T
 {
     #[tracing::instrument(level = "info", skip(self, request), fields(method = "create"))]
@@ -267,6 +277,35 @@ impl<
             Err(e) => Err(handle_error(&e)),
         }
     }
+
+    #[tracing::instrument(
+        level = "info",
+        skip(self, request),
+        fields(method = "find_channel_list")
+    )]
+    async fn find_channel_list(
+        &self,
+        request: tonic::Request<Empty>,
+    ) -> Result<tonic::Response<FindChannelListResponse>, tonic::Status> {
+        let _s = Self::trace_request("worker", "find_channel_list", &request);
+        let channels = self
+            .worker_config()
+            .channel_concurrency_pair()
+            .into_iter()
+            .map(|(name, concurrency)| {
+                let display_name = if name == T::DEFAULT_CHANNEL_NAME {
+                    DEFAULT_CHANNEL_DISPLAY_NAME.to_string()
+                } else {
+                    name
+                };
+                ChannelInfo {
+                    name: display_name,
+                    concurrency,
+                }
+            })
+            .collect();
+        Ok(Response::new(FindChannelListResponse { channels }))
+    }
 }
 
 #[derive(DebugStub)]
@@ -297,6 +336,11 @@ impl UseJobQueueConfig for WorkerGrpcImpl {
 impl UseStorageConfig for WorkerGrpcImpl {
     fn storage_config(&self) -> &StorageConfig {
         &self.app_module.config_module.storage_config
+    }
+}
+impl UseWorkerConfig for WorkerGrpcImpl {
+    fn worker_config(&self) -> &WorkerConfig {
+        &self.app_module.config_module.worker_config
     }
 }
 impl RequestValidator for WorkerGrpcImpl {}
