@@ -236,9 +236,8 @@ impl RunnerTrait for InlineWorkflowRunner {
             let res =
                 final_context.ok_or_else(|| anyhow::anyhow!("No workflow context was returned"))?;
 
-            tracing::info!("Workflow result: {}", res.read().await.output_string());
+            tracing::info!("Workflow result: {}", res.output_string());
 
-            let res = res.read().await;
             let r = WorkflowResult {
                 id: res.id.to_string().clone(),
                 output: serde_json::to_string(&res.output)?,
@@ -346,7 +345,6 @@ impl RunnerTrait for InlineWorkflowRunner {
             .then(|result| async move {
                 match result {
                     Ok(context) => {
-                        let context = context.read_owned().await;
                         // Create a WorkflowResult from the context
                         let workflow_result = WorkflowResult {
                             id: context.id.to_string(),
@@ -395,6 +393,9 @@ impl RunnerTrait for InlineWorkflowRunner {
             })
             .chain(futures::stream::once(async move {
                 // Add an End item at the end of the stream
+                tracing::debug!(
+                    "Workflow execution completed, sending end of stream: {metadata:#?}"
+                );
                 ResultOutputItem {
                     item: Some(proto::jobworkerp::data::result_output_item::Item::End(
                         proto::jobworkerp::data::Trailer { metadata },

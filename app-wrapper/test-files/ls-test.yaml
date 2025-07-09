@@ -48,9 +48,6 @@ do:
         in: ${.files} # must be array (${} is used for variable substitution by jq, not mixed with plain string)
         at: ind # index name (default: index)
       #while: ${$ind < 5} # condition for loop
-      metadata:
-        options:
-          channel: workflow
       do: # run as workflow job
         - TestSwitch:
             switch:
