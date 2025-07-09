@@ -426,6 +426,9 @@
       }
     },
     "runRunner": {
+      "type": "object",
+      "title": "RunRunner",
+      "description": "Execute using a runner configuration.",
       "required": [
         "runner"
       ],
@@ -461,7 +464,8 @@
             "arguments"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "workerOptions": {
       "type": "object",
@@ -506,6 +510,9 @@
       }
     },
     "runWorker": {
+      "type": "object",
+      "title": "RunWorker",
+      "description": "Execute using a worker configuration.",
       "required": [
         "worker"
       ],
@@ -533,9 +540,13 @@
             "arguments"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "runFunction": {
+      "type": "object",
+      "title": "RunFunction",
+      "description": "Execute using a function configuration.",
       "required": [
         "function"
       ],
@@ -597,7 +608,8 @@
             }
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "setTask": {
       "type": "object",

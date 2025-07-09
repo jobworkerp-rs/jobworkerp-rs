@@ -19,7 +19,6 @@ use infra_utils::infra::trace::Tracing;
 use opentelemetry::trace::TraceContextExt;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 struct TracingImpl;
 impl infra_utils::infra::trace::Tracing for TracingImpl {}
@@ -45,7 +44,7 @@ pub async fn execute(
     input: Arc<serde_json::Value>,
     context: Arc<serde_json::Value>,
     metadata: HashMap<String, String>,
-) -> Result<Arc<RwLock<WorkflowContext>>> {
+) -> Result<Arc<WorkflowContext>> {
     // let span =
     //     TracingImpl::tracing_span_from_metadata(&metadata, "workflow-execute", "execute_workflow");
     // let _ = span.enter();

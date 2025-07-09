@@ -191,15 +191,13 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
         // TODO: add other task types
         // currently support only RunTaskConfiguration
         match run {
-            workflow::RunTaskConfiguration::Variant0 {
-                await_: _await_,   // TODO
-                return_: _return_, // TODO
+            workflow::RunTaskConfiguration::Worker(workflow::RunWorker {
                 worker:
                     RunJobWorker {
                         arguments,
                         name: worker_name,
                     },
-            } => {
+            }) => {
                 task_context.add_position_name("worker".to_string()).await;
 
                 tracing::debug!("raw arguments: {:#?}", arguments);
@@ -251,9 +249,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
 
                 Ok(task_context)
             }
-            workflow::RunTaskConfiguration::Variant1 {
-                await_: _await_,   // TODO
-                return_: _return_, // TODO
+            workflow::RunTaskConfiguration::Runner(workflow::RunRunner {
                 runner:
                     RunJobRunner {
                         arguments,
@@ -261,7 +257,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         options,
                         settings,
                     },
-            } => {
+            }) => {
                 task_context.add_position_name("runner".to_string()).await;
 
                 tracing::debug!("raw arguments: {:#?}", arguments);
@@ -328,15 +324,13 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
 
                 Ok(task_context)
             }
-            workflow::RunTaskConfiguration::Variant2 {
-                await_: _await_,   // TODO
-                return_: _return_, // TODO
+            workflow::RunTaskConfiguration::Function(workflow::RunFunction {
                 function:
                     workflow::RunJobFunction::WorkerFunction {
                         arguments,
                         worker_name,
                     },
-            } => {
+            }) => {
                 task_context.add_position_name("function".to_string()).await;
 
                 tracing::debug!("raw arguments: {:#?}", arguments);
@@ -388,9 +382,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
 
                 Ok(task_context)
             }
-            workflow::RunTaskConfiguration::Variant2 {
-                await_: _await_,   // TODO
-                return_: _return_, // TODO
+            workflow::RunTaskConfiguration::Function(workflow::RunFunction {
                 function:
                     workflow::RunJobFunction::RunnerFunction {
                         arguments,
@@ -398,7 +390,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         runner_name,
                         settings,
                     },
-            } => {
+            }) => {
                 task_context.add_position_name("function".to_string()).await;
 
                 tracing::debug!("raw arguments: {:#?}", arguments);

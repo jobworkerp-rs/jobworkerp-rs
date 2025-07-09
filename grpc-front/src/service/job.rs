@@ -203,7 +203,18 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         .map(|d| d.output.as_ref().map(|o| o.items.len()))
                 );
                 let res_header = res.encode_to_vec();
-                let stream = st.map(Ok);
+                let stream = st.map(Ok).inspect(|item| match item {
+                    Ok(output_item) => {
+                        if output_item.item.is_none() {
+                            tracing::warn!(
+                                "gRPC enqueue_for_stream sending None item (stream should end)"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("gRPC enqueue_for_stream error: {:?}", e);
+                    }
+                });
                 let stream: Self::EnqueueForStreamStream = Box::pin(stream);
                 let mut res = Response::new(stream);
                 res.metadata_mut().insert_bin(

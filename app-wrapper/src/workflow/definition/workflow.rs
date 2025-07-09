@@ -1776,106 +1776,6 @@ impl ProcessResult {
         Default::default()
     }
 }
-#[doc = "Process output type to return."]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"title\": \"ProcessReturnType\","]
-#[doc = "  \"description\": \"Process output type to return.\","]
-#[doc = "  \"default\": \"stdout\","]
-#[doc = "  \"type\": \"string\","]
-#[doc = "  \"enum\": ["]
-#[doc = "    \"stdout\","]
-#[doc = "    \"stderr\","]
-#[doc = "    \"code\","]
-#[doc = "    \"all\","]
-#[doc = "    \"none\""]
-#[doc = "  ]"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(
-    :: serde :: Deserialize,
-    :: serde :: Serialize,
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-)]
-pub enum ProcessReturnType {
-    #[serde(rename = "stdout")]
-    Stdout,
-    #[serde(rename = "stderr")]
-    Stderr,
-    #[serde(rename = "code")]
-    Code,
-    #[serde(rename = "all")]
-    All,
-    #[serde(rename = "none")]
-    None,
-}
-impl ::std::convert::From<&Self> for ProcessReturnType {
-    fn from(value: &ProcessReturnType) -> Self {
-        value.clone()
-    }
-}
-impl ::std::fmt::Display for ProcessReturnType {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-        match *self {
-            Self::Stdout => write!(f, "stdout"),
-            Self::Stderr => write!(f, "stderr"),
-            Self::Code => write!(f, "code"),
-            Self::All => write!(f, "all"),
-            Self::None => write!(f, "none"),
-        }
-    }
-}
-impl ::std::str::FromStr for ProcessReturnType {
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        match value {
-            "stdout" => Ok(Self::Stdout),
-            "stderr" => Ok(Self::Stderr),
-            "code" => Ok(Self::Code),
-            "all" => Ok(Self::All),
-            "none" => Ok(Self::None),
-            _ => Err("invalid value".into()),
-        }
-    }
-}
-impl ::std::convert::TryFrom<&str> for ProcessReturnType {
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String> for ProcessReturnType {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String> for ProcessReturnType {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::default::Default for ProcessReturnType {
-    fn default() -> Self {
-        ProcessReturnType::Stdout
-    }
-}
 #[doc = "RaiseTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -2146,7 +2046,7 @@ impl ::std::convert::From<Error> for RaiseTaskError {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq, Eq)]
 pub enum RetryBackoff {
     #[serde(rename = "constant")]
     Constant(::serde_json::Map<::std::string::String, ::serde_json::Value>),
@@ -2192,7 +2092,7 @@ impl ::std::convert::From<&Self> for RetryBackoff {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct RetryLimit {
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub attempt: ::std::option::Option<RetryLimitAttempt>,
@@ -2238,7 +2138,7 @@ impl RetryLimit {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct RetryLimitAttempt {
     #[doc = "Maximum retry attempts."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -2354,7 +2254,7 @@ impl RetryLimitAttempt {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct RetryPolicy {
     #[doc = "Backoff strategy for retry durations."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -2384,12 +2284,15 @@ impl RetryPolicy {
         Default::default()
     }
 }
-#[doc = "RunFunction"]
+#[doc = "Execute using a function configuration."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
+#[doc = "  \"title\": \"RunFunction\","]
+#[doc = "  \"description\": \"Execute using a function configuration.\","]
+#[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"function\""]
 #[doc = "  ],"]
@@ -2451,11 +2354,13 @@ impl RetryPolicy {
 #[doc = "      ],"]
 #[doc = "      \"unevaluatedProperties\": false"]
 #[doc = "    }"]
-#[doc = "  }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct RunFunction {
     #[doc = "Executes a job using a specified function(runner or worker)."]
     pub function: RunJobFunction,
@@ -2669,12 +2574,15 @@ impl RunJobWorker {
         Default::default()
     }
 }
-#[doc = "RunRunner"]
+#[doc = "Execute using a runner configuration."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
+#[doc = "  \"title\": \"RunRunner\","]
+#[doc = "  \"description\": \"Execute using a runner configuration.\","]
+#[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"runner\""]
 #[doc = "  ],"]
@@ -2710,11 +2618,13 @@ impl RunJobWorker {
 #[doc = "      },"]
 #[doc = "      \"unevaluatedProperties\": false"]
 #[doc = "    }"]
-#[doc = "  }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct RunRunner {
     pub runner: RunJobRunner,
 }
@@ -2922,55 +2832,39 @@ impl RunTask {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 #[serde(untagged)]
 pub enum RunTaskConfiguration {
-    Variant0 {
-        #[doc = "Wait for process completion before continuing."]
-        #[serde(rename = "await", default = "defaults::default_bool::<true>")]
-        await_: bool,
-        #[doc = "Process output type to return."]
-        #[serde(
-            rename = "return",
-            default = "defaults::run_task_configuration_variant0_return"
-        )]
-        return_: ProcessReturnType,
-        worker: RunJobWorker,
-    },
-    Variant1 {
-        #[doc = "Wait for process completion before continuing."]
-        #[serde(rename = "await", default = "defaults::default_bool::<true>")]
-        await_: bool,
-        #[doc = "Process output type to return."]
-        #[serde(
-            rename = "return",
-            default = "defaults::run_task_configuration_variant1_return"
-        )]
-        return_: ProcessReturnType,
-        runner: RunJobRunner,
-    },
-    Variant2 {
-        #[doc = "Wait for process completion before continuing."]
-        #[serde(rename = "await", default = "defaults::default_bool::<true>")]
-        await_: bool,
-        #[doc = "Executes a job using a specified function(runner or worker)."]
-        function: RunJobFunction,
-        #[doc = "Process output type to return."]
-        #[serde(
-            rename = "return",
-            default = "defaults::run_task_configuration_variant2_return"
-        )]
-        return_: ProcessReturnType,
-    },
+    Worker(RunWorker),
+    Runner(RunRunner),
+    Function(RunFunction),
 }
 impl ::std::convert::From<&Self> for RunTaskConfiguration {
     fn from(value: &RunTaskConfiguration) -> Self {
         value.clone()
     }
 }
-#[doc = "RunWorker"]
+impl ::std::convert::From<RunWorker> for RunTaskConfiguration {
+    fn from(value: RunWorker) -> Self {
+        Self::Worker(value)
+    }
+}
+impl ::std::convert::From<RunRunner> for RunTaskConfiguration {
+    fn from(value: RunRunner) -> Self {
+        Self::Runner(value)
+    }
+}
+impl ::std::convert::From<RunFunction> for RunTaskConfiguration {
+    fn from(value: RunFunction) -> Self {
+        Self::Function(value)
+    }
+}
+#[doc = "Execute using a worker configuration."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
+#[doc = "  \"title\": \"RunWorker\","]
+#[doc = "  \"description\": \"Execute using a worker configuration.\","]
+#[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"worker\""]
 #[doc = "  ],"]
@@ -2998,11 +2892,13 @@ impl ::std::convert::From<&Self> for RunTaskConfiguration {
 #[doc = "      },"]
 #[doc = "      \"unevaluatedProperties\": false"]
 #[doc = "    }"]
-#[doc = "  }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct RunWorker {
     pub worker: RunJobWorker,
 }
@@ -4285,7 +4181,7 @@ impl WaitTask {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct WorkerOptions {
     #[doc = "Whether to broadcast results to listeners."]
     #[serde(
@@ -8301,23 +8197,11 @@ pub mod builder {
 }
 #[doc = r" Generation of default values for serde."]
 pub mod defaults {
-    pub(super) fn default_bool<const V: bool>() -> bool {
-        V
-    }
     pub(super) fn for_task_configuration_at() -> ::std::string::String {
         "index".to_string()
     }
     pub(super) fn for_task_configuration_each() -> ::std::string::String {
         "item".to_string()
-    }
-    pub(super) fn run_task_configuration_variant0_return() -> super::ProcessReturnType {
-        super::ProcessReturnType::Stdout
-    }
-    pub(super) fn run_task_configuration_variant1_return() -> super::ProcessReturnType {
-        super::ProcessReturnType::Stdout
-    }
-    pub(super) fn run_task_configuration_variant2_return() -> super::ProcessReturnType {
-        super::ProcessReturnType::Stdout
     }
     pub(super) fn schema_variant0_format() -> ::std::string::String {
         "json".to_string()

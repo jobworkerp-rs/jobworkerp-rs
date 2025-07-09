@@ -63,7 +63,17 @@ impl JobResultPublisher for RedisJobResultPubSubRepositoryImpl {
     ) -> Result<bool> {
         let ch = Self::job_result_stream_pubsub_channel_name(&job_id);
         let res_stream = stream
-            .map(|item| ProstMessageCodec::serialize_message(&item))
+            .map(|item| {
+                let result = ProstMessageCodec::serialize_message(&item);
+                if let Err(e) = &result {
+                    tracing::error!(
+                        "Failed to serialize ResultOutputItem: {:?}, item: {:?}",
+                        e,
+                        item
+                    );
+                }
+                result
+            })
             .filter_map(|r| async move { r.ok() })
             .boxed();
 
@@ -165,62 +175,54 @@ impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
         let repo = Arc::new(self.clone());
         let cn2 = Arc::new(cn);
 
-        let msg_stream = sub
-            .into_on_message()
-            .filter_map(move |msg| {
-                let repo = repo.clone();
-                let cn2 = cn2.clone();
-                async move {
-                    match msg.get_payload::<Vec<u8>>() {
-                        Ok(payload) => {
-                            tracing::debug!(
-                                "subscribe_result_stream_received: payload len={:?}",
-                                &payload.len()
-                            );
-                            let result =
-                                ProstMessageCodec::deserialize_message::<ResultOutputItem>(
-                                    &payload,
-                                )
+        let msg_stream = sub.into_on_message().filter_map(move |msg| {
+            let repo = repo.clone();
+            let cn2 = cn2.clone();
+            async move {
+                match msg.get_payload::<Vec<u8>>() {
+                    Ok(payload) => {
+                        tracing::debug!(
+                            "subscribe_result_stream_received: payload len={:?}",
+                            &payload.len()
+                        );
+                        let result =
+                            ProstMessageCodec::deserialize_message::<ResultOutputItem>(&payload)
                                 .inspect_err(|e| tracing::error!("deserialize_result:{:?}", e))
                                 .ok()?;
-                            match result.item {
-                                Some(result_output_item::Item::End(_)) => {
-                                    tracing::debug!(
-                                        "subscribe_result_stream_received: end of stream"
-                                    );
-                                    let _ = repo.unsubscribe(cn2.as_str()).await.inspect_err(|e| {
-                                        tracing::error!("unsubscribe:{:?}", e);
-                                    });
-                                    tracing::debug!(
-                                        "subscribe_result_stream_received: unsubscribed: {}",
-                                        cn2.as_str()
-                                    );
-                                    Some(ResultOutputItem { item: None }) // maek item none
-                                }
-                                Some(res) => {
-                                    tracing::debug!(
-                                        "subscribe_result_stream_received: result len={:?}",
-                                        &res.encoded_len()
-                                    );
-                                    Some(ResultOutputItem { item: Some(res) })
-                                }
-                                // skip if error in processing message
-                                None => {
-                                    tracing::info!(
-                                        "subscribe_result_stream_received: item is None"
-                                    );
-                                    None
-                                }
+                        match result.item {
+                            Some(result_output_item::Item::End(_)) => {
+                                tracing::debug!("subscribe_result_stream_received: end of stream");
+                                let _ = repo.unsubscribe(cn2.as_str()).await.inspect_err(|e| {
+                                    tracing::error!("unsubscribe:{:?}", e);
+                                });
+                                tracing::debug!(
+                                    "subscribe_result_stream_received: unsubscribed: {}",
+                                    cn2.as_str()
+                                );
+                                // Return the end marker to the client instead of None
+                                Some(result)
+                            }
+                            Some(res) => {
+                                tracing::debug!(
+                                    "subscribe_result_stream_received: result len={:?}",
+                                    &res.encoded_len()
+                                );
+                                Some(ResultOutputItem { item: Some(res) })
+                            }
+                            // skip if error in processing message
+                            None => {
+                                tracing::info!("subscribe_result_stream_received: item is None");
+                                None
                             }
                         }
-                        Err(e) => {
-                            tracing::error!("get_payload:{:?}", e);
-                            None
-                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("get_payload:{:?}", e);
+                        None
                     }
                 }
-            })
-            .take_while(|item| futures::future::ready(item.item.is_some()));
+            }
+        });
         Ok(msg_stream.boxed())
         // }
     }

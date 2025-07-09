@@ -1,7 +1,7 @@
 use crate::workflow::{
     definition::{
         transform::UseJqAndTemplateTransformer,
-        workflow::{self, tasks::TaskTrait, FlowDirective, Task, WorkflowSchema},
+        workflow::{self, tasks::TaskTrait, FlowDirective, Task},
     },
     execute::checkpoint,
 };
@@ -16,7 +16,7 @@ pub struct WorkflowContext {
     pub id: Uuid,
     pub name: String,
     #[serde(skip)]
-    pub definition: Arc<workflow::WorkflowSchema>,
+    pub document: Arc<workflow::Document>,
     pub input: Arc<serde_json::Value>,
     pub status: WorkflowStatus,
     pub started_at: DateTime<FixedOffset>,
@@ -42,7 +42,7 @@ impl WorkflowContext {
         Self {
             id: uuid,
             name: workflow.document.name.deref().to_string(),
-            definition: Arc::new(workflow.clone()),
+            document: Arc::new(workflow.document.clone()),
             input,
             status: WorkflowStatus::Pending,
             started_at,
@@ -65,7 +65,7 @@ impl WorkflowContext {
         Self {
             id: uuid,
             name: "default-workflow".to_string(), // TODO
-            definition: Arc::new(WorkflowSchema::default()),
+            document: Arc::new(workflow::Document::default()),
             input: Arc::new(serde_json::Value::Null),
             status: WorkflowStatus::Pending,
             started_at,
@@ -78,16 +78,15 @@ impl WorkflowContext {
     pub fn to_descriptor(&self) -> WorkflowDescriptor {
         WorkflowDescriptor {
             id: serde_json::Value::String(self.id.to_string()),
-            definition: self.definition.clone(),
             input: self.input.clone(),
             started_at: serde_json::Value::String(self.started_at.to_rfc3339()),
         }
     }
     pub fn to_runtime_descriptor(&self) -> RuntimeDescriptor {
         RuntimeDescriptor {
-            name: self.definition.document.name.deref().to_string(),
+            name: self.document.name.deref().to_string(),
             // version: self.definition.document.version.deref().to_string(),
-            metadata: self.definition.document.metadata.clone(),
+            metadata: self.document.metadata.clone(),
         }
     }
     pub fn output_string(&self) -> String {
@@ -354,7 +353,6 @@ impl TaskContext {
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct WorkflowDescriptor {
     id: serde_json::Value,
-    definition: Arc<WorkflowSchema>,
     input: Arc<serde_json::Value>,
     started_at: serde_json::Value,
 }

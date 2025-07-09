@@ -299,6 +299,9 @@ $defs:
           - $ref: "#/$defs/runRunner"
           - $ref: "#/$defs/runFunction"
   runRunner:
+    type: object
+    title: RunRunner
+    description: Execute using a runner configuration.
     required: [runner]
     properties:
       runner:
@@ -323,6 +326,7 @@ $defs:
             description: A key/value mapping of arguments to use when running the runner as job. Runtime expressions are supported for value transformation.
             additionalProperties: true
         required: [name, arguments]
+    additionalProperties: false
   workerOptions:
     type: object
     title: WorkerOptions
@@ -357,6 +361,9 @@ $defs:
         title: BroadcastResultsToListener
         description: Whether to broadcast results to listeners.
   runWorker:
+    type: object
+    title: RunWorker
+    description: Execute using a worker configuration.
     required: [worker]
     properties:
       worker:
@@ -375,7 +382,11 @@ $defs:
             description: A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation.
             additionalProperties: true
         required: [name, arguments]
+    additionalProperties: false
   runFunction:
+    type: object
+    title: RunFunction
+    description: Execute using a function configuration.
     required: [function]
     properties:
       function:
@@ -420,6 +431,7 @@ $defs:
               - workerName
               - arguments
             additionalProperties: false
+    additionalProperties: false
   setTask:
     type: object
     $ref: "#/$defs/taskBase"
