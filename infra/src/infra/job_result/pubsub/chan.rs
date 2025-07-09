@@ -181,8 +181,10 @@ impl JobResultSubscriber for ChanJobResultPubSubRepositoryImpl {
                         item: Some(result_output_item::Item::Data(data)),
                     }),
                     Ok(ResultOutputItem {
-                        item: Some(result_output_item::Item::End(_)),
-                    }) => Some(ResultOutputItem { item: None }),
+                        item: Some(result_output_item::Item::End(e)),
+                    }) => Some(ResultOutputItem {
+                        item: Some(result_output_item::Item::End(e)),
+                    }),
                     Ok(_) => {
                         tracing::error!("invalid message: {:?}", out);
                         None

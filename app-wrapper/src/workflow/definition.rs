@@ -44,11 +44,11 @@ impl WorkflowLoader {
     ) -> Result<workflow::WorkflowSchema> {
         match source {
             WorkflowSource::WorkflowUrl(url) => self
-                .load_workflow(Some(url.as_str()), None, false)
+                .load_workflow(Some(url.as_str()), None, true)
                 .await
                 .map_err(|e| anyhow!("Failed to load workflow from url={} , err: {}", url, e)),
             WorkflowSource::WorkflowData(data) => self
-                .load_workflow(None, Some(data.as_str()), false)
+                .load_workflow(None, Some(data.as_str()), true)
                 .await
                 .map_err(|e| anyhow!("Failed to load workflow from json={} , err: {}", data, e)),
         }
@@ -189,7 +189,7 @@ mod test {
         )?;
         let loader = super::WorkflowLoader::new(http_client)?;
         let flow = loader
-            .load_workflow(Some("test-files/switch.yaml"), None, false)
+            .load_workflow(Some("test-files/switch.yaml"), None, true)
             .await?;
         println!("{flow:#?}");
         assert_eq!(
@@ -218,7 +218,7 @@ mod test {
         )?;
         let loader = super::WorkflowLoader::new(http_client)?;
         let flow = loader
-            .load_workflow(Some("test-files/ls-test.yaml"), None, false)
+            .load_workflow(Some("test-files/ls-test.yaml"), None, true)
             .await?;
         println!("{flow:#?}");
         assert_eq!(flow.document.title, Some("Workflow test (ls)".to_string()));
@@ -244,7 +244,7 @@ mod test {
                 }
             })));
         assert!(run_task.input.as_ref().is_none());
-        if let workflow::RunTaskConfiguration::Variant1 {
+        if let workflow::RunTaskConfiguration::Runner(workflow::RunRunner {
             runner:
                 workflow::RunJobRunner {
                     arguments,
@@ -252,9 +252,8 @@ mod test {
                     options,
                     settings,
                 },
-            await_,
             ..
-        } = run_task.run.clone()
+        }) = run_task.run.clone()
         {
             assert_eq!(runner_name, "COMMAND".to_string());
             assert_eq!(
@@ -289,8 +288,6 @@ mod test {
                 ..Default::default()
             };
             assert_eq!(options, Some(opts));
-            assert!(await_); // default true
-                             // _ => panic!("unexpected script variant"),
         } else {
             return Err(
                 "Expected RunTaskConfiguration::Variant1 but found different configuration".into(),
