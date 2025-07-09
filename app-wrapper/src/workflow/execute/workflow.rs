@@ -168,8 +168,7 @@ impl WorkflowExecutor {
     pub fn execute_workflow(
         &self,
         cx: Arc<opentelemetry::Context>,
-    ) -> impl Stream<Item = Result<Arc<RwLock<WorkflowContext>>, Box<workflow::Error>>> + 'static
-    {
+    ) -> impl Stream<Item = Result<Arc<WorkflowContext>, Box<workflow::Error>>> + 'static {
         let initial_wfc = self.workflow_context.clone();
         let workflow = self.workflow.clone();
         let job_executors = self.job_executors.clone();
@@ -288,8 +287,10 @@ impl WorkflowExecutor {
                                 Arc::new(serde_json::json!({"error": e.to_string()}));
                             Self::record_workflow_output(&span, &error_output, &wf.status);
                             wf.output = Some(error_output);
+                            // hard copy
+                            let res = Arc::new((*wf).clone());
                             drop(wf);
-                            yield Ok(initial_wfc.clone());
+                            yield Ok(res);
                             return;
                         }
                     }
@@ -321,8 +322,10 @@ impl WorkflowExecutor {
                     let error_output = Arc::new(serde_json::json!({"error": e.to_string()}));
                     Self::record_workflow_output(&span, &error_output, &wf.status);
                     wf.output = Some(error_output);
+                    // hard copy
+                    let res = Arc::new((*wf).clone());
                     drop(wf);
-                    yield Ok(initial_wfc.clone());
+                    yield Ok(res);
                     return;
                 }
             };
@@ -343,8 +346,10 @@ impl WorkflowExecutor {
                         let error_output = Arc::new(serde_json::json!({"error": e.to_string()}));
                         Self::record_workflow_output(&span, &error_output, &wf.status);
                         wf.output = Some(error_output);
+                        // hard copy
+                        let res = Arc::new((*wf).clone());
                         drop(wf);
-                        yield Ok(initial_wfc.clone());
+                        yield Ok(res);
                         return;
                     }
                 }
@@ -386,14 +391,16 @@ impl WorkflowExecutor {
                         let mut wf = initial_wfc.write().await;
                         wf.output = Some(tc.output.clone());
                         wf.position = tc.position.read().await.clone(); // XXX clone
+                        // hard copy
+                        let res = Arc::new((*wf).clone());
                         drop(wf);
                         tracing::debug!(
                             "Task executed: {}, id={}, position={}",
                             workflow.document.name.as_str(),
-                            initial_wfc.read().await.id.to_string(),
+                            res.id.to_string(),
                             tc.position.read().await
                         );
-                        yield Ok(initial_wfc.clone());
+                        yield Ok(res);
                     }
                     Err(e) => {
                         tracing::debug!("Failed to execute task list: {:#?}", e);
@@ -473,11 +480,13 @@ impl WorkflowExecutor {
                 if let Some(output) = lock.output.as_ref() {
                     Self::record_workflow_output(&span, output, &lock.status);
                 }
+                // hard copy
+                let res = Arc::new((*lock).clone());
 
                 drop(lock);
 
                 // Yield final workflow context
-                yield Ok(initial_wfc.clone());
+                yield Ok(res);
             }
             tracing::debug!(
                 "Workflow execution completed: {}, id={}",
@@ -492,28 +501,28 @@ impl WorkflowExecutor {
                     tracing::info!(
                         "Workflow completed: id={}, doc={:#?}",
                         &lock.id,
-                        &lock.definition.document
+                        &lock.document
                     );
                 }
                 WorkflowStatus::Faulted => {
                     tracing::error!(
                         "Workflow faulted: id={}, doc={:#?}",
                         lock.id,
-                        lock.definition.document
+                        lock.document
                     );
                 }
                 WorkflowStatus::Cancelled => {
                     tracing::warn!(
                         "Workflow canceled: id={}, doc={:#?}",
                         lock.id,
-                        lock.definition.document
+                        lock.document
                     );
                 }
                 WorkflowStatus::Pending | WorkflowStatus::Waiting => {
                     tracing::warn!(
                         "Workflow is ended in waiting yet: id={}, doc={:#?}",
                         lock.id,
-                        lock.definition.document
+                        lock.document
                     );
                 }
             }
@@ -869,8 +878,7 @@ mod tests {
 
             assert!(final_wfc.is_some());
             let wfc = final_wfc.unwrap();
-            let lock = wfc.read().await;
-            assert_eq!(lock.status, WorkflowStatus::Completed);
+            assert_eq!(wfc.status, WorkflowStatus::Completed);
         })
     }
 
@@ -969,10 +977,8 @@ mod tests {
             tracing::debug!("First execution completed");
 
             let first_execution_wfc = final_wfc.unwrap();
-            let first_lock = first_execution_wfc.read().await;
-            assert_eq!(first_lock.status, WorkflowStatus::Completed);
-            let first_output = first_lock.output.as_ref().unwrap().clone();
-            drop(first_lock);
+            assert_eq!(first_execution_wfc.status, WorkflowStatus::Completed);
+            let first_output = first_execution_wfc.output.as_ref().unwrap().clone();
 
             // Simulate checkpoint restoration by creating a checkpoint context
             let checkpoint_repo = executor.checkpoint_repository.as_ref().unwrap();
@@ -1026,10 +1032,9 @@ mod tests {
 
             assert!(final_wfc2.is_some());
             let second_execution_wfc = final_wfc2.unwrap();
-            let second_lock = second_execution_wfc.read().await;
-            assert_eq!(second_lock.status, WorkflowStatus::Completed);
-            let second_output = second_lock.output.as_ref().unwrap().clone();
-            drop(second_lock);
+            assert_eq!(second_execution_wfc.status, WorkflowStatus::Completed);
+            let second_output = second_execution_wfc.output.as_ref().unwrap().clone();
+            drop(second_execution_wfc);
             tracing::debug!("====== Second execution output: {:#?}", second_output);
 
             // Verify that outputs are identical due to checkpoint restoration
@@ -1083,11 +1088,9 @@ mod tests {
             while let Some(wfc) = workflow_stream.next().await {
                 match wfc {
                     Ok(wfc) => {
-                        let lock = wfc.read().await;
-                        if let Some(output) = &lock.output {
+                        if let Some(output) = &wfc.output {
                             first_execution_results.push(output.clone());
                         }
-                        drop(lock);
                     }
                     Err(e) => {
                         tracing::error!("Workflow error: {:#?}", e);
@@ -1137,11 +1140,9 @@ mod tests {
                 while let Some(wfc) = workflow_stream2.next().await {
                     match wfc {
                         Ok(wfc) => {
-                            let lock = wfc.read().await;
-                            if let Some(output) = &lock.output {
+                            if let Some(output) = &wfc.output {
                                 second_execution_results.push(output.clone());
                             }
-                            drop(lock);
                         }
                         Err(e) => {
                             tracing::error!("Workflow error: {:#?}", e);
@@ -1467,10 +1468,8 @@ mod tests {
 
             assert!(final_wfc.is_some());
             let first_execution_wfc = final_wfc.unwrap();
-            let first_lock = first_execution_wfc.read().await;
-            assert_eq!(first_lock.status, WorkflowStatus::Completed);
-            let first_output = first_lock.output.as_ref().unwrap().clone();
-            drop(first_lock);
+            assert_eq!(first_execution_wfc.status, WorkflowStatus::Completed);
+            let first_output = first_execution_wfc.output.as_ref().unwrap().clone();
 
             // Get checkpoint from inside the for loop
             let checkpoint_repo = executor.checkpoint_repository.as_ref().unwrap();
@@ -1525,10 +1524,8 @@ mod tests {
 
             assert!(final_wfc2.is_some());
             let second_execution_wfc = final_wfc2.unwrap();
-            let second_lock = second_execution_wfc.read().await;
-            assert_eq!(second_lock.status, WorkflowStatus::Completed);
-            let second_output = second_lock.output.as_ref().unwrap().clone();
-            drop(second_lock);
+            assert_eq!(second_execution_wfc.status, WorkflowStatus::Completed);
+            let second_output = second_execution_wfc.output.as_ref().unwrap().clone();
 
             // Verify that outputs match when restored from checkpoint inside for loop
             assert_eq!(
@@ -1596,10 +1593,9 @@ mod tests {
 
             assert!(final_wfc.is_some());
             let first_execution_wfc = final_wfc.unwrap();
-            let first_lock = first_execution_wfc.read().await;
-            assert_eq!(first_lock.status, WorkflowStatus::Completed);
-            let first_output = first_lock.output.as_ref().unwrap().clone();
-            drop(first_lock);
+            assert_eq!(first_execution_wfc.status, WorkflowStatus::Completed);
+            let first_output = first_execution_wfc.output.as_ref().unwrap().clone();
+            drop(first_execution_wfc);
 
             // Get checkpoint from inside the try block
             let checkpoint_repo = executor.checkpoint_repository.as_ref().unwrap();
@@ -1654,10 +1650,8 @@ mod tests {
 
             assert!(final_wfc2.is_some());
             let second_execution_wfc = final_wfc2.unwrap();
-            let second_lock = second_execution_wfc.read().await;
-            assert_eq!(second_lock.status, WorkflowStatus::Completed);
-            let second_output = second_lock.output.as_ref().unwrap().clone();
-            drop(second_lock);
+            assert_eq!(second_execution_wfc.status, WorkflowStatus::Completed);
+            let second_output = second_execution_wfc.output.as_ref().unwrap().clone();
 
             // Verify that outputs match when restored from checkpoint inside try block
             assert_eq!(
@@ -1725,10 +1719,8 @@ mod tests {
 
             assert!(final_wfc.is_some());
             let first_execution_wfc = final_wfc.unwrap();
-            let first_lock = first_execution_wfc.read().await;
-            assert_eq!(first_lock.status, WorkflowStatus::Completed);
-            let first_output = first_lock.output.as_ref().unwrap().clone();
-            drop(first_lock);
+            assert_eq!(first_execution_wfc.status, WorkflowStatus::Completed);
+            let first_output = first_execution_wfc.output.as_ref().unwrap().clone();
 
             // Get checkpoint from deep nested structure
             let checkpoint_repo = executor.checkpoint_repository.as_ref().unwrap();
@@ -1783,10 +1775,8 @@ mod tests {
 
             assert!(final_wfc2.is_some());
             let second_execution_wfc = final_wfc2.unwrap();
-            let second_lock = second_execution_wfc.read().await;
-            assert_eq!(second_lock.status, WorkflowStatus::Completed);
-            let second_output = second_lock.output.as_ref().unwrap().clone();
-            drop(second_lock);
+            assert_eq!(second_execution_wfc.status, WorkflowStatus::Completed);
+            let second_output = second_execution_wfc.output.as_ref().unwrap().clone();
 
             // Verify that outputs match when restored from deep nested checkpoint
             assert_eq!(

@@ -547,7 +547,7 @@ impl TaskExecutor {
                     if let Err(e) = checkpoint_repository
                         .save_checkpoint_with_id(
                             execution_id.as_ref(),
-                            &wf_context.definition.document.name,
+                            &wf_context.document.name,
                             &checkpoint,
                         )
                         .await

@@ -38,7 +38,6 @@ message WorkerData {
   // # Response Type
   // 0: no result
   // 1: direct response
-  // 2: listen after execution
   jobworkerp.data.ResponseType response_type = 9;
   // # Store Success Flag
   // If true, job results will be stored in database when execution succeeds
