@@ -721,6 +721,40 @@ impl JobApp for HybridJobAppImpl {
         // .await
     }
 
+    async fn find_list_with_status(
+        &self,
+        status: JobStatus,
+        limit: Option<&i32>,
+    ) -> Result<Vec<(Job, JobStatus)>>
+    where
+        Self: Send + 'static,
+    {
+        // 1. Get all job statuses
+        let all_statuses = self
+            .redis_job_repository()
+            .job_status_repository()
+            .find_status_all()
+            .await?;
+
+        // 2. Filter by specified status and apply limit
+        let target_job_ids: Vec<JobId> = all_statuses
+            .into_iter()
+            .filter(|(_, job_status)| *job_status == status)
+            .map(|(id, _)| id)
+            .take(*limit.unwrap_or(&100) as usize)
+            .collect();
+
+        // 3. Get corresponding job data
+        let mut target_jobs = Vec::new();
+        for job_id in target_job_ids {
+            if let Some(job) = self.find_job(&job_id).await? {
+                target_jobs.push((job, status));
+            }
+        }
+
+        Ok(target_jobs)
+    }
+
     async fn find_job_status(&self, id: &JobId) -> Result<Option<JobStatus>>
     where
         Self: Send + 'static,

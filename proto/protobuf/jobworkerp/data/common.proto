@@ -193,17 +193,21 @@ enum ResultStatus {
 // # Job Status
 // Defines the current processing state of a job
 enum JobStatus {
+  // # Unknown
+  // Job status is unknown or corrupted (default value)
+  UNKNOWN = 0;
+
   // # Pending
   // Job is waiting to be processed
-  PENDING = 0;
+  PENDING = 1;
 
   // # Running
   // Job is currently being executed
-  RUNNING = 1;
+  RUNNING = 2;
 
   // # Waiting for Result
   // Job has completed execution and is waiting for result processing
-  WAIT_RESULT = 2;
+  WAIT_RESULT = 3;
 }
 
 // # Queue Type

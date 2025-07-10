@@ -3,6 +3,9 @@ pub mod hybrid;
 pub mod rdb_chan;
 // pub mod redis;
 
+#[cfg(test)]
+pub mod find_list_with_status_test;
+
 use super::JobBuilder;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -115,6 +118,14 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         limit: Option<&i32>,
         channel: Option<&str>,
     ) -> Result<Vec<(Job, Option<JobStatus>)>>
+    where
+        Self: Send + 'static;
+
+    async fn find_list_with_status(
+        &self,
+        status: JobStatus,
+        limit: Option<&i32>,
+    ) -> Result<Vec<(Job, JobStatus)>>
     where
         Self: Send + 'static;
 

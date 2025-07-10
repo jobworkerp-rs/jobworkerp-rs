@@ -25,18 +25,17 @@ impl JobStatusRepository for MemoryJobStatusRepository {
         Ok(self
             .atomic_hash_map
             .iter()
-            .flat_map(|r| {
+            .map(|r| {
                 let (id, v) = r.pair();
                 if *v == JobStatus::Pending as i32 {
-                    Some((JobId { value: *id }, JobStatus::Pending))
+                    (JobId { value: *id }, JobStatus::Pending)
                 } else if *v == JobStatus::Running as i32 {
-                    Some((JobId { value: *id }, JobStatus::Running))
+                    (JobId { value: *id }, JobStatus::Running)
                 } else if *v == JobStatus::WaitResult as i32 {
-                    Some((JobId { value: *id }, JobStatus::WaitResult))
+                    (JobId { value: *id }, JobStatus::WaitResult)
                 } else {
-                    let msg = format!("unknown status: id: {id}, status :{v}.");
-                    tracing::warn!(msg);
-                    None
+                    tracing::warn!("unknown status: id: {id}, status :{v}. returning as Unknown");
+                    (JobId { value: *id }, JobStatus::Unknown)
                 }
             })
             .collect_vec())
@@ -52,12 +51,11 @@ impl JobStatusRepository for MemoryJobStatusRepository {
                 Ok(Some(JobStatus::WaitResult))
             } else {
                 tracing::warn!(
-                    "unknown status in memory: id: {}, status :{}. delete",
+                    "unknown status in memory: id: {}, status :{}. returning as Unknown",
                     &id.value,
                     v
                 );
-                self.delete_status(id).await?;
-                Ok(None)
+                Ok(Some(JobStatus::Unknown))
             }
         } else {
             Ok(None)
@@ -107,5 +105,25 @@ mod tests {
         assert!(repo.delete_status(&id).await.unwrap());
         assert_eq!(repo.find_status(&id).await.unwrap(), None);
         assert!(!repo.delete_status(&id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_memory_job_status_repository_unknown_status() {
+        let repo = MemoryJobStatusRepository::new();
+        let id = JobId { value: 1 };
+        
+        // Insert an invalid/unknown status value directly into the map
+        repo.atomic_hash_map.insert(id.value, 999); // Invalid status value
+        
+        // Should return Unknown instead of None or error
+        assert_eq!(
+            repo.find_status(&id).await.unwrap(),
+            Some(JobStatus::Unknown)
+        );
+        
+        // find_status_all should also return Unknown for invalid statuses
+        let all_statuses = repo.find_status_all().await.unwrap();
+        assert_eq!(all_statuses.len(), 1);
+        assert_eq!(all_statuses[0].1, JobStatus::Unknown);
     }
 }
