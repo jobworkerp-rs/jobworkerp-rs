@@ -42,22 +42,22 @@ impl JobStatusRepository for RedisJobStatusRepository {
             .await?;
         Ok(rv
             .into_iter()
-            .flat_map(|(k, v)| {
+            .filter_map(|(k, v)| {
                 k.parse::<i64>()
                     .context("in parse job id of status")
-                    .and_then(|id| {
+                    .map(|id| {
                         if v == JobStatus::Pending as i32 {
-                            Ok((JobId { value: id }, JobStatus::Pending))
+                            (JobId { value: id }, JobStatus::Pending)
                         } else if v == JobStatus::Running as i32 {
-                            Ok((JobId { value: id }, JobStatus::Running))
+                            (JobId { value: id }, JobStatus::Running)
                         } else if v == JobStatus::WaitResult as i32 {
-                            Ok((JobId { value: id }, JobStatus::WaitResult))
+                            (JobId { value: id }, JobStatus::WaitResult)
                         } else {
-                            let msg = format!("unknown status: id: {}, status :{}.", &id, v);
-                            tracing::warn!(msg);
-                            Err(JobWorkerError::OtherError(msg).into())
+                            tracing::warn!("unknown status: id: {}, status :{}. returning as Unknown", &id, v);
+                            (JobId { value: id }, JobStatus::Unknown)
                         }
                     })
+                    .ok()
             })
             .collect_vec())
     }
@@ -76,10 +76,8 @@ impl JobStatusRepository for RedisJobStatusRepository {
             } else if v == JobStatus::WaitResult as i32 {
                 Ok(Some(JobStatus::WaitResult))
             } else {
-                tracing::warn!("unknown status: id: {}, status :{}. delete", &id.value, v);
-                // delete unknown status
-                self.delete_status(id).await?;
-                Ok(None)
+                tracing::warn!("unknown status: id: {}, status :{}. returning as Unknown", &id.value, v);
+                Ok(Some(JobStatus::Unknown))
             }
         } else {
             Ok(None)

@@ -46,12 +46,19 @@ service JobService {
   // only use db or redis+db queue type, run after or periodic worker jobs
   rpc FindList(FindListRequest) returns (stream jobworkerp.data.Job);
   rpc FindQueueList(FindQueueListRequest) returns (stream JobAndStatus);
+  // find jobs by status (Pending, Running, WaitResult)
+  rpc FindListWithStatus(FindListWithStatusRequest) returns (stream JobAndStatus);
   rpc Count(CountCondition) returns (CountResponse);
 }
 
 message FindQueueListRequest {
   optional int32 limit = 1;
   optional string channel = 2;
+}
+
+message FindListWithStatusRequest {
+  jobworkerp.data.JobStatus status = 1;
+  optional int32 limit = 2;
 }
 
 message JobAndStatus {
