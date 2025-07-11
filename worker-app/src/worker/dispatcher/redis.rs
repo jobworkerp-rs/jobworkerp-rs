@@ -1,4 +1,5 @@
 use crate::worker::dispatcher::redis_run_after::RedisRunAfterJobDispatcher;
+use crate::worker::manager::{RunningJobManager, UseRunningJobManager};
 use crate::worker::result_processor::{ResultProcessorImpl, UseResultProcessor};
 use crate::worker::runner::map::{RunnerFactoryWithPoolMap, UseRunnerPoolMap};
 use crate::worker::runner::result::RunnerResultHandler;
@@ -14,6 +15,8 @@ use async_trait::async_trait;
 use command_utils::util::shutdown::ShutdownLock;
 use futures::TryFutureExt;
 use infra::infra::job::queue::rdb::RdbJobQueueRepository;
+use infra::infra::job::queue::{JobQueueCancellationRepository, JobQueueCancellationRepositoryDispatcher, UseJobQueueCancellationRepositoryDispatcher};
+use infra::infra::job::queue::redis::RedisJobQueueRepositoryImpl;
 use infra::infra::job::rdb::{
     RdbChanJobRepositoryImpl, RdbJobRepository, UseRdbChanJobRepositoryOptional,
 };
@@ -57,6 +60,7 @@ pub trait RedisJobDispatcher:
     + UseRunnerApp
     + UseJobQueueConfig
     + UseIdGenerator
+    + UseRunningJobManager
 {
     fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
     where
@@ -330,6 +334,9 @@ pub struct RedisJobDispatcherImpl {
     pub runner_factory: Arc<RunnerFactory>,
     pub runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
     result_processor: Arc<ResultProcessorImpl>,
+    running_job_manager: Arc<RunningJobManager>,
+    // Add JobQueueCancellationRepositoryDispatcher for cancellation functionality
+    job_queue_cancellation_repository_dispatcher: JobQueueCancellationRepositoryDispatcher,
 }
 
 impl RedisJobDispatcherImpl {
@@ -344,6 +351,8 @@ impl RedisJobDispatcherImpl {
         runner_factory: Arc<RunnerFactory>,
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
         result_processor: Arc<ResultProcessorImpl>,
+        running_job_manager: Arc<RunningJobManager>,
+        redis_job_queue_repository: Arc<RedisJobQueueRepositoryImpl>,
     ) -> Self {
         // use redis only, use run after dispatcher for run after job
         let run_after_dispatcher = // TODO redis only storage
@@ -355,6 +364,12 @@ impl RedisJobDispatcherImpl {
         // } else {
             None;
         // };
+        
+        // Create JobQueueCancellationRepositoryDispatcher with Redis implementation
+        let job_queue_cancellation_repository_dispatcher = JobQueueCancellationRepositoryDispatcher::Redis(
+            (*redis_job_queue_repository).clone()
+        );
+        
         Self {
             id_generator,
             pool: redis_job_repository.redis_pool,
@@ -366,7 +381,43 @@ impl RedisJobDispatcherImpl {
             runner_factory,
             runner_pool_map,
             result_processor,
+            running_job_manager,
+            job_queue_cancellation_repository_dispatcher,
         }
+    }
+    
+    /// キャンセル通知の受信開始（Dispatcher起動時に呼び出し）
+    pub async fn start_cancellation_subscriber(&self) -> Result<()> {
+        let running_job_manager = self.running_job_manager.clone();
+        
+        // 実際のJobQueueCancellationRepositoryDispatcherを使用してキャンセル通知を受信
+        self.job_queue_cancellation_repository_dispatcher
+            .subscribe_job_cancellation(move |job_id| {
+                let running_job_manager = running_job_manager.clone();
+                Box::pin(async move {
+                    tracing::info!("Received cancellation request for job {} in Redis worker", job_id.value);
+                    
+                    // RunningJobManagerでキャンセル処理を実行
+                    match running_job_manager.cancel_running_job(&job_id).await {
+                        Ok(cancelled) => {
+                            if cancelled {
+                                tracing::info!("Successfully cancelled running job {}", job_id.value);
+                            } else {
+                                tracing::debug!("Job {} not found in running jobs (may have already completed)", job_id.value);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Error cancelling job {}: {:?}", job_id.value, e);
+                        }
+                    }
+                    
+                    Ok(())
+                })
+            })
+            .await?;
+        
+        tracing::info!("Redis cancellation subscriber started (full implementation)");
+        Ok(())
     }
 }
 
@@ -450,12 +501,40 @@ impl UseResultProcessor for RedisJobDispatcherImpl {
     }
 }
 
+impl UseRunningJobManager for RedisJobDispatcherImpl {
+    fn running_job_manager(&self) -> &RunningJobManager {
+        &self.running_job_manager
+    }
+}
+
+impl UseJobQueueCancellationRepositoryDispatcher for RedisJobDispatcherImpl {
+    fn job_queue_cancellation_repository_dispatcher(&self) -> &JobQueueCancellationRepositoryDispatcher {
+        &self.job_queue_cancellation_repository_dispatcher
+    }
+}
+
+#[async_trait]
 impl JobDispatcher for RedisJobDispatcherImpl {
     fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
     where
         Self: Send + Sync + 'static,
     {
         RedisJobDispatcher::dispatch_jobs(self, lock)
+    }
+    
+    async fn start_cancellation_monitoring(&self) -> Result<()> {
+        // RunningJobManagerのクリーンアップタスク開始
+        self.running_job_manager().start_cleanup_task();
+        
+        // キャンセル通知の受信開始
+        self.start_cancellation_subscriber().await?;
+        
+        tracing::info!("Started cancellation monitoring for RedisJobDispatcher");
+        Ok(())
+    }
+    
+    async fn get_running_job_count(&self) -> usize {
+        self.running_job_manager().get_running_job_count().await
     }
 }
 

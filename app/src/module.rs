@@ -14,6 +14,8 @@ use crate::app::worker::rdb::RdbWorkerAppImpl;
 use crate::app::worker::WorkerApp;
 use crate::app::{StorageConfig, WorkerConfig};
 use anyhow::Result;
+use infra::infra::job::queue::JobQueueCancellationRepositoryDispatcher;
+use infra::infra::job::queue::redis::UseRedisJobQueueRepository;
 use infra::infra::module::rdb::RdbChanRepositoryModule;
 use infra::infra::module::{HybridRepositoryModule, RedisRdbOptionalRepositoryModule};
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig};
@@ -158,6 +160,11 @@ impl AppModule {
                     repositories.clone(),
                     worker_app.clone(),
                 ));
+                // Create JobQueueCancellationRepositoryDispatcher for RdbChanJobAppImpl (Memory environment)
+                let job_queue_cancellation_repository_dispatcher = JobQueueCancellationRepositoryDispatcher::Chan(
+                    repositories.chan_job_queue_repository.clone()
+                );
+                
                 let job_app = Arc::new(RdbChanJobAppImpl::new(
                     config_module.clone(),
                     id_generator.clone(),
@@ -167,6 +174,7 @@ impl AppModule {
                         num_counters: 10000,
                         ttl: Some(Duration::from_secs(5)),
                     }),
+                    job_queue_cancellation_repository_dispatcher,
                 ));
                 let function_set_app = Arc::new(FunctionSetAppImpl::new(
                     repositories.function_set_repository.clone(),
@@ -271,6 +279,11 @@ impl AppModule {
                     descriptor_cache.clone(),
                     runner_app.clone(),
                 ));
+                // Create JobQueueCancellationRepositoryDispatcher for HybridJobAppImpl
+                let job_queue_cancellation_repository_dispatcher = JobQueueCancellationRepositoryDispatcher::Redis(
+                    repositories.redis_job_queue_repository().clone()
+                );
+                
                 let job_app = Arc::new(HybridJobAppImpl::new(
                     config_module.clone(),
                     id_generator.clone(),
@@ -280,6 +293,7 @@ impl AppModule {
                         num_counters: 10000,
                         ttl: Some(Duration::from_secs(60)),
                     }),
+                    job_queue_cancellation_repository_dispatcher,
                 ));
                 let job_result_app = Arc::new(HybridJobResultAppImpl::new(
                     config_module.storage_config.clone(),
@@ -438,12 +452,18 @@ pub mod test {
             ttl: Some(Duration::from_secs(5)),
         });
 
+        // Create JobQueueCancellationRepositoryDispatcher for HybridJobAppImpl
+        let job_queue_cancellation_repository_dispatcher = JobQueueCancellationRepositoryDispatcher::Redis(
+            repositories.redis_job_queue_repository().clone()
+        );
+        
         let job_app = Arc::new(HybridJobAppImpl::new(
             app_config.clone(),
             id_generator.clone(),
             repositories.clone(),
             worker_app.clone(),
             job_memory_cache,
+            job_queue_cancellation_repository_dispatcher,
         ));
 
         let job_result_app = Arc::new(HybridJobResultAppImpl::new(

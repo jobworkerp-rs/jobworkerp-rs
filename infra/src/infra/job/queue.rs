@@ -2,6 +2,10 @@ pub mod chan;
 pub mod rdb;
 pub mod redis;
 
+// Re-export implementations
+pub use chan::ChanJobQueueRepositoryImpl;
+pub use redis::RedisJobQueueRepositoryImpl;
+
 use std::collections::HashSet;
 
 use anyhow::Result;
@@ -83,4 +87,45 @@ pub trait JobQueueCancellationRepository: Send + Sync + 'static {
 pub trait UseJobQueueCancellationRepository {
     type CancellationRepo: JobQueueCancellationRepository;
     fn job_queue_cancellation_repository(&self) -> &Self::CancellationRepo;
+}
+
+/// Enum-based dispatcher for job queue cancellation repository
+/// This allows dynamic dispatch to different repository implementations
+#[derive(Debug, Clone)]
+pub enum JobQueueCancellationRepositoryDispatcher {
+    Redis(crate::infra::job::queue::redis::RedisJobQueueRepositoryImpl),
+    Chan(crate::infra::job::queue::chan::ChanJobQueueRepositoryImpl),
+}
+
+#[async_trait]
+impl JobQueueCancellationRepository for JobQueueCancellationRepositoryDispatcher {
+    async fn broadcast_job_cancellation(&self, job_id: &JobId) -> Result<()> {
+        match self {
+            JobQueueCancellationRepositoryDispatcher::Redis(repo) => {
+                repo.broadcast_job_cancellation(job_id).await
+            }
+            JobQueueCancellationRepositoryDispatcher::Chan(repo) => {
+                repo.broadcast_job_cancellation(job_id).await
+            }
+        }
+    }
+    
+    async fn subscribe_job_cancellation<F>(&self, callback: F) -> Result<()>
+    where
+        F: Fn(JobId) -> BoxFuture<'static, Result<()>> + Send + Sync + 'static,
+    {
+        match self {
+            JobQueueCancellationRepositoryDispatcher::Redis(repo) => {
+                repo.subscribe_job_cancellation(callback).await
+            }
+            JobQueueCancellationRepositoryDispatcher::Chan(repo) => {
+                repo.subscribe_job_cancellation(callback).await
+            }
+        }
+    }
+}
+
+/// Trait for accessing the dispatcher-based cancellation repository
+pub trait UseJobQueueCancellationRepositoryDispatcher {
+    fn job_queue_cancellation_repository_dispatcher(&self) -> &JobQueueCancellationRepositoryDispatcher;
 }

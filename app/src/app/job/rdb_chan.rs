@@ -4,10 +4,15 @@ use crate::module::AppConfigModule;
 use super::super::worker::{UseWorkerApp, WorkerApp};
 use super::super::JobBuilder;
 use super::{JobApp, JobCacheKeys};
+// use super::constants::cancellation::{CANCEL_REASON_USER_REQUEST, CANCEL_REASON_BEFORE_EXECUTION};
 use anyhow::Result;
 use async_trait::async_trait;
+
 use command_utils::util::datetime;
 use futures::stream::BoxStream;
+use infra::infra::job::queue::{
+    JobQueueCancellationRepository, JobQueueCancellationRepositoryDispatcher, UseJobQueueCancellationRepositoryDispatcher,
+};
 use infra::infra::job::queue::chan::{
     ChanJobQueueRepository, ChanJobQueueRepositoryImpl, UseChanJobQueueRepository,
 };
@@ -37,6 +42,7 @@ pub struct RdbChanJobAppImpl {
     repositories: Arc<RdbChanRepositoryModule>,
     worker_app: Arc<dyn WorkerApp + 'static>,
     memory_cache: MokaCacheImpl<Arc<String>, Job>,
+    job_queue_cancellation_repository_dispatcher: JobQueueCancellationRepositoryDispatcher,
 }
 
 impl RdbChanJobAppImpl {
@@ -46,6 +52,7 @@ impl RdbChanJobAppImpl {
         repositories: Arc<RdbChanRepositoryModule>,
         worker_app: Arc<dyn WorkerApp + 'static>,
         memory_cache: MokaCacheImpl<Arc<String>, Job>,
+        job_queue_cancellation_repository_dispatcher: JobQueueCancellationRepositoryDispatcher,
     ) -> Self {
         Self {
             app_config_module,
@@ -53,7 +60,88 @@ impl RdbChanJobAppImpl {
             repositories,
             worker_app,
             memory_cache,
+            job_queue_cancellation_repository_dispatcher,
         }
+    }
+
+    /// Internal implementation: Proper cancellation processing + cleanup
+    /// Similar to HybridJobAppImpl implementation for Standalone mode
+    async fn cancel_job_with_cleanup(&self, id: &JobId) -> Result<bool> {
+        // 1. Check current job status
+        let current_status = self.job_processing_status_repository()
+            .find_status(id)
+            .await?;
+        
+        let cancellation_result = match current_status {
+            Some(JobProcessingStatus::Running) => {
+                // Running → Cancelling state change
+                self.job_processing_status_repository()
+                    .upsert_status(id, &JobProcessingStatus::Cancelling)
+                    .await?;
+                
+                // 2. Active cancellation of running jobs (broadcast)
+                self.broadcast_job_cancellation(id).await?;
+                
+                tracing::info!("Job {} marked as cancelling, broadcasting to workers", id.value);
+                true
+            }
+            Some(JobProcessingStatus::Pending) => {
+                // Pending → Cancelling state change (Worker will detect when fetching)
+                self.job_processing_status_repository()
+                    .upsert_status(id, &JobProcessingStatus::Cancelling)
+                    .await?;
+                
+                tracing::info!("Pending job {} marked as cancelling", id.value);
+                true // Will be processed by Worker's ResultProcessor
+            }
+            Some(JobProcessingStatus::Cancelling) => {
+                tracing::info!("Job {} is already being cancelled", id.value);
+                true // Already being cancelled but considered success
+            }
+            Some(JobProcessingStatus::WaitResult) => {
+                // Processing completed, waiting for result - cannot cancel
+                tracing::info!("Job {} is waiting for result processing, cancellation not possible", id.value);
+                false // Cancellation failed
+            }
+            Some(JobProcessingStatus::Unknown) => {
+                tracing::warn!("Job {} has unknown status, attempting cancellation", id.value);
+                false // Cancellation failed
+            }
+            None => {
+                // Status doesn't exist (already completed or doesn't exist)
+                tracing::info!("Job {} status not found, may be already completed", id.value);
+                false // Cancellation failed
+            }
+        };
+        
+        // 3. Cancellation state setting completed (result processing will be done by Worker's ResultProcessor)
+        
+        // 4. DB/cache deletion (if necessary)
+        let db_deletion_result = match self.rdb_job_repository().delete(id).await {
+            Ok(r) => {
+                let _ = self.memory_cache.delete_cache(&Arc::new(Self::find_cache_key(id))).await;
+                Ok(r)
+            }
+            Err(e) => Err(e),
+        };
+        
+        // Cancellation success or DB deletion success
+        let db_result = db_deletion_result.unwrap_or(false);
+        let final_result = cancellation_result || db_result;
+        Ok(final_result)
+    }
+
+    /// Active cancellation of running jobs (Memory environment notification)
+    async fn broadcast_job_cancellation(&self, job_id: &JobId) -> Result<()> {
+        tracing::info!("Job cancellation broadcast requested for job {} (Memory environment)", job_id.value);
+        
+        // Use JobQueueCancellationRepositoryDispatcher to broadcast cancellation
+        self.job_queue_cancellation_repository_dispatcher
+            .broadcast_job_cancellation(job_id)
+            .await?;
+        
+        tracing::info!("Job cancellation broadcast completed for job {}", job_id.value);
+        Ok(())
     }
 
     // find not queueing  jobs from argument 'jobs' in channels
@@ -411,18 +499,8 @@ impl JobApp for RdbChanJobAppImpl {
     }
 
     async fn delete_job(&self, id: &JobId) -> Result<bool> {
-        // delete from db and redis
-        match self.rdb_job_repository().delete(id).await {
-            Ok(r) => {
-                let _ = self
-                    .memory_cache
-                    .delete_cache(&Arc::new(Self::find_cache_key(id)))
-                    .await; // ignore error
-                            // TODO delete from chan queue if possible
-                Ok(r)
-            }
-            Err(e) => Err(e),
-        }
+        // Phase 4.5: Updated to use proper cancellation instead of simple deletion
+        self.cancel_job_with_cleanup(id).await
     }
 
     // cannot get job of queue type REDIS (redis is used for queue and job cache)
@@ -635,6 +713,12 @@ impl UseChanJobResultPubSubRepository for RdbChanJobAppImpl {
     }
 }
 
+impl UseJobQueueCancellationRepositoryDispatcher for RdbChanJobAppImpl {
+    fn job_queue_cancellation_repository_dispatcher(&self) -> &JobQueueCancellationRepositoryDispatcher {
+        &self.job_queue_cancellation_repository_dispatcher
+    }
+}
+
 // for rdb chan
 #[async_trait]
 pub trait RdbChanJobAppHelper:
@@ -823,6 +907,12 @@ mod tests {
             runner_factory: Arc::new(runner_factory),
         });
         let subscrber = repositories.chan_job_result_pubsub_repository.clone();
+        
+        // Create JobQueueCancellationRepositoryDispatcher for test
+        let job_queue_cancellation_repository_dispatcher = JobQueueCancellationRepositoryDispatcher::Chan(
+            repositories.chan_job_queue_repository.clone()
+        );
+        
         Ok((
             RdbChanJobAppImpl::new(
                 config_module,
@@ -830,6 +920,7 @@ mod tests {
                 repositories,
                 Arc::new(worker_app),
                 job_memory_cache,
+                job_queue_cancellation_repository_dispatcher,
             ),
             subscrber,
         ))
