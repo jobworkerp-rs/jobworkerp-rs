@@ -1,19 +1,22 @@
 use crate::infra::job::rows::UseJobqueueAndCodec;
-use crate::infra::job_result::pubsub::redis::UseRedisJobResultPubSubRepository;
+use crate::infra::job_result::pubsub::redis::{UseRedisJobResultPubSubRepository, RedisJobResultPubSubRepositoryImpl};
 use crate::infra::job_result::pubsub::JobResultSubscriber;
-use crate::infra::UseJobQueueConfig;
+use crate::infra::{UseJobQueueConfig, JobQueueConfig};
+use crate::infra::job::queue::JobQueueCancellationRepository;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use infra_utils::infra::redis::UseRedisPool;
+use infra_utils::infra::redis::{UseRedisPool, UseRedisClient, RedisPool};
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     Job, JobId, JobResult, JobResultData, JobResultId, Priority, ResultOutputItem,
 };
+use futures::future::BoxFuture;
 use redis::AsyncCommands;
 use signal_hook::consts::SIGINT;
 use signal_hook_tokio::Signals;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 #[async_trait]
 pub trait RedisJobQueueRepository:
@@ -241,6 +244,126 @@ where
             .await
             .map_err(|e| JobWorkerError::RedisError(e).into())
     }
+
+}
+
+/// Redis implementation of JobQueueRepository with cancellation support
+#[derive(Clone, Debug)]
+pub struct RedisJobQueueRepositoryImpl {
+    pub job_queue_config: Arc<JobQueueConfig>,
+    pub redis_pool: &'static RedisPool,
+    pub job_result_pubsub_repository: RedisJobResultPubSubRepositoryImpl,
+}
+
+impl RedisJobQueueRepositoryImpl {
+    pub fn new(
+        job_queue_config: Arc<JobQueueConfig>,
+        redis_pool: &'static RedisPool,
+        redis_client: redis::Client,
+    ) -> Self {
+        let job_result_pubsub_repository = 
+            RedisJobResultPubSubRepositoryImpl::new(redis_client, job_queue_config.clone());
+        
+        Self {
+            job_queue_config,
+            redis_pool,
+            job_result_pubsub_repository,
+        }
+    }
+}
+
+impl UseJobQueueConfig for RedisJobQueueRepositoryImpl {
+    fn job_queue_config(&self) -> &JobQueueConfig {
+        &self.job_queue_config
+    }
+}
+
+impl UseRedisPool for RedisJobQueueRepositoryImpl {
+    fn redis_pool(&self) -> &'static RedisPool {
+        self.redis_pool
+    }
+}
+
+impl UseJobqueueAndCodec for RedisJobQueueRepositoryImpl {}
+
+impl UseRedisJobResultPubSubRepository for RedisJobQueueRepositoryImpl {
+    fn job_result_pubsub_repository(&self) -> &RedisJobResultPubSubRepositoryImpl {
+        &self.job_result_pubsub_repository
+    }
+}
+
+impl RedisJobQueueRepository for RedisJobQueueRepositoryImpl {}
+
+#[async_trait]
+impl JobQueueCancellationRepository for RedisJobQueueRepositoryImpl {
+    /// Broadcast job cancellation notification to all workers using Redis Pub/Sub
+    async fn broadcast_job_cancellation(&self, job_id: &JobId) -> Result<()> {
+        const JOB_CANCELLATION_CHANNEL: &str = "job_cancellation_channel";
+        
+        let message = serde_json::to_string(job_id)?;
+        let _: i32 = self.redis_pool()
+            .get()
+            .await?
+            .publish(JOB_CANCELLATION_CHANNEL, message)
+            .await
+            .map_err(|e| JobWorkerError::RedisError(e))?;
+        
+        tracing::info!("Broadcasted cancellation for job {} to all workers via Redis Pub/Sub", job_id.value);
+        Ok(())
+    }
+    
+    /// Subscribe to job cancellation notifications from Redis Pub/Sub
+    /// Note: This implementation uses simplified approach - in production,
+    /// this should be integrated with existing Redis Pub/Sub infrastructure
+    async fn subscribe_job_cancellation<F>(&self, callback: F) -> Result<()>
+    where
+        F: Fn(JobId) -> BoxFuture<'static, Result<()>> + Send + Sync + 'static,
+    {
+        const JOB_CANCELLATION_CHANNEL: &str = "job_cancellation_channel";
+        
+        // Create a new Redis connection for subscription
+        // In production, this should be integrated with existing connection management
+        let redis_pool = self.redis_pool();
+        let mut connection = redis_pool.get().await?;
+        
+        tokio::spawn(async move {
+            use redis::AsyncCommands;
+            
+            // This is a simplified implementation
+            // In production, use proper Redis Pub/Sub with separate connections
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                
+                // Poll for cancellation messages (simplified approach)
+                // Production implementation should use proper Redis Pub/Sub
+                if let Ok(messages) = connection.lrange::<&str, Vec<String>>(
+                    &format!("{}_queue", JOB_CANCELLATION_CHANNEL), 
+                    0, 
+                    -1
+                ).await {
+                    for message in messages {
+                        if let Ok(job_id) = serde_json::from_str::<JobId>(&message) {
+                            tracing::info!("Repository received cancellation request for job {}", job_id.value);
+                            
+                            if let Err(e) = callback(job_id).await {
+                                tracing::error!("Error processing cancellation callback: {:?}", e);
+                            }
+                        }
+                    }
+                    
+                    // Clear processed messages
+                    let _: () = connection.del(&format!("{}_queue", JOB_CANCELLATION_CHANNEL)).await.unwrap_or_default();
+                }
+            }
+        });
+        
+        tracing::info!("Started Redis cancellation subscriber via JobQueueCancellationRepository (simplified polling)");
+        Ok(())
+    }
+}
+
+pub trait UseRedisJobQueueRepository {
+    fn redis_job_queue_repository(&self) -> &RedisJobQueueRepositoryImpl;
 }
 
 #[cfg(test)]

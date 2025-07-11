@@ -1,3 +1,4 @@
+pub mod constants;
 pub mod execute;
 pub mod hybrid;
 pub mod rdb_chan;
@@ -5,6 +6,12 @@ pub mod rdb_chan;
 
 #[cfg(test)]
 pub mod find_list_with_processing_status_test;
+
+#[cfg(test)]
+pub mod result_status_test;
+
+#[cfg(test)]
+pub mod cancellation_test;
 
 use super::JobBuilder;
 use anyhow::Result;

@@ -5,6 +5,8 @@ pub mod redis;
 use std::collections::HashSet;
 
 use anyhow::Result;
+use async_trait::async_trait;
+use futures::future::BoxFuture;
 use proto::jobworkerp::data::{Job, JobId, JobResult, JobResultData, JobResultId, Priority};
 
 pub trait JobQueueRepository: Sync + 'static {
@@ -59,4 +61,26 @@ pub trait JobQueueRepository: Sync + 'static {
         channel: Option<&String>,
         priority: Priority,
     ) -> impl std::future::Future<Output = Result<i64>> + Send;
+}
+
+/// Extended job queue repository interface for cancellation functionality
+/// 
+/// This trait provides job cancellation broadcast capabilities for distributed workers.
+#[async_trait]
+pub trait JobQueueCancellationRepository: Send + Sync + 'static {
+    /// Broadcast job cancellation notification to all workers
+    async fn broadcast_job_cancellation(&self, job_id: &JobId) -> Result<()>;
+    
+    /// Subscribe to job cancellation notifications
+    async fn subscribe_job_cancellation<F>(&self, callback: F) -> Result<()>
+    where
+        F: Fn(JobId) -> BoxFuture<'static, Result<()>> + Send + Sync + 'static;
+}
+
+/// Trait for accessing the cancellation-enabled job queue repository
+/// Note: Due to generic methods, this trait cannot be dyn-compatible
+/// Use concrete types or enum dispatching pattern instead
+pub trait UseJobQueueCancellationRepository {
+    type CancellationRepo: JobQueueCancellationRepository;
+    fn job_queue_cancellation_repository(&self) -> &Self::CancellationRepo;
 }
