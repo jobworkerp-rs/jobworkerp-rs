@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use command_utils::util::datetime;
 use futures::stream::BoxStream;
 use infra::infra::job::queue::redis::{RedisJobQueueRepository, UseRedisJobQueueRepository};
-use infra::infra::job::queue::{JobQueueCancellationRepositoryDispatcher, JobQueueCancellationRepository, UseJobQueueCancellationRepositoryDispatcher};
+use infra::infra::job::queue::JobQueueCancellationRepository;
 use infra::infra::job::rdb::{RdbJobRepository, UseRdbChanJobRepository};
 use infra::infra::job::redis::{RedisJobRepository, UseRedisJobRepository};
 use infra::infra::job::status::{JobProcessingStatusRepository, UseJobProcessingStatusRepository};
@@ -29,8 +29,8 @@ use infra_utils::infra::cache::{MokaCacheImpl, UseMokaCache};
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
-    Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobProcessingStatus, Priority, QueueType,
-    ResponseType, ResultOutputItem, Worker, WorkerData, WorkerId,
+    Job, JobData, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, Priority,
+    QueueType, ResponseType, ResultOutputItem, Worker, WorkerData, WorkerId,
 };
 // TODO: ResultStatus will be used in Phase 2.5 for actual cancellation result creation
 // use proto::jobworkerp::data::ResultStatus;
@@ -44,7 +44,7 @@ pub struct HybridJobAppImpl {
     repositories: Arc<HybridRepositoryModule>,
     worker_app: Arc<dyn WorkerApp + 'static>,
     memory_cache: MokaCacheImpl<Arc<String>, Vec<Job>>,
-    job_queue_cancellation_repository_dispatcher: JobQueueCancellationRepositoryDispatcher,
+    job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository>,
 }
 
 impl HybridJobAppImpl {
@@ -54,7 +54,7 @@ impl HybridJobAppImpl {
         repositories: Arc<HybridRepositoryModule>,
         worker_app: Arc<dyn WorkerApp + 'static>,
         memory_cache: MokaCacheImpl<Arc<String>, Vec<Job>>,
-        job_queue_cancellation_repository_dispatcher: JobQueueCancellationRepositoryDispatcher,
+        job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository>,
     ) -> Self {
         Self {
             app_config_module,
@@ -62,7 +62,7 @@ impl HybridJobAppImpl {
             repositories,
             worker_app,
             memory_cache,
-            job_queue_cancellation_repository_dispatcher,
+            job_queue_cancellation_repository,
         }
     }
     // find not queueing  jobs from argument 'jobs' in channels
@@ -288,11 +288,12 @@ impl HybridJobAppImpl {
     /// Internal implementation: Proper cancellation processing + cleanup
     async fn cancel_job_with_cleanup(&self, id: &JobId) -> Result<bool> {
         // 1. Check current job status
-        let current_status = self.redis_job_repository()
+        let current_status = self
+            .redis_job_repository()
             .job_processing_status_repository()
             .find_status(id)
             .await?;
-        
+
         let cancellation_result = match current_status {
             Some(JobProcessingStatus::Running) => {
                 // Running → Cancelling state change
@@ -300,11 +301,14 @@ impl HybridJobAppImpl {
                     .job_processing_status_repository()
                     .upsert_status(id, &JobProcessingStatus::Cancelling)
                     .await?;
-                
+
                 // 2. Active cancellation of running jobs (broadcast)
                 self.broadcast_job_cancellation(id).await?;
-                
-                tracing::info!("Job {} marked as cancelling, broadcasting to workers", id.value);
+
+                tracing::info!(
+                    "Job {} marked as cancelling, broadcasting to workers",
+                    id.value
+                );
                 true
             }
             Some(JobProcessingStatus::Pending) => {
@@ -325,32 +329,47 @@ impl HybridJobAppImpl {
             }
             Some(JobProcessingStatus::WaitResult) => {
                 // Processing completed, waiting for result processing - cannot cancel
-                tracing::info!("Job {} is waiting for result processing, cancellation not possible", id.value);
+                tracing::info!(
+                    "Job {} is waiting for result processing, cancellation not possible",
+                    id.value
+                );
                 false // Cancellation failed
             }
             Some(JobProcessingStatus::Unknown) => {
                 // Corrupted or invalid status
-                tracing::warn!("Job {} has unknown status, attempting cancellation", id.value);
+                tracing::warn!(
+                    "Job {} has unknown status, attempting cancellation",
+                    id.value
+                );
                 false // Cancellation failed due to invalid state
             }
             None => {
                 // Status doesn't exist (already completed or non-existent job)
-                tracing::info!("Job {} status not found, may be already completed", id.value);
+                tracing::info!(
+                    "Job {} status not found, may be already completed",
+                    id.value
+                );
                 false // Cancellation failed
             }
         };
-        
+
         // 3. Cancellation state setting complete (result processing executed by Worker-side ResultProcessor)
-        
+
         // 4. DB/cache deletion (if necessary)
         let db_deletion_result = match self.rdb_job_repository().delete(id).await {
             Ok(r) => {
-                let _ = self.memory_cache.delete_cache(&Arc::new(Self::find_cache_key(id))).await;
-                self.redis_job_repository().delete(id).await.map(|r2| r || r2)
+                let _ = self
+                    .memory_cache
+                    .delete_cache(&Arc::new(Self::find_cache_key(id)))
+                    .await;
+                self.redis_job_repository()
+                    .delete(id)
+                    .await
+                    .map(|r2| r || r2)
             }
             Err(e) => Err(e),
         };
-        
+
         // Cancellation success or DB deletion success
         Ok(cancellation_result || db_deletion_result.unwrap_or(false))
     }
@@ -358,21 +377,21 @@ impl HybridJobAppImpl {
     /// Active cancellation of running jobs (distributed Worker notification)
     async fn broadcast_job_cancellation(&self, job_id: &JobId) -> Result<()> {
         // Phase 2.5 implementation: Use storage-specific broadcast
-        tracing::info!("Job cancellation broadcast requested for job {} (Phase 2.5 implementation)", job_id.value);
-        
-        // Use JobQueueCancellationRepositoryDispatcher to broadcast cancellation
-        self.job_queue_cancellation_repository_dispatcher
+        tracing::info!(
+            "Job cancellation broadcast requested for job {} (Phase 2.5 implementation)",
+            job_id.value
+        );
+
+        // Use JobQueueCancellationRepository to broadcast cancellation
+        self.job_queue_cancellation_repository
             .broadcast_job_cancellation(job_id)
             .await?;
-        
-        tracing::info!("Job cancellation broadcast completed for job {}", job_id.value);
-        Ok(())
-    }
-}
 
-impl UseJobQueueCancellationRepositoryDispatcher for HybridJobAppImpl {
-    fn job_queue_cancellation_repository_dispatcher(&self) -> &JobQueueCancellationRepositoryDispatcher {
-        &self.job_queue_cancellation_repository_dispatcher
+        tracing::info!(
+            "Job cancellation broadcast completed for job {}",
+            job_id.value
+        );
+        Ok(())
     }
 }
 
@@ -652,7 +671,9 @@ impl JobApp for HybridJobAppImpl {
     ) -> Result<bool> {
         tracing::debug!("complete_job: res_id={}", &id.value);
         if let Some(jid) = data.job_id.as_ref() {
-            self.job_processing_status_repository().delete_status(jid).await?;
+            self.job_processing_status_repository()
+                .delete_status(jid)
+                .await?;
             match ResponseType::try_from(data.response_type) {
                 Ok(ResponseType::Direct) => {
                     // send result for direct or listen after response
@@ -800,7 +821,10 @@ impl JobApp for HybridJobAppImpl {
         for j in ret.iter() {
             if let Some(jid) = j.id.as_ref() {
                 if let Some(j) = self.find_job(jid).await? {
-                    let s = self.job_processing_status_repository().find_status(jid).await?;
+                    let s = self
+                        .job_processing_status_repository()
+                        .find_status(jid)
+                        .await?;
                     job_and_status.push((j, s));
                 }
             }
@@ -848,14 +872,18 @@ impl JobApp for HybridJobAppImpl {
     where
         Self: Send + 'static,
     {
-        self.job_processing_status_repository().find_status(id).await
+        self.job_processing_status_repository()
+            .find_status(id)
+            .await
     }
 
     async fn find_all_job_status(&self) -> Result<Vec<(JobId, JobProcessingStatus)>>
     where
         Self: Send + 'static,
     {
-        self.job_processing_status_repository().find_status_all().await
+        self.job_processing_status_repository()
+            .find_status_all()
+            .await
     }
 
     async fn count(&self) -> Result<i64>
@@ -1077,11 +1105,10 @@ pub mod tests {
             job_queue_config,
             runner_factory: Arc::new(runner_factory),
         });
-        // Create JobQueueCancellationRepositoryDispatcher for test
-        let job_queue_cancellation_repository_dispatcher = JobQueueCancellationRepositoryDispatcher::Redis(
-            repositories.redis_job_queue_repository().clone()
-        );
-        
+        // Create JobQueueCancellationRepository for test (use Redis implementation)
+        let job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository> =
+            Arc::new(repositories.redis_job_queue_repository().clone());
+
         Ok((
             HybridJobAppImpl::new(
                 config_module,
@@ -1089,7 +1116,7 @@ pub mod tests {
                 repositories,
                 Arc::new(worker_app),
                 job_memory_cache,
-                job_queue_cancellation_repository_dispatcher,
+                job_queue_cancellation_repository,
             ),
             subscrber,
         ))
@@ -1216,7 +1243,10 @@ pub mod tests {
             let job0 = app.find_job(&jid).await?;
             assert!(job0.is_none());
             assert_eq!(
-                app.job_processing_status_repository().find_status(&jid).await.unwrap(),
+                app.job_processing_status_repository()
+                    .find_status(&jid)
+                    .await
+                    .unwrap(),
                 None
             );
             Ok(())

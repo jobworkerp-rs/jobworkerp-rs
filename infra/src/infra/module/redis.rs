@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
+use crate::infra::job::queue::redis::{RedisJobQueueRepositoryImpl, UseRedisJobQueueRepository};
 use crate::infra::job::redis::RedisJobRepositoryImpl;
 use crate::infra::job::redis::UseRedisJobRepository;
-use crate::infra::job::queue::redis::{RedisJobQueueRepositoryImpl, UseRedisJobQueueRepository};
 use crate::infra::job_result::pubsub::redis::RedisJobResultPubSubRepositoryImpl;
 use crate::infra::job_result::redis::RedisJobResultRepositoryImpl;
 use crate::infra::job_result::redis::UseRedisJobResultRepository;
@@ -155,8 +155,8 @@ impl UseRedisRepositoryModule for RedisRepositoryModule {
 pub mod test {
     use super::RedisRepositoryModule;
     use crate::infra::{
-        job::redis::RedisJobRepositoryImpl,
         job::queue::redis::RedisJobQueueRepositoryImpl,
+        job::redis::RedisJobRepositoryImpl,
         job_result::{
             pubsub::redis::RedisJobResultPubSubRepositoryImpl, redis::RedisJobResultRepositoryImpl,
         },

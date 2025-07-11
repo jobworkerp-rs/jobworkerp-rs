@@ -15,8 +15,8 @@ use async_trait::async_trait;
 use command_utils::util::shutdown::ShutdownLock;
 use futures::TryFutureExt;
 use infra::infra::job::queue::rdb::RdbJobQueueRepository;
-use infra::infra::job::queue::{JobQueueCancellationRepository, JobQueueCancellationRepositoryDispatcher, UseJobQueueCancellationRepositoryDispatcher};
 use infra::infra::job::queue::redis::RedisJobQueueRepositoryImpl;
+use infra::infra::job::queue::JobQueueCancellationRepository;
 use infra::infra::job::rdb::{
     RdbChanJobRepositoryImpl, RdbJobRepository, UseRdbChanJobRepositoryOptional,
 };
@@ -31,7 +31,7 @@ use infra_utils::infra::redis::{RedisPool, UseRedisPool};
 use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
-    Job, JobResult, JobResultId, JobProcessingStatus, Priority, QueueType, ResponseType, Worker,
+    Job, JobProcessingStatus, JobResult, JobResultId, Priority, QueueType, ResponseType, Worker,
 };
 use redis::{AsyncCommands, RedisError};
 use std::sync::Arc;
@@ -335,8 +335,8 @@ pub struct RedisJobDispatcherImpl {
     pub runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
     result_processor: Arc<ResultProcessorImpl>,
     running_job_manager: Arc<RunningJobManager>,
-    // Add JobQueueCancellationRepositoryDispatcher for cancellation functionality
-    job_queue_cancellation_repository_dispatcher: JobQueueCancellationRepositoryDispatcher,
+    // Add JobQueueCancellationRepository for cancellation functionality
+    job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository>,
 }
 
 impl RedisJobDispatcherImpl {
@@ -364,12 +364,11 @@ impl RedisJobDispatcherImpl {
         // } else {
             None;
         // };
-        
-        // Create JobQueueCancellationRepositoryDispatcher with Redis implementation
-        let job_queue_cancellation_repository_dispatcher = JobQueueCancellationRepositoryDispatcher::Redis(
-            (*redis_job_queue_repository).clone()
-        );
-        
+
+        // Use Redis implementation directly as JobQueueCancellationRepository
+        let job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository> =
+            redis_job_queue_repository.clone();
+
         Self {
             id_generator,
             pool: redis_job_repository.redis_pool,
@@ -382,40 +381,49 @@ impl RedisJobDispatcherImpl {
             runner_pool_map,
             result_processor,
             running_job_manager,
-            job_queue_cancellation_repository_dispatcher,
+            job_queue_cancellation_repository,
         }
     }
-    
+
     /// キャンセル通知の受信開始（Dispatcher起動時に呼び出し）
     pub async fn start_cancellation_subscriber(&self) -> Result<()> {
         let running_job_manager = self.running_job_manager.clone();
-        
-        // 実際のJobQueueCancellationRepositoryDispatcherを使用してキャンセル通知を受信
-        self.job_queue_cancellation_repository_dispatcher
-            .subscribe_job_cancellation(move |job_id| {
+
+        // 実際のJobQueueCancellationRepositoryを使用してキャンセル通知を受信
+        self.job_queue_cancellation_repository
+            .subscribe_job_cancellation(Box::new(move |job_id| {
                 let running_job_manager = running_job_manager.clone();
                 Box::pin(async move {
-                    tracing::info!("Received cancellation request for job {} in Redis worker", job_id.value);
-                    
+                    tracing::info!(
+                        "Received cancellation request for job {} in Redis worker",
+                        job_id.value
+                    );
+
                     // RunningJobManagerでキャンセル処理を実行
                     match running_job_manager.cancel_running_job(&job_id).await {
                         Ok(cancelled) => {
                             if cancelled {
-                                tracing::info!("Successfully cancelled running job {}", job_id.value);
+                                tracing::info!(
+                                    "Successfully cancelled running job {}",
+                                    job_id.value
+                                );
                             } else {
-                                tracing::debug!("Job {} not found in running jobs (may have already completed)", job_id.value);
+                                tracing::debug!(
+                                    "Job {} not found in running jobs (may have already completed)",
+                                    job_id.value
+                                );
                             }
                         }
                         Err(e) => {
                             tracing::error!("Error cancelling job {}: {:?}", job_id.value, e);
                         }
                     }
-                    
+
                     Ok(())
                 })
-            })
+            }))
             .await?;
-        
+
         tracing::info!("Redis cancellation subscriber started (full implementation)");
         Ok(())
     }
@@ -507,12 +515,6 @@ impl UseRunningJobManager for RedisJobDispatcherImpl {
     }
 }
 
-impl UseJobQueueCancellationRepositoryDispatcher for RedisJobDispatcherImpl {
-    fn job_queue_cancellation_repository_dispatcher(&self) -> &JobQueueCancellationRepositoryDispatcher {
-        &self.job_queue_cancellation_repository_dispatcher
-    }
-}
-
 #[async_trait]
 impl JobDispatcher for RedisJobDispatcherImpl {
     fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
@@ -521,18 +523,18 @@ impl JobDispatcher for RedisJobDispatcherImpl {
     {
         RedisJobDispatcher::dispatch_jobs(self, lock)
     }
-    
+
     async fn start_cancellation_monitoring(&self) -> Result<()> {
         // RunningJobManagerのクリーンアップタスク開始
         self.running_job_manager().start_cleanup_task();
-        
+
         // キャンセル通知の受信開始
         self.start_cancellation_subscriber().await?;
-        
+
         tracing::info!("Started cancellation monitoring for RedisJobDispatcher");
         Ok(())
     }
-    
+
     async fn get_running_job_count(&self) -> usize {
         self.running_job_manager().get_running_job_count().await
     }

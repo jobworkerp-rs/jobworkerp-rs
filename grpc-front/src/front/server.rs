@@ -1,9 +1,9 @@
 use crate::proto::jobworkerp::function::service::function_service_server::FunctionServiceServer;
 use crate::proto::jobworkerp::function::service::function_set_service_server::FunctionSetServiceServer;
+use crate::proto::jobworkerp::service::job_processing_status_service_server::JobProcessingStatusServiceServer;
 use crate::proto::jobworkerp::service::job_restore_service_server::JobRestoreServiceServer;
 use crate::proto::jobworkerp::service::job_result_service_server::JobResultServiceServer;
 use crate::proto::jobworkerp::service::job_service_server::JobServiceServer;
-use crate::proto::jobworkerp::service::job_processing_status_service_server::JobProcessingStatusServiceServer;
 use crate::proto::jobworkerp::service::runner_service_server::RunnerServiceServer;
 use crate::proto::jobworkerp::service::worker_service_server::WorkerServiceServer;
 use crate::proto::FILE_DESCRIPTOR_SET;
@@ -114,9 +114,9 @@ pub async fn start_server(
                 app_module.clone(),
             )))
             .add_service(JobServiceServer::new(JobGrpcImpl::new(app_module.clone())))
-            .add_service(JobProcessingStatusServiceServer::new(JobProcessingStatusGrpcImpl::new(
-                app_module.clone(),
-            )))
+            .add_service(JobProcessingStatusServiceServer::new(
+                JobProcessingStatusGrpcImpl::new(app_module.clone()),
+            ))
             .add_service(JobRestoreServiceServer::new(JobRestoreGrpcImpl::new(
                 app_module.clone(),
             )))

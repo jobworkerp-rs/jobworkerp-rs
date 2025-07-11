@@ -1,12 +1,12 @@
-use crate::infra::job::rows::UseJobqueueAndCodec;
 use crate::infra::job::queue::JobQueueCancellationRepository;
+use crate::infra::job::rows::UseJobqueueAndCodec;
 use crate::infra::JobQueueConfig;
 use crate::infra::UseJobQueueConfig;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
-use infra_utils::infra::chan::mpmc::{Chan, UseChanBuffer};
 use infra_utils::infra::chan::broadcast::BroadcastChan;
+use infra_utils::infra::chan::mpmc::{Chan, UseChanBuffer};
 use infra_utils::infra::chan::{ChanBuffer, ChanBufferItem};
 use jobworkerp_base::codec::UseProstCodec;
 use jobworkerp_base::error::JobWorkerError;
@@ -306,7 +306,6 @@ pub trait ChanJobQueueRepository:
         );
         Ok(self.chan_buf().count_chan_opt(c).await.unwrap_or(0) as i64)
     }
-
 }
 
 pub trait UseChanQueueBuffer {
@@ -352,64 +351,75 @@ impl JobQueueCancellationRepository for ChanJobQueueRepositoryImpl {
     /// Memory environment cancellation notification broadcast (using BroadcastChan)
     async fn broadcast_job_cancellation(&self, job_id: &JobId) -> Result<()> {
         let job_id_bytes = serde_json::to_vec(job_id)?;
-        
+
         match self.broadcast_chan().send(job_id_bytes) {
             Ok(sent) => {
                 if sent {
-                    tracing::info!("Broadcasted cancellation for job {} in memory environment", job_id.value);
+                    tracing::info!(
+                        "Broadcasted cancellation for job {} in memory environment",
+                        job_id.value
+                    );
                 } else {
-                    tracing::warn!("No receivers for cancellation broadcast of job {}", job_id.value);
+                    tracing::warn!(
+                        "No receivers for cancellation broadcast of job {}",
+                        job_id.value
+                    );
                 }
                 Ok(())
             }
             Err(e) => {
-                tracing::error!("Failed to broadcast cancellation for job {}: {:?}", job_id.value, e);
+                tracing::error!(
+                    "Failed to broadcast cancellation for job {}: {:?}",
+                    job_id.value,
+                    e
+                );
                 Err(anyhow::anyhow!("Broadcast error: {:?}", e))
             }
         }
     }
-    
+
     /// Subscribe to cancellation notifications (Memory environment, using BroadcastChan)
-    async fn subscribe_job_cancellation<F>(&self, callback: F) -> Result<()>
-    where
-        F: Fn(JobId) -> BoxFuture<'static, Result<()>> + Send + Sync + 'static,
-    {
+    async fn subscribe_job_cancellation(
+        &self,
+        callback: Box<dyn Fn(JobId) -> BoxFuture<'static, Result<()>> + Send + Sync + 'static>,
+    ) -> Result<()> {
         tracing::info!("Starting memory cancellation subscriber via BroadcastChan");
-        
-        let mut receiver = self.broadcast_chan().receiver().await;
-        
+
+        let receiver = self.broadcast_chan().receiver().await;
+
         tokio::spawn(async move {
-            use tokio_stream::wrappers::BroadcastStream;
             use futures::StreamExt;
-            
+            use tokio_stream::wrappers::BroadcastStream;
+
             let mut stream = BroadcastStream::new(receiver);
-            
+
             while let Some(result) = stream.next().await {
                 match result {
-                    Ok(data) => {
-                        match serde_json::from_slice::<JobId>(&data) {
-                            Ok(job_id) => {
-                                tracing::info!("Repository received cancellation request for job {} (memory)", job_id.value);
-                                
-                                if let Err(e) = callback(job_id).await {
-                                    tracing::error!("Error processing cancellation callback: {:?}", e);
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!("Failed to deserialize cancellation message: {:?}", e);
+                    Ok(data) => match serde_json::from_slice::<JobId>(&data) {
+                        Ok(job_id) => {
+                            tracing::info!(
+                                "Repository received cancellation request for job {} (memory)",
+                                job_id.value
+                            );
+
+                            if let Err(e) = callback(job_id).await {
+                                tracing::error!("Error processing cancellation callback: {:?}", e);
                             }
                         }
-                    }
+                        Err(e) => {
+                            tracing::warn!("Failed to deserialize cancellation message: {:?}", e);
+                        }
+                    },
                     Err(e) => {
                         tracing::error!("Broadcast receive error: {:?}", e);
                         // Continue listening despite errors
                     }
                 }
             }
-            
+
             tracing::info!("Memory cancellation subscriber stopped");
         });
-        
+
         Ok(())
     }
 }

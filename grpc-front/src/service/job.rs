@@ -2,8 +2,9 @@ use crate::proto::jobworkerp::data::{Priority, ResultOutputItem};
 use crate::proto::jobworkerp::service::job_request::Worker;
 use crate::proto::jobworkerp::service::job_service_server::JobService;
 use crate::proto::jobworkerp::service::{
-    CountCondition, CountResponse, CreateJobResponse, FindListWithProcessingStatusRequest, FindListRequest, FindQueueListRequest,
-    JobAndStatus, JobRequest, OptionalJobResponse, SuccessResponse,
+    CountCondition, CountResponse, CreateJobResponse, FindListRequest,
+    FindListWithProcessingStatusRequest, FindQueueListRequest, JobAndStatus, JobRequest,
+    OptionalJobResponse, SuccessResponse,
 };
 use crate::service::error_handle::handle_error;
 use app::app::job::JobApp;
@@ -317,7 +318,8 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
         }
     }
 
-    type FindListWithProcessingStatusStream = BoxStream<'static, Result<JobAndStatus, tonic::Status>>;
+    type FindListWithProcessingStatusStream =
+        BoxStream<'static, Result<JobAndStatus, tonic::Status>>;
     #[allow(clippy::result_large_err)]
     #[tracing::instrument(
         level = "info",
@@ -330,7 +332,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
     ) -> Result<tonic::Response<Self::FindListWithProcessingStatusStream>, tonic::Status> {
         let _s = Self::trace_request("job", "find_list_with_processing_status", &request);
         let req = request.get_ref();
-        
+
         // Validate and convert status
         let status = JobProcessingStatus::try_from(req.status)
             .map_err(|_| tonic::Status::invalid_argument("Invalid job status"))?;
@@ -342,9 +344,9 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
         {
             Ok(list) => Ok(Response::new(Box::pin(stream! {
                 for (job, status) in list {
-                    yield Ok(JobAndStatus { 
-                        job: Some(job), 
-                        status: Some(status as i32) 
+                    yield Ok(JobAndStatus {
+                        job: Some(job),
+                        status: Some(status as i32)
                     })
                 }
             }))),
@@ -445,7 +447,7 @@ mod tests {
             status: JobProcessingStatus::Running as i32,
             limit: Some(10),
         };
-        
+
         // Test status validation will be done in the implementation
         assert_eq!(valid_request.status, JobProcessingStatus::Running as i32);
         assert_eq!(valid_request.limit, Some(10));

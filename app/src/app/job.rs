@@ -2,19 +2,6 @@ pub mod constants;
 pub mod execute;
 pub mod hybrid;
 pub mod rdb_chan;
-// pub mod redis;
-
-#[cfg(test)]
-pub mod find_list_with_processing_status_test;
-
-#[cfg(test)]
-pub mod result_status_test;
-
-#[cfg(test)]
-pub mod cancellation_test;
-
-#[cfg(test)]
-pub mod rdb_chan_cancellation_test;
 
 use super::JobBuilder;
 use anyhow::Result;
@@ -29,8 +16,8 @@ use infra::infra::{
     UseJobQueueConfig,
 };
 use proto::jobworkerp::data::{
-    Job, JobId, JobResult, JobResultData, JobResultId, JobProcessingStatus, ResponseType, ResultOutputItem,
-    WorkerData, WorkerId,
+    Job, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, ResponseType,
+    ResultOutputItem, WorkerData, WorkerId,
 };
 use std::{collections::HashMap, fmt, sync::Arc};
 
@@ -239,3 +226,6 @@ where
             .await
     }
 }
+
+#[cfg(test)]
+pub mod rdb_chan_cancellation_test;

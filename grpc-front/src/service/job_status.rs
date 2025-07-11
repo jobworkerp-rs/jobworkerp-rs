@@ -2,7 +2,9 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use crate::proto::jobworkerp::service::job_processing_status_service_server::JobProcessingStatusService;
-use crate::proto::jobworkerp::service::{JobProcessingStatusResponse, OptionalJobProcessingStatusResponse};
+use crate::proto::jobworkerp::service::{
+    JobProcessingStatusResponse, OptionalJobProcessingStatusResponse,
+};
 use crate::service::error_handle::handle_error;
 use app::app::job::JobApp;
 use app::module::AppModule;
@@ -17,7 +19,9 @@ pub trait JobProcessingStatusGrpc {
 }
 
 #[tonic::async_trait]
-impl<T: JobProcessingStatusGrpc + Tracing + Send + Debug + Sync + 'static> JobProcessingStatusService for T {
+impl<T: JobProcessingStatusGrpc + Tracing + Send + Debug + Sync + 'static>
+    JobProcessingStatusService for T
+{
     #[tracing::instrument(level = "info", skip(self, request), fields(method = "find"))]
     async fn find(
         &self,

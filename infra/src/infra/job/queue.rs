@@ -68,64 +68,16 @@ pub trait JobQueueRepository: Sync + 'static {
 }
 
 /// Extended job queue repository interface for cancellation functionality
-/// 
+///
 /// This trait provides job cancellation broadcast capabilities for distributed workers.
 #[async_trait]
-pub trait JobQueueCancellationRepository: Send + Sync + 'static {
+pub trait JobQueueCancellationRepository: Send + Sync + 'static + std::fmt::Debug {
     /// Broadcast job cancellation notification to all workers
     async fn broadcast_job_cancellation(&self, job_id: &JobId) -> Result<()>;
-    
+
     /// Subscribe to job cancellation notifications
-    async fn subscribe_job_cancellation<F>(&self, callback: F) -> Result<()>
-    where
-        F: Fn(JobId) -> BoxFuture<'static, Result<()>> + Send + Sync + 'static;
-}
-
-/// Trait for accessing the cancellation-enabled job queue repository
-/// Note: Due to generic methods, this trait cannot be dyn-compatible
-/// Use concrete types or enum dispatching pattern instead
-pub trait UseJobQueueCancellationRepository {
-    type CancellationRepo: JobQueueCancellationRepository;
-    fn job_queue_cancellation_repository(&self) -> &Self::CancellationRepo;
-}
-
-/// Enum-based dispatcher for job queue cancellation repository
-/// This allows dynamic dispatch to different repository implementations
-#[derive(Debug, Clone)]
-pub enum JobQueueCancellationRepositoryDispatcher {
-    Redis(crate::infra::job::queue::redis::RedisJobQueueRepositoryImpl),
-    Chan(crate::infra::job::queue::chan::ChanJobQueueRepositoryImpl),
-}
-
-#[async_trait]
-impl JobQueueCancellationRepository for JobQueueCancellationRepositoryDispatcher {
-    async fn broadcast_job_cancellation(&self, job_id: &JobId) -> Result<()> {
-        match self {
-            JobQueueCancellationRepositoryDispatcher::Redis(repo) => {
-                repo.broadcast_job_cancellation(job_id).await
-            }
-            JobQueueCancellationRepositoryDispatcher::Chan(repo) => {
-                repo.broadcast_job_cancellation(job_id).await
-            }
-        }
-    }
-    
-    async fn subscribe_job_cancellation<F>(&self, callback: F) -> Result<()>
-    where
-        F: Fn(JobId) -> BoxFuture<'static, Result<()>> + Send + Sync + 'static,
-    {
-        match self {
-            JobQueueCancellationRepositoryDispatcher::Redis(repo) => {
-                repo.subscribe_job_cancellation(callback).await
-            }
-            JobQueueCancellationRepositoryDispatcher::Chan(repo) => {
-                repo.subscribe_job_cancellation(callback).await
-            }
-        }
-    }
-}
-
-/// Trait for accessing the dispatcher-based cancellation repository
-pub trait UseJobQueueCancellationRepositoryDispatcher {
-    fn job_queue_cancellation_repository_dispatcher(&self) -> &JobQueueCancellationRepositoryDispatcher;
+    async fn subscribe_job_cancellation(
+        &self,
+        callback: Box<dyn Fn(JobId) -> BoxFuture<'static, Result<()>> + Send + Sync + 'static>,
+    ) -> Result<()>;
 }

@@ -159,7 +159,9 @@ impl RedisJobRepositoryImpl {
         Self {
             job_queue_config: job_queue_config.clone(),
             redis_pool,
-            redis_job_processing_status_repository: Arc::new(RedisJobProcessingStatusRepository::new(redis_pool)),
+            redis_job_processing_status_repository: Arc::new(
+                RedisJobProcessingStatusRepository::new(redis_pool),
+            ),
             job_result_pubsub_repository: RedisJobResultPubSubRepositoryImpl::new(
                 redis_client,
                 job_queue_config,
@@ -220,7 +222,9 @@ async fn redis_test() -> Result<()> {
     let repo = RedisJobRepositoryImpl {
         job_queue_config: job_queue_config.clone(),
         redis_pool: pool,
-        redis_job_processing_status_repository: Arc::new(RedisJobProcessingStatusRepository::new(pool)),
+        redis_job_processing_status_repository: Arc::new(RedisJobProcessingStatusRepository::new(
+            pool,
+        )),
         job_result_pubsub_repository:
             crate::infra::job_result::pubsub::redis::RedisJobResultPubSubRepositoryImpl::new(
                 redis_client,
