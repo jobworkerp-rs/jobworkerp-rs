@@ -26,7 +26,8 @@ use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQue
 use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
-    Job, JobId, JobResult, JobResultData, JobProcessingStatus, Priority, QueueType, ResponseType, ResultOutput, ResultStatus, Worker,
+    Job, JobProcessingStatus, JobResult, JobResultData, Priority, QueueType, ResponseType,
+    ResultOutput, ResultStatus, Worker,
 };
 use std::sync::Arc;
 use tokio::task::JoinHandle;
@@ -220,7 +221,7 @@ pub trait ChanJobDispatcher:
             self.rdb_job_repository().delete(&jid).await?;
             Err(JobWorkerError::NotFound(mes))
         }?;
-        
+
         // ジョブ実行前にJobProcessingStatus確認（キャンセル要求の検出）
         match self.job_processing_status_repository().find_status(&jid).await? {
             Some(JobProcessingStatus::Pending) => {
@@ -230,18 +231,18 @@ pub trait ChanJobDispatcher:
             Some(JobProcessingStatus::Cancelling) => {
                 // キャンセル要求済み：実行をスキップしてResultProcessorでキャンセル処理
                 tracing::info!("Job {} marked for cancellation, skipping execution", jid.value);
-                
+
                 // キャンセル結果を直接作成
                 use command_utils::util::datetime;
                 let job_result_data = JobResultData {
-                    job_id: Some(jid.clone()),
+                    job_id: Some(jid),
                     status: ResultStatus::Cancelled as i32,
                     output: Some(ResultOutput {
                         items: b"Job was cancelled before execution".to_vec(),
                     }),
                     start_time: datetime::now_millis(),
                     end_time: datetime::now_millis(),
-                    worker_id: Some(wid.clone()),
+                    worker_id: Some(wid),
                     args: jdat.args.clone(),
                     uniq_key: jdat.uniq_key.clone(),
                     retried: jdat.retried,
@@ -256,7 +257,7 @@ pub trait ChanJobDispatcher:
                     store_failure: true,
                     worker_name: wdat.name.clone(),
                 };
-                
+
                 let cancelled_result = JobResult {
                     id: Some(proto::jobworkerp::data::JobResultId {
                         value: self.id_generator().generate_id()?,
@@ -264,7 +265,7 @@ pub trait ChanJobDispatcher:
                     data: Some(job_result_data),
                     metadata,
                 };
-                
+
                 return self.result_processor().process_result(cancelled_result, None, wdat).await;
             }
             Some(JobProcessingStatus::Running) => {
@@ -296,7 +297,7 @@ pub trait ChanJobDispatcher:
                 ).into());
             }
         }
-        
+
             if wdat.response_type != ResponseType::Direct as i32
                 && wdat.queue_type == QueueType::WithBackup as i32
             {
@@ -391,30 +392,39 @@ impl ChanJobDispatcherImpl {
             running_job_manager,
         }
     }
-    
+
     /// キャンセル通知の受信開始（Dispatcher起動時に呼び出し）
     pub async fn start_cancellation_subscriber(&self) -> Result<()> {
         let running_job_manager = self.running_job_manager.clone();
-        
+
         // ChanJobQueueRepositoryのsubscribe_job_cancellation()を使用
         self.chan_job_queue_repository()
-            .subscribe_job_cancellation(move |job_id| {
+            .subscribe_job_cancellation(Box::new(move |job_id| {
                 let manager = running_job_manager.clone();
                 Box::pin(async move {
-                    tracing::info!("Received cancellation request for job {} in memory worker", job_id.value);
-                    
+                    tracing::info!(
+                        "Received cancellation request for job {} in memory worker",
+                        job_id.value
+                    );
+
                     // RunningJobManagerに委譲してキャンセル実行
                     if manager.cancel_running_job(&job_id).await? {
-                        tracing::info!("Successfully processed cancellation for job {}", job_id.value);
+                        tracing::info!(
+                            "Successfully processed cancellation for job {}",
+                            job_id.value
+                        );
                     } else {
-                        tracing::debug!("Job {} not running in this worker, no action needed", job_id.value);
+                        tracing::debug!(
+                            "Job {} not running in this worker, no action needed",
+                            job_id.value
+                        );
                     }
-                    
+
                     Ok(())
                 })
-            })
+            }))
             .await?;
-        
+
         tracing::info!("Started memory cancellation subscriber in ChanJobDispatcher");
         Ok(())
     }
@@ -503,18 +513,18 @@ impl JobDispatcher for ChanJobDispatcherImpl {
     {
         ChanJobDispatcher::dispatch_jobs(self, lock)
     }
-    
+
     async fn start_cancellation_monitoring(&self) -> Result<()> {
         // RunningJobManagerのクリーンアップタスク開始
         self.running_job_manager().start_cleanup_task();
-        
+
         // キャンセル通知の受信開始
         self.start_cancellation_subscriber().await?;
-        
+
         tracing::info!("Started cancellation monitoring for ChanJobDispatcher");
         Ok(())
     }
-    
+
     async fn get_running_job_count(&self) -> usize {
         self.running_job_manager().get_running_job_count().await
     }

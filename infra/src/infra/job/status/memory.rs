@@ -101,7 +101,10 @@ mod tests {
             repo.find_status(&id).await.unwrap(),
             Some(JobProcessingStatus::Pending)
         );
-        assert!(repo.upsert_status(&id, &JobProcessingStatus::Running).await.unwrap(),);
+        assert!(repo
+            .upsert_status(&id, &JobProcessingStatus::Running)
+            .await
+            .unwrap(),);
         assert_eq!(
             repo.find_status(&id).await.unwrap(),
             Some(JobProcessingStatus::Running)
@@ -115,16 +118,16 @@ mod tests {
     async fn test_memory_job_status_repository_unknown_status() {
         let repo = MemoryJobProcessingStatusRepository::new();
         let id = JobId { value: 1 };
-        
+
         // Insert an invalid/unknown status value directly into the map
         repo.atomic_hash_map.insert(id.value, 999); // Invalid status value
-        
+
         // Should return Unknown instead of None or error
         assert_eq!(
             repo.find_status(&id).await.unwrap(),
             Some(JobProcessingStatus::Unknown)
         );
-        
+
         // find_status_all should also return Unknown for invalid statuses
         let all_statuses = repo.find_status_all().await.unwrap();
         assert_eq!(all_statuses.len(), 1);

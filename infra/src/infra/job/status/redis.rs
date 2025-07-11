@@ -53,7 +53,11 @@ impl JobProcessingStatusRepository for RedisJobProcessingStatusRepository {
                         } else if v == JobProcessingStatus::WaitResult as i32 {
                             (JobId { value: id }, JobProcessingStatus::WaitResult)
                         } else {
-                            tracing::warn!("unknown status: id: {}, status :{}. returning as Unknown", &id, v);
+                            tracing::warn!(
+                                "unknown status: id: {}, status :{}. returning as Unknown",
+                                &id,
+                                v
+                            );
                             (JobId { value: id }, JobProcessingStatus::Unknown)
                         }
                     })
@@ -76,7 +80,11 @@ impl JobProcessingStatusRepository for RedisJobProcessingStatusRepository {
             } else if v == JobProcessingStatus::WaitResult as i32 {
                 Ok(Some(JobProcessingStatus::WaitResult))
             } else {
-                tracing::warn!("unknown status: id: {}, status :{}. returning as Unknown", &id.value, v);
+                tracing::warn!(
+                    "unknown status: id: {}, status :{}. returning as Unknown",
+                    &id.value,
+                    v
+                );
                 Ok(Some(JobProcessingStatus::Unknown))
             }
         } else {

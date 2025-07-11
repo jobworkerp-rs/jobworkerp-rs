@@ -1,13 +1,19 @@
 //! Test module for RdbChanJobAppImpl cancellation functionality
-//! 
+//!
 //! This module tests job cancellation in Standalone (Memory + RDB) environment
 
 #[cfg(test)]
 mod rdb_chan_cancellation_tests {
     use super::super::rdb_chan::RdbChanJobAppImpl;
     use super::super::JobApp;
+    use crate::app::runner::rdb::RdbRunnerAppImpl;
+    use crate::app::runner::RunnerApp;
+    use crate::app::worker::rdb::RdbWorkerAppImpl;
+    use crate::app::worker::UseWorkerApp;
+    use crate::app::{StorageConfig, StorageType, WorkerConfig};
+    use crate::module::AppConfigModule;
     use anyhow::Result;
-    use infra::infra::job::queue::{JobQueueCancellationRepositoryDispatcher};
+    use infra::infra::job::queue::JobQueueCancellationRepository;
     use infra::infra::job::rows::UseJobqueueAndCodec;
     use infra::infra::job::status::UseJobProcessingStatusRepository;
     use infra::infra::module::rdb::test::setup_test_rdb_module;
@@ -22,33 +28,25 @@ mod rdb_chan_cancellation_tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
-    use crate::app::runner::rdb::RdbRunnerAppImpl;
-    use crate::app::runner::RunnerApp;
-    use crate::app::worker::rdb::RdbWorkerAppImpl;
-    use crate::app::worker::UseWorkerApp;
-    use crate::app::{StorageConfig, StorageType, WorkerConfig};
-    use crate::module::AppConfigModule;
-    
+
     const TEST_PLUGIN_DIR: &str = "../../plugins";
 
-    async fn create_test_rdb_chan_app(
-        use_mock_id: bool,
-    ) -> Result<RdbChanJobAppImpl> {
+    async fn create_test_rdb_chan_app(use_mock_id: bool) -> Result<RdbChanJobAppImpl> {
         let rdb_module = setup_test_rdb_module().await;
         let repositories = Arc::new(rdb_module);
-        
+
         // mock id generator (generate 1 until called set method)
         let id_generator = if use_mock_id {
             Arc::new(IdGeneratorWrapper::new_mock())
         } else {
             Arc::new(IdGeneratorWrapper::new())
         };
-        
+
         let moka_config = infra_utils::infra::cache::MokaCacheConfig {
             num_counters: 10000,
             ttl: Some(Duration::from_millis(100)),
         };
-        
+
         let job_memory_cache = infra_utils::infra::cache::MokaCacheImpl::new(&moka_config);
         let storage_config = Arc::new(StorageConfig {
             r#type: StorageType::Standalone,
@@ -63,7 +61,7 @@ mod rdb_chan_cancellation_tests {
             channels: vec!["test".to_string()],
             channel_concurrencies: vec![2],
         });
-        
+
         let descriptor_cache =
             Arc::new(infra_utils::infra::cache::MokaCacheImpl::new(&moka_config));
         let runner_app = Arc::new(RdbRunnerAppImpl::new(
@@ -96,19 +94,18 @@ mod rdb_chan_cancellation_tests {
             job_queue_config: job_queue_config.clone(),
             runner_factory: Arc::new(runner_factory),
         });
-        
-        // Create JobQueueCancellationRepositoryDispatcher for RdbChanJobAppImpl (Memory environment)
-        let job_queue_cancellation_repository_dispatcher = JobQueueCancellationRepositoryDispatcher::Chan(
-            repositories.chan_job_queue_repository.clone()
-        );
-        
+
+        // Create JobQueueCancellationRepository for RdbChanJobAppImpl (Memory environment)
+        let job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository> =
+            Arc::new(repositories.chan_job_queue_repository.clone());
+
         Ok(RdbChanJobAppImpl::new(
             config_module,
             id_generator,
             repositories,
             Arc::new(worker_app),
             job_memory_cache,
-            job_queue_cancellation_repository_dispatcher,
+            job_queue_cancellation_repository,
         ))
     }
 
@@ -117,11 +114,13 @@ mod rdb_chan_cancellation_tests {
         // Memory環境でのPendingジョブキャンセルテスト
         TEST_RUNTIME.block_on(async {
             let app = create_test_rdb_chan_app(true).await?;
-            
+
             // Create test worker
-            let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
-                name: "ls".to_string(),
-            });
+            let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
+                &proto::TestRunnerSettings {
+                    name: "ls".to_string(),
+                },
+            );
             let wd = WorkerData {
                 name: "testworker".to_string(),
                 description: "desc1".to_string(),
@@ -137,12 +136,13 @@ mod rdb_chan_cancellation_tests {
                 use_static: false,
                 broadcast_results: false,
             };
-            
+
             let worker_id = app.worker_app().create(&wd).await?;
-            let jargs = infra::infra::job::rows::JobqueueAndCodec::serialize_message(&proto::TestArgs {
-                args: vec!["/".to_string()],
-            });
-            
+            let jargs =
+                infra::infra::job::rows::JobqueueAndCodec::serialize_message(&proto::TestArgs {
+                    args: vec!["/".to_string()],
+                });
+
             // Enqueue job
             let metadata = Arc::new(HashMap::new());
             let (job_id, res, _) = app
@@ -159,10 +159,10 @@ mod rdb_chan_cancellation_tests {
                     false,
                 )
                 .await?;
-            
+
             assert!(job_id.value > 0);
             assert!(res.is_none());
-            
+
             // Verify job is pending
             assert_eq!(
                 app.job_processing_status_repository()
@@ -171,18 +171,19 @@ mod rdb_chan_cancellation_tests {
                     .unwrap(),
                 Some(JobProcessingStatus::Pending)
             );
-            
+
             // Cancel the job using delete_job (which now calls cancel_job_with_cleanup)
             let cancelled = app.delete_job(&job_id).await?;
             assert!(cancelled);
-            
+
             // Verify job is cancelled
-            let status = app.job_processing_status_repository()
+            let status = app
+                .job_processing_status_repository()
                 .find_status(&job_id)
                 .await
                 .unwrap();
             assert_eq!(status, Some(JobProcessingStatus::Cancelling));
-            
+
             tracing::info!("test_cancel_pending_job_rdb_chan completed successfully");
             Ok(())
         })
@@ -193,73 +194,73 @@ mod rdb_chan_cancellation_tests {
         // 存在しないジョブのキャンセルテスト
         TEST_RUNTIME.block_on(async {
             let app = create_test_rdb_chan_app(true).await?;
-            
+
             let nonexistent_job_id = JobId { value: 99999 };
-            
+
             // Cancel non-existent job should return false
             let cancelled = app.delete_job(&nonexistent_job_id).await?;
             assert!(!cancelled);
-            
+
             tracing::info!("test_cancel_nonexistent_job_rdb_chan completed successfully");
             Ok(())
         })
     }
 
     #[test]
-    fn test_cancel_job_various_states() -> Result<()> {
-        // 様々な状態のジョブキャンセルテスト
+    fn test_cancel_job_pending_states() -> Result<()> {
         TEST_RUNTIME.block_on(async {
             let app = create_test_rdb_chan_app(true).await?;
-            
+
             // Test with no status (should return false)
             let job_id = JobId { value: 54321 };
             let cancelled = app.delete_job(&job_id).await?;
             assert!(!cancelled);
-            
+
             // Set status to Pending and test cancellation
             app.job_processing_status_repository()
                 .upsert_status(&job_id, &JobProcessingStatus::Pending)
                 .await?;
-            
+
             let cancelled = app.delete_job(&job_id).await?;
             assert!(cancelled);
-            
+
             // Verify status changed to Cancelling
-            let status = app.job_processing_status_repository()
+            let status = app
+                .job_processing_status_repository()
                 .find_status(&job_id)
                 .await
                 .unwrap();
             assert_eq!(status, Some(JobProcessingStatus::Cancelling));
-            
-            tracing::info!("test_cancel_job_various_states completed successfully");
+
+            tracing::info!("test_cancel_job_pending_states completed successfully");
             Ok(())
         })
     }
 
     #[test]
     fn test_cancel_running_job_memory() -> Result<()> {
-        // Memory環境でのRunningジョブキャンセルテスト
         TEST_RUNTIME.block_on(async {
             let app = create_test_rdb_chan_app(true).await?;
-            
+
             let job_id = JobId { value: 67890 };
-            
+
             // Set status to Running
             app.job_processing_status_repository()
                 .upsert_status(&job_id, &JobProcessingStatus::Running)
                 .await?;
-            
+
             // Cancel the running job
             let cancelled = app.delete_job(&job_id).await?;
             assert!(cancelled);
-            
+
             // Verify status changed to Cancelling
-            let status = app.job_processing_status_repository()
+            let status = app
+                .job_processing_status_repository()
                 .find_status(&job_id)
                 .await
                 .unwrap();
             assert_eq!(status, Some(JobProcessingStatus::Cancelling));
-            
+
             tracing::info!("test_cancel_running_job_memory completed successfully");
             Ok(())
         })

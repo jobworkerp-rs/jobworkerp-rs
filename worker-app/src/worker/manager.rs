@@ -1,23 +1,22 @@
+use app::app::job::constants::cancellation::{
+    RUNNING_JOB_CLEANUP_INTERVAL_SECONDS, RUNNING_JOB_GRACE_PERIOD_MS,
+};
+use jobworkerp_base::error::JobWorkerError;
+use jobworkerp_runner::runner::RunnerTrait;
+use proto::jobworkerp::data::JobId;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
-use jobworkerp_base::error::JobWorkerError;
-use proto::jobworkerp::data::JobId;
-use jobworkerp_runner::runner::RunnerTrait;
-use app::app::job::constants::cancellation::{
-    RUNNING_JOB_DEFAULT_TTL_SECONDS, RUNNING_JOB_GRACE_PERIOD_MS, 
-    RUNNING_JOB_CLEANUP_INTERVAL_SECONDS
-};
 
-/// TTL付き実行中ジョブエントリ（メモリリーク防止）
+/// Running job entry with TTL (prevents memory leak)
 #[derive(Clone)]
 pub struct RunningJobEntry {
     pub runner: Arc<Mutex<Box<dyn RunnerTrait + Send + Sync>>>,
     pub registered_at: Instant,
-    pub job_timeout_ms: u64, // ジョブ固有のタイムアウト
-    pub is_static: bool, // static runnerかどうか
+    pub job_timeout_ms: u64, // Job-specific timeout
+    pub is_static: bool,     // Whether this is a static runner
 }
 
 impl RunningJobEntry {
@@ -33,25 +32,26 @@ impl RunningJobEntry {
             is_static,
         }
     }
-    
-    /// エントリが期限切れかチェック（Job個別timeout対応）
+
+    /// Check if the entry is expired (supports per-job timeout)
     pub fn is_expired(&self) -> bool {
         let ttl = if self.job_timeout_ms > 0 {
-            // Job個別タイムアウト + 余裕時間を使用
-            Duration::from_millis(self.job_timeout_ms + RUNNING_JOB_GRACE_PERIOD_MS)
+            // Use job-specific timeout + grace period
+            Some(Duration::from_millis(
+                self.job_timeout_ms + RUNNING_JOB_GRACE_PERIOD_MS,
+            ))
         } else {
-            // timeout未指定（無制限）の場合はデフォルトTTL使用
-            Duration::from_secs(RUNNING_JOB_DEFAULT_TTL_SECONDS)
+            None
         };
-        
+
         let elapsed = self.registered_at.elapsed();
-        
-        // デバッグ情報：期限切れ判定の詳細ログ
-        if elapsed > ttl {
+
+        // Debug info: detailed log for expiration check
+        if ttl.is_some_and(|t| elapsed > t) {
             tracing::debug!(
-                "Job entry expired: elapsed={}ms, ttl={}ms (job_timeout={}ms + grace={}ms)", 
-                elapsed.as_millis(), 
-                ttl.as_millis(),
+                "Job entry expired: elapsed={}ms, ttl={}ms (job_timeout={}ms + grace={}ms)",
+                elapsed.as_millis(),
+                ttl.map(|t| t.as_millis()).unwrap_or_default(),
                 self.job_timeout_ms,
                 RUNNING_JOB_GRACE_PERIOD_MS
             );
@@ -60,28 +60,32 @@ impl RunningJobEntry {
             false
         }
     }
-    
-    /// 期限までの残り時間を取得（デバッグ用）
+
+    /// Get remaining time until expiration (for debugging)
     pub fn time_to_expire(&self) -> Option<Duration> {
         let ttl = if self.job_timeout_ms > 0 {
-            Duration::from_millis(self.job_timeout_ms + RUNNING_JOB_GRACE_PERIOD_MS)
-        } else {
-            Duration::from_secs(RUNNING_JOB_DEFAULT_TTL_SECONDS)
-        };
-        
-        let elapsed = self.registered_at.elapsed();
-        if elapsed < ttl {
-            Some(ttl - elapsed)
+            Some(Duration::from_millis(
+                self.job_timeout_ms + RUNNING_JOB_GRACE_PERIOD_MS,
+            ))
         } else {
             None
-        }
+        };
+
+        let elapsed = self.registered_at.elapsed();
+        ttl.map(|t| t - elapsed)
     }
 }
 
-/// 実行中ジョブ管理（Redis/Memory共通）
+/// Running job manager (shared for Redis/Memory)
 pub struct RunningJobManager {
     running_jobs: Arc<RwLock<HashMap<i64, RunningJobEntry>>>,
     cleanup_started: Arc<AtomicBool>,
+}
+
+impl Default for RunningJobManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RunningJobManager {
@@ -91,8 +95,8 @@ impl RunningJobManager {
             cleanup_started: Arc::new(AtomicBool::new(false)),
         }
     }
-    
-    /// 実行中ジョブの登録
+
+    /// Register a running job
     pub async fn register_running_job(
         &self,
         job_id: &JobId,
@@ -102,99 +106,122 @@ impl RunningJobManager {
     ) {
         let entry = RunningJobEntry::new(runner, job_timeout_ms, is_static);
         self.running_jobs.write().await.insert(job_id.value, entry);
-        
-        tracing::debug!("Registered running job {} (timeout={}ms, static={})", 
-                       job_id.value, job_timeout_ms, is_static);
+
+        tracing::debug!(
+            "Registered running job {} (timeout={}ms, static={})",
+            job_id.value,
+            job_timeout_ms,
+            is_static
+        );
     }
 
-    /// 実行中ジョブの登録解除
+    /// Unregister a running job
     pub async fn unregister_running_job(&self, job_id: &JobId) -> bool {
-        let removed = self.running_jobs.write().await.remove(&job_id.value).is_some();
+        let removed = self
+            .running_jobs
+            .write()
+            .await
+            .remove(&job_id.value)
+            .is_some();
         if removed {
             tracing::debug!("Unregistered running job {}", job_id.value);
         }
         removed
     }
 
-    /// 指定ジョブのキャンセル実行
+    /// Execute cancellation for the specified job
     pub async fn cancel_running_job(&self, job_id: &JobId) -> Result<bool, JobWorkerError> {
         if let Some(entry) = self.running_jobs.read().await.get(&job_id.value) {
             let runner = entry.runner.clone();
-            let job_id_clone = job_id.clone();
+            let job_id_clone = *job_id;
             let running_jobs = self.running_jobs.clone();
-            
-            // Runner::cancel()を呼び出し + 管理対象から除去
+
+            // Call Runner::cancel() and remove from management
             tokio::spawn(async move {
                 runner.lock().await.cancel().await;
                 tracing::info!("Successfully cancelled running job {}", job_id_clone.value);
-                
-                // キャンセル処理後、管理対象から除去
-                if running_jobs.write().await.remove(&job_id_clone.value).is_some() {
-                    tracing::debug!("Removed cancelled job {} from running job manager", job_id_clone.value);
+
+                // After cancellation, remove from management
+                if running_jobs
+                    .write()
+                    .await
+                    .remove(&job_id_clone.value)
+                    .is_some()
+                {
+                    tracing::debug!(
+                        "Removed cancelled job {} from running job manager",
+                        job_id_clone.value
+                    );
                 }
             });
-            
+
             Ok(true)
         } else {
-            tracing::debug!("Job {} not found in running jobs, may have completed", job_id.value);
+            tracing::debug!(
+                "Job {} not found in running jobs, may have completed",
+                job_id.value
+            );
             Ok(false)
         }
     }
 
-    /// 実行中ジョブ数の取得（監視・デバッグ用）
+    /// Get the number of running jobs (for monitoring/debugging)
     pub async fn get_running_job_count(&self) -> usize {
         self.running_jobs.read().await.len()
     }
 
-    /// バックグラウンドクリーンアップタスク開始
+    /// Start background cleanup task
     pub fn start_cleanup_task(&self) {
-        // 既にクリーンアップタスクが開始されている場合は何もしない
-        if self.cleanup_started.compare_exchange(
-            false, 
-            true, 
-            Ordering::Acquire,
-            Ordering::Relaxed
-        ).is_err() {
+        // Do nothing if cleanup task has already started
+        if self
+            .cleanup_started
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
             tracing::debug!("Cleanup task already started");
             return;
         }
 
         let running_jobs = self.running_jobs.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(
-                Duration::from_secs(RUNNING_JOB_CLEANUP_INTERVAL_SECONDS)
-            );
-            
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(RUNNING_JOB_CLEANUP_INTERVAL_SECONDS));
+
             loop {
                 interval.tick().await;
-                
+
                 let mut jobs = running_jobs.write().await;
                 let initial_count = jobs.len();
-                
+
                 jobs.retain(|job_id, entry| {
                     if entry.is_expired() {
-                        tracing::warn!("Background cleanup: expired running job {} (registered: {:?}, timeout: {}ms)", 
-                                      job_id, entry.registered_at, entry.job_timeout_ms);
+                        tracing::warn!(
+                            "Background cleanup: expired running job {} (registered: {:?}, timeout: {}ms)", 
+                            job_id, entry.registered_at, entry.job_timeout_ms
+                        );
                         false
                     } else {
                         true
                     }
                 });
-                
+
                 let cleaned_count = initial_count - jobs.len();
                 if cleaned_count > 0 {
-                    tracing::info!("Background cleanup: removed {} expired running job entries", cleaned_count);
+                    tracing::info!(
+                        "Background cleanup: removed {} expired running job entries",
+                        cleaned_count
+                    );
                 }
-                
-                drop(jobs); // 明示的にlockを解放
+
+                drop(jobs); // Explicitly release the lock
             }
         });
-        
+
         tracing::info!("Started background cleanup task for running jobs");
     }
 }
 
-/// RunningJobManagerへのアクセストレイト
+/// Trait for accessing RunningJobManager
 pub trait UseRunningJobManager {
     fn running_job_manager(&self) -> &RunningJobManager;
 }
