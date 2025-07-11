@@ -4,6 +4,10 @@ use crate::module::AppConfigModule;
 use super::super::worker::{UseWorkerApp, WorkerApp};
 use super::super::JobBuilder;
 use super::{JobApp, JobCacheKeys, RedisJobAppHelper};
+// TODO: Use centralized constants in future phases
+// use super::constants::cancellation::{
+//     CANCEL_REASON_USER_REQUEST, JOB_CANCELLATION_CHANNEL,
+// };
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
@@ -22,11 +26,14 @@ use infra::infra::module::HybridRepositoryModule;
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use infra_utils::infra::cache::{MokaCacheImpl, UseMokaCache};
 use infra_utils::infra::rdb::UseRdbPool;
+use infra_utils::infra::redis::UseRedisPool;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobProcessingStatus, Priority, QueueType,
     ResponseType, ResultOutputItem, Worker, WorkerData, WorkerId,
 };
+// TODO: ResultStatus will be used in Phase 2.5 for actual cancellation result creation
+// use proto::jobworkerp::data::ResultStatus;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -273,6 +280,93 @@ impl HybridJobAppImpl {
                     .into(),
             )
         }
+    }
+
+    /// Internal implementation: Proper cancellation processing + cleanup
+    async fn cancel_job_with_cleanup(&self, id: &JobId) -> Result<bool> {
+        // 1. Check current job status
+        let current_status = self.redis_job_repository()
+            .job_processing_status_repository()
+            .find_status(id)
+            .await?;
+        
+        let cancellation_result = match current_status {
+            Some(JobProcessingStatus::Running) => {
+                // Running → Cancelling state change
+                self.redis_job_repository()
+                    .job_processing_status_repository()
+                    .upsert_status(id, &JobProcessingStatus::Cancelling)
+                    .await?;
+                
+                // 2. Active cancellation of running jobs (broadcast)
+                self.broadcast_job_cancellation(id).await?;
+                
+                tracing::info!("Job {} marked as cancelling, broadcasting to workers", id.value);
+                true
+            }
+            Some(JobProcessingStatus::Pending) => {
+                // Pending → Cancelling state change (will be cancelled when Worker picks it up)
+                // Note: There's a possibility the status changes right after current_status is retrieved,
+                // in which case the cancellation may be ineffective, but this is currently accepted
+                self.redis_job_repository()
+                    .job_processing_status_repository()
+                    .upsert_status(id, &JobProcessingStatus::Cancelling)
+                    .await?;
+                // Pending jobs are handled by state change only (detected by Worker side)
+                tracing::info!("Pending job {} marked as cancelling", id.value);
+                true // Will be properly processed through ResultProcessor on Worker side
+            }
+            Some(JobProcessingStatus::Cancelling) => {
+                tracing::info!("Job {} is already being cancelled", id.value);
+                true // Already being cancelled but treat as success
+            }
+            Some(JobProcessingStatus::WaitResult) => {
+                // Processing completed, waiting for result processing - cannot cancel
+                tracing::info!("Job {} is waiting for result processing, cancellation not possible", id.value);
+                false // Cancellation failed
+            }
+            Some(JobProcessingStatus::Unknown) => {
+                // Corrupted or invalid status
+                tracing::warn!("Job {} has unknown status, attempting cancellation", id.value);
+                false // Cancellation failed due to invalid state
+            }
+            None => {
+                // Status doesn't exist (already completed or non-existent job)
+                tracing::info!("Job {} status not found, may be already completed", id.value);
+                false // Cancellation failed
+            }
+        };
+        
+        // 3. Cancellation state setting complete (result processing executed by Worker-side ResultProcessor)
+        
+        // 4. DB/cache deletion (if necessary)
+        let db_deletion_result = match self.rdb_job_repository().delete(id).await {
+            Ok(r) => {
+                let _ = self.memory_cache.delete_cache(&Arc::new(Self::find_cache_key(id))).await;
+                self.redis_job_repository().delete(id).await.map(|r2| r || r2)
+            }
+            Err(e) => Err(e),
+        };
+        
+        // Cancellation success or DB deletion success
+        Ok(cancellation_result || db_deletion_result.unwrap_or(false))
+    }
+
+    /// Active cancellation of running jobs (distributed Worker notification)
+    async fn broadcast_job_cancellation(&self, job_id: &JobId) -> Result<()> {
+        // Phase 2.5 implementation: Use storage-specific broadcast
+        
+        // Phase 2.5: Simplified implementation for now
+        // TODO: Integrate with JobQueueCancellationRepository in Phase 3
+        
+        // For now, use a simple approach that works with existing infrastructure
+        // The actual broadcast will be implemented in Worker layer (Phase 3)
+        tracing::info!("Job cancellation broadcast requested for job {} (Phase 2.5 implementation)", job_id.value);
+        
+        // In Phase 3, this will be replaced with:
+        // self.job_queue_cancellation_repository().broadcast_job_cancellation(job_id).await
+        
+        Ok(())
     }
 }
 
@@ -615,21 +709,10 @@ impl JobApp for HybridJobAppImpl {
     }
 
     async fn delete_job(&self, id: &JobId) -> Result<bool> {
-        // delete from db and redis
-        match self.rdb_job_repository().delete(id).await {
-            Ok(r) => {
-                let _ = self
-                    .memory_cache
-                    .delete_cache(&Arc::new(Self::find_cache_key(id)))
-                    .await;
-                self.redis_job_repository()
-                    .delete(id)
-                    .await
-                    .map(|r2| r || r2)
-            }
-            Err(e) => Err(e),
-        }
+        // Perform proper job cancellation instead of direct deletion
+        self.cancel_job_with_cleanup(id).await
     }
+
     // cannot get job of queue type REDIS (redis is used for queue and job cache)
     async fn find_job(&self, id: &JobId) -> Result<Option<Job>>
     where

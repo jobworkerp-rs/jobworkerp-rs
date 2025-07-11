@@ -437,11 +437,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_find_list_with_processing_status_request_validation() {
-        use crate::proto::jobworkerp::service::FindListWithStatusRequest;
+        use crate::proto::jobworkerp::service::FindListWithProcessingStatusRequest;
         use proto::jobworkerp::data::JobProcessingStatus;
 
         // Test valid request
-        let valid_request = FindListWithStatusRequest {
+        let valid_request = FindListWithProcessingStatusRequest {
             status: JobProcessingStatus::Running as i32,
             limit: Some(10),
         };
@@ -451,7 +451,7 @@ mod tests {
         assert_eq!(valid_request.limit, Some(10));
 
         // Test with no limit
-        let no_limit_request = FindListWithStatusRequest {
+        let no_limit_request = FindListWithProcessingStatusRequest {
             status: JobProcessingStatus::Pending as i32,
             limit: None,
         };

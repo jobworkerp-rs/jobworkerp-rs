@@ -10,6 +10,7 @@ use crate::infra::runner::rdb::RdbRunnerRepositoryImpl;
 use crate::infra::worker::rdb::{RdbWorkerRepositoryImpl, UseRdbWorkerRepository};
 use crate::infra::{IdGeneratorWrapper, InfraConfigModule, JobQueueConfig};
 use infra_utils::infra::chan::ChanBuffer;
+use infra_utils::infra::chan::broadcast::BroadcastChan;
 use jobworkerp_runner::runner::factory::RunnerSpecFactory;
 
 pub trait UseRdbChanRepositoryModule {
@@ -67,6 +68,7 @@ impl RdbChanRepositoryModule {
             chan_job_queue_repository: ChanJobQueueRepositoryImpl::new(
                 job_queue_config,
                 ChanBuffer::new(None, 100_000), // mpmc chan. TODO from config
+                BroadcastChan::new(1000), // broadcast chan for cancellation. TODO from config
             ),
             function_set_repository: Arc::new(FunctionSetRepositoryImpl::new(id_generator, pool)),
         }
@@ -98,6 +100,7 @@ impl RdbChanRepositoryModule {
             chan_job_queue_repository: ChanJobQueueRepositoryImpl::new(
                 config_module.job_queue_config.clone(),
                 ChanBuffer::new(None, 100_000), // TODO from config
+                BroadcastChan::new(1000), // broadcast chan for cancellation. TODO from config
             ),
             function_set_repository: Arc::new(FunctionSetRepositoryImpl::new(id_generator, pool)),
         }
@@ -127,6 +130,8 @@ pub mod test {
         job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl, JobQueueConfig,
     };
     use infra_utils::infra::test::setup_test_rdb_from;
+    use infra_utils::infra::chan::broadcast::BroadcastChan;
+    use infra_utils::infra::chan::ChanBuffer;
     use jobworkerp_runner::runner::factory::RunnerSpecFactory;
     use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
     use jobworkerp_runner::runner::plugins::Plugins;
@@ -174,6 +179,7 @@ pub mod test {
             chan_job_queue_repository: ChanJobQueueRepositoryImpl::new(
                 Arc::new(JobQueueConfig::default()),
                 ChanBuffer::new(None, 10000),
+                BroadcastChan::new(1000), // broadcast chan for cancellation (test)
             ),
             function_set_repository: Arc::new(FunctionSetRepositoryImpl::new(id_generator, pool)),
         }

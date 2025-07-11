@@ -1,6 +1,5 @@
 #[cfg(test)]
 mod tests {
-    use super::super::JobApp;
     use crate::module::test::create_hybrid_test_app;
     use anyhow::Result;
     use proto::jobworkerp::data::JobProcessingStatus;
@@ -12,17 +11,17 @@ mod tests {
 
         // When no jobs exist with the specified status, should return empty list
         let running_jobs = app
-            .find_list_with_status(JobProcessingStatus::Running, Some(&10))
+            .find_list_with_processing_status(JobProcessingStatus::Running, Some(&10))
             .await?;
         assert_eq!(running_jobs.len(), 0);
 
         let pending_jobs = app
-            .find_list_with_status(JobProcessingStatus::Pending, Some(&10))
+            .find_list_with_processing_status(JobProcessingStatus::Pending, Some(&10))
             .await?;
         assert_eq!(pending_jobs.len(), 0);
 
         let wait_result_jobs = app
-            .find_list_with_status(JobProcessingStatus::WaitResult, Some(&10))
+            .find_list_with_processing_status(JobProcessingStatus::WaitResult, Some(&10))
             .await?;
         assert_eq!(wait_result_jobs.len(), 0);
 
@@ -36,7 +35,7 @@ mod tests {
 
         // Test with limit 0 - should return empty list
         let jobs = app
-            .find_list_with_status(JobProcessingStatus::Pending, Some(&0))
+            .find_list_with_processing_status(JobProcessingStatus::Pending, Some(&0))
             .await?;
         assert_eq!(jobs.len(), 0);
 
@@ -49,7 +48,7 @@ mod tests {
         let app = app_module.job_app.clone();
 
         // Test with no limit (should use default of 100)
-        let jobs = app.find_list_with_status(JobProcessingStatus::Pending, None).await?;
+        let jobs = app.find_list_with_processing_status(JobProcessingStatus::Pending, None).await?;
         // Should return empty list when no jobs exist
         assert_eq!(jobs.len(), 0);
 
@@ -70,7 +69,7 @@ mod tests {
         ];
 
         for status in statuses {
-            let jobs = app.find_list_with_status(status, Some(&10)).await?;
+            let jobs = app.find_list_with_processing_status(status, Some(&10)).await?;
             // Should not panic and should return empty list when no jobs exist
             assert_eq!(jobs.len(), 0);
 
