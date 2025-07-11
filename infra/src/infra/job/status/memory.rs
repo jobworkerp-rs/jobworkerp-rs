@@ -33,6 +33,8 @@ impl JobProcessingStatusRepository for MemoryJobProcessingStatusRepository {
                     (JobId { value: *id }, JobProcessingStatus::Running)
                 } else if *v == JobProcessingStatus::WaitResult as i32 {
                     (JobId { value: *id }, JobProcessingStatus::WaitResult)
+                } else if *v == JobProcessingStatus::Cancelling as i32 {
+                    (JobId { value: *id }, JobProcessingStatus::Cancelling)
                 } else {
                     tracing::warn!("unknown status: id: {id}, status :{v}. returning as Unknown");
                     (JobId { value: *id }, JobProcessingStatus::Unknown)
@@ -49,6 +51,8 @@ impl JobProcessingStatusRepository for MemoryJobProcessingStatusRepository {
                 Ok(Some(JobProcessingStatus::Running))
             } else if v == JobProcessingStatus::WaitResult as i32 {
                 Ok(Some(JobProcessingStatus::WaitResult))
+            } else if v == JobProcessingStatus::Cancelling as i32 {
+                Ok(Some(JobProcessingStatus::Cancelling))
             } else {
                 tracing::warn!(
                     "unknown status in memory: id: {}, status :{}. returning as Unknown",

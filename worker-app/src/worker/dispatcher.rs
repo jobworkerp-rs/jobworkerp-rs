@@ -4,7 +4,7 @@ use self::{
     rdb::{RdbJobDispatcher, RdbJobDispatcherImpl},
     redis::{RedisJobDispatcher, RedisJobDispatcherImpl},
 };
-use super::{result_processor::ResultProcessorImpl, runner::map::RunnerFactoryWithPoolMap};
+use super::{manager::RunningJobManager, result_processor::ResultProcessorImpl, runner::map::RunnerFactoryWithPoolMap};
 use anyhow::Result;
 use app::module::{AppConfigModule, AppModule};
 use app_wrapper::runner::RunnerFactory;
@@ -28,6 +28,12 @@ pub trait JobDispatcher: Send + Sync + 'static {
     fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
     where
         Self: Send + Sync + 'static;
+    
+    /// キャンセル監視の開始（Worker起動時に外部から呼ばれる）
+    async fn start_cancellation_monitoring(&self) -> Result<()>;
+    
+    /// 実行中ジョブ数の取得（監視やデバッグ用、外部から呼ばれる）
+    async fn get_running_job_count(&self) -> usize;
 }
 // TODO divide into three traits (redis, rdb and redis+rdb)
 pub struct JobDispatcherFactory {}
@@ -53,6 +59,9 @@ impl JobDispatcherFactory {
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
         result_processor: Arc<ResultProcessorImpl>,
     ) -> Box<dyn JobDispatcher + 'static> {
+        // RunningJobManagerを生成
+        let running_job_manager = Arc::new(RunningJobManager::new());
+        
         match (
             app_module.config_module.storage_type(),
             rdb_chan_repositories_opt.clone(),
@@ -92,6 +101,7 @@ impl JobDispatcherFactory {
                         runner_factory,
                         runner_pool_map,
                         result_processor,
+                        running_job_manager.clone(),
                     ),
                 })
             }
@@ -116,6 +126,8 @@ impl JobDispatcherFactory {
                         runner_factory,
                         runner_pool_map,
                         result_processor,
+                        running_job_manager.clone(),
+                        Arc::new(redis_repositories.redis_job_queue_repository.clone()),
                     ),
                 })
             }
@@ -136,6 +148,18 @@ impl JobDispatcher for HybridJobDispatcherImpl {
         RdbJobDispatcher::dispatch_jobs(&self.rdb_job_dispatcher, lock.clone())?;
         RedisJobDispatcher::dispatch_jobs(&self.redis_job_dispatcher, lock)
     }
+    
+    async fn start_cancellation_monitoring(&self) -> Result<()> {
+        // RdbJobDispatcherはキャンセル不要、RedisJobDispatcherのみ開始
+        self.redis_job_dispatcher.start_cancellation_monitoring().await?;
+        tracing::info!("Started cancellation monitoring for HybridJobDispatcher");
+        Ok(())
+    }
+    
+    async fn get_running_job_count(&self) -> usize {
+        // RedisJobDispatcherの実行中ジョブ数のみ（RdbJobDispatcherは常に0）
+        self.redis_job_dispatcher.get_running_job_count().await
+    }
 }
 #[async_trait]
 impl JobDispatcher for RdbChanJobDispatcherImpl {
@@ -145,5 +169,17 @@ impl JobDispatcher for RdbChanJobDispatcherImpl {
     {
         RdbJobDispatcher::dispatch_jobs(&self.rdb_job_dispatcher, lock.clone())?;
         ChanJobDispatcher::dispatch_jobs(&self.chan_job_dispatcher, lock)
+    }
+    
+    async fn start_cancellation_monitoring(&self) -> Result<()> {
+        // RdbJobDispatcherはキャンセル不要、ChanJobDispatcherのみ開始
+        self.chan_job_dispatcher.start_cancellation_monitoring().await?;
+        tracing::info!("Started cancellation monitoring for RdbChanJobDispatcher");
+        Ok(())
+    }
+    
+    async fn get_running_job_count(&self) -> usize {
+        // ChanJobDispatcherの実行中ジョブ数のみ（RdbJobDispatcherは常に0）
+        self.chan_job_dispatcher.get_running_job_count().await
     }
 }

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::infra::job::redis::RedisJobRepositoryImpl;
 use crate::infra::job::redis::UseRedisJobRepository;
+use crate::infra::job::queue::redis::{RedisJobQueueRepositoryImpl, UseRedisJobQueueRepository};
 use crate::infra::job_result::pubsub::redis::RedisJobResultPubSubRepositoryImpl;
 use crate::infra::job_result::redis::RedisJobResultRepositoryImpl;
 use crate::infra::job_result::redis::UseRedisJobResultRepository;
@@ -38,6 +39,11 @@ impl<T: UseRedisRepositoryModule> UseRedisJobResultRepository for T {
         &self.redis_repository_module().redis_job_result_repository
     }
 }
+impl<T: UseRedisRepositoryModule> UseRedisJobQueueRepository for T {
+    fn redis_job_queue_repository(&self) -> &RedisJobQueueRepositoryImpl {
+        &self.redis_repository_module().redis_job_queue_repository
+    }
+}
 
 // redis and rdb module for DI
 #[derive(Clone, DebugStub)]
@@ -50,6 +56,7 @@ pub struct RedisRepositoryModule {
     pub redis_job_repository: RedisJobRepositoryImpl,
     pub redis_job_result_repository: RedisJobResultRepositoryImpl,
     pub redis_job_result_pubsub_repository: RedisJobResultPubSubRepositoryImpl,
+    pub redis_job_queue_repository: RedisJobQueueRepositoryImpl,
 }
 
 impl RedisRepositoryModule {
@@ -85,8 +92,13 @@ impl RedisRepositoryModule {
                 redis_pool,
             ),
             redis_job_result_pubsub_repository: RedisJobResultPubSubRepositoryImpl::new(
-                redis_client,
+                redis_client.clone(),
+                job_queue_config.clone(),
+            ),
+            redis_job_queue_repository: RedisJobQueueRepositoryImpl::new(
                 job_queue_config,
+                redis_pool,
+                redis_client.clone(),
             ),
         }
     }
@@ -123,8 +135,13 @@ impl RedisRepositoryModule {
                 redis_pool,
             ),
             redis_job_result_pubsub_repository: RedisJobResultPubSubRepositoryImpl::new(
-                redis_client,
+                redis_client.clone(),
                 config_module.job_queue_config.clone(),
+            ),
+            redis_job_queue_repository: RedisJobQueueRepositoryImpl::new(
+                config_module.job_queue_config.clone(),
+                redis_pool,
+                redis_client,
             ),
         }
     }
@@ -139,6 +156,7 @@ pub mod test {
     use super::RedisRepositoryModule;
     use crate::infra::{
         job::redis::RedisJobRepositoryImpl,
+        job::queue::redis::RedisJobQueueRepositoryImpl,
         job_result::{
             pubsub::redis::RedisJobResultPubSubRepositoryImpl, redis::RedisJobResultRepositoryImpl,
         },
@@ -204,8 +222,13 @@ pub mod test {
                 redis_pool,
             ),
             redis_job_result_pubsub_repository: RedisJobResultPubSubRepositoryImpl::new(
-                redis_client,
+                redis_client.clone(),
+                job_queue_config.clone(),
+            ),
+            redis_job_queue_repository: RedisJobQueueRepositoryImpl::new(
                 job_queue_config,
+                redis_pool,
+                redis_client.clone(),
             ),
         }
     }

@@ -13,6 +13,9 @@ pub mod result_status_test;
 #[cfg(test)]
 pub mod cancellation_test;
 
+#[cfg(test)]
+pub mod rdb_chan_cancellation_test;
+
 use super::JobBuilder;
 use anyhow::Result;
 use async_trait::async_trait;

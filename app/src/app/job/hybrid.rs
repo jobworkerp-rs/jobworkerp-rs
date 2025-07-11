@@ -12,7 +12,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
 use futures::stream::BoxStream;
-use infra::infra::job::queue::redis::RedisJobQueueRepository;
+use infra::infra::job::queue::redis::{RedisJobQueueRepository, UseRedisJobQueueRepository};
+use infra::infra::job::queue::{JobQueueCancellationRepositoryDispatcher, JobQueueCancellationRepository, UseJobQueueCancellationRepositoryDispatcher};
 use infra::infra::job::rdb::{RdbJobRepository, UseRdbChanJobRepository};
 use infra::infra::job::redis::{RedisJobRepository, UseRedisJobRepository};
 use infra::infra::job::status::{JobProcessingStatusRepository, UseJobProcessingStatusRepository};
@@ -26,7 +27,6 @@ use infra::infra::module::HybridRepositoryModule;
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use infra_utils::infra::cache::{MokaCacheImpl, UseMokaCache};
 use infra_utils::infra::rdb::UseRdbPool;
-use infra_utils::infra::redis::UseRedisPool;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobProcessingStatus, Priority, QueueType,
@@ -44,6 +44,7 @@ pub struct HybridJobAppImpl {
     repositories: Arc<HybridRepositoryModule>,
     worker_app: Arc<dyn WorkerApp + 'static>,
     memory_cache: MokaCacheImpl<Arc<String>, Vec<Job>>,
+    job_queue_cancellation_repository_dispatcher: JobQueueCancellationRepositoryDispatcher,
 }
 
 impl HybridJobAppImpl {
@@ -53,6 +54,7 @@ impl HybridJobAppImpl {
         repositories: Arc<HybridRepositoryModule>,
         worker_app: Arc<dyn WorkerApp + 'static>,
         memory_cache: MokaCacheImpl<Arc<String>, Vec<Job>>,
+        job_queue_cancellation_repository_dispatcher: JobQueueCancellationRepositoryDispatcher,
     ) -> Self {
         Self {
             app_config_module,
@@ -60,6 +62,7 @@ impl HybridJobAppImpl {
             repositories,
             worker_app,
             memory_cache,
+            job_queue_cancellation_repository_dispatcher,
         }
     }
     // find not queueing  jobs from argument 'jobs' in channels
@@ -355,18 +358,21 @@ impl HybridJobAppImpl {
     /// Active cancellation of running jobs (distributed Worker notification)
     async fn broadcast_job_cancellation(&self, job_id: &JobId) -> Result<()> {
         // Phase 2.5 implementation: Use storage-specific broadcast
-        
-        // Phase 2.5: Simplified implementation for now
-        // TODO: Integrate with JobQueueCancellationRepository in Phase 3
-        
-        // For now, use a simple approach that works with existing infrastructure
-        // The actual broadcast will be implemented in Worker layer (Phase 3)
         tracing::info!("Job cancellation broadcast requested for job {} (Phase 2.5 implementation)", job_id.value);
         
-        // In Phase 3, this will be replaced with:
-        // self.job_queue_cancellation_repository().broadcast_job_cancellation(job_id).await
+        // Use JobQueueCancellationRepositoryDispatcher to broadcast cancellation
+        self.job_queue_cancellation_repository_dispatcher
+            .broadcast_job_cancellation(job_id)
+            .await?;
         
+        tracing::info!("Job cancellation broadcast completed for job {}", job_id.value);
         Ok(())
+    }
+}
+
+impl UseJobQueueCancellationRepositoryDispatcher for HybridJobAppImpl {
+    fn job_queue_cancellation_repository_dispatcher(&self) -> &JobQueueCancellationRepositoryDispatcher {
+        &self.job_queue_cancellation_repository_dispatcher
     }
 }
 
@@ -1071,6 +1077,11 @@ pub mod tests {
             job_queue_config,
             runner_factory: Arc::new(runner_factory),
         });
+        // Create JobQueueCancellationRepositoryDispatcher for test
+        let job_queue_cancellation_repository_dispatcher = JobQueueCancellationRepositoryDispatcher::Redis(
+            repositories.redis_job_queue_repository().clone()
+        );
+        
         Ok((
             HybridJobAppImpl::new(
                 config_module,
@@ -1078,6 +1089,7 @@ pub mod tests {
                 repositories,
                 Arc::new(worker_app),
                 job_memory_cache,
+                job_queue_cancellation_repository_dispatcher,
             ),
             subscrber,
         ))

@@ -328,11 +328,23 @@ impl UseResultProcessor for RdbJobDispatcherImpl {
 
 impl RdbJobDispatcher for RdbJobDispatcherImpl {}
 
+#[async_trait]
 impl JobDispatcher for RdbJobDispatcherImpl {
     fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
     where
         Self: Send + Sync + 'static,
     {
         RdbJobDispatcher::dispatch_jobs(self, lock)
+    }
+    
+    async fn start_cancellation_monitoring(&self) -> Result<()> {
+        // RdbJobDispatcherはキャンセル機能なし（scheduled/periodicジョブのみ）
+        tracing::info!("RdbJobDispatcher does not support cancellation monitoring");
+        Ok(())
+    }
+    
+    async fn get_running_job_count(&self) -> usize {
+        // RdbJobDispatcherは実行中ジョブ管理なし
+        0
     }
 }
