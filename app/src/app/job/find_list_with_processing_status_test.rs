@@ -3,7 +3,7 @@ mod tests {
     use super::super::JobApp;
     use crate::module::test::create_hybrid_test_app;
     use anyhow::Result;
-    use proto::jobworkerp::data::JobStatus;
+    use proto::jobworkerp::data::JobProcessingStatus;
 
     #[tokio::test]
     async fn test_find_list_with_status_empty_result() -> Result<()> {
@@ -12,17 +12,17 @@ mod tests {
 
         // When no jobs exist with the specified status, should return empty list
         let running_jobs = app
-            .find_list_with_status(JobStatus::Running, Some(&10))
+            .find_list_with_status(JobProcessingStatus::Running, Some(&10))
             .await?;
         assert_eq!(running_jobs.len(), 0);
 
         let pending_jobs = app
-            .find_list_with_status(JobStatus::Pending, Some(&10))
+            .find_list_with_status(JobProcessingStatus::Pending, Some(&10))
             .await?;
         assert_eq!(pending_jobs.len(), 0);
 
         let wait_result_jobs = app
-            .find_list_with_status(JobStatus::WaitResult, Some(&10))
+            .find_list_with_status(JobProcessingStatus::WaitResult, Some(&10))
             .await?;
         assert_eq!(wait_result_jobs.len(), 0);
 
@@ -36,7 +36,7 @@ mod tests {
 
         // Test with limit 0 - should return empty list
         let jobs = app
-            .find_list_with_status(JobStatus::Pending, Some(&0))
+            .find_list_with_status(JobProcessingStatus::Pending, Some(&0))
             .await?;
         assert_eq!(jobs.len(), 0);
 
@@ -49,7 +49,7 @@ mod tests {
         let app = app_module.job_app.clone();
 
         // Test with no limit (should use default of 100)
-        let jobs = app.find_list_with_status(JobStatus::Pending, None).await?;
+        let jobs = app.find_list_with_status(JobProcessingStatus::Pending, None).await?;
         // Should return empty list when no jobs exist
         assert_eq!(jobs.len(), 0);
 
@@ -63,10 +63,10 @@ mod tests {
 
         // Test all job statuses are supported
         let statuses = vec![
-            JobStatus::Pending,
-            JobStatus::Running,
-            JobStatus::WaitResult,
-            JobStatus::Unknown,
+            JobProcessingStatus::Pending,
+            JobProcessingStatus::Running,
+            JobProcessingStatus::WaitResult,
+            JobProcessingStatus::Unknown,
         ];
 
         for status in statuses {

@@ -11,7 +11,7 @@ use futures::stream::BoxStream;
 use infra::infra::job::queue::redis::RedisJobQueueRepository;
 use infra::infra::job::rdb::{RdbJobRepository, UseRdbChanJobRepository};
 use infra::infra::job::redis::{RedisJobRepository, UseRedisJobRepository};
-use infra::infra::job::status::{JobStatusRepository, UseJobStatusRepository};
+use infra::infra::job::status::{JobProcessingStatusRepository, UseJobProcessingStatusRepository};
 use infra::infra::job_result::pubsub::redis::{
     RedisJobResultPubSubRepositoryImpl, UseRedisJobResultPubSubRepository,
 };
@@ -24,7 +24,7 @@ use infra_utils::infra::cache::{MokaCacheImpl, UseMokaCache};
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
-    Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobStatus, Priority, QueueType,
+    Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobProcessingStatus, Priority, QueueType,
     ResponseType, ResultOutputItem, Worker, WorkerData, WorkerId,
 };
 use std::collections::{HashMap, HashSet};
@@ -217,8 +217,8 @@ impl HybridJobAppImpl {
                 };
                 // enqueue rdb only
                 if self.rdb_job_repository().create(&job).await? {
-                    self.job_status_repository()
-                        .upsert_status(&jid, &JobStatus::Pending)
+                    self.job_processing_status_repository()
+                        .upsert_status(&jid, &JobProcessingStatus::Pending)
                         .await?;
                     Ok((jid, None, None))
                 } else {
@@ -410,8 +410,8 @@ impl JobApp for HybridJobAppImpl {
                 };
                 // enqueue rdb only
                 if self.rdb_job_repository().create(&job).await? {
-                    self.job_status_repository()
-                        .upsert_status(&jid, &JobStatus::Pending)
+                    self.job_processing_status_repository()
+                        .upsert_status(&jid, &JobProcessingStatus::Pending)
                         .await?;
                     Ok((jid, None, None))
                 } else {
@@ -445,8 +445,8 @@ impl JobApp for HybridJobAppImpl {
                     // use only rdb queue (not recommended for hybrid storage)
                     let created = self.rdb_job_repository().create(&job).await?;
                     if created {
-                        self.job_status_repository()
-                            .upsert_status(&jid, &JobStatus::Pending)
+                        self.job_processing_status_repository()
+                            .upsert_status(&jid, &JobProcessingStatus::Pending)
                             .await?;
                         Ok((job.id.unwrap(), None, None))
                     } else {
@@ -503,8 +503,8 @@ impl JobApp for HybridJobAppImpl {
                     Ok(false)
                 };
                 // update job status of redis(memory)
-                self.job_status_repository()
-                    .upsert_status(jid, &JobStatus::Pending)
+                self.job_processing_status_repository()
+                    .upsert_status(jid, &JobProcessingStatus::Pending)
                     .await?;
                 let res_redis = if !is_run_after_job_data
                     && w.periodic_interval == 0
@@ -552,7 +552,7 @@ impl JobApp for HybridJobAppImpl {
     ) -> Result<bool> {
         tracing::debug!("complete_job: res_id={}", &id.value);
         if let Some(jid) = data.job_id.as_ref() {
-            self.job_status_repository().delete_status(jid).await?;
+            self.job_processing_status_repository().delete_status(jid).await?;
             match ResponseType::try_from(data.response_type) {
                 Ok(ResponseType::Direct) => {
                     // send result for direct or listen after response
@@ -686,7 +686,7 @@ impl JobApp for HybridJobAppImpl {
         &self,
         limit: Option<&i32>,
         channel: Option<&str>,
-    ) -> Result<Vec<(Job, Option<JobStatus>)>>
+    ) -> Result<Vec<(Job, Option<JobProcessingStatus>)>>
     where
         Self: Send + 'static,
     {
@@ -711,7 +711,7 @@ impl JobApp for HybridJobAppImpl {
         for j in ret.iter() {
             if let Some(jid) = j.id.as_ref() {
                 if let Some(j) = self.find_job(jid).await? {
-                    let s = self.job_status_repository().find_status(jid).await?;
+                    let s = self.job_processing_status_repository().find_status(jid).await?;
                     job_and_status.push((j, s));
                 }
             }
@@ -721,18 +721,18 @@ impl JobApp for HybridJobAppImpl {
         // .await
     }
 
-    async fn find_list_with_status(
+    async fn find_list_with_processing_status(
         &self,
-        status: JobStatus,
+        status: JobProcessingStatus,
         limit: Option<&i32>,
-    ) -> Result<Vec<(Job, JobStatus)>>
+    ) -> Result<Vec<(Job, JobProcessingStatus)>>
     where
         Self: Send + 'static,
     {
         // 1. Get all job statuses
         let all_statuses = self
             .redis_job_repository()
-            .job_status_repository()
+            .job_processing_status_repository()
             .find_status_all()
             .await?;
 
@@ -755,18 +755,18 @@ impl JobApp for HybridJobAppImpl {
         Ok(target_jobs)
     }
 
-    async fn find_job_status(&self, id: &JobId) -> Result<Option<JobStatus>>
+    async fn find_job_status(&self, id: &JobId) -> Result<Option<JobProcessingStatus>>
     where
         Self: Send + 'static,
     {
-        self.job_status_repository().find_status(id).await
+        self.job_processing_status_repository().find_status(id).await
     }
 
-    async fn find_all_job_status(&self) -> Result<Vec<(JobId, JobStatus)>>
+    async fn find_all_job_status(&self) -> Result<Vec<(JobId, JobProcessingStatus)>>
     where
         Self: Send + 'static,
     {
-        self.job_status_repository().find_status_all().await
+        self.job_processing_status_repository().find_status_all().await
     }
 
     async fn count(&self) -> Result<i64>
@@ -847,11 +847,11 @@ impl UseRedisRepositoryModule for HybridJobAppImpl {
         &self.repositories.redis_module
     }
 }
-impl UseJobStatusRepository for HybridJobAppImpl {
-    fn job_status_repository(&self) -> Arc<dyn JobStatusRepository> {
+impl UseJobProcessingStatusRepository for HybridJobAppImpl {
+    fn job_processing_status_repository(&self) -> Arc<dyn JobProcessingStatusRepository> {
         self.repositories
             .redis_job_repository()
-            .job_status_repository()
+            .job_processing_status_repository()
             .clone()
     }
 }
@@ -1070,7 +1070,7 @@ pub mod tests {
                     .unwrap();
                 assert!(job.is_none());
                 assert_eq!(
-                    app1.job_status_repository()
+                    app1.job_processing_status_repository()
                         .find_status(&jid)
                         .await
                         .unwrap(),
@@ -1121,7 +1121,7 @@ pub mod tests {
             let job0 = app.find_job(&jid).await?;
             assert!(job0.is_none());
             assert_eq!(
-                app.job_status_repository().find_status(&jid).await.unwrap(),
+                app.job_processing_status_repository().find_status(&jid).await.unwrap(),
                 None
             );
             Ok(())
@@ -1243,11 +1243,11 @@ pub mod tests {
                 ..Default::default()
             };
             assert_eq!(
-                app.job_status_repository()
+                app.job_processing_status_repository()
                     .find_status(&job_id)
                     .await
                     .unwrap(),
-                Some(JobStatus::Pending)
+                Some(JobProcessingStatus::Pending)
             );
 
             let result = JobResult {
@@ -1300,7 +1300,7 @@ pub mod tests {
             let job0 = app.find_job(&job_id).await.unwrap();
             assert!(job0.is_none());
             assert_eq!(
-                app.job_status_repository()
+                app.job_processing_status_repository()
                     .find_status(&job_id)
                     .await
                     .unwrap(),
@@ -1364,11 +1364,11 @@ pub mod tests {
             );
             assert_eq!(job.data.as_ref().unwrap().retried, 0);
             assert_eq!(
-                app.job_status_repository()
+                app.job_processing_status_repository()
                     .find_status(&job_id)
                     .await
                     .unwrap(),
-                Some(JobStatus::Pending)
+                Some(JobProcessingStatus::Pending)
             );
 
             let result = JobResult {
@@ -1411,7 +1411,7 @@ pub mod tests {
             // not fetched job (because of not use job_dispatcher)
             assert!(app.find_job(&job_id).await?.is_none());
             assert_eq!(
-                app.job_status_repository()
+                app.job_processing_status_repository()
                     .find_status(&job_id)
                     .await
                     .unwrap(),
@@ -1507,18 +1507,18 @@ pub mod tests {
 
             // check job status
             assert_eq!(
-                app.job_status_repository()
+                app.job_processing_status_repository()
                     .find_status(&job_id)
                     .await
                     .unwrap(),
-                Some(JobStatus::Pending)
+                Some(JobProcessingStatus::Pending)
             );
             assert_eq!(
-                app.job_status_repository()
+                app.job_processing_status_repository()
                     .find_status(&job_id2)
                     .await
                     .unwrap(),
-                Some(JobStatus::Pending)
+                Some(JobProcessingStatus::Pending)
             );
 
             // no jobs to restore  (exists in both redis and rdb)

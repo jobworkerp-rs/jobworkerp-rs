@@ -20,7 +20,7 @@ use infra::infra::job::rdb::{
 use infra::infra::job::redis::RedisJobRepositoryImpl;
 use infra::infra::job::redis::UseRedisJobRepository;
 use infra::infra::job::rows::UseJobqueueAndCodec;
-use infra::infra::job::status::UseJobStatusRepository;
+use infra::infra::job::status::UseJobProcessingStatusRepository;
 use infra::infra::runner::rows::RunnerWithSchema;
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use infra_utils::infra::redis::{RedisClient, UseRedisClient};
@@ -28,7 +28,7 @@ use infra_utils::infra::redis::{RedisPool, UseRedisPool};
 use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
-    Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, Worker,
+    Job, JobResult, JobResultId, JobProcessingStatus, Priority, QueueType, ResponseType, Worker,
 };
 use redis::{AsyncCommands, RedisError};
 use std::sync::Arc;
@@ -199,7 +199,7 @@ pub trait RedisJobDispatcher:
             tracing::error!("{}", &mes);
             if let Some(id) = job.id.as_ref() {
                 self.redis_job_repository()
-                    .job_status_repository()
+                    .job_processing_status_repository()
                     .delete_status(id)
                     .await?;
                 if let Some(repo) = self.rdb_job_repository_opt() {
@@ -226,7 +226,7 @@ pub trait RedisJobDispatcher:
             );
             tracing::error!("{}", &mes);
             self.redis_job_repository()
-                .job_status_repository()
+                .job_processing_status_repository()
                 .delete_status(&jid)
                 .await?;
             if let Some(repo) = self.rdb_job_repository_opt() {
@@ -269,8 +269,8 @@ pub trait RedisJobDispatcher:
                 {
                     // change status to running
                     self.redis_job_repository()
-                        .job_status_repository()
-                        .upsert_status(&jid, &JobStatus::Running)
+                        .job_processing_status_repository()
+                        .upsert_status(&jid, &JobProcessingStatus::Running)
                         .await?;
                 } else {
                     // already grabbed (strange! (not reset previous process in retry?), but continue processing job)
@@ -310,8 +310,8 @@ pub trait RedisJobDispatcher:
         // change status to wait handling result
         if wdat.response_type != ResponseType::Direct as i32 {
             self.redis_job_repository()
-                .job_status_repository()
-                .upsert_status(&jid, &JobStatus::WaitResult)
+                .job_processing_status_repository()
+                .upsert_status(&jid, &JobProcessingStatus::WaitResult)
                 .await?;
         }
         self.result_processor().process_result(r.0, r.1, wdat).await
