@@ -17,7 +17,7 @@ use infra_utils::infra::{
 };
 use itertools::Itertools;
 use jobworkerp_base::{codec::UseProstCodec, error::JobWorkerError};
-use proto::jobworkerp::data::{Job, JobData, JobId, JobStatus};
+use proto::jobworkerp::data::{Job, JobData, JobId, JobProcessingStatus};
 use sqlx::Executor;
 
 #[async_trait]
@@ -241,20 +241,20 @@ pub trait RdbJobRepository:
             .context(format!("error in find: id = {}", id.value))
     }
 
-    async fn find_status(&self, id: &JobId) -> Result<Option<JobStatus>> {
+    async fn find_status(&self, id: &JobId) -> Result<Option<JobProcessingStatus>> {
         self.find_row_tx(self.db_pool(), id).await.map(|r| {
             r.map(|r2| {
                 // status WaitResult cannot be determined from rdb
                 if r2.grabbed_until_time.unwrap_or(0) == 0 {
-                    JobStatus::Pending
+                    JobProcessingStatus::Pending
                 } else {
-                    JobStatus::Running
+                    JobProcessingStatus::Running
                 }
             })
         })
     }
 
-    async fn find_all_status(&self) -> Result<Vec<(JobId, JobStatus)>> {
+    async fn find_all_status(&self) -> Result<Vec<(JobId, JobProcessingStatus)>> {
         self.find_row_list_tx(self.db_pool(), None, None)
             .await
             .map(|r| {
@@ -262,9 +262,9 @@ pub trait RdbJobRepository:
                     .map(|r2| {
                         // status WaitResult cannot be determined from rdb
                         if r2.grabbed_until_time.unwrap_or(0) == 0 {
-                            (JobId { value: r2.id }, JobStatus::Pending)
+                            (JobId { value: r2.id }, JobProcessingStatus::Pending)
                         } else {
-                            (JobId { value: r2.id }, JobStatus::Running)
+                            (JobId { value: r2.id }, JobProcessingStatus::Running)
                         }
                     })
                     .collect_vec()

@@ -2,7 +2,7 @@ use crate::proto::jobworkerp::data::{Priority, ResultOutputItem};
 use crate::proto::jobworkerp::service::job_request::Worker;
 use crate::proto::jobworkerp::service::job_service_server::JobService;
 use crate::proto::jobworkerp::service::{
-    CountCondition, CountResponse, CreateJobResponse, FindListWithStatusRequest, FindListRequest, FindQueueListRequest,
+    CountCondition, CountResponse, CreateJobResponse, FindListWithProcessingStatusRequest, FindListRequest, FindQueueListRequest,
     JobAndStatus, JobRequest, OptionalJobResponse, SuccessResponse,
 };
 use crate::service::error_handle::handle_error;
@@ -14,7 +14,7 @@ use futures::StreamExt;
 use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
-use proto::jobworkerp::data::{Job, JobId, JobStatus};
+use proto::jobworkerp::data::{Job, JobId, JobProcessingStatus};
 use std::fmt::Debug;
 use std::sync::Arc;
 use tonic::metadata::MetadataValue;
@@ -317,27 +317,27 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
         }
     }
 
-    type FindListWithStatusStream = BoxStream<'static, Result<JobAndStatus, tonic::Status>>;
+    type FindListWithProcessingStatusStream = BoxStream<'static, Result<JobAndStatus, tonic::Status>>;
     #[allow(clippy::result_large_err)]
     #[tracing::instrument(
         level = "info",
         skip(self, request),
-        fields(method = "find_list_with_status")
+        fields(method = "find_list_with_processing_status")
     )]
-    async fn find_list_with_status(
+    async fn find_list_with_processing_status(
         &self,
-        request: tonic::Request<FindListWithStatusRequest>,
-    ) -> Result<tonic::Response<Self::FindListWithStatusStream>, tonic::Status> {
-        let _s = Self::trace_request("job", "find_list_with_status", &request);
+        request: tonic::Request<FindListWithProcessingStatusRequest>,
+    ) -> Result<tonic::Response<Self::FindListWithProcessingStatusStream>, tonic::Status> {
+        let _s = Self::trace_request("job", "find_list_with_processing_status", &request);
         let req = request.get_ref();
         
         // Validate and convert status
-        let status = JobStatus::try_from(req.status)
+        let status = JobProcessingStatus::try_from(req.status)
             .map_err(|_| tonic::Status::invalid_argument("Invalid job status"))?;
 
         match self
             .app()
-            .find_list_with_status(status, req.limit.as_ref())
+            .find_list_with_processing_status(status, req.limit.as_ref())
             .await
         {
             Ok(list) => Ok(Response::new(Box::pin(stream! {
@@ -436,26 +436,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_find_list_with_status_request_validation() {
+    async fn test_find_list_with_processing_status_request_validation() {
         use crate::proto::jobworkerp::service::FindListWithStatusRequest;
-        use proto::jobworkerp::data::JobStatus;
+        use proto::jobworkerp::data::JobProcessingStatus;
 
         // Test valid request
         let valid_request = FindListWithStatusRequest {
-            status: JobStatus::Running as i32,
+            status: JobProcessingStatus::Running as i32,
             limit: Some(10),
         };
         
         // Test status validation will be done in the implementation
-        assert_eq!(valid_request.status, JobStatus::Running as i32);
+        assert_eq!(valid_request.status, JobProcessingStatus::Running as i32);
         assert_eq!(valid_request.limit, Some(10));
 
         // Test with no limit
         let no_limit_request = FindListWithStatusRequest {
-            status: JobStatus::Pending as i32,
+            status: JobProcessingStatus::Pending as i32,
             limit: None,
         };
-        assert_eq!(no_limit_request.status, JobStatus::Pending as i32);
+        assert_eq!(no_limit_request.status, JobProcessingStatus::Pending as i32);
         assert_eq!(no_limit_request.limit, None);
     }
 }

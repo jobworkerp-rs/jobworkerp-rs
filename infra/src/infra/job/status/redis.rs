@@ -1,17 +1,17 @@
-use super::JobStatusRepository;
+use super::JobProcessingStatusRepository;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use infra_utils::infra::redis::{RedisPool, UseRedisPool};
 use itertools::Itertools;
 use jobworkerp_base::error::JobWorkerError;
-use proto::jobworkerp::data::{JobId, JobStatus};
+use proto::jobworkerp::data::{JobId, JobProcessingStatus};
 use redis::AsyncCommands;
 
 // manage job status (except for responseType:Direct worker)
 // TODO use (listen after or create job status api)
 #[async_trait]
-impl JobStatusRepository for RedisJobStatusRepository {
-    async fn upsert_status(&self, id: &JobId, status: &JobStatus) -> Result<bool> {
+impl JobProcessingStatusRepository for RedisJobProcessingStatusRepository {
+    async fn upsert_status(&self, id: &JobId, status: &JobProcessingStatus) -> Result<bool> {
         tracing::debug!("upsert_status:{}={:?}", &id.value, status,);
         let res: Result<bool> = self
             .redis_pool()
@@ -33,7 +33,7 @@ impl JobStatusRepository for RedisJobStatusRepository {
             .map_err(|e| JobWorkerError::RedisError(e).into())
     }
 
-    async fn find_status_all(&self) -> Result<Vec<(JobId, JobStatus)>> {
+    async fn find_status_all(&self) -> Result<Vec<(JobId, JobProcessingStatus)>> {
         let rv: Vec<(String, i32)> = self
             .redis_pool()
             .get()
@@ -46,22 +46,22 @@ impl JobStatusRepository for RedisJobStatusRepository {
                 k.parse::<i64>()
                     .context("in parse job id of status")
                     .map(|id| {
-                        if v == JobStatus::Pending as i32 {
-                            (JobId { value: id }, JobStatus::Pending)
-                        } else if v == JobStatus::Running as i32 {
-                            (JobId { value: id }, JobStatus::Running)
-                        } else if v == JobStatus::WaitResult as i32 {
-                            (JobId { value: id }, JobStatus::WaitResult)
+                        if v == JobProcessingStatus::Pending as i32 {
+                            (JobId { value: id }, JobProcessingStatus::Pending)
+                        } else if v == JobProcessingStatus::Running as i32 {
+                            (JobId { value: id }, JobProcessingStatus::Running)
+                        } else if v == JobProcessingStatus::WaitResult as i32 {
+                            (JobId { value: id }, JobProcessingStatus::WaitResult)
                         } else {
                             tracing::warn!("unknown status: id: {}, status :{}. returning as Unknown", &id, v);
-                            (JobId { value: id }, JobStatus::Unknown)
+                            (JobId { value: id }, JobProcessingStatus::Unknown)
                         }
                     })
                     .ok()
             })
             .collect_vec())
     }
-    async fn find_status(&self, id: &JobId) -> Result<Option<JobStatus>> {
+    async fn find_status(&self, id: &JobId) -> Result<Option<JobProcessingStatus>> {
         let res: Option<i32> = self
             .redis_pool()
             .get()
@@ -69,15 +69,15 @@ impl JobStatusRepository for RedisJobStatusRepository {
             .hget(Self::STATUS_HASH_KEY, id.value)
             .await?;
         if let Some(v) = res {
-            if v == JobStatus::Pending as i32 {
-                Ok(Some(JobStatus::Pending))
-            } else if v == JobStatus::Running as i32 {
-                Ok(Some(JobStatus::Running))
-            } else if v == JobStatus::WaitResult as i32 {
-                Ok(Some(JobStatus::WaitResult))
+            if v == JobProcessingStatus::Pending as i32 {
+                Ok(Some(JobProcessingStatus::Pending))
+            } else if v == JobProcessingStatus::Running as i32 {
+                Ok(Some(JobProcessingStatus::Running))
+            } else if v == JobProcessingStatus::WaitResult as i32 {
+                Ok(Some(JobProcessingStatus::WaitResult))
             } else {
                 tracing::warn!("unknown status: id: {}, status :{}. returning as Unknown", &id.value, v);
-                Ok(Some(JobStatus::Unknown))
+                Ok(Some(JobProcessingStatus::Unknown))
             }
         } else {
             Ok(None)
@@ -86,17 +86,17 @@ impl JobStatusRepository for RedisJobStatusRepository {
 }
 
 #[derive(Clone, Debug)]
-pub struct RedisJobStatusRepository {
+pub struct RedisJobProcessingStatusRepository {
     redis_pool: &'static RedisPool,
 }
 
-impl RedisJobStatusRepository {
+impl RedisJobProcessingStatusRepository {
     const STATUS_HASH_KEY: &'static str = "JOB_STATUS";
     pub fn new(redis_pool: &'static RedisPool) -> Self {
         Self { redis_pool }
     }
 }
-impl UseRedisPool for RedisJobStatusRepository {
+impl UseRedisPool for RedisJobProcessingStatusRepository {
     fn redis_pool(&self) -> &'static RedisPool {
         self.redis_pool
     }

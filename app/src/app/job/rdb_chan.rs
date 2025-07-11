@@ -13,7 +13,7 @@ use infra::infra::job::queue::chan::{
 };
 use infra::infra::job::rdb::{RdbJobRepository, UseRdbChanJobRepository};
 use infra::infra::job::rows::UseJobqueueAndCodec;
-use infra::infra::job::status::{JobStatusRepository, UseJobStatusRepository};
+use infra::infra::job::status::{JobProcessingStatusRepository, UseJobProcessingStatusRepository};
 use infra::infra::job_result::pubsub::chan::{
     ChanJobResultPubSubRepositoryImpl, UseChanJobResultPubSubRepository,
 };
@@ -24,7 +24,7 @@ use infra_utils::infra::cache::{MokaCacheImpl, UseMokaCache};
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
-    Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobStatus, QueueType, ResponseType,
+    Job, JobData, JobId, JobResult, JobResultData, JobResultId, JobProcessingStatus, QueueType, ResponseType,
     ResultOutputItem, Worker, WorkerData, WorkerId,
 };
 use std::collections::{HashMap, HashSet};
@@ -153,8 +153,8 @@ impl RdbChanJobAppImpl {
                 };
                 // enqueue rdb only
                 if self.rdb_job_repository().create(&job).await? {
-                    self.job_status_repository()
-                        .upsert_status(&jid, &JobStatus::Pending)
+                    self.job_processing_status_repository()
+                        .upsert_status(&jid, &JobProcessingStatus::Pending)
                         .await?;
                     Ok((jid, None, None))
                 } else {
@@ -319,8 +319,8 @@ impl JobApp for RdbChanJobAppImpl {
                     Ok(false)
                 };
                 // update job status of redis(memory)
-                self.job_status_repository()
-                    .upsert_status(jid, &JobStatus::Pending)
+                self.job_processing_status_repository()
+                    .upsert_status(jid, &JobProcessingStatus::Pending)
                     .await?;
                 let res_chan = if !is_run_after_job_data
                     && w.periodic_interval == 0
@@ -359,7 +359,7 @@ impl JobApp for RdbChanJobAppImpl {
     ) -> Result<bool> {
         tracing::debug!("complete_job: res_id={}", &id.value);
         if let Some(jid) = data.job_id.as_ref() {
-            self.job_status_repository().delete_status(jid).await?;
+            self.job_processing_status_repository().delete_status(jid).await?;
             match ResponseType::try_from(data.response_type) {
                 Ok(ResponseType::Direct) => {
                     let res = self
@@ -454,7 +454,7 @@ impl JobApp for RdbChanJobAppImpl {
         &self,
         limit: Option<&i32>,
         channel: Option<&str>,
-    ) -> Result<Vec<(Job, Option<JobStatus>)>>
+    ) -> Result<Vec<(Job, Option<JobProcessingStatus>)>>
     where
         Self: Send + 'static,
     {
@@ -465,7 +465,7 @@ impl JobApp for RdbChanJobAppImpl {
         let mut res = vec![];
         for j in v {
             if let Some(jid) = j.id.as_ref() {
-                if let Ok(status) = self.job_status_repository().find_status(jid).await {
+                if let Ok(status) = self.job_processing_status_repository().find_status(jid).await {
                     res.push((j, status));
                     if limit.is_some() && res.len() >= *limit.unwrap() as usize {
                         break;
@@ -476,16 +476,16 @@ impl JobApp for RdbChanJobAppImpl {
         Ok(res)
     }
 
-    async fn find_list_with_status(
+    async fn find_list_with_processing_status(
         &self,
-        status: JobStatus,
+        status: JobProcessingStatus,
         limit: Option<&i32>,
-    ) -> Result<Vec<(Job, JobStatus)>>
+    ) -> Result<Vec<(Job, JobProcessingStatus)>>
     where
         Self: Send + 'static,
     {
         // 1. Get all job statuses
-        let all_statuses = self.job_status_repository().find_status_all().await?;
+        let all_statuses = self.job_processing_status_repository().find_status_all().await?;
 
         // 2. Filter by specified status and apply limit
         let target_job_ids: Vec<JobId> = all_statuses
@@ -506,18 +506,18 @@ impl JobApp for RdbChanJobAppImpl {
         Ok(target_jobs)
     }
 
-    async fn find_job_status(&self, id: &JobId) -> Result<Option<JobStatus>>
+    async fn find_job_status(&self, id: &JobId) -> Result<Option<JobProcessingStatus>>
     where
         Self: Send + 'static,
     {
-        self.job_status_repository().find_status(id).await
+        self.job_processing_status_repository().find_status(id).await
     }
 
-    async fn find_all_job_status(&self) -> Result<Vec<(JobId, JobStatus)>>
+    async fn find_all_job_status(&self) -> Result<Vec<(JobId, JobProcessingStatus)>>
     where
         Self: Send + 'static,
     {
-        self.job_status_repository().find_status_all().await
+        self.job_processing_status_repository().find_status_all().await
     }
 
     async fn count(&self) -> Result<i64>
@@ -624,9 +624,9 @@ impl UseChanJobQueueRepository for RdbChanJobAppImpl {
 }
 impl RdbChanJobAppHelper for RdbChanJobAppImpl {}
 impl UseJobqueueAndCodec for RdbChanJobAppImpl {}
-impl UseJobStatusRepository for RdbChanJobAppImpl {
-    fn job_status_repository(&self) -> Arc<dyn JobStatusRepository> {
-        self.repositories.memory_job_status_repository.clone()
+impl UseJobProcessingStatusRepository for RdbChanJobAppImpl {
+    fn job_processing_status_repository(&self) -> Arc<dyn JobProcessingStatusRepository> {
+        self.repositories.memory_job_processing_status_repository.clone()
     }
 }
 impl UseChanJobResultPubSubRepository for RdbChanJobAppImpl {
@@ -640,7 +640,7 @@ impl UseChanJobResultPubSubRepository for RdbChanJobAppImpl {
 pub trait RdbChanJobAppHelper:
     UseRdbChanJobRepository
     + UseChanJobQueueRepository
-    + UseJobStatusRepository
+    + UseJobProcessingStatusRepository
     + JobBuilder
     + UseJobQueueConfig
     + UseChanJobResultPubSubRepository
@@ -672,8 +672,8 @@ where
         {
             Ok(_) => {
                 // update status (not use direct response)
-                self.job_status_repository()
-                    .upsert_status(&job_id, &JobStatus::Pending)
+                self.job_processing_status_repository()
+                    .upsert_status(&job_id, &JobProcessingStatus::Pending)
                     .await?;
                 // wait for result if direct response type
                 if worker.response_type == ResponseType::Direct as i32 {
@@ -898,7 +898,7 @@ mod tests {
                     .unwrap();
                 assert!(job.is_none());
                 assert_eq!(
-                    app1.job_status_repository()
+                    app1.job_processing_status_repository()
                         .find_status(&jid)
                         .await
                         .unwrap(),
@@ -948,7 +948,7 @@ mod tests {
             let job0 = app.find_job(&jid).await?;
             assert!(job0.is_none());
             assert_eq!(
-                app.job_status_repository().find_status(&jid).await.unwrap(),
+                app.job_processing_status_repository().find_status(&jid).await.unwrap(),
                 None
             );
             Ok(())
@@ -1018,11 +1018,11 @@ mod tests {
                 metadata: (*metadata).clone(),
             };
             assert_eq!(
-                app.job_status_repository()
+                app.job_processing_status_repository()
                     .find_status(&job_id)
                     .await
                     .unwrap(),
-                Some(JobStatus::Pending)
+                Some(JobProcessingStatus::Pending)
             );
 
             let result = JobResult {
@@ -1076,7 +1076,7 @@ mod tests {
             let job0 = app.find_job(&job_id).await.unwrap();
             assert!(job0.is_none());
             assert_eq!(
-                app.job_status_repository()
+                app.job_processing_status_repository()
                     .find_status(&job_id)
                     .await
                     .unwrap(),
@@ -1139,11 +1139,11 @@ mod tests {
             );
             assert_eq!(job.data.as_ref().unwrap().retried, 0);
             assert_eq!(
-                app.job_status_repository()
+                app.job_processing_status_repository()
                     .find_status(&job_id)
                     .await
                     .unwrap(),
-                Some(JobStatus::Pending)
+                Some(JobProcessingStatus::Pending)
             );
 
             let result = JobResult {
@@ -1186,7 +1186,7 @@ mod tests {
             // not fetched job (because of not use job_dispatcher)
             assert!(app.find_job(&job_id).await?.is_none());
             assert_eq!(
-                app.job_status_repository()
+                app.job_processing_status_repository()
                     .find_status(&job_id)
                     .await
                     .unwrap(),
@@ -1286,23 +1286,23 @@ mod tests {
             );
             // println!(
             //     "==== statuses: {:?}",
-            //     app.job_status_repository().find_status_all().await.unwrap()
+            //     app.job_processing_status_repository().find_status_all().await.unwrap()
             // );
 
             // check job status
             assert_eq!(
-                app.job_status_repository()
+                app.job_processing_status_repository()
                     .find_status(&job_id)
                     .await
                     .unwrap(),
-                Some(JobStatus::Pending)
+                Some(JobProcessingStatus::Pending)
             );
             assert_eq!(
-                app.job_status_repository()
+                app.job_processing_status_repository()
                     .find_status(&job_id2)
                     .await
                     .unwrap(),
-                Some(JobStatus::Pending)
+                Some(JobProcessingStatus::Pending)
             );
 
             // // no jobs to restore  (exists in both redis and rdb)

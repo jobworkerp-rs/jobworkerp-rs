@@ -4,7 +4,7 @@ pub mod rdb_chan;
 // pub mod redis;
 
 #[cfg(test)]
-pub mod find_list_with_status_test;
+pub mod find_list_with_processing_status_test;
 
 use super::JobBuilder;
 use anyhow::Result;
@@ -14,12 +14,12 @@ use infra::infra::{
     job::{
         queue::redis::RedisJobQueueRepository,
         redis::{schedule::RedisJobScheduleRepository, UseRedisJobRepository},
-        status::UseJobStatusRepository,
+        status::UseJobProcessingStatusRepository,
     },
     UseJobQueueConfig,
 };
 use proto::jobworkerp::data::{
-    Job, JobId, JobResult, JobResultData, JobResultId, JobStatus, ResponseType, ResultOutputItem,
+    Job, JobId, JobResult, JobResultData, JobResultId, JobProcessingStatus, ResponseType, ResultOutputItem,
     WorkerData, WorkerId,
 };
 use std::{collections::HashMap, fmt, sync::Arc};
@@ -117,15 +117,15 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         &self,
         limit: Option<&i32>,
         channel: Option<&str>,
-    ) -> Result<Vec<(Job, Option<JobStatus>)>>
+    ) -> Result<Vec<(Job, Option<JobProcessingStatus>)>>
     where
         Self: Send + 'static;
 
-    async fn find_list_with_status(
+    async fn find_list_with_processing_status(
         &self,
-        status: JobStatus,
+        status: JobProcessingStatus,
         limit: Option<&i32>,
-    ) -> Result<Vec<(Job, JobStatus)>>
+    ) -> Result<Vec<(Job, JobProcessingStatus)>>
     where
         Self: Send + 'static;
 
@@ -133,11 +133,11 @@ pub trait JobApp: fmt::Debug + Send + Sync {
     where
         Self: Send + 'static;
 
-    async fn find_job_status(&self, id: &JobId) -> Result<Option<JobStatus>>
+    async fn find_job_status(&self, id: &JobId) -> Result<Option<JobProcessingStatus>>
     where
         Self: Send + 'static;
 
-    async fn find_all_job_status(&self) -> Result<Vec<(JobId, JobStatus)>>
+    async fn find_all_job_status(&self) -> Result<Vec<(JobId, JobProcessingStatus)>>
     where
         Self: Send + 'static;
 
@@ -194,8 +194,8 @@ where
             Ok(_) => {
                 // update status (not use direct response)
                 self.redis_job_repository()
-                    .job_status_repository()
-                    .upsert_status(&job_id, &JobStatus::Pending)
+                    .job_processing_status_repository()
+                    .upsert_status(&job_id, &JobProcessingStatus::Pending)
                     .await?;
                 // wait for result if direct response type
                 if worker.response_type == ResponseType::Direct as i32 {

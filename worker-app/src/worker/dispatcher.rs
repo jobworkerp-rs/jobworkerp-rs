@@ -87,7 +87,7 @@ impl JobDispatcherFactory {
                         id_generator,
                         Arc::new(rdb_chan_repositories.chan_job_queue_repository.clone()),
                         rdb_job_repository,
-                        rdb_chan_repositories.memory_job_status_repository.clone(),
+                        rdb_chan_repositories.memory_job_processing_status_repository.clone(),
                         app_module,
                         runner_factory,
                         runner_pool_map,

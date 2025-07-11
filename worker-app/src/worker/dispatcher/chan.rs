@@ -17,14 +17,14 @@ use infra::infra::job::queue::chan::{
 use infra::infra::job::queue::rdb::RdbJobQueueRepository;
 use infra::infra::job::rdb::{RdbChanJobRepositoryImpl, RdbJobRepository, UseRdbChanJobRepository};
 use infra::infra::job::rows::UseJobqueueAndCodec;
-use infra::infra::job::status::memory::MemoryJobStatusRepository;
-use infra::infra::job::status::{JobStatusRepository, UseJobStatusRepository};
+use infra::infra::job::status::memory::MemoryJobProcessingStatusRepository;
+use infra::infra::job::status::{JobProcessingStatusRepository, UseJobProcessingStatusRepository};
 use infra::infra::runner::rows::RunnerWithSchema;
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
-    Job, JobResult, JobStatus, Priority, QueueType, ResponseType, Worker,
+    Job, JobResult, JobProcessingStatus, Priority, QueueType, ResponseType, Worker,
 };
 use std::sync::Arc;
 use tokio::task::JoinHandle;
@@ -38,7 +38,7 @@ pub trait ChanJobDispatcher:
     + UseRdbChanJobRepository
     // + UseSubscribeWorker
     + JobRunner
-    + UseJobStatusRepository
+    + UseJobProcessingStatusRepository
     + UseRunnerPoolMap
     + UseResultProcessor
     + UseWorkerConfig
@@ -164,7 +164,7 @@ pub trait ChanJobDispatcher:
             let mes = format!("job {:?} is incomplete data.", &job);
             tracing::error!("{}", &mes);
             if let Some(id) = job.id.as_ref() {
-                self.job_status_repository().delete_status(id).await?;
+                self.job_processing_status_repository().delete_status(id).await?;
                 self.rdb_job_repository().delete(id).await?;
             }
             return Err(JobWorkerError::OtherError(mes).into());
@@ -185,7 +185,7 @@ pub trait ChanJobDispatcher:
                 jdat.worker_id.as_ref().unwrap()
             );
             tracing::error!("{}", &mes);
-            self.job_status_repository().delete_status(&jid).await?;
+            self.job_processing_status_repository().delete_status(&jid).await?;
             self.rdb_job_repository().delete(&jid).await?;
             return Err(JobWorkerError::NotFound(mes).into());
         };
@@ -198,7 +198,7 @@ pub trait ChanJobDispatcher:
                 jdat.worker_id.as_ref().unwrap()
             );
             tracing::error!("{}", &mes);
-            self.job_status_repository().delete_status(&jid).await?;
+            self.job_processing_status_repository().delete_status(&jid).await?;
             self.rdb_job_repository().delete(&jid).await?;
             return Err(JobWorkerError::NotFound(mes).into());
         };
@@ -213,7 +213,7 @@ pub trait ChanJobDispatcher:
                 jdat.worker_id.as_ref().unwrap()
             );
             tracing::error!("{}", &mes);
-            self.job_status_repository().delete_status(&jid).await?;
+            self.job_processing_status_repository().delete_status(&jid).await?;
             self.rdb_job_repository().delete(&jid).await?;
             Err(JobWorkerError::NotFound(mes))
         }?;
@@ -230,8 +230,8 @@ pub trait ChanJobDispatcher:
                         .await?
                     {
                         // change status to running
-                        self.job_status_repository()
-                            .upsert_status(&jid, &JobStatus::Running)
+                        self.job_processing_status_repository()
+                            .upsert_status(&jid, &JobProcessingStatus::Running)
                             .await?;
                     } else {
                         // already grabbed (strange! (not reset previous process in retry?), but continue processing job)
@@ -244,8 +244,8 @@ pub trait ChanJobDispatcher:
                     }
             } else {
                 // change status to running
-                self.job_status_repository()
-                    .upsert_status(&jid, &JobStatus::Running)
+                self.job_processing_status_repository()
+                    .upsert_status(&jid, &JobProcessingStatus::Running)
                     .await?;
             }
             // run job
@@ -265,8 +265,8 @@ pub trait ChanJobDispatcher:
             tracing::trace!("send result id: {:?}, data: {:?}", &r.0.id, &r.0.data);
             // change status to wait handling result
             if wdat.response_type != ResponseType::Direct as i32 {
-                self.job_status_repository()
-                    .upsert_status(&jid, &JobStatus::WaitResult)
+                self.job_processing_status_repository()
+                    .upsert_status(&jid, &JobProcessingStatus::WaitResult)
                     .await?;
             }
             self.result_processor().process_result(r.0, r.1, wdat).await
@@ -278,7 +278,7 @@ pub struct ChanJobDispatcherImpl {
     id_generator: Arc<IdGeneratorWrapper>,
     job_queue_repository: Arc<ChanJobQueueRepositoryImpl>,
     rdb_job_repository: Arc<RdbChanJobRepositoryImpl>,
-    job_status_repository: Arc<MemoryJobStatusRepository>,
+    job_processing_status_repository: Arc<MemoryJobProcessingStatusRepository>,
     app_module: Arc<AppModule>,
     runner_factory: Arc<RunnerFactory>,
     runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
@@ -291,7 +291,7 @@ impl ChanJobDispatcherImpl {
         id_generator: Arc<IdGeneratorWrapper>,
         chan_job_queue_repository: Arc<ChanJobQueueRepositoryImpl>,
         rdb_job_repository: Arc<RdbChanJobRepositoryImpl>,
-        job_status_repository: Arc<MemoryJobStatusRepository>,
+        job_processing_status_repository: Arc<MemoryJobProcessingStatusRepository>,
         app_module: Arc<AppModule>,
         runner_factory: Arc<RunnerFactory>,
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
@@ -301,7 +301,7 @@ impl ChanJobDispatcherImpl {
             id_generator,
             job_queue_repository: chan_job_queue_repository,
             rdb_job_repository,
-            job_status_repository,
+            job_processing_status_repository,
             app_module,
             runner_factory,
             runner_pool_map,
@@ -315,9 +315,9 @@ impl UseChanJobQueueRepository for ChanJobDispatcherImpl {
         &self.job_queue_repository
     }
 }
-impl UseJobStatusRepository for ChanJobDispatcherImpl {
-    fn job_status_repository(&self) -> Arc<dyn JobStatusRepository> {
-        self.job_status_repository.clone()
+impl UseJobProcessingStatusRepository for ChanJobDispatcherImpl {
+    fn job_processing_status_repository(&self) -> Arc<dyn JobProcessingStatusRepository> {
+        self.job_processing_status_repository.clone()
     }
 }
 
