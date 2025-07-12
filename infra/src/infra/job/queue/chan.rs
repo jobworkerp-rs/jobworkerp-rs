@@ -317,7 +317,7 @@ pub struct ChanJobQueueRepositoryImpl {
     pub chan_pool: ChanBuffer<Vec<u8>, Chan<ChanBufferItem<Vec<u8>>>>,
     pub shared_buffer: Arc<Mutex<HashMap<String, Vec<proto::jobworkerp::data::Job>>>>,
     pub job_queue_config: Arc<JobQueueConfig>,
-    pub broadcast_chan_buf: BroadcastChan<Vec<u8>>,
+    pub broadcast_cancel_chan_buf: BroadcastChan<Vec<u8>>,
 }
 impl UseChanBuffer for ChanJobQueueRepositoryImpl {
     type Item = Vec<u8>;
@@ -337,8 +337,8 @@ impl UseJobQueueConfig for ChanJobQueueRepositoryImpl {
 }
 // BroadcastChan access methods
 impl ChanJobQueueRepositoryImpl {
-    pub fn broadcast_chan(&self) -> &BroadcastChan<Vec<u8>> {
-        &self.broadcast_chan_buf
+    pub fn broadcast_cancel_chan(&self) -> &BroadcastChan<Vec<u8>> {
+        &self.broadcast_cancel_chan_buf
     }
 }
 
@@ -352,7 +352,7 @@ impl JobQueueCancellationRepository for ChanJobQueueRepositoryImpl {
     async fn broadcast_job_cancellation(&self, job_id: &JobId) -> Result<()> {
         let job_id_bytes = serde_json::to_vec(job_id)?;
 
-        match self.broadcast_chan().send(job_id_bytes) {
+        match self.broadcast_cancel_chan().send(job_id_bytes) {
             Ok(sent) => {
                 if sent {
                     tracing::info!(
@@ -385,7 +385,7 @@ impl JobQueueCancellationRepository for ChanJobQueueRepositoryImpl {
     ) -> Result<()> {
         tracing::info!("Starting memory cancellation subscriber via BroadcastChan");
 
-        let receiver = self.broadcast_chan().receiver().await;
+        let receiver = self.broadcast_cancel_chan().receiver().await;
 
         tokio::spawn(async move {
             use futures::StreamExt;
@@ -433,7 +433,7 @@ impl ChanJobQueueRepositoryImpl {
             chan_pool,
             job_queue_config,
             shared_buffer: Arc::new(Mutex::new(HashMap::new())),
-            broadcast_chan_buf,
+            broadcast_cancel_chan_buf: broadcast_chan_buf,
         }
     }
 }
