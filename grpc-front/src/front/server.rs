@@ -1,9 +1,9 @@
 use crate::proto::jobworkerp::function::service::function_service_server::FunctionServiceServer;
 use crate::proto::jobworkerp::function::service::function_set_service_server::FunctionSetServiceServer;
+use crate::proto::jobworkerp::service::job_processing_status_service_server::JobProcessingStatusServiceServer;
 use crate::proto::jobworkerp::service::job_restore_service_server::JobRestoreServiceServer;
 use crate::proto::jobworkerp::service::job_result_service_server::JobResultServiceServer;
 use crate::proto::jobworkerp::service::job_service_server::JobServiceServer;
-use crate::proto::jobworkerp::service::job_status_service_server::JobStatusServiceServer;
 use crate::proto::jobworkerp::service::runner_service_server::RunnerServiceServer;
 use crate::proto::jobworkerp::service::worker_service_server::WorkerServiceServer;
 use crate::proto::FILE_DESCRIPTOR_SET;
@@ -12,7 +12,7 @@ use crate::service::function_set::FunctionSetGrpcImpl;
 use crate::service::job::JobGrpcImpl;
 use crate::service::job_restore::JobRestoreGrpcImpl;
 use crate::service::job_result::JobResultGrpcImpl;
-use crate::service::job_status::JobStatusGrpcImpl;
+use crate::service::job_status::JobProcessingStatusGrpcImpl;
 use crate::service::runner::RunnerGrpcImpl;
 use crate::service::worker::WorkerGrpcImpl;
 use anyhow::anyhow;
@@ -74,8 +74,8 @@ pub async fn start_server(
             .add_service(enable_grpc_web(JobServiceServer::new(JobGrpcImpl::new(
                 app_module.clone(),
             ))))
-            .add_service(enable_grpc_web(JobStatusServiceServer::new(
-                JobStatusGrpcImpl::new(app_module.clone()),
+            .add_service(enable_grpc_web(JobProcessingStatusServiceServer::new(
+                JobProcessingStatusGrpcImpl::new(app_module.clone()),
             )))
             .add_service(enable_grpc_web(JobRestoreServiceServer::new(
                 JobRestoreGrpcImpl::new(app_module.clone()),
@@ -114,9 +114,9 @@ pub async fn start_server(
                 app_module.clone(),
             )))
             .add_service(JobServiceServer::new(JobGrpcImpl::new(app_module.clone())))
-            .add_service(JobStatusServiceServer::new(JobStatusGrpcImpl::new(
-                app_module.clone(),
-            )))
+            .add_service(JobProcessingStatusServiceServer::new(
+                JobProcessingStatusGrpcImpl::new(app_module.clone()),
+            ))
             .add_service(JobRestoreServiceServer::new(JobRestoreGrpcImpl::new(
                 app_module.clone(),
             )))

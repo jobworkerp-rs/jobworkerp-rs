@@ -3,12 +3,13 @@ use std::sync::Arc;
 use crate::infra::function_set::rdb::FunctionSetRepositoryImpl;
 use crate::infra::job::queue::chan::ChanJobQueueRepositoryImpl;
 use crate::infra::job::rdb::{RdbChanJobRepositoryImpl, UseRdbChanJobRepository};
-use crate::infra::job::status::memory::MemoryJobStatusRepository;
+use crate::infra::job::status::memory::MemoryJobProcessingStatusRepository;
 use crate::infra::job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl;
 use crate::infra::job_result::rdb::{RdbJobResultRepositoryImpl, UseRdbJobResultRepository};
 use crate::infra::runner::rdb::RdbRunnerRepositoryImpl;
 use crate::infra::worker::rdb::{RdbWorkerRepositoryImpl, UseRdbWorkerRepository};
 use crate::infra::{IdGeneratorWrapper, InfraConfigModule, JobQueueConfig};
+use infra_utils::infra::chan::broadcast::BroadcastChan;
 use infra_utils::infra::chan::ChanBuffer;
 use jobworkerp_runner::runner::factory::RunnerSpecFactory;
 
@@ -37,7 +38,7 @@ pub struct RdbChanRepositoryModule {
     pub worker_repository: RdbWorkerRepositoryImpl,
     pub job_repository: RdbChanJobRepositoryImpl,
     pub job_result_repository: RdbJobResultRepositoryImpl,
-    pub memory_job_status_repository: Arc<MemoryJobStatusRepository>,
+    pub memory_job_processing_status_repository: Arc<MemoryJobProcessingStatusRepository>,
     pub chan_job_result_pubsub_repository: ChanJobResultPubSubRepositoryImpl,
     pub chan_job_queue_repository: ChanJobQueueRepositoryImpl,
     pub function_set_repository: Arc<FunctionSetRepositoryImpl>,
@@ -59,7 +60,9 @@ impl RdbChanRepositoryModule {
             worker_repository: RdbWorkerRepositoryImpl::new(pool),
             job_repository: RdbChanJobRepositoryImpl::new(job_queue_config.clone(), pool),
             job_result_repository: RdbJobResultRepositoryImpl::new(pool),
-            memory_job_status_repository: Arc::new(MemoryJobStatusRepository::new()),
+            memory_job_processing_status_repository: Arc::new(
+                MemoryJobProcessingStatusRepository::new(),
+            ),
             chan_job_result_pubsub_repository: ChanJobResultPubSubRepositoryImpl::new(
                 ChanBuffer::new(None, 100_000), // broadcast chan. TODO from config
                 job_queue_config.clone(),
@@ -67,6 +70,7 @@ impl RdbChanRepositoryModule {
             chan_job_queue_repository: ChanJobQueueRepositoryImpl::new(
                 job_queue_config,
                 ChanBuffer::new(None, 100_000), // mpmc chan. TODO from config
+                BroadcastChan::new(1000),       // broadcast chan for cancellation. TODO from config
             ),
             function_set_repository: Arc::new(FunctionSetRepositoryImpl::new(id_generator, pool)),
         }
@@ -90,7 +94,9 @@ impl RdbChanRepositoryModule {
                 pool,
             ),
             job_result_repository: RdbJobResultRepositoryImpl::new(pool),
-            memory_job_status_repository: Arc::new(MemoryJobStatusRepository::new()),
+            memory_job_processing_status_repository: Arc::new(
+                MemoryJobProcessingStatusRepository::new(),
+            ),
             chan_job_result_pubsub_repository: ChanJobResultPubSubRepositoryImpl::new(
                 ChanBuffer::new(None, 100_000), // TODO from config
                 config_module.job_queue_config.clone(),
@@ -98,6 +104,7 @@ impl RdbChanRepositoryModule {
             chan_job_queue_repository: ChanJobQueueRepositoryImpl::new(
                 config_module.job_queue_config.clone(),
                 ChanBuffer::new(None, 100_000), // TODO from config
+                BroadcastChan::new(1000),       // broadcast chan for cancellation. TODO from config
             ),
             function_set_repository: Arc::new(FunctionSetRepositoryImpl::new(id_generator, pool)),
         }
@@ -123,10 +130,12 @@ pub mod test {
         worker::rdb::RdbWorkerRepositoryImpl,
     };
     use crate::infra::{
-        job::status::memory::MemoryJobStatusRepository,
+        job::status::memory::MemoryJobProcessingStatusRepository,
         job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl, JobQueueConfig,
     };
+    use infra_utils::infra::chan::broadcast::BroadcastChan;
     use infra_utils::infra::test::setup_test_rdb_from;
+
     use jobworkerp_runner::runner::factory::RunnerSpecFactory;
     use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
     use jobworkerp_runner::runner::plugins::Plugins;
@@ -166,7 +175,9 @@ pub mod test {
                 pool,
             ),
             job_result_repository: RdbJobResultRepositoryImpl::new(pool),
-            memory_job_status_repository: Arc::new(MemoryJobStatusRepository::new()),
+            memory_job_processing_status_repository: Arc::new(
+                MemoryJobProcessingStatusRepository::new(),
+            ),
             chan_job_result_pubsub_repository: ChanJobResultPubSubRepositoryImpl::new(
                 ChanBuffer::new(None, 10000),
                 Arc::new(JobQueueConfig::default()),
@@ -174,6 +185,7 @@ pub mod test {
             chan_job_queue_repository: ChanJobQueueRepositoryImpl::new(
                 Arc::new(JobQueueConfig::default()),
                 ChanBuffer::new(None, 10000),
+                BroadcastChan::new(1000), // broadcast chan for cancellation (test)
             ),
             function_set_repository: Arc::new(FunctionSetRepositoryImpl::new(id_generator, pool)),
         }

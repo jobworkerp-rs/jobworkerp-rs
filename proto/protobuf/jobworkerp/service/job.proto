@@ -46,6 +46,8 @@ service JobService {
   // only use db or redis+db queue type, run after or periodic worker jobs
   rpc FindList(FindListRequest) returns (stream jobworkerp.data.Job);
   rpc FindQueueList(FindQueueListRequest) returns (stream JobAndStatus);
+  // find jobs by processing status (Pending, Running, WaitResult, Cancelling)
+  rpc FindListWithProcessingStatus(FindListWithProcessingStatusRequest) returns (stream JobAndStatus);
   rpc Count(CountCondition) returns (CountResponse);
 }
 
@@ -54,23 +56,28 @@ message FindQueueListRequest {
   optional string channel = 2;
 }
 
+message FindListWithProcessingStatusRequest {
+  jobworkerp.data.JobProcessingStatus status = 1;
+  optional int32 limit = 2;
+}
+
 message JobAndStatus {
   jobworkerp.data.Job job = 1;
-  optional jobworkerp.data.JobStatus status = 2;
+  optional jobworkerp.data.JobProcessingStatus status = 2;
 }
 
-message JobStatusResponse {
+message JobProcessingStatusResponse {
   jobworkerp.data.JobId id = 1;
-  jobworkerp.data.JobStatus status = 2;
+  jobworkerp.data.JobProcessingStatus status = 2;
 }
 
-message OptionalJobStatusResponse {
-  optional jobworkerp.data.JobStatus status = 1;
+message OptionalJobProcessingStatusResponse {
+  optional jobworkerp.data.JobProcessingStatus status = 1;
 }
 
-service JobStatusService {
-  rpc Find(jobworkerp.data.JobId) returns (OptionalJobStatusResponse);
-  rpc FindAll(jobworkerp.data.Empty) returns (stream JobStatusResponse);
+service JobProcessingStatusService {
+  rpc Find(jobworkerp.data.JobId) returns (OptionalJobProcessingStatusResponse);
+  rpc FindAll(jobworkerp.data.Empty) returns (stream JobProcessingStatusResponse);
 }
 
 message JobRestoreRequest {

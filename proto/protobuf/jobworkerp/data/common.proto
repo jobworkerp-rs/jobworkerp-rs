@@ -188,22 +188,35 @@ enum ResultStatus {
   // # Other Error
   // Unexpected system error occurred (cannot retry)
   OTHER_ERROR = 5;
+
+  // # Cancelled
+  // Job was cancelled by user request (cannot retry)
+  CANCELLED = 6;
 }
 
-// # Job Status
-// Defines the current processing state of a job
-enum JobStatus {
+// # Job Processing Status
+// Defines the current processing state of a job (temporary state during execution)
+// This is different from ResultStatus which represents permanent job outcomes
+enum JobProcessingStatus {
+  // # Unknown
+  // Job status is unknown or corrupted (default value)
+  UNKNOWN = 0;
+
   // # Pending
   // Job is waiting to be processed
-  PENDING = 0;
+  PENDING = 1;
 
   // # Running
   // Job is currently being executed
-  RUNNING = 1;
+  RUNNING = 2;
 
   // # Waiting for Result
   // Job has completed execution and is waiting for result processing
-  WAIT_RESULT = 2;
+  WAIT_RESULT = 3;
+
+  // # Cancelling
+  // Job is being cancelled (temporary state before final cancellation)
+  CANCELLING = 4;
 }
 
 // # Queue Type

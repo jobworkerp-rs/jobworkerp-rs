@@ -1,4 +1,5 @@
 use crate::worker::dispatcher::redis_run_after::RedisRunAfterJobDispatcher;
+use crate::worker::manager::{RunningJobManager, UseRunningJobManager};
 use crate::worker::result_processor::{ResultProcessorImpl, UseResultProcessor};
 use crate::worker::runner::map::{RunnerFactoryWithPoolMap, UseRunnerPoolMap};
 use crate::worker::runner::result::RunnerResultHandler;
@@ -14,13 +15,15 @@ use async_trait::async_trait;
 use command_utils::util::shutdown::ShutdownLock;
 use futures::TryFutureExt;
 use infra::infra::job::queue::rdb::RdbJobQueueRepository;
+use infra::infra::job::queue::redis::RedisJobQueueRepositoryImpl;
+use infra::infra::job::queue::JobQueueCancellationRepository;
 use infra::infra::job::rdb::{
     RdbChanJobRepositoryImpl, RdbJobRepository, UseRdbChanJobRepositoryOptional,
 };
 use infra::infra::job::redis::RedisJobRepositoryImpl;
 use infra::infra::job::redis::UseRedisJobRepository;
 use infra::infra::job::rows::UseJobqueueAndCodec;
-use infra::infra::job::status::UseJobStatusRepository;
+use infra::infra::job::status::UseJobProcessingStatusRepository;
 use infra::infra::runner::rows::RunnerWithSchema;
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use infra_utils::infra::redis::{RedisClient, UseRedisClient};
@@ -28,7 +31,7 @@ use infra_utils::infra::redis::{RedisPool, UseRedisPool};
 use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
-    Job, JobResult, JobResultId, JobStatus, Priority, QueueType, ResponseType, Worker,
+    Job, JobProcessingStatus, JobResult, JobResultId, Priority, QueueType, ResponseType, Worker,
 };
 use redis::{AsyncCommands, RedisError};
 use std::sync::Arc;
@@ -57,6 +60,7 @@ pub trait RedisJobDispatcher:
     + UseRunnerApp
     + UseJobQueueConfig
     + UseIdGenerator
+    + UseRunningJobManager
 {
     fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
     where
@@ -199,7 +203,7 @@ pub trait RedisJobDispatcher:
             tracing::error!("{}", &mes);
             if let Some(id) = job.id.as_ref() {
                 self.redis_job_repository()
-                    .job_status_repository()
+                    .job_processing_status_repository()
                     .delete_status(id)
                     .await?;
                 if let Some(repo) = self.rdb_job_repository_opt() {
@@ -226,7 +230,7 @@ pub trait RedisJobDispatcher:
             );
             tracing::error!("{}", &mes);
             self.redis_job_repository()
-                .job_status_repository()
+                .job_processing_status_repository()
                 .delete_status(&jid)
                 .await?;
             if let Some(repo) = self.rdb_job_repository_opt() {
@@ -269,8 +273,8 @@ pub trait RedisJobDispatcher:
                 {
                     // change status to running
                     self.redis_job_repository()
-                        .job_status_repository()
-                        .upsert_status(&jid, &JobStatus::Running)
+                        .job_processing_status_repository()
+                        .upsert_status(&jid, &JobProcessingStatus::Running)
                         .await?;
                 } else {
                     // already grabbed (strange! (not reset previous process in retry?), but continue processing job)
@@ -310,8 +314,8 @@ pub trait RedisJobDispatcher:
         // change status to wait handling result
         if wdat.response_type != ResponseType::Direct as i32 {
             self.redis_job_repository()
-                .job_status_repository()
-                .upsert_status(&jid, &JobStatus::WaitResult)
+                .job_processing_status_repository()
+                .upsert_status(&jid, &JobProcessingStatus::WaitResult)
                 .await?;
         }
         self.result_processor().process_result(r.0, r.1, wdat).await
@@ -330,6 +334,9 @@ pub struct RedisJobDispatcherImpl {
     pub runner_factory: Arc<RunnerFactory>,
     pub runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
     result_processor: Arc<ResultProcessorImpl>,
+    running_job_manager: Arc<RunningJobManager>,
+    // Add JobQueueCancellationRepository for cancellation functionality
+    job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository>,
 }
 
 impl RedisJobDispatcherImpl {
@@ -344,6 +351,8 @@ impl RedisJobDispatcherImpl {
         runner_factory: Arc<RunnerFactory>,
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
         result_processor: Arc<ResultProcessorImpl>,
+        running_job_manager: Arc<RunningJobManager>,
+        redis_job_queue_repository: Arc<RedisJobQueueRepositoryImpl>,
     ) -> Self {
         // use redis only, use run after dispatcher for run after job
         let run_after_dispatcher = // TODO redis only storage
@@ -355,6 +364,11 @@ impl RedisJobDispatcherImpl {
         // } else {
             None;
         // };
+
+        // Use Redis implementation directly as JobQueueCancellationRepository
+        let job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository> =
+            redis_job_queue_repository.clone();
+
         Self {
             id_generator,
             pool: redis_job_repository.redis_pool,
@@ -366,7 +380,52 @@ impl RedisJobDispatcherImpl {
             runner_factory,
             runner_pool_map,
             result_processor,
+            running_job_manager,
+            job_queue_cancellation_repository,
         }
+    }
+
+    /// Start receiving cancellation notifications (called when Dispatcher starts)
+    pub async fn start_cancellation_subscriber(&self) -> Result<()> {
+        let running_job_manager = self.running_job_manager.clone();
+
+        // Use actual JobQueueCancellationRepository to receive cancellation notifications
+        self.job_queue_cancellation_repository
+            .subscribe_job_cancellation(Box::new(move |job_id| {
+                let running_job_manager = running_job_manager.clone();
+                Box::pin(async move {
+                    tracing::info!(
+                        "Received cancellation request for job {} in Redis worker",
+                        job_id.value
+                    );
+
+                    // Execute cancellation process in RunningJobManager
+                    match running_job_manager.cancel_running_job(&job_id).await {
+                        Ok(cancelled) => {
+                            if cancelled {
+                                tracing::info!(
+                                    "Successfully cancelled running job {}",
+                                    job_id.value
+                                );
+                            } else {
+                                tracing::debug!(
+                                    "Job {} not found in running jobs (may have already completed)",
+                                    job_id.value
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Error cancelling job {}: {:?}", job_id.value, e);
+                        }
+                    }
+
+                    Ok(())
+                })
+            }))
+            .await?;
+
+        tracing::info!("Redis cancellation subscriber started (full implementation)");
+        Ok(())
     }
 }
 
@@ -450,12 +509,34 @@ impl UseResultProcessor for RedisJobDispatcherImpl {
     }
 }
 
+impl UseRunningJobManager for RedisJobDispatcherImpl {
+    fn running_job_manager(&self) -> &RunningJobManager {
+        &self.running_job_manager
+    }
+}
+
+#[async_trait]
 impl JobDispatcher for RedisJobDispatcherImpl {
     fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
     where
         Self: Send + Sync + 'static,
     {
         RedisJobDispatcher::dispatch_jobs(self, lock)
+    }
+
+    async fn start_cancellation_monitoring(&self) -> Result<()> {
+        // Start RunningJobManager cleanup task
+        self.running_job_manager().start_cleanup_task();
+
+        // Start receiving cancellation notifications
+        self.start_cancellation_subscriber().await?;
+
+        tracing::info!("Started cancellation monitoring for RedisJobDispatcher");
+        Ok(())
+    }
+
+    async fn get_running_job_count(&self) -> usize {
+        self.running_job_manager().get_running_job_count().await
     }
 }
 

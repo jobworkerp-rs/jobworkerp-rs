@@ -2,9 +2,15 @@ pub mod chan;
 pub mod rdb;
 pub mod redis;
 
+// Re-export implementations
+pub use chan::ChanJobQueueRepositoryImpl;
+pub use redis::RedisJobQueueRepositoryImpl;
+
 use std::collections::HashSet;
 
 use anyhow::Result;
+use async_trait::async_trait;
+use futures::future::BoxFuture;
 use proto::jobworkerp::data::{Job, JobId, JobResult, JobResultData, JobResultId, Priority};
 
 pub trait JobQueueRepository: Sync + 'static {
@@ -59,4 +65,19 @@ pub trait JobQueueRepository: Sync + 'static {
         channel: Option<&String>,
         priority: Priority,
     ) -> impl std::future::Future<Output = Result<i64>> + Send;
+}
+
+/// Extended job queue repository interface for cancellation functionality
+///
+/// This trait provides job cancellation broadcast capabilities for distributed workers.
+#[async_trait]
+pub trait JobQueueCancellationRepository: Send + Sync + 'static + std::fmt::Debug {
+    /// Broadcast job cancellation notification to all workers
+    async fn broadcast_job_cancellation(&self, job_id: &JobId) -> Result<()>;
+
+    /// Subscribe to job cancellation notifications
+    async fn subscribe_job_cancellation(
+        &self,
+        callback: Box<dyn Fn(JobId) -> BoxFuture<'static, Result<()>> + Send + Sync + 'static>,
+    ) -> Result<()>;
 }
