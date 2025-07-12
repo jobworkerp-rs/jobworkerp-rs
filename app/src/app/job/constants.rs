@@ -16,11 +16,6 @@ pub mod cancellation {
     /// This constant must be used consistently across all workers to avoid channel name conflicts
     pub const JOB_CANCELLATION_CHANNEL: &str = "job_cancellation_channel";
 
-    /// Standard cancellation messages for ResultOutput
-    /// These messages are stored in job results and provide consistent user feedback
-    pub const CANCEL_REASON_USER_REQUEST: &str = "Job cancelled by user request";
-    pub const CANCEL_REASON_BEFORE_EXECUTION: &str = "Job cancelled before execution";
-
     /// Grace period added to job-specific timeout (5 minutes)
     /// This allows jobs to complete gracefully even after timeout
     pub const RUNNING_JOB_GRACE_PERIOD_MS: u64 = 300_000; // 5 minutes

@@ -435,29 +435,25 @@ mod tests {
             ..Default::default()
         };
         assert!(v.validate_create(&reqr).is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_find_list_with_processing_status_request_validation() {
-        use crate::proto::jobworkerp::service::FindListWithProcessingStatusRequest;
-        use proto::jobworkerp::data::JobProcessingStatus;
-
-        // Test valid request
-        let valid_request = FindListWithProcessingStatusRequest {
-            status: JobProcessingStatus::Running as i32,
-            limit: Some(10),
-        };
-
-        // Test status validation will be done in the implementation
-        assert_eq!(valid_request.status, JobProcessingStatus::Running as i32);
-        assert_eq!(valid_request.limit, Some(10));
-
-        // Test with no limit
-        let no_limit_request = FindListWithProcessingStatusRequest {
-            status: JobProcessingStatus::Pending as i32,
-            limit: None,
-        };
-        assert_eq!(no_limit_request.status, JobProcessingStatus::Pending as i32);
-        assert_eq!(no_limit_request.limit, None);
+        let mut req = reqr.clone();
+        req.worker = Some(Worker::WorkerName("".to_string()));
+        assert!(v.validate_create(&req).is_err());
+        let mut req = reqr.clone();
+        req.worker = None;
+        assert!(v.validate_create(&req).is_err());
+        let mut req = reqr.clone();
+        req.timeout = Some(0);
+        assert!(v.validate_create(&req).is_ok());
+        let mut req = reqr.clone();
+        req.run_after_time = Some(-1);
+        assert!(v.validate_create(&req).is_err());
+        let mut req = reqr.clone();
+        req.run_after_time = Some(0);
+        assert!(v.validate_create(&req).is_ok());
+        let mut req = reqr.clone();
+        req.priority = Some(Priority::High as i32);
+        assert!(v.validate_create(&req).is_ok());
+        req.args = Vec::new();
+        assert!(v.validate_create(&req).is_ok());
     }
 }

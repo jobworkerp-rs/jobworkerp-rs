@@ -57,7 +57,7 @@ mod tests {
 
             // Test finding jobs with different statuses
             let metadata = Arc::new(HashMap::new());
-            
+
             // Create a job and test various status transitions
             let (job_id, res, _) = app
                 .enqueue_job(
@@ -124,7 +124,7 @@ mod tests {
 
             // Test finding non-existent job status
             let nonexistent_job_id = JobId { value: 99999 };
-            
+
             let status = app
                 .job_processing_status_repository()
                 .find_status(&nonexistent_job_id)

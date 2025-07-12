@@ -182,7 +182,7 @@ mod tests {
         })
     }
 
-    #[test] 
+    #[test]
     fn test_cancel_running_job_hybrid() -> Result<()> {
         TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
@@ -204,7 +204,7 @@ mod tests {
                 .find_status(&job_id)
                 .await
                 .unwrap();
-            // Note: The actual behavior may depend on implementation - 
+            // Note: The actual behavior may depend on implementation -
             // it could be Cancelling or the job might be removed entirely
             assert!(status.is_some() || status.is_none()); // Accept either outcome for now
 
@@ -226,8 +226,8 @@ mod tests {
             ];
 
             for (initial_status, should_cancel) in test_cases {
-                let job_id = JobId { 
-                    value: app.id_generator().generate_id().unwrap() 
+                let job_id = JobId {
+                    value: app.id_generator().generate_id().unwrap(),
                 };
 
                 // Set initial status
@@ -237,11 +237,14 @@ mod tests {
 
                 // Attempt cancellation
                 let cancelled = app.delete_job(&job_id).await?;
-                assert_eq!(cancelled, should_cancel, 
-                    "Cancellation result should match expected for status {:?}", initial_status);
+                assert_eq!(
+                    cancelled, should_cancel,
+                    "Cancellation result should match expected for status {initial_status:?}"
+                );
 
-                tracing::debug!("Tested cancellation for status {:?}: cancelled={}", 
-                    initial_status, cancelled);
+                tracing::debug!(
+                    "Tested cancellation for status {initial_status:?}: cancelled={cancelled}"
+                );
             }
 
             tracing::info!("test_cancel_job_state_transitions completed successfully");
