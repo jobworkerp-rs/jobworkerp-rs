@@ -197,7 +197,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
             &res.as_ref().map(|r| r.0)
         );
         match res {
-            Ok((_id, Some(res), Some(st))) => {
+            Ok((id, Some(res), Some(st))) => {
                 tracing::debug!(
                     "enqueue_for_stream output = {:?}",
                     &res.data
@@ -205,6 +205,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         .map(|d| d.output.as_ref().map(|o| o.items.len()))
                 );
                 let res_header = res.encode_to_vec();
+                let job_id_header = id.encode_to_vec();
                 let stream = stream! {
                     let mut stream_ended = false;
                     let mut st = st;
@@ -246,10 +247,15 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                     super::JOB_RESULT_HEADER_NAME,
                     MetadataValue::from_bytes(res_header.as_slice()),
                 );
+                res.metadata_mut().insert_bin(
+                    super::JOB_ID_HEADER_NAME,
+                    MetadataValue::from_bytes(job_id_header.as_slice()),
+                );
                 Ok(res)
             }
-            Ok((_id, res, _)) => {
+            Ok((id, res, _)) => {
                 let res_header = res.map(|r| r.encode_to_vec());
+                let job_id_header = id.encode_to_vec();
                 // empty stream
                 let st = stream::empty().boxed() as Self::EnqueueForStreamStream;
                 let mut res = Response::new(st);
@@ -259,6 +265,10 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         MetadataValue::from_bytes(header.as_slice()),
                     );
                 }
+                res.metadata_mut().insert_bin(
+                    super::JOB_ID_HEADER_NAME,
+                    MetadataValue::from_bytes(job_id_header.as_slice()),
+                );
                 Ok(res)
             }
             Err(e) => Err(handle_error(&e)),
