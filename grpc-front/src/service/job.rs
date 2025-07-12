@@ -2,8 +2,9 @@ use crate::proto::jobworkerp::data::{Priority, ResultOutputItem};
 use crate::proto::jobworkerp::service::job_request::Worker;
 use crate::proto::jobworkerp::service::job_service_server::JobService;
 use crate::proto::jobworkerp::service::{
-    CountCondition, CountResponse, CreateJobResponse, FindListRequest, FindQueueListRequest,
-    JobAndStatus, JobRequest, OptionalJobResponse, SuccessResponse,
+    CountCondition, CountResponse, CreateJobResponse, FindListRequest,
+    FindListWithProcessingStatusRequest, FindQueueListRequest, JobAndStatus, JobRequest,
+    OptionalJobResponse, SuccessResponse,
 };
 use crate::service::error_handle::handle_error;
 use app::app::job::JobApp;
@@ -14,7 +15,7 @@ use futures::StreamExt;
 use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
-use proto::jobworkerp::data::{Job, JobId};
+use proto::jobworkerp::data::{Job, JobId, JobProcessingStatus};
 use std::fmt::Debug;
 use std::sync::Arc;
 use tonic::metadata::MetadataValue;
@@ -316,6 +317,43 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
             Err(e) => Err(handle_error(&e)),
         }
     }
+
+    type FindListWithProcessingStatusStream =
+        BoxStream<'static, Result<JobAndStatus, tonic::Status>>;
+    #[allow(clippy::result_large_err)]
+    #[tracing::instrument(
+        level = "info",
+        skip(self, request),
+        fields(method = "find_list_with_processing_status")
+    )]
+    async fn find_list_with_processing_status(
+        &self,
+        request: tonic::Request<FindListWithProcessingStatusRequest>,
+    ) -> Result<tonic::Response<Self::FindListWithProcessingStatusStream>, tonic::Status> {
+        let _s = Self::trace_request("job", "find_list_with_processing_status", &request);
+        let req = request.get_ref();
+
+        // Validate and convert status
+        let status = JobProcessingStatus::try_from(req.status)
+            .map_err(|_| tonic::Status::invalid_argument("Invalid job status"))?;
+
+        match self
+            .app()
+            .find_list_with_processing_status(status, req.limit.as_ref())
+            .await
+        {
+            Ok(list) => Ok(Response::new(Box::pin(stream! {
+                for (job, status) in list {
+                    yield Ok(JobAndStatus {
+                        job: Some(job),
+                        status: Some(status as i32)
+                    })
+                }
+            }))),
+            Err(e) => Err(handle_error(&e)),
+        }
+    }
+
     #[allow(clippy::result_large_err)]
     #[tracing::instrument(level = "info", skip(self, request), fields(method = "count"))]
     async fn count(

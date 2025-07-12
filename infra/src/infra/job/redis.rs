@@ -3,8 +3,8 @@ pub mod schedule;
 use self::schedule::RedisJobScheduleRepository;
 use super::queue::redis::RedisJobQueueRepository;
 use super::rows::UseJobqueueAndCodec;
-use super::status::redis::RedisJobStatusRepository;
-use super::status::{JobStatusRepository, UseJobStatusRepository};
+use super::status::redis::RedisJobProcessingStatusRepository;
+use super::status::{JobProcessingStatusRepository, UseJobProcessingStatusRepository};
 use crate::infra::job_result::pubsub::redis::{
     RedisJobResultPubSubRepositoryImpl, UseRedisJobResultPubSubRepository,
 };
@@ -146,7 +146,7 @@ pub struct RedisJobRepositoryImpl {
     job_queue_config: Arc<JobQueueConfig>,
     #[debug_stub = "RedisPool"]
     pub redis_pool: &'static RedisPool,
-    pub redis_job_status_repository: Arc<RedisJobStatusRepository>,
+    pub redis_job_processing_status_repository: Arc<RedisJobProcessingStatusRepository>,
     pub job_result_pubsub_repository: RedisJobResultPubSubRepositoryImpl,
 }
 
@@ -159,7 +159,9 @@ impl RedisJobRepositoryImpl {
         Self {
             job_queue_config: job_queue_config.clone(),
             redis_pool,
-            redis_job_status_repository: Arc::new(RedisJobStatusRepository::new(redis_pool)),
+            redis_job_processing_status_repository: Arc::new(
+                RedisJobProcessingStatusRepository::new(redis_pool),
+            ),
             job_result_pubsub_repository: RedisJobResultPubSubRepositoryImpl::new(
                 redis_client,
                 job_queue_config,
@@ -193,9 +195,9 @@ impl UseRedisJobResultPubSubRepository for RedisJobRepositoryImpl {
         &self.job_result_pubsub_repository
     }
 }
-impl UseJobStatusRepository for RedisJobRepositoryImpl {
-    fn job_status_repository(&self) -> Arc<dyn JobStatusRepository> {
-        self.redis_job_status_repository.clone()
+impl UseJobProcessingStatusRepository for RedisJobRepositoryImpl {
+    fn job_processing_status_repository(&self) -> Arc<dyn JobProcessingStatusRepository> {
+        self.redis_job_processing_status_repository.clone()
     }
 }
 impl UseRedisLock for RedisJobRepositoryImpl {}
@@ -220,7 +222,9 @@ async fn redis_test() -> Result<()> {
     let repo = RedisJobRepositoryImpl {
         job_queue_config: job_queue_config.clone(),
         redis_pool: pool,
-        redis_job_status_repository: Arc::new(RedisJobStatusRepository::new(pool)),
+        redis_job_processing_status_repository: Arc::new(RedisJobProcessingStatusRepository::new(
+            pool,
+        )),
         job_result_pubsub_repository:
             crate::infra::job_result::pubsub::redis::RedisJobResultPubSubRepositoryImpl::new(
                 redis_client,

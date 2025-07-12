@@ -42,7 +42,7 @@ pub mod jobworkerp {
         pub type ResultOutput = data::ResultOutput;
         pub type ResultOutputItem = data::ResultOutputItem;
         pub type ResultStatus = data::ResultStatus;
-        pub type JobStatus = data::JobStatus;
+        pub type JobProcessingStatus = data::JobProcessingStatus;
         pub type Empty = data::Empty;
     }
     pub mod service {
