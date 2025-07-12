@@ -11,6 +11,7 @@ pub mod worker;
 use std::collections::HashMap;
 
 pub const JOB_RESULT_HEADER_NAME: &str = "x-job-result-bin";
+pub const JOB_ID_HEADER_NAME: &str = "x-job-id-bin";
 // prefix for jobworkerp metadata(closed headers from runner)
 const JOBWORKERP_HEADER_PREFIX: &str = "jobworkerp-";
 
