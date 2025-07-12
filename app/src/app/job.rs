@@ -3,6 +3,14 @@ pub mod execute;
 pub mod hybrid;
 pub mod rdb_chan;
 
+// Test modules for job cancellation functionality
+#[cfg(test)]
+pub mod cancellation_test;
+#[cfg(test)]
+pub mod find_list_with_processing_status_test;
+#[cfg(test)]
+pub mod rdb_chan_cancellation_test;
+
 use super::JobBuilder;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -226,6 +234,3 @@ where
             .await
     }
 }
-
-#[cfg(test)]
-pub mod rdb_chan_cancellation_test;
