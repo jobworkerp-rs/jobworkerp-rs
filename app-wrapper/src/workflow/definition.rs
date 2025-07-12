@@ -94,7 +94,7 @@ impl WorkflowLoader {
             // validate schema
             // XXX Broken
             if validate {
-                let _ = self.validate_schema(&json).await;
+                let _ = self.validate_schema(&json).await?;
             }
             // convert to workflow schema
             serde_json::from_value(json).map_err(|e| {

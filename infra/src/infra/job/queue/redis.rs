@@ -128,7 +128,7 @@ where
                 self.job_result_pubsub_repository()
                     .subscribe_result_stream(job_id, timeout)
                     .await
-                    .inspect_err(|e| tracing::warn!("subscribe_result_stream error: {:?}", e))
+                    .inspect_err(|e| tracing::error!("subscribe_result_stream error: {:?}, job_id: {:?}", e, job_id))
                     .ok()
             } else {
                 None
@@ -136,17 +136,49 @@ where
         };
 
         let (pop_result, subscribe_result) = tokio::join!(pop_future, subscribe_future);
-        tracing::debug!(
-            "wait_for_result_queue_for_response: got res: {:?} {}",
-            pop_result.as_ref().map(|r| r.id),
-            if subscribe_result.is_some() {
-                "with stream"
-            } else {
-                "without stream"
-            }
-        );
+        
+        // Handle streaming request inconsistency: if streaming was requested but stream creation failed
+        if request_streaming && subscribe_result.is_none() {
+            tracing::warn!(
+                "wait_for_result_queue_for_response: streaming requested but no stream available for job_id: {:?}",
+                job_id
+            );
+        }
+        
         match pop_result {
-            Ok(r) => Ok((r, subscribe_result)),
+            Ok(r) => {
+                // Check if job result indicates error status - in that case, don't return stream
+                // even if streaming was requested, to prevent HTTP/2 protocol errors
+                let should_disable_stream = if let Some(ref data) = r.data {
+                    use proto::jobworkerp::data::ResultStatus;
+                    data.status != ResultStatus::Success as i32
+                } else {
+                    false
+                };
+                
+                let final_stream = if should_disable_stream {
+                    tracing::debug!(
+                        "wait_for_result_queue_for_response: disabling stream for error result, job_id: {:?}, status: {:?}",
+                        job_id,
+                        r.data.as_ref().map(|d| d.status)
+                    );
+                    None
+                } else {
+                    subscribe_result
+                };
+                
+                tracing::debug!(
+                    "wait_for_result_queue_for_response: got res: {:?} {}",
+                    r.id,
+                    if final_stream.is_some() {
+                        "with stream"
+                    } else {
+                        "without stream"
+                    }
+                );
+                
+                Ok((r, final_stream))
+            },
             Err(e) => Err(e),
         }
     }
