@@ -301,7 +301,7 @@ impl JobQueueCancellationRepository for RedisJobQueueRepositoryImpl {
     async fn broadcast_job_cancellation(&self, job_id: &JobId) -> Result<()> {
         const JOB_CANCELLATION_CHANNEL: &str = "job_cancellation_channel";
 
-        let message = serde_json::to_string(job_id)?;
+        let message = <Self as UseJobqueueAndCodec>::serialize_message(job_id);
         let _: i32 = self
             .redis_pool()
             .get()
@@ -332,51 +332,100 @@ impl JobQueueCancellationRepository for RedisJobQueueRepositoryImpl {
         tokio::spawn(async move {
             use futures::StreamExt;
             use infra_utils::infra::redis::UseRedisClient;
+            use signal_hook::consts::{SIGINT, SIGTERM};
+            use signal_hook_tokio::Signals;
 
-            loop {
+            // Setup signal handling once
+            let signals = Signals::new([SIGINT, SIGTERM]).expect("cannot setup signals");
+            let handle = signals.handle();
+
+            // Create signal streams once
+            let mut sigint_stream =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+                    .expect("signal error");
+            let mut sigterm_stream =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("signal error");
+
+            // Try to establish initial subscription
+            let mut message_stream = loop {
                 match repository.subscribe(JOB_CANCELLATION_CHANNEL).await {
                     Ok(subscription) => {
                         tracing::info!("Started Redis Pub/Sub cancellation subscriber");
-
-                        // Process messages from Redis Pub/Sub
-                        let mut message_stream = subscription.into_on_message();
-
-                        while let Some(message) = message_stream.next().await {
-                            match message.get_payload::<String>() {
-                                Ok(payload) => match serde_json::from_str::<JobId>(&payload) {
-                                    Ok(job_id) => {
-                                        tracing::info!("Repository received cancellation request for job {} via Redis Pub/Sub", job_id.value);
-
-                                        if let Err(e) = callback(job_id).await {
-                                            tracing::error!(
-                                                "Error processing cancellation callback: {:?}",
-                                                e
-                                            );
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            "Failed to deserialize cancellation message: {:?}",
-                                            e
-                                        );
-                                    }
-                                },
-                                Err(e) => {
-                                    tracing::warn!("Failed to get message payload: {:?}", e);
-                                }
-                            }
-                        }
-
-                        tracing::warn!("Redis Pub/Sub message stream ended, reconnecting...");
+                        break subscription.into_on_message();
                     }
                     Err(e) => {
-                        tracing::error!("Failed to create Redis Pub/Sub subscription: {:?}", e);
+                        tracing::error!("Failed to create Redis Pub/Sub subscription: {:?}, retrying in 5 seconds...", e);
                         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                     }
                 }
+            };
 
-                // Wait before reconnecting
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            loop {
+                tokio::select! {
+                    // Handle shutdown signals
+                    _ = sigint_stream.recv() => {
+                        handle.close();
+                        tracing::info!("Redis cancellation subscriber received SIGINT");
+                        return;
+                    },
+                    // Handle termination signals
+                    _ = sigterm_stream.recv() => {
+                        handle.close();
+                        tracing::info!("Redis cancellation subscriber received SIGTERM");
+                        return;
+                    },
+                    // Handle Redis Pub/Sub messages
+                    message = message_stream.next() => {
+                        match message {
+                            Some(message) => {
+                                match message.get_payload::<Vec<u8>>() {
+                                    Ok(payload_bytes) => {
+                                        match <RedisJobQueueRepositoryImpl as UseJobqueueAndCodec>::deserialize_message::<JobId>(
+                                            &payload_bytes,
+                                        ) {
+                                            Ok(job_id) => {
+                                                tracing::info!("Repository received cancellation request for job {} via Redis Pub/Sub", job_id.value);
+
+                                                if let Err(e) = callback(job_id).await {
+                                                    tracing::error!(
+                                                        "Error processing cancellation callback: {:?}",
+                                                        e
+                                                    );
+                                                }
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    "Failed to deserialize cancellation message: {:?}",
+                                                    e
+                                                );
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("Failed to get message payload: {:?}", e);
+                                    }
+                                }
+                            }
+                            None => {
+                                // Stream ended, immediately reconnect
+                                tracing::warn!("Redis Pub/Sub message stream ended, reconnecting immediately...");
+                                message_stream = loop {
+                                    match repository.subscribe(JOB_CANCELLATION_CHANNEL).await {
+                                        Ok(subscription) => {
+                                            tracing::info!("Reconnected Redis Pub/Sub cancellation subscriber");
+                                            break subscription.into_on_message();
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Failed to reconnect Redis Pub/Sub subscription: {:?}, retrying in 2 seconds...", e);
+                                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                        }
+                                    }
+                                };
+                            }
+                        }
+                    }
+                }
             }
         });
 
@@ -538,6 +587,66 @@ mod test {
             .await?;
         assert_eq!(res.0.data.unwrap(), job_result_data);
         assert!(res.1.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_job_cancellation_protobuf_pubsub() -> Result<()> {
+        use super::super::JobQueueCancellationRepository;
+        use futures::future::BoxFuture;
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        let redis_pool = setup_test_redis_pool().await;
+        let redis_client = setup_test_redis_client()?;
+        let job_queue_config = Arc::new(JobQueueConfig {
+            expire_job_result_seconds: 10,
+            fetch_interval: 1000,
+        });
+        let job_result_pubsub_repository =
+            RedisJobResultPubSubRepositoryImpl::new(redis_client, job_queue_config.clone());
+        let repo = super::RedisJobQueueRepositoryImpl {
+            job_queue_config,
+            redis_pool,
+            job_result_pubsub_repository,
+        };
+
+        // Test job ID
+        let test_job_id = JobId { value: 67890 };
+
+        // Set up receiver to capture the cancellation message
+        let received_job_ids = Arc::new(Mutex::new(Vec::new()));
+        let received_job_ids_clone = received_job_ids.clone();
+
+        let callback: Box<dyn Fn(JobId) -> BoxFuture<'static, Result<()>> + Send + Sync + 'static> =
+            Box::new(move |job_id: JobId| {
+                let received_job_ids = received_job_ids_clone.clone();
+                Box::pin(async move {
+                    received_job_ids.lock().await.push(job_id);
+                    Ok(())
+                }) as BoxFuture<'static, Result<()>>
+            });
+
+        // Start subscription
+        repo.subscribe_job_cancellation(callback).await?;
+
+        // Small delay to ensure subscription is active
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // Broadcast cancellation
+        repo.broadcast_job_cancellation(&test_job_id).await?;
+
+        // Wait for message to be processed
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+        // Verify the message was received and correctly deserialized
+        let received = received_job_ids.lock().await;
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].value, test_job_id.value);
+
+        tracing::info!(
+            "Successfully sent and received JobId via protobuf in Redis Pub/Sub cancellation"
+        );
         Ok(())
     }
 }

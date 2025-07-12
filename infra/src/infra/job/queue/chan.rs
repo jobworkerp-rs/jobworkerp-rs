@@ -350,7 +350,7 @@ impl ChanJobQueueRepository for ChanJobQueueRepositoryImpl {}
 impl JobQueueCancellationRepository for ChanJobQueueRepositoryImpl {
     /// Memory environment cancellation notification broadcast (using BroadcastChan)
     async fn broadcast_job_cancellation(&self, job_id: &JobId) -> Result<()> {
-        let job_id_bytes = serde_json::to_vec(job_id)?;
+        let job_id_bytes = <Self as UseJobqueueAndCodec>::serialize_message(job_id);
 
         match self.broadcast_cancel_chan().send(job_id_bytes) {
             Ok(sent) => {
@@ -385,39 +385,86 @@ impl JobQueueCancellationRepository for ChanJobQueueRepositoryImpl {
     ) -> Result<()> {
         tracing::info!("Starting memory cancellation subscriber via BroadcastChan");
 
-        let receiver = self.broadcast_cancel_chan().receiver().await;
+        let broadcast_chan = self.broadcast_cancel_chan().clone();
 
         tokio::spawn(async move {
             use futures::StreamExt;
+            use signal_hook::consts::{SIGINT, SIGTERM};
+            use signal_hook_tokio::Signals;
             use tokio_stream::wrappers::BroadcastStream;
 
+            // Setup signal handling once
+            let signals = Signals::new([SIGINT, SIGTERM]).expect("cannot setup signals");
+            let handle = signals.handle();
+
+            // Create signal streams once
+            let mut sigint_stream =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+                    .expect("signal error");
+            let mut sigterm_stream =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("signal error");
+
+            // Get initial receiver and stream
+            let mut receiver = broadcast_chan.receiver().await;
             let mut stream = BroadcastStream::new(receiver);
+            tracing::info!("Started memory cancellation subscriber via BroadcastChan");
 
-            while let Some(result) = stream.next().await {
-                match result {
-                    Ok(data) => match serde_json::from_slice::<JobId>(&data) {
-                        Ok(job_id) => {
-                            tracing::info!(
-                                "Repository received cancellation request for job {} (memory)",
-                                job_id.value
-                            );
+            loop {
+                tokio::select! {
+                    // Handle shutdown signals
+                    _ = sigint_stream.recv() => {
+                        handle.close();
+                        tracing::info!("Memory cancellation subscriber received SIGINT");
+                        return;
+                    },
+                    // Handle termination signals
+                    _ = sigterm_stream.recv() => {
+                        handle.close();
+                        tracing::info!("Memory cancellation subscriber received SIGTERM");
+                        return;
+                    },
+                    // Handle broadcast messages
+                    result = stream.next() => {
+                        match result {
+                            Some(Ok(data)) => {
+                                match <ChanJobQueueRepositoryImpl as UseJobqueueAndCodec>::deserialize_message::<JobId>(&data) {
+                                    Ok(job_id) => {
+                                        tracing::info!(
+                                            "Repository received cancellation request for job {} (memory)",
+                                            job_id.value
+                                        );
 
-                            if let Err(e) = callback(job_id).await {
-                                tracing::error!("Error processing cancellation callback: {:?}", e);
+                                        if let Err(e) = callback(job_id).await {
+                                            tracing::error!("Error processing cancellation callback: {:?}", e);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "Failed to deserialize cancellation message: {:?}",
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                            Some(Err(e)) => {
+                                tracing::error!("Broadcast receive error: {:?}, reconnecting immediately...", e);
+                                // Immediately get new receiver on error
+                                receiver = broadcast_chan.receiver().await;
+                                stream = BroadcastStream::new(receiver);
+                                tracing::info!("Reconnected memory cancellation subscriber after error");
+                            }
+                            None => {
+                                // Stream ended, immediately get new receiver
+                                tracing::warn!("Memory broadcast stream ended, reconnecting immediately...");
+                                receiver = broadcast_chan.receiver().await;
+                                stream = BroadcastStream::new(receiver);
+                                tracing::info!("Reconnected memory cancellation subscriber after stream end");
                             }
                         }
-                        Err(e) => {
-                            tracing::warn!("Failed to deserialize cancellation message: {:?}", e);
-                        }
-                    },
-                    Err(e) => {
-                        tracing::error!("Broadcast receive error: {:?}", e);
-                        // Continue listening despite errors
                     }
                 }
             }
-
-            tracing::info!("Memory cancellation subscriber stopped");
         });
 
         Ok(())
@@ -679,6 +726,60 @@ mod test {
         let res = repo.receive_job_from_channels(qcn).await?;
         assert_eq!(res.id.unwrap(), job1.id.unwrap());
         assert_eq!(repo.find_multi_from_queue(None, None).await?, vec![]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_job_cancellation_protobuf_broadcast() -> Result<()> {
+        use super::super::JobQueueCancellationRepository;
+        use futures::future::BoxFuture;
+        use infra_utils::infra::chan::broadcast::BroadcastChan;
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        let chan_buf = ChanBuffer::new(None, 10000);
+        let job_queue_config = Arc::new(JobQueueConfig {
+            expire_job_result_seconds: 10,
+            fetch_interval: 1000,
+        });
+        let broadcast_chan_buf = BroadcastChan::new(100);
+        let repo =
+            super::ChanJobQueueRepositoryImpl::new(job_queue_config, chan_buf, broadcast_chan_buf);
+
+        // Test job ID
+        let test_job_id = JobId { value: 12345 };
+
+        // Set up receiver to capture the cancellation message
+        let received_job_ids = Arc::new(Mutex::new(Vec::new()));
+        let received_job_ids_clone = received_job_ids.clone();
+
+        let callback: Box<dyn Fn(JobId) -> BoxFuture<'static, Result<()>> + Send + Sync + 'static> =
+            Box::new(move |job_id: JobId| {
+                let received_job_ids = received_job_ids_clone.clone();
+                Box::pin(async move {
+                    received_job_ids.lock().await.push(job_id);
+                    Ok(())
+                }) as BoxFuture<'static, Result<()>>
+            });
+
+        // Start subscription
+        repo.subscribe_job_cancellation(callback).await?;
+
+        // Small delay to ensure subscription is active
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+        // Broadcast cancellation
+        repo.broadcast_job_cancellation(&test_job_id).await?;
+
+        // Wait for message to be processed
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Verify the message was received and correctly deserialized
+        let received = received_job_ids.lock().await;
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].value, test_job_id.value);
+
+        tracing::info!("Successfully sent and received JobId via protobuf in memory cancellation");
         Ok(())
     }
 }

@@ -32,10 +32,10 @@ pub trait JobDispatcher: Send + Sync + 'static {
     where
         Self: Send + Sync + 'static;
 
-    /// キャンセル監視の開始（Worker起動時に外部から呼ばれる）
+    /// Start cancellation monitoring (called externally when Worker starts)
     async fn start_cancellation_monitoring(&self) -> Result<()>;
 
-    /// 実行中ジョブ数の取得（監視やデバッグ用、外部から呼ばれる）
+    /// Get the number of running jobs (for monitoring and debugging, called externally)
     async fn get_running_job_count(&self) -> usize;
 }
 // TODO divide into three traits (redis, rdb and redis+rdb)
@@ -62,7 +62,7 @@ impl JobDispatcherFactory {
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
         result_processor: Arc<ResultProcessorImpl>,
     ) -> Box<dyn JobDispatcher + 'static> {
-        // RunningJobManagerを生成
+        // Generate RunningJobManager
         let running_job_manager = Arc::new(RunningJobManager::new());
 
         match (
@@ -155,7 +155,7 @@ impl JobDispatcher for HybridJobDispatcherImpl {
     }
 
     async fn start_cancellation_monitoring(&self) -> Result<()> {
-        // RdbJobDispatcherはキャンセル不要、RedisJobDispatcherのみ開始
+        // RdbJobDispatcher does not need cancellation, only start RedisJobDispatcher
         self.redis_job_dispatcher
             .start_cancellation_monitoring()
             .await?;
@@ -164,7 +164,7 @@ impl JobDispatcher for HybridJobDispatcherImpl {
     }
 
     async fn get_running_job_count(&self) -> usize {
-        // RedisJobDispatcherの実行中ジョブ数のみ（RdbJobDispatcherは常に0）
+        // Only RedisJobDispatcher's running job count (RdbJobDispatcher is always 0)
         self.redis_job_dispatcher.get_running_job_count().await
     }
 }
@@ -179,7 +179,7 @@ impl JobDispatcher for RdbChanJobDispatcherImpl {
     }
 
     async fn start_cancellation_monitoring(&self) -> Result<()> {
-        // RdbJobDispatcherはキャンセル不要、ChanJobDispatcherのみ開始
+        // RdbJobDispatcher does not need cancellation, only start ChanJobDispatcher
         self.chan_job_dispatcher
             .start_cancellation_monitoring()
             .await?;
@@ -188,7 +188,7 @@ impl JobDispatcher for RdbChanJobDispatcherImpl {
     }
 
     async fn get_running_job_count(&self) -> usize {
-        // ChanJobDispatcherの実行中ジョブ数のみ（RdbJobDispatcherは常に0）
+        // Only ChanJobDispatcher's running job count (RdbJobDispatcher is always 0)
         self.chan_job_dispatcher.get_running_job_count().await
     }
 }

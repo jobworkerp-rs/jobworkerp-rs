@@ -385,11 +385,11 @@ impl RedisJobDispatcherImpl {
         }
     }
 
-    /// キャンセル通知の受信開始（Dispatcher起動時に呼び出し）
+    /// Start receiving cancellation notifications (called when Dispatcher starts)
     pub async fn start_cancellation_subscriber(&self) -> Result<()> {
         let running_job_manager = self.running_job_manager.clone();
 
-        // 実際のJobQueueCancellationRepositoryを使用してキャンセル通知を受信
+        // Use actual JobQueueCancellationRepository to receive cancellation notifications
         self.job_queue_cancellation_repository
             .subscribe_job_cancellation(Box::new(move |job_id| {
                 let running_job_manager = running_job_manager.clone();
@@ -399,7 +399,7 @@ impl RedisJobDispatcherImpl {
                         job_id.value
                     );
 
-                    // RunningJobManagerでキャンセル処理を実行
+                    // Execute cancellation process in RunningJobManager
                     match running_job_manager.cancel_running_job(&job_id).await {
                         Ok(cancelled) => {
                             if cancelled {
@@ -525,10 +525,10 @@ impl JobDispatcher for RedisJobDispatcherImpl {
     }
 
     async fn start_cancellation_monitoring(&self) -> Result<()> {
-        // RunningJobManagerのクリーンアップタスク開始
+        // Start RunningJobManager cleanup task
         self.running_job_manager().start_cleanup_task();
 
-        // キャンセル通知の受信開始
+        // Start receiving cancellation notifications
         self.start_cancellation_subscriber().await?;
 
         tracing::info!("Started cancellation monitoring for RedisJobDispatcher");
