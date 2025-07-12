@@ -10,7 +10,7 @@ use crate::service::error_handle::handle_error;
 use app::app::job::JobApp;
 use app::module::AppModule;
 use async_stream::stream;
-use futures::stream::{self, BoxStream};
+use futures::stream::BoxStream;
 use futures::StreamExt;
 use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
@@ -196,6 +196,8 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
             "enqueue_for_stream result = {:?}",
             &res.as_ref().map(|r| r.0)
         );
+        
+        
         match res {
             Ok((id, Some(res), Some(st))) => {
                 tracing::debug!(
@@ -206,38 +208,42 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                 );
                 let res_header = res.encode_to_vec();
                 let job_id_header = id.encode_to_vec();
+                
+                // Wrap the underlying stream with proper error handling
                 let stream = stream! {
-                    let mut stream_ended = false;
                     let mut st = st;
-                    while !stream_ended {
-                        if let Some(output_item) = st.next().await {
-                            // Check if this is an end item
-                            match &output_item.item {
-                                Some(result_output_item::Item::End(_)) => {
-                                    tracing::debug!(
-                                        "gRPC enqueue_for_stream received End item (sending and ending stream)"
-                                    );
-                                    yield Ok(output_item);
-                                    stream_ended = true;
-                                }
-                                Some(_) => {
-                                    tracing::trace!(
-                                        "gRPC enqueue_for_stream sending item: {:?}",
-                                        output_item.item.as_ref().map(std::mem::discriminant)
-                                    );
-                                    yield Ok(output_item);
-                                }
-                                None => {
-                                    tracing::debug!(
-                                        "gRPC enqueue_for_stream received None item (stream ending)"
-                                    );
-                                    stream_ended = true;
+                    loop {
+                        match st.next().await {
+                            Some(output_item) => {
+                                // Check if this is an end item
+                                match &output_item.item {
+                                    Some(result_output_item::Item::End(_)) => {
+                                        tracing::debug!(
+                                            "gRPC enqueue_for_stream received End item (sending and ending stream)"
+                                        );
+                                        yield Ok(output_item);
+                                        break;
+                                    }
+                                    Some(_) => {
+                                        tracing::trace!(
+                                            "gRPC enqueue_for_stream sending item: {:?}",
+                                            output_item.item.as_ref().map(std::mem::discriminant)
+                                        );
+                                        yield Ok(output_item);
+                                    }
+                                    None => {
+                                        tracing::debug!(
+                                            "gRPC enqueue_for_stream received None item (stream ending gracefully)"
+                                        );
+                                        break;
+                                    }
                                 }
                             }
-                        } else {
-                            // Stream naturally ended
-                            tracing::debug!("gRPC enqueue_for_stream: underlying stream ended");
-                            stream_ended = true;
+                            None => {
+                                // Stream naturally ended
+                                tracing::debug!("gRPC enqueue_for_stream: underlying stream ended gracefully");
+                                break;
+                            }
                         }
                     }
                 }.boxed();
@@ -254,10 +260,33 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                 Ok(res)
             }
             Ok((id, res, _)) => {
+                // For streaming requests where no actual stream is available (error cases),
+                // return an error status instead of trying to create an empty stream
+                // This prevents HTTP/2 protocol errors
+                if let Some(job_result) = &res {
+                    if let Some(result_data) = &job_result.data {
+                        use proto::jobworkerp::data::ResultStatus;
+                        if result_data.status != ResultStatus::Success as i32 {
+                            tracing::warn!(
+                                "enqueue_for_stream: job {} failed with status {}, returning gRPC error", 
+                                id.value, result_data.status
+                            );
+                            
+                            // Use external function for proper error code mapping
+                            let status = JobGrpcImpl::create_job_error_status(&id, result_data);
+                            
+                            return Err(status);
+                        }
+                    }
+                }
+                
                 let res_header = res.map(|r| r.encode_to_vec());
                 let job_id_header = id.encode_to_vec();
-                // empty stream
-                let st = stream::empty().boxed() as Self::EnqueueForStreamStream;
+                
+                // Create properly terminated empty stream for cases where no stream data is available
+                // Using stream::iter with empty iterator to ensure proper gRPC stream termination
+                let st = futures::stream::iter(std::iter::empty::<Result<ResultOutputItem, tonic::Status>>()).boxed() as Self::EnqueueForStreamStream;
+                
                 let mut res = Response::new(st);
                 if let Some(header) = res_header {
                     res.metadata_mut().insert_bin(
@@ -271,7 +300,11 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                 );
                 Ok(res)
             }
-            Err(e) => Err(handle_error(&e)),
+            Err(e) => {
+                // enqueue_job failed before creating job_id - no headers to include
+                tracing::warn!("enqueue_for_stream failed during job creation: {:?}", e);
+                Err(handle_error(&e))
+            }
         }
     }
     #[allow(clippy::result_large_err)]
@@ -422,6 +455,82 @@ impl JobGrpc for JobGrpcImpl {
 impl Tracing for JobGrpcImpl {}
 
 impl RequestValidator for JobGrpcImpl {}
+
+impl JobGrpcImpl {
+    /// Create appropriate gRPC error status from job result data
+    fn create_job_error_status(job_id: &proto::jobworkerp::data::JobId, result_data: &proto::jobworkerp::data::JobResultData) -> tonic::Status {
+        use proto::jobworkerp::data::ResultStatus;
+        
+        let error_output = result_data.output.as_ref()
+            .map(|o| String::from_utf8_lossy(&o.items))
+            .unwrap_or_default();
+        
+        // Map ResultStatus to appropriate gRPC status codes
+        let grpc_status = match ResultStatus::try_from(result_data.status) {
+            Ok(ResultStatus::Success) => {
+                // This shouldn't happen in error path, but handle gracefully
+                tonic::Status::internal("Unexpected success status in error handling")
+            },
+            Ok(ResultStatus::ErrorAndRetry) => {
+                // Temporary failure that can be retried
+                tonic::Status::unavailable(
+                    format!("Job execution failed (retryable): {}", error_output)
+                )
+            },
+            Ok(ResultStatus::MaxRetry) => {
+                // Permanent failure after max retries
+                tonic::Status::aborted(
+                    format!("Job execution failed (max retries exceeded): {}", error_output)
+                )
+            },
+            Ok(ResultStatus::OtherError) => {
+                // General execution error
+                tonic::Status::internal(
+                    format!("Job execution error: {}", error_output)
+                )
+            },
+            Ok(ResultStatus::FatalError) => {
+                // Fatal error (e.g., runner loading failure)
+                tonic::Status::failed_precondition(
+                    format!("Fatal job execution error: {}", error_output)
+                )
+            },
+            Ok(ResultStatus::Abort) => {
+                // Job was aborted
+                tonic::Status::aborted(
+                    format!("Job execution aborted: {}", error_output)
+                )
+            },
+            Ok(ResultStatus::Cancelled) => {
+                // Job was cancelled
+                tonic::Status::cancelled(
+                    format!("Job execution cancelled: {}", error_output)
+                )
+            },
+            Err(_) => {
+                // Unknown status code
+                tonic::Status::unknown(
+                    format!("Job execution failed with unknown status: {}", result_data.status)
+                )
+            }
+        };
+        
+        // Enhance message with job_id
+        let original_message = grpc_status.message();
+        let enhanced_message = format!("job_id={}, {}", job_id.value, original_message);
+        
+        // Create new status with enhanced message
+        match grpc_status.code() {
+            tonic::Code::Unavailable => tonic::Status::unavailable(enhanced_message),
+            tonic::Code::Aborted => tonic::Status::aborted(enhanced_message),
+            tonic::Code::Internal => tonic::Status::internal(enhanced_message),
+            tonic::Code::FailedPrecondition => tonic::Status::failed_precondition(enhanced_message),
+            tonic::Code::Cancelled => tonic::Status::cancelled(enhanced_message),
+            tonic::Code::Unknown => tonic::Status::unknown(enhanced_message),
+            _ => tonic::Status::internal(enhanced_message),
+        }
+    }
+}
 
 // unit test for RequestValidator::validate_create method
 #[cfg(test)]

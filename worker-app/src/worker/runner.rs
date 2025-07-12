@@ -150,7 +150,8 @@ pub trait JobRunner:
                 .map(ResultOutputEnum::Stream);
             let end = datetime::now_millis();
             tracing::debug!(
-                "end runner(stream): {}, duration:{}(ms)",
+                "end runner(stream: {}): {}, duration:{}(ms)",
+                if res.is_ok() { "success" } else { "error" },
                 &name,
                 end - start,
             );
