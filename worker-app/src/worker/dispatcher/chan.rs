@@ -196,7 +196,7 @@ pub trait ChanJobDispatcher:
         let sid = if let Some(id) = wdat.runner_id.as_ref() {
             id
         } else {
-            // TODO cannot return result in this case. send result as error?
+            // TODO: cannot return result in this case. Send result as error?
             let mes = format!(
                 "worker {:?} runner_id is not found.",
                 jdat.worker_id.as_ref().unwrap()
@@ -211,7 +211,7 @@ pub trait ChanJobDispatcher:
         {
                 runner_data.ok_or(JobWorkerError::NotFound(format!("runner data {:?} is not found.", &sid)))
         } else {
-            // TODO cannot return result in this case. send result as error?
+            // TODO: cannot return result in this case. Send result as error?
             let mes = format!(
                 "runner data {:?} is not found.",
                 jdat.worker_id.as_ref().unwrap()
@@ -222,17 +222,17 @@ pub trait ChanJobDispatcher:
             Err(JobWorkerError::NotFound(mes))
         }?;
 
-        // ジョブ実行前にJobProcessingStatus確認（キャンセル要求の検出）
+        // Check JobProcessingStatus before job execution (detect cancellation request)
         match self.job_processing_status_repository().find_status(&jid).await? {
             Some(JobProcessingStatus::Pending) => {
-                // 正常状態：通常実行を継続
+                // Normal state: continue normal execution
                 tracing::debug!("Job {} is in expected Pending state, proceeding with execution", jid.value);
             }
             Some(JobProcessingStatus::Cancelling) => {
-                // キャンセル要求済み：実行をスキップしてResultProcessorでキャンセル処理
+                // Cancellation requested: skip execution and process cancellation with ResultProcessor
                 tracing::info!("Job {} marked for cancellation, skipping execution", jid.value);
 
-                // キャンセル結果を直接作成
+                // Directly create cancellation result
                 use command_utils::util::datetime;
                 let job_result_data = JobResultData {
                     job_id: Some(jid),
@@ -246,7 +246,7 @@ pub trait ChanJobDispatcher:
                     args: jdat.args.clone(),
                     uniq_key: jdat.uniq_key.clone(),
                     retried: jdat.retried,
-                    max_retry: 0, // キャンセル時はリトライしない
+                    max_retry: 0, // No retry on cancellation
                     priority: jdat.priority,
                     timeout: jdat.timeout,
                     request_streaming: jdat.request_streaming,
@@ -269,28 +269,28 @@ pub trait ChanJobDispatcher:
                 return self.result_processor().process_result(cancelled_result, None, wdat).await;
             }
             Some(JobProcessingStatus::Running) => {
-                // 異常状態：他のWorkerで既に実行中、多重実行を防止
+                // Abnormal state: already running on another worker, prevent duplicate execution
                 tracing::error!("Job {} is already in Running state, preventing duplicate execution", jid.value);
                 return Err(JobWorkerError::RuntimeError(
                     format!("Job {} is already running", jid.value)
                 ).into());
             }
             Some(JobProcessingStatus::WaitResult) => {
-                // 異常状態：既に実行完了済み
+                // Abnormal state: already completed
                 tracing::warn!("Job {} is already in WaitResult state, skipping duplicate execution", jid.value);
                 return Err(JobWorkerError::RuntimeError(
                     format!("Job {} is already completed", jid.value)
                 ).into());
             }
             Some(JobProcessingStatus::Unknown) => {
-                // 異常状態：不明な状態
+                // Abnormal state: unknown status
                 tracing::error!("Job {} has unknown processing status", jid.value);
                 return Err(JobWorkerError::RuntimeError(
                     format!("Job {} has unknown status", jid.value)
                 ).into());
             }
             None => {
-                // 異常状態：ステータスが存在しない（高負荷時の競合状態の可能性）
+                // Abnormal state: status does not exist (possible race condition under high load)
                 tracing::error!("Job {} has no processing status, may indicate race condition or invalid job", jid.value);
                 return Err(JobWorkerError::RuntimeError(
                     format!("Job {} has no processing status", jid.value)
@@ -393,11 +393,11 @@ impl ChanJobDispatcherImpl {
         }
     }
 
-    /// キャンセル通知の受信開始（Dispatcher起動時に呼び出し）
+    /// Start receiving cancellation notifications (called at dispatcher startup)
     pub async fn start_cancellation_subscriber(&self) -> Result<()> {
         let running_job_manager = self.running_job_manager.clone();
 
-        // ChanJobQueueRepositoryのsubscribe_job_cancellation()を使用
+        // Use subscribe_job_cancellation() of ChanJobQueueRepository
         self.chan_job_queue_repository()
             .subscribe_job_cancellation(Box::new(move |job_id| {
                 let manager = running_job_manager.clone();
@@ -407,7 +407,7 @@ impl ChanJobDispatcherImpl {
                         job_id.value
                     );
 
-                    // RunningJobManagerに委譲してキャンセル実行
+                    // Delegate to RunningJobManager to execute cancellation
                     if manager.cancel_running_job(&job_id).await? {
                         tracing::info!(
                             "Successfully processed cancellation for job {}",
@@ -515,10 +515,10 @@ impl JobDispatcher for ChanJobDispatcherImpl {
     }
 
     async fn start_cancellation_monitoring(&self) -> Result<()> {
-        // RunningJobManagerのクリーンアップタスク開始
+        // Start cleanup task for RunningJobManager
         self.running_job_manager().start_cleanup_task();
 
-        // キャンセル通知の受信開始
+        // Start receiving cancellation notifications
         self.start_cancellation_subscriber().await?;
 
         tracing::info!("Started cancellation monitoring for ChanJobDispatcher");

@@ -4,15 +4,11 @@ use crate::module::AppConfigModule;
 use super::super::worker::{UseWorkerApp, WorkerApp};
 use super::super::JobBuilder;
 use super::{JobApp, JobCacheKeys, RedisJobAppHelper};
-// TODO: Use centralized constants in future phases
-// use super::constants::cancellation::{
-//     CANCEL_REASON_USER_REQUEST, JOB_CANCELLATION_CHANNEL,
-// };
 use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::datetime;
 use futures::stream::BoxStream;
-use infra::infra::job::queue::redis::{RedisJobQueueRepository, UseRedisJobQueueRepository};
+use infra::infra::job::queue::redis::RedisJobQueueRepository;
 use infra::infra::job::queue::JobQueueCancellationRepository;
 use infra::infra::job::rdb::{RdbJobRepository, UseRdbChanJobRepository};
 use infra::infra::job::redis::{RedisJobRepository, UseRedisJobRepository};
@@ -32,8 +28,6 @@ use proto::jobworkerp::data::{
     Job, JobData, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, Priority,
     QueueType, ResponseType, ResultOutputItem, Worker, WorkerData, WorkerId,
 };
-// TODO: ResultStatus will be used in Phase 2.5 for actual cancellation result creation
-// use proto::jobworkerp::data::ResultStatus;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -313,7 +307,7 @@ impl HybridJobAppImpl {
             }
             Some(JobProcessingStatus::Pending) => {
                 // Pending → Cancelling state change (will be cancelled when Worker picks it up)
-                // Note: There's a possibility the status changes right after current_status is retrieved,
+                // XXX: There's a possibility the status changes right after current_status is retrieved,
                 // in which case the cancellation may be ineffective, but this is currently accepted
                 self.redis_job_repository()
                     .job_processing_status_repository()
@@ -1018,6 +1012,7 @@ pub mod tests {
     use crate::app::{StorageConfig, StorageType};
     use crate::module::test::TEST_PLUGIN_DIR;
     use anyhow::Result;
+    use infra::infra::job::queue::redis::UseRedisJobQueueRepository;
     use infra::infra::job_result::pubsub::redis::RedisJobResultPubSubRepositoryImpl;
     use infra::infra::module::rdb::test::setup_test_rdb_module;
     use infra::infra::module::redis::test::setup_test_redis_module;
