@@ -15,6 +15,7 @@ use futures::StreamExt;
 use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
+use proto::jobworkerp::data::result_output_item;
 use proto::jobworkerp::data::{Job, JobId, JobProcessingStatus};
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -204,18 +205,41 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         .map(|d| d.output.as_ref().map(|o| o.items.len()))
                 );
                 let res_header = res.encode_to_vec();
-                let stream = st.map(Ok).inspect(|item| match item {
-                    Ok(output_item) => {
-                        if output_item.item.is_none() {
-                            tracing::warn!(
-                                "gRPC enqueue_for_stream sending None item (stream should end)"
-                            );
+                let stream = stream! {
+                    let mut stream_ended = false;
+                    let mut st = st;
+                    while !stream_ended {
+                        if let Some(output_item) = st.next().await {
+                            // Check if this is an end item
+                            match &output_item.item {
+                                Some(result_output_item::Item::End(_)) => {
+                                    tracing::debug!(
+                                        "gRPC enqueue_for_stream received End item (sending and ending stream)"
+                                    );
+                                    yield Ok(output_item);
+                                    stream_ended = true;
+                                }
+                                Some(_) => {
+                                    tracing::trace!(
+                                        "gRPC enqueue_for_stream sending item: {:?}",
+                                        output_item.item.as_ref().map(std::mem::discriminant)
+                                    );
+                                    yield Ok(output_item);
+                                }
+                                None => {
+                                    tracing::debug!(
+                                        "gRPC enqueue_for_stream received None item (stream ending)"
+                                    );
+                                    stream_ended = true;
+                                }
+                            }
+                        } else {
+                            // Stream naturally ended
+                            tracing::debug!("gRPC enqueue_for_stream: underlying stream ended");
+                            stream_ended = true;
                         }
                     }
-                    Err(e) => {
-                        tracing::error!("gRPC enqueue_for_stream error: {:?}", e);
-                    }
-                });
+                }.boxed();
                 let stream: Self::EnqueueForStreamStream = Box::pin(stream);
                 let mut res = Response::new(stream);
                 res.metadata_mut().insert_bin(
