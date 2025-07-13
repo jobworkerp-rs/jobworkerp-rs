@@ -1,4 +1,4 @@
-FROM nvcr.io/nvidia/cuda:12.8.1-runtime-ubuntu24.04
+FROM nvcr.io/nvidia/cuda:12.9.1-runtime-ubuntu24.04
 
 RUN apt-get update && apt-get -y dist-upgrade && apt-get install -y libssl3 libcurl4 libgomp1 libcudnn9-cuda-12 docker.io docker-compose \
     && apt-get clean -y && rm -rf /var/lib/apt/lists/*
