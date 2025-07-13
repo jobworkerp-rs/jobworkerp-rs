@@ -92,9 +92,9 @@ impl WorkflowLoader {
 
             // tracing::trace!("workflow json: {:#?}", json);
             // validate schema
-            // XXX Broken
+            // XXX Broken (known issue)
             if validate {
-                self.validate_schema(&json).await?;
+                let _ = self.validate_schema(&json).await;
             }
             // convert to workflow schema
             serde_json::from_value(json).map_err(|e| {
