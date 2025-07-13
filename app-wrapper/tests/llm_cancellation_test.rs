@@ -152,7 +152,8 @@ fn create_simple_chat_args() -> jobworkerp_runner::jobworkerp::runner::llm::LlmC
 }
 
 /// Create simple test completion arguments for basic testing
-fn create_simple_completion_args() -> jobworkerp_runner::jobworkerp::runner::llm::LlmCompletionArgs {
+fn create_simple_completion_args() -> jobworkerp_runner::jobworkerp::runner::llm::LlmCompletionArgs
+{
     jobworkerp_runner::jobworkerp::runner::llm::LlmCompletionArgs {
         prompt: "Hello, this is a test prompt.".to_string(),
         model: Some(TEST_MODEL.to_string()),
@@ -447,7 +448,8 @@ async fn test_llm_chat_pre_execution_cancellation() -> Result<()> {
 
     // Create app module for testing
     let app_module = create_hybrid_test_app().await?;
-    let mut runner = app_wrapper::llm::chat::LLMChatRunnerImpl::new(std::sync::Arc::new(app_module));
+    let mut runner =
+        app_wrapper::llm::chat::LLMChatRunnerImpl::new(std::sync::Arc::new(app_module));
 
     // Set pre-cancelled token before running
     let cancelled_token = CancellationToken::new();
@@ -553,7 +555,7 @@ async fn test_llm_completion_pre_execution_cancellation_with_mock() -> Result<()
     println!("Testing LLM Completion Runner pre-execution cancellation with mocked service...");
 
     let mut runner = app_wrapper::llm::completion::LLMCompletionRunnerImpl::new();
-    
+
     // Try to load with dummy settings (will fail but that's expected)
     let dummy_settings = jobworkerp_runner::jobworkerp::runner::llm::LlmRunnerSettings {
         settings: Some(
@@ -567,12 +569,12 @@ async fn test_llm_completion_pre_execution_cancellation_with_mock() -> Result<()
             )
         )
     };
-    
+
     let mut settings_buf = Vec::new();
     use prost::Message;
     dummy_settings.encode(&mut settings_buf)?;
     let _ = runner.load(settings_buf).await; // May fail, but that's ok for this test
-    
+
     // Now set pre-cancelled token after loading attempt
     let cancelled_token = CancellationToken::new();
     cancelled_token.cancel();
@@ -622,11 +624,11 @@ async fn test_external_cancellation_token_control() -> Result<()> {
     println!("Testing external cancellation token control scenarios...");
 
     let mut runner = app_wrapper::llm::completion::LLMCompletionRunnerImpl::new();
-    
+
     // Scenario 1: Set a normal (not cancelled) token
     let normal_token = CancellationToken::new();
     runner.set_cancellation_token(normal_token.clone());
-    
+
     let args = create_simple_completion_args();
     let metadata = HashMap::new();
     let serialized_args = {
@@ -635,37 +637,51 @@ async fn test_external_cancellation_token_control() -> Result<()> {
         args.encode(&mut buf)?;
         buf
     };
-    
+
     // Should fail quickly due to no LLM service, but not due to cancellation
     let (result1, _) = runner.run(&serialized_args, metadata.clone()).await;
     assert!(result1.is_err());
-    assert!(result1.as_ref().unwrap_err().to_string().contains("not initialized"));
+    assert!(result1
+        .as_ref()
+        .unwrap_err()
+        .to_string()
+        .contains("not initialized"));
     println!("✓ Normal token allows execution attempt");
-    
+
     // Scenario 2: Cancel the token externally and try again
     normal_token.cancel();
-    
+
     // Set the same (now cancelled) token
     runner.set_cancellation_token(normal_token);
-    
+
     let start_time = Instant::now();
     let (result2, _) = runner.run(&serialized_args, metadata).await;
     let elapsed = start_time.elapsed();
-    
+
     // Should be cancelled or fail very quickly
     assert!(result2.is_err());
-    assert!(elapsed < Duration::from_millis(50), "Should be immediate with cancelled token");
-    println!("✓ Externally cancelled token prevents execution (elapsed: {:?})", elapsed);
-    
+    assert!(
+        elapsed < Duration::from_millis(50),
+        "Should be immediate with cancelled token"
+    );
+    println!(
+        "✓ Externally cancelled token prevents execution (elapsed: {:?})",
+        elapsed
+    );
+
     // Scenario 3: Set a new uncancelled token
     let fresh_token = CancellationToken::new();
     runner.set_cancellation_token(fresh_token);
-    
+
     let (result3, _) = runner.run(&serialized_args, HashMap::new()).await;
     assert!(result3.is_err());
-    assert!(result3.as_ref().unwrap_err().to_string().contains("not initialized"));
+    assert!(result3
+        .as_ref()
+        .unwrap_err()
+        .to_string()
+        .contains("not initialized"));
     println!("✓ Fresh token allows execution attempt again");
-    
+
     println!("✓ External cancellation token control test completed successfully");
     Ok(())
 }
