@@ -310,7 +310,12 @@ pub trait RedisJobDispatcher:
             id
         };
         // TODO execute and return result to result channel.
-        tracing::trace!("send result id: {:?}, data: {:?}", id, &r.0);
+        tracing::trace!(
+            "send result id: {:?}, data: {:?}, hasStream:{}, ",
+            id,
+            &r.0,
+            &r.1.is_some()
+        );
         // change status to wait handling result
         if wdat.response_type != ResponseType::Direct as i32 {
             self.redis_job_repository()
