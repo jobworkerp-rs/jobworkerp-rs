@@ -121,7 +121,8 @@ impl Runner for K8SRunner {
     }
 
     fn cancel(&mut self) {
-        todo!()
+        // K8sJobRunner is not fully implemented yet
+        tracing::warn!("K8sJobRunner cancel: not implemented yet");
     }
     fn runner_settings_proto(&self) -> String;
     fn job_args_proto(&self) -> String;

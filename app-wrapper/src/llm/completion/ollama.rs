@@ -14,6 +14,7 @@ use ollama_rs::{
 use proto::jobworkerp::data::RunnerType;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 use super::super::generic_tracing_helper::{
     ChatResponse, GenericLLMTracingHelper, LLMMessage, ModelOptions as GenericModelOptions,
@@ -226,6 +227,86 @@ impl OllamaService {
             .generate(request)
             .await
             .map_err(|e| anyhow!("Generation error(generation): {}", e))?;
+
+        tracing::debug!(
+            "END OF generation {}: duration: {}",
+            RunnerType::LlmCompletion.as_str_name(),
+            res.total_duration.unwrap_or_default()
+        );
+        let mut result = LlmCompletionResult {
+            content: None,
+            reasoning_content: None,
+            done: true,
+            context: res
+                .context
+                .map(|c| llm::llm_completion_result::GenerationContext {
+                    context: Some(
+                        llm::llm_completion_result::generation_context::Context::Ollama(
+                            llm::llm_completion_result::OllamaContext { data: c.0 },
+                        ),
+                    ),
+                }),
+            usage: Some(llm::llm_completion_result::Usage {
+                model: self.model.clone(),
+                prompt_tokens: res.prompt_eval_count.map(|d| d as u32),
+                completion_tokens: res.eval_count.map(|d| d as u32),
+                total_prompt_time_sec: res
+                    .prompt_eval_duration
+                    .map(|d| (d as f64 / 1_000_000_000.0) as f32),
+                total_completion_time_sec: res
+                    .eval_duration
+                    .map(|d| (d as f64 / 1_000_000_000.0) as f32),
+            }),
+        };
+        if args
+            .options
+            .as_ref()
+            .is_some_and(|o| o.extract_reasoning_content())
+        {
+            let (prompt, think) = Self::divide_think_tag(res.response);
+            result.content = Some(llm::llm_completion_result::MessageContent {
+                content: Some(message_content::Content::Text(prompt)),
+            });
+            result.reasoning_content = think;
+        } else {
+            result.content = Some(llm::llm_completion_result::MessageContent {
+                content: Some(message_content::Content::Text(res.response)),
+            });
+        }
+        Ok(result)
+    }
+
+    /// Cancellable version of request_generation
+    pub async fn request_generation_with_cancellation(
+        &self,
+        args: LlmCompletionArgs,
+        cancellation_token: CancellationToken,
+        _cx: opentelemetry::Context,
+        _metadata: HashMap<String, String>,
+    ) -> Result<LlmCompletionResult> {
+        let options = Self::create_completion_options(&args);
+        let mut request = GenerationRequest::new(self.model.clone(), args.prompt);
+        request = request.options(options.clone());
+        if let Some(system_prompt) = self.system_prompt.clone() {
+            request = request.system(system_prompt);
+        }
+        if let Some(llm::llm_completion_args::GenerationContext {
+            context:
+                Some(llm::llm_completion_args::generation_context::Context::OllamaContext(context)),
+        }) = args.context
+        {
+            request = request.context(completion::GenerationContext(context.data));
+        }
+
+        // Cancellable Ollama generation call
+        let res = tokio::select! {
+            generation_result = self.ollama.generate(request) => {
+                generation_result.map_err(|e| anyhow!("Generation error(generation): {}", e))?
+            }
+            _ = cancellation_token.cancelled() => {
+                return Err(anyhow!("Ollama generation was cancelled"));
+            }
+        };
 
         tracing::debug!(
             "END OF generation {}: duration: {}",

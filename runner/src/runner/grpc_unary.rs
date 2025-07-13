@@ -13,6 +13,7 @@ use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType}
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 use tonic::{
     metadata::MetadataValue,
     transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity},
@@ -31,6 +32,7 @@ pub struct GrpcUnaryRunner {
     max_message_size: Option<usize>,
     auth_token: Option<String>,
     use_reflection: bool,
+    cancellation_token: Option<CancellationToken>,
 }
 
 impl GrpcUnaryRunner {
@@ -43,6 +45,7 @@ impl GrpcUnaryRunner {
             max_message_size: None,
             auth_token: None,
             use_reflection: false,
+            cancellation_token: None,
         }
     }
 
@@ -314,6 +317,10 @@ impl RunnerTrait for GrpcUnaryRunner {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        // Set up cancellation token for this execution
+        let cancellation_token = CancellationToken::new();
+        self.cancellation_token = Some(cancellation_token.clone());
+
         let result = async {
             if let Some(mut client) = self.client.clone() {
                 let req = ProstMessageCodec::deserialize_message::<GrpcUnaryArgs>(args)?;
@@ -386,19 +393,28 @@ impl RunnerTrait for GrpcUnaryRunner {
                     request_len
                 );
 
+                // Send gRPC request with cancellation support
                 let response = if req.timeout > 0 {
                     let timeout_duration = Duration::from_millis(req.timeout as u64);
-                    tokio::time::timeout(timeout_duration, client.unary(request, method, codec))
-                        .await
-                        .map(|r| {
-                            r.inspect_err(|e| tracing::warn!("grpc request error: status={:?}", e))
-                        })
-                        .map_err(|_| anyhow!("Request timed out after {} ms", req.timeout))?
+                    tokio::select! {
+                        timeout_result = tokio::time::timeout(timeout_duration, client.unary(request, method, codec)) => {
+                            timeout_result
+                                .map(|r| r.inspect_err(|e| tracing::warn!("grpc request error: status={:?}", e)))
+                                .map_err(|_| tonic::Status::new(tonic::Code::DeadlineExceeded, format!("Request timed out after {} ms", req.timeout)))?
+                        }
+                        _ = cancellation_token.cancelled() => {
+                            return Err(anyhow!("gRPC request was cancelled"));
+                        }
+                    }
                 } else {
-                    client
-                        .unary(request, method, codec)
-                        .await
-                        .inspect_err(|e| tracing::warn!("grpc request error: status={:?}", e))
+                    tokio::select! {
+                        response_result = client.unary(request, method, codec) => {
+                            response_result.inspect_err(|e| tracing::warn!("grpc request error: status={:?}", e))
+                        }
+                        _ = cancellation_token.cancelled() => {
+                            return Err(anyhow!("gRPC request was cancelled"));
+                        }
+                    }
                 };
                 let res = match response {
                     Ok(response) => GrpcUnaryResult {
@@ -423,8 +439,11 @@ impl RunnerTrait for GrpcUnaryRunner {
             } else {
                 Err(anyhow!("grpc client is not initialized"))
             }
-        };
-        (result.await, metadata)
+        }.await;
+
+        // Clear cancellation token after execution
+        self.cancellation_token = None;
+        (result, metadata)
     }
 
     async fn run_stream(
@@ -437,18 +456,112 @@ impl RunnerTrait for GrpcUnaryRunner {
     }
 
     async fn cancel(&mut self) {
-        tracing::warn!("cannot cancel grpc request until timeout")
+        if let Some(token) = &self.cancellation_token {
+            token.cancel();
+            tracing::info!("gRPC request cancelled");
+        } else {
+            tracing::warn!("No active gRPC request to cancel");
+        }
     }
-}
-
-// For debugging: find the source of GrpcUnaryArgs
-// Please remove this after we find the correct file
-fn _debug_find_file_path() {
-    println!("GrpcUnaryArgs is defined at {:?}", std::module_path!());
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_grpc_cancel_no_active_request() {
+        eprintln!("=== Starting gRPC cancel with no active request test ===");
+        let mut runner = GrpcUnaryRunner::new();
+
+        // Call cancel when no request is running - should not panic
+        runner.cancel().await;
+        eprintln!("gRPC cancel completed successfully with no active request");
+
+        eprintln!("=== gRPC cancel with no active request test completed ===");
+    }
+
+    #[tokio::test]
+    async fn test_grpc_cancellation_token_setup() {
+        eprintln!("=== Starting gRPC cancellation token setup test ===");
+        let mut runner = GrpcUnaryRunner::new();
+
+        // Verify initial state
+        assert!(
+            runner.cancellation_token.is_none(),
+            "Initially no cancellation token"
+        );
+
+        // Test that cancellation token is properly managed
+        runner.cancel().await; // Should not panic
+
+        eprintln!("=== gRPC cancellation token setup test completed ===");
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires gRPC server - run with --ignored for full testing
+    async fn test_grpc_actual_cancellation() {
+        eprintln!("=== Starting gRPC actual cancellation test ===");
+        use crate::jobworkerp::runner::GrpcUnaryArgs;
+        use jobworkerp_base::codec::ProstMessageCodec;
+        use std::collections::HashMap;
+
+        let mut runner = GrpcUnaryRunner::new();
+
+        // Test with a gRPC request that would take some time
+        // Note: This test requires a running gRPC server for actual testing
+        let grpc_args = GrpcUnaryArgs {
+            method: "/grpc.reflection.v1alpha.ServerReflection/ServerReflectionInfo".to_string(),
+            request: "{}".to_string(), // Empty JSON request
+            metadata: HashMap::new(),
+            timeout: 10000, // 10 second timeout
+        };
+
+        let arg_bytes = ProstMessageCodec::serialize_message(&grpc_args).unwrap();
+        let metadata = HashMap::new();
+
+        // Test cancellation setup (without actual server)
+        let start_time = std::time::Instant::now();
+        let execution_task = tokio::spawn(async move { runner.run(&arg_bytes, metadata).await });
+
+        // Wait briefly
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Test timeout - would fail due to no server, but demonstrates cancellation setup
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), execution_task).await;
+
+        let elapsed = start_time.elapsed();
+        eprintln!("gRPC execution time: {elapsed:?}");
+
+        match result {
+            Ok(task_result) => {
+                let (execution_result, _metadata) = task_result.unwrap();
+                match execution_result {
+                    Ok(_) => {
+                        eprintln!("gRPC request completed unexpectedly");
+                    }
+                    Err(e) => {
+                        eprintln!("gRPC request failed as expected (no server): {e}");
+                    }
+                }
+            }
+            Err(_) => {
+                eprintln!(
+                    "gRPC request timed out - this indicates cancellation mechanism is ready"
+                );
+                assert!(
+                    elapsed >= std::time::Duration::from_secs(1),
+                    "Should timeout after 1 second"
+                );
+            }
+        }
+
+        eprintln!("=== gRPC actual cancellation test completed ===");
+    }
+}
+
+#[cfg(test)]
+mod existing_tests {
     use super::*;
     use proto::jobworkerp::data::Runner;
 

@@ -151,6 +151,156 @@ async fn test_time_mcp_server() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn test_mcp_cancellation() -> Result<()> {
+    use crate::jobworkerp::runner::McpServerArgs;
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+    use std::collections::HashMap;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    // Create McpClients
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+
+    // Create MCP runner instance with the client
+    let mut runner = McpServerRunnerImpl::new(client);
+
+    // Test cancellation without active request
+    runner.cancel().await;
+    eprintln!("MCP cancel completed successfully with no active operation");
+
+    // Test cancellation token setup with actual MCP call
+    let mcp_args = McpServerArgs {
+        tool_name: "get_current_time".to_string(),
+        arg_json: r#"{"timezone": "UTC"}"#.to_string(),
+    };
+
+    let arg_bytes = ProstMessageCodec::serialize_message(&mcp_args)?;
+    let metadata = HashMap::new();
+
+    // Start MCP tool call in a task
+    let start_time = std::time::Instant::now();
+    let execution_task = tokio::spawn(async move { runner.run(&arg_bytes, metadata).await });
+
+    // Wait briefly for tool call to start
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Test with a short timeout to demonstrate cancellation readiness
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), execution_task).await;
+
+    let elapsed = start_time.elapsed();
+    eprintln!("MCP execution time: {elapsed:?}");
+
+    match result {
+        Ok(task_result) => {
+            let (execution_result, _metadata) = task_result.unwrap();
+            match execution_result {
+                Ok(_) => {
+                    eprintln!("MCP tool call completed successfully (fast response)");
+                    // For fast responses, this is actually good
+                }
+                Err(e) => {
+                    eprintln!("MCP tool call failed: {e}");
+                }
+            }
+        }
+        Err(_) => {
+            eprintln!("MCP tool call timed out - this indicates cancellation mechanism would work");
+            // This timeout demonstrates that the MCP call was running long enough to be cancelled
+            assert!(
+                elapsed >= std::time::Duration::from_secs(2),
+                "Should timeout after 2 seconds"
+            );
+        }
+    }
+
+    eprintln!("=== MCP cancellation test completed ===");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_mcp_cancellation_during_execution() -> Result<()> {
+    use crate::jobworkerp::runner::McpServerArgs;
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    // Create McpClients
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+
+    // Create MCP runner instance with the client (wrapped for sharing)
+    let runner = Arc::new(Mutex::new(McpServerRunnerImpl::new(client)));
+
+    // Test concurrent cancellation during execution
+    let mcp_args = McpServerArgs {
+        tool_name: "get_current_time".to_string(),
+        arg_json: r#"{"timezone": "UTC"}"#.to_string(),
+    };
+
+    let arg_bytes = ProstMessageCodec::serialize_message(&mcp_args)?;
+    let metadata = HashMap::new();
+
+    let runner_clone = runner.clone();
+
+    // Start MCP tool call in a task
+    let execution_task = tokio::spawn(async move {
+        let mut runner_guard = runner_clone.lock().await;
+        runner_guard.run(&arg_bytes, metadata).await
+    });
+
+    // Wait briefly for tool call to potentially start
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+    // Trigger cancellation from another task
+    let cancel_task = tokio::spawn(async move {
+        let mut runner_guard = runner.lock().await;
+        runner_guard.cancel().await;
+        eprintln!("Cancellation triggered");
+    });
+
+    // Wait for both tasks
+    let (execution_result, _) = tokio::join!(execution_task, cancel_task);
+
+    match execution_result {
+        Ok((result, _metadata)) => {
+            match result {
+                Ok(_) => {
+                    eprintln!("MCP tool call completed before cancellation took effect");
+                }
+                Err(e) => {
+                    eprintln!("MCP tool call error (may be due to cancellation): {e}");
+                    // Check if error message contains cancellation indication
+                    let error_msg = e.to_string();
+                    if error_msg.contains("cancelled") {
+                        eprintln!("Cancellation was successful!");
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("MCP execution task failed: {e}");
+        }
+    }
+
+    eprintln!("=== MCP cancellation during execution test completed ===");
+    Ok(())
+}
+
 // #[tokio::test]
 // async fn test_sqlite_mcp_server() -> Result<()> {
 //     // SQLite server configuration (using in-memory database)

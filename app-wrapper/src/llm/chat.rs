@@ -17,6 +17,7 @@ use proto::jobworkerp::data::{result_output_item, ResultOutputItem, RunnerType};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 pub mod conversion;
 pub mod genai;
@@ -26,6 +27,7 @@ pub struct LLMChatRunnerImpl {
     pub app: Arc<AppModule>,
     pub ollama: Option<OllamaChatService>,
     pub genai: Option<GenaiChatService>,
+    cancellation_token: Option<CancellationToken>,
 }
 
 impl LLMChatRunnerImpl {
@@ -34,6 +36,7 @@ impl LLMChatRunnerImpl {
             app: app_module,
             ollama: None,
             genai: None,
+            cancellation_token: None,
         }
     }
 }
@@ -205,6 +208,11 @@ impl RunnerTrait for LLMChatRunnerImpl {
     }
 
     async fn cancel(&mut self) {
-        tracing::warn!("OllamaPromptRunner cancel: not implemented!");
+        if let Some(token) = &self.cancellation_token {
+            token.cancel();
+            tracing::info!("LLM chat request cancelled");
+        } else {
+            tracing::warn!("No active LLM chat request to cancel");
+        }
     }
 }
