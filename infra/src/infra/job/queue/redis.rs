@@ -128,7 +128,13 @@ where
                 self.job_result_pubsub_repository()
                     .subscribe_result_stream(job_id, timeout)
                     .await
-                    .inspect_err(|e| tracing::error!("subscribe_result_stream error: {:?}, job_id: {:?}", e, job_id))
+                    .inspect_err(|e| {
+                        tracing::error!(
+                            "subscribe_result_stream error: {:?}, job_id: {:?}",
+                            e,
+                            job_id
+                        )
+                    })
                     .ok()
             } else {
                 None
@@ -136,7 +142,7 @@ where
         };
 
         let (pop_result, subscribe_result) = tokio::join!(pop_future, subscribe_future);
-        
+
         // Handle streaming request inconsistency: if streaming was requested but stream creation failed
         if request_streaming && subscribe_result.is_none() {
             tracing::warn!(
@@ -144,7 +150,7 @@ where
                 job_id
             );
         }
-        
+
         match pop_result {
             Ok(r) => {
                 // Check if job result indicates error status - in that case, don't return stream
@@ -155,7 +161,7 @@ where
                 } else {
                     false
                 };
-                
+
                 let final_stream = if should_disable_stream {
                     tracing::debug!(
                         "wait_for_result_queue_for_response: disabling stream for error result, job_id: {:?}, status: {:?}",
@@ -166,7 +172,7 @@ where
                 } else {
                     subscribe_result
                 };
-                
+
                 tracing::debug!(
                     "wait_for_result_queue_for_response: got res: {:?} {}",
                     r.id,
@@ -176,9 +182,9 @@ where
                         "without stream"
                     }
                 );
-                
+
                 Ok((r, final_stream))
-            },
+            }
             Err(e) => Err(e),
         }
     }
