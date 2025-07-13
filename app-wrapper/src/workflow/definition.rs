@@ -92,7 +92,7 @@ impl WorkflowLoader {
 
             // tracing::trace!("workflow json: {:#?}", json);
             // validate schema
-            // XXX Broken
+            // XXX Broken (known issue)
             if validate {
                 let _ = self.validate_schema(&json).await;
             }
