@@ -35,6 +35,12 @@ impl LLMCompletionRunnerImpl {
             cancellation_token: None,
         }
     }
+    
+    /// Set a cancellation token for this runner instance
+    /// This allows external control over cancellation behavior (for test)
+    pub fn set_cancellation_token(&mut self, token: CancellationToken) {
+        self.cancellation_token = Some(token);
+    }
 }
 
 impl Tracing for LLMCompletionRunnerImpl {}

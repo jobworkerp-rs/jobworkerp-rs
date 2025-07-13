@@ -39,6 +39,12 @@ impl LLMChatRunnerImpl {
             cancellation_token: None,
         }
     }
+
+    /// Set a cancellation token for this runner instance
+    /// This allows external control over cancellation behavior (for test)
+    pub fn set_cancellation_token(&mut self, token: CancellationToken) {
+        self.cancellation_token = Some(token);
+    }
 }
 
 impl Tracing for LLMChatRunnerImpl {}
@@ -276,27 +282,5 @@ impl RunnerTrait for LLMChatRunnerImpl {
         } else {
             tracing::warn!("No active LLM chat request to cancel");
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Skip AppModule-dependent tests for now since creating a test AppModule is complex
-    // Focus on the core cancellation token logic which can be tested independently
-
-    #[tokio::test]
-    async fn test_llm_chat_cancellation_token_basic() {
-        eprintln!("=== Testing LLM Chat Runner cancellation token basic functionality ===");
-
-        // Test that CancellationToken can be created and cancelled
-        let token = CancellationToken::new();
-        assert!(!token.is_cancelled());
-
-        token.cancel();
-        assert!(token.is_cancelled());
-
-        eprintln!("=== LLM Chat cancellation token basic functionality test completed ===");
     }
 }
