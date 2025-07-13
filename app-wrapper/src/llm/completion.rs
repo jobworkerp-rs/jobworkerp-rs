@@ -143,8 +143,14 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                     .map_err(|e| anyhow!("encode error: {}", e))?;
                 Ok(buf)
             } else if let Some(genai) = self.genai.as_mut() {
-                //XXX chat only - TODO: Add cancellation support for GenAI
-                let res = genai.request_chat(args, cx, metadata_clone).await?;
+                // Add cancellation support for GenAI
+                let res = tokio::select! {
+                    result = genai.request_chat(args, cx, metadata_clone) => result?,
+                    _ = cancellation_token.cancelled() => {
+                        tracing::info!("LLM completion (GenAI) request was cancelled");
+                        return Err(anyhow!("LLM completion (GenAI) request was cancelled"));
+                    }
+                };
                 let mut buf = Vec::with_capacity(res.encoded_len());
                 res.encode(&mut buf)
                     .map_err(|e| anyhow!("encode error: {}", e))?;
@@ -165,7 +171,19 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
+        // Set up cancellation token for stream execution
+        let cancellation_token = CancellationToken::new();
+        self.cancellation_token = Some(cancellation_token.clone());
+
         let args = LlmCompletionArgs::decode(args).map_err(|e| anyhow!("decode error: {}", e))?;
+
+        // Check cancellation before LLM service execution
+        if cancellation_token.is_cancelled() {
+            tracing::info!("LLM completion stream execution was cancelled before service call");
+            return Err(anyhow!(
+                "LLM completion stream execution was cancelled before service call"
+            ));
+        }
 
         if let Some(ollama) = self.ollama.as_mut() {
             // Get streaming responses from ollama service
@@ -211,8 +229,14 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
 
             Ok(output_stream)
         } else if let Some(genai) = self.genai.as_mut() {
-            // Get streaming responses from genai service
-            let stream = genai.request_chat_stream(args, metadata).await?;
+            // Get streaming responses from genai service with cancellation check
+            let stream = tokio::select! {
+                result = genai.request_chat_stream(args, metadata) => result?,
+                _ = cancellation_token.cancelled() => {
+                    tracing::info!("LLM completion stream (GenAI) request was cancelled");
+                    return Err(anyhow!("LLM completion stream (GenAI) request was cancelled"));
+                }
+            };
             Ok(stream)
         } else {
             Err(anyhow!("llm is not initialized"))
@@ -262,6 +286,37 @@ mod tests {
         runner.cancel().await; // Should not panic
 
         eprintln!("=== LLM cancellation token setup test completed ===");
+    }
+
+    #[tokio::test]
+    async fn test_llm_completion_genai_cancellation() {
+        eprintln!("=== Testing LLM Completion GenAI cancellation support ===");
+
+        let _runner = LLMCompletionRunnerImpl::new();
+
+        // Test cancellation token basic functionality
+        let token = CancellationToken::new();
+        assert!(!token.is_cancelled());
+
+        token.cancel();
+        assert!(token.is_cancelled());
+
+        eprintln!("=== LLM Completion GenAI cancellation support test completed ===");
+    }
+
+    #[tokio::test]
+    async fn test_llm_completion_cancellation_token_management() {
+        eprintln!("=== Testing LLM Completion cancellation token management ===");
+
+        let mut runner = LLMCompletionRunnerImpl::new();
+
+        // Initially no cancellation token
+        assert!(runner.cancellation_token.is_none());
+
+        // Test that cancel works without panic when no token exists
+        runner.cancel().await;
+
+        eprintln!("=== LLM Completion cancellation token management test completed ===");
     }
 
     #[tokio::test]

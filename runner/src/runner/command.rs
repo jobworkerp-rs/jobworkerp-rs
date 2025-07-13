@@ -26,6 +26,7 @@ use sysinfo::System;
 use tokio::process::{Child, Command};
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, LinesCodec};
+use tokio_util::sync::CancellationToken;
 
 /**
  * CommandRunner
@@ -44,10 +45,14 @@ trait CommandRunner: RunnerTrait {
 #[derive(Debug)]
 pub struct CommandRunnerImpl {
     pub process: Option<Box<Child>>,
+    pub cancellation_token: Option<CancellationToken>,
 }
 impl CommandRunnerImpl {
     pub fn new() -> Self {
-        Self { process: None }
+        Self {
+            process: None,
+            cancellation_token: None,
+        }
     }
 }
 
@@ -60,7 +65,8 @@ impl Default for CommandRunnerImpl {
 impl Clone for CommandRunnerImpl {
     fn clone(&self) -> Self {
         Self {
-            process: None, // cannot clone process
+            process: None,            // cannot clone process
+            cancellation_token: None, // cannot clone cancellation token
         }
     }
 }
@@ -129,6 +135,24 @@ impl RunnerTrait for CommandRunnerImpl {
         // let mut metadata = metadata.clone();
         // Self::inject_metadata_from_context(&mut metadata, &cx);
 
+        // Set up cancellation token for pre-execution cancellation check
+        let cancellation_token = if let Some(existing_token) = &self.cancellation_token {
+            // If token already exists and is cancelled, return early
+            if existing_token.is_cancelled() {
+                return (
+                    Err(anyhow::anyhow!(
+                        "Command execution was cancelled before start"
+                    )),
+                    metadata,
+                );
+            }
+            existing_token.clone()
+        } else {
+            let new_token = CancellationToken::new();
+            self.cancellation_token = Some(new_token.clone());
+            new_token
+        };
+
         let res = async {
         let data =
             ProstMessageCodec::deserialize_message::<CommandArgs>(args).context("on run job")?;
@@ -158,13 +182,23 @@ impl RunnerTrait for CommandRunnerImpl {
             should_monitor_memory,
             started_at
         );
-        match command
-            .args(args)
-            .kill_on_drop(true)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
+        // Use tokio::select! to monitor cancellation during process spawn
+        let spawn_result = tokio::select! {
+            spawn_result = async {
+                command
+                    .args(args)
+                    .kill_on_drop(true)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+            } => spawn_result,
+            _ = cancellation_token.cancelled() => {
+                tracing::info!("Command execution was cancelled before spawn");
+                return Err(anyhow::anyhow!("Command execution was cancelled before spawn"));
+            }
+        };
+
+        match spawn_result {
             Ok(child) => {
                 tracing::debug!("spawned child: {:?}", child);
                 self.set_child(Some(child));
@@ -285,14 +319,25 @@ impl RunnerTrait for CommandRunnerImpl {
                 // Calculate execution time in milliseconds
                 let execution_time_ms = start_time.elapsed().as_millis() as u64;
 
-                // Get the exit code from the child process
+                // Get the exit code from the child process with cancellation monitoring
                 let exit_code = match self.consume_child() {
                     Some(mut child) => {
-                        match child.wait().await {
-                            Ok(status) => status,
-                            Err(e) => {
-                                tracing::error!("Failed to wait for child process: {:?}", e);
-                                std::process::ExitStatus::default() // Provide a default exit status
+                        // Monitor cancellation during process execution
+                        tokio::select! {
+                            wait_result = child.wait() => {
+                                match wait_result {
+                                    Ok(status) => status,
+                                    Err(e) => {
+                                        tracing::error!("Failed to wait for child process: {:?}", e);
+                                        std::process::ExitStatus::default() // Provide a default exit status
+                                    }
+                                }
+                            }
+                            _ = cancellation_token.cancelled() => {
+                                tracing::info!("Command execution was cancelled during process execution");
+                                // Kill the child process if cancellation is requested
+                                let _ = child.kill().await;
+                                return Err(anyhow::anyhow!("Command execution was cancelled during process execution"));
                             }
                         }
                     }
@@ -344,6 +389,9 @@ impl RunnerTrait for CommandRunnerImpl {
             }
         }
         }.await;
+
+        // Clear cancellation token after execution
+        self.cancellation_token = None;
         (res, metadata)
     }
     async fn run_stream(
@@ -777,6 +825,12 @@ impl RunnerTrait for CommandRunnerImpl {
     }
 
     async fn cancel(&mut self) {
+        // Cancel the cancellation token first
+        if let Some(token) = &self.cancellation_token {
+            token.cancel();
+            tracing::info!("Command execution cancellation token triggered");
+        }
+
         if let Some(mut child) = self.consume_child() {
             #[cfg(unix)]
             {
@@ -1373,5 +1427,84 @@ mod tests {
         eprintln!("Execution completed in {elapsed:?}");
 
         eprintln!("=== Command cancel with shared state test completed ===");
+    }
+
+    #[tokio::test]
+    async fn test_pre_execution_cancellation() {
+        eprintln!("=== Testing COMMAND Runner pre-execution cancellation ===");
+
+        let mut runner = CommandRunnerImpl::new();
+        let arg = CommandArgs {
+            command: "sleep".to_string(),
+            args: vec!["5".to_string()], // Longer sleep to ensure cancellation
+            with_memory_monitoring: false,
+        };
+
+        // Test cancellation by calling cancel() and then checking cancellation token
+        runner.cancellation_token = Some(CancellationToken::new());
+
+        // Cancel the token immediately
+        if let Some(ref token) = runner.cancellation_token {
+            token.cancel();
+        }
+
+        let start_time = std::time::Instant::now();
+        let (result, _metadata) = runner
+            .run(
+                &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                HashMap::new(),
+            )
+            .await;
+        let elapsed = start_time.elapsed();
+
+        eprintln!("Execution completed in {elapsed:?}");
+
+        // The command should be cancelled
+        match result {
+            Ok(_) => {
+                panic!("Command should have been cancelled but completed normally");
+            }
+            Err(e) => {
+                eprintln!("Command was cancelled as expected: {e}");
+                assert!(e.to_string().contains("cancelled"));
+            }
+        }
+
+        // Should complete much faster than 5 seconds due to cancellation
+        assert!(
+            elapsed.as_millis() < 1000,
+            "Cancellation should prevent long execution"
+        );
+
+        eprintln!("=== Pre-execution cancellation test completed ===");
+    }
+
+    #[tokio::test]
+    async fn test_cancellation_token_management() {
+        eprintln!("=== Testing COMMAND Runner cancellation token management ===");
+
+        let mut runner = CommandRunnerImpl::new();
+
+        // Initially no cancellation token
+        assert!(runner.cancellation_token.is_none());
+
+        let arg = CommandArgs {
+            command: "echo".to_string(),
+            args: vec!["test".to_string()],
+            with_memory_monitoring: false,
+        };
+
+        let (result, _metadata) = runner
+            .run(
+                &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                HashMap::new(),
+            )
+            .await;
+
+        // After execution, cancellation token should be cleared
+        assert!(runner.cancellation_token.is_none());
+        assert!(result.is_ok());
+
+        eprintln!("=== Cancellation token management test completed ===");
     }
 }

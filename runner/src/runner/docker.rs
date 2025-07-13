@@ -19,6 +19,7 @@ use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
 use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -161,6 +162,7 @@ where
 pub struct DockerExecRunner {
     docker: Option<Docker>,
     instant_id: String,
+    cancellation_token: Option<CancellationToken>,
 }
 
 impl DockerExecRunner {
@@ -168,6 +170,7 @@ impl DockerExecRunner {
         DockerExecRunner {
             docker: None,
             instant_id: "".to_string(),
+            cancellation_token: None,
         }
     }
     // create and start container
@@ -305,6 +308,24 @@ impl RunnerTrait for DockerExecRunner {
         arg: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        // Set up cancellation token for pre-execution cancellation check
+        let cancellation_token = if let Some(existing_token) = &self.cancellation_token {
+            // If token already exists and is cancelled, return early
+            if existing_token.is_cancelled() {
+                return (
+                    Err(anyhow::anyhow!(
+                        "Docker execution was cancelled before start"
+                    )),
+                    metadata,
+                );
+            }
+            existing_token.clone()
+        } else {
+            let new_token = CancellationToken::new();
+            self.cancellation_token = Some(new_token.clone());
+            new_token
+        };
+
         let result = async {
             if let Some(docker) = self.docker.as_ref() {
                 let req = ProstMessageCodec::deserialize_message::<DockerArgs>(arg)?;
@@ -313,15 +334,52 @@ impl RunnerTrait for DockerExecRunner {
                 c.attach_stdout = Some(true);
                 c.attach_stderr = Some(true);
 
+                // Check cancellation before creating exec
+                if cancellation_token.is_cancelled() {
+                    tracing::info!("Docker exec execution was cancelled before create_exec");
+                    return Err(anyhow::anyhow!("Docker exec execution was cancelled before create_exec"));
+                }
+
                 // non interactive
-                let exec = docker.create_exec(&self.instant_id, c).await?.id;
+                let exec = tokio::select! {
+                    exec_result = docker.create_exec(&self.instant_id, c) => {
+                        exec_result?.id
+                    }
+                    _ = cancellation_token.cancelled() => {
+                        tracing::info!("Docker exec creation was cancelled");
+                        return Err(anyhow::anyhow!("Docker exec creation was cancelled"));
+                    }
+                };
 
                 let mut out = Vec::<Vec<u8>>::new();
-                if let StartExecResults::Attached { mut output, .. } =
-                    docker.start_exec(&exec, None).await?
-                {
-                    while let Some(Ok(msg)) = output.next().await {
-                        out.push(format!("{msg}\n").into_bytes().to_vec());
+                let start_result = tokio::select! {
+                    start_result = docker.start_exec(&exec, None) => start_result,
+                    _ = cancellation_token.cancelled() => {
+                        tracing::info!("Docker exec start was cancelled");
+                        return Err(anyhow::anyhow!("Docker exec start was cancelled"));
+                    }
+                };
+
+                if let StartExecResults::Attached { mut output, .. } = start_result? {
+                    loop {
+                        tokio::select! {
+                            msg_result = output.next() => {
+                                match msg_result {
+                                    Some(Ok(msg)) => {
+                                        out.push(format!("{msg}\n").into_bytes().to_vec());
+                                    }
+                                    Some(Err(e)) => {
+                                        tracing::error!("Docker output stream error: {}", e);
+                                        break;
+                                    }
+                                    None => break, // Stream ended
+                                }
+                            }
+                            _ = cancellation_token.cancelled() => {
+                                tracing::info!("Docker exec output reading was cancelled");
+                                return Err(anyhow::anyhow!("Docker exec output reading was cancelled"));
+                            }
+                        }
                     }
                     Ok(out.concat())
                 } else {
@@ -333,6 +391,9 @@ impl RunnerTrait for DockerExecRunner {
             }
         }
         .await;
+
+        // Clear cancellation token after execution
+        self.cancellation_token = None;
         (result, metadata)
     }
     async fn run_stream(
@@ -346,6 +407,12 @@ impl RunnerTrait for DockerExecRunner {
     }
 
     async fn cancel(&mut self) {
+        // Cancel the cancellation token first
+        if let Some(token) = &self.cancellation_token {
+            token.cancel();
+            tracing::info!("Docker exec cancellation token triggered");
+        }
+
         if !self.instant_id.is_empty() {
             tracing::info!("Stopping Docker container: {}", self.instant_id);
 
@@ -410,6 +477,7 @@ async fn exec_test() -> Result<()> {
 pub struct DockerRunner {
     docker: Option<Docker>,
     current_container_id: Option<String>,
+    cancellation_token: Option<CancellationToken>,
 }
 
 impl DockerRunner {
@@ -417,6 +485,7 @@ impl DockerRunner {
         DockerRunner {
             docker: None,
             current_container_id: None,
+            cancellation_token: None,
         }
     }
     pub async fn create(&mut self, image_options: &CreateRunnerOptions<String>) -> Result<()> {
@@ -546,6 +615,24 @@ impl RunnerTrait for DockerRunner {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        // Set up cancellation token for pre-execution cancellation check
+        let cancellation_token = if let Some(existing_token) = &self.cancellation_token {
+            // If token already exists and is cancelled, return early
+            if existing_token.is_cancelled() {
+                return (
+                    Err(anyhow::anyhow!(
+                        "Docker execution was cancelled before start"
+                    )),
+                    metadata,
+                );
+            }
+            existing_token.clone()
+        } else {
+            let new_token = CancellationToken::new();
+            self.cancellation_token = Some(new_token.clone());
+            new_token
+        };
+
         let result = async {
             let arg = ProstMessageCodec::deserialize_message::<DockerArgs>(args)?;
             let create_option = CreateRunnerOptions::new(arg.image.clone());
@@ -553,32 +640,45 @@ impl RunnerTrait for DockerRunner {
                 self.create(&create_option).await?;
             }
             if let Some(docker) = self.docker.as_ref() {
+                // Check cancellation before creating image
+                if cancellation_token.is_cancelled() {
+                    tracing::info!("Docker execution was cancelled before create_image");
+                    return Err(anyhow::anyhow!("Docker execution was cancelled before create_image"));
+                }
+
                 // create image if not exist
-                docker
-                    .create_image(Some(create_option.to_docker()), None, None)
-                    .try_collect::<Vec<_>>()
-                    .await
-                    .map_err(JobWorkerError::DockerError)?;
+                tokio::select! {
+                    result = docker
+                        .create_image(Some(create_option.to_docker()), None, None)
+                        .try_collect::<Vec<_>>() => {
+                        result.map_err(JobWorkerError::DockerError)?;
+                    }
+                    _ = cancellation_token.cancelled() => {
+                        tracing::info!("Docker image creation was cancelled");
+                        return Err(anyhow::anyhow!("Docker image creation was cancelled"));
+                    }
+                }
 
                 let mut config = self.trans_docker_arg_to_config(&arg);
                 // to output log
                 config.attach_stdout = Some(true);
                 config.attach_stderr = Some(true);
 
-                let created = docker
-                    .create_container::<&str, String>(None, config)
-                    .await?;
+                let created = tokio::select! {
+                    result = docker.create_container::<&str, String>(None, config) => result?,
+                    _ = cancellation_token.cancelled() => {
+                        tracing::info!("Docker container creation was cancelled");
+                        return Err(anyhow::anyhow!("Docker container creation was cancelled"));
+                    }
+                };
                 let id = created.id;
                 tracing::info!("container id: {}", &id);
 
                 // Store container ID for potential cancellation
                 self.current_container_id = Some(id.clone());
 
-                let AttachContainerResults {
-                    mut output,
-                    input: _,
-                } = docker
-                    .attach_container(
+                let attach_result = tokio::select! {
+                    result = docker.attach_container(
                         &id,
                         Some(AttachContainerOptions::<String> {
                             stdout: Some(true),
@@ -587,21 +687,53 @@ impl RunnerTrait for DockerRunner {
                             stream: Some(true),
                             ..Default::default()
                         }),
-                    )
-                    .await?;
+                    ) => result?,
+                    _ = cancellation_token.cancelled() => {
+                        tracing::info!("Docker container attach was cancelled");
+                        return Err(anyhow::anyhow!("Docker container attach was cancelled"));
+                    }
+                };
 
-                docker.start_container::<String>(&id, None).await?;
+                let AttachContainerResults {
+                    mut output,
+                    input: _,
+                } = attach_result;
+
+                tokio::select! {
+                    result = docker.start_container::<String>(&id, None) => result?,
+                    _ = cancellation_token.cancelled() => {
+                        tracing::info!("Docker container start was cancelled");
+                        return Err(anyhow::anyhow!("Docker container start was cancelled"));
+                    }
+                }
 
                 let mut logs = Vec::<Vec<u8>>::new();
                 // pipe docker attach output into stdout
-                while let Some(Ok(output)) = output.next().await {
-                    match String::from_utf8(output.into_bytes().to_vec()) {
-                        Ok(o) => {
-                            tracing::info!("{}", &o);
-                            logs.push(format!("{o}\n").into_bytes().to_vec())
-                            // logs.push(o);
+                loop {
+                    tokio::select! {
+                        output_result = output.next() => {
+                            match output_result {
+                                Some(Ok(output)) => {
+                                    match String::from_utf8(output.into_bytes().to_vec()) {
+                                        Ok(o) => {
+                                            tracing::info!("{}", &o);
+                                            logs.push(format!("{o}\n").into_bytes().to_vec())
+                                            // logs.push(o);
+                                        }
+                                        Err(e) => tracing::error!("error in decoding logs: {:?}", e),
+                                    }
+                                }
+                                Some(Err(e)) => {
+                                    tracing::error!("Docker output stream error: {}", e);
+                                    break;
+                                }
+                                None => break, // Stream ended
+                            }
                         }
-                        Err(e) => tracing::error!("error in decoding logs: {:?}", e),
+                        _ = cancellation_token.cancelled() => {
+                            tracing::info!("Docker output reading was cancelled");
+                            return Err(anyhow::anyhow!("Docker output reading was cancelled"));
+                        }
                     }
                 }
                 // remove container if persist to running
@@ -621,8 +753,9 @@ impl RunnerTrait for DockerRunner {
         }
         .await;
 
-        // Clear container ID after execution completes
+        // Clear container ID and cancellation token after execution completes
         self.current_container_id = None;
+        self.cancellation_token = None;
         (result, metadata)
     }
     async fn run_stream(
@@ -636,6 +769,12 @@ impl RunnerTrait for DockerRunner {
     }
 
     async fn cancel(&mut self) {
+        // Cancel the cancellation token first
+        if let Some(token) = &self.cancellation_token {
+            token.cancel();
+            tracing::info!("Docker cancellation token triggered");
+        }
+
         if let (Some(docker), Some(container_id)) =
             (self.docker.as_ref(), &self.current_container_id)
         {
@@ -823,4 +962,107 @@ async fn run_test() -> Result<()> {
     tracing::info!("result:{:?}", &r);
 
     Ok(())
+}
+
+#[tokio::test]
+async fn test_docker_exec_pre_execution_cancellation() {
+    eprintln!("=== Testing Docker Exec Runner pre-execution cancellation ===");
+
+    let mut runner = DockerExecRunner::new();
+
+    // Test cancellation by setting a cancelled token
+    runner.cancellation_token = Some(CancellationToken::new());
+
+    // Cancel the token immediately
+    if let Some(ref token) = runner.cancellation_token {
+        token.cancel();
+    }
+
+    use crate::jobworkerp::runner::DockerArgs;
+    let arg = DockerArgs {
+        cmd: vec!["sleep".to_string(), "10".to_string()],
+        ..Default::default()
+    };
+
+    let start_time = std::time::Instant::now();
+    let (result, _metadata) = runner
+        .run(
+            &ProstMessageCodec::serialize_message(&arg).unwrap(),
+            HashMap::new(),
+        )
+        .await;
+    let elapsed = start_time.elapsed();
+
+    eprintln!("Execution completed in {elapsed:?}");
+
+    // The command should be cancelled
+    match result {
+        Ok(_) => {
+            panic!("Docker exec command should have been cancelled but completed normally");
+        }
+        Err(e) => {
+            eprintln!("Docker exec command was cancelled as expected: {e}");
+            assert!(e.to_string().contains("cancelled"));
+        }
+    }
+
+    // Should complete much faster than 10 seconds due to cancellation
+    assert!(
+        elapsed.as_millis() < 1000,
+        "Cancellation should prevent long execution"
+    );
+
+    eprintln!("=== Docker Exec pre-execution cancellation test completed ===");
+}
+
+#[tokio::test]
+async fn test_docker_runner_pre_execution_cancellation() {
+    eprintln!("=== Testing Docker Runner pre-execution cancellation ===");
+
+    let mut runner = DockerRunner::new();
+
+    // Test cancellation by setting a cancelled token
+    runner.cancellation_token = Some(CancellationToken::new());
+
+    // Cancel the token immediately
+    if let Some(ref token) = runner.cancellation_token {
+        token.cancel();
+    }
+
+    use crate::jobworkerp::runner::DockerArgs;
+    let arg = DockerArgs {
+        image: Some("busybox:latest".to_string()),
+        cmd: vec!["sleep".to_string(), "10".to_string()],
+        ..Default::default()
+    };
+
+    let start_time = std::time::Instant::now();
+    let (result, _metadata) = runner
+        .run(
+            &ProstMessageCodec::serialize_message(&arg).unwrap(),
+            HashMap::new(),
+        )
+        .await;
+    let elapsed = start_time.elapsed();
+
+    eprintln!("Execution completed in {elapsed:?}");
+
+    // The command should be cancelled
+    match result {
+        Ok(_) => {
+            panic!("Docker runner command should have been cancelled but completed normally");
+        }
+        Err(e) => {
+            eprintln!("Docker runner command was cancelled as expected: {e}");
+            assert!(e.to_string().contains("cancelled"));
+        }
+    }
+
+    // Should complete much faster than 10 seconds due to cancellation
+    assert!(
+        elapsed.as_millis() < 1000,
+        "Cancellation should prevent long execution"
+    );
+
+    eprintln!("=== Docker Runner pre-execution cancellation test completed ===");
 }
