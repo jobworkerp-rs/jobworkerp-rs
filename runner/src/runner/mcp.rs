@@ -22,6 +22,7 @@ use proto::jobworkerp::function::data::ToolAnnotations;
 use proxy::McpServerProxy;
 use rmcp::model::CallToolRequestParam;
 use std::collections::HashMap;
+use tokio_util::sync::CancellationToken;
 
 pub mod config;
 #[cfg(any(test, feature = "test-utils"))]
@@ -35,11 +36,15 @@ pub mod proxy;
 #[derive(Debug)]
 pub struct McpServerRunnerImpl {
     mcp_server: McpServerProxy,
+    cancellation_token: Option<CancellationToken>,
 }
 
 impl McpServerRunnerImpl {
     pub fn new(server: McpServerProxy) -> Self {
-        Self { mcp_server: server }
+        Self {
+            mcp_server: server,
+            cancellation_token: None,
+        }
     }
     pub async fn tools(&self) -> Result<Vec<McpTool>> {
         self.mcp_server.load_tools().await.map(|list| {
@@ -104,6 +109,10 @@ impl RunnerTrait for McpServerRunnerImpl {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        // Set up cancellation token for this execution
+        let cancellation_token = CancellationToken::new();
+        self.cancellation_token = Some(cancellation_token.clone());
+
         let result = async {
             let span = Self::otel_span_from_metadata(
                 &metadata,
@@ -125,18 +134,23 @@ impl RunnerTrait for McpServerRunnerImpl {
                 "input.arg_json",
                 arg.arg_json.clone(), // XXX clone
             ));
-            let res = self
-                .mcp_server
-                .transport
-                .call_tool(CallToolRequestParam {
-                    name: std::borrow::Cow::Owned(arg.tool_name),
-                    arguments: serde_json::from_str(arg.arg_json.as_str())
-                        .inspect_err(|e| {
-                            tracing::error!("Failed to parse arguments: {}", e);
-                        })
-                        .ok(),
-                })
-                .await?;
+            // Call MCP tool with cancellation support
+            let res = tokio::select! {
+                call_result = self
+                    .mcp_server
+                    .transport
+                    .call_tool(CallToolRequestParam {
+                        name: std::borrow::Cow::Owned(arg.tool_name),
+                        arguments: serde_json::from_str(arg.arg_json.as_str())
+                            .inspect_err(|e| {
+                                tracing::error!("Failed to parse arguments: {}", e);
+                            })
+                            .ok(),
+                    }) => call_result?,
+                _ = cancellation_token.cancelled() => {
+                    return Err(anyhow!("MCP tool call was cancelled"));
+                }
+            };
 
             if res.is_error.unwrap_or_default() {
                 let error = anyhow!(
@@ -242,6 +256,9 @@ impl RunnerTrait for McpServerRunnerImpl {
             Ok(encoded)
         }
         .await;
+
+        // Clear cancellation token after execution
+        self.cancellation_token = None;
         (result, metadata)
     }
 
@@ -255,7 +272,13 @@ impl RunnerTrait for McpServerRunnerImpl {
     }
 
     async fn cancel(&mut self) {
-        tracing::debug!("cancel mcp server");
-        // self.mcp_server.cancel().await.unwrap_or_default();
+        if let Some(token) = &self.cancellation_token {
+            token.cancel();
+            tracing::info!("MCP server operation cancelled");
+        } else {
+            tracing::warn!("No active MCP server operation to cancel");
+        }
     }
 }
+
+// MCP Runnerのテストはintegration_tests.rsに実装済み
