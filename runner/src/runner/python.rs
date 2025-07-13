@@ -18,6 +18,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::process::Command;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use super::RunnerSpec;
 
@@ -27,6 +28,7 @@ pub struct PythonCommandRunner {
     settings: Option<PythonCommandRunnerSettings>,
     process_cancel: Arc<Mutex<bool>>,
     current_process_id: Arc<Mutex<Option<u32>>>,
+    cancellation_token: Option<CancellationToken>,
 }
 
 impl PythonCommandRunner {
@@ -37,6 +39,7 @@ impl PythonCommandRunner {
             settings: None,
             process_cancel: Arc::new(Mutex::new(false)),
             current_process_id: Arc::new(Mutex::new(None)),
+            cancellation_token: None,
         }
     }
 
@@ -184,6 +187,24 @@ impl RunnerTrait for PythonCommandRunner {
         arg: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        // Set up cancellation token for pre-execution cancellation check
+        let cancellation_token = if let Some(existing_token) = &self.cancellation_token {
+            // If token already exists and is cancelled, return early
+            if existing_token.is_cancelled() {
+                return (
+                    Err(anyhow::anyhow!(
+                        "Python command execution was cancelled before start"
+                    )),
+                    metadata,
+                );
+            }
+            existing_token.clone()
+        } else {
+            let new_token = CancellationToken::new();
+            self.cancellation_token = Some(new_token.clone());
+            new_token
+        };
+
         let result = async {
             let python_bin = self
                 .python_bin_path()
@@ -282,14 +303,47 @@ impl RunnerTrait for PythonCommandRunner {
                 command.env(key, value);
             }
 
-            let child = command.spawn().context("Failed to execute Python script")?;
+            // Check cancellation before spawning process
+            if cancellation_token.is_cancelled() {
+                tracing::info!("Python command execution was cancelled before spawn");
+                return Err(anyhow::anyhow!("Python command execution was cancelled before spawn"));
+            }
 
+            let child = command.spawn().context("Failed to execute Python script")?;
             *self.current_process_id.lock().await = child.id();
 
-            let output = child
-                .wait_with_output()
-                .await
-                .context("Failed to wait for process")?;
+            // Monitor cancellation during process execution
+            let child_id = child.id();
+            let output = tokio::select! {
+                output_result = child.wait_with_output() => {
+                    output_result.context("Failed to wait for process")?
+                }
+                _ = cancellation_token.cancelled() => {
+                    tracing::info!("Python command execution was cancelled during process execution");
+                    // Kill the child process using PID if cancellation is requested
+                    if let Some(pid) = child_id {
+                        #[cfg(unix)]
+                        {
+                            use nix::sys::signal::{kill, Signal};
+                            use nix::unistd::Pid;
+                            let _ = kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
+                        }
+                        #[cfg(windows)]
+                        {
+                            use windows_sys::Win32::System::Threading::{
+                                OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+                            };
+                            unsafe {
+                                let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+                                if handle != 0 {
+                                    let _ = TerminateProcess(handle, 1);
+                                }
+                            }
+                        }
+                    }
+                    return Err(anyhow::anyhow!("Python command execution was cancelled during process execution"));
+                }
+            };
 
             *self.current_process_id.lock().await = None;
 
@@ -310,6 +364,9 @@ impl RunnerTrait for PythonCommandRunner {
             Ok(encoded_result)
         }
         .await;
+
+        // Clear cancellation token after execution
+        self.cancellation_token = None;
         (result, metadata)
     }
 
@@ -322,6 +379,12 @@ impl RunnerTrait for PythonCommandRunner {
     }
 
     async fn cancel(&mut self) {
+        // Cancel the cancellation token first
+        if let Some(token) = &self.cancellation_token {
+            token.cancel();
+            tracing::info!("Python command execution cancellation token triggered");
+        }
+
         let mut cancel_flag = self.process_cancel.lock().await;
         *cancel_flag = true;
 
@@ -624,5 +687,92 @@ except KeyboardInterrupt:
         }
 
         eprintln!("=== Python actual cancellation test completed ===");
+    }
+
+    #[tokio::test]
+    async fn test_pre_execution_cancellation() {
+        eprintln!("=== Testing PYTHON Runner pre-execution cancellation ===");
+
+        let mut runner = PythonCommandRunner::new();
+
+        // Test cancellation by setting a cancelled token
+        runner.cancellation_token = Some(CancellationToken::new());
+
+        // Cancel the token immediately
+        if let Some(ref token) = runner.cancellation_token {
+            token.cancel();
+        }
+
+        let arg = PythonCommandArgs {
+            script: Some(python_command_args::Script::ScriptContent(
+                "import time; time.sleep(5); print('Should not reach here')".to_string(),
+            )),
+            env_vars: std::collections::HashMap::new(),
+            input_data: None,
+            with_stderr: false,
+        };
+
+        let start_time = std::time::Instant::now();
+        let (result, _metadata) = runner
+            .run(
+                &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                HashMap::new(),
+            )
+            .await;
+        let elapsed = start_time.elapsed();
+
+        eprintln!("Execution completed in {elapsed:?}");
+
+        // The command should be cancelled
+        match result {
+            Ok(_) => {
+                panic!("Python command should have been cancelled but completed normally");
+            }
+            Err(e) => {
+                eprintln!("Python command was cancelled as expected: {e}");
+                assert!(e.to_string().contains("cancelled"));
+            }
+        }
+
+        // Should complete much faster than 5 seconds due to cancellation
+        assert!(
+            elapsed.as_millis() < 1000,
+            "Cancellation should prevent long execution"
+        );
+
+        eprintln!("=== Pre-execution cancellation test completed ===");
+    }
+
+    #[tokio::test]
+    async fn test_cancellation_token_management() {
+        eprintln!("=== Testing PYTHON Runner cancellation token management ===");
+
+        let mut runner = PythonCommandRunner::new();
+
+        // Initially no cancellation token
+        assert!(runner.cancellation_token.is_none());
+
+        let arg = PythonCommandArgs {
+            script: Some(python_command_args::Script::ScriptContent(
+                "print('hello')".to_string(),
+            )),
+            env_vars: std::collections::HashMap::new(),
+            input_data: None,
+            with_stderr: false,
+        };
+
+        // This will fail because Python environment is not loaded
+        let (result, _metadata) = runner
+            .run(
+                &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                HashMap::new(),
+            )
+            .await;
+
+        // After execution, cancellation token should be cleared
+        assert!(runner.cancellation_token.is_none());
+        assert!(result.is_err()); // Expected to fail without proper Python setup
+
+        eprintln!("=== Cancellation token management test completed ===");
     }
 }
