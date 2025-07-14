@@ -109,11 +109,19 @@ impl RunnerTrait for McpServerRunnerImpl {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        // Set up cancellation token for this execution
-        let cancellation_token = CancellationToken::new();
-        self.cancellation_token = Some(cancellation_token.clone());
+        // Set up cancellation token for this execution if not already set
+        let cancellation_token = self.cancellation_token.clone().unwrap_or_else(|| {
+            let token = CancellationToken::new();
+            self.cancellation_token = Some(token.clone());
+            token
+        });
 
         let result = async {
+            // Check for cancellation before starting
+            if cancellation_token.is_cancelled() {
+                return Err(anyhow!("MCP tool call was cancelled before execution"));
+            }
+
             let span = Self::otel_span_from_metadata(
                 &metadata,
                 APP_WORKER_NAME,

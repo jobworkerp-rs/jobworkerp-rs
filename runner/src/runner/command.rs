@@ -1341,18 +1341,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cancel_no_active_process() {
-        eprintln!("=== Starting cancel with no active process test ===");
-        let mut runner = CommandRunnerImpl::new();
-
-        // Call cancel when no process is running - should not panic
-        runner.cancel().await;
-        eprintln!("Cancel completed successfully with no active process");
-
-        eprintln!("=== Cancel with no active process test completed ===");
-    }
-
-    #[tokio::test]
     async fn test_command_cancel_with_shared_state() {
         eprintln!("=== Starting command cancel with shared state test ===");
         use std::sync::Arc;

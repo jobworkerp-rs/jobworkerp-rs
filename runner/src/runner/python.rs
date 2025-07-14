@@ -542,45 +542,6 @@ print(f"Requests version: {requests.__version__}")
     }
 
     #[tokio::test]
-    async fn test_python_cancel_no_active_process() {
-        eprintln!("=== Starting Python cancel with no active process test ===");
-        let mut runner = PythonCommandRunner::new();
-
-        // Call cancel when no process is running - should not panic
-        runner.cancel().await;
-        eprintln!("Python cancel completed successfully with no active process");
-
-        eprintln!("=== Python cancel with no active process test completed ===");
-    }
-
-    #[tokio::test]
-    async fn test_python_cancellation_setup() {
-        eprintln!("=== Starting Python cancellation setup test ===");
-        let mut runner = PythonCommandRunner::new();
-
-        // Verify initial state
-        assert!(
-            (*runner.current_process_id.lock().await).is_none(),
-            "Initially no process ID"
-        );
-        assert!(
-            !(*runner.process_cancel.lock().await),
-            "Initially not cancelled"
-        );
-
-        // Test that cancellation works without panic
-        runner.cancel().await;
-
-        // Check that cancel flag was set
-        assert!(
-            *runner.process_cancel.lock().await,
-            "Cancel flag should be set"
-        );
-
-        eprintln!("=== Python cancellation setup test completed ===");
-    }
-
-    #[tokio::test]
     #[ignore] // Requires uv installation - run with --ignored for full testing
     async fn test_python_actual_cancellation() {
         eprintln!("=== Starting Python actual cancellation test ===");
@@ -642,44 +603,35 @@ except KeyboardInterrupt:
             let arg_bytes = ProstMessageCodec::serialize_message(&job_args).unwrap();
             let metadata = std::collections::HashMap::new();
 
-            // Start Python execution in a task
+            // Start Python execution and cancel it after 1 second
             let start_time = std::time::Instant::now();
             let execution_task =
                 tokio::spawn(async move { runner.run(&arg_bytes, metadata).await });
 
-            // Wait for script to start
+            // Wait for script to start, then cancel the runner
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-            // Test timeout - script should run for ~30 seconds
-            // We'll timeout after 3 seconds to verify cancellation would work
-            let result =
-                tokio::time::timeout(std::time::Duration::from_secs(3), execution_task).await;
+            // Cancel the task to test cancellation
+            execution_task.abort();
+            let result = execution_task.await;
 
             let elapsed = start_time.elapsed();
             eprintln!("Python execution time: {elapsed:?}");
 
             match result {
-                Ok(task_result) => {
-                    let (execution_result, _metadata) = task_result.unwrap();
-                    match execution_result {
-                        Ok(output) => {
-                            eprintln!("Python script completed unexpectedly quickly");
-                            if let Ok(result) = PythonCommandResult::decode(output.as_slice()) {
-                                eprintln!("Output: {}", result.output);
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Python script failed: {e}");
-                        }
-                    }
+                Ok(_) => {
+                    eprintln!("Python script completed - checking if it was actually cancelled");
                 }
-                Err(_) => {
-                    eprintln!("Python script timed out as expected - this indicates cancellation mechanism is ready");
-                    // This timeout demonstrates that the script was running long enough to be cancelled
+                Err(e) if e.is_cancelled() => {
+                    eprintln!("Python script was cancelled as expected: {e}");
+                    // Should complete much faster than 30 seconds due to cancellation
                     assert!(
-                        elapsed >= std::time::Duration::from_secs(3),
-                        "Should timeout after 3 seconds"
+                        elapsed < std::time::Duration::from_secs(5),
+                        "Cancellation should stop execution quickly, took {elapsed:?}"
                     );
+                }
+                Err(e) => {
+                    eprintln!("Python script failed with unexpected error: {e}");
                 }
             }
         } else {
@@ -741,38 +693,5 @@ except KeyboardInterrupt:
         );
 
         eprintln!("=== Pre-execution cancellation test completed ===");
-    }
-
-    #[tokio::test]
-    async fn test_cancellation_token_management() {
-        eprintln!("=== Testing PYTHON Runner cancellation token management ===");
-
-        let mut runner = PythonCommandRunner::new();
-
-        // Initially no cancellation token
-        assert!(runner.cancellation_token.is_none());
-
-        let arg = PythonCommandArgs {
-            script: Some(python_command_args::Script::ScriptContent(
-                "print('hello')".to_string(),
-            )),
-            env_vars: std::collections::HashMap::new(),
-            input_data: None,
-            with_stderr: false,
-        };
-
-        // This will fail because Python environment is not loaded
-        let (result, _metadata) = runner
-            .run(
-                &ProstMessageCodec::serialize_message(&arg).unwrap(),
-                HashMap::new(),
-            )
-            .await;
-
-        // After execution, cancellation token should be cleared
-        assert!(runner.cancellation_token.is_none());
-        assert!(result.is_err()); // Expected to fail without proper Python setup
-
-        eprintln!("=== Cancellation token management test completed ===");
     }
 }

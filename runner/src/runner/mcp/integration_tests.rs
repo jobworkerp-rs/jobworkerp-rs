@@ -117,6 +117,30 @@ pub async fn create_time_mcp_server() -> Result<McpServerConfig> {
     })
 }
 
+pub async fn create_fetch_mcp_server_transport() -> Result<McpServerTransportConfig> {
+    // Fetch server configuration
+    let fetch_server_path = get_mcp_server_path("fetch");
+
+    // Set up virtual environment
+    let envs = setup_python_environment_with_uv(&fetch_server_path).await?;
+
+    // Use Python directly from the virtual environment
+    let venv_python = get_venv_python(&fetch_server_path);
+    Ok(McpServerTransportConfig::Stdio {
+        command: venv_python.to_string_lossy().to_string(),
+        args: vec!["-m".to_string(), "mcp_server_fetch".to_string()],
+        envs,
+    })
+}
+
+pub async fn create_fetch_mcp_server() -> Result<McpServerConfig> {
+    Ok(McpServerConfig {
+        name: "fetch".to_string(),
+        description: None,
+        transport: create_fetch_mcp_server_transport().await?,
+    })
+}
+
 #[tokio::test]
 async fn test_time_mcp_server() -> Result<()> {
     use crate::runner::mcp::config::McpConfig;
@@ -153,12 +177,9 @@ async fn test_time_mcp_server() -> Result<()> {
 
 #[tokio::test]
 async fn test_mcp_cancellation() -> Result<()> {
-    use crate::jobworkerp::runner::McpServerArgs;
     use crate::runner::mcp::config::McpConfig;
     use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerTrait;
-    use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
-    use std::collections::HashMap;
 
     let config = McpConfig {
         server: vec![create_time_mcp_server().await?],
@@ -175,7 +196,40 @@ async fn test_mcp_cancellation() -> Result<()> {
     runner.cancel().await;
     eprintln!("MCP cancel completed successfully with no active operation");
 
-    // Test cancellation token setup with actual MCP call
+    // Test basic cancellation functionality is available
+    eprintln!("Basic MCP cancel functionality is available and does not panic");
+
+    eprintln!("=== MCP cancellation test completed ===");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_mcp_pre_execution_cancellation() -> Result<()> {
+    use crate::jobworkerp::runner::McpServerArgs;
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+    use std::collections::HashMap;
+    use tokio_util::sync::CancellationToken;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    // Create McpClients
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+
+    // Create MCP runner instance
+    let mut runner = McpServerRunnerImpl::new(client);
+
+    // Set up cancellation token and cancel it immediately (pre-execution)
+    let cancellation_token = CancellationToken::new();
+    runner.cancellation_token = Some(cancellation_token.clone());
+    cancellation_token.cancel();
+
+    // Test pre-execution cancellation
     let mcp_args = McpServerArgs {
         tool_name: "get_current_time".to_string(),
         arg_json: r#"{"timezone": "UTC"}"#.to_string(),
@@ -184,47 +238,23 @@ async fn test_mcp_cancellation() -> Result<()> {
     let arg_bytes = ProstMessageCodec::serialize_message(&mcp_args)?;
     let metadata = HashMap::new();
 
-    // Start MCP tool call in a task
     let start_time = std::time::Instant::now();
-    let execution_task = tokio::spawn(async move { runner.run(&arg_bytes, metadata).await });
-
-    // Wait briefly for tool call to start
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    // Test with a short timeout to demonstrate cancellation readiness
-    let result = tokio::time::timeout(std::time::Duration::from_secs(2), execution_task).await;
-
+    let (result, _) = runner.run(&arg_bytes, metadata).await;
     let elapsed = start_time.elapsed();
-    eprintln!("MCP execution time: {elapsed:?}");
 
-    match result {
-        Ok(task_result) => {
-            let (execution_result, _metadata) = task_result.unwrap();
-            match execution_result {
-                Ok(_) => {
-                    eprintln!("MCP tool call completed successfully (fast response)");
-                    // For fast responses, this is actually good
-                }
-                Err(e) => {
-                    eprintln!("MCP tool call failed: {e}");
-                }
-            }
-        }
-        Err(_) => {
-            eprintln!("MCP tool call timed out - this indicates cancellation mechanism would work");
-            // This timeout demonstrates that the MCP call was running long enough to be cancelled
-            assert!(
-                elapsed >= std::time::Duration::from_secs(2),
-                "Should timeout after 2 seconds"
-            );
-        }
-    }
+    // Should fail immediately due to pre-execution cancellation
+    assert!(result.is_err());
+    assert!(elapsed < std::time::Duration::from_millis(100));
 
-    eprintln!("=== MCP cancellation test completed ===");
+    let error_msg = result.unwrap_err().to_string();
+    assert!(error_msg.contains("cancelled before"));
+
+    eprintln!("=== MCP pre-execution cancellation test completed ===");
     Ok(())
 }
 
 #[tokio::test]
+#[ignore] // Requires network access and fetch MCP server - run with --ignored for full testing
 async fn test_mcp_cancellation_during_execution() -> Result<()> {
     use crate::jobworkerp::runner::McpServerArgs;
     use crate::runner::mcp::config::McpConfig;
@@ -236,20 +266,20 @@ async fn test_mcp_cancellation_during_execution() -> Result<()> {
     use tokio::sync::Mutex;
 
     let config = McpConfig {
-        server: vec![create_time_mcp_server().await?],
+        server: vec![create_fetch_mcp_server().await?],
     };
 
     // Create McpClients
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
-    let client = factory.connect_server("time").await?;
+    let client = factory.connect_server("fetch").await?;
 
     // Create MCP runner instance with the client (wrapped for sharing)
     let runner = Arc::new(Mutex::new(McpServerRunnerImpl::new(client)));
 
-    // Test concurrent cancellation during execution
+    // Test concurrent cancellation during execution with slow HTTP request
     let mcp_args = McpServerArgs {
-        tool_name: "get_current_time".to_string(),
-        arg_json: r#"{"timezone": "UTC"}"#.to_string(),
+        tool_name: "fetch".to_string(),
+        arg_json: r#"{"url": "https://httpbin.org/delay/5", "max_length": 10000}"#.to_string(),
     };
 
     let arg_bytes = ProstMessageCodec::serialize_message(&mcp_args)?;
@@ -257,37 +287,56 @@ async fn test_mcp_cancellation_during_execution() -> Result<()> {
 
     let runner_clone = runner.clone();
 
+    // Start execution and track timing
+    let start_time = std::time::Instant::now();
+
     // Start MCP tool call in a task
     let execution_task = tokio::spawn(async move {
         let mut runner_guard = runner_clone.lock().await;
         runner_guard.run(&arg_bytes, metadata).await
     });
 
-    // Wait briefly for tool call to potentially start
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    // Wait for HTTP request to start (longer delay for fetch to actually begin)
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    // Trigger cancellation from another task
+    // Trigger cancellation from another task after the fetch has started
     let cancel_task = tokio::spawn(async move {
         let mut runner_guard = runner.lock().await;
         runner_guard.cancel().await;
-        eprintln!("Cancellation triggered");
+        eprintln!("Cancellation triggered after 500ms");
     });
 
     // Wait for both tasks
     let (execution_result, _) = tokio::join!(execution_task, cancel_task);
 
+    let elapsed = start_time.elapsed();
+    eprintln!("Total execution time: {elapsed:?}");
+
     match execution_result {
         Ok((result, _metadata)) => {
             match result {
                 Ok(_) => {
-                    eprintln!("MCP tool call completed before cancellation took effect");
+                    eprintln!("MCP fetch completed before cancellation took effect");
+                    if elapsed < std::time::Duration::from_secs(5) {
+                        eprintln!(
+                            "Fetch completed quickly ({elapsed:?}), cancellation may have worked"
+                        );
+                    } else {
+                        eprintln!("Fetch took full time ({elapsed:?}), cancellation did not work");
+                    }
                 }
                 Err(e) => {
-                    eprintln!("MCP tool call error (may be due to cancellation): {e}");
+                    eprintln!("MCP fetch error (likely due to cancellation): {e}");
                     // Check if error message contains cancellation indication
                     let error_msg = e.to_string();
-                    if error_msg.contains("cancelled") {
-                        eprintln!("Cancellation was successful!");
+                    if error_msg.contains("cancelled") || error_msg.contains("abort") {
+                        eprintln!("✅ Cancellation was successful! Error: {error_msg}");
+                        assert!(
+                            elapsed < std::time::Duration::from_secs(4),
+                            "Cancellation should prevent full 5-second delay, took {elapsed:?}"
+                        );
+                    } else {
+                        eprintln!("❌ Error not related to cancellation: {error_msg}");
                     }
                 }
             }
