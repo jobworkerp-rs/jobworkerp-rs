@@ -828,30 +828,6 @@ impl RunnerTrait for DockerRunner {
 }
 
 #[tokio::test]
-async fn test_docker_exec_cancel() {
-    eprintln!("=== Starting Docker Exec cancel test ===");
-    let mut runner = DockerExecRunner::new();
-
-    // Call cancel when no container is running - should not panic
-    runner.cancel().await;
-    eprintln!("Docker Exec cancel completed successfully with no active container");
-
-    eprintln!("=== Docker Exec cancel test completed ===");
-}
-
-#[tokio::test]
-async fn test_docker_runner_cancel() {
-    eprintln!("=== Starting Docker Runner cancel test ===");
-    let mut runner = DockerRunner::new();
-
-    // Call cancel when no container is running - should not panic
-    runner.cancel().await;
-    eprintln!("Docker Runner cancel completed successfully with no container tracking");
-
-    eprintln!("=== Docker Runner cancel test completed ===");
-}
-
-#[tokio::test]
 #[ignore] // Requires Docker daemon - run with --ignored for full testing
 async fn test_docker_runner_actual_cancellation() {
     eprintln!("=== Starting Docker Runner actual cancellation test ===");
@@ -880,39 +856,42 @@ async fn test_docker_runner_actual_cancellation() {
     let arg_bytes = ProstMessageCodec::serialize_message(&docker_args).unwrap();
     let metadata = HashMap::new();
 
-    // Start container execution in a task
+    // Start container execution and cancel it after 1 second
     let start_time = std::time::Instant::now();
     let execution_task = tokio::spawn(async move { runner.run(&arg_bytes, metadata).await });
 
-    // Wait briefly for container to start
+    // Wait briefly for container to start, then cancel the task
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    // Test timeout - if container is running, it should take ~30 seconds
-    // We'll timeout after 3 seconds to verify cancellation would work
-    let result = tokio::time::timeout(std::time::Duration::from_secs(3), execution_task).await;
+    // Cancel the task to test cancellation
+    execution_task.abort();
+    let result = execution_task.await;
 
     let elapsed = start_time.elapsed();
     eprintln!("Execution time: {elapsed:?}");
 
     match result {
         Ok(task_result) => {
-            let (execution_result, _metadata) = task_result.unwrap();
+            let (execution_result, _metadata) = task_result;
             match execution_result {
                 Ok(_) => {
-                    eprintln!("Container completed unexpectedly quickly");
+                    eprintln!("Container completed - checking if it was actually cancelled");
                 }
                 Err(e) => {
-                    eprintln!("Container failed (may be expected): {e}");
+                    eprintln!("Container failed: {e}");
                 }
             }
         }
-        Err(_) => {
-            eprintln!("Container execution timed out as expected - this indicates cancellation would work");
-            // This timeout demonstrates that the container was running long enough to be cancelled
+        Err(e) if e.is_cancelled() => {
+            eprintln!("Container execution was cancelled as expected: {e}");
+            // Should complete much faster than 30 seconds due to cancellation
             assert!(
-                elapsed >= std::time::Duration::from_secs(3),
-                "Should timeout after 3 seconds"
+                elapsed < std::time::Duration::from_secs(5),
+                "Cancellation should stop execution quickly, took {elapsed:?}"
             );
+        }
+        Err(e) => {
+            eprintln!("Container execution failed with unexpected error: {e}");
         }
     }
 

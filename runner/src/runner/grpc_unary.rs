@@ -317,11 +317,19 @@ impl RunnerTrait for GrpcUnaryRunner {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        // Set up cancellation token for this execution
-        let cancellation_token = CancellationToken::new();
-        self.cancellation_token = Some(cancellation_token.clone());
+        // Set up cancellation token for this execution if not already set
+        let cancellation_token = self.cancellation_token.clone().unwrap_or_else(|| {
+            let token = CancellationToken::new();
+            self.cancellation_token = Some(token.clone());
+            token
+        });
 
         let result = async {
+            // Check for cancellation before starting
+            if cancellation_token.is_cancelled() {
+                return Err(anyhow!("gRPC request was cancelled before execution"));
+            }
+
             if let Some(mut client) = self.client.clone() {
                 let req = ProstMessageCodec::deserialize_message::<GrpcUnaryArgs>(args)?;
                 let codec = RawBytesCodec;
@@ -468,102 +476,41 @@ impl RunnerTrait for GrpcUnaryRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proto::jobworkerp::data::Runner;
 
     #[tokio::test]
-    async fn test_grpc_cancel_no_active_request() {
-        eprintln!("=== Starting gRPC cancel with no active request test ===");
+    async fn test_grpc_pre_execution_cancellation() {
         let mut runner = GrpcUnaryRunner::new();
 
-        // Call cancel when no request is running - should not panic
-        runner.cancel().await;
-        eprintln!("gRPC cancel completed successfully with no active request");
+        // Set up cancellation token and cancel it immediately
+        let cancellation_token = CancellationToken::new();
+        runner.cancellation_token = Some(cancellation_token.clone());
+        cancellation_token.cancel();
 
-        eprintln!("=== gRPC cancel with no active request test completed ===");
-    }
-
-    #[tokio::test]
-    async fn test_grpc_cancellation_token_setup() {
-        eprintln!("=== Starting gRPC cancellation token setup test ===");
-        let mut runner = GrpcUnaryRunner::new();
-
-        // Verify initial state
-        assert!(
-            runner.cancellation_token.is_none(),
-            "Initially no cancellation token"
-        );
-
-        // Test that cancellation token is properly managed
-        runner.cancel().await; // Should not panic
-
-        eprintln!("=== gRPC cancellation token setup test completed ===");
-    }
-
-    #[tokio::test]
-    #[ignore] // Requires gRPC server - run with --ignored for full testing
-    async fn test_grpc_actual_cancellation() {
-        eprintln!("=== Starting gRPC actual cancellation test ===");
         use crate::jobworkerp::runner::GrpcUnaryArgs;
-        use jobworkerp_base::codec::ProstMessageCodec;
-        use std::collections::HashMap;
-
-        let mut runner = GrpcUnaryRunner::new();
-
-        // Test with a gRPC request that would take some time
-        // Note: This test requires a running gRPC server for actual testing
         let grpc_args = GrpcUnaryArgs {
-            method: "/grpc.reflection.v1alpha.ServerReflection/ServerReflectionInfo".to_string(),
-            request: "{}".to_string(), // Empty JSON request
+            method: "/test.Service/TestMethod".to_string(),
+            request: "{}".to_string(),
             metadata: HashMap::new(),
-            timeout: 10000, // 10 second timeout
+            timeout: 5000,
         };
 
-        let arg_bytes = ProstMessageCodec::serialize_message(&grpc_args).unwrap();
-        let metadata = HashMap::new();
-
-        // Test cancellation setup (without actual server)
         let start_time = std::time::Instant::now();
-        let execution_task = tokio::spawn(async move { runner.run(&arg_bytes, metadata).await });
-
-        // Wait briefly
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        // Test timeout - would fail due to no server, but demonstrates cancellation setup
-        let result = tokio::time::timeout(std::time::Duration::from_secs(1), execution_task).await;
-
+        let (result, _) = runner
+            .run(
+                &ProstMessageCodec::serialize_message(&grpc_args).unwrap(),
+                HashMap::new(),
+            )
+            .await;
         let elapsed = start_time.elapsed();
-        eprintln!("gRPC execution time: {elapsed:?}");
 
-        match result {
-            Ok(task_result) => {
-                let (execution_result, _metadata) = task_result.unwrap();
-                match execution_result {
-                    Ok(_) => {
-                        eprintln!("gRPC request completed unexpectedly");
-                    }
-                    Err(e) => {
-                        eprintln!("gRPC request failed as expected (no server): {e}");
-                    }
-                }
-            }
-            Err(_) => {
-                eprintln!(
-                    "gRPC request timed out - this indicates cancellation mechanism is ready"
-                );
-                assert!(
-                    elapsed >= std::time::Duration::from_secs(1),
-                    "Should timeout after 1 second"
-                );
-            }
-        }
+        // Should fail immediately due to pre-execution cancellation
+        assert!(result.is_err());
+        assert!(elapsed < std::time::Duration::from_millis(100));
 
-        eprintln!("=== gRPC actual cancellation test completed ===");
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("cancelled before"));
     }
-}
-
-#[cfg(test)]
-mod existing_tests {
-    use super::*;
-    use proto::jobworkerp::data::Runner;
 
     #[tokio::test]
     #[ignore] // need to start front server and fix handling empty stream...

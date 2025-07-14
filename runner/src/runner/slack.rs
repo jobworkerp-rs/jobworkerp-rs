@@ -83,11 +83,21 @@ impl RunnerTrait for SlackPostMessageRunner {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        // Set up cancellation token for this execution
-        let cancellation_token = CancellationToken::new();
-        self.cancellation_token = Some(cancellation_token.clone());
+        // Set up cancellation token for this execution if not already set
+        let cancellation_token = self.cancellation_token.clone().unwrap_or_else(|| {
+            let token = CancellationToken::new();
+            self.cancellation_token = Some(token.clone());
+            token
+        });
 
         let result = async {
+            // Check for cancellation before starting
+            if cancellation_token.is_cancelled() {
+                return Err(anyhow!(
+                    "Slack message sending was cancelled before execution"
+                ));
+            }
+
             if let Some(slack) = self.slack.as_ref() {
                 tracing::debug!("slack runner is initialized");
                 let message =
@@ -159,48 +169,22 @@ impl RunnerTrait for SlackPostMessageRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
-    async fn test_slack_cancel_no_active_operation() {
-        eprintln!("=== Starting Slack cancel with no active operation test ===");
-        let mut runner = SlackPostMessageRunner::new();
-
-        // Call cancel when no operation is running - should not panic
-        runner.cancel().await;
-        eprintln!("Slack cancel completed successfully with no active operation");
-
-        eprintln!("=== Slack cancel with no active operation test completed ===");
-    }
-
-    #[tokio::test]
-    async fn test_slack_cancellation_token_setup() {
-        eprintln!("=== Starting Slack cancellation token setup test ===");
-        let mut runner = SlackPostMessageRunner::new();
-
-        // Verify initial state
-        assert!(
-            runner.cancellation_token.is_none(),
-            "Initially no cancellation token"
-        );
-
-        // Test that cancellation token is properly managed
-        runner.cancel().await; // Should not panic
-
-        eprintln!("=== Slack cancellation token setup test completed ===");
-    }
-
-    #[tokio::test]
-    #[ignore] // Requires Slack configuration - run with --ignored for full testing
-    async fn test_slack_actual_cancellation() {
-        eprintln!("=== Starting Slack actual cancellation test ===");
+    async fn test_slack_pre_execution_cancellation() {
         use crate::jobworkerp::runner::SlackChatPostMessageArgs;
         use jobworkerp_base::codec::ProstMessageCodec;
         use std::collections::HashMap;
 
         let mut runner = SlackPostMessageRunner::new();
 
-        // Test with a Slack message that would be sent
-        // Note: This test requires actual Slack configuration for real testing
+        // Set up cancellation token and cancel it immediately (pre-execution)
+        let cancellation_token = CancellationToken::new();
+        runner.cancellation_token = Some(cancellation_token.clone());
+        cancellation_token.cancel();
+
+        // Create valid Slack message args
         let slack_args = SlackChatPostMessageArgs {
             channel: "#test".to_string(),
             text: Some("Test message for cancellation".to_string()),
@@ -221,42 +205,16 @@ mod tests {
         let arg_bytes = ProstMessageCodec::serialize_message(&slack_args).unwrap();
         let metadata = HashMap::new();
 
-        // Test cancellation setup (without actual Slack credentials)
+        // Execute with pre-cancelled token
         let start_time = std::time::Instant::now();
-        let execution_task = tokio::spawn(async move { runner.run(&arg_bytes, metadata).await });
-
-        // Wait briefly
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        // Test timeout - would fail due to no credentials, but demonstrates cancellation setup
-        let result = tokio::time::timeout(std::time::Duration::from_secs(1), execution_task).await;
-
+        let (result, _) = runner.run(&arg_bytes, metadata).await;
         let elapsed = start_time.elapsed();
-        eprintln!("Slack execution time: {elapsed:?}");
 
-        match result {
-            Ok(task_result) => {
-                let (execution_result, _metadata) = task_result.unwrap();
-                match execution_result {
-                    Ok(_) => {
-                        eprintln!("Slack message sent unexpectedly");
-                    }
-                    Err(e) => {
-                        eprintln!("Slack message failed as expected (no configuration): {e}");
-                    }
-                }
-            }
-            Err(_) => {
-                eprintln!(
-                    "Slack operation timed out - this indicates cancellation mechanism is ready"
-                );
-                assert!(
-                    elapsed >= std::time::Duration::from_secs(1),
-                    "Should timeout after 1 second"
-                );
-            }
-        }
+        // Should fail immediately due to pre-execution cancellation
+        assert!(result.is_err());
+        assert!(elapsed < std::time::Duration::from_millis(100));
 
-        eprintln!("=== Slack actual cancellation test completed ===");
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("cancelled before"));
     }
 }

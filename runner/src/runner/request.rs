@@ -94,11 +94,19 @@ impl RunnerTrait for RequestRunner {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        // Set up cancellation token for this execution
-        let cancellation_token = CancellationToken::new();
-        self.cancellation_token = Some(cancellation_token.clone());
+        // Set up cancellation token for this execution if not already set
+        let cancellation_token = self.cancellation_token.clone().unwrap_or_else(|| {
+            let token = CancellationToken::new();
+            self.cancellation_token = Some(token.clone());
+            token
+        });
 
         let result = async {
+            // Check for cancellation before starting
+            if cancellation_token.is_cancelled() {
+                return Err(anyhow!("HTTP request was cancelled before execution"));
+            }
+
             if let Some(url) = self.url.as_ref() {
                 let args = ProstMessageCodec::deserialize_message::<HttpRequestArgs>(args)?;
                 let met = Method::from_str(args.method.as_str())?;
@@ -237,102 +245,43 @@ async fn run_request() {
     assert!(res.0.is_ok());
 }
 
-#[tokio::test]
-async fn test_http_cancel_no_active_request() {
-    eprintln!("=== Starting HTTP cancel with no active request test ===");
-    let mut runner = RequestRunner::new();
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio_util::sync::CancellationToken;
 
-    // Call cancel when no request is running - should not panic
-    runner.cancel().await;
-    eprintln!("HTTP cancel completed successfully with no active request");
+    #[tokio::test]
+    async fn test_http_pre_execution_cancellation() {
+        let mut runner = RequestRunner::new();
 
-    eprintln!("=== HTTP cancel with no active request test completed ===");
-}
+        // Set up cancellation token and cancel it immediately
+        let cancellation_token = CancellationToken::new();
+        runner.cancellation_token = Some(cancellation_token.clone());
+        cancellation_token.cancel();
 
-#[tokio::test]
-async fn test_http_cancellation_token_setup() {
-    eprintln!("=== Starting HTTP cancellation token setup test ===");
-    let mut runner = RequestRunner::new();
+        use crate::jobworkerp::runner::HttpRequestArgs;
+        let http_args = HttpRequestArgs {
+            method: "GET".to_string(),
+            path: "/test".to_string(),
+            headers: vec![],
+            queries: vec![],
+            body: None,
+        };
 
-    // Verify initial state
-    assert!(
-        runner.cancellation_token.is_none(),
-        "Initially no cancellation token"
-    );
+        let start_time = std::time::Instant::now();
+        let (result, _) = runner
+            .run(
+                &ProstMessageCodec::serialize_message(&http_args).unwrap(),
+                HashMap::new(),
+            )
+            .await;
+        let elapsed = start_time.elapsed();
 
-    // Test that cancellation token is properly managed
-    runner.cancel().await; // Should not panic
+        // Should fail immediately due to pre-execution cancellation
+        assert!(result.is_err());
+        assert!(elapsed < std::time::Duration::from_millis(100));
 
-    eprintln!("=== HTTP cancellation token setup test completed ===");
-}
-
-#[tokio::test]
-#[ignore] // Requires network access - run with --ignored for full testing
-async fn test_http_actual_cancellation() {
-    eprintln!("=== Starting HTTP actual cancellation test ===");
-    use crate::jobworkerp::runner::HttpRequestArgs;
-    use std::collections::HashMap;
-
-    let mut runner = RequestRunner::new();
-
-    // Use a slow endpoint for testing cancellation
-    match runner.create("https://httpbin.org/") {
-        Ok(_) => {
-            // Create a request that would take some time (delay endpoint)
-            let http_args = HttpRequestArgs {
-                headers: vec![],
-                queries: vec![],
-                method: "GET".to_string(),
-                body: None,
-                path: "delay/5".to_string(), // 5 second delay
-            };
-
-            let arg_bytes = ProstMessageCodec::serialize_message(&http_args).unwrap();
-            let metadata = HashMap::new();
-
-            // Start HTTP request in a task
-            let start_time = std::time::Instant::now();
-            let execution_task =
-                tokio::spawn(async move { runner.run(&arg_bytes, metadata).await });
-
-            // Wait briefly for request to start
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-            // Test timeout - request should take ~5 seconds
-            // We'll timeout after 2 seconds to verify cancellation would work
-            let result =
-                tokio::time::timeout(std::time::Duration::from_secs(2), execution_task).await;
-
-            let elapsed = start_time.elapsed();
-            eprintln!("HTTP execution time: {elapsed:?}");
-
-            match result {
-                Ok(task_result) => {
-                    let (execution_result, _metadata) = task_result.unwrap();
-                    match execution_result {
-                        Ok(_) => {
-                            eprintln!("HTTP request completed unexpectedly quickly");
-                        }
-                        Err(e) => {
-                            eprintln!("HTTP request failed: {e}");
-                        }
-                    }
-                }
-                Err(_) => {
-                    eprintln!("HTTP request timed out as expected - this indicates cancellation mechanism is ready");
-                    // This timeout demonstrates that the HTTP request was running long enough to be cancelled
-                    assert!(
-                        elapsed >= std::time::Duration::from_secs(2),
-                        "Should timeout after 2 seconds"
-                    );
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("Could not set up HTTP runner for testing: {e}");
-            eprintln!("Skipping actual HTTP cancellation test");
-        }
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("cancelled before"));
     }
-
-    eprintln!("=== HTTP actual cancellation test completed ===");
 }

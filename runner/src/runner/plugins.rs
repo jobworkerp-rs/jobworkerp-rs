@@ -209,3 +209,64 @@ pub trait PluginRunner: Send + Sync {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_plugins_initialization() {
+        let plugins = Plugins::new();
+
+        // Test that runner loader is initialized
+        let runner_loader = plugins.runner_plugins();
+        let loader_guard = runner_loader.read().await;
+
+        // Should not panic and should be empty initially
+        drop(loader_guard);
+    }
+
+    #[tokio::test]
+    async fn test_plugin_loader_directory_scan() {
+        let plugins = Plugins::new();
+
+        // Test scanning a non-existent directory
+        let loaded = plugins.load_plugin_files("/non_existent_path").await;
+
+        // Should return empty vec for non-existent directory
+        assert!(loaded.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_plugin_metadata() {
+        let metadata = PluginMetadata {
+            name: "test_plugin".to_string(),
+            description: "Test plugin for unit testing".to_string(),
+            filename: "test_plugin.so".to_string(),
+        };
+
+        assert_eq!(metadata.name, "test_plugin");
+        assert_eq!(metadata.description, "Test plugin for unit testing");
+        assert_eq!(metadata.filename, "test_plugin.so");
+    }
+
+    #[tokio::test]
+    async fn test_plugin_system_initialization() {
+        // Test basic plugin system initialization without loading actual plugins
+        let plugins = Plugins::new();
+
+        // Test that we can access the runner loader
+        let loader = plugins.runner_plugins();
+        let loader_guard = loader.read().await;
+        drop(loader_guard);
+
+        // Test that plugin files loading works with invalid path
+        let loaded = plugins
+            .load_plugin_files("invalid/path/that/does/not/exist")
+            .await;
+        assert!(
+            loaded.is_empty(),
+            "Should return empty vec for non-existent directory"
+        );
+    }
+}
