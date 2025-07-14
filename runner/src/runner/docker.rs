@@ -403,6 +403,8 @@ impl RunnerTrait for DockerExecRunner {
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // default implementation (return empty)
         let _ = arg;
+        // Clear cancellation token even on error
+        self.cancellation_token = None;
         Err(anyhow::anyhow!("not implemented"))
     }
 
@@ -765,6 +767,8 @@ impl RunnerTrait for DockerRunner {
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // default implementation (return empty)
         let _ = arg;
+        // Clear cancellation token even on error
+        self.cancellation_token = None;
         Err(anyhow::anyhow!("not implemented"))
     }
 

@@ -821,6 +821,8 @@ impl RunnerTrait for CommandRunnerImpl {
             }
         };
 
+        // Clear cancellation token after stream setup
+        self.cancellation_token = None;
         Ok(Box::pin(stream))
     }
 

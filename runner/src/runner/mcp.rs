@@ -276,6 +276,8 @@ impl RunnerTrait for McpServerRunnerImpl {
         _metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         tracing::error!("run_stream not implemented");
+        // Clear cancellation token even on error
+        self.cancellation_token = None;
         Err(anyhow!("run_stream not implemented"))
     }
 

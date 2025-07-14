@@ -194,6 +194,8 @@ impl RunnerTrait for RequestRunner {
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // default implementation (return empty)
         let _ = (arg, metadata);
+        // Clear cancellation token even on error
+        self.cancellation_token = None;
         Err(anyhow::anyhow!("not implemented"))
     }
 
