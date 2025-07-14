@@ -375,6 +375,8 @@ impl RunnerTrait for PythonCommandRunner {
         _arg: &[u8],
         _metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
+        // Clear cancellation token even on error
+        self.cancellation_token = None;
         Err(anyhow!("Stream output not supported by PythonRunner"))
     }
 

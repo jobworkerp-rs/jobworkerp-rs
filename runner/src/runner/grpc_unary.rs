@@ -460,6 +460,8 @@ impl RunnerTrait for GrpcUnaryRunner {
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let _ = (arg, metadata);
+        // Clear cancellation token even on error
+        self.cancellation_token = None;
         Err(anyhow!("not implemented"))
     }
 

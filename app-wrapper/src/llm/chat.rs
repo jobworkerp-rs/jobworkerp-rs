@@ -265,12 +265,18 @@ impl RunnerTrait for LLMChatRunnerImpl {
                 })
                 .boxed();
 
+            // Clear cancellation token after stream setup
+            self.cancellation_token = None;
             Ok(output_stream)
         } else if let Some(genai) = self.genai.as_mut() {
             // Get streaming responses from genai service
             let stream = genai.request_chat_stream(args, metadata).await?;
+            // Clear cancellation token after stream setup
+            self.cancellation_token = None;
             Ok(stream)
         } else {
+            // Clear cancellation token even on error
+            self.cancellation_token = None;
             Err(anyhow!("llm is not initialized"))
         }
     }

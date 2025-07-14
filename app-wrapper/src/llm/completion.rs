@@ -121,11 +121,25 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         arg: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        let metadata_clone = metadata.clone();
+        // Set up cancellation token for pre-execution cancellation check
+        let cancellation_token = if let Some(existing_token) = &self.cancellation_token {
+            // If token already exists and is cancelled, return early
+            if existing_token.is_cancelled() {
+                return (
+                    Err(anyhow::anyhow!(
+                        "LLM completion execution was cancelled before start"
+                    )),
+                    metadata,
+                );
+            }
+            existing_token.clone()
+        } else {
+            let new_token = CancellationToken::new();
+            self.cancellation_token = Some(new_token.clone());
+            new_token
+        };
 
-        // Set up cancellation token for this execution
-        let cancellation_token = CancellationToken::new();
-        self.cancellation_token = Some(cancellation_token.clone());
+        let metadata_clone = metadata.clone();
 
         let result = async {
             let span =
@@ -177,9 +191,20 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        // Set up cancellation token for stream execution
-        let cancellation_token = CancellationToken::new();
-        self.cancellation_token = Some(cancellation_token.clone());
+        // Set up cancellation token for pre-execution cancellation check
+        let cancellation_token = if let Some(existing_token) = &self.cancellation_token {
+            // If token already exists and is cancelled, return early
+            if existing_token.is_cancelled() {
+                return Err(anyhow::anyhow!(
+                    "LLM completion stream execution was cancelled before start"
+                ));
+            }
+            existing_token.clone()
+        } else {
+            let new_token = CancellationToken::new();
+            self.cancellation_token = Some(new_token.clone());
+            new_token
+        };
 
         let args = LlmCompletionArgs::decode(args).map_err(|e| anyhow!("decode error: {}", e))?;
 
@@ -233,6 +258,8 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                 })
                 .boxed();
 
+            // Clear cancellation token after stream setup
+            self.cancellation_token = None;
             Ok(output_stream)
         } else if let Some(genai) = self.genai.as_mut() {
             // Get streaming responses from genai service with cancellation check
@@ -243,8 +270,12 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                     return Err(anyhow!("LLM completion stream (GenAI) request was cancelled"));
                 }
             };
+            // Clear cancellation token after stream setup
+            self.cancellation_token = None;
             Ok(stream)
         } else {
+            // Clear cancellation token even on error
+            self.cancellation_token = None;
             Err(anyhow!("llm is not initialized"))
         }
     }
