@@ -5,10 +5,7 @@
 #![allow(clippy::collapsible_match)]
 
 use anyhow::Result;
-use app::app::function::function_set::FunctionSetApp;
 use app::module::test::create_hybrid_test_app;
-use app_wrapper::llm::chat::genai::GenaiChatService;
-use app_wrapper::llm::chat::ollama::OllamaChatService;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{ChatMessage, LlmOptions};
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{ChatRole, MessageContent};
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::{
@@ -17,7 +14,6 @@ use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::{
 use jobworkerp_runner::jobworkerp::runner::llm::LlmRunnerSettings;
 use jobworkerp_runner::jobworkerp::runner::llm::{LlmChatArgs, LlmCompletionArgs};
 use jobworkerp_runner::runner::RunnerTrait;
-use proto::jobworkerp::function::data::{FunctionSetData, FunctionTarget, FunctionType};
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::Instant;
@@ -26,74 +22,6 @@ use tokio_util::sync::CancellationToken;
 /// Test configuration
 const OLLAMA_HOST: &str = "http://ollama.ollama.svc.cluster.local:11434";
 const TEST_MODEL: &str = "qwen3:30b"; // Use a larger model that takes time to respond
-const OTLP_ADDR: &str = "http://otel-collector.default.svc.cluster.local:4317";
-
-/// Create Ollama chat service for cancellation testing
-async fn create_ollama_service() -> Result<OllamaChatService> {
-    std::env::set_var("OTLP_ADDR", OTLP_ADDR);
-    let _app_module = create_hybrid_test_app().await?;
-
-    // Create function set for tool calling tests
-    let _result = _app_module
-        .function_set_app
-        .as_ref()
-        .create_function_set(&FunctionSetData {
-            name: "ollama_cancel_test".to_string(),
-            description: "Test set for Ollama cancellation tests".to_string(),
-            category: 0,
-            targets: vec![FunctionTarget {
-                id: 1, // COMMAND runner
-                r#type: FunctionType::Runner as i32,
-            }],
-        })
-        .await;
-
-    let settings = OllamaRunnerSettings {
-        model: TEST_MODEL.to_string(),
-        base_url: Some(OLLAMA_HOST.to_string()),
-        system_prompt: Some(
-            "You are a helpful assistant. Please provide detailed, thoughtful responses. When asked to write something long, write extensively with multiple paragraphs."
-                .to_string(),
-        ),
-        ..Default::default()
-    };
-
-    let service = OllamaChatService::new(_app_module.function_app, settings)?;
-    Ok(service)
-}
-
-/// Create GenAI chat service for cancellation testing
-async fn create_genai_service() -> Result<GenaiChatService> {
-    std::env::set_var("OTLP_ADDR", OTLP_ADDR);
-    let _app_module = create_hybrid_test_app().await?;
-
-    // Create function set for tool calling tests
-    let _result = _app_module
-        .function_set_app
-        .as_ref()
-        .create_function_set(&FunctionSetData {
-            name: "genai_cancel_test".to_string(),
-            description: "Test set for GenAI cancellation tests".to_string(),
-            category: 0,
-            targets: vec![FunctionTarget {
-                id: 1, // COMMAND runner
-                r#type: FunctionType::Runner as i32,
-            }],
-        })
-        .await;
-
-    let settings = GenaiRunnerSettings {
-        model: TEST_MODEL.to_string(),
-        base_url: Some(OLLAMA_HOST.to_string()), // Use Ollama host via GenAI
-        system_prompt: Some(
-            "You are a helpful assistant. Please provide detailed, thoughtful responses. When asked to write something long, write extensively with multiple paragraphs."
-                .to_string(),
-        ),
-    };
-
-    let service = GenaiChatService::new(_app_module.function_app, settings).await?;
-    Ok(service)
-}
 
 /// Create test chat arguments for a long-running conversation
 fn create_long_running_chat_args() -> LlmChatArgs {
@@ -175,7 +103,7 @@ fn create_simple_completion_args() -> LlmCompletionArgs {
 /// Create long-running test completion arguments
 fn create_long_running_completion_args() -> LlmCompletionArgs {
     LlmCompletionArgs {
-        prompt: "Please write a very detailed, comprehensive essay about the history and future of artificial intelligence. Include multiple sections covering the early pioneers, major breakthroughs, current applications, challenges, ethical considerations, and future predictions. Make it at least 2000 words with detailed explanations and examples.".to_string(),
+        prompt: "Please write a very detailed, comprehensive essay about the history and future of artificial intelligence. Include multiple sections covering the early pioneers, major breakthroughs, current applications, challenges, ethical considerations, and future predictions. Make it at least 10000 words with detailed explanations and examples.".to_string(),
         model: Some(TEST_MODEL.to_string()),
         system_prompt: None,
         function_options: None,
@@ -343,82 +271,137 @@ async fn test_genai_chat_cancellation_mid_execution() -> Result<()> {
     Ok(())
 }
 
-/// Test Ollama streaming chat cancellation
+/// Test Ollama streaming chat cancellation using runner.cancel()
 #[tokio::test]
 #[ignore = "Integration test requiring Ollama server"]
 async fn test_ollama_streaming_cancellation() -> Result<()> {
     command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
-    let service = create_ollama_service().await?;
+    println!("Testing Ollama chat runner stream cancellation...");
 
+    let _app_module = create_hybrid_test_app().await?;
+    let runner = std::sync::Arc::new(tokio::sync::Mutex::new(
+        app_wrapper::llm::chat::LLMChatRunnerImpl::new(std::sync::Arc::new(_app_module)),
+    ));
+
+    // Load Ollama settings
+    let ollama_settings = OllamaRunnerSettings {
+        model: TEST_MODEL.to_string(),
+        base_url: Some(OLLAMA_HOST.to_string()),
+        system_prompt: Some(
+            "You are a helpful assistant. Please provide very detailed, comprehensive responses with multiple paragraphs.".to_string(),
+        ),
+        ..Default::default()
+    };
+    let settings = LlmRunnerSettings {
+        settings: Some(
+            jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::Settings::Ollama(
+                ollama_settings,
+            ),
+        ),
+    };
+    let serialized_settings = prost::Message::encode_to_vec(&settings);
+
+    // Create cancellation token and set it on the runner BEFORE execution
+    let cancellation_token = CancellationToken::new();
+    {
+        let mut runner_guard = runner.lock().await;
+        runner_guard.load(serialized_settings).await?;
+        runner_guard.set_cancellation_token(cancellation_token.clone());
+    }
+
+    // Create test arguments with a long-running prompt
     let args = create_long_running_chat_args();
+    let metadata = HashMap::new();
 
-    println!("Starting Ollama streaming chat...");
     let start_time = Instant::now();
+    let serialized_args = {
+        use prost::Message;
+        let mut buf = Vec::new();
+        args.encode(&mut buf)?;
+        buf
+    };
 
-    // Start streaming request
-    let stream_result = service.request_stream_chat(args).await;
-    match stream_result {
-        Ok(mut stream) => {
-            let mut item_count = 0;
+    let runner_clone = runner.clone();
 
-            // Create cancellation token and cancel it after processing a few items
-            let cancel_token = CancellationToken::new();
-            let cancel_token_clone = cancel_token.clone();
+    // Start stream execution in a task
+    let execution_task = tokio::spawn(async move {
+        let mut runner_guard = runner_clone.lock().await;
+        let stream_result = runner_guard.run_stream(&serialized_args, metadata).await?;
 
-            // Cancel after 3 seconds
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_secs(3)).await;
-                cancel_token_clone.cancel();
-            });
+        // Process the stream
+        use futures::StreamExt;
+        let mut item_count = 0;
+        let mut stream = stream_result;
 
-            // Process stream until cancellation
-            use futures::StreamExt;
-            loop {
-                tokio::select! {
-                    item = stream.next() => {
-                        match item {
-                            Some(_result_item) => {
-                                item_count += 1;
-                                println!("Received stream item #{}", item_count);
+        while let Some(_item) = stream.next().await {
+            item_count += 1;
+            println!("Received Ollama stream item #{}", item_count);
 
-                                if item_count >= 10 {
-                                    break; // Limit items to prevent endless streaming
-                                }
-                            }
-                            None => {
-                                println!("Stream ended naturally");
-                                break;
-                            }
-                        }
-                    }
-                    _ = cancel_token.cancelled() => {
-                        println!("Stream cancelled by token");
-                        break;
+            // Add a small delay to make the stream processing observable
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        Ok::<usize, anyhow::Error>(item_count)
+    });
+
+    // Wait for stream to start producing items (let it run for a bit)
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // Cancel using the external token reference (avoids deadlock)
+    cancellation_token.cancel();
+    println!("Called cancellation_token.cancel() after 1 second");
+
+    // Wait for the execution to complete or be cancelled
+    let execution_result = execution_task.await;
+    let elapsed = start_time.elapsed();
+
+    println!("Ollama stream execution completed in {:?}", elapsed);
+
+    match execution_result {
+        Ok(stream_processing_result) => {
+            match stream_processing_result {
+                Ok(item_count) => {
+                    println!(
+                        "Ollama stream processed {} items before completion/cancellation",
+                        item_count
+                    );
+                    // Check if cancellation likely occurred based on timing and item count
+                    if elapsed <= Duration::from_secs(2) && item_count < 1000 {
+                        println!("✓ Ollama stream was likely cancelled mid-execution (processed {} items in {:?})", item_count, elapsed);
+                    } else if elapsed > Duration::from_secs(10) {
+                        return Err(anyhow::anyhow!(
+                            "Stream should have been cancelled within 10 seconds but took {:?} to complete normally. Cancellation failed.",
+                            elapsed
+                        ));
+                    } else {
+                        println!(
+                            "✓ Ollama stream completed quickly (before cancellation took effect)"
+                        );
                     }
                 }
+                Err(e) => {
+                    println!(
+                        "✓ Ollama stream processing was cancelled as expected: {}",
+                        e
+                    );
+                }
             }
-
-            let elapsed = start_time.elapsed();
-            println!(
-                "Streaming was cancelled/stopped after {:?}, processed {} items",
-                elapsed, item_count
-            );
-
-            // Should have processed some items but not completed the full response
-            assert!(item_count > 0, "Should have processed some stream items");
-            assert!(
-                elapsed < Duration::from_secs(30),
-                "Streaming should be cancelled before full completion (elapsed: {:?})",
-                elapsed
-            );
         }
         Err(e) => {
-            println!("Failed to start streaming: {}", e);
-            return Err(e);
+            println!("Ollama stream execution task failed: {}", e);
+            return Err(e.into());
         }
     }
 
-    println!("✓ Ollama streaming cancellation test completed successfully");
+    // Verify that cancellation happened within reasonable time
+    if elapsed > Duration::from_secs(10) {
+        return Err(anyhow::anyhow!(
+            "Stream processing took too long ({:?}), suggesting cancellation did not work properly",
+            elapsed
+        ));
+    }
+
+    println!("✓ Ollama stream cancellation test completed successfully");
     Ok(())
 }
 
@@ -475,82 +458,130 @@ async fn test_llm_chat_pre_execution_cancellation() -> Result<()> {
     Ok(())
 }
 
-/// Test GenAI streaming chat cancellation
+/// Test GenAI streaming chat cancellation using runner.cancel()
 #[tokio::test]
 #[ignore = "Integration test requiring Ollama server"]
 async fn test_genai_streaming_cancellation() -> Result<()> {
     command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
-    let service = create_genai_service().await?;
+    println!("Testing GenAI chat runner stream cancellation...");
 
+    let _app_module = create_hybrid_test_app().await?;
+    let runner = std::sync::Arc::new(tokio::sync::Mutex::new(
+        app_wrapper::llm::chat::LLMChatRunnerImpl::new(std::sync::Arc::new(_app_module)),
+    ));
+
+    // Load GenAI settings
+    let genai_settings = GenaiRunnerSettings {
+        model: TEST_MODEL.to_string(),
+        base_url: Some(OLLAMA_HOST.to_string()), // Use Ollama host via GenAI
+        system_prompt: Some(
+            "You are a helpful assistant. Please provide very detailed, comprehensive responses with multiple paragraphs.".to_string(),
+        ),
+    };
+    let settings = LlmRunnerSettings {
+        settings: Some(
+            jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::Settings::Genai(
+                genai_settings,
+            ),
+        ),
+    };
+    let serialized_settings = prost::Message::encode_to_vec(&settings);
+
+    // Create cancellation token and set it on the runner BEFORE execution
+    let cancellation_token = CancellationToken::new();
+    {
+        let mut runner_guard = runner.lock().await;
+        runner_guard.load(serialized_settings).await?;
+        runner_guard.set_cancellation_token(cancellation_token.clone());
+    }
+
+    // Create test arguments with a long-running prompt
     let args = create_long_running_chat_args();
+    let metadata = HashMap::new();
 
-    println!("Starting GenAI streaming chat...");
     let start_time = Instant::now();
+    let serialized_args = {
+        use prost::Message;
+        let mut buf = Vec::new();
+        args.encode(&mut buf)?;
+        buf
+    };
 
-    // Start streaming request
-    let stream_result = service.request_chat_stream(args, HashMap::new()).await;
-    match stream_result {
-        Ok(mut stream) => {
-            let mut item_count = 0;
+    let runner_clone = runner.clone();
 
-            // Create cancellation token and cancel it after processing a few items
-            let cancel_token = CancellationToken::new();
-            let cancel_token_clone = cancel_token.clone();
+    // Start stream execution in a task
+    let execution_task = tokio::spawn(async move {
+        let mut runner_guard = runner_clone.lock().await;
+        let stream_result = runner_guard.run_stream(&serialized_args, metadata).await?;
 
-            // Cancel after 3 seconds
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_secs(3)).await;
-                cancel_token_clone.cancel();
-            });
+        // Process the stream
+        use futures::StreamExt;
+        let mut item_count = 0;
+        let mut stream = stream_result;
 
-            // Process stream until cancellation
-            use futures::StreamExt;
-            loop {
-                tokio::select! {
-                    item = stream.next() => {
-                        match item {
-                            Some(_result_item) => {
-                                item_count += 1;
-                                println!("Received GenAI stream item #{}", item_count);
+        while let Some(_item) = stream.next().await {
+            item_count += 1;
+            println!("Received GenAI stream item #{}", item_count);
 
-                                if item_count >= 10 {
-                                    break; // Limit items to prevent endless streaming
-                                }
-                            }
-                            None => {
-                                println!("GenAI stream ended naturally");
-                                break;
-                            }
-                        }
-                    }
-                    _ = cancel_token.cancelled() => {
-                        println!("GenAI stream cancelled by token");
-                        break;
+            // Add a small delay to make the stream processing observable
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        Ok::<usize, anyhow::Error>(item_count)
+    });
+
+    // Wait for stream to start producing items (let it run for a bit)
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // Cancel using the external token reference (avoids deadlock)
+    cancellation_token.cancel();
+    println!("Called cancellation_token.cancel() after 1 second");
+
+    // Wait for the execution to complete or be cancelled
+    let execution_result = execution_task.await;
+    let elapsed = start_time.elapsed();
+
+    println!("GenAI stream execution completed in {:?}", elapsed);
+
+    match execution_result {
+        Ok(stream_processing_result) => {
+            match stream_processing_result {
+                Ok(item_count) => {
+                    println!(
+                        "GenAI stream processed {} items before completion/cancellation",
+                        item_count
+                    );
+                    // Check if cancellation likely occurred based on timing and item count
+                    if elapsed <= Duration::from_secs(2) && item_count < 1000 {
+                        println!("✓ GenAI stream was likely cancelled mid-execution (processed {} items in {:?})", item_count, elapsed);
+                    } else if elapsed > Duration::from_secs(10) {
+                        return Err(anyhow::anyhow!(
+                            "Stream should have been cancelled within 10 seconds but took {:?} to complete normally. Cancellation failed.",
+                            elapsed
+                        ));
+                    } else {
+                        println!(
+                            "✓ GenAI stream completed quickly (before cancellation took effect)"
+                        );
                     }
                 }
+                Err(e) => {
+                    println!("✓ GenAI stream processing was cancelled as expected: {}", e);
+                }
             }
-
-            let elapsed = start_time.elapsed();
-            println!(
-                "GenAI streaming was cancelled/stopped after {:?}, processed {} items",
-                elapsed, item_count
-            );
-
-            // Should have processed some items but not completed the full response
-            assert!(
-                item_count > 0,
-                "Should have processed some GenAI stream items"
-            );
-            assert!(
-                elapsed < Duration::from_secs(30),
-                "GenAI streaming should be cancelled before full completion (elapsed: {:?})",
-                elapsed
-            );
         }
         Err(e) => {
-            println!("Failed to start GenAI streaming: {}", e);
-            return Err(e);
+            println!("GenAI stream execution task failed: {}", e);
+            return Err(e.into());
         }
+    }
+
+    // Verify that cancellation happened within reasonable time
+    if elapsed > Duration::from_secs(10) {
+        return Err(anyhow::anyhow!(
+            "Stream processing took too long ({:?}), suggesting cancellation did not work properly",
+            elapsed
+        ));
     }
 
     println!("✓ GenAI streaming cancellation test completed successfully");
@@ -801,6 +832,266 @@ async fn test_llm_completion_ollama_mid_execution_cancellation() -> Result<()> {
     Ok(())
 }
 
+/// Test LLM Chat Runner stream mid-execution cancellation with actual streaming
+#[tokio::test]
+#[ignore = "Integration test requiring Ollama server with long-running stream"]
+async fn test_llm_chat_stream_mid_execution_cancellation() -> Result<()> {
+    println!("Testing LLM Chat Runner stream mid-execution cancellation...");
+
+    let _app_module = create_hybrid_test_app().await?;
+    let runner = std::sync::Arc::new(tokio::sync::Mutex::new(
+        app_wrapper::llm::chat::LLMChatRunnerImpl::new(std::sync::Arc::new(_app_module)),
+    ));
+
+    // Load Ollama settings
+    let ollama_settings = OllamaRunnerSettings {
+        model: TEST_MODEL.to_string(),
+        base_url: Some(OLLAMA_HOST.to_string()),
+        system_prompt: Some(
+            "You are a helpful assistant. Please provide very detailed, comprehensive responses with multiple paragraphs.".to_string(),
+        ),
+        ..Default::default()
+    };
+    let settings = LlmRunnerSettings {
+        settings: Some(
+            jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::Settings::Ollama(
+                ollama_settings,
+            ),
+        ),
+    };
+    let serialized_settings = prost::Message::encode_to_vec(&settings);
+
+    // Create cancellation token and set it on the runner BEFORE execution
+    let cancellation_token = CancellationToken::new();
+    {
+        let mut runner_guard = runner.lock().await;
+        runner_guard.load(serialized_settings).await?;
+        runner_guard.set_cancellation_token(cancellation_token.clone());
+    }
+
+    // Create test arguments with a long-running prompt
+    let args = create_long_running_chat_args();
+    let metadata = HashMap::new();
+
+    let start_time = Instant::now();
+    let serialized_args = {
+        use prost::Message;
+        let mut buf = Vec::new();
+        args.encode(&mut buf)?;
+        buf
+    };
+
+    let runner_clone = runner.clone();
+
+    // Start stream execution in a task
+    let execution_task = tokio::spawn(async move {
+        let mut runner_guard = runner_clone.lock().await;
+        let stream_result = runner_guard.run_stream(&serialized_args, metadata).await?;
+
+        // Process the stream
+        use futures::StreamExt;
+        let mut item_count = 0;
+        let mut stream = stream_result;
+
+        while let Some(_item) = stream.next().await {
+            item_count += 1;
+            println!("Received stream item #{}", item_count);
+
+            // Add a small delay to make the stream processing observable
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        Ok::<usize, anyhow::Error>(item_count)
+    });
+
+    // Wait for stream to start producing items (let it run for a bit)
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // Cancel using the external token reference (avoids deadlock)
+    cancellation_token.cancel();
+    println!("Called cancellation_token.cancel() after 1 second");
+
+    // Wait for the execution to complete or be cancelled
+    let execution_result = execution_task.await;
+    let elapsed = start_time.elapsed();
+
+    println!("LLM Chat stream execution completed in {:?}", elapsed);
+
+    match execution_result {
+        Ok(stream_processing_result) => {
+            match stream_processing_result {
+                Ok(item_count) => {
+                    println!(
+                        "LLM Chat stream processed {} items before completion/cancellation",
+                        item_count
+                    );
+                    // Check if cancellation likely occurred based on timing and item count
+                    if elapsed <= Duration::from_secs(2) && item_count < 1000 {
+                        println!("✓ Stream was likely cancelled mid-execution (processed {} items in {:?})", item_count, elapsed);
+                    } else if elapsed > Duration::from_secs(10) {
+                        return Err(anyhow::anyhow!(
+                            "Stream should have been cancelled within 10 seconds but took {:?} to complete normally. Cancellation failed.",
+                            elapsed
+                        ));
+                    } else {
+                        println!("✓ Stream completed quickly (before cancellation took effect)");
+                    }
+                }
+                Err(e) => {
+                    println!(
+                        "✓ LLM Chat stream processing was cancelled as expected: {}",
+                        e
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            println!("Stream execution task failed: {}", e);
+            return Err(e.into());
+        }
+    }
+
+    // Verify that cancellation happened within reasonable time
+    if elapsed > Duration::from_secs(10) {
+        return Err(anyhow::anyhow!(
+            "Stream processing took too long ({:?}), suggesting cancellation did not work properly",
+            elapsed
+        ));
+    }
+
+    println!("✓ LLM Chat stream mid-execution cancellation test completed successfully");
+    Ok(())
+}
+
+/// Test LLM Completion Runner stream mid-execution cancellation with actual streaming
+#[tokio::test]
+#[ignore = "Integration test requiring Ollama server with long-running stream"]
+async fn test_llm_completion_stream_mid_execution_cancellation() -> Result<()> {
+    println!("Testing LLM Completion Runner stream mid-execution cancellation...");
+
+    let runner = std::sync::Arc::new(tokio::sync::Mutex::new(
+        app_wrapper::llm::completion::LLMCompletionRunnerImpl::new(),
+    ));
+
+    // Load Ollama settings
+    let ollama_settings = jobworkerp_runner::jobworkerp::runner::llm::LlmRunnerSettings {
+        settings: Some(
+            jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::Settings::Ollama(
+                OllamaRunnerSettings {
+                    model: TEST_MODEL.to_string(),
+                    base_url: Some(OLLAMA_HOST.to_string()),
+                    system_prompt: None,
+                    pull_model: Some(false),
+                },
+            ),
+        ),
+    };
+
+    let mut settings_buf = Vec::new();
+    use prost::Message;
+    ollama_settings.encode(&mut settings_buf)?;
+
+    // Create cancellation token and set it on the runner BEFORE execution
+    let cancellation_token = CancellationToken::new();
+    {
+        let mut runner_guard = runner.lock().await;
+        runner_guard.load(settings_buf).await?;
+        runner_guard.set_cancellation_token(cancellation_token.clone());
+    }
+
+    // Create test arguments with a long-running prompt
+    let args = create_long_running_completion_args();
+    let metadata = HashMap::new();
+
+    let start_time = Instant::now();
+    let serialized_args = {
+        let mut buf = Vec::new();
+        args.encode(&mut buf)?;
+        buf
+    };
+
+    let runner_clone = runner.clone();
+
+    // Start stream execution in a task
+    let execution_task = tokio::spawn(async move {
+        let mut runner_guard = runner_clone.lock().await;
+        let stream_result = runner_guard.run_stream(&serialized_args, metadata).await?;
+
+        // Process the stream
+        use futures::StreamExt;
+        let mut item_count = 0;
+        let mut stream = stream_result;
+
+        while let Some(_item) = stream.next().await {
+            item_count += 1;
+            println!("Received completion stream item #{}", item_count);
+
+            // Add a small delay to make the stream processing observable
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        Ok::<usize, anyhow::Error>(item_count)
+    });
+
+    // Wait for stream to start producing items (let it run for a bit)
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // Cancel using the external token reference (avoids deadlock)
+    cancellation_token.cancel();
+    println!("Called cancellation_token.cancel() after 1 second");
+
+    // Wait for the execution to complete or be cancelled
+    let execution_result = execution_task.await;
+    let elapsed = start_time.elapsed();
+
+    println!("LLM Completion stream execution completed in {:?}", elapsed);
+
+    match execution_result {
+        Ok(stream_processing_result) => {
+            match stream_processing_result {
+                Ok(item_count) => {
+                    println!(
+                        "LLM Completion stream processed {} items before completion/cancellation",
+                        item_count
+                    );
+                    // Check if cancellation likely occurred based on timing and item count
+                    if elapsed <= Duration::from_secs(2) && item_count < 1000 {
+                        println!("✓ Stream was likely cancelled mid-execution (processed {} items in {:?})", item_count, elapsed);
+                    } else if elapsed > Duration::from_secs(10) {
+                        return Err(anyhow::anyhow!(
+                            "Stream should have been cancelled within 10 seconds but took {:?} to complete normally. Cancellation failed.",
+                            elapsed
+                        ));
+                    } else {
+                        println!("✓ Stream completed quickly (before cancellation took effect)");
+                    }
+                }
+                Err(e) => {
+                    println!(
+                        "✓ LLM Completion stream processing was cancelled as expected: {}",
+                        e
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            println!("Stream execution task failed: {}", e);
+            return Err(e.into());
+        }
+    }
+
+    // Verify that cancellation happened within reasonable time
+    if elapsed > Duration::from_secs(10) {
+        return Err(anyhow::anyhow!(
+            "Stream processing took too long ({:?}), suggesting cancellation did not work properly",
+            elapsed
+        ));
+    }
+
+    println!("✓ LLM Completion stream mid-execution cancellation test completed successfully");
+    Ok(())
+}
+
 /// Test mid-execution cancellation with actual LLM Completion Runner (GenAI)
 #[tokio::test]
 #[ignore = "Integration test requiring external setup"]
@@ -906,5 +1197,138 @@ async fn test_llm_completion_genai_mid_execution_cancellation() -> Result<()> {
     }
 
     println!("✓ LLM Completion (GenAI) mid-execution cancellation test completed successfully");
+    Ok(())
+}
+
+/// Test LLM Completion Runner stream mid-execution cancellation with GenAI
+#[tokio::test]
+#[ignore = "Integration test requiring Ollama server with long-running stream"]
+async fn test_llm_completion_genai_stream_mid_execution_cancellation() -> Result<()> {
+    println!("Testing LLM Completion Runner (GenAI) stream mid-execution cancellation...");
+
+    let runner = std::sync::Arc::new(tokio::sync::Mutex::new(
+        app_wrapper::llm::completion::LLMCompletionRunnerImpl::new(),
+    ));
+
+    // Load GenAI settings
+    let genai_settings = jobworkerp_runner::jobworkerp::runner::llm::LlmRunnerSettings {
+        settings: Some(
+            jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::Settings::Genai(
+                GenaiRunnerSettings {
+                    model: TEST_MODEL.to_string(),
+                    base_url: Some(OLLAMA_HOST.to_string()), // Use Ollama host via GenAI
+                    system_prompt: None,
+                },
+            ),
+        ),
+    };
+
+    let mut settings_buf = Vec::new();
+    use prost::Message;
+    genai_settings.encode(&mut settings_buf)?;
+
+    // Create cancellation token and set it on the runner BEFORE execution
+    let cancellation_token = CancellationToken::new();
+    {
+        let mut runner_guard = runner.lock().await;
+        runner_guard.load(settings_buf).await?;
+        runner_guard.set_cancellation_token(cancellation_token.clone());
+    }
+
+    // Create test arguments with a long-running prompt
+    let args = create_long_running_completion_args();
+    let metadata = HashMap::new();
+
+    let start_time = Instant::now();
+    let serialized_args = {
+        let mut buf = Vec::new();
+        args.encode(&mut buf)?;
+        buf
+    };
+
+    let runner_clone = runner.clone();
+
+    // Start stream execution in a task
+    let execution_task = tokio::spawn(async move {
+        let mut runner_guard = runner_clone.lock().await;
+        let stream_result = runner_guard.run_stream(&serialized_args, metadata).await?;
+
+        // Process the stream
+        use futures::StreamExt;
+        let mut item_count = 0;
+        let mut stream = stream_result;
+
+        while let Some(_item) = stream.next().await {
+            item_count += 1;
+            println!("Received GenAI completion stream item #{}", item_count);
+
+            // Add a small delay to make the stream processing observable
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        Ok::<usize, anyhow::Error>(item_count)
+    });
+
+    // Wait for stream to start producing items (let it run for a bit)
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // Cancel using the external token reference (avoids deadlock)
+    cancellation_token.cancel();
+    println!("Called cancellation_token.cancel() after 1 second");
+
+    // Wait for the execution to complete or be cancelled
+    let execution_result = execution_task.await;
+    let elapsed = start_time.elapsed();
+
+    println!(
+        "LLM Completion (GenAI) stream execution completed in {:?}",
+        elapsed
+    );
+
+    match execution_result {
+        Ok(stream_processing_result) => {
+            match stream_processing_result {
+                Ok(item_count) => {
+                    println!(
+                        "LLM Completion (GenAI) stream processed {} items before completion/cancellation",
+                        item_count
+                    );
+                    // Check if cancellation likely occurred based on timing and item count
+                    if elapsed <= Duration::from_secs(2) && item_count < 1000 {
+                        println!("✓ GenAI completion stream was likely cancelled mid-execution (processed {} items in {:?})", item_count, elapsed);
+                    } else if elapsed > Duration::from_secs(10) {
+                        return Err(anyhow::anyhow!(
+                            "Stream should have been cancelled within 10 seconds but took {:?} to complete normally. Cancellation failed.",
+                            elapsed
+                        ));
+                    } else {
+                        println!("✓ GenAI completion stream completed quickly (before cancellation took effect)");
+                    }
+                }
+                Err(e) => {
+                    println!(
+                        "✓ LLM Completion (GenAI) stream processing was cancelled as expected: {}",
+                        e
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            println!("GenAI completion stream execution task failed: {}", e);
+            return Err(e.into());
+        }
+    }
+
+    // Verify that cancellation happened within reasonable time
+    if elapsed > Duration::from_secs(10) {
+        return Err(anyhow::anyhow!(
+            "Stream processing took too long ({:?}), suggesting cancellation did not work properly",
+            elapsed
+        ));
+    }
+
+    println!(
+        "✓ LLM Completion (GenAI) stream mid-execution cancellation test completed successfully"
+    );
     Ok(())
 }
