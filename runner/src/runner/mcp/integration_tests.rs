@@ -350,6 +350,215 @@ async fn test_mcp_cancellation_during_execution() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn test_mcp_stream_execution_normal() -> Result<()> {
+    use crate::jobworkerp::runner::McpServerArgs;
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use futures::StreamExt;
+    use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+    use proto::jobworkerp::data::result_output_item::Item;
+    use std::collections::HashMap;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    // Create McpClients
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+
+    // Create MCP runner instance
+    let mut runner = McpServerRunnerImpl::new(client);
+
+    // Test MCP stream with time server
+    let mcp_args = McpServerArgs {
+        tool_name: "get_current_time".to_string(),
+        arg_json: r#"{"timezone": "UTC"}"#.to_string(),
+    };
+
+    let arg_bytes = ProstMessageCodec::serialize_message(&mcp_args)?;
+    let metadata = HashMap::new();
+
+    let start_time = std::time::Instant::now();
+    let mut stream = runner.run_stream(&arg_bytes, metadata).await?;
+
+    let mut item_count = 0;
+    let mut received_data = false;
+    let mut received_end = false;
+
+    while let Some(item) = stream.next().await {
+        item_count += 1;
+        eprintln!("Received stream item #{item_count}: {item:?}");
+
+        match item.item {
+            Some(Item::Data(data)) => {
+                received_data = true;
+                // Try to deserialize the data to verify it's valid MCP result
+                let result = ProstMessageCodec::deserialize_message::<
+                    crate::jobworkerp::runner::McpServerResult,
+                >(&data)?;
+                eprintln!("Deserialized MCP result: {result:?}");
+                assert!(!result.content.is_empty());
+                assert!(!result.is_error);
+            }
+            Some(Item::End(trailer)) => {
+                received_end = true;
+                eprintln!("Stream ended with trailer: {trailer:?}");
+            }
+            _ => {
+                eprintln!("Unexpected item type");
+            }
+        }
+    }
+
+    let elapsed = start_time.elapsed();
+    eprintln!("MCP stream completed in {elapsed:?}");
+
+    // Verify stream behavior
+    assert!(received_data, "Should have received data item");
+    assert!(received_end, "Should have received end marker");
+    assert_eq!(
+        item_count, 2,
+        "Should have received exactly 2 items (data + end)"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "Should complete quickly"
+    );
+
+    eprintln!("=== MCP stream normal execution test completed successfully ===");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_mcp_stream_execution_with_cancellation() -> Result<()> {
+    use crate::jobworkerp::runner::McpServerArgs;
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use futures::StreamExt;
+    use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+    use proto::jobworkerp::data::result_output_item::Item;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::Mutex;
+    use tokio_util::sync::CancellationToken;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    // Create McpClients
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+
+    // Create MCP runner instance (wrapped for sharing)
+    let runner = Arc::new(Mutex::new(McpServerRunnerImpl::new(client)));
+
+    // Create cancellation token and set it on the runner
+    let cancellation_token = CancellationToken::new();
+    {
+        let mut runner_guard = runner.lock().await;
+        runner_guard.cancellation_token = Some(cancellation_token.clone());
+    }
+
+    let start_time = std::time::Instant::now();
+
+    // Test MCP stream with time server
+    let mcp_args = McpServerArgs {
+        tool_name: "get_current_time".to_string(),
+        arg_json: r#"{"timezone": "UTC"}"#.to_string(),
+    };
+
+    let arg_bytes = ProstMessageCodec::serialize_message(&mcp_args)?;
+    let metadata = HashMap::new();
+
+    let runner_clone = runner.clone();
+
+    // Start stream execution in a task
+    let execution_task = tokio::spawn(async move {
+        let mut runner_guard = runner_clone.lock().await;
+        let stream_result = runner_guard.run_stream(&arg_bytes, metadata).await;
+
+        match stream_result {
+            Ok(mut stream) => {
+                let mut item_count = 0;
+
+                while let Some(item) = stream.next().await {
+                    item_count += 1;
+                    eprintln!("Received stream item #{item_count}: {item:?}");
+
+                    match item.item {
+                        Some(Item::Data(_data)) => {
+                            eprintln!("Received data item before cancellation");
+                        }
+                        Some(Item::End(_trailer)) => {
+                            eprintln!("Stream ended (possibly due to cancellation)");
+                            break;
+                        }
+                        _ => {
+                            eprintln!("Unexpected item type");
+                        }
+                    }
+                }
+
+                Ok(item_count)
+            }
+            Err(e) => {
+                eprintln!("Stream creation failed: {e}");
+                Err(e)
+            }
+        }
+    });
+
+    // Wait for stream to start (let it run for a bit)
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Cancel using the external token reference (avoids deadlock)
+    cancellation_token.cancel();
+    eprintln!("Called cancellation_token.cancel() after 100ms");
+
+    // Wait for the execution to complete or be cancelled
+    let execution_result = execution_task.await;
+    let elapsed = start_time.elapsed();
+
+    eprintln!("MCP stream execution completed in {elapsed:?}");
+
+    match execution_result {
+        Ok(stream_processing_result) => {
+            match stream_processing_result {
+                Ok(item_count) => {
+                    eprintln!("✓ MCP stream processing completed with {item_count} items");
+                    // The stream should complete quickly due to cancellation
+                    assert!(elapsed < Duration::from_secs(2));
+                }
+                Err(e) => {
+                    eprintln!("✓ MCP stream processing was cancelled as expected: {e}");
+                    // Check if it's a cancellation error
+                    if e.to_string().contains("cancelled") {
+                        eprintln!("✓ Cancellation was properly detected");
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("MCP stream execution task failed: {e}");
+            panic!("Task failed: {e}");
+        }
+    }
+
+    // Verify that cancellation happened quickly
+    if elapsed > Duration::from_secs(2) {
+        panic!("Stream processing took too long ({elapsed:?}), cancellation may not have worked");
+    }
+
+    eprintln!("✓ MCP stream execution with cancellation test completed successfully");
+    Ok(())
+}
+
 // #[tokio::test]
 // async fn test_sqlite_mcp_server() -> Result<()> {
 //     // SQLite server configuration (using in-memory database)

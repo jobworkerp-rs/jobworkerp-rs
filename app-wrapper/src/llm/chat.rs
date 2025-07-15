@@ -123,6 +123,7 @@ impl RunnerTrait for LLMChatRunnerImpl {
         let cancellation_token = if let Some(existing_token) = &self.cancellation_token {
             // If token already exists and is cancelled, return early
             if existing_token.is_cancelled() {
+                self.cancellation_token = None; // Reset token on early cancellation
                 return (
                     Err(anyhow::anyhow!(
                         "LLM chat execution was cancelled before start"
@@ -195,6 +196,7 @@ impl RunnerTrait for LLMChatRunnerImpl {
         let cancellation_token = if let Some(existing_token) = &self.cancellation_token {
             // If token already exists and is cancelled, return early
             if existing_token.is_cancelled() {
+                self.cancellation_token = None; // Reset token on early cancellation
                 return Err(anyhow::anyhow!(
                     "LLM chat stream execution was cancelled before start"
                 ));

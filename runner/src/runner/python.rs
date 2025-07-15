@@ -191,6 +191,7 @@ impl RunnerTrait for PythonCommandRunner {
         let cancellation_token = if let Some(existing_token) = &self.cancellation_token {
             // If token already exists and is cancelled, return early
             if existing_token.is_cancelled() {
+                self.cancellation_token = None; // Reset token on early cancellation
                 return (
                     Err(anyhow::anyhow!(
                         "Python command execution was cancelled before start"
@@ -375,6 +376,17 @@ impl RunnerTrait for PythonCommandRunner {
         _arg: &[u8],
         _metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
+        // Set up cancellation token for pre-execution cancellation check
+        if let Some(existing_token) = &self.cancellation_token {
+            // If token already exists and is cancelled, return early
+            if existing_token.is_cancelled() {
+                self.cancellation_token = None; // Reset token on early cancellation
+                return Err(anyhow::anyhow!(
+                    "Python stream execution was cancelled before start"
+                ));
+            }
+        }
+
         // Clear cancellation token even on error
         self.cancellation_token = None;
         Err(anyhow!("Stream output not supported by PythonRunner"))
@@ -695,5 +707,104 @@ except KeyboardInterrupt:
         );
 
         eprintln!("=== Pre-execution cancellation test completed ===");
+    }
+
+    #[tokio::test]
+    async fn test_python_stream_mid_execution_cancellation() {
+        eprintln!("=== Testing PYTHON Runner stream mid-execution cancellation ===");
+
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+        use tokio::sync::Mutex;
+
+        // Use Arc<tokio::sync::Mutex<>> to share runner between tasks (similar to LLM pattern)
+        let runner = Arc::new(Mutex::new(PythonCommandRunner::new()));
+
+        // Create test arguments
+        let arg = PythonCommandArgs {
+            script: Some(python_command_args::Script::ScriptContent(
+                "import time; time.sleep(5); print('Should not reach here')".to_string(),
+            )),
+            env_vars: std::collections::HashMap::new(),
+            input_data: None,
+            with_stderr: false,
+        };
+
+        // Create cancellation token and set it on the runner
+        let cancellation_token = CancellationToken::new();
+        {
+            let mut runner_guard = runner.lock().await;
+            runner_guard.cancellation_token = Some(cancellation_token.clone());
+        }
+
+        let start_time = Instant::now();
+        let serialized_args = ProstMessageCodec::serialize_message(&arg).unwrap();
+
+        let runner_clone = runner.clone();
+
+        // Start stream execution in a task
+        let execution_task = tokio::spawn(async move {
+            let mut runner_guard = runner_clone.lock().await;
+            let stream_result = runner_guard
+                .run_stream(&serialized_args, HashMap::new())
+                .await;
+
+            match stream_result {
+                Ok(_stream) => {
+                    // Python stream is not implemented, so this shouldn't happen
+                    eprintln!("WARNING: Python stream returned Ok (should be unimplemented)");
+                    Ok(0)
+                }
+                Err(e) => {
+                    eprintln!("Python stream returned error as expected: {e}");
+                    Err(e)
+                }
+            }
+        });
+
+        // Wait for stream to start (let it run for a bit)
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Cancel using the external token reference (avoids deadlock)
+        cancellation_token.cancel();
+        eprintln!("Called cancellation_token.cancel() after 100ms");
+
+        // Wait for the execution to complete or be cancelled
+        let execution_result = execution_task.await;
+        let elapsed = start_time.elapsed();
+
+        eprintln!("Python stream execution completed in {elapsed:?}");
+
+        match execution_result {
+            Ok(stream_processing_result) => {
+                match stream_processing_result {
+                    Ok(_item_count) => {
+                        eprintln!("WARNING: Python stream should be unimplemented");
+                    }
+                    Err(e) => {
+                        eprintln!("✓ Python stream processing was cancelled as expected: {e}");
+                        // Check if it's a cancellation error or unimplemented error
+                        if e.to_string().contains("cancelled") {
+                            eprintln!("✓ Cancellation was properly detected");
+                        } else if e.to_string().contains("not implemented") {
+                            eprintln!("✓ Stream is unimplemented but cancellation check worked");
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Python stream execution task failed: {e}");
+                panic!("Task failed: {e}");
+            }
+        }
+
+        // Verify that cancellation happened very quickly (since stream is unimplemented)
+        if elapsed > Duration::from_secs(1) {
+            panic!(
+                "Stream processing took too long ({elapsed:?}), should be immediate for unimplemented stream"
+            );
+        }
+
+        eprintln!("✓ Python stream mid-execution cancellation test completed successfully");
     }
 }

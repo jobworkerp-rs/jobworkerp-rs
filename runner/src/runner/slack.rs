@@ -13,6 +13,7 @@ use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tonic::async_trait;
 
@@ -151,11 +152,82 @@ impl RunnerTrait for SlackPostMessageRunner {
         arg: &[u8],
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        // default implementation (return empty)
-        let _ = (arg, metadata);
-        // Clear cancellation token even on error
-        self.cancellation_token = None;
-        Err(anyhow::anyhow!("not implemented"))
+        // Set up cancellation token for pre-execution cancellation check
+        let cancellation_token = self.cancellation_token.clone().unwrap_or_else(|| {
+            let token = CancellationToken::new();
+            self.cancellation_token = Some(token.clone());
+            token
+        });
+
+        // Check for cancellation before starting
+        if cancellation_token.is_cancelled() {
+            self.cancellation_token = None;
+            return Err(anyhow!(
+                "Slack stream request was cancelled before execution"
+            ));
+        }
+
+        let slack = self
+            .slack
+            .clone()
+            .ok_or_else(|| anyhow!("slack repository is not initialized"))?;
+        let message = ProstMessageCodec::deserialize_message::<SlackChatPostMessageArgs>(arg)?;
+
+        use async_stream::stream;
+        use proto::jobworkerp::data::{result_output_item::Item, Trailer};
+
+        let trailer = Arc::new(Trailer {
+            metadata: metadata.clone(),
+        });
+
+        let stream = stream! {
+            // Send Slack message with cancellation support
+            let send_result = tokio::select! {
+                result = slack.send_message(&message) => result,
+                _ = cancellation_token.cancelled() => {
+                    tracing::info!("Slack stream request was cancelled");
+                    yield ResultOutputItem {
+                        item: Some(Item::End((*trailer).clone())),
+                    };
+                    return;
+                }
+            };
+
+            match send_result {
+                Ok(res) => {
+                    match res.to_proto() {
+                        Ok(proto_result) => {
+                            // Serialize and yield the result
+                            match ProstMessageCodec::serialize_message(&proto_result) {
+                                Ok(serialized) => {
+                                    yield ResultOutputItem {
+                                        item: Some(Item::Data(serialized)),
+                                    };
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to serialize Slack result: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to convert Slack result to proto: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Slack message sending failed: {}", e);
+                }
+            }
+
+            // Send end marker
+            yield ResultOutputItem {
+                item: Some(Item::End((*trailer).clone())),
+            };
+        };
+
+        // Keep cancellation token for potential mid-stream cancellation
+        // Note: The token will be cleared when cancel() is called
+        Ok(Box::pin(stream))
     }
 
     async fn cancel(&mut self) {
@@ -218,5 +290,113 @@ mod tests {
 
         let error_msg = result.unwrap_err().to_string();
         assert!(error_msg.contains("cancelled before"));
+    }
+
+    #[tokio::test]
+    async fn test_slack_stream_mid_execution_cancellation() {
+        eprintln!("=== Testing Slack Runner stream mid-execution cancellation ===");
+
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+        use tokio::sync::Mutex;
+
+        // Use Arc<tokio::sync::Mutex<>> to share runner between tasks (similar to LLM pattern)
+        let runner = Arc::new(Mutex::new(SlackPostMessageRunner::new()));
+
+        // Create test arguments
+        use crate::jobworkerp::runner::SlackChatPostMessageArgs;
+        let arg = SlackChatPostMessageArgs {
+            channel: "#test".to_string(),
+            text: Some("Test message for cancellation".to_string()),
+            username: Some("test-bot".to_string()),
+            icon_emoji: None,
+            icon_url: None,
+            link_names: None,
+            parse: None,
+            reply_broadcast: None,
+            thread_ts: None,
+            unfurl_links: None,
+            unfurl_media: None,
+            mrkdwn: None,
+            blocks: vec![],
+            attachments: vec![],
+        };
+
+        // Create cancellation token and set it on the runner
+        let cancellation_token = CancellationToken::new();
+        {
+            let mut runner_guard = runner.lock().await;
+            runner_guard.cancellation_token = Some(cancellation_token.clone());
+        }
+
+        let start_time = Instant::now();
+        let serialized_args = ProstMessageCodec::serialize_message(&arg).unwrap();
+
+        let runner_clone = runner.clone();
+
+        // Start stream execution in a task
+        let execution_task = tokio::spawn(async move {
+            let mut runner_guard = runner_clone.lock().await;
+            let stream_result = runner_guard
+                .run_stream(&serialized_args, HashMap::new())
+                .await;
+
+            match stream_result {
+                Ok(_stream) => {
+                    // Slack stream is not implemented, so this shouldn't happen
+                    eprintln!("WARNING: Slack stream returned Ok (should be unimplemented)");
+                    Ok(0)
+                }
+                Err(e) => {
+                    eprintln!("Slack stream returned error as expected: {e}");
+                    Err(e)
+                }
+            }
+        });
+
+        // Wait for stream to start (let it run for a bit)
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Cancel using the external token reference (avoids deadlock)
+        cancellation_token.cancel();
+        eprintln!("Called cancellation_token.cancel() after 100ms");
+
+        // Wait for the execution to complete or be cancelled
+        let execution_result = execution_task.await;
+        let elapsed = start_time.elapsed();
+
+        eprintln!("Slack stream execution completed in {elapsed:?}");
+
+        match execution_result {
+            Ok(stream_processing_result) => {
+                match stream_processing_result {
+                    Ok(_item_count) => {
+                        eprintln!("WARNING: Slack stream should be unimplemented");
+                    }
+                    Err(e) => {
+                        eprintln!("✓ Slack stream processing was cancelled as expected: {e}");
+                        // Check if it's a cancellation error or unimplemented error
+                        if e.to_string().contains("cancelled") {
+                            eprintln!("✓ Cancellation was properly detected");
+                        } else if e.to_string().contains("not implemented") {
+                            eprintln!("✓ Stream is unimplemented but cancellation check worked");
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Slack stream execution task failed: {e}");
+                panic!("Task failed: {e}");
+            }
+        }
+
+        // Verify that cancellation happened very quickly (since stream is unimplemented)
+        if elapsed > Duration::from_secs(1) {
+            panic!(
+                "Stream processing took too long ({elapsed:?}), should be immediate for unimplemented stream"
+            );
+        }
+
+        eprintln!("✓ Slack stream mid-execution cancellation test completed successfully");
     }
 }

@@ -126,6 +126,7 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         let cancellation_token = if let Some(existing_token) = &self.cancellation_token {
             // If token already exists and is cancelled, return early
             if existing_token.is_cancelled() {
+                self.cancellation_token = None; // Reset token on early cancellation
                 return (
                     Err(anyhow::anyhow!(
                         "LLM completion execution was cancelled before start"
@@ -196,6 +197,7 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         let cancellation_token = if let Some(existing_token) = &self.cancellation_token {
             // If token already exists and is cancelled, return early
             if existing_token.is_cancelled() {
+                self.cancellation_token = None; // Reset token on early cancellation
                 return Err(anyhow::anyhow!(
                     "LLM completion stream execution was cancelled before start"
                 ));
