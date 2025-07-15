@@ -22,6 +22,7 @@ use proto::jobworkerp::function::data::ToolAnnotations;
 use proxy::McpServerProxy;
 use rmcp::model::CallToolRequestParam;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 pub mod config;
@@ -84,7 +85,7 @@ impl RunnerSpec for McpServerRunnerImpl {
         Some(include_str!("../../protobuf/jobworkerp/runner/mcp_server_result.proto").to_string())
     }
     fn output_type(&self) -> StreamingOutputType {
-        StreamingOutputType::NonStreaming
+        StreamingOutputType::Both
     }
     fn settings_schema(&self) -> String {
         schema_to_json_string!(crate::jobworkerp::runner::Empty, "settings_schema")
@@ -272,13 +273,150 @@ impl RunnerTrait for McpServerRunnerImpl {
 
     async fn run_stream(
         &mut self,
-        _arg: &[u8],
-        _metadata: HashMap<String, String>,
+        arg: &[u8],
+        metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        tracing::error!("run_stream not implemented");
-        // Clear cancellation token even on error
-        self.cancellation_token = None;
-        Err(anyhow!("run_stream not implemented"))
+        // Set up cancellation token for pre-execution cancellation check
+        let cancellation_token = self.cancellation_token.clone().unwrap_or_else(|| {
+            let token = CancellationToken::new();
+            self.cancellation_token = Some(token.clone());
+            token
+        });
+
+        // Check for cancellation before starting
+        if cancellation_token.is_cancelled() {
+            self.cancellation_token = None;
+            return Err(anyhow!("MCP stream request was cancelled before execution"));
+        }
+
+        let arg = ProstMessageCodec::deserialize_message::<McpServerArgs>(arg)?;
+
+        // Extract needed data from self to avoid lifetime issues
+        let mcp_transport = self.mcp_server.transport.clone();
+        let tool_name = arg.tool_name.clone();
+        let arg_json = arg.arg_json.clone();
+
+        use async_stream::stream;
+        use proto::jobworkerp::data::{result_output_item::Item, Trailer};
+
+        let trailer = Arc::new(Trailer {
+            metadata: metadata.clone(),
+        });
+
+        let stream = stream! {
+            // Call MCP tool with cancellation support
+            let call_result = tokio::select! {
+                result = mcp_transport.call_tool(CallToolRequestParam {
+                    name: std::borrow::Cow::Owned(tool_name),
+                    arguments: serde_json::from_str(arg_json.as_str())
+                        .inspect_err(|e| {
+                            tracing::error!("Failed to parse arguments: {}", e);
+                        })
+                        .ok(),
+                }) => result,
+                _ = cancellation_token.cancelled() => {
+                    tracing::info!("MCP stream request was cancelled");
+                    yield ResultOutputItem {
+                        item: Some(Item::End((*trailer).clone())),
+                    };
+                    return;
+                }
+            };
+
+            match call_result {
+                Ok(res) => {
+                    // Map response to McpServerResult
+                    let mut mcp_contents = Vec::new();
+                    for content in res.content {
+                        match content.raw {
+                            rmcp::model::RawContent::Text(rmcp::model::RawTextContent { text }) => {
+                                mcp_contents.push(mcp_server_result::Content {
+                                    raw_content: Some(mcp_server_result::content::RawContent::Text(
+                                        mcp_server_result::TextContent { text },
+                                    )),
+                                });
+                            }
+                            rmcp::model::RawContent::Image(rmcp::model::RawImageContent {
+                                data,
+                                mime_type,
+                            }) => {
+                                mcp_contents.push(mcp_server_result::Content {
+                                    raw_content: Some(mcp_server_result::content::RawContent::Image(
+                                        mcp_server_result::ImageContent { data, mime_type },
+                                    )),
+                                });
+                            }
+                            rmcp::model::RawContent::Audio(_audio) => {
+                                tracing::error!("Audio content not supported yet");
+                            }
+                            rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
+                                resource: rmcp::model::ResourceContents::TextResourceContents {
+                                    uri, mime_type, text,
+                                },
+                            }) => {
+                                mcp_contents.push(mcp_server_result::Content {
+                                    raw_content: Some(mcp_server_result::content::RawContent::Resource(
+                                        mcp_server_result::EmbeddedResource {
+                                            resource: Some(
+                                                mcp_server_result::embedded_resource::Resource::Text(
+                                                    TextResourceContents { uri, mime_type, text },
+                                                ),
+                                            ),
+                                        },
+                                    )),
+                                });
+                            }
+                            rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
+                                resource: rmcp::model::ResourceContents::BlobResourceContents {
+                                    uri, mime_type, blob,
+                                },
+                            }) => {
+                                mcp_contents.push(mcp_server_result::Content {
+                                    raw_content: Some(mcp_server_result::content::RawContent::Resource(
+                                        mcp_server_result::EmbeddedResource {
+                                            resource: Some(
+                                                mcp_server_result::embedded_resource::Resource::Blob(
+                                                    BlobResourceContents { uri, mime_type, blob },
+                                                ),
+                                            ),
+                                        },
+                                    )),
+                                });
+                            }
+                        }
+                    }
+
+                    let mcp_result = McpServerResult {
+                        content: mcp_contents,
+                        is_error: res.is_error.unwrap_or(false),
+                    };
+
+                    // Serialize and yield the result
+                    match ProstMessageCodec::serialize_message(&mcp_result) {
+                        Ok(serialized) => {
+                            yield ResultOutputItem {
+                                item: Some(Item::Data(serialized)),
+                            };
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to serialize MCP result: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("MCP tool call failed: {}", e);
+                }
+            }
+
+            // Send end marker
+            yield ResultOutputItem {
+                item: Some(Item::End((*trailer).clone())),
+            };
+        };
+
+        // Keep cancellation token for potential mid-stream cancellation
+        // Note: The token will be cleared when cancel() is called
+        Ok(Box::pin(stream))
     }
 
     async fn cancel(&mut self) {

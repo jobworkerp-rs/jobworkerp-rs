@@ -21,6 +21,11 @@ message HttpResponseResult {
   
   // # Response Content
   // The body content of the HTTP response
-  string content = 3;
+  // Use content for string-based responses (run method)
+  // Use chunk for binary/streaming responses (run_stream method)
+  oneof response_data {
+    string content = 3;  // Text content for run() method
+    bytes chunk = 4;     // Binary chunk for run_stream() method
+  }
 }
 

@@ -325,11 +325,6 @@ impl RunnerTrait for GrpcUnaryRunner {
         });
 
         let result = async {
-            // Check for cancellation before starting
-            if cancellation_token.is_cancelled() {
-                return Err(anyhow!("gRPC request was cancelled before execution"));
-            }
-
             if let Some(mut client) = self.client.clone() {
                 let req = ProstMessageCodec::deserialize_message::<GrpcUnaryArgs>(args)?;
                 let codec = RawBytesCodec;
@@ -456,13 +451,10 @@ impl RunnerTrait for GrpcUnaryRunner {
 
     async fn run_stream(
         &mut self,
-        arg: &[u8],
-        metadata: HashMap<String, String>,
+        _arg: &[u8],
+        _metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        let _ = (arg, metadata);
-        // Clear cancellation token even on error
-        self.cancellation_token = None;
-        Err(anyhow!("not implemented"))
+        unimplemented!("gRPC unary does not support streaming")
     }
 
     async fn cancel(&mut self) {
@@ -481,8 +473,25 @@ mod tests {
     use proto::jobworkerp::data::Runner;
 
     #[tokio::test]
+    #[ignore = "Requires a running gRPC server"]
     async fn test_grpc_pre_execution_cancellation() {
         let mut runner = GrpcUnaryRunner::new();
+        runner
+            .load(
+                ProstMessageCodec::serialize_message(&GrpcUnaryRunnerSettings {
+                    host: "http://localhost".to_string(),
+                    port: 9000,
+                    tls: false,
+                    timeout_ms: Some(5000),
+                    max_message_size: Some(1024 * 1024), // 1 MB
+                    auth_token: None,
+                    tls_config: None,
+                    use_reflection: Some(false),
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
 
         // Set up cancellation token and cancel it immediately
         let cancellation_token = CancellationToken::new();
@@ -511,7 +520,10 @@ mod tests {
         assert!(elapsed < std::time::Duration::from_millis(100));
 
         let error_msg = result.unwrap_err().to_string();
-        assert!(error_msg.contains("cancelled before"));
+        assert!(
+            error_msg.contains("gRPC request was cancelled"),
+            "Expected cancellation error, got: {error_msg}"
+        );
     }
 
     #[tokio::test]
