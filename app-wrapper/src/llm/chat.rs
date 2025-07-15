@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use app::module::AppModule;
+use async_stream::stream;
 use async_trait::async_trait;
 use futures::stream::{BoxStream, StreamExt};
 use genai::GenaiChatService;
@@ -149,14 +150,6 @@ impl RunnerTrait for LLMChatRunnerImpl {
             let args = LlmChatArgs::decode(&mut Cursor::new(arg))
                 .map_err(|e| anyhow!("decode error: {}", e))?;
 
-            // Check cancellation before LLM service execution
-            if cancellation_token.is_cancelled() {
-                tracing::info!("LLM chat execution was cancelled before service call");
-                return Err(anyhow!(
-                    "LLM chat execution was cancelled before service call"
-                ));
-            }
-
             if let Some(ollama) = self.ollama.as_mut() {
                 let res = tokio::select! {
                     result = ollama.request_chat(args, cx, metadata_clone.clone()) => result?,
@@ -215,65 +208,94 @@ impl RunnerTrait for LLMChatRunnerImpl {
 
         let args = LlmChatArgs::decode(args).map_err(|e| anyhow!("decode error: {}", e))?;
 
-        // Check cancellation before LLM service execution
-        if cancellation_token.is_cancelled() {
-            tracing::info!("LLM chat stream execution was cancelled before service call");
-            return Err(anyhow::anyhow!(
-                "LLM chat stream execution was cancelled before service call"
-            ));
-        }
-
         if let Some(ollama) = self.ollama.as_mut() {
             // Get streaming responses from ollama service
             let stream = ollama.request_stream_chat(args).await?;
 
             let req_meta = Arc::new(metadata.clone());
-            // Transform each LlmChatResult into ResultOutputItem
-            let output_stream = stream
-                .flat_map(move |completion_result| {
-                    let mut result_items = Vec::new();
+            let cancel_token = cancellation_token.clone();
 
-                    // Encode the completion result to binary if there is content
-                    if completion_result
-                        .content
-                        .as_ref()
-                        .is_some_and(|c| c.content.is_some())
-                    {
-                        let buf = ProstMessageCodec::serialize_message(&completion_result);
-                        // Add content data item
-                        if let Ok(buf) = buf {
-                            result_items.push(ResultOutputItem {
-                                item: Some(result_output_item::Item::Data(buf)),
-                            });
-                        } else {
-                            tracing::error!("Failed to serialize LLM completion result");
+            // Transform each LlmChatResult into ResultOutputItem with cancellation support
+            let output_stream = stream! {
+                tokio::pin!(stream);
+                loop {
+                    tokio::select! {
+                        item = stream.next() => {
+                            match item {
+                                Some(completion_result) => {
+                                    // Encode the completion result to binary if there is content
+                                    if completion_result
+                                        .content
+                                        .as_ref()
+                                        .is_some_and(|c| c.content.is_some())
+                                    {
+                                        let buf = ProstMessageCodec::serialize_message(&completion_result);
+                                        // Add content data item
+                                        if let Ok(buf) = buf {
+                                            yield ResultOutputItem {
+                                                item: Some(result_output_item::Item::Data(buf)),
+                                            };
+                                        } else {
+                                            tracing::error!("Failed to serialize LLM completion result");
+                                        }
+                                    }
+
+                                    // If this is the last chunk, add an End item
+                                    if completion_result.done {
+                                        yield ResultOutputItem {
+                                            item: Some(result_output_item::Item::End(
+                                                proto::jobworkerp::data::Trailer {
+                                                    metadata: (*req_meta).clone(),
+                                                },
+                                            )),
+                                        };
+                                        break;
+                                    }
+                                }
+                                None => break,
+                            }
+                        }
+                        _ = cancel_token.cancelled() => {
+                            tracing::info!("LLM chat stream was cancelled");
+                            break;
                         }
                     }
+                }
+            }.boxed();
 
-                    // If this is the last chunk, add an End item
-                    if completion_result.done {
-                        result_items.push(ResultOutputItem {
-                            item: Some(result_output_item::Item::End(
-                                proto::jobworkerp::data::Trailer {
-                                    metadata: (*req_meta).clone(),
-                                },
-                            )),
-                        });
-                    }
-
-                    futures::stream::iter(result_items)
-                })
-                .boxed();
-
-            // Clear cancellation token after stream setup
-            self.cancellation_token = None;
+            // Keep cancellation token for mid-stream cancellation
+            // The token will be used by cancel() method during stream processing
+            // Note: cancellation_token is NOT reset here because stream is still active
             Ok(output_stream)
         } else if let Some(genai) = self.genai.as_mut() {
             // Get streaming responses from genai service
             let stream = genai.request_chat_stream(args, metadata).await?;
-            // Clear cancellation token after stream setup
-            self.cancellation_token = None;
-            Ok(stream)
+
+            // Add cancellation support to GenAI stream
+            let cancel_token = cancellation_token.clone();
+            let cancellable_stream = stream! {
+                tokio::pin!(stream);
+                loop {
+                    tokio::select! {
+                        item = stream.next() => {
+                            match item {
+                                Some(result_item) => yield result_item,
+                                None => break,
+                            }
+                        }
+                        _ = cancel_token.cancelled() => {
+                            tracing::info!("LLM chat GenAI stream was cancelled");
+                            break;
+                        }
+                    }
+                }
+            }
+            .boxed();
+
+            // Keep cancellation token for mid-stream cancellation
+            // The token will be used by cancel() method during stream processing
+            // Note: cancellation_token is NOT reset here because stream is still active
+            Ok(cancellable_stream)
         } else {
             // Clear cancellation token even on error
             self.cancellation_token = None;
