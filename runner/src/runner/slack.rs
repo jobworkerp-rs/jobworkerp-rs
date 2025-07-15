@@ -14,9 +14,9 @@ use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
 use tonic::async_trait;
 
+use super::common::cancellation_helper::CancellationHelper;
 use super::RunnerSpec;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Debug)]
@@ -27,15 +27,22 @@ pub struct SlackResultOutput {
 #[derive(Clone, Debug)]
 pub struct SlackPostMessageRunner {
     slack: Option<SlackRepository>,
-    cancellation_token: Option<CancellationToken>,
+    cancellation_helper: CancellationHelper,
 }
 
 impl SlackPostMessageRunner {
     pub fn new() -> Self {
         Self {
             slack: None,
-            cancellation_token: None,
+            cancellation_helper: CancellationHelper::new(),
         }
+    }
+
+    /// Set a cancellation token for this runner instance
+    /// This allows external control over cancellation behavior (for test)
+    #[cfg(test)]
+    pub(crate) fn set_cancellation_token(&mut self, token: tokio_util::sync::CancellationToken) {
+        self.cancellation_helper.set_cancellation_token(token);
     }
 }
 
@@ -84,21 +91,12 @@ impl RunnerTrait for SlackPostMessageRunner {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        // Set up cancellation token for this execution if not already set
-        let cancellation_token = self.cancellation_token.clone().unwrap_or_else(|| {
-            let token = CancellationToken::new();
-            self.cancellation_token = Some(token.clone());
-            token
-        });
+        let cancellation_token = match self.cancellation_helper.setup_execution_token() {
+            Ok(token) => token,
+            Err(e) => return (Err(e), metadata),
+        };
 
         let result = async {
-            // Check for cancellation before starting
-            if cancellation_token.is_cancelled() {
-                return Err(anyhow!(
-                    "Slack message sending was cancelled before execution"
-                ));
-            }
-
             if let Some(slack) = self.slack.as_ref() {
                 tracing::debug!("slack runner is initialized");
                 let message =
@@ -144,7 +142,7 @@ impl RunnerTrait for SlackPostMessageRunner {
         .await;
 
         // Clear cancellation token after execution
-        self.cancellation_token = None;
+        self.cancellation_helper.clear_token();
         (result, metadata)
     }
     async fn run_stream(
@@ -152,20 +150,7 @@ impl RunnerTrait for SlackPostMessageRunner {
         arg: &[u8],
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        // Set up cancellation token for pre-execution cancellation check
-        let cancellation_token = self.cancellation_token.clone().unwrap_or_else(|| {
-            let token = CancellationToken::new();
-            self.cancellation_token = Some(token.clone());
-            token
-        });
-
-        // Check for cancellation before starting
-        if cancellation_token.is_cancelled() {
-            self.cancellation_token = None;
-            return Err(anyhow!(
-                "Slack stream request was cancelled before execution"
-            ));
-        }
+        let cancellation_token = self.cancellation_helper.setup_execution_token()?;
 
         let slack = self
             .slack
@@ -231,19 +216,13 @@ impl RunnerTrait for SlackPostMessageRunner {
     }
 
     async fn cancel(&mut self) {
-        if let Some(token) = &self.cancellation_token {
-            token.cancel();
-            tracing::info!("Slack message sending cancelled");
-        } else {
-            tracing::warn!("No active Slack operation to cancel");
-        }
+        self.cancellation_helper.cancel();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
     async fn test_slack_pre_execution_cancellation() {
@@ -254,8 +233,8 @@ mod tests {
         let mut runner = SlackPostMessageRunner::new();
 
         // Set up cancellation token and cancel it immediately (pre-execution)
-        let cancellation_token = CancellationToken::new();
-        runner.cancellation_token = Some(cancellation_token.clone());
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        runner.set_cancellation_token(cancellation_token.clone());
         cancellation_token.cancel();
 
         // Create valid Slack message args
@@ -323,10 +302,10 @@ mod tests {
         };
 
         // Create cancellation token and set it on the runner
-        let cancellation_token = CancellationToken::new();
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
         {
             let mut runner_guard = runner.lock().await;
-            runner_guard.cancellation_token = Some(cancellation_token.clone());
+            runner_guard.set_cancellation_token(cancellation_token.clone());
         }
 
         let start_time = Instant::now();

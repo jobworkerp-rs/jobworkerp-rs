@@ -1,3 +1,5 @@
+use super::common::cancellation_helper::CancellationHelper;
+use super::RunnerSpec;
 use crate::jobworkerp::runner::{
     python_command_args, python_command_runner_settings, PythonCommandArgs, PythonCommandResult,
     PythonCommandRunnerSettings,
@@ -18,9 +20,6 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::process::Command;
 use tokio::sync::Mutex;
-use tokio_util::sync::CancellationToken;
-
-use super::RunnerSpec;
 
 pub struct PythonCommandRunner {
     venv_path: Option<PathBuf>,
@@ -28,7 +27,7 @@ pub struct PythonCommandRunner {
     settings: Option<PythonCommandRunnerSettings>,
     process_cancel: Arc<Mutex<bool>>,
     current_process_id: Arc<Mutex<Option<u32>>>,
-    cancellation_token: Option<CancellationToken>,
+    cancellation_helper: CancellationHelper,
 }
 
 impl PythonCommandRunner {
@@ -39,8 +38,15 @@ impl PythonCommandRunner {
             settings: None,
             process_cancel: Arc::new(Mutex::new(false)),
             current_process_id: Arc::new(Mutex::new(None)),
-            cancellation_token: None,
+            cancellation_helper: CancellationHelper::new(),
         }
+    }
+
+    /// Set a cancellation token for this runner instance
+    /// This allows external control over cancellation behavior (for test)
+    #[cfg(test)]
+    pub(crate) fn set_cancellation_token(&mut self, token: tokio_util::sync::CancellationToken) {
+        self.cancellation_helper.set_cancellation_token(token);
     }
 
     fn python_bin_path(&self) -> Option<PathBuf> {
@@ -187,23 +193,10 @@ impl RunnerTrait for PythonCommandRunner {
         arg: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        // Set up cancellation token for pre-execution cancellation check
-        let cancellation_token = if let Some(existing_token) = &self.cancellation_token {
-            // If token already exists and is cancelled, return early
-            if existing_token.is_cancelled() {
-                self.cancellation_token = None; // Reset token on early cancellation
-                return (
-                    Err(anyhow::anyhow!(
-                        "Python command execution was cancelled before start"
-                    )),
-                    metadata,
-                );
-            }
-            existing_token.clone()
-        } else {
-            let new_token = CancellationToken::new();
-            self.cancellation_token = Some(new_token.clone());
-            new_token
+        // Set up cancellation token using helper
+        let cancellation_token = match self.cancellation_helper.setup_execution_token() {
+            Ok(token) => token,
+            Err(e) => return (Err(e), metadata),
         };
 
         let result = async {
@@ -366,9 +359,11 @@ impl RunnerTrait for PythonCommandRunner {
         }
         .await;
 
-        // Clear cancellation token after execution
-        self.cancellation_token = None;
-        (result, metadata)
+        super::common::cancellation_helper::handle_run_result(
+            &mut self.cancellation_helper,
+            result,
+            metadata,
+        )
     }
 
     async fn run_stream(
@@ -377,27 +372,15 @@ impl RunnerTrait for PythonCommandRunner {
         _metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // Set up cancellation token for pre-execution cancellation check
-        if let Some(existing_token) = &self.cancellation_token {
-            // If token already exists and is cancelled, return early
-            if existing_token.is_cancelled() {
-                self.cancellation_token = None; // Reset token on early cancellation
-                return Err(anyhow::anyhow!(
-                    "Python stream execution was cancelled before start"
-                ));
-            }
-        }
+        let _cancellation_token = self.cancellation_helper.setup_execution_token()?;
 
         // Clear cancellation token even on error
-        self.cancellation_token = None;
+        self.cancellation_helper.clear_token();
         Err(anyhow!("Stream output not supported by PythonRunner"))
     }
 
     async fn cancel(&mut self) {
-        // Cancel the cancellation token first
-        if let Some(token) = &self.cancellation_token {
-            token.cancel();
-            tracing::info!("Python command execution cancellation token triggered");
-        }
+        self.cancellation_helper.cancel();
 
         let mut cancel_flag = self.process_cancel.lock().await;
         *cancel_flag = true;
@@ -662,12 +645,9 @@ except KeyboardInterrupt:
         let mut runner = PythonCommandRunner::new();
 
         // Test cancellation by setting a cancelled token
-        runner.cancellation_token = Some(CancellationToken::new());
-
-        // Cancel the token immediately
-        if let Some(ref token) = runner.cancellation_token {
-            token.cancel();
-        }
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        runner.set_cancellation_token(cancellation_token.clone());
+        cancellation_token.cancel();
 
         let arg = PythonCommandArgs {
             script: Some(python_command_args::Script::ScriptContent(
@@ -731,10 +711,10 @@ except KeyboardInterrupt:
         };
 
         // Create cancellation token and set it on the runner
-        let cancellation_token = CancellationToken::new();
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
         {
             let mut runner_guard = runner.lock().await;
-            runner_guard.cancellation_token = Some(cancellation_token.clone());
+            runner_guard.set_cancellation_token(cancellation_token.clone());
         }
 
         let start_time = Instant::now();

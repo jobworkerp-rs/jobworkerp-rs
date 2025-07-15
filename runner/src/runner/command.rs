@@ -19,14 +19,16 @@ use std::{
     future::Future,
     mem,
     process::Stdio,
-    sync::{Arc, Mutex, RwLock},
+    sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use sysinfo::System;
 use tokio::process::{Child, Command};
+use tokio::sync::{Mutex, RwLock};
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, LinesCodec};
-use tokio_util::sync::CancellationToken;
+
+use super::common::cancellation_helper::CancellationHelper;
 
 /**
  * CommandRunner
@@ -45,16 +47,30 @@ trait CommandRunner: RunnerTrait {
 #[derive(Debug)]
 pub struct CommandRunnerImpl {
     pub process: Option<Box<Child>>,
-    pub cancellation_token: Option<CancellationToken>,
+    cancellation_helper: CancellationHelper,
     pub stream_process_pid: Arc<RwLock<Option<u32>>>,
 }
 impl CommandRunnerImpl {
     pub fn new() -> Self {
         Self {
             process: None,
-            cancellation_token: None,
+            cancellation_helper: CancellationHelper::new(),
             stream_process_pid: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Set a cancellation token for this runner instance
+    /// This allows external control over cancellation behavior (for test)
+    #[cfg(test)]
+    pub(crate) fn set_cancellation_token(&mut self, token: tokio_util::sync::CancellationToken) {
+        self.cancellation_helper.set_cancellation_token(token);
+    }
+    pub async fn reset(&mut self) -> Result<()> {
+        self.process = None;
+        self.cancellation_helper.clear_token();
+        let mut pid = self.stream_process_pid.write().await;
+        *pid = None; // Reset the stream process PID
+        Ok(())
     }
 }
 
@@ -68,7 +84,7 @@ impl Clone for CommandRunnerImpl {
     fn clone(&self) -> Self {
         Self {
             process: None,                                   // cannot clone process
-            cancellation_token: None,                        // cannot clone cancellation token
+            cancellation_helper: CancellationHelper::new(),  // create new helper for clone
             stream_process_pid: Arc::new(RwLock::new(None)), // create new RwLock for clone
         }
     }
@@ -138,23 +154,10 @@ impl RunnerTrait for CommandRunnerImpl {
         // let mut metadata = metadata.clone();
         // Self::inject_metadata_from_context(&mut metadata, &cx);
 
-        // Set up cancellation token for pre-execution cancellation check
-        let cancellation_token = if let Some(existing_token) = &self.cancellation_token {
-            // If token already exists and is cancelled, return early
-            if existing_token.is_cancelled() {
-                self.cancellation_token = None; // Reset token on early cancellation
-                return (
-                    Err(anyhow::anyhow!(
-                        "Command execution was cancelled before start"
-                    )),
-                    metadata,
-                );
-            }
-            existing_token.clone()
-        } else {
-            let new_token = CancellationToken::new();
-            self.cancellation_token = Some(new_token.clone());
-            new_token
+        // Set up cancellation token using helper
+        let cancellation_token = match self.cancellation_helper.setup_execution_token() {
+            Ok(token) => token,
+            Err(e) => return (Err(e), metadata),
         };
 
         let res = async {
@@ -251,9 +254,8 @@ impl RunnerTrait for CommandRunnerImpl {
                                         );
                                         if memory > current_max {
                                             current_max = memory;
-                                            if let Ok(mut max) = max_mem.lock() {
-                                                *max = current_max;
-                                            }
+                                            let mut max = max_mem.lock().await;
+                                            *max = current_max;
                                         }
                                     } else {
                                         // Process not found, probably exited
@@ -315,7 +317,7 @@ impl RunnerTrait for CommandRunnerImpl {
 
                 // Get the maximum memory usage - default to 0 if not monitored
                 let max_memory_usage = if should_monitor_memory {
-                    *max_memory.lock().unwrap()
+                    *max_memory.lock().await
                 } else {
                     0
                 };
@@ -394,36 +396,32 @@ impl RunnerTrait for CommandRunnerImpl {
         }
         }.await;
 
-        // Clear cancellation token after execution
-        self.cancellation_token = None;
-        (res, metadata)
+        let _ = self.reset().await; // Ignore reset errors in cleanup
+        super::common::cancellation_helper::handle_run_result(
+            &mut self.cancellation_helper,
+            res,
+            metadata,
+        )
     }
     async fn run_stream(
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        // Set up cancellation token for pre-execution cancellation check
-        let cancellation_token = if let Some(existing_token) = &self.cancellation_token {
-            // If token already exists and is cancelled, return early
-            if existing_token.is_cancelled() {
-                self.cancellation_token = None; // Reset token on early cancellation
-                return Err(anyhow::anyhow!(
-                    "Command stream execution was cancelled before start"
-                ));
-            }
-            existing_token.clone()
-        } else {
-            let new_token = CancellationToken::new();
-            self.cancellation_token = Some(new_token.clone());
-            new_token
-        };
+        // Set up cancellation token using helper
+        let cancellation_token = self.cancellation_helper.setup_execution_token()?;
 
         let data = ProstMessageCodec::deserialize_message::<CommandArgs>(args)
             .context("on run_stream job")?;
         let command_str = data.command.clone();
         let args_vec = data.args.clone(); // Clone the args to own them
         let should_monitor_memory = data.with_memory_monitoring;
+
+        // Clone stream_process_pid for use within the stream
+        let stream_pid_ref = self.stream_process_pid.clone();
+
+        // Clone cancellation helper for cleanup within stream
+        let mut cancellation_helper_clone = self.cancellation_helper.clone();
 
         // Create mutable command here
         let mut command = Command::new(command_str.as_str());
@@ -457,8 +455,7 @@ impl RunnerTrait for CommandRunnerImpl {
             metadata: metadata.clone(),
         });
 
-        // Clone the stream_process_pid for use inside the stream
-        let stream_pid_ref = self.stream_process_pid.clone();
+        // Stream_process_pid already cloned above
 
         // Create the stream - use stream! instead of try_stream! to handle errors internally
         let stream = stream! {
@@ -475,10 +472,9 @@ impl RunnerTrait for CommandRunnerImpl {
 
                     // Store the process ID for cancellation from outside the stream
                     if let Some(pid) = process_id {
-                        if let Ok(mut pid_guard) = stream_pid_ref.write() {
-                            *pid_guard = Some(pid);
-                            tracing::debug!("Set stream process PID for cancellation: {}", pid);
-                        }
+                        let mut pid_guard = stream_pid_ref.write().await;
+                        *pid_guard = Some(pid);
+                        tracing::debug!("Set stream process PID for cancellation: {}", pid);
                     }
 
                     // Set up memory monitoring if enabled
@@ -508,9 +504,8 @@ impl RunnerTrait for CommandRunnerImpl {
                                     let memory = process.memory(); // in Byte
                                     if memory > current_max {
                                         current_max = memory;
-                                        if let Ok(mut max) = max_mem.lock() {
-                                            *max = current_max;
-                                        }
+                                        let mut max = max_mem.lock().await;
+                                        *max = current_max;
                                     }
                                 } else {
                                     // Process not found, probably exited
@@ -643,7 +638,7 @@ impl RunnerTrait for CommandRunnerImpl {
                                                         execution_time_ms: None, // Not finished yet
                                                         started_at: Some(started_at),
                                                         max_memory_usage_kb: if should_monitor_memory {
-                                                            let mem = *max_memory.lock().unwrap();
+                                                            let mem = *max_memory.lock().await;
                                                             if mem > 0 { Some(mem/1024) } else { None }
                                                         } else { None },
                                                     };
@@ -698,7 +693,7 @@ impl RunnerTrait for CommandRunnerImpl {
                                                         execution_time_ms: None, // Not finished yet
                                                         started_at: Some(started_at),
                                                         max_memory_usage_kb: if should_monitor_memory {
-                                                            let mem = *max_memory.lock().unwrap();
+                                                            let mem = *max_memory.lock().await;
                                                             if mem > 0 { Some(mem/1024) } else { None }
                                                         } else { None },
                                                     };
@@ -776,7 +771,7 @@ impl RunnerTrait for CommandRunnerImpl {
 
                     // Get the maximum memory usage
                     let max_memory_usage = if should_monitor_memory {
-                        *max_memory.lock().unwrap()
+                        *max_memory.lock().await
                     } else {
                         0
                     };
@@ -815,6 +810,12 @@ impl RunnerTrait for CommandRunnerImpl {
                         }
                     }
 
+                    // Reset stream process PID and cancellation helper
+                    let mut pid_guard = stream_pid_ref.write().await;
+                    *pid_guard = None;
+                    drop(pid_guard);
+                    cancellation_helper_clone.clear_token();
+
                     // Send the end of stream marker
                     yield ResultOutputItem {
                         item: Some(Item::End((*trailer).clone())),
@@ -850,6 +851,12 @@ impl RunnerTrait for CommandRunnerImpl {
                         }
                     }
 
+                    // Reset stream process PID and cancellation helper on error
+                    let mut pid_guard = stream_pid_ref.write().await;
+                    *pid_guard = None;
+                    drop(pid_guard);
+                    cancellation_helper_clone.clear_token();
+
                     // Always send end marker even on error
                     yield ResultOutputItem {
                         item: Some(Item::End((*trailer).clone())),
@@ -858,20 +865,12 @@ impl RunnerTrait for CommandRunnerImpl {
             }
         };
 
-        // Keep cancellation token for stream processing
-        // The token will be used for mid-stream cancellation
-        // Note: The token should be reset by the cancel() method when called
         Ok(Box::pin(stream))
     }
 
     async fn cancel(&mut self) {
-        // Cancel the cancellation token first
-        if let Some(token) = &self.cancellation_token {
-            token.cancel();
-            tracing::info!("Command execution cancellation token triggered");
-        } else {
-            tracing::warn!("No cancellation token available for cancellation");
-        }
+        // Cancel using helper
+        self.cancellation_helper.cancel();
 
         if let Some(mut child) = self.consume_child() {
             #[cfg(unix)]
@@ -930,11 +929,8 @@ impl RunnerTrait for CommandRunnerImpl {
 
         // Also handle stream process if set
         let stream_pid = {
-            if let Ok(mut pid_guard) = self.stream_process_pid.write() {
-                pid_guard.take()
-            } else {
-                None
-            }
+            let mut pid_guard = self.stream_process_pid.write().await;
+            pid_guard.take()
         };
 
         if let Some(stream_pid) = stream_pid {
@@ -977,8 +973,8 @@ impl RunnerTrait for CommandRunnerImpl {
             }
         }
 
-        // Reset cancellation token after cancellation
-        self.cancellation_token = None;
+        // Clear cancellation token after cancellation
+        self.cancellation_helper.clear_token();
     }
 }
 
@@ -1386,12 +1382,11 @@ mod tests {
         };
 
         // Test cancellation by calling cancel() and then checking cancellation token
-        runner.cancellation_token = Some(CancellationToken::new());
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        runner.set_cancellation_token(cancellation_token.clone());
 
         // Cancel the token immediately
-        if let Some(ref token) = runner.cancellation_token {
-            token.cancel();
-        }
+        cancellation_token.cancel();
 
         let start_time = std::time::Instant::now();
         let (result, _metadata) = runner
@@ -1434,8 +1429,8 @@ mod tests {
         let mut runner = CommandRunnerImpl::new();
 
         // Pre-set cancellation token
-        let cancellation_token = CancellationToken::new();
-        runner.cancellation_token = Some(cancellation_token.clone());
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        runner.set_cancellation_token(cancellation_token.clone());
 
         // Create a long-running command
         let arg = CommandArgs {
@@ -1516,14 +1511,14 @@ mod tests {
         use futures::StreamExt;
         use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
         use std::collections::HashMap;
-        use std::sync::{Arc, RwLock};
+        use std::sync::Arc;
         use std::time::{Duration, Instant};
         use tokio::time::sleep;
 
         eprintln!("=== Testing run_stream() process management and cancel() integration ===");
 
         let runner = Arc::new(tokio::sync::Mutex::new(CommandRunnerImpl::new()));
-        let shared_pid = Arc::new(RwLock::new(None::<u32>));
+        let shared_pid = Arc::new(tokio::sync::RwLock::new(None::<u32>));
 
         // Create a long-running command that we can observe
         let arg = CommandArgs {
@@ -1573,15 +1568,15 @@ mod tests {
                 if let Ok(pid_str) = String::from_utf8(output.stdout) {
                     if let Ok(pid) = pid_str.trim().parse::<u32>() {
                         eprintln!("Found target process PID: {pid}");
-                        *pid_for_stream.write().unwrap() = Some(pid);
+                        *pid_for_stream.write().await = Some(pid);
 
                         // Set the stream process PID in the runner for cancellation
                         {
                             let runner_guard = runner_for_stream.lock().await;
-                            if let Ok(mut pid_guard) = runner_guard.stream_process_pid.write() {
-                                *pid_guard = Some(pid);
-                                eprintln!("Set stream_process_pid in runner: {pid}");
-                            }
+                            let mut pid_guard = runner_guard.stream_process_pid.write().await;
+                            *pid_guard = Some(pid);
+                            eprintln!("Set stream_process_pid in runner: {pid}");
+                            drop(pid_guard);
                             drop(runner_guard);
                         }
                     }
@@ -1628,7 +1623,7 @@ mod tests {
 
             // Check if we captured a PID
             let captured_pid = {
-                let pid_guard = pid_for_cancel.read().unwrap();
+                let pid_guard = pid_for_cancel.read().await;
                 *pid_guard
             };
 

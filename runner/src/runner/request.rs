@@ -1,5 +1,6 @@
 use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
 
+use super::common::cancellation_helper::CancellationHelper;
 use super::{RunnerSpec, RunnerTrait};
 use crate::jobworkerp::runner::{HttpRequestArgs, HttpRequestRunnerSettings, HttpResponseResult};
 use crate::{schema_to_json_string, schema_to_json_string_option};
@@ -16,7 +17,6 @@ use reqwest::{
     header::{HeaderMap, HeaderName},
     Method, Url,
 };
-use tokio_util::sync::CancellationToken;
 
 /// HTTP request runner.
 /// Handles HTTP requests with streaming support.
@@ -30,7 +30,7 @@ use tokio_util::sync::CancellationToken;
 pub struct RequestRunner {
     pub client: reqwest::Client,
     pub url: Option<Url>,
-    cancellation_token: Option<CancellationToken>,
+    cancellation_helper: CancellationHelper,
 }
 
 impl RequestRunner {
@@ -38,8 +38,15 @@ impl RequestRunner {
         Self {
             client: reqwest::Client::new(),
             url: None,
-            cancellation_token: None,
+            cancellation_helper: CancellationHelper::new(),
         }
+    }
+
+    /// Set a cancellation token for this runner instance
+    /// This allows external control over cancellation behavior (for test)
+    #[cfg(test)]
+    pub(crate) fn set_cancellation_token(&mut self, token: tokio_util::sync::CancellationToken) {
+        self.cancellation_helper.set_cancellation_token(token);
     }
     // TODO Error type
     // settings: base url (+ arg.path)
@@ -103,12 +110,11 @@ impl RunnerTrait for RequestRunner {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        // Set up cancellation token for this execution if not already set
-        let cancellation_token = self.cancellation_token.clone().unwrap_or_else(|| {
-            let token = CancellationToken::new();
-            self.cancellation_token = Some(token.clone());
-            token
-        });
+        // Set up cancellation token using helper
+        let cancellation_token = match self.cancellation_helper.setup_execution_token() {
+            Ok(token) => token,
+            Err(e) => return (Err(e), metadata),
+        };
 
         let result = async {
             // Check for cancellation before starting
@@ -192,9 +198,11 @@ impl RunnerTrait for RequestRunner {
             }
         }.await;
 
-        // Clear cancellation token after execution
-        self.cancellation_token = None;
-        (result, metadata)
+        super::common::cancellation_helper::handle_run_result(
+            &mut self.cancellation_helper,
+            result,
+            metadata,
+        )
     }
     async fn run_stream(
         &mut self,
@@ -202,19 +210,7 @@ impl RunnerTrait for RequestRunner {
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // Set up cancellation token for pre-execution cancellation check
-        let cancellation_token = self.cancellation_token.clone().unwrap_or_else(|| {
-            let token = CancellationToken::new();
-            self.cancellation_token = Some(token.clone());
-            token
-        });
-
-        // Check for cancellation before starting
-        if cancellation_token.is_cancelled() {
-            self.cancellation_token = None;
-            return Err(anyhow!(
-                "HTTP stream request was cancelled before execution"
-            ));
-        }
+        let cancellation_token = self.cancellation_helper.setup_execution_token()?;
 
         let url = self.url.clone().ok_or_else(|| anyhow!("url is not set"))?;
         let client = self.client.clone();
@@ -383,19 +379,13 @@ impl RunnerTrait for RequestRunner {
     }
 
     async fn cancel(&mut self) {
-        if let Some(token) = &self.cancellation_token {
-            token.cancel();
-            tracing::info!("HTTP request cancelled");
-        } else {
-            tracing::warn!("No active HTTP request to cancel");
-        }
+        self.cancellation_helper.cancel();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
     async fn run_request() {
@@ -440,8 +430,8 @@ mod tests {
         let mut runner = RequestRunner::new();
 
         // Set up cancellation token and cancel it immediately
-        let cancellation_token = CancellationToken::new();
-        runner.cancellation_token = Some(cancellation_token.clone());
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        runner.set_cancellation_token(cancellation_token.clone());
         cancellation_token.cancel();
 
         use crate::jobworkerp::runner::HttpRequestArgs;
@@ -492,10 +482,10 @@ mod tests {
         };
 
         // Create cancellation token and set it on the runner
-        let cancellation_token = CancellationToken::new();
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
         {
             let mut runner_guard = runner.lock().await;
-            runner_guard.cancellation_token = Some(cancellation_token.clone());
+            runner_guard.set_cancellation_token(cancellation_token.clone());
         }
 
         let start_time = Instant::now();

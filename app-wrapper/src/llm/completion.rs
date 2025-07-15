@@ -17,7 +17,8 @@ use proto::jobworkerp::data::{result_output_item, ResultOutputItem, RunnerType};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
+
+use super::cancellation_helper::{execute_cancellable, handle_run_result, CancellationHelper};
 
 pub mod genai;
 pub mod ollama;
@@ -25,7 +26,7 @@ pub mod ollama;
 pub struct LLMCompletionRunnerImpl {
     pub ollama: Option<OllamaService>,
     pub genai: Option<GenaiCompletionService>,
-    cancellation_token: Option<CancellationToken>,
+    cancellation_helper: CancellationHelper,
 }
 
 impl LLMCompletionRunnerImpl {
@@ -33,14 +34,15 @@ impl LLMCompletionRunnerImpl {
         Self {
             ollama: None,
             genai: None,
-            cancellation_token: None,
+            cancellation_helper: CancellationHelper::new(),
         }
     }
 
     /// Set a cancellation token for this runner instance
     /// This allows external control over cancellation behavior (for test)
-    pub fn set_cancellation_token(&mut self, token: CancellationToken) {
-        self.cancellation_token = Some(token);
+    #[allow(dead_code)]
+    pub fn set_cancellation_token(&mut self, token: tokio_util::sync::CancellationToken) {
+        self.cancellation_helper.set_cancellation_token(token);
     }
 }
 
@@ -122,30 +124,20 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         arg: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        // Set up cancellation token for pre-execution cancellation check
-        let cancellation_token = if let Some(existing_token) = &self.cancellation_token {
-            // If token already exists and is cancelled, return early
-            if existing_token.is_cancelled() {
-                self.cancellation_token = None; // Reset token on early cancellation
-                return (
-                    Err(anyhow::anyhow!(
-                        "LLM completion execution was cancelled before start"
-                    )),
-                    metadata,
-                );
-            }
-            existing_token.clone()
-        } else {
-            let new_token = CancellationToken::new();
-            self.cancellation_token = Some(new_token.clone());
-            new_token
+        // Set up cancellation token using helper
+        let cancellation_token = match self.cancellation_helper.setup_execution_token() {
+            Ok(token) => token,
+            Err(e) => return (Err(e), metadata),
         };
 
         let metadata_clone = metadata.clone();
 
         let result = async {
-            let span =
-                Self::otel_span_from_metadata(&metadata, APP_WORKER_NAME, "llm_completion_run");
+            let span = Self::otel_span_from_metadata(
+                &metadata_clone,
+                APP_WORKER_NAME,
+                "llm_completion_run",
+            );
             let cx = Context::current_with_span(span);
 
             let args = LlmCompletionArgs::decode(&mut Cursor::new(arg))
@@ -155,9 +147,9 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                 let res = ollama
                     .request_generation_with_cancellation(
                         args,
-                        cancellation_token,
+                        cancellation_token.clone(),
                         cx,
-                        metadata_clone,
+                        metadata_clone.clone(),
                     )
                     .await?;
                 let mut buf = Vec::with_capacity(res.encoded_len());
@@ -165,14 +157,12 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                     .map_err(|e| anyhow!("encode error: {}", e))?;
                 Ok(buf)
             } else if let Some(genai) = self.genai.as_mut() {
-                // Add cancellation support for GenAI
-                let res = tokio::select! {
-                    result = genai.request_chat(args, cx, metadata_clone) => result?,
-                    _ = cancellation_token.cancelled() => {
-                        tracing::info!("LLM completion (GenAI) request was cancelled");
-                        return Err(anyhow!("LLM completion (GenAI) request was cancelled"));
-                    }
-                };
+                let res = execute_cancellable(
+                    genai.request_chat(args, cx, metadata_clone.clone()),
+                    &cancellation_token,
+                    "LLM completion (GenAI) request",
+                )
+                .await?;
                 let mut buf = Vec::with_capacity(res.encoded_len());
                 res.encode(&mut buf)
                     .map_err(|e| anyhow!("encode error: {}", e))?;
@@ -183,9 +173,7 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         }
         .await;
 
-        // Clear cancellation token after execution
-        self.cancellation_token = None;
-        (result, metadata)
+        handle_run_result(&mut self.cancellation_helper, result, metadata_clone)
     }
 
     async fn run_stream(
@@ -193,21 +181,8 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        // Set up cancellation token for pre-execution cancellation check
-        let cancellation_token = if let Some(existing_token) = &self.cancellation_token {
-            // If token already exists and is cancelled, return early
-            if existing_token.is_cancelled() {
-                self.cancellation_token = None; // Reset token on early cancellation
-                return Err(anyhow::anyhow!(
-                    "LLM completion stream execution was cancelled before start"
-                ));
-            }
-            existing_token.clone()
-        } else {
-            let new_token = CancellationToken::new();
-            self.cancellation_token = Some(new_token.clone());
-            new_token
-        };
+        // Set up cancellation token using helper
+        let cancellation_token = self.cancellation_helper.setup_execution_token()?;
 
         let args = LlmCompletionArgs::decode(args).map_err(|e| anyhow!("decode error: {}", e))?;
 
@@ -315,17 +290,12 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
             Ok(cancellable_stream)
         } else {
             // Clear cancellation token even on error
-            self.cancellation_token = None;
+            self.cancellation_helper.clear_token();
             Err(anyhow!("llm is not initialized"))
         }
     }
 
     async fn cancel(&mut self) {
-        if let Some(token) = &self.cancellation_token {
-            token.cancel();
-            tracing::info!("LLM completion request cancelled");
-        } else {
-            tracing::warn!("No active LLM completion request to cancel");
-        }
+        self.cancellation_helper.cancel();
     }
 }
