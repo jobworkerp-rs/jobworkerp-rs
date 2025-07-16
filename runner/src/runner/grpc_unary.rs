@@ -13,12 +13,12 @@ use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType}
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio_util::sync::CancellationToken;
 use tonic::{
     metadata::MetadataValue,
     transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity},
 };
 
+use super::common::cancellation_helper::{handle_run_result, CancellationHelper};
 use super::{RunnerSpec, RunnerTrait};
 
 /// grpc unary request runner.
@@ -32,7 +32,7 @@ pub struct GrpcUnaryRunner {
     max_message_size: Option<usize>,
     auth_token: Option<String>,
     use_reflection: bool,
-    cancellation_token: Option<CancellationToken>,
+    cancellation_helper: CancellationHelper,
 }
 
 impl GrpcUnaryRunner {
@@ -45,8 +45,15 @@ impl GrpcUnaryRunner {
             max_message_size: None,
             auth_token: None,
             use_reflection: false,
-            cancellation_token: None,
+            cancellation_helper: CancellationHelper::new(),
         }
+    }
+
+    /// Set a cancellation token for this runner instance
+    /// This allows external control over cancellation behavior (for test)
+    #[cfg(test)]
+    pub(crate) fn set_cancellation_token(&mut self, token: tokio_util::sync::CancellationToken) {
+        self.cancellation_helper.set_cancellation_token(token);
     }
 
     pub async fn create(&mut self, settings: &GrpcUnaryRunnerSettings) -> Result<()> {
@@ -317,12 +324,11 @@ impl RunnerTrait for GrpcUnaryRunner {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        // Set up cancellation token for this execution if not already set
-        let cancellation_token = self.cancellation_token.clone().unwrap_or_else(|| {
-            let token = CancellationToken::new();
-            self.cancellation_token = Some(token.clone());
-            token
-        });
+        // Set up cancellation token using helper
+        let cancellation_token = match self.cancellation_helper.setup_execution_token() {
+            Ok(token) => token,
+            Err(e) => return (Err(e), metadata),
+        };
 
         let result = async {
             if let Some(mut client) = self.client.clone() {
@@ -444,9 +450,7 @@ impl RunnerTrait for GrpcUnaryRunner {
             }
         }.await;
 
-        // Clear cancellation token after execution
-        self.cancellation_token = None;
-        (result, metadata)
+        handle_run_result(&mut self.cancellation_helper, result, metadata)
     }
 
     async fn run_stream(
@@ -458,12 +462,7 @@ impl RunnerTrait for GrpcUnaryRunner {
     }
 
     async fn cancel(&mut self) {
-        if let Some(token) = &self.cancellation_token {
-            token.cancel();
-            tracing::info!("gRPC request cancelled");
-        } else {
-            tracing::warn!("No active gRPC request to cancel");
-        }
+        self.cancellation_helper.cancel();
     }
 }
 
@@ -494,8 +493,8 @@ mod tests {
             .unwrap();
 
         // Set up cancellation token and cancel it immediately
-        let cancellation_token = CancellationToken::new();
-        runner.cancellation_token = Some(cancellation_token.clone());
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        runner.set_cancellation_token(cancellation_token.clone());
         cancellation_token.cancel();
 
         use crate::jobworkerp::runner::GrpcUnaryArgs;

@@ -18,7 +18,8 @@ use proto::jobworkerp::data::{result_output_item, ResultOutputItem, RunnerType};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
+
+use super::cancellation_helper::{execute_cancellable, handle_run_result, CancellationHelper};
 
 pub mod conversion;
 pub mod genai;
@@ -28,7 +29,7 @@ pub struct LLMChatRunnerImpl {
     pub app: Arc<AppModule>,
     pub ollama: Option<OllamaChatService>,
     pub genai: Option<GenaiChatService>,
-    cancellation_token: Option<CancellationToken>,
+    cancellation_helper: CancellationHelper,
 }
 
 impl LLMChatRunnerImpl {
@@ -37,14 +38,15 @@ impl LLMChatRunnerImpl {
             app: app_module,
             ollama: None,
             genai: None,
-            cancellation_token: None,
+            cancellation_helper: CancellationHelper::new(),
         }
     }
 
     /// Set a cancellation token for this runner instance
     /// This allows external control over cancellation behavior (for test)
-    pub fn set_cancellation_token(&mut self, token: CancellationToken) {
-        self.cancellation_token = Some(token);
+    #[allow(dead_code)]
+    pub fn set_cancellation_token(&mut self, token: tokio_util::sync::CancellationToken) {
+        self.cancellation_helper.set_cancellation_token(token);
     }
 }
 
@@ -119,59 +121,40 @@ impl RunnerTrait for LLMChatRunnerImpl {
         arg: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        // Set up cancellation token for pre-execution cancellation check
-        let cancellation_token = if let Some(existing_token) = &self.cancellation_token {
-            // If token already exists and is cancelled, return early
-            if existing_token.is_cancelled() {
-                self.cancellation_token = None; // Reset token on early cancellation
-                return (
-                    Err(anyhow::anyhow!(
-                        "LLM chat execution was cancelled before start"
-                    )),
-                    metadata,
-                );
-            }
-            existing_token.clone()
-        } else {
-            let new_token = CancellationToken::new();
-            self.cancellation_token = Some(new_token.clone());
-            new_token
+        // Set up cancellation token using helper
+        let cancellation_token = match self.cancellation_helper.setup_execution_token() {
+            Ok(token) => token,
+            Err(e) => return (Err(e), metadata),
         };
 
         let span = Self::otel_span_from_metadata(&metadata, APP_WORKER_NAME, "llm_chat_run");
         let cx = Context::current_with_span(span);
-        // let span = cx.span();
-        // let span = Self::tracing_span_from_metadata(&metadata, APP_NAME, "llm_chat_run");
-        // let _ = span.enter();
-        // let cx = span.context();
 
-        // TODO process metadata
         let metadata_clone = metadata.clone();
         let result = async {
             let args = LlmChatArgs::decode(&mut Cursor::new(arg))
                 .map_err(|e| anyhow!("decode error: {}", e))?;
 
             if let Some(ollama) = self.ollama.as_mut() {
-                let res = tokio::select! {
-                    result = ollama.request_chat(args, cx, metadata_clone.clone()) => result?,
-                    _ = cancellation_token.cancelled() => {
-                        tracing::info!("LLM chat (Ollama) request was cancelled");
-                        return Err(anyhow!("LLM chat (Ollama) request was cancelled"));
-                    }
-                };
+                let res = execute_cancellable(
+                    ollama.request_chat(args, cx, metadata_clone.clone()),
+                    &cancellation_token,
+                    "LLM chat (Ollama) request",
+                )
+                .await?;
+
                 let mut buf = Vec::with_capacity(res.encoded_len());
                 res.encode(&mut buf)
                     .map_err(|e| anyhow!("encode error: {}", e))?;
                 Ok(buf)
             } else if let Some(genai) = self.genai.as_mut() {
-                //XXX chat only
-                let res = tokio::select! {
-                    result = genai.request_chat(args, cx, metadata_clone.clone()) => result?,
-                    _ = cancellation_token.cancelled() => {
-                        tracing::info!("LLM chat (GenAI) request was cancelled");
-                        return Err(anyhow!("LLM chat (GenAI) request was cancelled"));
-                    }
-                };
+                let res = execute_cancellable(
+                    genai.request_chat(args, cx, metadata_clone.clone()),
+                    &cancellation_token,
+                    "LLM chat (GenAI) request",
+                )
+                .await?;
+
                 let mut buf = Vec::with_capacity(res.encoded_len());
                 res.encode(&mut buf)
                     .map_err(|e| anyhow!("encode error: {}", e))?;
@@ -182,9 +165,7 @@ impl RunnerTrait for LLMChatRunnerImpl {
         }
         .await;
 
-        // Clear cancellation token after execution
-        self.cancellation_token = None;
-        (result, metadata_clone)
+        handle_run_result(&mut self.cancellation_helper, result, metadata_clone)
     }
 
     async fn run_stream(
@@ -192,21 +173,8 @@ impl RunnerTrait for LLMChatRunnerImpl {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        // Set up cancellation token for pre-execution cancellation check
-        let cancellation_token = if let Some(existing_token) = &self.cancellation_token {
-            // If token already exists and is cancelled, return early
-            if existing_token.is_cancelled() {
-                self.cancellation_token = None; // Reset token on early cancellation
-                return Err(anyhow::anyhow!(
-                    "LLM chat stream execution was cancelled before start"
-                ));
-            }
-            existing_token.clone()
-        } else {
-            let new_token = CancellationToken::new();
-            self.cancellation_token = Some(new_token.clone());
-            new_token
-        };
+        // Set up cancellation token using helper
+        let cancellation_token = self.cancellation_helper.setup_execution_token()?;
 
         let args = LlmChatArgs::decode(args).map_err(|e| anyhow!("decode error: {}", e))?;
 
@@ -300,17 +268,12 @@ impl RunnerTrait for LLMChatRunnerImpl {
             Ok(cancellable_stream)
         } else {
             // Clear cancellation token even on error
-            self.cancellation_token = None;
+            self.cancellation_helper.clear_token();
             Err(anyhow!("llm is not initialized"))
         }
     }
 
     async fn cancel(&mut self) {
-        if let Some(token) = &self.cancellation_token {
-            token.cancel();
-            tracing::info!("LLM chat request cancelled");
-        } else {
-            tracing::warn!("No active LLM chat request to cancel");
-        }
+        self.cancellation_helper.cancel();
     }
 }

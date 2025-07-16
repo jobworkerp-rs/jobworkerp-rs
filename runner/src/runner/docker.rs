@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use super::common::cancellation_helper::CancellationHelper;
 use super::{RunnerSpec, RunnerTrait};
 use crate::jobworkerp::runner::{DockerArgs, DockerRunnerSettings};
 use crate::schema_to_json_string;
@@ -19,7 +20,6 @@ use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
 use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
-use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -162,7 +162,7 @@ where
 pub struct DockerExecRunner {
     docker: Option<Docker>,
     instant_id: String,
-    cancellation_token: Option<CancellationToken>,
+    cancellation_helper: CancellationHelper,
 }
 
 impl DockerExecRunner {
@@ -170,8 +170,15 @@ impl DockerExecRunner {
         DockerExecRunner {
             docker: None,
             instant_id: "".to_string(),
-            cancellation_token: None,
+            cancellation_helper: CancellationHelper::new(),
         }
+    }
+
+    /// Set a cancellation token for this runner instance
+    /// This allows external control over cancellation behavior (for test)
+    #[cfg(test)]
+    pub(crate) fn set_cancellation_token(&mut self, token: tokio_util::sync::CancellationToken) {
+        self.cancellation_helper.set_cancellation_token(token);
     }
     // create and start container
     pub async fn create(&mut self, image_options: &CreateRunnerOptions<String>) -> Result<()> {
@@ -308,23 +315,10 @@ impl RunnerTrait for DockerExecRunner {
         arg: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        // Set up cancellation token for pre-execution cancellation check
-        let cancellation_token = if let Some(existing_token) = &self.cancellation_token {
-            // If token already exists and is cancelled, return early
-            if existing_token.is_cancelled() {
-                self.cancellation_token = None; // Reset token on early cancellation
-                return (
-                    Err(anyhow::anyhow!(
-                        "Docker execution was cancelled before start"
-                    )),
-                    metadata,
-                );
-            }
-            existing_token.clone()
-        } else {
-            let new_token = CancellationToken::new();
-            self.cancellation_token = Some(new_token.clone());
-            new_token
+        // Set up cancellation token using helper
+        let cancellation_token = match self.cancellation_helper.setup_execution_token() {
+            Ok(token) => token,
+            Err(e) => return (Err(e), metadata),
         };
 
         let result = async {
@@ -393,9 +387,11 @@ impl RunnerTrait for DockerExecRunner {
         }
         .await;
 
-        // Clear cancellation token after execution
-        self.cancellation_token = None;
-        (result, metadata)
+        super::common::cancellation_helper::handle_run_result(
+            &mut self.cancellation_helper,
+            result,
+            metadata,
+        )
     }
     async fn run_stream(
         &mut self,
@@ -403,29 +399,17 @@ impl RunnerTrait for DockerExecRunner {
         _metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // Set up cancellation token for pre-execution cancellation check
-        if let Some(existing_token) = &self.cancellation_token {
-            // If token already exists and is cancelled, return early
-            if existing_token.is_cancelled() {
-                self.cancellation_token = None; // Reset token on early cancellation
-                return Err(anyhow::anyhow!(
-                    "Docker exec stream execution was cancelled before start"
-                ));
-            }
-        }
+        let _cancellation_token = self.cancellation_helper.setup_execution_token()?;
 
         // default implementation (return empty)
         let _ = arg;
         // Clear cancellation token even on error
-        self.cancellation_token = None;
+        self.cancellation_helper.clear_token();
         Err(anyhow::anyhow!("not implemented"))
     }
 
     async fn cancel(&mut self) {
-        // Cancel the cancellation token first
-        if let Some(token) = &self.cancellation_token {
-            token.cancel();
-            tracing::info!("Docker exec cancellation token triggered");
-        }
+        self.cancellation_helper.cancel();
 
         if !self.instant_id.is_empty() {
             tracing::info!("Stopping Docker container: {}", self.instant_id);
@@ -491,7 +475,7 @@ async fn exec_test() -> Result<()> {
 pub struct DockerRunner {
     docker: Option<Docker>,
     current_container_id: Option<String>,
-    cancellation_token: Option<CancellationToken>,
+    cancellation_helper: CancellationHelper,
 }
 
 impl DockerRunner {
@@ -499,8 +483,15 @@ impl DockerRunner {
         DockerRunner {
             docker: None,
             current_container_id: None,
-            cancellation_token: None,
+            cancellation_helper: CancellationHelper::new(),
         }
+    }
+
+    /// Set a cancellation token for this runner instance
+    /// This allows external control over cancellation behavior (for test)
+    #[cfg(test)]
+    pub(crate) fn set_cancellation_token(&mut self, token: tokio_util::sync::CancellationToken) {
+        self.cancellation_helper.set_cancellation_token(token);
     }
     pub async fn create(&mut self, image_options: &CreateRunnerOptions<String>) -> Result<()> {
         if image_options.from_image.is_some() || image_options.from_src.is_some() {
@@ -629,23 +620,10 @@ impl RunnerTrait for DockerRunner {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        // Set up cancellation token for pre-execution cancellation check
-        let cancellation_token = if let Some(existing_token) = &self.cancellation_token {
-            // If token already exists and is cancelled, return early
-            if existing_token.is_cancelled() {
-                self.cancellation_token = None; // Reset token on early cancellation
-                return (
-                    Err(anyhow::anyhow!(
-                        "Docker execution was cancelled before start"
-                    )),
-                    metadata,
-                );
-            }
-            existing_token.clone()
-        } else {
-            let new_token = CancellationToken::new();
-            self.cancellation_token = Some(new_token.clone());
-            new_token
+        // Set up cancellation token using helper
+        let cancellation_token = match self.cancellation_helper.setup_execution_token() {
+            Ok(token) => token,
+            Err(e) => return (Err(e), metadata),
         };
 
         let result = async {
@@ -768,10 +746,13 @@ impl RunnerTrait for DockerRunner {
         }
         .await;
 
-        // Clear container ID and cancellation token after execution completes
+        // Clear container ID after execution completes
         self.current_container_id = None;
-        self.cancellation_token = None;
-        (result, metadata)
+        super::common::cancellation_helper::handle_run_result(
+            &mut self.cancellation_helper,
+            result,
+            metadata,
+        )
     }
     async fn run_stream(
         &mut self,
@@ -779,29 +760,17 @@ impl RunnerTrait for DockerRunner {
         _metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // Set up cancellation token for pre-execution cancellation check
-        if let Some(existing_token) = &self.cancellation_token {
-            // If token already exists and is cancelled, return early
-            if existing_token.is_cancelled() {
-                self.cancellation_token = None; // Reset token on early cancellation
-                return Err(anyhow::anyhow!(
-                    "Docker stream execution was cancelled before start"
-                ));
-            }
-        }
+        let _cancellation_token = self.cancellation_helper.setup_execution_token()?;
 
         // default implementation (return empty)
         let _ = arg;
         // Clear cancellation token even on error
-        self.cancellation_token = None;
+        self.cancellation_helper.clear_token();
         Err(anyhow::anyhow!("not implemented"))
     }
 
     async fn cancel(&mut self) {
-        // Cancel the cancellation token first
-        if let Some(token) = &self.cancellation_token {
-            token.cancel();
-            tracing::info!("Docker cancellation token triggered");
-        }
+        self.cancellation_helper.cancel();
 
         if let (Some(docker), Some(container_id)) =
             (self.docker.as_ref(), &self.current_container_id)
@@ -978,12 +947,9 @@ async fn test_docker_exec_pre_execution_cancellation() {
     let mut runner = DockerExecRunner::new();
 
     // Test cancellation by setting a cancelled token
-    runner.cancellation_token = Some(CancellationToken::new());
-
-    // Cancel the token immediately
-    if let Some(ref token) = runner.cancellation_token {
-        token.cancel();
-    }
+    let cancellation_token = tokio_util::sync::CancellationToken::new();
+    runner.set_cancellation_token(cancellation_token.clone());
+    cancellation_token.cancel();
 
     use crate::jobworkerp::runner::DockerArgs;
     let arg = DockerArgs {
@@ -1029,12 +995,9 @@ async fn test_docker_runner_pre_execution_cancellation() {
     let mut runner = DockerRunner::new();
 
     // Test cancellation by setting a cancelled token
-    runner.cancellation_token = Some(CancellationToken::new());
-
-    // Cancel the token immediately
-    if let Some(ref token) = runner.cancellation_token {
-        token.cancel();
-    }
+    let cancellation_token = tokio_util::sync::CancellationToken::new();
+    runner.set_cancellation_token(cancellation_token.clone());
+    cancellation_token.cancel();
 
     use crate::jobworkerp::runner::DockerArgs;
     let arg = DockerArgs {
@@ -1094,10 +1057,10 @@ async fn test_docker_exec_stream_mid_execution_cancellation() {
     };
 
     // Create cancellation token and set it on the runner
-    let cancellation_token = CancellationToken::new();
+    let cancellation_token = tokio_util::sync::CancellationToken::new();
     {
         let mut runner_guard = runner.lock().await;
-        runner_guard.cancellation_token = Some(cancellation_token.clone());
+        runner_guard.set_cancellation_token(cancellation_token.clone());
     }
 
     let start_time = Instant::now();
@@ -1191,10 +1154,10 @@ async fn test_docker_runner_stream_mid_execution_cancellation() {
     };
 
     // Create cancellation token and set it on the runner
-    let cancellation_token = CancellationToken::new();
+    let cancellation_token = tokio_util::sync::CancellationToken::new();
     {
         let mut runner_guard = runner.lock().await;
-        runner_guard.cancellation_token = Some(cancellation_token.clone());
+        runner_guard.set_cancellation_token(cancellation_token.clone());
     }
 
     let start_time = Instant::now();
