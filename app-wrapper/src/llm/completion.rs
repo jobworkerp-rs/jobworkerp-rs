@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use async_stream::stream;
 use async_trait::async_trait;
 use futures::stream::{BoxStream, StreamExt};
 use genai::GenaiCompletionService;
@@ -17,12 +18,15 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
 
+use super::cancellation_helper::{execute_cancellable, handle_run_result, CancellationHelper};
+
 pub mod genai;
 pub mod ollama;
 
 pub struct LLMCompletionRunnerImpl {
     pub ollama: Option<OllamaService>,
     pub genai: Option<GenaiCompletionService>,
+    cancellation_helper: CancellationHelper,
 }
 
 impl LLMCompletionRunnerImpl {
@@ -30,7 +34,15 @@ impl LLMCompletionRunnerImpl {
         Self {
             ollama: None,
             genai: None,
+            cancellation_helper: CancellationHelper::new(),
         }
+    }
+
+    /// Set a cancellation token for this runner instance
+    /// This allows external control over cancellation behavior (for test)
+    #[allow(dead_code)]
+    pub fn set_cancellation_token(&mut self, token: tokio_util::sync::CancellationToken) {
+        self.cancellation_helper.set_cancellation_token(token);
     }
 }
 
@@ -112,23 +124,45 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         arg: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        // Set up cancellation token using helper
+        let cancellation_token = match self.cancellation_helper.setup_execution_token() {
+            Ok(token) => token,
+            Err(e) => return (Err(e), metadata),
+        };
+
         let metadata_clone = metadata.clone();
+
         let result = async {
-            let span =
-                Self::otel_span_from_metadata(&metadata, APP_WORKER_NAME, "llm_completion_run");
+            let span = Self::otel_span_from_metadata(
+                &metadata_clone,
+                APP_WORKER_NAME,
+                "llm_completion_run",
+            );
             let cx = Context::current_with_span(span);
 
             let args = LlmCompletionArgs::decode(&mut Cursor::new(arg))
                 .map_err(|e| anyhow!("decode error: {}", e))?;
             if let Some(ollama) = self.ollama.as_mut() {
-                let res = ollama.request_generation(args, cx, metadata_clone).await?;
+                // Use cancellable version
+                let res = ollama
+                    .request_generation_with_cancellation(
+                        args,
+                        cancellation_token.clone(),
+                        cx,
+                        metadata_clone.clone(),
+                    )
+                    .await?;
                 let mut buf = Vec::with_capacity(res.encoded_len());
                 res.encode(&mut buf)
                     .map_err(|e| anyhow!("encode error: {}", e))?;
                 Ok(buf)
             } else if let Some(genai) = self.genai.as_mut() {
-                //XXX chat only
-                let res = genai.request_chat(args, cx, metadata_clone).await?;
+                let res = execute_cancellable(
+                    genai.request_chat(args, cx, metadata_clone.clone()),
+                    &cancellation_token,
+                    "LLM completion (GenAI) request",
+                )
+                .await?;
                 let mut buf = Vec::with_capacity(res.encoded_len());
                 res.encode(&mut buf)
                     .map_err(|e| anyhow!("encode error: {}", e))?;
@@ -138,7 +172,8 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
             }
         }
         .await;
-        (result, metadata)
+
+        handle_run_result(&mut self.cancellation_helper, result, metadata_clone)
     }
 
     async fn run_stream(
@@ -146,61 +181,121 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
+        // Set up cancellation token using helper
+        let cancellation_token = self.cancellation_helper.setup_execution_token()?;
+
         let args = LlmCompletionArgs::decode(args).map_err(|e| anyhow!("decode error: {}", e))?;
+
+        // Check cancellation before LLM service execution
+        if cancellation_token.is_cancelled() {
+            tracing::info!("LLM completion stream execution was cancelled before service call");
+            return Err(anyhow!(
+                "LLM completion stream execution was cancelled before service call"
+            ));
+        }
 
         if let Some(ollama) = self.ollama.as_mut() {
             // Get streaming responses from ollama service
             let stream = ollama.request_stream_generation(args).await?;
 
             let req_meta = Arc::new(metadata.clone());
-            // Transform each LlmCompletionResult into ResultOutputItem
-            let output_stream = stream
-                .flat_map(move |completion_result| {
-                    let mut result_items = Vec::new();
+            let cancel_token = cancellation_token.clone();
 
-                    // Encode the completion result to binary if there is content
-                    if completion_result
-                        .content
-                        .as_ref()
-                        .is_some_and(|c| c.content.is_some())
-                    {
-                        let buf = ProstMessageCodec::serialize_message(&completion_result);
-                        // Add content data item
-                        if let Ok(buf) = buf {
-                            result_items.push(ResultOutputItem {
-                                item: Some(result_output_item::Item::Data(buf)),
-                            });
-                        } else {
-                            tracing::error!("Failed to serialize LLM completion result");
+            // Transform each LlmCompletionResult into ResultOutputItem with cancellation support
+            let output_stream = stream! {
+                tokio::pin!(stream);
+                loop {
+                    tokio::select! {
+                        item = stream.next() => {
+                            match item {
+                                Some(completion_result) => {
+                                    // Encode the completion result to binary if there is content
+                                    if completion_result
+                                        .content
+                                        .as_ref()
+                                        .is_some_and(|c| c.content.is_some())
+                                    {
+                                        let buf = ProstMessageCodec::serialize_message(&completion_result);
+                                        // Add content data item
+                                        if let Ok(buf) = buf {
+                                            yield ResultOutputItem {
+                                                item: Some(result_output_item::Item::Data(buf)),
+                                            };
+                                        } else {
+                                            tracing::error!("Failed to serialize LLM completion result");
+                                        }
+                                    }
+
+                                    // If this is the final result (done=true), add an end marker
+                                    if completion_result.done {
+                                        yield ResultOutputItem {
+                                            item: Some(proto::jobworkerp::data::result_output_item::Item::End(
+                                                proto::jobworkerp::data::Trailer {
+                                                    metadata: (*req_meta).clone(),
+                                                },
+                                            )),
+                                        };
+                                        break;
+                                    }
+                                }
+                                None => break,
+                            }
+                        }
+                        _ = cancel_token.cancelled() => {
+                            tracing::info!("LLM completion stream was cancelled");
+                            break;
                         }
                     }
+                }
+            }.boxed();
 
-                    // If this is the final result (done=true), add an end marker
-                    if completion_result.done {
-                        result_items.push(ResultOutputItem {
-                            item: Some(proto::jobworkerp::data::result_output_item::Item::End(
-                                proto::jobworkerp::data::Trailer {
-                                    metadata: (*req_meta).clone(),
-                                },
-                            )),
-                        });
-                    }
-
-                    futures::stream::iter(result_items)
-                })
-                .boxed();
-
+            // Keep cancellation token for mid-stream cancellation
+            // The token will be used by cancel() method during stream processing
+            // Note: cancellation_token is NOT reset here because stream is still active
             Ok(output_stream)
         } else if let Some(genai) = self.genai.as_mut() {
-            // Get streaming responses from genai service
-            let stream = genai.request_chat_stream(args, metadata).await?;
-            Ok(stream)
+            // Get streaming responses from genai service with cancellation check
+            let stream = tokio::select! {
+                result = genai.request_chat_stream(args, metadata) => result?,
+                _ = cancellation_token.cancelled() => {
+                    tracing::info!("LLM completion stream (GenAI) request was cancelled");
+                    return Err(anyhow!("LLM completion stream (GenAI) request was cancelled"));
+                }
+            };
+
+            // Add cancellation support to GenAI stream
+            let cancel_token = cancellation_token.clone();
+            let cancellable_stream = stream! {
+                tokio::pin!(stream);
+                loop {
+                    tokio::select! {
+                        item = stream.next() => {
+                            match item {
+                                Some(result_item) => yield result_item,
+                                None => break,
+                            }
+                        }
+                        _ = cancel_token.cancelled() => {
+                            tracing::info!("LLM completion GenAI stream was cancelled");
+                            break;
+                        }
+                    }
+                }
+            }
+            .boxed();
+
+            // Keep cancellation token for mid-stream cancellation
+            // The token will be used by cancel() method during stream processing
+            // Note: cancellation_token is NOT reset here because stream is still active
+            Ok(cancellable_stream)
         } else {
+            // Clear cancellation token even on error
+            self.cancellation_helper.clear_token();
             Err(anyhow!("llm is not initialized"))
         }
     }
 
     async fn cancel(&mut self) {
-        tracing::warn!("OllamaPromptRunner cancel: not implemented!");
+        self.cancellation_helper.cancel();
     }
 }

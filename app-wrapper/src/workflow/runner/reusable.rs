@@ -25,6 +25,8 @@ use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::llm::cancellation_helper::CancellationHelper;
+
 #[derive(Debug, Clone)]
 pub struct ReusableWorkflowRunner {
     app_wrapper_module: Arc<crate::modules::AppWrapperModule>,
@@ -32,7 +34,7 @@ pub struct ReusableWorkflowRunner {
     http_client: ReqwestClient,
     workflow_executor: Option<Arc<WorkflowExecutor>>,
     workflow: Option<Arc<WorkflowSchema>>,
-    canceled: bool,
+    cancellation_helper: CancellationHelper,
 }
 impl ReusableWorkflowRunner {
     pub fn new(
@@ -53,8 +55,15 @@ impl ReusableWorkflowRunner {
             http_client,
             workflow_executor: None,
             workflow: None,
-            canceled: false,
+            cancellation_helper: CancellationHelper::new(),
         })
+    }
+
+    /// Set a cancellation token for this runner instance
+    /// This allows external control over cancellation behavior (for test)
+    #[allow(dead_code)]
+    pub(crate) fn set_cancellation_token(&mut self, token: tokio_util::sync::CancellationToken) {
+        self.cancellation_helper.set_cancellation_token(token);
     }
 }
 impl ReusableWorkflowRunnerSpec for ReusableWorkflowRunner {}
@@ -136,12 +145,14 @@ impl RunnerTrait for ReusableWorkflowRunner {
             tracing::debug!("Workflow args: {:#?}", &arg);
             if let Some(workflow) = self.workflow.as_ref() {
                 tracing::debug!("Workflow: {:#?}", workflow);
-                if self.canceled {
-                    return Err(anyhow::anyhow!(
-                        "canceled by user: {}, {:?}",
-                        RunnerType::ReusableWorkflow.as_str_name(),
-                        arg
-                    ));
+                if let Some(token) = self.cancellation_helper.get_token() {
+                    if token.is_cancelled() {
+                        return Err(anyhow::anyhow!(
+                            "canceled by user: {}, {:?}",
+                            RunnerType::ReusableWorkflow.as_str_name(),
+                            arg
+                        ));
+                    }
                 }
                 let input_json = serde_json::from_str(&arg.input)
                     .unwrap_or_else(|_| serde_json::Value::String(arg.input.clone()));
@@ -231,12 +242,14 @@ impl RunnerTrait for ReusableWorkflowRunner {
         let metadata_arc = Arc::new(metadata.clone());
         let execution_id = ExecutionId::new_opt(arg.execution_id.clone());
 
-        if self.canceled {
-            return Err(anyhow::anyhow!(
-                "canceled by user: {}, {:?}",
-                RunnerType::ReusableWorkflow.as_str_name(),
-                arg
-            ));
+        if let Some(token) = self.cancellation_helper.get_token() {
+            if token.is_cancelled() {
+                return Err(anyhow::anyhow!(
+                    "canceled by user: {}, {:?}",
+                    RunnerType::ReusableWorkflow.as_str_name(),
+                    arg
+                ));
+            }
         }
 
         let input_json = serde_json::from_str(&arg.input)
@@ -347,7 +360,7 @@ impl RunnerTrait for ReusableWorkflowRunner {
     }
 
     async fn cancel(&mut self) {
-        self.canceled = true;
+        self.cancellation_helper.cancel();
         if let Some(executor) = self.workflow_executor.as_ref() {
             executor.cancel().await;
         }

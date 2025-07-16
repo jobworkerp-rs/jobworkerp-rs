@@ -1,3 +1,4 @@
+pub mod cancellation_helper;
 pub mod chat;
 pub mod completion;
 pub mod generic_tracing_helper;

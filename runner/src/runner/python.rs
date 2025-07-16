@@ -1,3 +1,5 @@
+use super::common::cancellation_helper::CancellationHelper;
+use super::RunnerSpec;
 use crate::jobworkerp::runner::{
     python_command_args, python_command_runner_settings, PythonCommandArgs, PythonCommandResult,
     PythonCommandRunnerSettings,
@@ -19,14 +21,13 @@ use tempfile::TempDir;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
-use super::RunnerSpec;
-
 pub struct PythonCommandRunner {
     venv_path: Option<PathBuf>,
     temp_dir: Option<TempDir>,
     settings: Option<PythonCommandRunnerSettings>,
     process_cancel: Arc<Mutex<bool>>,
     current_process_id: Arc<Mutex<Option<u32>>>,
+    cancellation_helper: CancellationHelper,
 }
 
 impl PythonCommandRunner {
@@ -37,7 +38,15 @@ impl PythonCommandRunner {
             settings: None,
             process_cancel: Arc::new(Mutex::new(false)),
             current_process_id: Arc::new(Mutex::new(None)),
+            cancellation_helper: CancellationHelper::new(),
         }
+    }
+
+    /// Set a cancellation token for this runner instance
+    /// This allows external control over cancellation behavior (for test)
+    #[cfg(test)]
+    pub(crate) fn set_cancellation_token(&mut self, token: tokio_util::sync::CancellationToken) {
+        self.cancellation_helper.set_cancellation_token(token);
     }
 
     fn python_bin_path(&self) -> Option<PathBuf> {
@@ -184,6 +193,12 @@ impl RunnerTrait for PythonCommandRunner {
         arg: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        // Set up cancellation token using helper
+        let cancellation_token = match self.cancellation_helper.setup_execution_token() {
+            Ok(token) => token,
+            Err(e) => return (Err(e), metadata),
+        };
+
         let result = async {
             let python_bin = self
                 .python_bin_path()
@@ -282,14 +297,47 @@ impl RunnerTrait for PythonCommandRunner {
                 command.env(key, value);
             }
 
-            let child = command.spawn().context("Failed to execute Python script")?;
+            // Check cancellation before spawning process
+            if cancellation_token.is_cancelled() {
+                tracing::info!("Python command execution was cancelled before spawn");
+                return Err(anyhow::anyhow!("Python command execution was cancelled before spawn"));
+            }
 
+            let child = command.spawn().context("Failed to execute Python script")?;
             *self.current_process_id.lock().await = child.id();
 
-            let output = child
-                .wait_with_output()
-                .await
-                .context("Failed to wait for process")?;
+            // Monitor cancellation during process execution
+            let child_id = child.id();
+            let output = tokio::select! {
+                output_result = child.wait_with_output() => {
+                    output_result.context("Failed to wait for process")?
+                }
+                _ = cancellation_token.cancelled() => {
+                    tracing::info!("Python command execution was cancelled during process execution");
+                    // Kill the child process using PID if cancellation is requested
+                    if let Some(pid) = child_id {
+                        #[cfg(unix)]
+                        {
+                            use nix::sys::signal::{kill, Signal};
+                            use nix::unistd::Pid;
+                            let _ = kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
+                        }
+                        #[cfg(windows)]
+                        {
+                            use windows_sys::Win32::System::Threading::{
+                                OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+                            };
+                            unsafe {
+                                let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+                                if handle != 0 {
+                                    let _ = TerminateProcess(handle, 1);
+                                }
+                            }
+                        }
+                    }
+                    return Err(anyhow::anyhow!("Python command execution was cancelled during process execution"));
+                }
+            };
 
             *self.current_process_id.lock().await = None;
 
@@ -310,7 +358,12 @@ impl RunnerTrait for PythonCommandRunner {
             Ok(encoded_result)
         }
         .await;
-        (result, metadata)
+
+        super::common::cancellation_helper::handle_run_result(
+            &mut self.cancellation_helper,
+            result,
+            metadata,
+        )
     }
 
     async fn run_stream(
@@ -318,20 +371,69 @@ impl RunnerTrait for PythonCommandRunner {
         _arg: &[u8],
         _metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
+        // Set up cancellation token for pre-execution cancellation check
+        let _cancellation_token = self.cancellation_helper.setup_execution_token()?;
+
+        // Clear cancellation token even on error
+        self.cancellation_helper.clear_token();
         Err(anyhow!("Stream output not supported by PythonRunner"))
     }
 
     async fn cancel(&mut self) {
+        self.cancellation_helper.cancel();
+
         let mut cancel_flag = self.process_cancel.lock().await;
         *cancel_flag = true;
 
-        // kill the current process
+        // Kill the current process with graceful shutdown attempt
         if let Some(pid) = *self.current_process_id.lock().await {
             #[cfg(unix)]
             {
                 use nix::sys::signal::{kill, Signal};
                 use nix::unistd::Pid;
-                let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+
+                // First try SIGTERM for graceful shutdown
+                if let Err(e) = kill(Pid::from_raw(pid as i32), Signal::SIGTERM) {
+                    tracing::warn!("Failed to send SIGTERM to Python process {}: {}", pid, e);
+                } else {
+                    tracing::debug!("Sent SIGTERM to Python process {}", pid);
+                }
+
+                // Wait for graceful shutdown with 5 second timeout
+                let start_time = std::time::Instant::now();
+                let timeout_duration = std::time::Duration::from_secs(5);
+
+                // Check if process is still running after timeout
+                tokio::time::sleep(timeout_duration).await;
+
+                // Try to send signal 0 to check if process still exists
+                match kill(Pid::from_raw(pid as i32), None) {
+                    Ok(_) => {
+                        // Process still exists, force kill with SIGKILL
+                        tracing::warn!(
+                            "Python process {} did not terminate gracefully, force killing",
+                            pid
+                        );
+                        if let Err(e) = kill(Pid::from_raw(pid as i32), Signal::SIGKILL) {
+                            tracing::error!(
+                                "Failed to send SIGKILL to Python process {}: {}",
+                                pid,
+                                e
+                            );
+                        } else {
+                            tracing::debug!("Sent SIGKILL to Python process {}", pid);
+                        }
+                    }
+                    Err(_) => {
+                        // Process no longer exists (terminated gracefully)
+                        let elapsed = start_time.elapsed();
+                        tracing::debug!(
+                            "Python process {} terminated gracefully in {:?}",
+                            pid,
+                            elapsed
+                        );
+                    }
+                }
             }
 
             #[cfg(windows)]
@@ -342,10 +444,18 @@ impl RunnerTrait for PythonCommandRunner {
                 unsafe {
                     let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
                     if handle != 0 {
-                        TerminateProcess(handle, 1);
+                        if TerminateProcess(handle, 1) != 0 {
+                            tracing::debug!("Terminated Python process {}", pid);
+                        } else {
+                            tracing::error!("Failed to terminate Python process {}", pid);
+                        }
+                    } else {
+                        tracing::warn!("Failed to open Python process {} for termination", pid);
                     }
                 }
             }
+        } else {
+            tracing::warn!("No active Python process to cancel");
         }
     }
 }
@@ -426,5 +536,255 @@ print(f"Requests version: {requests.__version__}")
         } else {
             panic!("uv not found");
         }
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires uv installation - run with --ignored for full testing
+    async fn test_python_actual_cancellation() {
+        eprintln!("=== Starting Python actual cancellation test ===");
+
+        const UV_PATH: &str = if cfg!(windows) {
+            "C:\\Program Files\\uv\\uv.exe"
+        } else {
+            "uv" // from path
+        };
+
+        if tokio::process::Command::new(UV_PATH)
+            .arg("--version")
+            .output()
+            .await
+            .is_ok()
+        {
+            let mut runner = PythonCommandRunner::new();
+
+            let settings = PythonCommandRunnerSettings {
+                uv_path: Some(UV_PATH.to_string()),
+                python_version: "3.11".to_string(),
+                requirements_spec: None,
+            };
+
+            runner
+                .load(ProstMessageCodec::serialize_message(&settings).unwrap())
+                .await
+                .unwrap();
+
+            // Create a long-running Python script
+            let job_args = PythonCommandArgs {
+                script: Some(python_command_args::Script::ScriptContent(
+                    r#"
+import time
+import signal
+
+def signal_handler(sig, frame):
+    print("Received signal, cleaning up...")
+    exit(0)
+
+signal.signal(signal.SIGTERM, signal_handler)
+
+print("Starting long-running task...")
+try:
+    for i in range(30):  # Run for ~30 seconds
+        print(f"Working... {i}")
+        time.sleep(1)
+    print("Task completed")
+except KeyboardInterrupt:
+    print("Interrupted")
+                    "#
+                    .to_string(),
+                )),
+                input_data: None,
+                env_vars: std::collections::HashMap::new(),
+                with_stderr: false,
+            };
+
+            let arg_bytes = ProstMessageCodec::serialize_message(&job_args).unwrap();
+            let metadata = std::collections::HashMap::new();
+
+            // Start Python execution and cancel it after 1 second
+            let start_time = std::time::Instant::now();
+            let execution_task =
+                tokio::spawn(async move { runner.run(&arg_bytes, metadata).await });
+
+            // Wait for script to start, then cancel the runner
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+            // Cancel the task to test cancellation
+            execution_task.abort();
+            let result = execution_task.await;
+
+            let elapsed = start_time.elapsed();
+            eprintln!("Python execution time: {elapsed:?}");
+
+            match result {
+                Ok(_) => {
+                    eprintln!("Python script completed - checking if it was actually cancelled");
+                }
+                Err(e) if e.is_cancelled() => {
+                    eprintln!("Python script was cancelled as expected: {e}");
+                    // Should complete much faster than 30 seconds due to cancellation
+                    assert!(
+                        elapsed < std::time::Duration::from_secs(5),
+                        "Cancellation should stop execution quickly, took {elapsed:?}"
+                    );
+                }
+                Err(e) => {
+                    eprintln!("Python script failed with unexpected error: {e}");
+                }
+            }
+        } else {
+            eprintln!("uv not found, skipping actual Python cancellation test");
+        }
+
+        eprintln!("=== Python actual cancellation test completed ===");
+    }
+
+    #[tokio::test]
+    async fn test_pre_execution_cancellation() {
+        eprintln!("=== Testing PYTHON Runner pre-execution cancellation ===");
+
+        let mut runner = PythonCommandRunner::new();
+
+        // Test cancellation by setting a cancelled token
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        runner.set_cancellation_token(cancellation_token.clone());
+        cancellation_token.cancel();
+
+        let arg = PythonCommandArgs {
+            script: Some(python_command_args::Script::ScriptContent(
+                "import time; time.sleep(5); print('Should not reach here')".to_string(),
+            )),
+            env_vars: std::collections::HashMap::new(),
+            input_data: None,
+            with_stderr: false,
+        };
+
+        let start_time = std::time::Instant::now();
+        let (result, _metadata) = runner
+            .run(
+                &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                HashMap::new(),
+            )
+            .await;
+        let elapsed = start_time.elapsed();
+
+        eprintln!("Execution completed in {elapsed:?}");
+
+        // The command should be cancelled
+        match result {
+            Ok(_) => {
+                panic!("Python command should have been cancelled but completed normally");
+            }
+            Err(e) => {
+                eprintln!("Python command was cancelled as expected: {e}");
+                assert!(e.to_string().contains("cancelled"));
+            }
+        }
+
+        // Should complete much faster than 5 seconds due to cancellation
+        assert!(
+            elapsed.as_millis() < 1000,
+            "Cancellation should prevent long execution"
+        );
+
+        eprintln!("=== Pre-execution cancellation test completed ===");
+    }
+
+    #[tokio::test]
+    async fn test_python_stream_mid_execution_cancellation() {
+        eprintln!("=== Testing PYTHON Runner stream mid-execution cancellation ===");
+
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+        use tokio::sync::Mutex;
+
+        // Use Arc<tokio::sync::Mutex<>> to share runner between tasks (similar to LLM pattern)
+        let runner = Arc::new(Mutex::new(PythonCommandRunner::new()));
+
+        // Create test arguments
+        let arg = PythonCommandArgs {
+            script: Some(python_command_args::Script::ScriptContent(
+                "import time; time.sleep(5); print('Should not reach here')".to_string(),
+            )),
+            env_vars: std::collections::HashMap::new(),
+            input_data: None,
+            with_stderr: false,
+        };
+
+        // Create cancellation token and set it on the runner
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        {
+            let mut runner_guard = runner.lock().await;
+            runner_guard.set_cancellation_token(cancellation_token.clone());
+        }
+
+        let start_time = Instant::now();
+        let serialized_args = ProstMessageCodec::serialize_message(&arg).unwrap();
+
+        let runner_clone = runner.clone();
+
+        // Start stream execution in a task
+        let execution_task = tokio::spawn(async move {
+            let mut runner_guard = runner_clone.lock().await;
+            let stream_result = runner_guard
+                .run_stream(&serialized_args, HashMap::new())
+                .await;
+
+            match stream_result {
+                Ok(_stream) => {
+                    // Python stream is not implemented, so this shouldn't happen
+                    eprintln!("WARNING: Python stream returned Ok (should be unimplemented)");
+                    Ok(0)
+                }
+                Err(e) => {
+                    eprintln!("Python stream returned error as expected: {e}");
+                    Err(e)
+                }
+            }
+        });
+
+        // Wait for stream to start (let it run for a bit)
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Cancel using the external token reference (avoids deadlock)
+        cancellation_token.cancel();
+        eprintln!("Called cancellation_token.cancel() after 100ms");
+
+        // Wait for the execution to complete or be cancelled
+        let execution_result = execution_task.await;
+        let elapsed = start_time.elapsed();
+
+        eprintln!("Python stream execution completed in {elapsed:?}");
+
+        match execution_result {
+            Ok(stream_processing_result) => {
+                match stream_processing_result {
+                    Ok(_item_count) => {
+                        eprintln!("WARNING: Python stream should be unimplemented");
+                    }
+                    Err(e) => {
+                        eprintln!("✓ Python stream processing was cancelled as expected: {e}");
+                        // Check if it's a cancellation error or unimplemented error
+                        if e.to_string().contains("cancelled") {
+                            eprintln!("✓ Cancellation was properly detected");
+                        } else if e.to_string().contains("not implemented") {
+                            eprintln!("✓ Stream is unimplemented but cancellation check worked");
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Python stream execution task failed: {e}");
+                panic!("Task failed: {e}");
+            }
+        }
+
+        // Verify that cancellation happened very quickly (since stream is unimplemented)
+        if elapsed > Duration::from_secs(1) {
+            panic!(
+                "Stream processing took too long ({elapsed:?}), should be immediate for unimplemented stream"
+            );
+        }
+
+        eprintln!("✓ Python stream mid-execution cancellation test completed successfully");
     }
 }

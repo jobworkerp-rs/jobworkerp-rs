@@ -18,6 +18,7 @@ use tonic::{
     transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity},
 };
 
+use super::common::cancellation_helper::{handle_run_result, CancellationHelper};
 use super::{RunnerSpec, RunnerTrait};
 
 /// grpc unary request runner.
@@ -31,6 +32,7 @@ pub struct GrpcUnaryRunner {
     max_message_size: Option<usize>,
     auth_token: Option<String>,
     use_reflection: bool,
+    cancellation_helper: CancellationHelper,
 }
 
 impl GrpcUnaryRunner {
@@ -43,7 +45,15 @@ impl GrpcUnaryRunner {
             max_message_size: None,
             auth_token: None,
             use_reflection: false,
+            cancellation_helper: CancellationHelper::new(),
         }
+    }
+
+    /// Set a cancellation token for this runner instance
+    /// This allows external control over cancellation behavior (for test)
+    #[cfg(test)]
+    pub(crate) fn set_cancellation_token(&mut self, token: tokio_util::sync::CancellationToken) {
+        self.cancellation_helper.set_cancellation_token(token);
     }
 
     pub async fn create(&mut self, settings: &GrpcUnaryRunnerSettings) -> Result<()> {
@@ -314,6 +324,12 @@ impl RunnerTrait for GrpcUnaryRunner {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        // Set up cancellation token using helper
+        let cancellation_token = match self.cancellation_helper.setup_execution_token() {
+            Ok(token) => token,
+            Err(e) => return (Err(e), metadata),
+        };
+
         let result = async {
             if let Some(mut client) = self.client.clone() {
                 let req = ProstMessageCodec::deserialize_message::<GrpcUnaryArgs>(args)?;
@@ -386,19 +402,28 @@ impl RunnerTrait for GrpcUnaryRunner {
                     request_len
                 );
 
+                // Send gRPC request with cancellation support
                 let response = if req.timeout > 0 {
                     let timeout_duration = Duration::from_millis(req.timeout as u64);
-                    tokio::time::timeout(timeout_duration, client.unary(request, method, codec))
-                        .await
-                        .map(|r| {
-                            r.inspect_err(|e| tracing::warn!("grpc request error: status={:?}", e))
-                        })
-                        .map_err(|_| anyhow!("Request timed out after {} ms", req.timeout))?
+                    tokio::select! {
+                        timeout_result = tokio::time::timeout(timeout_duration, client.unary(request, method, codec)) => {
+                            timeout_result
+                                .map(|r| r.inspect_err(|e| tracing::warn!("grpc request error: status={:?}", e)))
+                                .map_err(|_| tonic::Status::new(tonic::Code::DeadlineExceeded, format!("Request timed out after {} ms", req.timeout)))?
+                        }
+                        _ = cancellation_token.cancelled() => {
+                            return Err(anyhow!("gRPC request was cancelled"));
+                        }
+                    }
                 } else {
-                    client
-                        .unary(request, method, codec)
-                        .await
-                        .inspect_err(|e| tracing::warn!("grpc request error: status={:?}", e))
+                    tokio::select! {
+                        response_result = client.unary(request, method, codec) => {
+                            response_result.inspect_err(|e| tracing::warn!("grpc request error: status={:?}", e))
+                        }
+                        _ = cancellation_token.cancelled() => {
+                            return Err(anyhow!("gRPC request was cancelled"));
+                        }
+                    }
                 };
                 let res = match response {
                     Ok(response) => GrpcUnaryResult {
@@ -423,34 +448,82 @@ impl RunnerTrait for GrpcUnaryRunner {
             } else {
                 Err(anyhow!("grpc client is not initialized"))
             }
-        };
-        (result.await, metadata)
+        }.await;
+
+        handle_run_result(&mut self.cancellation_helper, result, metadata)
     }
 
     async fn run_stream(
         &mut self,
-        arg: &[u8],
-        metadata: HashMap<String, String>,
+        _arg: &[u8],
+        _metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        let _ = (arg, metadata);
-        Err(anyhow!("not implemented"))
+        unimplemented!("gRPC unary does not support streaming")
     }
 
     async fn cancel(&mut self) {
-        tracing::warn!("cannot cancel grpc request until timeout")
+        self.cancellation_helper.cancel();
     }
-}
-
-// For debugging: find the source of GrpcUnaryArgs
-// Please remove this after we find the correct file
-fn _debug_find_file_path() {
-    println!("GrpcUnaryArgs is defined at {:?}", std::module_path!());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use proto::jobworkerp::data::Runner;
+
+    #[tokio::test]
+    #[ignore = "Requires a running gRPC server"]
+    async fn test_grpc_pre_execution_cancellation() {
+        let mut runner = GrpcUnaryRunner::new();
+        runner
+            .load(
+                ProstMessageCodec::serialize_message(&GrpcUnaryRunnerSettings {
+                    host: "http://localhost".to_string(),
+                    port: 9000,
+                    tls: false,
+                    timeout_ms: Some(5000),
+                    max_message_size: Some(1024 * 1024), // 1 MB
+                    auth_token: None,
+                    tls_config: None,
+                    use_reflection: Some(false),
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Set up cancellation token and cancel it immediately
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        runner.set_cancellation_token(cancellation_token.clone());
+        cancellation_token.cancel();
+
+        use crate::jobworkerp::runner::GrpcUnaryArgs;
+        let grpc_args = GrpcUnaryArgs {
+            method: "/test.Service/TestMethod".to_string(),
+            request: "{}".to_string(),
+            metadata: HashMap::new(),
+            timeout: 5000,
+        };
+
+        let start_time = std::time::Instant::now();
+        let (result, _) = runner
+            .run(
+                &ProstMessageCodec::serialize_message(&grpc_args).unwrap(),
+                HashMap::new(),
+            )
+            .await;
+        let elapsed = start_time.elapsed();
+
+        // Should fail immediately due to pre-execution cancellation
+        assert!(result.is_err());
+        assert!(elapsed < std::time::Duration::from_millis(100));
+
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("gRPC request was cancelled"),
+            "Expected cancellation error, got: {error_msg}"
+        );
+    }
 
     #[tokio::test]
     #[ignore] // need to start front server and fix handling empty stream...

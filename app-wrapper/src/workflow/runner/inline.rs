@@ -22,13 +22,15 @@ use schemars::JsonSchema;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::llm::cancellation_helper::CancellationHelper;
+
 #[derive(Debug, Clone)]
 pub struct InlineWorkflowRunner {
     app_wrapper_module: Arc<crate::modules::AppWrapperModule>,
     app_module: Arc<AppModule>,
     http_client: ReqwestClient,
     workflow_executor: Option<Arc<WorkflowExecutor>>,
-    canceled: bool,
+    cancellation_helper: CancellationHelper,
 }
 impl Tracing for InlineWorkflowRunner {}
 impl InlineWorkflowRunner {
@@ -52,8 +54,15 @@ impl InlineWorkflowRunner {
             app_module,
             http_client,
             workflow_executor: None,
-            canceled: false,
+            cancellation_helper: CancellationHelper::new(),
         })
+    }
+
+    /// Set a cancellation token for this runner instance
+    /// This allows external control over cancellation behavior (for test)
+    #[allow(dead_code)]
+    pub(crate) fn set_cancellation_token(&mut self, token: tokio_util::sync::CancellationToken) {
+        self.cancellation_helper.set_cancellation_token(token);
     }
 }
 impl InlineWorkflowRunnerSpec for InlineWorkflowRunner {}
@@ -136,12 +145,14 @@ impl RunnerTrait for InlineWorkflowRunner {
             let arg = InlineWorkflowArgs::decode(args)?;
             tracing::debug!("workflow args: {:#?}", arg);
             let execution_id = ExecutionId::new_opt(arg.execution_id.clone());
-            if self.canceled {
-                return Err(anyhow::anyhow!(
-                    "canceled by user: {}, {:?}",
-                    RunnerType::InlineWorkflow.as_str_name(),
-                    arg
-                ));
+            if let Some(token) = self.cancellation_helper.get_token() {
+                if token.is_cancelled() {
+                    return Err(anyhow::anyhow!(
+                        "canceled by user: {}, {:?}",
+                        RunnerType::InlineWorkflow.as_str_name(),
+                        arg
+                    ));
+                }
             }
             let input_json = serde_json::from_str(&arg.input)
                 .unwrap_or_else(|_| serde_json::Value::String(arg.input.clone()));
@@ -214,13 +225,15 @@ impl RunnerTrait for InlineWorkflowRunner {
                 match result {
                     Ok(context) => {
                         final_context = Some(context);
-                        if self.canceled {
-                            return Err(JobWorkerError::RuntimeError(format!(
-                                "canceled by user: {}, {:?}",
-                                RunnerType::InlineWorkflow.as_str_name(),
-                                arg
-                            ))
-                            .into());
+                        if let Some(token) = self.cancellation_helper.get_token() {
+                            if token.is_cancelled() {
+                                return Err(JobWorkerError::RuntimeError(format!(
+                                    "canceled by user: {}, {:?}",
+                                    RunnerType::InlineWorkflow.as_str_name(),
+                                    arg
+                                ))
+                                .into());
+                            }
                         }
                     }
                     Err(e) => {
@@ -266,12 +279,14 @@ impl RunnerTrait for InlineWorkflowRunner {
 
         let arg = InlineWorkflowArgs::decode(args)?;
         tracing::debug!("workflow args: {:#?}", arg);
-        if self.canceled {
-            return Err(anyhow::anyhow!(
-                "canceled by user: {}, {:?}",
-                RunnerType::InlineWorkflow.as_str_name(),
-                arg
-            ));
+        if let Some(token) = self.cancellation_helper.get_token() {
+            if token.is_cancelled() {
+                return Err(anyhow::anyhow!(
+                    "canceled by user: {}, {:?}",
+                    RunnerType::InlineWorkflow.as_str_name(),
+                    arg
+                ));
+            }
         }
         let execution_id = ExecutionId::new_opt(arg.execution_id);
         let input_json = serde_json::from_str(&arg.input)
@@ -408,6 +423,6 @@ impl RunnerTrait for InlineWorkflowRunner {
     }
 
     async fn cancel(&mut self) {
-        self.canceled = true;
+        self.cancellation_helper.cancel();
     }
 }
