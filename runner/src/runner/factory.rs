@@ -115,6 +115,28 @@ impl RunnerSpecFactory {
     ) -> Option<Box<dyn RunnerSpec + Send + Sync>> {
         match RunnerType::from_str_name(name) {
             Some(RunnerType::Command) => {
+                // Create a dummy cancellation manager for RunnerSpec purposes
+                #[derive(Debug)]
+                #[allow(dead_code)]
+                struct DummyCancellationManager;
+
+                #[async_trait::async_trait]
+                impl crate::runner::cancellation::RunnerCancellationManager for DummyCancellationManager {
+                    async fn setup_monitoring(
+                        &mut self,
+                        _job_id: &proto::jobworkerp::data::JobId,
+                        _job_data: &proto::jobworkerp::data::JobData,
+                        _cancellation_helper: &mut crate::runner::common::cancellation_helper::CancellationHelper,
+                    ) -> anyhow::Result<crate::runner::cancellation::CancellationSetupResult>
+                    {
+                        Ok(crate::runner::cancellation::CancellationSetupResult::MonitoringStarted)
+                    }
+
+                    async fn cleanup_monitoring(&mut self) -> anyhow::Result<()> {
+                        Ok(())
+                    }
+                }
+
                 Some(Box::new(CommandRunnerImpl::new()) as Box<dyn RunnerSpec + Send + Sync>)
             }
             Some(RunnerType::PythonCommand) => {

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::infra::function_set::rdb::FunctionSetRepositoryImpl;
 use crate::infra::job::queue::chan::ChanJobQueueRepositoryImpl;
+use crate::infra::job::queue::{JobQueueCancellationRepository, UseJobQueueCancellationRepository};
 use crate::infra::job::rdb::{RdbChanJobRepositoryImpl, UseRdbChanJobRepository};
 use crate::infra::job::status::memory::MemoryJobProcessingStatusRepository;
 use crate::infra::job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl;
@@ -29,6 +30,12 @@ impl<T: UseRdbChanRepositoryModule> UseRdbChanJobRepository for T {
 impl<T: UseRdbChanRepositoryModule> UseRdbJobResultRepository for T {
     fn rdb_job_result_repository(&self) -> &RdbJobResultRepositoryImpl {
         &self.rdb_repository_module().job_result_repository
+    }
+}
+// RdbChanRepositoryModule自体への実装
+impl UseJobQueueCancellationRepository for RdbChanRepositoryModule {
+    fn job_queue_cancellation_repository(&self) -> Arc<dyn JobQueueCancellationRepository> {
+        Arc::new(self.chan_job_queue_repository.clone())
     }
 }
 

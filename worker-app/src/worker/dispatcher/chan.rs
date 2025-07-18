@@ -1,5 +1,4 @@
 use super::JobDispatcher;
-use crate::worker::manager::{RunningJobManager, UseRunningJobManager};
 use crate::worker::result_processor::{ResultProcessorImpl, UseResultProcessor};
 use crate::worker::runner::map::{RunnerFactoryWithPoolMap, UseRunnerPoolMap};
 use crate::worker::runner::result::RunnerResultHandler;
@@ -49,7 +48,6 @@ pub trait ChanJobDispatcher:
     + UseRunnerApp
     + UseJobQueueConfig
     + UseIdGenerator
-    + UseRunningJobManager
 {
     fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
     where
@@ -364,7 +362,6 @@ pub struct ChanJobDispatcherImpl {
     runner_factory: Arc<RunnerFactory>,
     runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
     result_processor: Arc<ResultProcessorImpl>,
-    running_job_manager: Arc<RunningJobManager>,
 }
 
 impl ChanJobDispatcherImpl {
@@ -378,7 +375,6 @@ impl ChanJobDispatcherImpl {
         runner_factory: Arc<RunnerFactory>,
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
         result_processor: Arc<ResultProcessorImpl>,
-        running_job_manager: Arc<RunningJobManager>,
     ) -> Self {
         Self {
             id_generator,
@@ -389,37 +385,25 @@ impl ChanJobDispatcherImpl {
             runner_factory,
             runner_pool_map,
             result_processor,
-            running_job_manager,
         }
     }
 
     /// Start receiving cancellation notifications (called at dispatcher startup)
     pub async fn start_cancellation_subscriber(&self) -> Result<()> {
-        let running_job_manager = self.running_job_manager.clone();
+        // Note: According to the cancellation improvement plan, job cancellation is now handled
+        // at the JobRunner level through CancelMonitoring trait and pubsub integration.
+        // The old RunningJobManager-based approach has been replaced.
 
-        // Use subscribe_job_cancellation() of ChanJobQueueRepository
+        // Set up basic pubsub subscription for cancellation notifications
+        // The actual cancellation logic is now handled by Runner's internal monitoring
         self.chan_job_queue_repository()
             .subscribe_job_cancellation(Box::new(move |job_id| {
-                let manager = running_job_manager.clone();
                 Box::pin(async move {
                     tracing::info!(
-                        "Received cancellation request for job {} in memory worker",
+                        "Received cancellation notification for job {} - handled by Runner's internal monitoring",
                         job_id.value
                     );
-
-                    // Delegate to RunningJobManager to execute cancellation
-                    if manager.cancel_running_job(&job_id).await? {
-                        tracing::info!(
-                            "Successfully processed cancellation for job {}",
-                            job_id.value
-                        );
-                    } else {
-                        tracing::debug!(
-                            "Job {} not running in this worker, no action needed",
-                            job_id.value
-                        );
-                    }
-
+                    // The actual cancellation is now handled at the Runner level through CancelMonitoring trait
                     Ok(())
                 })
             }))
@@ -499,12 +483,6 @@ impl UseResultProcessor for ChanJobDispatcherImpl {
     }
 }
 
-impl UseRunningJobManager for ChanJobDispatcherImpl {
-    fn running_job_manager(&self) -> &RunningJobManager {
-        &self.running_job_manager
-    }
-}
-
 #[async_trait]
 impl JobDispatcher for ChanJobDispatcherImpl {
     fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
@@ -515,18 +493,15 @@ impl JobDispatcher for ChanJobDispatcherImpl {
     }
 
     async fn start_cancellation_monitoring(&self) -> Result<()> {
-        // Start cleanup task for RunningJobManager
-        self.running_job_manager().start_cleanup_task();
+        // Note: RunningJobManager has been removed according to the cancellation improvement plan.
+        // Cancellation monitoring is now handled at the JobRunner level through CancelMonitoring trait.
+        // This method remains for compatibility but does minimal work.
 
-        // Start receiving cancellation notifications
+        // Start receiving cancellation notifications (still needed for pubsub infrastructure)
         self.start_cancellation_subscriber().await?;
 
-        tracing::info!("Started cancellation monitoring for ChanJobDispatcher");
+        tracing::info!("Started cancellation monitoring for ChanJobDispatcher (simplified)");
         Ok(())
-    }
-
-    async fn get_running_job_count(&self) -> usize {
-        self.running_job_manager().get_running_job_count().await
     }
 }
 

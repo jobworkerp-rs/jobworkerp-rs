@@ -42,6 +42,7 @@ use futures::stream::BoxStream;
 use proto::jobworkerp::data::{ResultOutputItem, StreamingOutputType};
 use tonic::async_trait;
 
+pub mod cancellation;
 pub mod command;
 pub mod common;
 pub mod docker;
@@ -116,4 +117,7 @@ pub trait RunnerTrait: RunnerSpec + Send + Sync {
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>>;
     async fn cancel(&mut self);
+
+    /// Downcast to Any for type checking and casting
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }

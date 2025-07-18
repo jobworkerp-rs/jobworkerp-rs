@@ -172,4 +172,8 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
     async fn cancel(&mut self) {
         let _ = self.plugin_runner.write().await.cancel(); //.map(|mut r| r.cancel());
     }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }

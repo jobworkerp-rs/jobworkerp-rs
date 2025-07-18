@@ -8,7 +8,7 @@ use proto::jobworkerp::data::{JobId, JobProcessingStatus};
 use tonic::async_trait;
 
 #[async_trait]
-pub trait JobProcessingStatusRepository: Send + Sync + 'static {
+pub trait JobProcessingStatusRepository: Send + Sync + std::fmt::Debug + 'static {
     async fn upsert_status(&self, id: &JobId, status: &JobProcessingStatus) -> Result<bool>;
     async fn delete_status(&self, id: &JobId) -> Result<bool>;
     async fn find_status_all(&self) -> Result<Vec<(JobId, JobProcessingStatus)>>;

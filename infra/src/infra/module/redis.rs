@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::infra::job::queue::redis::{RedisJobQueueRepositoryImpl, UseRedisJobQueueRepository};
+use crate::infra::job::queue::{JobQueueCancellationRepository, UseJobQueueCancellationRepository};
 use crate::infra::job::redis::RedisJobRepositoryImpl;
 use crate::infra::job::redis::UseRedisJobRepository;
 use crate::infra::job_result::pubsub::redis::RedisJobResultPubSubRepositoryImpl;
@@ -42,6 +43,12 @@ impl<T: UseRedisRepositoryModule> UseRedisJobResultRepository for T {
 impl<T: UseRedisRepositoryModule> UseRedisJobQueueRepository for T {
     fn redis_job_queue_repository(&self) -> &RedisJobQueueRepositoryImpl {
         &self.redis_repository_module().redis_job_queue_repository
+    }
+}
+// RedisRepositoryModule自体への実装
+impl UseJobQueueCancellationRepository for RedisRepositoryModule {
+    fn job_queue_cancellation_repository(&self) -> Arc<dyn JobQueueCancellationRepository> {
+        Arc::new(self.redis_job_queue_repository.clone())
     }
 }
 

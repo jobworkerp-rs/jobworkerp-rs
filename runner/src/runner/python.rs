@@ -458,6 +458,10 @@ impl RunnerTrait for PythonCommandRunner {
             tracing::warn!("No active Python process to cancel");
         }
     }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 #[cfg(test)]
