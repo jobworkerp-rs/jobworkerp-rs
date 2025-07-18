@@ -171,6 +171,9 @@ mod tests {
                 .find_status(&job_id)
                 .await
                 .unwrap();
+            tracing::info!("Job status after enqueue: {:?}", status);
+
+            // Debug: Check all statuses
             assert_eq!(status, Some(JobProcessingStatus::Pending));
 
             // Test that delete_job properly calls cancellation functionality

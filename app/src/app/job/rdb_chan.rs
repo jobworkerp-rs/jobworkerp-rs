@@ -471,7 +471,10 @@ impl JobApp for RdbChanJobAppImpl {
                     .delete_status(jid)
                     .await?;
             } else {
-                tracing::debug!("complete_job: keeping status for streaming job: {}", jid.value);
+                tracing::debug!(
+                    "complete_job: keeping status for streaming job: {}",
+                    jid.value
+                );
             }
             match ResponseType::try_from(data.response_type) {
                 Ok(ResponseType::Direct) => {

@@ -231,7 +231,7 @@ pub trait ChanJobQueueRepository:
         // First wait for job result, then handle streaming
         // This prevents race condition where job status gets deleted before stream is set up
         let pop_result = pop_fut.await;
-        
+
         let stream_result = if request_streaming && pop_result.is_ok() {
             stream_fut.await
         } else {
@@ -684,7 +684,7 @@ mod test {
         assert!(elapsed >= std::time::Duration::from_millis(90));
         assert!(elapsed <= std::time::Duration::from_millis(500));
 
-        println!("Timeout test completed in {:?}", elapsed);
+        println!("Timeout test completed in {elapsed:?}");
         Ok(())
     }
 

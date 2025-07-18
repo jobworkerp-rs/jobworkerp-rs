@@ -164,7 +164,8 @@ pub trait UseJobApp {
 
 // for redis and hybrid
 #[async_trait]
-pub trait RedisJobAppHelper: UseRedisJobRepository + JobBuilder + UseJobQueueConfig
+pub trait RedisJobAppHelper:
+    UseRedisJobRepository + JobBuilder + UseJobQueueConfig + UseJobProcessingStatusRepository
 where
     Self: Sized + 'static,
 {
@@ -198,8 +199,7 @@ where
         } {
             Ok(_) => {
                 // update status (not use direct response)
-                self.redis_job_repository()
-                    .job_processing_status_repository()
+                self.job_processing_status_repository()
                     .upsert_status(&job_id, &JobProcessingStatus::Pending)
                     .await?;
                 // wait for result if direct response type
