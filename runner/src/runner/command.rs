@@ -1106,6 +1106,23 @@ impl CancelMonitoring for CommandRunnerImpl {
 
         Ok(())
     }
+
+    /// Pool recycling時の完全状態リセット
+    /// CommandRunner固有の状態（stream_process_pid等）をリセットして次回ジョブでの状態混入を防ぐ
+    async fn reset_for_pooling(&mut self) -> Result<()> {
+        // 1. 基本的なcleanup実行
+        self.cleanup_cancellation_monitoring().await?;
+
+        // 2. CommandRunner固有の状態リセット
+        // stream_process_pid をリセット（前回のストリーミングプロセス情報を削除）
+        {
+            let mut pid_guard = self.stream_process_pid.write().await;
+            *pid_guard = None;
+        }
+
+        tracing::debug!("CommandRunner completely reset for pooling");
+        Ok(())
+    }
 }
 
 // CancelMonitoringCapable implementation (type-safe integration trait)

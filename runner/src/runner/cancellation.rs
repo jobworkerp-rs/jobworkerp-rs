@@ -54,6 +54,15 @@ pub trait CancelMonitoring: Send + Sync {
 
     /// Cleanup cancellation monitoring
     async fn cleanup_cancellation_monitoring(&mut self) -> Result<()>;
+
+    /// Pool recycling時の完全状態リセット
+    /// Pool返却時にCancellationManager状態を完全にリセットし、次回ジョブでの状態混入を防ぐ
+    async fn reset_for_pooling(&mut self) -> Result<()> {
+        // デフォルト実装: cleanup_cancellation_monitoring() + ログ出力
+        self.cleanup_cancellation_monitoring().await?;
+        tracing::debug!("CancelMonitoring reset for pooling (default implementation)");
+        Ok(())
+    }
 }
 
 /// Type-safe integration trait for Runners

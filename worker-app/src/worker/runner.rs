@@ -130,44 +130,106 @@ pub trait JobRunner:
 
         // Check if runner supports CancelMonitoring
         // Note: We need to check for concrete types since CancelMonitoringCapable is not object safe
-        if let Some(command_runner) = runner_impl
-            .as_any_mut()
-            .downcast_mut::<jobworkerp_runner::runner::command::CommandRunnerImpl>(
-        ) {
-            tracing::debug!(
-                "Setting up cancellation monitoring for CommandRunner job {}",
-                job_id.value
-            );
 
-            // Setup cancellation monitoring
-            match command_runner
-                .setup_cancellation_monitoring(*job_id, data)
-                .await
-            {
-                Ok(Some(job_result)) => {
-                    tracing::info!("Job {} should be cancelled immediately", job_id.value);
-                    return Some(job_result);
-                }
-                Ok(None) => {
+        // Macro to handle runner cancellation setup with consistent error handling
+        macro_rules! setup_cancellation_for_runner {
+            ($runner_type:ty, $runner_name:expr, $runner_var:ident) => {
+                if let Some($runner_var) = runner_impl.as_any_mut().downcast_mut::<$runner_type>() {
                     tracing::debug!(
-                        "Cancellation monitoring setup successful for job {}",
+                        "Setting up cancellation monitoring for {} job {}",
+                        $runner_name,
                         job_id.value
                     );
+
+                    match $runner_var
+                        .setup_cancellation_monitoring(*job_id, data)
+                        .await
+                    {
+                        Ok(Some(job_result)) => {
+                            tracing::info!("Job {} should be cancelled immediately", job_id.value);
+                            return Some(job_result);
+                        }
+                        Ok(None) => {
+                            tracing::debug!(
+                                "Cancellation monitoring setup successful for job {}",
+                                job_id.value
+                            );
+                            return None;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to setup cancellation monitoring for job {}: {:?}",
+                                job_id.value,
+                                e
+                            );
+                            return None;
+                        }
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to setup cancellation monitoring for job {}: {:?}",
-                        job_id.value,
-                        e
-                    );
-                }
-            }
-        } else {
-            tracing::debug!(
-                "Runner does not support cancellation monitoring for job {}",
-                job_id.value
-            );
+            };
         }
+
+        // Try each runner type
+        setup_cancellation_for_runner!(
+            jobworkerp_runner::runner::command::CommandRunnerImpl,
+            "CommandRunner",
+            command_runner
+        );
+        setup_cancellation_for_runner!(
+            jobworkerp_runner::runner::python::PythonCommandRunner,
+            "PythonCommandRunner",
+            python_runner
+        );
+        setup_cancellation_for_runner!(
+            jobworkerp_runner::runner::docker::DockerExecRunner,
+            "DockerExecRunner",
+            docker_exec_runner
+        );
+        setup_cancellation_for_runner!(
+            jobworkerp_runner::runner::docker::DockerRunner,
+            "DockerRunner",
+            docker_runner
+        );
+        setup_cancellation_for_runner!(
+            jobworkerp_runner::runner::request::RequestRunner,
+            "RequestRunner",
+            request_runner
+        );
+        setup_cancellation_for_runner!(
+            jobworkerp_runner::runner::grpc_unary::GrpcUnaryRunner,
+            "GrpcUnaryRunner",
+            grpc_runner
+        );
+        setup_cancellation_for_runner!(
+            jobworkerp_runner::runner::slack::SlackPostMessageRunner,
+            "SlackPostMessageRunner",
+            slack_runner
+        );
+        setup_cancellation_for_runner!(
+            app_wrapper::llm::completion::LLMCompletionRunnerImpl,
+            "LLMCompletionRunner",
+            llm_completion_runner
+        );
+        setup_cancellation_for_runner!(
+            app_wrapper::llm::chat::LLMChatRunnerImpl,
+            "LLMChatRunner",
+            llm_chat_runner
+        );
+        setup_cancellation_for_runner!(
+            app_wrapper::workflow::runner::inline::InlineWorkflowRunner,
+            "InlineWorkflowRunner",
+            inline_workflow_runner
+        );
+        setup_cancellation_for_runner!(
+            app_wrapper::workflow::runner::reusable::ReusableWorkflowRunner,
+            "ReusableWorkflowRunner",
+            reusable_workflow_runner
+        );
+
+        tracing::debug!(
+            "Runner does not support cancellation monitoring for job {}",
+            job_id.value
+        );
 
         // No immediate cancellation needed, continue with normal execution
         None
@@ -183,23 +245,174 @@ pub trait JobRunner:
 
         // Check if runner supports CancelMonitoring
         // Note: We need to check for concrete types since CancelMonitoringCapable is not object safe
-        if let Some(command_runner) = runner_impl
-            .as_any_mut()
-            .downcast_mut::<jobworkerp_runner::runner::command::CommandRunnerImpl>(
-        ) {
-            tracing::trace!(
-                "Cleaning up cancellation monitoring for CommandRunner job {}",
-                job_id.value
-            );
 
-            if let Err(e) = command_runner.cleanup_cancellation_monitoring().await {
-                tracing::warn!(
-                    "Failed to cleanup cancellation monitoring for job {}: {:?}",
-                    job_id.value,
-                    e
-                );
-            }
+        // Macro to handle runner cancellation cleanup with consistent error handling
+        macro_rules! cleanup_cancellation_for_runner {
+            ($runner_type:ty, $runner_name:expr, $runner_var:ident) => {
+                if let Some($runner_var) = runner_impl.as_any_mut().downcast_mut::<$runner_type>() {
+                    tracing::trace!(
+                        "Cleaning up cancellation monitoring for {} job {}",
+                        $runner_name,
+                        job_id.value
+                    );
+
+                    if let Err(e) = $runner_var.cleanup_cancellation_monitoring().await {
+                        tracing::warn!(
+                            "Failed to cleanup cancellation monitoring for job {}: {:?}",
+                            job_id.value,
+                            e
+                        );
+                    }
+                    return;
+                }
+            };
         }
+
+        // Try each runner type
+        cleanup_cancellation_for_runner!(
+            jobworkerp_runner::runner::command::CommandRunnerImpl,
+            "CommandRunner",
+            command_runner
+        );
+        cleanup_cancellation_for_runner!(
+            jobworkerp_runner::runner::python::PythonCommandRunner,
+            "PythonCommandRunner",
+            python_runner
+        );
+        cleanup_cancellation_for_runner!(
+            jobworkerp_runner::runner::docker::DockerExecRunner,
+            "DockerExecRunner",
+            docker_exec_runner
+        );
+        cleanup_cancellation_for_runner!(
+            jobworkerp_runner::runner::docker::DockerRunner,
+            "DockerRunner",
+            docker_runner
+        );
+        cleanup_cancellation_for_runner!(
+            jobworkerp_runner::runner::request::RequestRunner,
+            "RequestRunner",
+            request_runner
+        );
+        cleanup_cancellation_for_runner!(
+            jobworkerp_runner::runner::grpc_unary::GrpcUnaryRunner,
+            "GrpcUnaryRunner",
+            grpc_runner
+        );
+        cleanup_cancellation_for_runner!(
+            jobworkerp_runner::runner::slack::SlackPostMessageRunner,
+            "SlackPostMessageRunner",
+            slack_runner
+        );
+        cleanup_cancellation_for_runner!(
+            app_wrapper::llm::completion::LLMCompletionRunnerImpl,
+            "LLMCompletionRunner",
+            llm_completion_runner
+        );
+        cleanup_cancellation_for_runner!(
+            app_wrapper::llm::chat::LLMChatRunnerImpl,
+            "LLMChatRunner",
+            llm_chat_runner
+        );
+        cleanup_cancellation_for_runner!(
+            app_wrapper::workflow::runner::inline::InlineWorkflowRunner,
+            "InlineWorkflowRunner",
+            inline_workflow_runner
+        );
+        cleanup_cancellation_for_runner!(
+            app_wrapper::workflow::runner::reusable::ReusableWorkflowRunner,
+            "ReusableWorkflowRunner",
+            reusable_workflow_runner
+        );
+    }
+
+    /// Reset cancellation monitoring state for pooling if the runner supports it
+    async fn reset_for_pooling_if_supported(
+        &self,
+        runner_impl: &mut Box<dyn RunnerTrait + Send + Sync>,
+    ) {
+        use jobworkerp_runner::runner::cancellation::CancelMonitoring;
+
+        // Check if runner supports CancelMonitoring
+        // Note: We need to check for concrete types since CancelMonitoringCapable is not object safe
+
+        // Macro to handle runner pooling reset with consistent error handling
+        macro_rules! reset_for_pooling_for_runner {
+            ($runner_type:ty, $runner_name:expr, $runner_var:ident) => {
+                if let Some($runner_var) = runner_impl.as_any_mut().downcast_mut::<$runner_type>() {
+                    tracing::trace!(
+                        "Resetting cancellation monitoring for pooling: {}",
+                        $runner_name
+                    );
+
+                    if let Err(e) = $runner_var.reset_for_pooling().await {
+                        tracing::warn!(
+                            "Failed to reset cancellation monitoring for pooling in {}: {:?}",
+                            $runner_name,
+                            e
+                        );
+                    }
+                    return;
+                }
+            };
+        }
+
+        // Try each runner type
+        reset_for_pooling_for_runner!(
+            jobworkerp_runner::runner::command::CommandRunnerImpl,
+            "CommandRunner",
+            command_runner
+        );
+        reset_for_pooling_for_runner!(
+            jobworkerp_runner::runner::python::PythonCommandRunner,
+            "PythonCommandRunner",
+            python_runner
+        );
+        reset_for_pooling_for_runner!(
+            jobworkerp_runner::runner::docker::DockerExecRunner,
+            "DockerExecRunner",
+            docker_exec_runner
+        );
+        reset_for_pooling_for_runner!(
+            jobworkerp_runner::runner::docker::DockerRunner,
+            "DockerRunner",
+            docker_runner
+        );
+        reset_for_pooling_for_runner!(
+            jobworkerp_runner::runner::request::RequestRunner,
+            "RequestRunner",
+            request_runner
+        );
+        reset_for_pooling_for_runner!(
+            jobworkerp_runner::runner::grpc_unary::GrpcUnaryRunner,
+            "GrpcUnaryRunner",
+            grpc_runner
+        );
+        reset_for_pooling_for_runner!(
+            jobworkerp_runner::runner::slack::SlackPostMessageRunner,
+            "SlackPostMessageRunner",
+            slack_runner
+        );
+        reset_for_pooling_for_runner!(
+            app_wrapper::llm::completion::LLMCompletionRunnerImpl,
+            "LLMCompletionRunner",
+            llm_completion_runner
+        );
+        reset_for_pooling_for_runner!(
+            app_wrapper::llm::chat::LLMChatRunnerImpl,
+            "LLMChatRunner",
+            llm_chat_runner
+        );
+        reset_for_pooling_for_runner!(
+            app_wrapper::workflow::runner::inline::InlineWorkflowRunner,
+            "InlineWorkflowRunner",
+            inline_workflow_runner
+        );
+        reset_for_pooling_for_runner!(
+            app_wrapper::workflow::runner::reusable::ReusableWorkflowRunner,
+            "ReusableWorkflowRunner",
+            reusable_workflow_runner
+        );
     }
 
     /// キャンセル済みジョブの結果を作成（プラン実装）

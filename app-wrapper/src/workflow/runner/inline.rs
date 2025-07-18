@@ -430,3 +430,45 @@ impl RunnerTrait for InlineWorkflowRunner {
         self
     }
 }
+
+// CancelMonitoring implementation for InlineWorkflowRunner
+#[async_trait]
+impl jobworkerp_runner::runner::cancellation::CancelMonitoring for InlineWorkflowRunner {
+    /// Initialize cancellation monitoring for specific job
+    async fn setup_cancellation_monitoring(
+        &mut self,
+        job_id: proto::jobworkerp::data::JobId,
+        _job_data: &proto::jobworkerp::data::JobData,
+    ) -> anyhow::Result<Option<proto::jobworkerp::data::JobResult>> {
+        tracing::debug!(
+            "Setting up cancellation monitoring for InlineWorkflowRunner job {}",
+            job_id.value
+        );
+
+        // For InlineWorkflowRunner, we use the same pattern as CommandRunner
+        // The actual cancellation monitoring will be handled by the CancellationHelper
+        // Workflow execution will be cancelled through the executor
+
+        tracing::trace!("Cancellation monitoring started for job {}", job_id.value);
+        Ok(None) // Continue with normal execution
+    }
+
+    /// Cleanup cancellation monitoring
+    async fn cleanup_cancellation_monitoring(&mut self) -> anyhow::Result<()> {
+        tracing::trace!("Cleaning up cancellation monitoring for InlineWorkflowRunner");
+
+        // Clear the cancellation helper
+        self.cancellation_helper.clear_token();
+
+        Ok(())
+    }
+}
+
+// CancelMonitoringCapable implementation for InlineWorkflowRunner
+impl jobworkerp_runner::runner::cancellation::CancelMonitoringCapable for InlineWorkflowRunner {
+    fn as_cancel_monitoring(
+        &mut self,
+    ) -> &mut dyn jobworkerp_runner::runner::cancellation::CancelMonitoring {
+        self
+    }
+}
