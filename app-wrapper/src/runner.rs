@@ -63,16 +63,18 @@ impl RunnerFactory {
         match RunnerType::from_str_name(name) {
             Some(RunnerType::Command) => {
                 let mut runner = CommandRunnerImpl::new();
-                
+
                 // Set up proper cancellation manager with AppModule repository
                 let cancellation_repository = self.app_module.job_queue_cancellation_repository();
-                let cancellation_manager: Box<dyn jobworkerp_runner::runner::cancellation::RunnerCancellationManager> = Box::new(
+                let cancellation_manager: Box<
+                    dyn jobworkerp_runner::runner::cancellation::RunnerCancellationManager,
+                > = Box::new(
                     crate::runner::cancellation::RunnerCancellationManager::new_with_repository(
                         cancellation_repository,
                     ),
                 );
                 runner.set_cancellation_manager(cancellation_manager);
-                
+
                 Some(Box::new(runner) as Box<dyn RunnerTrait + Send + Sync>)
             }
             Some(RunnerType::PythonCommand) => {

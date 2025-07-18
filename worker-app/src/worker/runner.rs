@@ -127,7 +127,7 @@ pub trait JobRunner:
         runner_impl: &mut Box<dyn RunnerTrait + Send + Sync>,
     ) -> Option<JobResult> {
         use jobworkerp_runner::runner::cancellation::CancelMonitoring;
-        
+
         // Check if runner supports CancelMonitoring
         // Note: We need to check for concrete types since CancelMonitoringCapable is not object safe
         if let Some(command_runner) = runner_impl
@@ -295,7 +295,10 @@ pub trait JobRunner:
 
             // For streaming jobs, we rely on timeout-based cleanup since the stream continues running
             // The cancellation monitoring will automatically timeout after job_timeout + 30 seconds
-            tracing::debug!("Streaming job {} monitoring will auto-cleanup via timeout", job_id.value);
+            tracing::debug!(
+                "Streaming job {} monitoring will auto-cleanup via timeout",
+                job_id.value
+            );
 
             (
                 self.job_result_data(

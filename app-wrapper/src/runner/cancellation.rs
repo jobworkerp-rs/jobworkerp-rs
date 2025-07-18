@@ -18,8 +18,8 @@ pub trait UseRunnerCancellationManager {
 }
 
 // Import for CancellationHelper integration
-use jobworkerp_runner::runner::common::cancellation_helper::CancellationHelper;
 use jobworkerp_runner::runner::cancellation::RunnerCancellationManager as RunnerCancellationManagerTrait;
+use jobworkerp_runner::runner::common::cancellation_helper::CancellationHelper;
 
 /// キャンセル監視のセットアップ結果
 #[derive(Debug)]
@@ -158,8 +158,11 @@ impl RunnerCancellationManager {
                 "Started pubsub listener task for job {}",
                 target_job_id.value
             );
-            
-            tracing::debug!("About to call subscribe_job_cancellation_with_timeout for job {}", target_job_id.value);
+
+            tracing::debug!(
+                "About to call subscribe_job_cancellation_with_timeout for job {}",
+                target_job_id.value
+            );
 
             // 実際のpubsub統合
             let result = repository
@@ -233,15 +236,17 @@ impl RunnerCancellationManagerTrait for RunnerCancellationManager {
         job_data: &proto::jobworkerp::data::JobData,
         cancellation_helper: &mut CancellationHelper,
     ) -> Result<jobworkerp_runner::runner::cancellation::CancellationSetupResult> {
-        let result = self.setup_monitoring(job_id, job_data.timeout, cancellation_helper).await?;
-        
+        let result = self
+            .setup_monitoring(job_id, job_data.timeout, cancellation_helper)
+            .await?;
+
         match result {
-            CancellationSetupResult::MonitoringStarted => {
-                Ok(jobworkerp_runner::runner::cancellation::CancellationSetupResult::MonitoringStarted)
-            }
-            CancellationSetupResult::AlreadyCancelled => {
-                Ok(jobworkerp_runner::runner::cancellation::CancellationSetupResult::AlreadyCancelled)
-            }
+            CancellationSetupResult::MonitoringStarted => Ok(
+                jobworkerp_runner::runner::cancellation::CancellationSetupResult::MonitoringStarted,
+            ),
+            CancellationSetupResult::AlreadyCancelled => Ok(
+                jobworkerp_runner::runner::cancellation::CancellationSetupResult::AlreadyCancelled,
+            ),
         }
     }
 

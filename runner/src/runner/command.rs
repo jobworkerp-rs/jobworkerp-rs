@@ -34,7 +34,6 @@ use super::cancellation::{
 use super::common::cancellation_helper::CancellationHelper;
 use proto::jobworkerp::data::{JobData, JobId, JobResult};
 
-
 /**
  * CommandRunner
  * - command: command to run
@@ -70,7 +69,7 @@ impl CommandRunnerImpl {
             {
                 use nix::sys::signal::{kill, Signal};
                 use nix::unistd::Pid;
-                
+
                 // First try SIGTERM for graceful shutdown
                 if let Err(e) = kill(Pid::from_raw(pid as i32), Signal::SIGTERM) {
                     tracing::warn!("Failed to send SIGTERM to process {}: {}", pid, e);
@@ -78,11 +77,15 @@ impl CommandRunnerImpl {
                 } else {
                     tracing::debug!("Sent SIGTERM to process {} for graceful shutdown", pid);
                 }
-                
+
                 // Wait for graceful shutdown with 5 second timeout
                 match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {
                     Ok(Ok(status)) => {
-                        tracing::debug!("Process {} terminated gracefully with status: {}", pid, status);
+                        tracing::debug!(
+                            "Process {} terminated gracefully with status: {}",
+                            pid,
+                            status
+                        );
                         return true;
                     }
                     Ok(Err(e)) => {
@@ -90,7 +93,10 @@ impl CommandRunnerImpl {
                     }
                     Err(_) => {
                         // Force kill with SIGKILL if timeout
-                        tracing::warn!("Process {} did not terminate gracefully, force killing", pid);
+                        tracing::warn!(
+                            "Process {} did not terminate gracefully, force killing",
+                            pid
+                        );
                         if let Err(e) = kill(Pid::from_raw(pid as i32), Signal::SIGKILL) {
                             tracing::error!("Failed to send SIGKILL to process {}: {}", pid, e);
                         }
@@ -490,7 +496,7 @@ impl RunnerTrait for CommandRunnerImpl {
 
         // Clone cancellation helper for cleanup within stream
         let mut cancellation_helper_clone = self.cancellation_helper.clone();
-        
+
         // Clone Arc of cancellation manager for stream lifecycle management
         let cancellation_manager = self.cancellation_manager.clone();
 
@@ -809,15 +815,15 @@ impl RunnerTrait for CommandRunnerImpl {
                                 tracing::info!("Command stream execution was cancelled");
                                 // Implement graceful cancellation using shared function
                                 cancellation_helper_clone.cancel();
-                                
+
                                 // Gracefully kill the process
                                 Self::graceful_kill_process(&mut child).await;
-                                
+
                                 // Clear the PID from stream_pid_ref
                                 let mut pid_guard = stream_pid_ref.write().await;
                                 *pid_guard = None;
                                 drop(pid_guard);
-                                
+
                                 break;
                             }
                         }
@@ -896,7 +902,7 @@ impl RunnerTrait for CommandRunnerImpl {
                     *pid_guard = None;
                     drop(pid_guard);
                     cancellation_helper_clone.clear_token();
-                    
+
                     // Cleanup cancellation monitoring now that the stream has completed
                     tracing::debug!("Stream completed for job, cleaning up cancellation monitoring");
                     if let Some(manager_arc) = &cancellation_manager {
@@ -949,7 +955,7 @@ impl RunnerTrait for CommandRunnerImpl {
                     *pid_guard = None;
                     drop(pid_guard);
                     cancellation_helper_clone.clear_token();
-                    
+
                     // Cleanup cancellation monitoring on error as well
                     tracing::debug!("Stream failed for job, cleaning up cancellation monitoring");
                     if let Some(manager_arc) = &cancellation_manager {
@@ -1057,10 +1063,15 @@ impl CancelMonitoring for CommandRunnerImpl {
         // Setup cancellation monitoring using RunnerCancellationManager
         let result = if let Some(manager_arc) = &self.cancellation_manager {
             let mut manager = manager_arc.lock().await;
-            manager.setup_monitoring(&job_id, job_data, &mut self.cancellation_helper).await?
+            manager
+                .setup_monitoring(&job_id, job_data, &mut self.cancellation_helper)
+                .await?
         } else {
             // No cancellation manager set, continue without monitoring
-            tracing::debug!("No cancellation manager set for job {}, skipping monitoring", job_id.value);
+            tracing::debug!(
+                "No cancellation manager set for job {}, skipping monitoring",
+                job_id.value
+            );
             CancellationSetupResult::MonitoringStarted
         };
 

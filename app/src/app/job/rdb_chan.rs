@@ -464,9 +464,15 @@ impl JobApp for RdbChanJobAppImpl {
     ) -> Result<bool> {
         tracing::debug!("complete_job: res_id={}", &id.value);
         if let Some(jid) = data.job_id.as_ref() {
-            self.job_processing_status_repository()
-                .delete_status(jid)
-                .await?;
+            // For streaming jobs, don't delete status immediately as the process may still be running
+            let is_streaming_job = stream.is_some();
+            if !is_streaming_job {
+                self.job_processing_status_repository()
+                    .delete_status(jid)
+                    .await?;
+            } else {
+                tracing::debug!("complete_job: keeping status for streaming job: {}", jid.value);
+            }
             match ResponseType::try_from(data.response_type) {
                 Ok(ResponseType::Direct) => {
                     let res = self
