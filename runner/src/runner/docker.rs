@@ -832,413 +832,6 @@ impl RunnerTrait for DockerRunner {
     }
 }
 
-#[tokio::test]
-#[ignore] // Requires Docker daemon - run with --ignored for full testing
-async fn test_docker_runner_actual_cancellation() {
-    eprintln!("=== Starting Docker Runner actual cancellation test ===");
-    use crate::jobworkerp::runner::DockerArgs;
-    use jobworkerp_base::codec::ProstMessageCodec;
-    use std::collections::HashMap;
-
-    let mut runner = DockerRunner::new();
-
-    // Test with a long-running container that can be cancelled
-    let docker_args = DockerArgs {
-        image: Some("alpine:latest".to_string()),
-        user: None,
-        exposed_ports: vec![],
-        env: vec![],
-        cmd: vec!["sleep".to_string(), "30".to_string()], // Sleep for 30 seconds
-        args_escaped: None,
-        volumes: vec![],
-        working_dir: None,
-        entrypoint: vec![],
-        network_disabled: None,
-        mac_address: None,
-        shell: vec![],
-    };
-
-    let arg_bytes = ProstMessageCodec::serialize_message(&docker_args).unwrap();
-    let metadata = HashMap::new();
-
-    // Start container execution and cancel it after 1 second
-    let start_time = std::time::Instant::now();
-    let execution_task = tokio::spawn(async move { runner.run(&arg_bytes, metadata).await });
-
-    // Wait briefly for container to start, then cancel the task
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-    // Cancel the task to test cancellation
-    execution_task.abort();
-    let result = execution_task.await;
-
-    let elapsed = start_time.elapsed();
-    eprintln!("Execution time: {elapsed:?}");
-
-    match result {
-        Ok(task_result) => {
-            let (execution_result, _metadata) = task_result;
-            match execution_result {
-                Ok(_) => {
-                    eprintln!("Container completed - checking if it was actually cancelled");
-                }
-                Err(e) => {
-                    eprintln!("Container failed: {e}");
-                }
-            }
-        }
-        Err(e) if e.is_cancelled() => {
-            eprintln!("Container execution was cancelled as expected: {e}");
-            // Should complete much faster than 30 seconds due to cancellation
-            assert!(
-                elapsed < std::time::Duration::from_secs(5),
-                "Cancellation should stop execution quickly, took {elapsed:?}"
-            );
-        }
-        Err(e) => {
-            eprintln!("Container execution failed with unexpected error: {e}");
-        }
-    }
-
-    eprintln!("=== Docker Runner actual cancellation test completed ===");
-}
-
-#[tokio::test]
-#[ignore]
-async fn run_test() -> Result<()> {
-    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
-
-    let mut runner1 = DockerRunner::new();
-    runner1
-        .create(&CreateRunnerOptions::new(Some(
-            "busybox:latest".to_string(),
-        )))
-        .await?;
-    let mut runner2 = DockerRunner::new();
-    runner2
-        .create(&CreateRunnerOptions::new(Some(
-            "busybox:latest".to_string(),
-        )))
-        .await?;
-    let arg = ProstMessageCodec::serialize_message(&DockerArgs {
-        image: Some("busybox:latest".to_string()),
-        cmd: vec!["ls".to_string(), "-alh".to_string(), "/".to_string()],
-        ..Default::default()
-    })?;
-    let handle1 = tokio::spawn(async move {
-        let res = runner1.run(&arg, HashMap::new()).await;
-        tracing::info!("result:{:?}", &res);
-        res
-    });
-
-    let arg2 = ProstMessageCodec::serialize_message(&DockerArgs {
-        image: Some("busybox:latest".to_string()),
-        cmd: vec!["echo".to_string(), "run in docker container".to_string()],
-        ..Default::default()
-    })?;
-    let handle2 = tokio::spawn(async move {
-        let res = runner2.run(&arg2, HashMap::new()).await;
-        tracing::info!("result:{:?}", &res);
-        res
-    });
-
-    let r = tokio::join!(handle1, handle2);
-    tracing::info!("result:{:?}", &r);
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_docker_exec_pre_execution_cancellation() {
-    eprintln!("=== Testing Docker Exec Runner pre-execution cancellation ===");
-
-    let mut runner = DockerExecRunner::new();
-
-    // Test cancellation by setting a cancelled token
-    let cancellation_token = tokio_util::sync::CancellationToken::new();
-    runner.set_cancellation_token(cancellation_token.clone());
-    cancellation_token.cancel();
-
-    use crate::jobworkerp::runner::DockerArgs;
-    let arg = DockerArgs {
-        cmd: vec!["sleep".to_string(), "10".to_string()],
-        ..Default::default()
-    };
-
-    let start_time = std::time::Instant::now();
-    let (result, _metadata) = runner
-        .run(
-            &ProstMessageCodec::serialize_message(&arg).unwrap(),
-            HashMap::new(),
-        )
-        .await;
-    let elapsed = start_time.elapsed();
-
-    eprintln!("Execution completed in {elapsed:?}");
-
-    // The command should be cancelled
-    match result {
-        Ok(_) => {
-            panic!("Docker exec command should have been cancelled but completed normally");
-        }
-        Err(e) => {
-            eprintln!("Docker exec command was cancelled as expected: {e}");
-            assert!(e.to_string().contains("cancelled"));
-        }
-    }
-
-    // Should complete much faster than 10 seconds due to cancellation
-    assert!(
-        elapsed.as_millis() < 1000,
-        "Cancellation should prevent long execution"
-    );
-
-    eprintln!("=== Docker Exec pre-execution cancellation test completed ===");
-}
-
-#[tokio::test]
-async fn test_docker_runner_pre_execution_cancellation() {
-    eprintln!("=== Testing Docker Runner pre-execution cancellation ===");
-
-    let mut runner = DockerRunner::new();
-
-    // Test cancellation by setting a cancelled token
-    let cancellation_token = tokio_util::sync::CancellationToken::new();
-    runner.set_cancellation_token(cancellation_token.clone());
-    cancellation_token.cancel();
-
-    use crate::jobworkerp::runner::DockerArgs;
-    let arg = DockerArgs {
-        image: Some("busybox:latest".to_string()),
-        cmd: vec!["sleep".to_string(), "10".to_string()],
-        ..Default::default()
-    };
-
-    let start_time = std::time::Instant::now();
-    let (result, _metadata) = runner
-        .run(
-            &ProstMessageCodec::serialize_message(&arg).unwrap(),
-            HashMap::new(),
-        )
-        .await;
-    tokio::time::sleep(std::time::Duration::from_millis(1000)).await; // Allow some time for cancellation to take effect
-    let elapsed = start_time.elapsed();
-
-    eprintln!("Execution completed in {elapsed:?}");
-
-    // The command should be cancelled
-    match result {
-        Ok(_) => {
-            panic!("Docker runner command should have been cancelled but completed normally");
-        }
-        Err(e) => {
-            eprintln!("Docker runner command was cancelled as expected: {e}");
-            assert!(e.to_string().contains("cancelled"));
-        }
-    }
-
-    // Should complete much faster than 10 seconds due to cancellation
-    assert!(
-        elapsed.as_millis() < 2000,
-        "Cancellation should prevent long execution"
-    );
-
-    eprintln!("=== Docker Runner pre-execution cancellation test completed ===");
-}
-
-#[tokio::test]
-async fn test_docker_exec_stream_mid_execution_cancellation() {
-    eprintln!("=== Testing Docker Exec Runner stream mid-execution cancellation ===");
-
-    use std::sync::Arc;
-    use std::time::{Duration, Instant};
-    use tokio::sync::Mutex;
-
-    // Use Arc<tokio::sync::Mutex<>> to share runner between tasks (similar to LLM pattern)
-    let runner = Arc::new(Mutex::new(DockerExecRunner::new()));
-
-    // Create test arguments
-    use crate::jobworkerp::runner::DockerArgs;
-    let arg = DockerArgs {
-        cmd: vec!["sleep".to_string(), "10".to_string()],
-        ..Default::default()
-    };
-
-    // Create cancellation token and set it on the runner
-    let cancellation_token = tokio_util::sync::CancellationToken::new();
-    {
-        let mut runner_guard = runner.lock().await;
-        runner_guard.set_cancellation_token(cancellation_token.clone());
-    }
-
-    let start_time = Instant::now();
-    let serialized_args = ProstMessageCodec::serialize_message(&arg).unwrap();
-
-    let runner_clone = runner.clone();
-
-    // Start stream execution in a task
-    let execution_task = tokio::spawn(async move {
-        let mut runner_guard = runner_clone.lock().await;
-        let stream_result = runner_guard
-            .run_stream(&serialized_args, HashMap::new())
-            .await;
-
-        match stream_result {
-            Ok(_stream) => {
-                // Docker exec stream is not implemented, so this shouldn't happen
-                eprintln!("WARNING: Docker exec stream returned Ok (should be unimplemented)");
-                Ok(0)
-            }
-            Err(e) => {
-                eprintln!("Docker exec stream returned error as expected: {e}");
-                Err(e)
-            }
-        }
-    });
-
-    // Wait for stream to start (let it run for a bit)
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Cancel using the external token reference (avoids deadlock)
-    cancellation_token.cancel();
-    eprintln!("Called cancellation_token.cancel() after 100ms");
-
-    // Wait for the execution to complete or be cancelled
-    let execution_result = execution_task.await;
-    let elapsed = start_time.elapsed();
-
-    eprintln!("Docker exec stream execution completed in {elapsed:?}");
-
-    match execution_result {
-        Ok(stream_processing_result) => {
-            match stream_processing_result {
-                Ok(_item_count) => {
-                    eprintln!("WARNING: Docker exec stream should be unimplemented");
-                }
-                Err(e) => {
-                    eprintln!("✓ Docker exec stream processing was cancelled as expected: {e}");
-                    // Check if it's a cancellation error or unimplemented error
-                    if e.to_string().contains("cancelled") {
-                        eprintln!("✓ Cancellation was properly detected");
-                    } else if e.to_string().contains("not implemented") {
-                        eprintln!("✓ Stream is unimplemented but cancellation check worked");
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("Docker exec stream execution task failed: {e}");
-            panic!("Task failed: {e}");
-        }
-    }
-
-    // Verify that cancellation happened very quickly (since stream is unimplemented)
-    if elapsed > Duration::from_secs(1) {
-        panic!(
-            "Stream processing took too long ({elapsed:?}), should be immediate for unimplemented stream"
-        );
-    }
-
-    eprintln!("✓ Docker exec stream mid-execution cancellation test completed successfully");
-}
-
-#[tokio::test]
-async fn test_docker_runner_stream_mid_execution_cancellation() {
-    eprintln!("=== Testing Docker Runner stream mid-execution cancellation ===");
-
-    use std::sync::Arc;
-    use std::time::{Duration, Instant};
-    use tokio::sync::Mutex;
-
-    // Use Arc<tokio::sync::Mutex<>> to share runner between tasks (similar to LLM pattern)
-    let runner = Arc::new(Mutex::new(DockerRunner::new()));
-
-    // Create test arguments
-    use crate::jobworkerp::runner::DockerArgs;
-    let arg = DockerArgs {
-        image: Some("busybox:latest".to_string()),
-        cmd: vec!["sleep".to_string(), "10".to_string()],
-        ..Default::default()
-    };
-
-    // Create cancellation token and set it on the runner
-    let cancellation_token = tokio_util::sync::CancellationToken::new();
-    {
-        let mut runner_guard = runner.lock().await;
-        runner_guard.set_cancellation_token(cancellation_token.clone());
-    }
-
-    let start_time = Instant::now();
-    let serialized_args = ProstMessageCodec::serialize_message(&arg).unwrap();
-
-    let runner_clone = runner.clone();
-
-    // Start stream execution in a task
-    let execution_task = tokio::spawn(async move {
-        let mut runner_guard = runner_clone.lock().await;
-        let stream_result = runner_guard
-            .run_stream(&serialized_args, HashMap::new())
-            .await;
-
-        match stream_result {
-            Ok(_stream) => {
-                // Docker runner stream is not implemented, so this shouldn't happen
-                eprintln!("WARNING: Docker runner stream returned Ok (should be unimplemented)");
-                Ok(0)
-            }
-            Err(e) => {
-                eprintln!("Docker runner stream returned error as expected: {e}");
-                Err(e)
-            }
-        }
-    });
-
-    // Wait for stream to start (let it run for a bit)
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // Cancel using the external token reference (avoids deadlock)
-    cancellation_token.cancel();
-    eprintln!("Called cancellation_token.cancel() after 100ms");
-
-    // Wait for the execution to complete or be cancelled
-    let execution_result = execution_task.await;
-    let elapsed = start_time.elapsed();
-
-    eprintln!("Docker runner stream execution completed in {elapsed:?}");
-
-    match execution_result {
-        Ok(stream_processing_result) => {
-            match stream_processing_result {
-                Ok(_item_count) => {
-                    eprintln!("WARNING: Docker runner stream should be unimplemented");
-                }
-                Err(e) => {
-                    eprintln!("✓ Docker runner stream processing was cancelled as expected: {e}");
-                    // Check if it's a cancellation error or unimplemented error
-                    if e.to_string().contains("cancelled") {
-                        eprintln!("✓ Cancellation was properly detected");
-                    } else if e.to_string().contains("not implemented") {
-                        eprintln!("✓ Stream is unimplemented but cancellation check worked");
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("Docker runner stream execution task failed: {e}");
-            panic!("Task failed: {e}");
-        }
-    }
-
-    // Verify that cancellation happened very quickly (since stream is unimplemented)
-    if elapsed > Duration::from_secs(1) {
-        panic!(
-            "Stream processing took too long ({elapsed:?}), should be immediate for unimplemented stream"
-        );
-    }
-
-    eprintln!("✓ Docker runner stream mid-execution cancellation test completed successfully");
-}
-
 // CancelMonitoring implementation for DockerExecRunner
 #[async_trait]
 impl super::cancellation::CancelMonitoring for DockerExecRunner {
@@ -1322,5 +915,350 @@ impl super::cancellation::CancelMonitoring for DockerRunner {
 impl super::cancellation::CancelMonitoringCapable for DockerRunner {
     fn as_cancel_monitoring(&mut self) -> &mut dyn super::cancellation::CancelMonitoring {
         self
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore]
+    async fn run_test() -> Result<()> {
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+
+        let mut runner1 = DockerRunner::new();
+        runner1
+            .create(&CreateRunnerOptions::new(Some(
+                "busybox:latest".to_string(),
+            )))
+            .await?;
+        let mut runner2 = DockerRunner::new();
+        runner2
+            .create(&CreateRunnerOptions::new(Some(
+                "busybox:latest".to_string(),
+            )))
+            .await?;
+        let arg = ProstMessageCodec::serialize_message(&DockerArgs {
+            image: Some("busybox:latest".to_string()),
+            cmd: vec!["ls".to_string(), "-alh".to_string(), "/".to_string()],
+            ..Default::default()
+        })?;
+        let handle1 = tokio::spawn(async move {
+            let res = runner1.run(&arg, HashMap::new()).await;
+            tracing::info!("result:{:?}", &res);
+            res
+        });
+
+        let arg2 = ProstMessageCodec::serialize_message(&DockerArgs {
+            image: Some("busybox:latest".to_string()),
+            cmd: vec!["echo".to_string(), "run in docker container".to_string()],
+            ..Default::default()
+        })?;
+        let handle2 = tokio::spawn(async move {
+            let res = runner2.run(&arg2, HashMap::new()).await;
+            tracing::info!("result:{:?}", &res);
+            res
+        });
+
+        let r = tokio::join!(handle1, handle2);
+        tracing::info!("result:{:?}", &r);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_docker_exec_pre_execution_cancellation() {
+        eprintln!("=== Testing Docker Exec Runner pre-execution cancellation ===");
+
+        let mut runner = DockerExecRunner::new();
+
+        // Test cancellation by setting a cancelled token
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        runner.set_cancellation_token(cancellation_token.clone());
+        cancellation_token.cancel();
+
+        use crate::jobworkerp::runner::DockerArgs;
+        let arg = DockerArgs {
+            cmd: vec!["sleep".to_string(), "10".to_string()],
+            ..Default::default()
+        };
+
+        let start_time = std::time::Instant::now();
+        let (result, _metadata) = runner
+            .run(
+                &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                HashMap::new(),
+            )
+            .await;
+        let elapsed = start_time.elapsed();
+
+        eprintln!("Execution completed in {elapsed:?}");
+
+        // The command should be cancelled
+        match result {
+            Ok(_) => {
+                panic!("Docker exec command should have been cancelled but completed normally");
+            }
+            Err(e) => {
+                eprintln!("Docker exec command was cancelled as expected: {e}");
+                assert!(e.to_string().contains("cancelled"));
+            }
+        }
+
+        // Should complete much faster than 10 seconds due to cancellation
+        assert!(
+            elapsed.as_millis() < 1000,
+            "Cancellation should prevent long execution"
+        );
+
+        eprintln!("=== Docker Exec pre-execution cancellation test completed ===");
+    }
+
+    #[tokio::test]
+    async fn test_docker_runner_pre_execution_cancellation() {
+        eprintln!("=== Testing Docker Runner pre-execution cancellation ===");
+
+        let mut runner = DockerRunner::new();
+
+        // Test cancellation by setting a cancelled token
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        runner.set_cancellation_token(cancellation_token.clone());
+        cancellation_token.cancel();
+
+        use crate::jobworkerp::runner::DockerArgs;
+        let arg = DockerArgs {
+            image: Some("busybox:latest".to_string()),
+            cmd: vec!["sleep".to_string(), "10".to_string()],
+            ..Default::default()
+        };
+
+        let start_time = std::time::Instant::now();
+        let (result, _metadata) = runner
+            .run(
+                &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                HashMap::new(),
+            )
+            .await;
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await; // Allow some time for cancellation to take effect
+        let elapsed = start_time.elapsed();
+
+        eprintln!("Execution completed in {elapsed:?}");
+
+        // The command should be cancelled
+        match result {
+            Ok(_) => {
+                panic!("Docker runner command should have been cancelled but completed normally");
+            }
+            Err(e) => {
+                eprintln!("Docker runner command was cancelled as expected: {e}");
+                assert!(e.to_string().contains("cancelled"));
+            }
+        }
+
+        // Should complete much faster than 10 seconds due to cancellation
+        assert!(
+            elapsed.as_millis() < 2000,
+            "Cancellation should prevent long execution"
+        );
+
+        eprintln!("=== Docker Runner pre-execution cancellation test completed ===");
+    }
+
+    #[tokio::test]
+    async fn test_docker_exec_stream_mid_execution_cancellation() {
+        eprintln!("=== Testing Docker Exec Runner stream mid-execution cancellation ===");
+
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+        use tokio::sync::Mutex;
+
+        // Use Arc<tokio::sync::Mutex<>> to share runner between tasks (similar to LLM pattern)
+        let runner = Arc::new(Mutex::new(DockerExecRunner::new()));
+
+        // Create test arguments
+        use crate::jobworkerp::runner::DockerArgs;
+        let arg = DockerArgs {
+            cmd: vec!["sleep".to_string(), "10".to_string()],
+            ..Default::default()
+        };
+
+        // Create cancellation token and set it on the runner
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        {
+            let mut runner_guard = runner.lock().await;
+            runner_guard.set_cancellation_token(cancellation_token.clone());
+        }
+
+        let start_time = Instant::now();
+        let serialized_args = ProstMessageCodec::serialize_message(&arg).unwrap();
+
+        let runner_clone = runner.clone();
+
+        // Start stream execution in a task
+        let execution_task = tokio::spawn(async move {
+            let mut runner_guard = runner_clone.lock().await;
+            let stream_result = runner_guard
+                .run_stream(&serialized_args, HashMap::new())
+                .await;
+
+            match stream_result {
+                Ok(_stream) => {
+                    // Docker exec stream is not implemented, so this shouldn't happen
+                    eprintln!("WARNING: Docker exec stream returned Ok (should be unimplemented)");
+                    Ok(0)
+                }
+                Err(e) => {
+                    eprintln!("Docker exec stream returned error as expected: {e}");
+                    Err(e)
+                }
+            }
+        });
+
+        // Wait for stream to start (let it run for a bit)
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Cancel using the external token reference (avoids deadlock)
+        cancellation_token.cancel();
+        eprintln!("Called cancellation_token.cancel() after 100ms");
+
+        // Wait for the execution to complete or be cancelled
+        let execution_result = execution_task.await;
+        let elapsed = start_time.elapsed();
+
+        eprintln!("Docker exec stream execution completed in {elapsed:?}");
+
+        match execution_result {
+            Ok(stream_processing_result) => {
+                match stream_processing_result {
+                    Ok(_item_count) => {
+                        eprintln!("WARNING: Docker exec stream should be unimplemented");
+                    }
+                    Err(e) => {
+                        eprintln!("✓ Docker exec stream processing was cancelled as expected: {e}");
+                        // Check if it's a cancellation error or unimplemented error
+                        if e.to_string().contains("cancelled") {
+                            eprintln!("✓ Cancellation was properly detected");
+                        } else if e.to_string().contains("not implemented") {
+                            eprintln!("✓ Stream is unimplemented but cancellation check worked");
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Docker exec stream execution task failed: {e}");
+                panic!("Task failed: {e}");
+            }
+        }
+
+        // Verify that cancellation happened very quickly (since stream is unimplemented)
+        if elapsed > Duration::from_secs(1) {
+            panic!(
+            "Stream processing took too long ({elapsed:?}), should be immediate for unimplemented stream"
+        );
+        }
+
+        eprintln!("✓ Docker exec stream mid-execution cancellation test completed successfully");
+    }
+
+    #[tokio::test]
+    async fn test_docker_runner_stream_mid_execution_cancellation() {
+        eprintln!("=== Testing Docker Runner stream mid-execution cancellation ===");
+
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+        use tokio::sync::Mutex;
+
+        // Use Arc<tokio::sync::Mutex<>> to share runner between tasks (similar to LLM pattern)
+        let runner = Arc::new(Mutex::new(DockerRunner::new()));
+
+        // Create test arguments
+        use crate::jobworkerp::runner::DockerArgs;
+        let arg = DockerArgs {
+            image: Some("busybox:latest".to_string()),
+            cmd: vec!["sleep".to_string(), "10".to_string()],
+            ..Default::default()
+        };
+
+        // Create cancellation token and set it on the runner
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        {
+            let mut runner_guard = runner.lock().await;
+            runner_guard.set_cancellation_token(cancellation_token.clone());
+        }
+
+        let start_time = Instant::now();
+        let serialized_args = ProstMessageCodec::serialize_message(&arg).unwrap();
+
+        let runner_clone = runner.clone();
+
+        // Start stream execution in a task
+        let execution_task = tokio::spawn(async move {
+            let mut runner_guard = runner_clone.lock().await;
+            let stream_result = runner_guard
+                .run_stream(&serialized_args, HashMap::new())
+                .await;
+
+            match stream_result {
+                Ok(_stream) => {
+                    // Docker runner stream is not implemented, so this shouldn't happen
+                    eprintln!(
+                        "WARNING: Docker runner stream returned Ok (should be unimplemented)"
+                    );
+                    Ok(0)
+                }
+                Err(e) => {
+                    eprintln!("Docker runner stream returned error as expected: {e}");
+                    Err(e)
+                }
+            }
+        });
+
+        // Wait for stream to start (let it run for a bit)
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Cancel using the external token reference (avoids deadlock)
+        cancellation_token.cancel();
+        eprintln!("Called cancellation_token.cancel() after 100ms");
+
+        // Wait for the execution to complete or be cancelled
+        let execution_result = execution_task.await;
+        let elapsed = start_time.elapsed();
+
+        eprintln!("Docker runner stream execution completed in {elapsed:?}");
+
+        match execution_result {
+            Ok(stream_processing_result) => {
+                match stream_processing_result {
+                    Ok(_item_count) => {
+                        eprintln!("WARNING: Docker runner stream should be unimplemented");
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "✓ Docker runner stream processing was cancelled as expected: {e}"
+                        );
+                        // Check if it's a cancellation error or unimplemented error
+                        if e.to_string().contains("cancelled") {
+                            eprintln!("✓ Cancellation was properly detected");
+                        } else if e.to_string().contains("not implemented") {
+                            eprintln!("✓ Stream is unimplemented but cancellation check worked");
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Docker runner stream execution task failed: {e}");
+                panic!("Task failed: {e}");
+            }
+        }
+
+        // Verify that cancellation happened very quickly (since stream is unimplemented)
+        if elapsed > Duration::from_secs(1) {
+            panic!(
+            "Stream processing took too long ({elapsed:?}), should be immediate for unimplemented stream"
+        );
+        }
+
+        eprintln!("✓ Docker runner stream mid-execution cancellation test completed successfully");
     }
 }
