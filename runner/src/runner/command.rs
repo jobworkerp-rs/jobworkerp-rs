@@ -143,25 +143,6 @@ impl CommandRunnerImpl {
     }
 }
 
-// Default is not supported for CommandRunnerImpl due to cancellation_manager requirement
-// impl Default for CommandRunnerImpl {
-//     fn default() -> Self {
-//         Self::new()
-//     }
-// }
-
-// Clone is not supported for CommandRunnerImpl due to cancellation_manager
-// impl Clone for CommandRunnerImpl {
-//     fn clone(&self) -> Self {
-//         Self {
-//             process: None,                                          // cannot clone process
-//             cancellation_helper: CancellationHelper::new(),         // create new helper for clone
-//             stream_process_pid: Arc::new(RwLock::new(None)),        // create new RwLock for clone
-//             cancellation_manager: ???,                            // Cannot clone trait object
-//         }
-//     }
-// }
-
 #[async_trait]
 impl CommandRunner for CommandRunnerImpl {
     fn child(&mut self) -> &mut Option<Box<Child>> {
@@ -1243,33 +1224,6 @@ mod tests {
 
         // Should return an error for non-existent command
         assert!(res.0.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_cancel() {
-        let mut runner = CommandRunnerImpl::new();
-        let arg = CommandArgs {
-            command: "/bin/sleep".to_string(),
-            args: vec!["10".to_string()],
-            with_memory_monitoring: false,
-        };
-
-        // Run the command in a separate task so we can cancel it
-        let run_handle = tokio::spawn(async move {
-            let res = runner
-                .run(
-                    &ProstMessageCodec::serialize_message(&arg).unwrap(),
-                    HashMap::new(),
-                )
-                .await;
-            (runner, res)
-        });
-
-        // Wait a bit for the process to start
-        sleep(Duration::from_millis(500)).await;
-        // Cancel the task
-        run_handle.abort();
-        sleep(Duration::from_millis(500)).await;
     }
 
     #[tokio::test]
