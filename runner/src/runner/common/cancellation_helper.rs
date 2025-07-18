@@ -49,13 +49,24 @@ impl CancellationHelper {
         self.cancellation_token.as_ref()
     }
 
+    /// Get current cancellation token for external use
+    pub fn get_cancellation_token(&self) -> CancellationToken {
+        match &self.cancellation_token {
+            Some(token) => token.clone(),
+            None => CancellationToken::new(),
+        }
+    }
+
     /// Cancel current execution
-    pub fn cancel(&self) {
+    pub fn cancel(&mut self) {
         if let Some(token) = &self.cancellation_token {
             token.cancel();
             tracing::info!("Runner execution cancelled");
         } else {
-            tracing::warn!("No active runner execution to cancel");
+            let new_token = CancellationToken::new();
+            new_token.cancel();
+            self.cancellation_token = Some(new_token.clone());
+            tracing::info!("Runner execution cancelled(new token created)");
         }
     }
 

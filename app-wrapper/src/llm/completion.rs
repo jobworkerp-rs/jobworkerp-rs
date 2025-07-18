@@ -298,4 +298,8 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
     async fn cancel(&mut self) {
         self.cancellation_helper.cancel();
     }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }

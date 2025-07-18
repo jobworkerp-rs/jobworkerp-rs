@@ -4,10 +4,7 @@ use self::{
     rdb::{RdbJobDispatcher, RdbJobDispatcherImpl},
     redis::{RedisJobDispatcher, RedisJobDispatcherImpl},
 };
-use super::{
-    manager::RunningJobManager, result_processor::ResultProcessorImpl,
-    runner::map::RunnerFactoryWithPoolMap,
-};
+use super::{result_processor::ResultProcessorImpl, runner::map::RunnerFactoryWithPoolMap};
 use anyhow::Result;
 use app::module::{AppConfigModule, AppModule};
 use app_wrapper::runner::RunnerFactory;
@@ -34,9 +31,6 @@ pub trait JobDispatcher: Send + Sync + 'static {
 
     /// Start cancellation monitoring (called externally when Worker starts)
     async fn start_cancellation_monitoring(&self) -> Result<()>;
-
-    /// Get the number of running jobs (for monitoring and debugging, called externally)
-    async fn get_running_job_count(&self) -> usize;
 }
 // TODO divide into three traits (redis, rdb and redis+rdb)
 pub struct JobDispatcherFactory {}
@@ -62,9 +56,6 @@ impl JobDispatcherFactory {
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
         result_processor: Arc<ResultProcessorImpl>,
     ) -> Box<dyn JobDispatcher + 'static> {
-        // Generate RunningJobManager
-        let running_job_manager = Arc::new(RunningJobManager::new());
-
         match (
             app_module.config_module.storage_type(),
             rdb_chan_repositories_opt.clone(),
@@ -106,7 +97,6 @@ impl JobDispatcherFactory {
                         runner_factory,
                         runner_pool_map,
                         result_processor,
-                        running_job_manager.clone(),
                     ),
                 })
             }
@@ -131,7 +121,6 @@ impl JobDispatcherFactory {
                         runner_factory,
                         runner_pool_map,
                         result_processor,
-                        running_job_manager.clone(),
                         Arc::new(redis_repositories.redis_job_queue_repository.clone()),
                     ),
                 })
@@ -162,11 +151,6 @@ impl JobDispatcher for HybridJobDispatcherImpl {
         tracing::info!("Started cancellation monitoring for HybridJobDispatcher");
         Ok(())
     }
-
-    async fn get_running_job_count(&self) -> usize {
-        // Only RedisJobDispatcher's running job count (RdbJobDispatcher is always 0)
-        self.redis_job_dispatcher.get_running_job_count().await
-    }
 }
 #[async_trait]
 impl JobDispatcher for RdbChanJobDispatcherImpl {
@@ -185,10 +169,5 @@ impl JobDispatcher for RdbChanJobDispatcherImpl {
             .await?;
         tracing::info!("Started cancellation monitoring for RdbChanJobDispatcher");
         Ok(())
-    }
-
-    async fn get_running_job_count(&self) -> usize {
-        // Only ChanJobDispatcher's running job count (RdbJobDispatcher is always 0)
-        self.chan_job_dispatcher.get_running_job_count().await
     }
 }

@@ -422,6 +422,10 @@ impl RunnerTrait for DockerExecRunner {
             tracing::warn!("No active Docker container to cancel");
         }
     }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 // confirm local docker
@@ -821,6 +825,10 @@ impl RunnerTrait for DockerRunner {
         } else {
             tracing::warn!("No active Docker container to cancel");
         }
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 

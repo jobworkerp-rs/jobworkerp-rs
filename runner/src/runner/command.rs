@@ -28,7 +28,12 @@ use tokio::sync::{Mutex, RwLock};
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, LinesCodec};
 
+use super::cancellation::{
+    CancelMonitoring, CancelMonitoringCapable, CancellationSetupResult, RunnerCancellationManager,
+};
 use super::common::cancellation_helper::CancellationHelper;
+use proto::jobworkerp::data::{JobData, JobId, JobResult};
+
 
 /**
  * CommandRunner
@@ -49,14 +54,74 @@ pub struct CommandRunnerImpl {
     pub process: Option<Box<Child>>,
     cancellation_helper: CancellationHelper,
     pub stream_process_pid: Arc<RwLock<Option<u32>>>,
+    cancellation_manager: Option<Arc<tokio::sync::Mutex<Box<dyn RunnerCancellationManager>>>>,
 }
+impl Default for CommandRunnerImpl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CommandRunnerImpl {
+    /// Gracefully kill a child process with SIGTERM, fallback to SIGKILL
+    async fn graceful_kill_process(child: &mut tokio::process::Child) -> bool {
+        if let Some(pid) = child.id() {
+            #[cfg(unix)]
+            {
+                use nix::sys::signal::{kill, Signal};
+                use nix::unistd::Pid;
+                
+                // First try SIGTERM for graceful shutdown
+                if let Err(e) = kill(Pid::from_raw(pid as i32), Signal::SIGTERM) {
+                    tracing::warn!("Failed to send SIGTERM to process {}: {}", pid, e);
+                    return false;
+                } else {
+                    tracing::debug!("Sent SIGTERM to process {} for graceful shutdown", pid);
+                }
+                
+                // Wait for graceful shutdown with 5 second timeout
+                match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {
+                    Ok(Ok(status)) => {
+                        tracing::debug!("Process {} terminated gracefully with status: {}", pid, status);
+                        return true;
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!("Error waiting for process {}: {}", pid, e);
+                    }
+                    Err(_) => {
+                        // Force kill with SIGKILL if timeout
+                        tracing::warn!("Process {} did not terminate gracefully, force killing", pid);
+                        if let Err(e) = kill(Pid::from_raw(pid as i32), Signal::SIGKILL) {
+                            tracing::error!("Failed to send SIGKILL to process {}: {}", pid, e);
+                        }
+                        let _ = child.kill().await;
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = child.kill().await;
+            }
+        }
+        false
+    }
+
     pub fn new() -> Self {
         Self {
             process: None,
             cancellation_helper: CancellationHelper::new(),
             stream_process_pid: Arc::new(RwLock::new(None)),
+            cancellation_manager: None, // No manager by default
         }
+    }
+
+    /// Set a cancellation manager for this runner instance
+    /// This allows proper cancellation functionality via pubsub
+    pub fn set_cancellation_manager(
+        &mut self,
+        cancellation_manager: Box<dyn RunnerCancellationManager>,
+    ) {
+        self.cancellation_manager = Some(Arc::new(Mutex::new(cancellation_manager)));
     }
 
     /// Set a cancellation token for this runner instance
@@ -74,21 +139,24 @@ impl CommandRunnerImpl {
     }
 }
 
-impl Default for CommandRunnerImpl {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// Default is not supported for CommandRunnerImpl due to cancellation_manager requirement
+// impl Default for CommandRunnerImpl {
+//     fn default() -> Self {
+//         Self::new()
+//     }
+// }
 
-impl Clone for CommandRunnerImpl {
-    fn clone(&self) -> Self {
-        Self {
-            process: None,                                   // cannot clone process
-            cancellation_helper: CancellationHelper::new(),  // create new helper for clone
-            stream_process_pid: Arc::new(RwLock::new(None)), // create new RwLock for clone
-        }
-    }
-}
+// Clone is not supported for CommandRunnerImpl due to cancellation_manager
+// impl Clone for CommandRunnerImpl {
+//     fn clone(&self) -> Self {
+//         Self {
+//             process: None,                                          // cannot clone process
+//             cancellation_helper: CancellationHelper::new(),         // create new helper for clone
+//             stream_process_pid: Arc::new(RwLock::new(None)),        // create new RwLock for clone
+//             cancellation_manager: ???,                            // Cannot clone trait object
+//         }
+//     }
+// }
 
 #[async_trait]
 impl CommandRunner for CommandRunnerImpl {
@@ -341,8 +409,8 @@ impl RunnerTrait for CommandRunnerImpl {
                             }
                             _ = cancellation_token.cancelled() => {
                                 tracing::info!("Command execution was cancelled during process execution");
-                                // Kill the child process if cancellation is requested
-                                let _ = child.kill().await;
+                                // Gracefully kill the child process using shared function
+                                Self::graceful_kill_process(&mut child).await;
                                 return Err(anyhow::anyhow!("Command execution was cancelled during process execution"));
                             }
                         }
@@ -422,6 +490,9 @@ impl RunnerTrait for CommandRunnerImpl {
 
         // Clone cancellation helper for cleanup within stream
         let mut cancellation_helper_clone = self.cancellation_helper.clone();
+        
+        // Clone Arc of cancellation manager for stream lifecycle management
+        let cancellation_manager = self.cancellation_manager.clone();
 
         // Create mutable command here
         let mut command = Command::new(command_str.as_str());
@@ -736,7 +807,17 @@ impl RunnerTrait for CommandRunnerImpl {
                             }
                             _ = cancellation_token.cancelled() => {
                                 tracing::info!("Command stream execution was cancelled");
-                                // Break the loop - external cancel() method will handle the kill via PID
+                                // Implement graceful cancellation using shared function
+                                cancellation_helper_clone.cancel();
+                                
+                                // Gracefully kill the process
+                                Self::graceful_kill_process(&mut child).await;
+                                
+                                // Clear the PID from stream_pid_ref
+                                let mut pid_guard = stream_pid_ref.write().await;
+                                *pid_guard = None;
+                                drop(pid_guard);
+                                
                                 break;
                             }
                         }
@@ -815,6 +896,18 @@ impl RunnerTrait for CommandRunnerImpl {
                     *pid_guard = None;
                     drop(pid_guard);
                     cancellation_helper_clone.clear_token();
+                    
+                    // Cleanup cancellation monitoring now that the stream has completed
+                    tracing::debug!("Stream completed for job, cleaning up cancellation monitoring");
+                    if let Some(manager_arc) = &cancellation_manager {
+                        if let Ok(mut manager) = manager_arc.try_lock() {
+                            if let Err(e) = manager.cleanup_monitoring().await {
+                                tracing::warn!("Failed to cleanup cancellation monitoring: {:?}", e);
+                            }
+                        } else {
+                            tracing::warn!("Could not acquire lock for cancellation manager cleanup");
+                        }
+                    }
 
                     // Send the end of stream marker
                     yield ResultOutputItem {
@@ -856,6 +949,18 @@ impl RunnerTrait for CommandRunnerImpl {
                     *pid_guard = None;
                     drop(pid_guard);
                     cancellation_helper_clone.clear_token();
+                    
+                    // Cleanup cancellation monitoring on error as well
+                    tracing::debug!("Stream failed for job, cleaning up cancellation monitoring");
+                    if let Some(manager_arc) = &cancellation_manager {
+                        if let Ok(mut manager) = manager_arc.try_lock() {
+                            if let Err(e) = manager.cleanup_monitoring().await {
+                                tracing::warn!("Failed to cleanup cancellation monitoring on error: {:?}", e);
+                            }
+                        } else {
+                            tracing::warn!("Could not acquire lock for cancellation manager cleanup on error");
+                        }
+                    }
 
                     // Always send end marker even on error
                     yield ResultOutputItem {
@@ -873,56 +978,7 @@ impl RunnerTrait for CommandRunnerImpl {
         self.cancellation_helper.cancel();
 
         if let Some(mut child) = self.consume_child() {
-            #[cfg(unix)]
-            {
-                use nix::sys::signal::{kill, Signal};
-                use nix::unistd::Pid;
-
-                if let Some(pid) = child.id() {
-                    // First try SIGTERM for graceful shutdown
-                    if let Err(e) = kill(Pid::from_raw(pid as i32), Signal::SIGTERM) {
-                        tracing::warn!("Failed to send SIGTERM to process {}: {}", pid, e);
-                    } else {
-                        tracing::debug!("Sent SIGTERM to process {}", pid);
-                    }
-
-                    // Wait for graceful shutdown with 5 second timeout
-                    match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
-                        .await
-                    {
-                        Ok(Ok(status)) => {
-                            tracing::debug!(
-                                "Process {} terminated gracefully with status: {}",
-                                pid,
-                                status
-                            );
-                        }
-                        Ok(Err(e)) => {
-                            tracing::warn!("Error waiting for process {}: {}", pid, e);
-                        }
-                        Err(_) => {
-                            // Force kill with SIGKILL if timeout
-                            tracing::warn!(
-                                "Process {} did not terminate gracefully, force killing",
-                                pid
-                            );
-                            if let Err(e) = kill(Pid::from_raw(pid as i32), Signal::SIGKILL) {
-                                tracing::error!("Failed to send SIGKILL to process {}: {}", pid, e);
-                            }
-                            let _ = child.kill().await;
-                        }
-                    }
-                } else {
-                    tracing::warn!("Cannot get PID for child process");
-                    let _ = child.kill().await;
-                }
-            }
-            #[cfg(windows)]
-            {
-                // Windows: Direct termination
-                tracing::debug!("Terminating Windows process");
-                let _ = child.kill().await;
-            }
+            Self::graceful_kill_process(&mut child).await;
         } else {
             tracing::warn!("No active command process to cancel");
         }
@@ -976,6 +1032,78 @@ impl RunnerTrait for CommandRunnerImpl {
         // Clear cancellation token after cancellation
         self.cancellation_helper.clear_token();
     }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+// CancelMonitoring implementation for CommandRunnerImpl
+#[async_trait]
+impl CancelMonitoring for CommandRunnerImpl {
+    /// Initialize cancellation monitoring for specific job
+    async fn setup_cancellation_monitoring(
+        &mut self,
+        job_id: JobId,
+        job_data: &JobData,
+    ) -> Result<Option<JobResult>> {
+        use super::cancellation::CancellationSetupResult;
+
+        tracing::debug!(
+            "Setting up cancellation monitoring for CommandRunner job {}",
+            job_id.value
+        );
+
+        // Setup cancellation monitoring using RunnerCancellationManager
+        let result = if let Some(manager_arc) = &self.cancellation_manager {
+            let mut manager = manager_arc.lock().await;
+            manager.setup_monitoring(&job_id, job_data, &mut self.cancellation_helper).await?
+        } else {
+            // No cancellation manager set, continue without monitoring
+            tracing::debug!("No cancellation manager set for job {}, skipping monitoring", job_id.value);
+            CancellationSetupResult::MonitoringStarted
+        };
+
+        match result {
+            CancellationSetupResult::MonitoringStarted => {
+                tracing::trace!("Cancellation monitoring started for job {}", job_id.value);
+                Ok(None) // Continue with normal execution
+            }
+            CancellationSetupResult::AlreadyCancelled => {
+                tracing::info!(
+                    "Job {} was already cancelled before execution",
+                    job_id.value
+                );
+                // TODO: Create proper cancelled JobResult here
+                // For now, return None to continue with normal execution path
+                // The cancellation will be handled by the CancellationHelper
+                Ok(None)
+            }
+        }
+    }
+
+    /// Cleanup cancellation monitoring
+    async fn cleanup_cancellation_monitoring(&mut self) -> Result<()> {
+        tracing::trace!("Cleaning up cancellation monitoring for CommandRunner");
+
+        // Cleanup the cancellation manager
+        if let Some(manager_arc) = &self.cancellation_manager {
+            let mut manager = manager_arc.lock().await;
+            manager.cleanup_monitoring().await?;
+        }
+
+        // Clear the cancellation helper
+        self.cancellation_helper.clear_token();
+
+        Ok(())
+    }
+}
+
+// CancelMonitoringCapable implementation (type-safe integration trait)
+impl CancelMonitoringCapable for CommandRunnerImpl {
+    fn as_cancel_monitoring(&mut self) -> &mut dyn CancelMonitoring {
+        self
+    }
 }
 
 // test CommandRunnerImpl run with command '/usr/bin/sleep' and arg '10'
@@ -985,6 +1113,27 @@ mod tests {
     use crate::jobworkerp::runner::CommandArgs;
     use futures::StreamExt;
     use tokio::time::{sleep, Duration};
+
+    // Mock implementation for testing
+    #[derive(Debug)]
+    #[allow(dead_code)]
+    struct MockCancellationManager;
+
+    #[async_trait]
+    impl RunnerCancellationManager for MockCancellationManager {
+        async fn setup_monitoring(
+            &mut self,
+            _job_id: &JobId,
+            _job_data: &JobData,
+            _cancellation_helper: &mut CancellationHelper,
+        ) -> Result<crate::runner::cancellation::CancellationSetupResult> {
+            Ok(crate::runner::cancellation::CancellationSetupResult::MonitoringStarted)
+        }
+
+        async fn cleanup_monitoring(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
 
     #[tokio::test]
     async fn test_run() {

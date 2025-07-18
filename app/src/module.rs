@@ -15,7 +15,8 @@ use crate::app::worker::WorkerApp;
 use crate::app::{StorageConfig, WorkerConfig};
 use anyhow::Result;
 use infra::infra::job::queue::redis::UseRedisJobQueueRepository;
-use infra::infra::job::queue::JobQueueCancellationRepository;
+use infra::infra::job::queue::{JobQueueCancellationRepository, UseJobQueueCancellationRepository};
+use infra::infra::job::status::{JobProcessingStatusRepository, UseJobProcessingStatusRepository};
 use infra::infra::module::rdb::RdbChanRepositoryModule;
 use infra::infra::module::{HybridRepositoryModule, RedisRdbOptionalRepositoryModule};
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig};
@@ -360,6 +361,26 @@ impl AppModule {
     async fn load_runner(&self) -> Result<()> {
         self.runner_app.load_runner().await?;
         Ok(())
+    }
+
+    pub fn job_queue_cancellation_repository(&self) -> Arc<dyn JobQueueCancellationRepository> {
+        self.repositories.job_queue_cancellation_repository()
+    }
+
+    pub fn job_processing_status_repository(&self) -> Arc<dyn JobProcessingStatusRepository> {
+        self.repositories.job_processing_status_repository()
+    }
+}
+
+impl UseJobQueueCancellationRepository for AppModule {
+    fn job_queue_cancellation_repository(&self) -> Arc<dyn JobQueueCancellationRepository> {
+        self.job_queue_cancellation_repository()
+    }
+}
+
+impl UseJobProcessingStatusRepository for AppModule {
+    fn job_processing_status_repository(&self) -> Arc<dyn JobProcessingStatusRepository> {
+        self.job_processing_status_repository()
     }
 }
 

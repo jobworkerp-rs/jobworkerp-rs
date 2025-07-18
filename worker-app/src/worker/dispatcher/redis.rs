@@ -1,5 +1,4 @@
 use crate::worker::dispatcher::redis_run_after::RedisRunAfterJobDispatcher;
-use crate::worker::manager::{RunningJobManager, UseRunningJobManager};
 use crate::worker::result_processor::{ResultProcessorImpl, UseResultProcessor};
 use crate::worker::runner::map::{RunnerFactoryWithPoolMap, UseRunnerPoolMap};
 use crate::worker::runner::result::RunnerResultHandler;
@@ -60,7 +59,6 @@ pub trait RedisJobDispatcher:
     + UseRunnerApp
     + UseJobQueueConfig
     + UseIdGenerator
-    + UseRunningJobManager
 {
     fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
     where
@@ -339,7 +337,6 @@ pub struct RedisJobDispatcherImpl {
     pub runner_factory: Arc<RunnerFactory>,
     pub runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
     result_processor: Arc<ResultProcessorImpl>,
-    running_job_manager: Arc<RunningJobManager>,
     // Add JobQueueCancellationRepository for cancellation functionality
     job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository>,
 }
@@ -356,7 +353,6 @@ impl RedisJobDispatcherImpl {
         runner_factory: Arc<RunnerFactory>,
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
         result_processor: Arc<ResultProcessorImpl>,
-        running_job_manager: Arc<RunningJobManager>,
         redis_job_queue_repository: Arc<RedisJobQueueRepositoryImpl>,
     ) -> Self {
         // use redis only, use run after dispatcher for run after job
@@ -385,45 +381,26 @@ impl RedisJobDispatcherImpl {
             runner_factory,
             runner_pool_map,
             result_processor,
-            running_job_manager,
             job_queue_cancellation_repository,
         }
     }
 
     /// Start receiving cancellation notifications (called when Dispatcher starts)
     pub async fn start_cancellation_subscriber(&self) -> Result<()> {
-        let running_job_manager = self.running_job_manager.clone();
+        // Note: According to the cancellation improvement plan, job cancellation is now handled
+        // at the JobRunner level through CancelMonitoring trait and pubsub integration.
+        // The old RunningJobManager-based approach has been replaced.
 
-        // Use actual JobQueueCancellationRepository to receive cancellation notifications
+        // Set up basic pubsub subscription for cancellation notifications
+        // The actual cancellation logic is now handled by Runner's internal monitoring
         self.job_queue_cancellation_repository
             .subscribe_job_cancellation(Box::new(move |job_id| {
-                let running_job_manager = running_job_manager.clone();
                 Box::pin(async move {
                     tracing::info!(
-                        "Received cancellation request for job {} in Redis worker",
+                        "Received cancellation notification for job {} - handled by Runner's internal monitoring",
                         job_id.value
                     );
-
-                    // Execute cancellation process in RunningJobManager
-                    match running_job_manager.cancel_running_job(&job_id).await {
-                        Ok(cancelled) => {
-                            if cancelled {
-                                tracing::info!(
-                                    "Successfully cancelled running job {}",
-                                    job_id.value
-                                );
-                            } else {
-                                tracing::debug!(
-                                    "Job {} not found in running jobs (may have already completed)",
-                                    job_id.value
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("Error cancelling job {}: {:?}", job_id.value, e);
-                        }
-                    }
-
+                    // The actual cancellation is now handled at the Runner level through CancelMonitoring trait
                     Ok(())
                 })
             }))
@@ -514,12 +491,6 @@ impl UseResultProcessor for RedisJobDispatcherImpl {
     }
 }
 
-impl UseRunningJobManager for RedisJobDispatcherImpl {
-    fn running_job_manager(&self) -> &RunningJobManager {
-        &self.running_job_manager
-    }
-}
-
 #[async_trait]
 impl JobDispatcher for RedisJobDispatcherImpl {
     fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
@@ -530,18 +501,15 @@ impl JobDispatcher for RedisJobDispatcherImpl {
     }
 
     async fn start_cancellation_monitoring(&self) -> Result<()> {
-        // Start RunningJobManager cleanup task
-        self.running_job_manager().start_cleanup_task();
+        // Note: RunningJobManager has been removed according to the cancellation improvement plan.
+        // Cancellation monitoring is now handled at the JobRunner level through CancelMonitoring trait.
+        // This method remains for compatibility but does minimal work.
 
-        // Start receiving cancellation notifications
+        // Start receiving cancellation notifications (still needed for pubsub infrastructure)
         self.start_cancellation_subscriber().await?;
 
-        tracing::info!("Started cancellation monitoring for RedisJobDispatcher");
+        tracing::info!("Started cancellation monitoring for RedisJobDispatcher (simplified)");
         Ok(())
-    }
-
-    async fn get_running_job_count(&self) -> usize {
-        self.running_job_manager().get_running_job_count().await
     }
 }
 

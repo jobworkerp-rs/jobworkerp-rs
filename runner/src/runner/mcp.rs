@@ -427,6 +427,10 @@ impl RunnerTrait for McpServerRunnerImpl {
             tracing::warn!("No active MCP server operation to cancel");
         }
     }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 // MCP Runnerのテストはintegration_tests.rsに実装済み

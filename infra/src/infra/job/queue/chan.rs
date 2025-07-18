@@ -318,6 +318,7 @@ pub struct ChanJobQueueRepositoryImpl {
     pub shared_buffer: Arc<Mutex<HashMap<String, Vec<proto::jobworkerp::data::Job>>>>,
     pub job_queue_config: Arc<JobQueueConfig>,
     pub broadcast_cancel_chan_buf: BroadcastChan<Vec<u8>>,
+    pub cancelled_jobs: Arc<Mutex<HashSet<i64>>>,
 }
 impl UseChanBuffer for ChanJobQueueRepositoryImpl {
     type Item = Vec<u8>;
@@ -348,8 +349,23 @@ impl ChanJobQueueRepository for ChanJobQueueRepositoryImpl {}
 
 #[async_trait]
 impl JobQueueCancellationRepository for ChanJobQueueRepositoryImpl {
+    /// Check if a job is cancelled
+    /// Note: This is a placeholder implementation
+    /// In real implementation, we would need access to JobProcessingStatusRepository
+    async fn is_cancelled(&self, job_id: &JobId) -> Result<bool> {
+        // For now, check the in-memory cancelled_jobs set
+        let cancelled_jobs = self.cancelled_jobs.lock().await;
+        Ok(cancelled_jobs.contains(&job_id.value))
+    }
+
     /// Memory environment cancellation notification broadcast (using BroadcastChan)
     async fn broadcast_job_cancellation(&self, job_id: &JobId) -> Result<()> {
+        // Mark job as cancelled in memory
+        {
+            let mut cancelled_jobs = self.cancelled_jobs.lock().await;
+            cancelled_jobs.insert(job_id.value);
+        }
+
         let job_id_bytes = <Self as UseJobqueueAndCodec>::serialize_message(job_id);
 
         match self.broadcast_cancel_chan().send(job_id_bytes) {
@@ -469,6 +485,72 @@ impl JobQueueCancellationRepository for ChanJobQueueRepositoryImpl {
 
         Ok(())
     }
+
+    /// Subscribe to job cancellation notifications with timeout and cleanup support
+    ///
+    /// **BroadcastChan implementation (Memory environment)** also supports timeout functionality
+    async fn subscribe_job_cancellation_with_timeout(
+        &self,
+        callback: Box<dyn Fn(JobId) -> BoxFuture<'static, Result<()>> + Send + Sync + 'static>,
+        job_timeout_ms: u64,
+        mut cleanup_receiver: tokio::sync::oneshot::Receiver<()>,
+    ) -> Result<()> {
+        let broadcast_chan = self.broadcast_cancel_chan().clone();
+        let timeout_duration = std::time::Duration::from_millis(job_timeout_ms + 30_000);
+
+        tracing::debug!(
+            "Started memory cancellation subscription with {} ms timeout",
+            timeout_duration.as_millis()
+        );
+
+        tokio::spawn(async move {
+            use futures::StreamExt;
+            use tokio_stream::wrappers::BroadcastStream;
+
+            // Get initial receiver and stream
+            let receiver = broadcast_chan.receiver().await;
+            let mut stream = BroadcastStream::new(receiver);
+
+            loop {
+                tokio::select! {
+                    // Receive BroadcastChan messages (with timeout)
+                    msg_result = tokio::time::timeout(timeout_duration, stream.next()) => {
+                        match msg_result {
+                            Ok(Some(Ok(data))) => {
+                                if let Ok(job_id) = <ChanJobQueueRepositoryImpl as UseJobqueueAndCodec>::deserialize_message::<JobId>(&data) {
+                                    if let Err(e) = callback(job_id).await {
+                                        tracing::error!("Cancellation callback error: {:?}", e);
+                                    }
+                                }
+                            }
+                            Ok(Some(Err(e))) => {
+                                tracing::error!("Broadcast receive error: {:?}", e);
+                                break;
+                            }
+                            Ok(None) => {
+                                tracing::info!("Memory broadcast stream ended");
+                                break;
+                            }
+                            Err(_timeout) => {
+                                // Timeout for automatic termination
+                                tracing::info!("Memory cancellation subscription timed out after {} ms", timeout_duration.as_millis());
+                                break;
+                            }
+                        }
+                    }
+                    // Manual cleanup signal
+                    _ = &mut cleanup_receiver => {
+                        tracing::debug!("Received cleanup signal, terminating memory subscription");
+                        break;
+                    }
+                }
+            }
+
+            tracing::debug!("Memory cancellation subscription terminated");
+        });
+
+        Ok(())
+    }
 }
 impl ChanJobQueueRepositoryImpl {
     pub fn new(
@@ -481,6 +563,7 @@ impl ChanJobQueueRepositoryImpl {
             job_queue_config,
             shared_buffer: Arc::new(Mutex::new(HashMap::new())),
             broadcast_cancel_chan_buf: broadcast_chan_buf,
+            cancelled_jobs: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 }

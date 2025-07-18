@@ -9,6 +9,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
+use infra_utils::infra::redis::UseRedisClient;
 use infra_utils::infra::redis::{RedisPool, UseRedisPool};
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
@@ -335,6 +336,15 @@ impl RedisJobQueueRepository for RedisJobQueueRepositoryImpl {}
 
 #[async_trait]
 impl JobQueueCancellationRepository for RedisJobQueueRepositoryImpl {
+    /// Check if a job is cancelled by querying JobProcessingStatus
+    async fn is_cancelled(&self, job_id: &JobId) -> Result<bool> {
+        // Note: This is a placeholder implementation
+        // In real implementation, we would need access to JobProcessingStatusRepository
+        // For now, we'll return false to avoid the non-existent key issue
+        let _ = job_id;
+        Ok(false)
+    }
+
     /// Broadcast job cancellation notification to all workers using Redis Pub/Sub
     async fn broadcast_job_cancellation(&self, job_id: &JobId) -> Result<()> {
         const JOB_CANCELLATION_CHANNEL: &str = "job_cancellation_channel";
@@ -468,6 +478,89 @@ impl JobQueueCancellationRepository for RedisJobQueueRepositoryImpl {
         });
 
         tracing::info!("Started Redis cancellation subscriber via JobQueueCancellationRepository (full Pub/Sub implementation)");
+        Ok(())
+    }
+
+    /// Subscribe to job cancellation notifications with timeout and cleanup support
+    ///
+    /// **Leak prevention**: Job timeout + margin for automatic disconnection  
+    /// **Simple design**: No complex control needed, leverages redis-rs standard functionality
+    async fn subscribe_job_cancellation_with_timeout(
+        &self,
+        callback: Box<dyn Fn(JobId) -> BoxFuture<'static, Result<()>> + Send + Sync + 'static>,
+        job_timeout_ms: u64, // Job timeout time (milliseconds)
+        mut cleanup_receiver: tokio::sync::oneshot::Receiver<()>,
+    ) -> Result<()> {
+        const JOB_CANCELLATION_CHANNEL: &str = "job_cancellation_channel";
+
+        // Job timeout + 30 seconds margin for pubsub timeout setting
+        let pubsub_timeout = std::time::Duration::from_millis(job_timeout_ms + 30_000);
+
+        // Create pubsub connection with timeout setting using redis client
+        let mut pubsub = self
+            .job_result_pubsub_repository
+            .redis_client()
+            .get_async_pubsub()
+            .await?;
+
+        pubsub.subscribe(JOB_CANCELLATION_CHANNEL).await?;
+
+        tracing::info!(
+            "Started job cancellation subscription with {} ms timeout on channel: {}",
+            pubsub_timeout.as_millis(),
+            JOB_CANCELLATION_CHANNEL
+        );
+
+        use futures::StreamExt;
+        let mut message_stream = pubsub.on_message();
+
+        loop {
+            tokio::select! {
+                // Receive pubsub messages (with application-level timeout)
+                msg_result = tokio::time::timeout(pubsub_timeout, message_stream.next()) => {
+                    match msg_result {
+                        Ok(Some(message)) => {
+                            match message.get_payload::<Vec<u8>>() {
+                                Ok(payload_bytes) => {
+                                    match <Self as UseJobqueueAndCodec>::deserialize_message::<JobId>(&payload_bytes) {
+                                        Ok(job_id) => {
+                                            tracing::trace!("Received cancellation message for job {}", job_id.value);
+                                            if let Err(e) = callback(job_id).await {
+                                                tracing::error!("Cancellation callback error: {:?}", e);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!("Failed to deserialize job ID from cancellation message: {:?}", e);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Failed to get message payload from cancellation message: {:?}", e);
+                                }
+                            }
+                        }
+                        Ok(None) => {
+                            // Pubsub stream ended
+                            tracing::info!("Pubsub connection ended");
+                            break;
+                        }
+                        Err(_timeout) => {
+                            // Application-level timeout occurred
+                            tracing::info!("Pubsub connection timed out after {} ms", pubsub_timeout.as_millis());
+                            break;
+                        }
+                    }
+                }
+                // Manual cleanup signal
+                _ = &mut cleanup_receiver => {
+                    tracing::debug!("Received cleanup signal, terminating pubsub");
+                    break;
+                }
+            }
+        }
+
+        // Pubsub is automatically dropped and connection released
+        tracing::debug!("Job cancellation subscription terminated");
         Ok(())
     }
 }

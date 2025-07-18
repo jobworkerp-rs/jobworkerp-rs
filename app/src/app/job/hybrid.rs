@@ -338,12 +338,22 @@ impl HybridJobAppImpl {
                 false // Cancellation failed due to invalid state
             }
             None => {
-                // Status doesn't exist (already completed or non-existent job)
+                // Status doesn't exist - could be a streaming job or already completed
                 tracing::info!(
-                    "Job {} status not found, may be already completed",
+                    "Job {} status not found, attempting cancellation broadcast for streaming job",
                     id.value
                 );
-                false // Cancellation failed
+                // Try to broadcast cancellation anyway (for streaming jobs)
+                match self.broadcast_job_cancellation(id).await {
+                    Ok(_) => {
+                        tracing::info!("Successfully broadcasted cancellation for job {}", id.value);
+                        true // Cancellation broadcasted successfully
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to broadcast cancellation for job {}: {:?}", id.value, e);
+                        false // Cancellation failed
+                    }
+                }
             }
         };
 
