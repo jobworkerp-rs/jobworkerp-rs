@@ -346,11 +346,18 @@ impl HybridJobAppImpl {
                 // Try to broadcast cancellation anyway (for streaming jobs)
                 match self.broadcast_job_cancellation(id).await {
                     Ok(_) => {
-                        tracing::info!("Successfully broadcasted cancellation for job {}", id.value);
+                        tracing::info!(
+                            "Successfully broadcasted cancellation for job {}",
+                            id.value
+                        );
                         true // Cancellation broadcasted successfully
                     }
                     Err(e) => {
-                        tracing::warn!("Failed to broadcast cancellation for job {}: {:?}", id.value, e);
+                        tracing::warn!(
+                            "Failed to broadcast cancellation for job {}: {:?}",
+                            id.value,
+                            e
+                        );
                         false // Cancellation failed
                     }
                 }
