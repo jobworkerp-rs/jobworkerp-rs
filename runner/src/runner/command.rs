@@ -28,9 +28,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, LinesCodec};
 
-use super::cancellation::{
-    CancelMonitoring, CancelMonitoringCapable, CancellationSetupResult, RunnerCancellationManager,
-};
+use super::cancellation::{CancelMonitoring, CancelMonitoringCapable, RunnerCancellationManager};
 use super::common::cancellation_helper::CancellationHelper;
 use proto::jobworkerp::data::{JobData, JobId, JobResult};
 

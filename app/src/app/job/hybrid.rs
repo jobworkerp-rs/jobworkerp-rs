@@ -283,7 +283,6 @@ impl HybridJobAppImpl {
     async fn cancel_job_with_cleanup(&self, id: &JobId) -> Result<bool> {
         // 1. Check current job status
         let current_status = self
-            .redis_job_repository()
             .job_processing_status_repository()
             .find_status(id)
             .await?;
@@ -291,8 +290,7 @@ impl HybridJobAppImpl {
         let cancellation_result = match current_status {
             Some(JobProcessingStatus::Running) => {
                 // Running → Cancelling state change
-                self.redis_job_repository()
-                    .job_processing_status_repository()
+                self.job_processing_status_repository()
                     .upsert_status(id, &JobProcessingStatus::Cancelling)
                     .await?;
 
@@ -309,8 +307,7 @@ impl HybridJobAppImpl {
                 // Pending → Cancelling state change (will be cancelled when Worker picks it up)
                 // XXX: There's a possibility the status changes right after current_status is retrieved,
                 // in which case the cancellation may be ineffective, but this is currently accepted
-                self.redis_job_repository()
-                    .job_processing_status_repository()
+                self.job_processing_status_repository()
                     .upsert_status(id, &JobProcessingStatus::Cancelling)
                     .await?;
                 // Pending jobs are handled by state change only (detected by Worker side)
@@ -338,29 +335,12 @@ impl HybridJobAppImpl {
                 false // Cancellation failed due to invalid state
             }
             None => {
-                // Status doesn't exist - could be a streaming job or already completed
+                // Status doesn't exist - job likely doesn't exist
                 tracing::info!(
-                    "Job {} status not found, attempting cancellation broadcast for streaming job",
+                    "Job {} status not found, job likely doesn't exist",
                     id.value
                 );
-                // Try to broadcast cancellation anyway (for streaming jobs)
-                match self.broadcast_job_cancellation(id).await {
-                    Ok(_) => {
-                        tracing::info!(
-                            "Successfully broadcasted cancellation for job {}",
-                            id.value
-                        );
-                        true // Cancellation broadcasted successfully
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "Failed to broadcast cancellation for job {}: {:?}",
-                            id.value,
-                            e
-                        );
-                        false // Cancellation failed
-                    }
-                }
+                false // Cannot cancel non-existent job
             }
         };
 
@@ -977,10 +957,7 @@ impl UseRedisRepositoryModule for HybridJobAppImpl {
 }
 impl UseJobProcessingStatusRepository for HybridJobAppImpl {
     fn job_processing_status_repository(&self) -> Arc<dyn JobProcessingStatusRepository> {
-        self.repositories
-            .redis_job_repository()
-            .job_processing_status_repository()
-            .clone()
+        self.repositories.job_processing_status_repository()
     }
 }
 impl UseIdGenerator for HybridJobAppImpl {
