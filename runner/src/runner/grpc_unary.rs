@@ -470,6 +470,46 @@ impl RunnerTrait for GrpcUnaryRunner {
     }
 }
 
+// CancelMonitoring implementation for GrpcUnaryRunner
+#[async_trait]
+impl super::cancellation::CancelMonitoring for GrpcUnaryRunner {
+    /// Initialize cancellation monitoring for specific job
+    async fn setup_cancellation_monitoring(
+        &mut self,
+        job_id: proto::jobworkerp::data::JobId,
+        _job_data: &proto::jobworkerp::data::JobData,
+    ) -> Result<Option<proto::jobworkerp::data::JobResult>> {
+        tracing::debug!(
+            "Setting up cancellation monitoring for GrpcUnaryRunner job {}",
+            job_id.value
+        );
+
+        // For GrpcUnaryRunner, we use the same pattern as CommandRunner
+        // The actual cancellation monitoring will be handled by the CancellationHelper
+        // gRPC requests will be cancelled automatically when the token is cancelled
+
+        tracing::trace!("Cancellation monitoring started for job {}", job_id.value);
+        Ok(None) // Continue with normal execution
+    }
+
+    /// Cleanup cancellation monitoring
+    async fn cleanup_cancellation_monitoring(&mut self) -> Result<()> {
+        tracing::trace!("Cleaning up cancellation monitoring for GrpcUnaryRunner");
+
+        // Clear the cancellation helper
+        self.cancellation_helper.clear_token();
+
+        Ok(())
+    }
+}
+
+// CancelMonitoringCapable implementation for GrpcUnaryRunner
+impl super::cancellation::CancelMonitoringCapable for GrpcUnaryRunner {
+    fn as_cancel_monitoring(&mut self) -> &mut dyn super::cancellation::CancelMonitoring {
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

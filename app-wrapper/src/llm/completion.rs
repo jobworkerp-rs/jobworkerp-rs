@@ -303,3 +303,45 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         self
     }
 }
+
+// CancelMonitoring implementation for LLMCompletionRunnerImpl
+#[async_trait]
+impl jobworkerp_runner::runner::cancellation::CancelMonitoring for LLMCompletionRunnerImpl {
+    /// Initialize cancellation monitoring for specific job
+    async fn setup_cancellation_monitoring(
+        &mut self,
+        job_id: proto::jobworkerp::data::JobId,
+        _job_data: &proto::jobworkerp::data::JobData,
+    ) -> anyhow::Result<Option<proto::jobworkerp::data::JobResult>> {
+        tracing::debug!(
+            "Setting up cancellation monitoring for LLMCompletionRunnerImpl job {}",
+            job_id.value
+        );
+
+        // For LLMCompletionRunnerImpl, we use the same pattern as CommandRunner
+        // The actual cancellation monitoring will be handled by the CancellationHelper
+        // LLM API requests will be cancelled automatically when the token is cancelled
+
+        tracing::trace!("Cancellation monitoring started for job {}", job_id.value);
+        Ok(None) // Continue with normal execution
+    }
+
+    /// Cleanup cancellation monitoring
+    async fn cleanup_cancellation_monitoring(&mut self) -> anyhow::Result<()> {
+        tracing::trace!("Cleaning up cancellation monitoring for LLMCompletionRunnerImpl");
+
+        // Clear the cancellation helper
+        self.cancellation_helper.clear_token();
+
+        Ok(())
+    }
+}
+
+// CancelMonitoringCapable implementation for LLMCompletionRunnerImpl
+impl jobworkerp_runner::runner::cancellation::CancelMonitoringCapable for LLMCompletionRunnerImpl {
+    fn as_cancel_monitoring(
+        &mut self,
+    ) -> &mut dyn jobworkerp_runner::runner::cancellation::CancelMonitoring {
+        self
+    }
+}

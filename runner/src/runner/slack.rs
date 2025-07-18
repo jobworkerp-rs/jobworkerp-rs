@@ -224,6 +224,46 @@ impl RunnerTrait for SlackPostMessageRunner {
     }
 }
 
+// CancelMonitoring implementation for SlackPostMessageRunner
+#[async_trait]
+impl super::cancellation::CancelMonitoring for SlackPostMessageRunner {
+    /// Initialize cancellation monitoring for specific job
+    async fn setup_cancellation_monitoring(
+        &mut self,
+        job_id: proto::jobworkerp::data::JobId,
+        _job_data: &proto::jobworkerp::data::JobData,
+    ) -> Result<Option<proto::jobworkerp::data::JobResult>> {
+        tracing::debug!(
+            "Setting up cancellation monitoring for SlackPostMessageRunner job {}",
+            job_id.value
+        );
+
+        // For SlackPostMessageRunner, we use the same pattern as CommandRunner
+        // The actual cancellation monitoring will be handled by the CancellationHelper
+        // Slack API requests will be cancelled automatically when the token is cancelled
+
+        tracing::trace!("Cancellation monitoring started for job {}", job_id.value);
+        Ok(None) // Continue with normal execution
+    }
+
+    /// Cleanup cancellation monitoring
+    async fn cleanup_cancellation_monitoring(&mut self) -> Result<()> {
+        tracing::trace!("Cleaning up cancellation monitoring for SlackPostMessageRunner");
+
+        // Clear the cancellation helper
+        self.cancellation_helper.clear_token();
+
+        Ok(())
+    }
+}
+
+// CancelMonitoringCapable implementation for SlackPostMessageRunner
+impl super::cancellation::CancelMonitoringCapable for SlackPostMessageRunner {
+    fn as_cancel_monitoring(&mut self) -> &mut dyn super::cancellation::CancelMonitoring {
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -464,6 +464,54 @@ impl RunnerTrait for PythonCommandRunner {
     }
 }
 
+// CancelMonitoring implementation for PythonCommandRunner
+#[async_trait]
+impl super::cancellation::CancelMonitoring for PythonCommandRunner {
+    /// Initialize cancellation monitoring for specific job
+    async fn setup_cancellation_monitoring(
+        &mut self,
+        job_id: proto::jobworkerp::data::JobId,
+        _job_data: &proto::jobworkerp::data::JobData,
+    ) -> Result<Option<proto::jobworkerp::data::JobResult>> {
+        tracing::debug!(
+            "Setting up cancellation monitoring for PythonCommandRunner job {}",
+            job_id.value
+        );
+
+        // For PythonCommandRunner, we use the same pattern as CommandRunner
+        // The actual cancellation monitoring will be handled by the CancellationHelper
+        // and the process management is already implemented in cancel() method
+
+        tracing::trace!("Cancellation monitoring started for job {}", job_id.value);
+        Ok(None) // Continue with normal execution
+    }
+
+    /// Cleanup cancellation monitoring
+    async fn cleanup_cancellation_monitoring(&mut self) -> Result<()> {
+        tracing::trace!("Cleaning up cancellation monitoring for PythonCommandRunner");
+
+        // Clear the cancellation helper
+        self.cancellation_helper.clear_token();
+
+        // Reset process cancel flag
+        let mut cancel_flag = self.process_cancel.lock().await;
+        *cancel_flag = false;
+
+        // Clear current process ID
+        let mut process_id = self.current_process_id.lock().await;
+        *process_id = None;
+
+        Ok(())
+    }
+}
+
+// CancelMonitoringCapable implementation (type-safe integration trait)
+impl super::cancellation::CancelMonitoringCapable for PythonCommandRunner {
+    fn as_cancel_monitoring(&mut self) -> &mut dyn super::cancellation::CancelMonitoring {
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

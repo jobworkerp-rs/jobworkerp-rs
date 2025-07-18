@@ -281,3 +281,45 @@ impl RunnerTrait for LLMChatRunnerImpl {
         self
     }
 }
+
+// CancelMonitoring implementation for LLMChatRunnerImpl
+#[async_trait]
+impl jobworkerp_runner::runner::cancellation::CancelMonitoring for LLMChatRunnerImpl {
+    /// Initialize cancellation monitoring for specific job
+    async fn setup_cancellation_monitoring(
+        &mut self,
+        job_id: proto::jobworkerp::data::JobId,
+        _job_data: &proto::jobworkerp::data::JobData,
+    ) -> anyhow::Result<Option<proto::jobworkerp::data::JobResult>> {
+        tracing::debug!(
+            "Setting up cancellation monitoring for LLMChatRunnerImpl job {}",
+            job_id.value
+        );
+
+        // For LLMChatRunnerImpl, we use the same pattern as CommandRunner
+        // The actual cancellation monitoring will be handled by the CancellationHelper
+        // LLM API requests will be cancelled automatically when the token is cancelled
+
+        tracing::trace!("Cancellation monitoring started for job {}", job_id.value);
+        Ok(None) // Continue with normal execution
+    }
+
+    /// Cleanup cancellation monitoring
+    async fn cleanup_cancellation_monitoring(&mut self) -> anyhow::Result<()> {
+        tracing::trace!("Cleaning up cancellation monitoring for LLMChatRunnerImpl");
+
+        // Clear the cancellation helper
+        self.cancellation_helper.clear_token();
+
+        Ok(())
+    }
+}
+
+// CancelMonitoringCapable implementation for LLMChatRunnerImpl
+impl jobworkerp_runner::runner::cancellation::CancelMonitoringCapable for LLMChatRunnerImpl {
+    fn as_cancel_monitoring(
+        &mut self,
+    ) -> &mut dyn jobworkerp_runner::runner::cancellation::CancelMonitoring {
+        self
+    }
+}

@@ -1238,3 +1238,89 @@ async fn test_docker_runner_stream_mid_execution_cancellation() {
 
     eprintln!("✓ Docker runner stream mid-execution cancellation test completed successfully");
 }
+
+// CancelMonitoring implementation for DockerExecRunner
+#[async_trait]
+impl super::cancellation::CancelMonitoring for DockerExecRunner {
+    /// Initialize cancellation monitoring for specific job
+    async fn setup_cancellation_monitoring(
+        &mut self,
+        job_id: proto::jobworkerp::data::JobId,
+        _job_data: &proto::jobworkerp::data::JobData,
+    ) -> Result<Option<proto::jobworkerp::data::JobResult>> {
+        tracing::debug!(
+            "Setting up cancellation monitoring for DockerExecRunner job {}",
+            job_id.value
+        );
+
+        // For DockerExecRunner, we use the same pattern as CommandRunner
+        // The actual cancellation monitoring will be handled by the CancellationHelper
+        // and the container management is already implemented in cancel() method
+
+        tracing::trace!("Cancellation monitoring started for job {}", job_id.value);
+        Ok(None) // Continue with normal execution
+    }
+
+    /// Cleanup cancellation monitoring
+    async fn cleanup_cancellation_monitoring(&mut self) -> Result<()> {
+        tracing::trace!("Cleaning up cancellation monitoring for DockerExecRunner");
+
+        // Clear the cancellation helper
+        self.cancellation_helper.clear_token();
+
+        // Clear instant_id if needed (though it might be used for container identification)
+        // self.instant_id = String::new(); // Note: Keeping this as it might be needed for container lifecycle
+
+        Ok(())
+    }
+}
+
+// CancelMonitoringCapable implementation for DockerExecRunner
+impl super::cancellation::CancelMonitoringCapable for DockerExecRunner {
+    fn as_cancel_monitoring(&mut self) -> &mut dyn super::cancellation::CancelMonitoring {
+        self
+    }
+}
+
+// CancelMonitoring implementation for DockerRunner
+#[async_trait]
+impl super::cancellation::CancelMonitoring for DockerRunner {
+    /// Initialize cancellation monitoring for specific job
+    async fn setup_cancellation_monitoring(
+        &mut self,
+        job_id: proto::jobworkerp::data::JobId,
+        _job_data: &proto::jobworkerp::data::JobData,
+    ) -> Result<Option<proto::jobworkerp::data::JobResult>> {
+        tracing::debug!(
+            "Setting up cancellation monitoring for DockerRunner job {}",
+            job_id.value
+        );
+
+        // For DockerRunner, we use the same pattern as CommandRunner
+        // The actual cancellation monitoring will be handled by the CancellationHelper
+        // and the container management is already implemented in cancel() method
+
+        tracing::trace!("Cancellation monitoring started for job {}", job_id.value);
+        Ok(None) // Continue with normal execution
+    }
+
+    /// Cleanup cancellation monitoring
+    async fn cleanup_cancellation_monitoring(&mut self) -> Result<()> {
+        tracing::trace!("Cleaning up cancellation monitoring for DockerRunner");
+
+        // Clear the cancellation helper
+        self.cancellation_helper.clear_token();
+
+        // Clear current container ID if needed
+        self.current_container_id = None;
+
+        Ok(())
+    }
+}
+
+// CancelMonitoringCapable implementation for DockerRunner
+impl super::cancellation::CancelMonitoringCapable for DockerRunner {
+    fn as_cancel_monitoring(&mut self) -> &mut dyn super::cancellation::CancelMonitoring {
+        self
+    }
+}
