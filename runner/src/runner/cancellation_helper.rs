@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 /// キャンセル監視の共通実装（Manager必須版）
 /// 3つのRunnerで重複していたロジックを統一
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct CancelMonitoringHelper {
     // Manager必須 - Option削除で型安全性向上
     cancellation_manager: Arc<Mutex<Box<dyn RunnerCancellationManager>>>,
