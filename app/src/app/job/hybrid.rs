@@ -310,11 +310,14 @@ impl HybridJobAppImpl {
                 self.job_processing_status_repository()
                     .upsert_status(id, &JobProcessingStatus::Cancelling)
                     .await?;
-                
+
                 // Broadcast cancellation to handle cases where job is actually running but status hasn't been updated yet
                 self.broadcast_job_cancellation(id).await?;
-                
-                tracing::info!("Pending job {} marked as cancelling with broadcast", id.value);
+
+                tracing::info!(
+                    "Pending job {} marked as cancelling with broadcast",
+                    id.value
+                );
                 true // Will be properly processed through ResultProcessor on Worker side
             }
             Some(JobProcessingStatus::Cancelling) => {
@@ -874,6 +877,11 @@ impl JobApp for HybridJobAppImpl {
             .take(*limit.unwrap_or(&100) as usize)
             .collect();
 
+        tracing::debug!(
+            "find_list_with_processing_status: found {} job IDs for status {:?}",
+            target_job_ids.len(),
+            status
+        );
         // 3. Get corresponding job data
         let mut target_jobs = Vec::new();
         for job_id in target_job_ids {

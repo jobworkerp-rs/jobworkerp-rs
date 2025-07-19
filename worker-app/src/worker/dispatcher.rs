@@ -53,9 +53,13 @@ pub trait JobDispatcher:
             .job_processing_status_repository()
             .find_status(job_id)
             .await?;
-        
-        tracing::debug!("check_cancellation_status: job {} has status {:?}", job_id.value, status);
-        
+
+        tracing::debug!(
+            "check_cancellation_status: job {} has status {:?}",
+            job_id.value,
+            status
+        );
+
         match status {
             Some(JobProcessingStatus::Pending) => {
                 // Normal state: continue normal execution

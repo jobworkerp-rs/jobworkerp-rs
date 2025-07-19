@@ -280,12 +280,12 @@ impl RunnerCancellationManagerTrait for RunnerCancellationManager {
     async fn get_token(&self) -> tokio_util::sync::CancellationToken {
         self.cancellation_token
             .clone()
-            .unwrap_or_else(|| CancellationToken::new())
+            .unwrap_or_default()
     }
 
     fn is_cancelled(&self) -> bool {
         self.cancellation_token
             .as_ref()
-            .map_or(false, |t| t.is_cancelled())
+            .is_some_and(|t| t.is_cancelled())
     }
 }
