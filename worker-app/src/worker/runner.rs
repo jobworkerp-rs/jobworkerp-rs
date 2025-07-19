@@ -8,7 +8,7 @@ mod integration_tests;
 
 use self::map::UseRunnerPoolMap;
 use self::result::RunnerResultHandler;
-use self::stream_guard::StreamWithPoolGuard;
+use self::stream_guard::{StreamWithCancelGuard, StreamWithPoolGuard};
 use anyhow::anyhow;
 use anyhow::Result;
 use app_wrapper::runner::UseRunnerFactory;
@@ -72,21 +72,23 @@ pub trait JobRunner:
             match p {
                 Ok(Some(runner)) => {
                     // ストリーミング判定のためjob.dataを先に確認
-                    let is_streaming = job.data.as_ref().map_or(false, |data| data.request_streaming);
-                    
+                    let is_streaming = job
+                        .data
+                        .as_ref()
+                        .is_some_and(|data| data.request_streaming);
+
                     if is_streaming {
                         // ストリーミング時：Pool Objectを後で返却するため保持
                         let mut r = runner.lock().await;
                         tracing::debug!("static runner found (streaming): {:?}", r.name());
-                        let (job_result, stream) = self.run_job_inner(worker_data, job, &mut r).await;
+                        let (job_result, stream) =
+                            self.run_job_inner(worker_data, job, &mut r).await;
                         drop(r); // unlock
-                        
-                        let final_stream = if let Some(stream) = stream {
-                            Some(Box::pin(StreamWithPoolGuard::new(stream, runner)) as BoxStream<'static, _>)
-                        } else {
-                            None
-                        };
-                        
+
+                        let final_stream = stream.map(|stream| {
+                            Box::pin(StreamWithPoolGuard::new(stream, runner)) as BoxStream<'static, _>
+                        });
+
                         (job_result, final_stream)
                     } else {
                         // 非ストリーミング時：既存通り（即座にPool返却）
@@ -108,7 +110,45 @@ pub trait JobRunner:
             match rres {
                 Ok(mut runner) => {
                     tracing::debug!("non-static runner found: {:?}", runner.name());
-                    self.run_job_inner(worker_data, job, &mut runner).await
+
+                    // ストリーミング判定
+                    let is_streaming = job
+                        .data
+                        .as_ref()
+                        .is_some_and(|data| data.request_streaming);
+
+                    if is_streaming {
+                        // ストリーミング時：CommandRunnerImplからCancelHelperをclone取得
+                        use jobworkerp_runner::runner::command::CommandRunnerImpl;
+                        let cancel_helper = if let Some(command_runner) =
+                            runner.as_any_mut().downcast_mut::<CommandRunnerImpl>()
+                        {
+                            command_runner.clone_cancel_helper_for_stream()
+                        } else {
+                            None
+                        };
+
+                        let mut runner = runner;
+                        let (job_result, stream) =
+                            self.run_job_inner(worker_data, job, &mut runner).await;
+
+                        let final_stream = if let Some(stream) = stream {
+                            if let Some(cancel_helper) = cancel_helper {
+                                Some(Box::pin(StreamWithCancelGuard::new(stream, cancel_helper))
+                                    as BoxStream<'static, _>)
+                            } else {
+                                Some(stream)
+                            }
+                        } else {
+                            None
+                        };
+
+                        (job_result, final_stream)
+                    } else {
+                        // 非ストリーミング時：既存通り
+                        let mut runner = runner;
+                        self.run_job_inner(worker_data, job, &mut runner).await
+                    }
                 }
                 Err(e) => (self.handle_error_option(worker_data, job, Some(e)), None),
             }

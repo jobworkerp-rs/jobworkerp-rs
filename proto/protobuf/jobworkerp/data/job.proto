@@ -22,16 +22,16 @@ message JobData {
   optional string uniq_key = 3;
 
   // # Enqueue Time
-  // Timestamp when the job was registered in the queue (Unix time in seconds)
+  // Timestamp when the job was registered in the queue (Unix time in milliseconds)
   int64 enqueue_time = 4;
 
   // # Grabbed Until Time
   // Timestamp until which the job is locked for processing (Unix time in
-  // seconds) This should not be specified manually - it's set by the system
+  // milliseconds) This should not be specified manually - it's set by the system
   optional int64 grabbed_until_time = 5;
 
   // # Run After Time
-  // Timestamp when the job should be executed (Unix time in seconds)
+  // Timestamp when the job should be executed (Unix time in milliseconds)
   // Jobs will not be processed until this time is reached
   int64 run_after_time = 6;
 
@@ -46,7 +46,7 @@ message JobData {
   jobworkerp.data.Priority priority = 8;
 
   // # Timeout
-  // Maximum execution time for the job in seconds
+  // Maximum execution time for the job in milliseconds
   // Job will be terminated if it exceeds this duration
   uint64 timeout = 9;
 
