@@ -18,16 +18,16 @@ use futures::stream::BoxStream;
 use infra::infra::{
     job::{
         queue::redis::RedisJobQueueRepository,
-        redis::{schedule::RedisJobScheduleRepository, UseRedisJobRepository},
+        redis::{schedule::RedisJobScheduleRepository, RedisJobRepository, UseRedisJobRepository},
         status::UseJobProcessingStatusRepository,
     },
     UseJobQueueConfig,
 };
 use proto::jobworkerp::data::{
-    Job, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, ResponseType,
-    ResultOutputItem, WorkerData, WorkerId,
+    Job, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, QueueType,
+    ResponseType, ResultOutputItem, WorkerData, WorkerId,
 };
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{collections::HashMap, fmt, sync::Arc, time::Duration};
 
 pub trait JobCacheKeys {
     // cache keys
@@ -184,6 +184,23 @@ where
         Self: Send + 'static,
     {
         let job_id = job.id.unwrap();
+
+        // For QueueType::Normal jobs, store with individual TTL for visibility during execution
+        if worker.queue_type == QueueType::Normal as i32 {
+            if let Some(job_data) = &job.data {
+                // TTL = job timeout + 5 minutes safety margin (milliseconds to duration)
+                let ttl = Duration::from_millis(job_data.timeout + 300_000);
+                self.redis_job_repository()
+                    .create_with_expire(&job_id, job_data, ttl)
+                    .await?;
+                tracing::debug!(
+                    "Created job {} with TTL {:?} for running job visibility",
+                    job_id.value,
+                    ttl
+                );
+            }
+        }
+
         // job in the future(need to wait) (use for redis only mode in future)
         let res = match if self.is_run_after_job(job) {
             // schedule

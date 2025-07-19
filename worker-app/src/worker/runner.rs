@@ -72,10 +72,7 @@ pub trait JobRunner:
             match p {
                 Ok(Some(runner)) => {
                     // ストリーミング判定のためjob.dataを先に確認
-                    let is_streaming = job
-                        .data
-                        .as_ref()
-                        .is_some_and(|data| data.request_streaming);
+                    let is_streaming = job.data.as_ref().is_some_and(|data| data.request_streaming);
 
                     if is_streaming {
                         // ストリーミング時：Pool Objectを後で返却するため保持
@@ -86,7 +83,8 @@ pub trait JobRunner:
                         drop(r); // unlock
 
                         let final_stream = stream.map(|stream| {
-                            Box::pin(StreamWithPoolGuard::new(stream, runner)) as BoxStream<'static, _>
+                            Box::pin(StreamWithPoolGuard::new(stream, runner))
+                                as BoxStream<'static, _>
                         });
 
                         (job_result, final_stream)
@@ -112,10 +110,7 @@ pub trait JobRunner:
                     tracing::debug!("non-static runner found: {:?}", runner.name());
 
                     // ストリーミング判定
-                    let is_streaming = job
-                        .data
-                        .as_ref()
-                        .is_some_and(|data| data.request_streaming);
+                    let is_streaming = job.data.as_ref().is_some_and(|data| data.request_streaming);
 
                     if is_streaming {
                         // ストリーミング時：CommandRunnerImplからCancelHelperをclone取得
