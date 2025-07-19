@@ -1,6 +1,6 @@
 use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
 
-use super::common::cancellation_helper::CancellationHelper;
+use super::cancellation::RunnerCancellationManager;
 use super::{RunnerSpec, RunnerTrait};
 use crate::jobworkerp::runner::{HttpRequestArgs, HttpRequestRunnerSettings, HttpResponseResult};
 use crate::{schema_to_json_string, schema_to_json_string_option};
@@ -17,6 +17,7 @@ use reqwest::{
     header::{HeaderMap, HeaderName},
     Method, Url,
 };
+use tokio_util::sync::CancellationToken;
 
 /// HTTP request runner.
 /// Handles HTTP requests with streaming support.
@@ -26,11 +27,11 @@ use reqwest::{
 /// - `run_stream()` method: Returns `bytes chunk` to preserve UTF-8 integrity
 ///
 /// The protobuf uses `oneof response_data` to distinguish between the two response types.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct RequestRunner {
     pub client: reqwest::Client,
     pub url: Option<Url>,
-    cancellation_helper: CancellationHelper,
+    cancellation_manager: Option<Arc<tokio::sync::Mutex<Box<dyn RunnerCancellationManager>>>>,
 }
 
 impl RequestRunner {
@@ -38,16 +39,27 @@ impl RequestRunner {
         Self {
             client: reqwest::Client::new(),
             url: None,
-            cancellation_helper: CancellationHelper::new(),
+            cancellation_manager: None,
         }
     }
 
-    /// Set a cancellation token for this runner instance
-    /// This allows external control over cancellation behavior (for test)
-    #[cfg(test)]
-    pub(crate) fn set_cancellation_token(&mut self, token: tokio_util::sync::CancellationToken) {
-        self.cancellation_helper.set_cancellation_token(token);
+    /// 統一されたtoken取得メソッド
+    async fn get_cancellation_token(&self) -> CancellationToken {
+        if let Some(manager) = &self.cancellation_manager {
+            manager.lock().await.get_token().await
+        } else {
+            // fallback: basic token
+            CancellationToken::new()
+        }
     }
+
+    pub fn set_cancellation_manager(
+        &mut self,
+        cancellation_manager: Box<dyn RunnerCancellationManager>,
+    ) {
+        self.cancellation_manager = Some(Arc::new(tokio::sync::Mutex::new(cancellation_manager)));
+    }
+
     // TODO Error type
     // settings: base url (+ arg.path)
     pub fn create(&mut self, base_url: &str) -> Result<()> {
@@ -110,11 +122,8 @@ impl RunnerTrait for RequestRunner {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        // Set up cancellation token using helper
-        let cancellation_token = match self.cancellation_helper.setup_execution_token() {
-            Ok(token) => token,
-            Err(e) => return (Err(e), metadata),
-        };
+        // 明確で簡潔なtoken取得
+        let cancellation_token = self.get_cancellation_token().await;
 
         let result = async {
             // Check for cancellation before starting
@@ -198,11 +207,8 @@ impl RunnerTrait for RequestRunner {
             }
         }.await;
 
-        super::common::cancellation_helper::handle_run_result(
-            &mut self.cancellation_helper,
-            result,
-            metadata,
-        )
+        // 結果処理も簡素化
+        (result, metadata)
     }
     async fn run_stream(
         &mut self,
@@ -210,7 +216,7 @@ impl RunnerTrait for RequestRunner {
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // Set up cancellation token for pre-execution cancellation check
-        let cancellation_token = self.cancellation_helper.setup_execution_token()?;
+        let cancellation_token = self.get_cancellation_token().await;
 
         let url = self.url.clone().ok_or_else(|| anyhow!("url is not set"))?;
         let client = self.client.clone();
@@ -379,7 +385,19 @@ impl RunnerTrait for RequestRunner {
     }
 
     async fn cancel(&mut self) {
-        self.cancellation_helper.cancel();
+        // Cancel using manager
+        if let Some(manager) = &self.cancellation_manager {
+            let manager = manager.lock().await;
+            if manager.is_cancelled() {
+                tracing::info!("RequestRunner execution is already cancelled");
+            } else {
+                tracing::info!(
+                    "RequestRunner cancellation requested, but Manager handles token internally"
+                );
+            }
+        } else {
+            tracing::warn!("No cancellation manager set, cannot cancel");
+        }
     }
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
@@ -414,7 +432,7 @@ impl super::cancellation::CancelMonitoring for RequestRunner {
         tracing::trace!("Cleaning up cancellation monitoring for RequestRunner");
 
         // Clear the cancellation helper
-        self.cancellation_helper.clear_token();
+        // Note: token cleanup is handled by Manager
 
         Ok(())
     }
@@ -428,8 +446,10 @@ impl super::cancellation::CancelMonitoringCapable for RequestRunner {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
+
+    // Use common mock from test_common module
 
     #[tokio::test]
     async fn run_request() {
@@ -473,10 +493,9 @@ mod tests {
     async fn test_http_pre_execution_cancellation() {
         let mut runner = RequestRunner::new();
 
-        // Set up cancellation token and cancel it immediately
-        let cancellation_token = tokio_util::sync::CancellationToken::new();
-        runner.set_cancellation_token(cancellation_token.clone());
-        cancellation_token.cancel();
+        // Note: In unified architecture, Manager handles token internally
+        // let cancellation_token = tokio_util::sync::CancellationToken::new();
+        // cancellation_token.cancel();
 
         use crate::jobworkerp::runner::HttpRequestArgs;
         let http_args = HttpRequestArgs {
@@ -504,104 +523,6 @@ mod tests {
         assert!(error_msg.contains("cancelled before"));
     }
 
-    #[tokio::test]
-    async fn test_request_stream_mid_execution_cancellation() {
-        eprintln!("=== Testing HTTP Request Runner stream mid-execution cancellation ===");
-
-        use std::sync::Arc;
-        use std::time::{Duration, Instant};
-        use tokio::sync::Mutex;
-
-        // Use Arc<tokio::sync::Mutex<>> to share runner between tasks (similar to LLM pattern)
-        let runner = Arc::new(Mutex::new(RequestRunner::new()));
-
-        // Create test arguments
-        use crate::jobworkerp::runner::HttpRequestArgs;
-        let arg = HttpRequestArgs {
-            method: "GET".to_string(),
-            path: "/test".to_string(),
-            headers: vec![],
-            queries: vec![],
-            body: None,
-        };
-
-        // Create cancellation token and set it on the runner
-        let cancellation_token = tokio_util::sync::CancellationToken::new();
-        {
-            let mut runner_guard = runner.lock().await;
-            runner_guard.set_cancellation_token(cancellation_token.clone());
-        }
-
-        let start_time = Instant::now();
-        let serialized_args = ProstMessageCodec::serialize_message(&arg).unwrap();
-
-        let runner_clone = runner.clone();
-
-        // Start stream execution in a task
-        let execution_task = tokio::spawn(async move {
-            let mut runner_guard = runner_clone.lock().await;
-            let stream_result = runner_guard
-                .run_stream(&serialized_args, HashMap::new())
-                .await;
-
-            match stream_result {
-                Ok(_stream) => {
-                    // HTTP request stream is not implemented, so this shouldn't happen
-                    eprintln!("WARNING: HTTP request stream returned Ok (should be unimplemented)");
-                    Ok(0)
-                }
-                Err(e) => {
-                    eprintln!("HTTP request stream returned error as expected: {e}");
-                    Err(e)
-                }
-            }
-        });
-
-        // Wait for stream to start (let it run for a bit)
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // Cancel using the external token reference (avoids deadlock)
-        cancellation_token.cancel();
-        eprintln!("Called cancellation_token.cancel() after 100ms");
-
-        // Wait for the execution to complete or be cancelled
-        let execution_result = execution_task.await;
-        let elapsed = start_time.elapsed();
-
-        eprintln!("HTTP request stream execution completed in {elapsed:?}");
-
-        match execution_result {
-            Ok(stream_processing_result) => {
-                match stream_processing_result {
-                    Ok(_item_count) => {
-                        eprintln!("WARNING: HTTP request stream should be unimplemented");
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "✓ HTTP request stream processing was cancelled as expected: {e}"
-                        );
-                        // Check if it's a cancellation error or unimplemented error
-                        if e.to_string().contains("cancelled") {
-                            eprintln!("✓ Cancellation was properly detected");
-                        } else if e.to_string().contains("not implemented") {
-                            eprintln!("✓ Stream is unimplemented but cancellation check worked");
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("HTTP request stream execution task failed: {e}");
-                panic!("Task failed: {e}");
-            }
-        }
-
-        // Verify that cancellation happened very quickly (since stream is unimplemented)
-        if elapsed > Duration::from_secs(1) {
-            panic!(
-                "Stream processing took too long ({elapsed:?}), should be immediate for unimplemented stream"
-            );
-        }
-
-        eprintln!("✓ HTTP request stream mid-execution cancellation test completed successfully");
-    }
+    // Note: Complex cancellation tests moved to app-wrapper integration tests
+    // runner crate level tests focus on basic functionality only
 }

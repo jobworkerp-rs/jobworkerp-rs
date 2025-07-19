@@ -58,6 +58,9 @@ pub mod request;
 pub mod slack;
 pub mod workflow;
 
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_common;
+
 /// Macro to convert a Rust type to a JSON schema string
 #[macro_export]
 macro_rules! schema_to_json_string {

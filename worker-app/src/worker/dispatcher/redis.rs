@@ -59,6 +59,7 @@ pub trait RedisJobDispatcher:
     + UseRunnerApp
     + UseJobQueueConfig
     + UseIdGenerator
+    + JobDispatcher
 {
     fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
     where
@@ -255,6 +256,16 @@ pub trait RedisJobDispatcher:
                 &sid
             )))
         }?;
+        // Check JobProcessingStatus before job execution (detect cancellation request)
+        if let Some(cancelled_result) = self
+            .check_cancellation_status(&jid, &wid, &wdat, meta.clone(), &jdat)
+            .await?
+        {
+            return self
+                .result_processor()
+                .process_result(cancelled_result, None, wdat)
+                .await;
+        }
 
         if wdat.response_type != ResponseType::Direct as i32
             && wdat.queue_type == QueueType::WithBackup as i32
@@ -284,6 +295,16 @@ pub trait RedisJobDispatcher:
                     .into());
                 }
             }
+        } else {
+            tracing::debug!(
+                "Job {} using Direct mode, updating status to Running",
+                jid.value
+            );
+            // change status to running
+            self.redis_job_repository()
+                .job_processing_status_repository()
+                .upsert_status(&jid, &JobProcessingStatus::Running)
+                .await?;
         }
         // run job
         let mut r = self
@@ -488,6 +509,15 @@ impl UseJobQueueConfig for RedisJobDispatcherImpl {
 impl UseResultProcessor for RedisJobDispatcherImpl {
     fn result_processor(&self) -> &ResultProcessorImpl {
         &self.result_processor
+    }
+}
+
+impl UseJobProcessingStatusRepository for RedisJobDispatcherImpl {
+    fn job_processing_status_repository(
+        &self,
+    ) -> Arc<dyn infra::infra::job::status::JobProcessingStatusRepository> {
+        self.redis_job_repository()
+            .job_processing_status_repository()
     }
 }
 

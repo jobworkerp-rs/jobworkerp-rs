@@ -19,7 +19,9 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
 
-use super::cancellation_helper::{execute_cancellable, handle_run_result, CancellationHelper};
+use super::cancellation_helper::execute_cancellable;
+use jobworkerp_runner::runner::cancellation::RunnerCancellationManager;
+use tokio_util::sync::CancellationToken;
 
 pub mod conversion;
 pub mod genai;
@@ -29,7 +31,7 @@ pub struct LLMChatRunnerImpl {
     pub app: Arc<AppModule>,
     pub ollama: Option<OllamaChatService>,
     pub genai: Option<GenaiChatService>,
-    cancellation_helper: CancellationHelper,
+    cancellation_manager: Option<Arc<tokio::sync::Mutex<Box<dyn RunnerCancellationManager>>>>,
 }
 
 impl LLMChatRunnerImpl {
@@ -38,15 +40,41 @@ impl LLMChatRunnerImpl {
             app: app_module,
             ollama: None,
             genai: None,
-            cancellation_helper: CancellationHelper::new(),
+            cancellation_manager: None,
         }
     }
 
-    /// Set a cancellation token for this runner instance
-    /// This allows external control over cancellation behavior (for test)
-    #[allow(dead_code)]
-    pub fn set_cancellation_token(&mut self, token: tokio_util::sync::CancellationToken) {
-        self.cancellation_helper.set_cancellation_token(token);
+    /// Unified token retrieval method
+    async fn get_cancellation_token(&self) -> CancellationToken {
+        if let Some(manager) = &self.cancellation_manager {
+            manager.lock().await.get_token().await
+        } else {
+            // fallback: basic token
+            CancellationToken::new()
+        }
+    }
+
+    pub fn set_cancellation_manager(
+        &mut self,
+        cancellation_manager: Box<dyn RunnerCancellationManager>,
+    ) {
+        self.cancellation_manager = Some(Arc::new(tokio::sync::Mutex::new(cancellation_manager)));
+    }
+
+    /// Test-only cancellation token setting method
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn set_cancellation_token(&mut self, token: CancellationToken) {
+        // For testing: Set token via Manager
+        if let Some(_manager_arc) = &self.cancellation_manager {
+            // Note: In real tests, Manager internal functionality should be used
+            tracing::warn!("Test method: set_cancellation_token called, but Manager should handle token internally");
+        } else {
+            // Create dummy Manager for testing
+            let mut mock_manager = crate::runner::cancellation::RunnerCancellationManager::new();
+            mock_manager.set_cancellation_token(token);
+            self.cancellation_manager =
+                Some(Arc::new(tokio::sync::Mutex::new(Box::new(mock_manager))));
+        }
     }
 }
 
@@ -121,11 +149,8 @@ impl RunnerTrait for LLMChatRunnerImpl {
         arg: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        // Set up cancellation token using helper
-        let cancellation_token = match self.cancellation_helper.setup_execution_token() {
-            Ok(token) => token,
-            Err(e) => return (Err(e), metadata),
-        };
+        // Clear and concise token retrieval
+        let cancellation_token = self.get_cancellation_token().await;
 
         let span = Self::otel_span_from_metadata(&metadata, APP_WORKER_NAME, "llm_chat_run");
         let cx = Context::current_with_span(span);
@@ -165,7 +190,8 @@ impl RunnerTrait for LLMChatRunnerImpl {
         }
         .await;
 
-        handle_run_result(&mut self.cancellation_helper, result, metadata_clone)
+        // Simplified result processing
+        (result, metadata_clone)
     }
 
     async fn run_stream(
@@ -173,8 +199,8 @@ impl RunnerTrait for LLMChatRunnerImpl {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        // Set up cancellation token using helper
-        let cancellation_token = self.cancellation_helper.setup_execution_token()?;
+        // Set up cancellation token using manager
+        let cancellation_token = self.get_cancellation_token().await;
 
         let args = LlmChatArgs::decode(args).map_err(|e| anyhow!("decode error: {}", e))?;
 
@@ -268,13 +294,25 @@ impl RunnerTrait for LLMChatRunnerImpl {
             Ok(cancellable_stream)
         } else {
             // Clear cancellation token even on error
-            self.cancellation_helper.clear_token();
+            // Note: token cleanup is handled by Manager
             Err(anyhow!("llm is not initialized"))
         }
     }
 
     async fn cancel(&mut self) {
-        self.cancellation_helper.cancel();
+        // Cancel using manager
+        if let Some(manager) = &self.cancellation_manager {
+            let manager = manager.lock().await;
+            if manager.is_cancelled() {
+                tracing::info!("LLMChatRunner execution is already cancelled");
+            } else {
+                tracing::info!(
+                    "LLMChatRunner cancellation requested, but Manager handles token internally"
+                );
+            }
+        } else {
+            tracing::warn!("No cancellation manager set, cannot cancel");
+        }
     }
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
@@ -297,7 +335,7 @@ impl jobworkerp_runner::runner::cancellation::CancelMonitoring for LLMChatRunner
         );
 
         // For LLMChatRunnerImpl, we use the same pattern as CommandRunner
-        // The actual cancellation monitoring will be handled by the CancellationHelper
+        // The actual cancellation monitoring will be handled by the Manager
         // LLM API requests will be cancelled automatically when the token is cancelled
 
         tracing::trace!("Cancellation monitoring started for job {}", job_id.value);
@@ -308,8 +346,8 @@ impl jobworkerp_runner::runner::cancellation::CancelMonitoring for LLMChatRunner
     async fn cleanup_cancellation_monitoring(&mut self) -> anyhow::Result<()> {
         tracing::trace!("Cleaning up cancellation monitoring for LLMChatRunnerImpl");
 
-        // Clear the cancellation helper
-        self.cancellation_helper.clear_token();
+        // Clear the cancellation manager
+        // Note: token cleanup is handled by Manager
 
         Ok(())
     }

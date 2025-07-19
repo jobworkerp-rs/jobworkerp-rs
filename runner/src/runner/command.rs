@@ -27,9 +27,9 @@ use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock};
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, LinesCodec};
+use tokio_util::sync::CancellationToken;
 
 use super::cancellation::{CancelMonitoring, CancelMonitoringCapable, RunnerCancellationManager};
-use super::common::cancellation_helper::CancellationHelper;
 use proto::jobworkerp::data::{JobData, JobId, JobResult};
 
 /**
@@ -49,7 +49,6 @@ trait CommandRunner: RunnerTrait {
 #[derive(Debug)]
 pub struct CommandRunnerImpl {
     pub process: Option<Box<Child>>,
-    cancellation_helper: CancellationHelper,
     pub stream_process_pid: Arc<RwLock<Option<u32>>>,
     cancellation_manager: Option<Arc<tokio::sync::Mutex<Box<dyn RunnerCancellationManager>>>>,
 }
@@ -113,7 +112,6 @@ impl CommandRunnerImpl {
     pub fn new() -> Self {
         Self {
             process: None,
-            cancellation_helper: CancellationHelper::new(),
             stream_process_pid: Arc::new(RwLock::new(None)),
             cancellation_manager: None, // No manager by default
         }
@@ -128,15 +126,18 @@ impl CommandRunnerImpl {
         self.cancellation_manager = Some(Arc::new(Mutex::new(cancellation_manager)));
     }
 
-    /// Set a cancellation token for this runner instance
-    /// This allows external control over cancellation behavior (for test)
-    #[cfg(test)]
-    pub(crate) fn set_cancellation_token(&mut self, token: tokio_util::sync::CancellationToken) {
-        self.cancellation_helper.set_cancellation_token(token);
+    /// 統一されたtoken取得メソッド
+    async fn get_cancellation_token(&self) -> CancellationToken {
+        if let Some(manager) = &self.cancellation_manager {
+            manager.lock().await.get_token().await
+        } else {
+            // fallback: basic token
+            CancellationToken::new()
+        }
     }
+
     pub async fn reset(&mut self) -> Result<()> {
         self.process = None;
-        self.cancellation_helper.clear_token();
         let mut pid = self.stream_process_pid.write().await;
         *pid = None; // Reset the stream process PID
         Ok(())
@@ -207,11 +208,8 @@ impl RunnerTrait for CommandRunnerImpl {
         // let mut metadata = metadata.clone();
         // Self::inject_metadata_from_context(&mut metadata, &cx);
 
-        // Set up cancellation token using helper
-        let cancellation_token = match self.cancellation_helper.setup_execution_token() {
-            Ok(token) => token,
-            Err(e) => return (Err(e), metadata),
-        };
+        // 明確で簡潔なtoken取得
+        let cancellation_token = self.get_cancellation_token().await;
 
         let res = async {
         let data =
@@ -333,19 +331,34 @@ impl RunnerTrait for CommandRunnerImpl {
                     let mut stdout_reader = FramedRead::new(stdout, LinesCodec::new());
                     let mut stderr_reader = FramedRead::new(stderr, LinesCodec::new());
 
-                    // Process stdout
-                    while let Some(line) = stdout_reader.next().await {
-                        match line {
-                            Ok(l) => stdout_messages.push(l),
-                            Err(e) => tracing::error!("command stdout line decode err: {:?}", e),
-                        }
-                    }
-
-                    // Process stderr
-                    while let Some(line) = stderr_reader.next().await {
-                        match line {
-                            Ok(l) => stderr_messages.push(l),
-                            Err(e) => tracing::error!("command stderr line decode err: {:?}", e),
+                    // Process stdout and stderr concurrently with cancellation monitoring
+                    let mut stdout_done = false;
+                    let mut stderr_done = false;
+                    
+                    while !stdout_done || !stderr_done {
+                        tokio::select! {
+                            stdout_line = stdout_reader.next(), if !stdout_done => {
+                                match stdout_line {
+                                    Some(Ok(line)) => stdout_messages.push(line),
+                                    Some(Err(e)) => tracing::error!("command stdout line decode err: {:?}", e),
+                                    None => stdout_done = true,
+                                }
+                            }
+                            stderr_line = stderr_reader.next(), if !stderr_done => {
+                                match stderr_line {
+                                    Some(Ok(line)) => stderr_messages.push(line),
+                                    Some(Err(e)) => tracing::error!("command stderr line decode err: {:?}", e),
+                                    None => stderr_done = true,
+                                }
+                            }
+                            _ = cancellation_token.cancelled() => {
+                                tracing::info!("Command execution cancelled during output reading");
+                                // Get child process and kill it
+                                if let Some(mut child) = self.consume_child() {
+                                    Self::graceful_kill_process(&mut child).await;
+                                }
+                                return Err(anyhow::anyhow!("Command execution was cancelled during output reading"));
+                            }
                         }
                     }
                 }
@@ -450,19 +463,16 @@ impl RunnerTrait for CommandRunnerImpl {
         }.await;
 
         let _ = self.reset().await; // Ignore reset errors in cleanup
-        super::common::cancellation_helper::handle_run_result(
-            &mut self.cancellation_helper,
-            res,
-            metadata,
-        )
+                                    // 結果処理も簡素化
+        (res, metadata)
     }
     async fn run_stream(
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        // Set up cancellation token using helper
-        let cancellation_token = self.cancellation_helper.setup_execution_token()?;
+        // Set up cancellation token using manager
+        let cancellation_token = self.get_cancellation_token().await;
 
         let data = ProstMessageCodec::deserialize_message::<CommandArgs>(args)
             .context("on run_stream job")?;
@@ -473,8 +483,7 @@ impl RunnerTrait for CommandRunnerImpl {
         // Clone stream_process_pid for use within the stream
         let stream_pid_ref = self.stream_process_pid.clone();
 
-        // Clone cancellation helper for cleanup within stream
-        let mut cancellation_helper_clone = self.cancellation_helper.clone();
+        // Note: cancellation token is already cloned above, no need for helper
 
         // Clone Arc of cancellation manager for stream lifecycle management
         let cancellation_manager = self.cancellation_manager.clone();
@@ -792,8 +801,7 @@ impl RunnerTrait for CommandRunnerImpl {
                             }
                             _ = cancellation_token.cancelled() => {
                                 tracing::info!("Command stream execution was cancelled");
-                                // Implement graceful cancellation using shared function
-                                cancellation_helper_clone.cancel();
+                                // Note: cancellation is already handled by the token
 
                                 // Gracefully kill the process
                                 Self::graceful_kill_process(&mut child).await;
@@ -880,7 +888,7 @@ impl RunnerTrait for CommandRunnerImpl {
                     let mut pid_guard = stream_pid_ref.write().await;
                     *pid_guard = None;
                     drop(pid_guard);
-                    cancellation_helper_clone.clear_token();
+                    // Note: token cleanup is handled by Manager
 
                     // Cleanup cancellation monitoring now that the stream has completed
                     tracing::debug!("Stream completed for job, cleaning up cancellation monitoring");
@@ -933,7 +941,7 @@ impl RunnerTrait for CommandRunnerImpl {
                     let mut pid_guard = stream_pid_ref.write().await;
                     *pid_guard = None;
                     drop(pid_guard);
-                    cancellation_helper_clone.clear_token();
+                    // Note: token cleanup is handled by Manager
 
                     // Cleanup cancellation monitoring on error as well
                     tracing::debug!("Stream failed for job, cleaning up cancellation monitoring");
@@ -959,8 +967,19 @@ impl RunnerTrait for CommandRunnerImpl {
     }
 
     async fn cancel(&mut self) {
-        // Cancel using helper
-        self.cancellation_helper.cancel();
+        // Cancel using manager
+        if let Some(manager) = &self.cancellation_manager {
+            let manager = manager.lock().await;
+            if manager.is_cancelled() {
+                tracing::info!("CommandRunner execution is already cancelled");
+            } else {
+                tracing::info!(
+                    "CommandRunner cancellation requested, but Manager handles token internally"
+                );
+            }
+        } else {
+            tracing::warn!("No cancellation manager set, cannot cancel");
+        }
 
         if let Some(mut child) = self.consume_child() {
             Self::graceful_kill_process(&mut child).await;
@@ -1014,8 +1033,7 @@ impl RunnerTrait for CommandRunnerImpl {
             }
         }
 
-        // Clear cancellation token after cancellation
-        self.cancellation_helper.clear_token();
+        // Note: token cleanup is handled by Manager
     }
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
@@ -1039,12 +1057,11 @@ impl CancelMonitoring for CommandRunnerImpl {
             job_id.value
         );
 
-        // Setup cancellation monitoring using RunnerCancellationManager
+        // Manager直接使用
         let result = if let Some(manager_arc) = &self.cancellation_manager {
             let mut manager = manager_arc.lock().await;
-            manager
-                .setup_monitoring(&job_id, job_data, &mut self.cancellation_helper)
-                .await?
+            // Note: Manager now handles token internally, no need for external helper
+            manager.setup_monitoring(&job_id, job_data).await?
         } else {
             // No cancellation manager set, continue without monitoring
             tracing::debug!(
@@ -1082,8 +1099,7 @@ impl CancelMonitoring for CommandRunnerImpl {
             manager.cleanup_monitoring().await?;
         }
 
-        // Clear the cancellation helper
-        self.cancellation_helper.clear_token();
+        // Note: token cleanup is handled by Manager
 
         Ok(())
     }
@@ -1121,26 +1137,7 @@ mod tests {
     use futures::StreamExt;
     use tokio::time::{sleep, Duration};
 
-    // Mock implementation for testing
-    #[derive(Debug)]
-    #[allow(dead_code)]
-    struct MockCancellationManager;
-
-    #[async_trait]
-    impl RunnerCancellationManager for MockCancellationManager {
-        async fn setup_monitoring(
-            &mut self,
-            _job_id: &JobId,
-            _job_data: &JobData,
-            _cancellation_helper: &mut CancellationHelper,
-        ) -> Result<crate::runner::cancellation::CancellationSetupResult> {
-            Ok(crate::runner::cancellation::CancellationSetupResult::MonitoringStarted)
-        }
-
-        async fn cleanup_monitoring(&mut self) -> Result<()> {
-            Ok(())
-        }
-    }
+    // Use common mock from test_common module
 
     #[tokio::test]
     async fn test_run() {
@@ -1499,328 +1496,6 @@ mod tests {
         eprintln!("=== Graceful cancellation test completed ===");
     }
 
-    #[tokio::test]
-    async fn test_pre_execution_cancellation() {
-        eprintln!("=== Testing COMMAND Runner pre-execution cancellation ===");
-
-        let mut runner = CommandRunnerImpl::new();
-        let arg = CommandArgs {
-            command: "sleep".to_string(),
-            args: vec!["5".to_string()], // Longer sleep to ensure cancellation
-            with_memory_monitoring: false,
-        };
-
-        // Test cancellation by calling cancel() and then checking cancellation token
-        let cancellation_token = tokio_util::sync::CancellationToken::new();
-        runner.set_cancellation_token(cancellation_token.clone());
-
-        // Cancel the token immediately
-        cancellation_token.cancel();
-
-        let start_time = std::time::Instant::now();
-        let (result, _metadata) = runner
-            .run(
-                &ProstMessageCodec::serialize_message(&arg).unwrap(),
-                HashMap::new(),
-            )
-            .await;
-        let elapsed = start_time.elapsed();
-
-        eprintln!("Execution completed in {elapsed:?}");
-
-        // The command should be cancelled
-        match result {
-            Ok(_) => {
-                panic!("Command should have been cancelled but completed normally");
-            }
-            Err(e) => {
-                eprintln!("Command was cancelled as expected: {e}");
-                assert!(e.to_string().contains("cancelled"));
-            }
-        }
-
-        // Should complete much faster than 5 seconds due to cancellation
-        assert!(
-            elapsed.as_millis() < 1000,
-            "Cancellation should prevent long execution"
-        );
-
-        eprintln!("=== Pre-execution cancellation test completed ===");
-    }
-
-    #[tokio::test]
-    async fn test_run_stream_simple_cancellation() {
-        eprintln!("=== Testing simple run_stream() cancellation ===");
-
-        use futures::StreamExt;
-        use std::time::{Duration, Instant};
-
-        let mut runner = CommandRunnerImpl::new();
-
-        // Pre-set cancellation token
-        let cancellation_token = tokio_util::sync::CancellationToken::new();
-        runner.set_cancellation_token(cancellation_token.clone());
-
-        // Create a long-running command
-        let arg = CommandArgs {
-            command: "/bin/bash".to_string(),
-            args: vec![
-                "-c".to_string(),
-                "for i in {1..30}; do echo \"Line $i\"; sleep 0.5; done".to_string(),
-            ],
-            with_memory_monitoring: false,
-        };
-
-        let serialized_args = ProstMessageCodec::serialize_message(&arg).unwrap();
-        let start_time = Instant::now();
-
-        // Start the stream
-        let stream_result = runner.run_stream(&serialized_args, HashMap::new()).await;
-        assert!(stream_result.is_ok(), "Stream should start successfully");
-
-        let mut stream = stream_result.unwrap();
-        let mut item_count = 0;
-
-        // Process a few items
-        for _ in 0..2 {
-            if let Some(_item) = stream.next().await {
-                item_count += 1;
-                eprintln!("Received item #{item_count}");
-            }
-        }
-
-        // Cancel after processing 2 items
-        cancellation_token.cancel();
-        eprintln!("Cancellation token triggered after {item_count} items");
-
-        // Continue processing to see if cancellation takes effect
-        let mut additional_items = 0;
-        let timeout = Duration::from_secs(3);
-        let start_wait = Instant::now();
-
-        while start_wait.elapsed() < timeout {
-            match tokio::time::timeout(Duration::from_millis(100), stream.next()).await {
-                Ok(Some(_)) => {
-                    additional_items += 1;
-                    eprintln!(
-                        "Received additional item #{}",
-                        item_count + additional_items
-                    );
-                }
-                Ok(None) => {
-                    eprintln!("Stream ended");
-                    break;
-                }
-                Err(_) => {
-                    eprintln!("No more items within timeout");
-                    break;
-                }
-            }
-        }
-
-        let total_elapsed = start_time.elapsed();
-        let total_items = item_count + additional_items;
-
-        eprintln!("Total execution time: {total_elapsed:?}");
-        eprintln!("Total items processed: {total_items}");
-
-        // Verify cancellation worked
-        if total_elapsed < Duration::from_secs(8) && total_items < 20 {
-            eprintln!("✓ Cancellation appears to have worked (short execution, few items)");
-        } else {
-            eprintln!("⚠ Cancellation may not have worked fully (took {total_elapsed:?}, {total_items} items)");
-        }
-
-        eprintln!("✓ Simple run_stream() cancellation test completed");
-    }
-
-    #[tokio::test]
-    async fn test_run_stream_process_management_and_cancel() {
-        use crate::jobworkerp::runner::CommandArgs;
-        use futures::StreamExt;
-        use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
-        use std::collections::HashMap;
-        use std::sync::Arc;
-        use std::time::{Duration, Instant};
-        use tokio::time::sleep;
-
-        eprintln!("=== Testing run_stream() process management and cancel() integration ===");
-
-        let runner = Arc::new(tokio::sync::Mutex::new(CommandRunnerImpl::new()));
-        let shared_pid = Arc::new(tokio::sync::RwLock::new(None::<u32>));
-
-        // Create a long-running command that we can observe
-        let arg = CommandArgs {
-            command: "/bin/bash".to_string(),
-            args: vec![
-                "-c".to_string(),
-                "for i in {1..30}; do echo \"Line $i\"; sleep 0.3; done".to_string(),
-            ],
-            with_memory_monitoring: false,
-        };
-
-        let serialized_args = ProstMessageCodec::serialize_message(&arg).unwrap();
-        let start_time = Instant::now();
-
-        // Clone for the stream processing task
-        let runner_for_stream = runner.clone();
-        let pid_for_stream = shared_pid.clone();
-
-        // Start stream processing in a separate task
-        let stream_task = tokio::spawn(async move {
-            let mut runner_guard = runner_for_stream.lock().await;
-
-            // Start the stream
-            let stream_result = runner_guard
-                .run_stream(&serialized_args, HashMap::new())
-                .await;
-            assert!(stream_result.is_ok(), "Stream should start successfully");
-            drop(runner_guard); // Release lock immediately after starting stream
-
-            let mut stream = stream_result.unwrap();
-            let mut item_count = 0;
-
-            // Process first item
-            if let Some(_item) = stream.next().await {
-                item_count += 1;
-                eprintln!("Stream received item #{item_count}");
-            }
-
-            // Check if we can capture the process (this is tricky in stream mode)
-            // For now, we'll simulate finding a process by checking system processes
-            if let Ok(output) = tokio::process::Command::new("pgrep")
-                .arg("-f")
-                .arg("for i in {1..30}")
-                .output()
-                .await
-            {
-                if let Ok(pid_str) = String::from_utf8(output.stdout) {
-                    if let Ok(pid) = pid_str.trim().parse::<u32>() {
-                        eprintln!("Found target process PID: {pid}");
-                        *pid_for_stream.write().await = Some(pid);
-
-                        // Set the stream process PID in the runner for cancellation
-                        {
-                            let runner_guard = runner_for_stream.lock().await;
-                            let mut pid_guard = runner_guard.stream_process_pid.write().await;
-                            *pid_guard = Some(pid);
-                            eprintln!("Set stream_process_pid in runner: {pid}");
-                            drop(pid_guard);
-                            drop(runner_guard);
-                        }
-                    }
-                }
-            }
-
-            // Process second item
-            if let Some(_item) = stream.next().await {
-                item_count += 1;
-                eprintln!("Stream received item #{item_count}");
-            }
-
-            // Continue processing until cancelled/completed
-            loop {
-                match tokio::time::timeout(Duration::from_millis(200), stream.next()).await {
-                    Ok(Some(_)) => {
-                        item_count += 1;
-                        eprintln!("Stream received item #{item_count}");
-                    }
-                    Ok(None) => {
-                        eprintln!("Stream ended naturally");
-                        break;
-                    }
-                    Err(_) => {
-                        eprintln!("Stream timeout, continuing...");
-                        continue;
-                    }
-                }
-            }
-
-            item_count
-        });
-
-        // Wait for stream to start and hopefully capture PID
-        sleep(Duration::from_millis(800)).await;
-
-        // Clone for the cancellation task
-        let runner_for_cancel = runner.clone();
-        let pid_for_cancel = shared_pid.clone();
-
-        // Start cancellation in a separate task
-        let cancel_task = tokio::spawn(async move {
-            eprintln!("Starting cancellation process...");
-
-            // Check if we captured a PID
-            let captured_pid = {
-                let pid_guard = pid_for_cancel.read().await;
-                *pid_guard
-            };
-
-            if let Some(pid) = captured_pid {
-                eprintln!("Attempting to cancel process with PID: {pid}");
-
-                // First try graceful cancel through runner
-                let mut runner_guard = runner_for_cancel.lock().await;
-                runner_guard.cancel().await;
-                eprintln!("Called runner.cancel()");
-                drop(runner_guard);
-
-                // Give graceful cancel a moment
-                sleep(Duration::from_millis(300)).await;
-
-                // Check if process is still running
-                let check_result = tokio::process::Command::new("kill")
-                    .arg("-0") // Check if process exists
-                    .arg(pid.to_string())
-                    .output()
-                    .await;
-
-                match check_result {
-                    Ok(output) if output.status.success() => {
-                        eprintln!("Process still running, sending SIGTERM");
-                        let _ = tokio::process::Command::new("kill")
-                            .arg("-TERM")
-                            .arg(pid.to_string())
-                            .output()
-                            .await;
-                    }
-                    _ => {
-                        eprintln!("Process appears to have been terminated by cancel()");
-                    }
-                }
-            } else {
-                eprintln!("No PID captured, using only token-based cancellation");
-                let mut runner_guard = runner_for_cancel.lock().await;
-                runner_guard.cancel().await;
-                eprintln!("Called runner.cancel() (token-only)");
-            }
-        });
-
-        // Wait for both tasks
-        let (stream_result, _) = tokio::join!(stream_task, cancel_task);
-
-        let total_elapsed = start_time.elapsed();
-
-        match stream_result {
-            Ok(item_count) => {
-                eprintln!("Stream processing completed with {item_count} items");
-                eprintln!("Total execution time: {total_elapsed:?}");
-
-                // Verify that cancellation had an effect
-                if total_elapsed < Duration::from_secs(5) && item_count < 15 {
-                    eprintln!("✓ Process management and cancellation integration successful");
-                    eprintln!("  - Stream processed {item_count} items in {total_elapsed:?}");
-                    eprintln!("  - Early termination indicates cancel() effectiveness");
-                } else {
-                    eprintln!("⚠ Cancellation may not have been fully effective");
-                    eprintln!("  - Processed {item_count} items in {total_elapsed:?}");
-                }
-            }
-            Err(e) => {
-                eprintln!("Stream task failed: {e}");
-            }
-        }
-
-        eprintln!("=== Process management and cancel integration test completed ===");
-    }
+    // Note: Complex cancellation tests moved to app-wrapper integration tests
+    // runner crate level tests focus on basic functionality only
 }

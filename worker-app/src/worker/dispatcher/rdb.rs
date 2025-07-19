@@ -326,6 +326,16 @@ impl UseResultProcessor for RdbJobDispatcherImpl {
     }
 }
 
+impl infra::infra::job::status::UseJobProcessingStatusRepository for RdbJobDispatcherImpl {
+    fn job_processing_status_repository(
+        &self,
+    ) -> Arc<dyn infra::infra::job::status::JobProcessingStatusRepository> {
+        // RdbJobDispatcherは通常job processing statusを使用しないため、ダミー実装
+        // 実際のstatusの必要があればapp_moduleから適切なrepositoryを取得する
+        Arc::new(infra::infra::job::status::memory::MemoryJobProcessingStatusRepository::new())
+    }
+}
+
 impl RdbJobDispatcher for RdbJobDispatcherImpl {}
 
 #[async_trait]

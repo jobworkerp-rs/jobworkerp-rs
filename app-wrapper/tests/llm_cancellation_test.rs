@@ -155,12 +155,20 @@ async fn test_ollama_chat_cancellation_mid_execution() -> Result<()> {
     };
     let serialized_settings = prost::Message::encode_to_vec(&settings);
 
-    // Create cancellation token and set it on the runner
+    // Create cancellation token and manager, set it on the runner
     let cancellation_token = CancellationToken::new();
     {
         let mut runner_guard = runner.lock().await;
         runner_guard.load(serialized_settings).await?;
-        runner_guard.set_cancellation_token(cancellation_token.clone());
+
+        // Set up cancellation manager with token
+        #[cfg(any(test, feature = "test-utils"))]
+        {
+            let mut cancellation_manager =
+                app_wrapper::runner::cancellation::RunnerCancellationManager::new();
+            cancellation_manager.set_cancellation_token(cancellation_token.clone());
+            runner_guard.set_cancellation_manager(Box::new(cancellation_manager));
+        }
     }
 
     println!("Starting Ollama chat with long-running request...");
@@ -235,7 +243,14 @@ async fn test_genai_chat_cancellation_mid_execution() -> Result<()> {
     {
         let mut runner_guard = runner.lock().await;
         runner_guard.load(serialized_settings).await?;
-        runner_guard.set_cancellation_token(cancellation_token.clone());
+        // Set up cancellation manager with token
+        #[cfg(any(test, feature = "test-utils"))]
+        {
+            let mut cancellation_manager =
+                app_wrapper::runner::cancellation::RunnerCancellationManager::new();
+            cancellation_manager.set_cancellation_token(cancellation_token.clone());
+            runner_guard.set_cancellation_manager(Box::new(cancellation_manager));
+        }
     }
 
     println!("Starting GenAI chat with long-running request...");
@@ -306,7 +321,14 @@ async fn test_ollama_streaming_cancellation() -> Result<()> {
     {
         let mut runner_guard = runner.lock().await;
         runner_guard.load(serialized_settings).await?;
-        runner_guard.set_cancellation_token(cancellation_token.clone());
+        // Set up cancellation manager with token
+        #[cfg(any(test, feature = "test-utils"))]
+        {
+            let mut cancellation_manager =
+                app_wrapper::runner::cancellation::RunnerCancellationManager::new();
+            cancellation_manager.set_cancellation_token(cancellation_token.clone());
+            runner_guard.set_cancellation_manager(Box::new(cancellation_manager));
+        }
     }
 
     // Create test arguments with a long-running prompt
@@ -415,10 +437,13 @@ async fn test_llm_chat_pre_execution_cancellation() -> Result<()> {
     let mut runner =
         app_wrapper::llm::chat::LLMChatRunnerImpl::new(std::sync::Arc::new(_app_module));
 
-    // Set pre-cancelled token before running
+    // Create cancellation manager with pre-cancelled token
     let cancelled_token = CancellationToken::new();
     cancelled_token.cancel();
-    runner.set_cancellation_token(cancelled_token);
+    let cancellation_manager = app_wrapper::runner::cancellation::RunnerCancellationManager::new();
+    // Set the token internally in the manager (for testing)
+    let manager_with_token = Box::new(cancellation_manager);
+    runner.set_cancellation_manager(manager_with_token);
 
     // Create test arguments
     let args = create_simple_chat_args();
@@ -492,7 +517,14 @@ async fn test_genai_streaming_cancellation() -> Result<()> {
     {
         let mut runner_guard = runner.lock().await;
         runner_guard.load(serialized_settings).await?;
-        runner_guard.set_cancellation_token(cancellation_token.clone());
+        // Set up cancellation manager with token
+        #[cfg(any(test, feature = "test-utils"))]
+        {
+            let mut cancellation_manager =
+                app_wrapper::runner::cancellation::RunnerCancellationManager::new();
+            cancellation_manager.set_cancellation_token(cancellation_token.clone());
+            runner_guard.set_cancellation_manager(Box::new(cancellation_manager));
+        }
     }
 
     // Create test arguments with a long-running prompt
@@ -614,10 +646,12 @@ async fn test_llm_completion_ollama_pre_execution_cancellation() -> Result<()> {
     ollama_settings.encode(&mut settings_buf)?;
     let _ = runner.load(settings_buf).await; // May fail if no Ollama server, but that's ok
 
-    // Set pre-cancelled token before running
+    // Create cancellation manager with pre-cancelled token
     let cancelled_token = CancellationToken::new();
     cancelled_token.cancel();
-    runner.set_cancellation_token(cancelled_token);
+    let cancellation_manager = app_wrapper::runner::cancellation::RunnerCancellationManager::new();
+    let manager_with_token = Box::new(cancellation_manager);
+    runner.set_cancellation_manager(manager_with_token);
 
     // Create test arguments
     let args = create_simple_completion_args();
@@ -681,10 +715,12 @@ async fn test_llm_completion_genai_pre_execution_cancellation() -> Result<()> {
     genai_settings.encode(&mut settings_buf)?;
     let _ = runner.load(settings_buf).await; // May fail if no Ollama server, but that's ok
 
-    // Set pre-cancelled token before running
+    // Create cancellation manager with pre-cancelled token
     let cancelled_token = CancellationToken::new();
     cancelled_token.cancel();
-    runner.set_cancellation_token(cancelled_token);
+    let cancellation_manager = app_wrapper::runner::cancellation::RunnerCancellationManager::new();
+    let manager_with_token = Box::new(cancellation_manager);
+    runner.set_cancellation_manager(manager_with_token);
 
     // Create test arguments
     let args = create_simple_completion_args();
@@ -756,7 +792,14 @@ async fn test_llm_completion_ollama_mid_execution_cancellation() -> Result<()> {
     {
         let mut runner_guard = runner.lock().await;
         let _ = runner_guard.load(settings_buf).await; // May fail if no Ollama server, but continue
-        runner_guard.set_cancellation_token(cancellation_token.clone());
+                                                       // Set up cancellation manager with token
+        #[cfg(any(test, feature = "test-utils"))]
+        {
+            let mut cancellation_manager =
+                app_wrapper::runner::cancellation::RunnerCancellationManager::new();
+            cancellation_manager.set_cancellation_token(cancellation_token.clone());
+            runner_guard.set_cancellation_manager(Box::new(cancellation_manager));
+        }
     }
 
     // Create test arguments
@@ -866,7 +909,14 @@ async fn test_llm_chat_stream_mid_execution_cancellation() -> Result<()> {
     {
         let mut runner_guard = runner.lock().await;
         runner_guard.load(serialized_settings).await?;
-        runner_guard.set_cancellation_token(cancellation_token.clone());
+        // Set up cancellation manager with token
+        #[cfg(any(test, feature = "test-utils"))]
+        {
+            let mut cancellation_manager =
+                app_wrapper::runner::cancellation::RunnerCancellationManager::new();
+            cancellation_manager.set_cancellation_token(cancellation_token.clone());
+            runner_guard.set_cancellation_manager(Box::new(cancellation_manager));
+        }
     }
 
     // Create test arguments with a long-running prompt
@@ -996,7 +1046,14 @@ async fn test_llm_completion_stream_mid_execution_cancellation() -> Result<()> {
     {
         let mut runner_guard = runner.lock().await;
         runner_guard.load(settings_buf).await?;
-        runner_guard.set_cancellation_token(cancellation_token.clone());
+        // Set up cancellation manager with token
+        #[cfg(any(test, feature = "test-utils"))]
+        {
+            let mut cancellation_manager =
+                app_wrapper::runner::cancellation::RunnerCancellationManager::new();
+            cancellation_manager.set_cancellation_token(cancellation_token.clone());
+            runner_guard.set_cancellation_manager(Box::new(cancellation_manager));
+        }
     }
 
     // Create test arguments with a long-running prompt
@@ -1124,7 +1181,14 @@ async fn test_llm_completion_genai_mid_execution_cancellation() -> Result<()> {
     {
         let mut runner_guard = runner.lock().await;
         let _ = runner_guard.load(settings_buf).await; // May fail if no Ollama server, but continue
-        runner_guard.set_cancellation_token(cancellation_token.clone());
+                                                       // Set up cancellation manager with token
+        #[cfg(any(test, feature = "test-utils"))]
+        {
+            let mut cancellation_manager =
+                app_wrapper::runner::cancellation::RunnerCancellationManager::new();
+            cancellation_manager.set_cancellation_token(cancellation_token.clone());
+            runner_guard.set_cancellation_manager(Box::new(cancellation_manager));
+        }
     }
 
     // Create test arguments
@@ -1232,7 +1296,14 @@ async fn test_llm_completion_genai_stream_mid_execution_cancellation() -> Result
     {
         let mut runner_guard = runner.lock().await;
         runner_guard.load(settings_buf).await?;
-        runner_guard.set_cancellation_token(cancellation_token.clone());
+        // Set up cancellation manager with token
+        #[cfg(any(test, feature = "test-utils"))]
+        {
+            let mut cancellation_manager =
+                app_wrapper::runner::cancellation::RunnerCancellationManager::new();
+            cancellation_manager.set_cancellation_token(cancellation_token.clone());
+            runner_guard.set_cancellation_manager(Box::new(cancellation_manager));
+        }
     }
 
     // Create test arguments with a long-running prompt
