@@ -30,6 +30,7 @@ use tokio_util::codec::{FramedRead, LinesCodec};
 use tokio_util::sync::CancellationToken;
 
 use super::cancellation::{CancelMonitoring, CancelMonitoringCapable, RunnerCancellationManager};
+use super::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
 use proto::jobworkerp::data::{JobData, JobId, JobResult};
 
 /**
@@ -51,6 +52,8 @@ pub struct CommandRunnerImpl {
     pub process: Option<Box<Child>>,
     pub stream_process_pid: Arc<RwLock<Option<u32>>>,
     cancellation_manager: Option<Arc<tokio::sync::Mutex<Box<dyn RunnerCancellationManager>>>>,
+    // DI統合用のHelper（Optional）
+    cancel_helper: Option<CancelMonitoringHelper>,
 }
 impl Default for CommandRunnerImpl {
     fn default() -> Self {
@@ -109,11 +112,23 @@ impl CommandRunnerImpl {
         false
     }
 
+    /// キャンセル監視なしconstructor（既存互換）
     pub fn new() -> Self {
         Self {
             process: None,
             stream_process_pid: Arc::new(RwLock::new(None)),
             cancellation_manager: None, // No manager by default
+            cancel_helper: None,        // 明示的にNone
+        }
+    }
+
+    /// キャンセル監視付きconstructor（DI統合版）
+    pub fn new_with_cancel_monitoring(cancel_helper: CancelMonitoringHelper) -> Self {
+        Self {
+            process: None,
+            stream_process_pid: Arc::new(RwLock::new(None)),
+            cancellation_manager: None, // Helper使用時は従来manager不要
+            cancel_helper: Some(cancel_helper), // 明示的にSome
         }
     }
 
@@ -128,10 +143,14 @@ impl CommandRunnerImpl {
 
     /// 統一されたtoken取得メソッド
     async fn get_cancellation_token(&self) -> CancellationToken {
-        if let Some(manager) = &self.cancellation_manager {
+        // キャンセル監視要否の明確な判定
+        if let Some(helper) = &self.cancel_helper {
+            helper.get_cancellation_token().await
+        } else if let Some(manager) = &self.cancellation_manager {
+            // 既存manager方式への後方互換
             manager.lock().await.get_token().await
         } else {
-            // fallback: basic token
+            // キャンセル監視なし - default token
             CancellationToken::new()
         }
     }
@@ -485,8 +504,7 @@ impl RunnerTrait for CommandRunnerImpl {
 
         // Note: cancellation token is already cloned above, no need for helper
 
-        // Clone Arc of cancellation manager for stream lifecycle management
-        let cancellation_manager = self.cancellation_manager.clone();
+        // Note: Cancellation manager lifecycle is now handled by DI Helper system
 
         // Create mutable command here
         let mut command = Command::new(command_str.as_str());
@@ -890,17 +908,8 @@ impl RunnerTrait for CommandRunnerImpl {
                     drop(pid_guard);
                     // Note: token cleanup is handled by Manager
 
-                    // Cleanup cancellation monitoring now that the stream has completed
-                    tracing::debug!("Stream completed for job, cleaning up cancellation monitoring");
-                    if let Some(manager_arc) = &cancellation_manager {
-                        if let Ok(mut manager) = manager_arc.try_lock() {
-                            if let Err(e) = manager.cleanup_monitoring().await {
-                                tracing::warn!("Failed to cleanup cancellation monitoring: {:?}", e);
-                            }
-                        } else {
-                            tracing::warn!("Could not acquire lock for cancellation manager cleanup");
-                        }
-                    }
+                    // Stream completed - cancellation monitoring cleanup is handled by process lifecycle
+                    tracing::debug!("Stream completed for job, keeping cancellation monitoring active for process lifetime");
 
                     // Send the end of stream marker
                     yield ResultOutputItem {
@@ -943,17 +952,8 @@ impl RunnerTrait for CommandRunnerImpl {
                     drop(pid_guard);
                     // Note: token cleanup is handled by Manager
 
-                    // Cleanup cancellation monitoring on error as well
-                    tracing::debug!("Stream failed for job, cleaning up cancellation monitoring");
-                    if let Some(manager_arc) = &cancellation_manager {
-                        if let Ok(mut manager) = manager_arc.try_lock() {
-                            if let Err(e) = manager.cleanup_monitoring().await {
-                                tracing::warn!("Failed to cleanup cancellation monitoring on error: {:?}", e);
-                            }
-                        } else {
-                            tracing::warn!("Could not acquire lock for cancellation manager cleanup on error");
-                        }
-                    }
+                    // Stream failed - cancellation monitoring cleanup is handled by process lifecycle
+                    tracing::debug!("Stream failed for job, keeping cancellation monitoring active for process lifetime");
 
                     // Always send end marker even on error
                     yield ResultOutputItem {
@@ -1050,75 +1050,91 @@ impl CancelMonitoring for CommandRunnerImpl {
         job_id: JobId,
         job_data: &JobData,
     ) -> Result<Option<JobResult>> {
-        use super::cancellation::CancellationSetupResult;
-
-        tracing::debug!(
-            "Setting up cancellation monitoring for CommandRunner job {}",
-            job_id.value
-        );
-
-        // Manager直接使用
-        let result = if let Some(manager_arc) = &self.cancellation_manager {
+        // Helper有無の明確な分岐
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.setup_monitoring_impl(job_id, job_data).await
+        } else if let Some(manager_arc) = &self.cancellation_manager {
+            // 既存manager方式への後方互換
+            use super::cancellation::CancellationSetupResult;
             let mut manager = manager_arc.lock().await;
-            // Note: Manager now handles token internally, no need for external helper
-            manager.setup_monitoring(&job_id, job_data).await?
+            let result = manager.setup_monitoring(&job_id, job_data).await?;
+            match result {
+                CancellationSetupResult::MonitoringStarted => {
+                    tracing::trace!("Cancellation monitoring started for job {}", job_id.value);
+                    Ok(None)
+                }
+                CancellationSetupResult::AlreadyCancelled => {
+                    tracing::info!(
+                        "Job {} was already cancelled before execution",
+                        job_id.value
+                    );
+                    Ok(None)
+                }
+            }
         } else {
-            // No cancellation manager set, continue without monitoring
-            tracing::debug!(
-                "No cancellation manager set for job {}, skipping monitoring",
-                job_id.value
-            );
-            CancellationSetupResult::MonitoringStarted
-        };
-
-        match result {
-            CancellationSetupResult::MonitoringStarted => {
-                tracing::trace!("Cancellation monitoring started for job {}", job_id.value);
-                Ok(None) // Continue with normal execution
-            }
-            CancellationSetupResult::AlreadyCancelled => {
-                tracing::info!(
-                    "Job {} was already cancelled before execution",
-                    job_id.value
-                );
-                // TODO: Create proper cancelled JobResult here
-                // For now, return None to continue with normal execution path
-                // The cancellation will be handled by the CancellationHelper
-                Ok(None)
-            }
+            tracing::debug!("No cancel monitoring configured for job {}", job_id.value);
+            Ok(None)
         }
     }
 
     /// Cleanup cancellation monitoring
     async fn cleanup_cancellation_monitoring(&mut self) -> Result<()> {
-        tracing::trace!("Cleaning up cancellation monitoring for CommandRunner");
-
-        // Cleanup the cancellation manager
-        if let Some(manager_arc) = &self.cancellation_manager {
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.cleanup_monitoring_impl().await
+        } else if let Some(manager_arc) = &self.cancellation_manager {
+            // 既存manager方式への後方互換
             let mut manager = manager_arc.lock().await;
             manager.cleanup_monitoring().await?;
+            Ok(())
+        } else {
+            Ok(())
         }
-
-        // Note: token cleanup is handled by Manager
-
-        Ok(())
     }
 
     /// Pool recycling時の完全状態リセット
     /// CommandRunner固有の状態（stream_process_pid等）をリセットして次回ジョブでの状態混入を防ぐ
     async fn reset_for_pooling(&mut self) -> Result<()> {
-        // 1. 基本的なcleanup実行
-        self.cleanup_cancellation_monitoring().await?;
+        // ストリーミングプロセス実行中チェック
+        let has_active_stream_process = {
+            let pid_guard = self.stream_process_pid.read().await;
+            pid_guard.is_some()
+        };
 
-        // 2. CommandRunner固有の状態リセット
-        // stream_process_pid をリセット（前回のストリーミングプロセス情報を削除）
-        {
+        if has_active_stream_process {
+            // ストリーミングプロセス実行中はキャンセル監視を維持
+            // プロセス終了時の自動cleanup（タイムアウトベース）に委ねる
+            tracing::debug!("CommandRunner has active streaming process - keeping cancellation monitoring active");
+        } else {
+            // プロセス終了時のみキャンセル監視をクリーンアップ
+            if let Some(helper) = &mut self.cancel_helper {
+                helper.reset_for_pooling_impl().await?;
+            } else {
+                self.cleanup_cancellation_monitoring().await?;
+            }
+        }
+
+        // CommandRunner固有の状態リセット（非ストリーミング時のみ）
+        if !has_active_stream_process {
             let mut pid_guard = self.stream_process_pid.write().await;
             *pid_guard = None;
         }
 
-        tracing::debug!("CommandRunner completely reset for pooling");
+        tracing::debug!(
+            "CommandRunner reset for pooling (streaming active: {})",
+            has_active_stream_process
+        );
         Ok(())
+    }
+}
+
+// DI trait実装（Option対応）
+impl UseCancelMonitoringHelper for CommandRunnerImpl {
+    fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
+        self.cancel_helper.as_ref()
+    }
+
+    fn cancel_monitoring_helper_mut(&mut self) -> Option<&mut CancelMonitoringHelper> {
+        self.cancel_helper.as_mut()
     }
 }
 

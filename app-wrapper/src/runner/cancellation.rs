@@ -278,9 +278,7 @@ impl RunnerCancellationManagerTrait for RunnerCancellationManager {
     }
 
     async fn get_token(&self) -> tokio_util::sync::CancellationToken {
-        self.cancellation_token
-            .clone()
-            .unwrap_or_default()
+        self.cancellation_token.clone().unwrap_or_default()
     }
 
     fn is_cancelled(&self) -> bool {

@@ -1,6 +1,7 @@
 use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
 
-use super::cancellation::RunnerCancellationManager;
+use super::cancellation::{CancelMonitoring, RunnerCancellationManager};
+use super::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
 use super::{RunnerSpec, RunnerTrait};
 use crate::jobworkerp::runner::{HttpRequestArgs, HttpRequestRunnerSettings, HttpResponseResult};
 use crate::{schema_to_json_string, schema_to_json_string_option};
@@ -32,23 +33,41 @@ pub struct RequestRunner {
     pub client: reqwest::Client,
     pub url: Option<Url>,
     cancellation_manager: Option<Arc<tokio::sync::Mutex<Box<dyn RunnerCancellationManager>>>>,
+    // DI統合用のHelper（Optional）
+    cancel_helper: Option<CancelMonitoringHelper>,
 }
 
 impl RequestRunner {
+    /// キャンセル監視なしconstructor（既存互換）
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::new(),
             url: None,
             cancellation_manager: None,
+            cancel_helper: None, // 明示的にNone
+        }
+    }
+
+    /// キャンセル監視付きconstructor（DI統合版）
+    pub fn new_with_cancel_monitoring(cancel_helper: CancelMonitoringHelper) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            url: None,
+            cancellation_manager: None, // Helper使用時は従来manager不要
+            cancel_helper: Some(cancel_helper), // 明示的にSome
         }
     }
 
     /// 統一されたtoken取得メソッド
     async fn get_cancellation_token(&self) -> CancellationToken {
-        if let Some(manager) = &self.cancellation_manager {
+        // キャンセル監視要否の明確な判定
+        if let Some(helper) = &self.cancel_helper {
+            helper.get_cancellation_token().await
+        } else if let Some(manager) = &self.cancellation_manager {
+            // 既存manager方式への後方互換
             manager.lock().await.get_token().await
         } else {
-            // fallback: basic token
+            // キャンセル監視なし - default token
             CancellationToken::new()
         }
     }
@@ -405,43 +424,78 @@ impl RunnerTrait for RequestRunner {
     }
 }
 
-// CancelMonitoring implementation for RequestRunner
-#[async_trait]
-impl super::cancellation::CancelMonitoring for RequestRunner {
-    /// Initialize cancellation monitoring for specific job
-    async fn setup_cancellation_monitoring(
-        &mut self,
-        job_id: proto::jobworkerp::data::JobId,
-        _job_data: &proto::jobworkerp::data::JobData,
-    ) -> Result<Option<proto::jobworkerp::data::JobResult>> {
-        tracing::debug!(
-            "Setting up cancellation monitoring for RequestRunner job {}",
-            job_id.value
-        );
-
-        // For RequestRunner, we use the same pattern as CommandRunner
-        // The actual cancellation monitoring will be handled by the CancellationHelper
-        // HTTP requests will be cancelled automatically when the token is cancelled
-
-        tracing::trace!("Cancellation monitoring started for job {}", job_id.value);
-        Ok(None) // Continue with normal execution
+// DI trait実装（Option対応）
+impl UseCancelMonitoringHelper for RequestRunner {
+    fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
+        self.cancel_helper.as_ref()
     }
 
-    /// Cleanup cancellation monitoring
-    async fn cleanup_cancellation_monitoring(&mut self) -> Result<()> {
-        tracing::trace!("Cleaning up cancellation monitoring for RequestRunner");
-
-        // Clear the cancellation helper
-        // Note: token cleanup is handled by Manager
-
-        Ok(())
+    fn cancel_monitoring_helper_mut(&mut self) -> Option<&mut CancelMonitoringHelper> {
+        self.cancel_helper.as_mut()
     }
 }
 
-// CancelMonitoringCapable implementation for RequestRunner
-impl super::cancellation::CancelMonitoringCapable for RequestRunner {
-    fn as_cancel_monitoring(&mut self) -> &mut dyn super::cancellation::CancelMonitoring {
-        self
+// CancelMonitoring trait実装（Helper委譲版）
+#[async_trait]
+impl CancelMonitoring for RequestRunner {
+    async fn setup_cancellation_monitoring(
+        &mut self,
+        job_id: proto::jobworkerp::data::JobId,
+        job_data: &proto::jobworkerp::data::JobData,
+    ) -> Result<Option<proto::jobworkerp::data::JobResult>> {
+        // Helper有無の明確な分岐
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.setup_monitoring_impl(job_id, job_data).await
+        } else if let Some(manager_arc) = &self.cancellation_manager {
+            // 既存manager方式への後方互換
+            use super::cancellation::CancellationSetupResult;
+            let mut manager = manager_arc.lock().await;
+            let result = manager.setup_monitoring(&job_id, job_data).await?;
+            match result {
+                CancellationSetupResult::MonitoringStarted => {
+                    tracing::trace!("Cancellation monitoring started for job {}", job_id.value);
+                    Ok(None)
+                }
+                CancellationSetupResult::AlreadyCancelled => {
+                    tracing::info!(
+                        "Job {} was already cancelled before execution",
+                        job_id.value
+                    );
+                    Ok(None)
+                }
+            }
+        } else {
+            tracing::debug!("No cancel monitoring configured for job {}", job_id.value);
+            Ok(None)
+        }
+    }
+
+    async fn cleanup_cancellation_monitoring(&mut self) -> Result<()> {
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.cleanup_monitoring_impl().await
+        } else if let Some(manager_arc) = &self.cancellation_manager {
+            // 既存manager方式への後方互換
+            let mut manager = manager_arc.lock().await;
+            manager.cleanup_monitoring().await?;
+            Ok(())
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn reset_for_pooling(&mut self) -> Result<()> {
+        // RequestRunnerは通常短時間で完了するため、常にクリーンアップを実行
+        // 将来的にストリーミング対応する場合は、プロセス状態チェックを追加
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.reset_for_pooling_impl().await?;
+        } else {
+            self.cleanup_cancellation_monitoring().await?;
+        }
+
+        // RequestRunner固有の状態リセット
+        // 現在特に状態を持たないが、将来の拡張に備えて構造を用意
+        tracing::debug!("RequestRunner reset for pooling");
+        Ok(())
     }
 }
 

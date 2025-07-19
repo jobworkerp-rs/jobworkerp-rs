@@ -60,39 +60,44 @@ impl RunnerFactory {
         name: &str,
         use_static: bool,
     ) -> Option<Box<dyn RunnerTrait + Send + Sync>> {
+        // Storage設定に応じたキャンセル監視Helper作成
+        let create_cancel_helper = || {
+            use jobworkerp_runner::runner::cancellation_helper::CancelMonitoringHelper;
+            let cancellation_repository = self.app_module.job_queue_cancellation_repository();
+            let cancellation_manager = Box::new(
+                crate::runner::cancellation::RunnerCancellationManager::new_with_repository(
+                    cancellation_repository,
+                ),
+            );
+            CancelMonitoringHelper::new(cancellation_manager)
+        };
+
         match RunnerType::from_str_name(name) {
-            Some(RunnerType::Command) => {
-                let mut runner = CommandRunnerImpl::new();
-
-                // Set up proper cancellation manager with AppModule repository
-                let cancellation_repository = self.app_module.job_queue_cancellation_repository();
-                let cancellation_manager: Box<
-                    dyn jobworkerp_runner::runner::cancellation::RunnerCancellationManager,
-                > = Box::new(
-                    crate::runner::cancellation::RunnerCancellationManager::new_with_repository(
-                        cancellation_repository,
-                    ),
-                );
-                runner.set_cancellation_manager(cancellation_manager);
-
-                Some(Box::new(runner) as Box<dyn RunnerTrait + Send + Sync>)
-            }
-            Some(RunnerType::PythonCommand) => {
-                Some(Box::new(PythonCommandRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
-            }
+            Some(RunnerType::Command) => Some(Box::new(
+                CommandRunnerImpl::new_with_cancel_monitoring(create_cancel_helper()),
+            ) as Box<dyn RunnerTrait + Send + Sync>),
+            Some(RunnerType::PythonCommand) => Some(Box::new(
+                PythonCommandRunner::new_with_cancel_monitoring(create_cancel_helper()),
+            )
+                as Box<dyn RunnerTrait + Send + Sync>),
             Some(RunnerType::Docker) if use_static => {
+                // TODO: DockerExecRunnerにもキャンセル監視対応を追加予定
                 Some(Box::new(DockerExecRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
             }
             Some(RunnerType::Docker) => {
+                // TODO: DockerRunnerにもキャンセル監視対応を追加予定
                 Some(Box::new(DockerRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
             }
             Some(RunnerType::GrpcUnary) => {
+                // TODO: GrpcUnaryRunnerにもキャンセル監視対応を追加予定
                 Some(Box::new(GrpcUnaryRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
             }
-            Some(RunnerType::HttpRequest) => {
-                Some(Box::new(RequestRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
-            }
+            Some(RunnerType::HttpRequest) => Some(Box::new(
+                RequestRunner::new_with_cancel_monitoring(create_cancel_helper()),
+            )
+                as Box<dyn RunnerTrait + Send + Sync>),
             Some(RunnerType::SlackPostMessage) => {
+                // TODO: SlackPostMessageRunnerにもキャンセル監視対応を追加予定
                 Some(Box::new(SlackPostMessageRunner::new()) as Box<dyn RunnerTrait + Send + Sync>)
             }
             Some(RunnerType::InlineWorkflow) => {
@@ -120,17 +125,21 @@ impl RunnerFactory {
                 }
             }
             Some(RunnerType::LlmCompletion) => {
+                // TODO: LLMCompletionRunnerImplにもキャンセル監視対応を追加予定
                 Some(Box::new(LLMCompletionRunnerImpl::new()) as Box<dyn RunnerTrait + Send + Sync>)
             }
             Some(RunnerType::LlmChat) => {
+                // TODO: LLMChatRunnerImplにもキャンセル監視対応を追加予定
                 Some(Box::new(LLMChatRunnerImpl::new(self.app_module.clone()))
                     as Box<dyn RunnerTrait + Send + Sync>)
             }
             _ => {
                 if let Ok(server) = self.mcp_clients.connect_server(name).await {
+                    // TODO: McpServerRunnerImplにもキャンセル監視対応を追加予定
                     Some(Box::new(McpServerRunnerImpl::new(server))
                         as Box<dyn RunnerTrait + Send + Sync>)
                 } else {
+                    // TODO: Plugin Runnersにもキャンセル監視対応を追加予定
                     self.plugins
                         .runner_plugins()
                         .write()
