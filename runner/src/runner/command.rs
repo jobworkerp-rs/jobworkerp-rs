@@ -37,7 +37,7 @@ use proto::jobworkerp::data::{JobData, JobId, JobResult};
  * - command: command to run
  * - child: child process
  *
- * specify multiple arguments with \n separated     
+ * specify multiple arguments with \n separated
  */
 #[async_trait]
 trait CommandRunner: RunnerTrait {
@@ -334,7 +334,7 @@ impl RunnerTrait for CommandRunnerImpl {
                     // Process stdout and stderr concurrently with cancellation monitoring
                     let mut stdout_done = false;
                     let mut stderr_done = false;
-                    
+
                     while !stdout_done || !stderr_done {
                         tokio::select! {
                             stdout_line = stdout_reader.next(), if !stdout_done => {
@@ -420,7 +420,7 @@ impl RunnerTrait for CommandRunnerImpl {
                 };
 
                 tracing::info!(
-                    "command has run: {}, started_at: {}ms, execution_time: {}ms, peak_memory: {}KB, stdout:{:?}, stderr:{:?}", 
+                    "command has run: {}, started_at: {}ms, execution_time: {}ms, peak_memory: {}KB, stdout:{:?}, stderr:{:?}",
                     &data.command,
                     started_at,
                     execution_time_ms,

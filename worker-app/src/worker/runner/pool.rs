@@ -530,8 +530,8 @@ mod tests {
                         JobId { value: 100000 + i as i64 },
                         JobData {
                             worker_id: Some(WorkerId { value: 1 }),
-                            args: format!("test_args_{}", i).into_bytes(),
-                            uniq_key: Some(format!("test_key_{}", i)),
+                            args: format!("test_args_{i}").into_bytes(),
+                            uniq_key: Some(format!("test_key_{i}")),
                             enqueue_time: 1000000 + i as i64,
                             grabbed_until_time: None,
                             run_after_time: 0,
