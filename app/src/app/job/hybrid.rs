@@ -30,6 +30,7 @@ use proto::jobworkerp::data::{
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Clone, Debug)]
 pub struct HybridJobAppImpl {
@@ -281,7 +282,7 @@ impl HybridJobAppImpl {
 
     /// Internal implementation: Proper cancellation processing + cleanup
     async fn cancel_job_with_cleanup(&self, id: &JobId) -> Result<bool> {
-        // 1. Check current job status
+        // Check current job status
         let current_status = self
             .job_processing_status_repository()
             .find_status(id)
@@ -350,25 +351,26 @@ impl HybridJobAppImpl {
             }
         };
 
-        // 3. Cancellation state setting complete (result processing executed by Worker-side ResultProcessor)
-
-        // 4. DB/cache deletion (if necessary)
+        // DB/cache deletion (if necessary)
         let db_deletion_result = match self.rdb_job_repository().delete(id).await {
             Ok(r) => {
                 let _ = self
                     .memory_cache
                     .delete_cache(&Arc::new(Self::find_cache_key(id)))
                     .await;
-                self.redis_job_repository()
-                    .delete(id)
-                    .await
-                    .map(|r2| r || r2)
+                Ok(r)
             }
             Err(e) => Err(e),
         };
+        let redis_deletion_result = self.redis_job_repository().delete(id).await;
+        self.job_processing_status_repository()
+            .delete_status(id)
+            .await?;
 
         // Cancellation success or DB deletion success
-        Ok(cancellation_result || db_deletion_result.unwrap_or(false))
+        Ok(cancellation_result
+            || db_deletion_result.unwrap_or_default()
+            || redis_deletion_result.unwrap_or_default())
     }
 
     /// Active cancellation of running jobs (distributed Worker notification)
@@ -668,18 +670,6 @@ impl JobApp for HybridJobAppImpl {
     ) -> Result<bool> {
         tracing::debug!("complete_job: res_id={}", &id.value);
         if let Some(jid) = data.job_id.as_ref() {
-            // For streaming jobs, don't delete status immediately as the process may still be running
-            let is_streaming_job = stream.is_some();
-            if !is_streaming_job {
-                self.job_processing_status_repository()
-                    .delete_status(jid)
-                    .await?;
-            } else {
-                tracing::debug!(
-                    "complete_job: keeping status for streaming job: {}",
-                    jid.value
-                );
-            }
             match ResponseType::try_from(data.response_type) {
                 Ok(ResponseType::Direct) => {
                     // send result for direct or listen after response
@@ -704,16 +694,15 @@ impl JobApp for HybridJobAppImpl {
                             &jid.value
                         );
                         pubsub_repo.publish_result_stream_data(*jid, stream).await?;
+                        self.delete_job(jid).await?;
                         // Delete status after streaming data is completely published
-                        self.job_processing_status_repository()
-                            .delete_status(jid)
-                            .await?;
                         tracing::debug!(
                             "complete_job(direct): stream data published and status deleted: {}",
                             &jid.value
                         );
+                    } else {
+                        self.delete_job(jid).await?;
                     }
-                    // tokio::time::sleep(Duration::from_secs(3)).await;
                     res
                 }
                 Ok(_rtype) => {
@@ -723,23 +712,16 @@ impl JobApp for HybridJobAppImpl {
                         .publish_result(id, data, true) // XXX to_listen must be set worker.broadcast_results
                         .await;
                     // stream data
-                    let had_stream = stream.is_some();
                     if let Some(stream) = stream {
                         let pubsub_repo = self.job_result_pubsub_repository().clone();
                         pubsub_repo.publish_result_stream_data(*jid, stream).await?;
                         tracing::debug!("complete_job: stream data published: {}", &jid.value);
                     }
                     self.delete_job(jid).await?;
-                    // Delete status after delete_job to avoid interference with cancel_job_with_cleanup
-                    if had_stream {
-                        self.job_processing_status_repository()
-                            .delete_status(jid)
-                            .await?;
-                        tracing::debug!(
-                            "complete_job: status deleted after streaming job completion: {}",
-                            &jid.value
-                        );
-                    }
+                    tracing::debug!(
+                        "complete_job: status deleted after streaming job completion: {}",
+                        &jid.value
+                    );
                     r
                 }
                 _ => {
@@ -766,37 +748,36 @@ impl JobApp for HybridJobAppImpl {
     where
         Self: Send + 'static,
     {
-        let k = Arc::new(Self::find_cache_key(id));
-        // XXX negative memory cache exists
-        self.memory_cache
-            .with_cache(&k, || async {
-                // find from redis as cache
-                let v = self.redis_job_repository().find(id).await;
-                match v {
-                    Ok(opt) => match opt {
-                        Some(v) => Ok(vec![v]),
-                        None => {
-                            let rv = self
-                                .rdb_job_repository()
-                                .find(id)
-                                .await
-                                .map(|r| r.map(|o| vec![o]).unwrap_or_default())?;
-                            if let Some(Job {
-                                id: Some(_),
-                                data: Some(r),
-                                metadata: _, // not store metadata in db
-                            }) = rv.first()
-                            {
-                                self.redis_job_repository().create(id, r).await?;
-                            }
-                            Ok(rv)
-                        }
-                    },
-                    Err(e) => Err(e),
+        // Search order optimization: Redis individual key -> RDB
+
+        // 1. Check Redis individual TTL key first (for running jobs)
+        if let Ok(Some(job)) = self.redis_job_repository().find(id).await {
+            tracing::debug!("Found job {} from Redis individual TTL key", id.value);
+            return Ok(Some(job));
+        }
+
+        // 2. Check RDB and cache result if found
+        if let Ok(Some(job)) = self.rdb_job_repository().find(id).await {
+            tracing::debug!("Found job {} from RDB", id.value);
+
+            // Cache in Redis with appropriate TTL for future lookups
+            if let Some(job_data) = &job.data {
+                // Use default TTL of 1 hour for RDB-retrieved jobs
+                let ttl = Duration::from_secs(3600);
+                if let Err(e) = self
+                    .redis_job_repository()
+                    .create_with_expire(id, job_data, ttl)
+                    .await
+                {
+                    tracing::warn!("Failed to cache job {} in Redis: {:?}", id.value, e);
                 }
-            })
-            .await
-            .map(|r| r.first().map(|o| (*o).clone()))
+            }
+            return Ok(Some(job));
+        }
+
+        // 3. Not found anywhere
+        tracing::debug!("Job {} not found in any storage", id.value);
+        Ok(None)
     }
 
     async fn find_job_list(&self, limit: Option<&i32>, offset: Option<&i64>) -> Result<Vec<Job>>
@@ -1191,7 +1172,7 @@ pub mod tests {
                         metadata.clone(),
                         Some(&worker_id1),
                         None,
-                        jarg1,
+                        jarg1.clone(),
                         None,
                         0,
                         0,
@@ -1212,14 +1193,25 @@ pub mod tests {
                             .unwrap(),
                     )
                     .await
+                    .unwrap()
                     .unwrap();
-                assert!(job.is_none());
+                assert_eq!(job.id, Some(jid));
+                assert_eq!(job.data.as_ref().unwrap().worker_id, Some(worker_id1));
+                assert_eq!(job.data.as_ref().unwrap().args, jarg1);
+                assert_eq!(job.data.as_ref().unwrap().uniq_key, None);
+                assert!(job.data.as_ref().unwrap().enqueue_time > 0);
+                assert_eq!(job.data.as_ref().unwrap().grabbed_until_time, None);
+                assert_eq!(job.data.as_ref().unwrap().run_after_time, 0);
+                assert_eq!(job.data.as_ref().unwrap().retried, 0);
+                assert_eq!(job.data.as_ref().unwrap().priority, 0);
+                assert_eq!(job.data.as_ref().unwrap().timeout, 0);
+                assert!(!job.data.as_ref().unwrap().request_streaming);
                 assert_eq!(
                     app1.job_processing_status_repository()
                         .find_status(&jid)
                         .await
                         .unwrap(),
-                    None
+                    Some(JobProcessingStatus::Pending)
                 );
 
                 (jid, job_res)

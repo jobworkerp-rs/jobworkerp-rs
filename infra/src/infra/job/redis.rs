@@ -18,9 +18,9 @@ use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
 use proto::jobworkerp::data::{Job, JobData, JobId};
 use redis::AsyncCommands;
-use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::sync::Arc;
+use std::time::Duration;
 
 // TODO use if you need (not using in default)
 #[async_trait]
@@ -28,103 +28,83 @@ pub trait RedisJobRepository: UseRedisPool + Sync + 'static
 where
     Self: Send + 'static,
 {
-    const CACHE_KEY: &'static str = "JOB_DEF";
+    const INDIVIDUAL_JOB_KEY_PREFIX: &'static str = "JOB_INDIVIDUAL:";
 
-    // use for cache
-    async fn create(&self, id: &JobId, job: &JobData) -> Result<()> {
-        let res: Result<bool> = self
-            .redis_pool()
-            .get()
-            .await?
-            .hset_nx(Self::CACHE_KEY, id.value, Self::serialize_job(job))
+    // create with individual key TTL for running job visibility (replaces old create)
+    async fn create_with_expire(&self, id: &JobId, job: &JobData, ttl: Duration) -> Result<()> {
+        let job_key = format!("{}{}", Self::INDIVIDUAL_JOB_KEY_PREFIX, id.value);
+        let serialized_job = Self::serialize_job(job);
+
+        let mut conn = self.redis_pool().get().await?;
+
+        // Use SET with EX option for individual key TTL
+        let result: Result<String> = conn
+            .set_ex(&job_key, serialized_job, ttl.as_secs())
             .await
             .map_err(|e| JobWorkerError::RedisError(e).into());
-        match res {
-            Ok(r) => {
-                if r {
-                    Ok(())
-                } else {
-                    Err(JobWorkerError::AlreadyExists(format!(
-                        "job creation error: already exists id={}",
-                        id.value
-                    ))
-                    .into())
-                }
-            }
+
+        match result {
+            Ok(_) => Ok(()),
             Err(e) => Err(e),
         }
     }
 
-    async fn upsert(&self, id: &JobId, job: &JobData) -> Result<bool> {
-        let m = Self::serialize_job(job);
+    async fn upsert(&self, id: &JobId, job: &JobData, ttl: Duration) -> Result<bool> {
+        let job_key = format!("{}{}", Self::INDIVIDUAL_JOB_KEY_PREFIX, id.value);
+        let serialized_job = Self::serialize_job(job);
 
-        let res: Result<bool> = self
-            .redis_pool()
-            .get()
-            .await?
-            .hset(Self::CACHE_KEY, id.value, m)
+        let mut conn = self.redis_pool().get().await?;
+
+        // Use SET with EX option for individual key TTL (always upsert)
+        let result: Result<String> = conn
+            .set_ex(&job_key, serialized_job, ttl.as_secs())
             .await
             .map_err(|e| JobWorkerError::RedisError(e).into());
-        res
+
+        match result {
+            Ok(_) => Ok(true), // Always consider upsert as successful update
+            Err(e) => Err(e),
+        }
     }
 
     async fn delete(&self, id: &JobId) -> Result<bool> {
-        self.redis_pool()
+        let job_key = format!("{}{}", Self::INDIVIDUAL_JOB_KEY_PREFIX, id.value);
+        let deleted: i32 = self
+            .redis_pool()
             .get()
             .await?
-            .hdel(Self::CACHE_KEY, id.value)
+            .del(&job_key)
             .await
-            .map_err(|e| JobWorkerError::RedisError(e).into())
+            .map_err(JobWorkerError::RedisError)?;
+        Ok(deleted > 0)
     }
 
     async fn find(&self, id: &JobId) -> Result<Option<Job>> {
+        let job_key = format!("{}{}", Self::INDIVIDUAL_JOB_KEY_PREFIX, id.value);
+
         match self
             .redis_pool()
             .get()
             .await?
-            .hget(Self::CACHE_KEY, id.value)
+            .get::<_, Option<Vec<u8>>>(&job_key)
             .await
         {
-            Ok(Some(v)) => Self::deserialize_to_job(&v).map(|d| {
-                Some(Job {
-                    id: Some(*id),
-                    data: Some(d),
-                    ..Default::default()
-                })
-            }),
-            Ok(None) => Ok(None),
-            Err(e) => Err(JobWorkerError::RedisError(e).into()),
-        }
-    }
-
-    async fn find_all(&self) -> Result<Vec<Job>> {
-        let res: Result<BTreeMap<i64, Vec<u8>>> = self
-            .redis_pool()
-            .get()
-            .await?
-            .hgetall(Self::CACHE_KEY)
-            .await
-            .map_err(|e| JobWorkerError::RedisError(e).into());
-        res.map(|tree| {
-            tree.iter()
-                .flat_map(|(id, v)| {
-                    Self::deserialize_to_job(v).map(|d| Job {
-                        id: Some(JobId { value: *id }),
+            Ok(Some(v)) => {
+                tracing::debug!("Found job {} from individual TTL key", id.value);
+                Self::deserialize_to_job(&v).map(|d| {
+                    Some(Job {
+                        id: Some(*id),
                         data: Some(d),
                         ..Default::default()
                     })
                 })
-                .collect()
-        })
-    }
-
-    async fn count(&self) -> Result<i64> {
-        self.redis_pool()
-            .get()
-            .await?
-            .hlen(Self::CACHE_KEY)
-            .await
-            .map_err(|e| JobWorkerError::RedisError(e).into())
+            }
+            Ok(None) => {
+                tracing::debug!("Job {} not found in Redis individual key", id.value);
+                Ok(None)
+            }
+            Err(e) => Err(JobWorkerError::RedisError(e).into()),
+        }
     }
 
     fn serialize_job(w: &JobData) -> Vec<u8> {
@@ -251,8 +231,8 @@ async fn redis_test() -> Result<()> {
     repo.delete(&id).await?;
 
     // create and find
-    repo.create(&id, job).await?;
-    assert!(repo.create(&id, job).await.err().is_some()); // already exists
+    let ttl = Duration::from_secs(3600); // 1 hour TTL
+    repo.create_with_expire(&id, job, ttl).await?;
     let res = repo.find(&id).await?;
     assert_eq!(res.and_then(|r| r.data).as_ref(), Some(job));
 
@@ -270,7 +250,7 @@ async fn redis_test() -> Result<()> {
     job2.timeout = 2000;
     job2.request_streaming = false;
     // update and find
-    assert!(!repo.upsert(&id, &job2).await?);
+    assert!(repo.upsert(&id, &job2, ttl).await?);
     let res2 = repo.find(&id).await?;
     assert_eq!(res2.and_then(|r| r.data).as_ref(), Some(&job2));
 
@@ -278,5 +258,66 @@ async fn redis_test() -> Result<()> {
     assert!(repo.delete(&id).await?);
     assert_eq!(repo.find(&id).await?, None);
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn redis_individual_ttl_test() -> Result<()> {
+    use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+    use proto::jobworkerp::data::WorkerId;
+    use std::time::Duration;
+
+    let pool = infra_utils::infra::test::setup_test_redis_pool().await;
+    let redis_client = infra_utils::infra::test::setup_test_redis_client()?;
+    let job_queue_config = Arc::new(JobQueueConfig {
+        expire_job_result_seconds: 60,
+        fetch_interval: 1000,
+    });
+
+    let repo = RedisJobRepositoryImpl {
+        job_queue_config: job_queue_config.clone(),
+        redis_pool: pool,
+        redis_job_processing_status_repository: Arc::new(RedisJobProcessingStatusRepository::new(
+            pool,
+        )),
+        job_result_pubsub_repository:
+            crate::infra::job_result::pubsub::redis::RedisJobResultPubSubRepositoryImpl::new(
+                redis_client,
+                job_queue_config.clone(),
+            ),
+    };
+
+    let id = JobId { value: 12345 };
+    let jargs = ProstMessageCodec::serialize_message(&proto::TestArgs {
+        args: vec!["sleep".to_string(), "1".to_string()],
+    })?;
+    let job = &JobData {
+        worker_id: Some(WorkerId { value: 2 }),
+        args: jargs,
+        uniq_key: Some("ttl_test".to_string()),
+        enqueue_time: 5,
+        grabbed_until_time: Some(6),
+        run_after_time: 7,
+        retried: 8,
+        priority: 9,
+        timeout: 5000, // 5 seconds
+        request_streaming: false,
+    };
+
+    // Test create_with_expire and find
+    let ttl = Duration::from_secs(10); // 10 seconds TTL
+    repo.create_with_expire(&id, job, ttl).await?;
+
+    // Should be able to find from individual key
+    let found_job = repo.find(&id).await?;
+    assert!(found_job.is_some());
+    assert_eq!(found_job.unwrap().data.as_ref(), Some(job));
+
+    // Wait for TTL to expire and test again
+    tokio::time::sleep(Duration::from_secs(11)).await;
+    let expired_result = repo.find(&id).await?;
+    assert!(expired_result.is_none());
+
+    tracing::info!("Individual TTL test completed successfully");
     Ok(())
 }

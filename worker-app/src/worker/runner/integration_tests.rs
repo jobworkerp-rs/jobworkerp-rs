@@ -249,13 +249,15 @@ mod streaming_pool_guard_tests {
             // 既存のMockJobRunnerを使用する代わりに、直接的なアプローチでテスト
             // 計画書の修正が正しく動作することを確認
             tracing::info!("🔍 Testing clone_cancel_helper_for_stream implementation");
-            
-            use jobworkerp_runner::runner::command::CommandRunnerImpl;
-            use jobworkerp_runner::runner::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
+
             use async_trait::async_trait;
             use jobworkerp_runner::runner::cancellation::{
                 CancellationSetupResult, RunnerCancellationManager,
             };
+            use jobworkerp_runner::runner::cancellation_helper::{
+                CancelMonitoringHelper, UseCancelMonitoringHelper,
+            };
+            use jobworkerp_runner::runner::command::CommandRunnerImpl;
             use tokio_util::sync::CancellationToken;
 
             // テスト用のダミーCancellationManager
@@ -279,7 +281,9 @@ mod streaming_pool_guard_tests {
                     _job_id: &proto::jobworkerp::data::JobId,
                     _job_data: &proto::jobworkerp::data::JobData,
                 ) -> anyhow::Result<CancellationSetupResult> {
-                    tracing::info!("✅ Cancellation monitoring setup called - this verifies our fix!");
+                    tracing::info!(
+                        "✅ Cancellation monitoring setup called - this verifies our fix!"
+                    );
                     Ok(CancellationSetupResult::MonitoringStarted)
                 }
 
@@ -301,20 +305,23 @@ mod streaming_pool_guard_tests {
             let cancel_helper = CancelMonitoringHelper::new(manager);
 
             // CommandRunnerImplを作成
-            let mut runner = CommandRunnerImpl::new_with_cancel_monitoring(cancel_helper);
-            
+            let runner = CommandRunnerImpl::new_with_cancel_monitoring(cancel_helper);
+
             // 修正されたclone_cancel_helper_for_streamをテスト
             let cloned_helper = runner.clone_cancel_helper_for_stream();
             assert!(cloned_helper.is_some(), "Clone should succeed");
-            
+
             // 元のhelperがまだ残っていることを確認（これが我々の修正のポイント）
             let original_helper = runner.cancel_monitoring_helper();
-            assert!(original_helper.is_some(), "Original helper should still exist after clone");
-            
+            assert!(
+                original_helper.is_some(),
+                "Original helper should still exist after clone"
+            );
+
             tracing::info!("✅ clone_cancel_helper_for_stream works correctly");
             tracing::info!("✅ Original helper preserved for cancellation monitoring");
             tracing::info!("✅ Real non-static streaming fix validation completed");
-            
+
             Ok(())
         })
     }
