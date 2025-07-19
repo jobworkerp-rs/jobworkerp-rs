@@ -1,9 +1,14 @@
 pub mod map;
 pub mod pool;
 pub mod result;
+pub mod stream_guard;
+
+#[cfg(test)]
+mod integration_tests;
 
 use self::map::UseRunnerPoolMap;
 use self::result::RunnerResultHandler;
+use self::stream_guard::StreamWithPoolGuard;
 use anyhow::anyhow;
 use anyhow::Result;
 use app_wrapper::runner::UseRunnerFactory;
@@ -66,9 +71,31 @@ pub trait JobRunner:
                 .await;
             match p {
                 Ok(Some(runner)) => {
-                    let mut r = runner.lock().await;
-                    tracing::debug!("static runner found: {:?}", r.name());
-                    self.run_job_inner(worker_data, job, &mut r).await
+                    // ストリーミング判定のためjob.dataを先に確認
+                    let is_streaming = job.data.as_ref().map_or(false, |data| data.request_streaming);
+                    
+                    if is_streaming {
+                        // ストリーミング時：Pool Objectを後で返却するため保持
+                        let mut r = runner.lock().await;
+                        tracing::debug!("static runner found (streaming): {:?}", r.name());
+                        let (job_result, stream) = self.run_job_inner(worker_data, job, &mut r).await;
+                        drop(r); // unlock
+                        
+                        let final_stream = if let Some(stream) = stream {
+                            Some(Box::pin(StreamWithPoolGuard::new(stream, runner)) as BoxStream<'static, _>)
+                        } else {
+                            None
+                        };
+                        
+                        (job_result, final_stream)
+                    } else {
+                        // 非ストリーミング時：既存通り（即座にPool返却）
+                        let mut r = runner.lock().await;
+                        tracing::debug!("static runner found (non-streaming): {:?}", r.name());
+                        let result = self.run_job_inner(worker_data, job, &mut r).await;
+                        // runnerは自動的にdropされてPool返却される
+                        result
+                    }
                 }
                 Ok(None) => (self.handle_error_option(worker_data, job, None), None),
                 Err(e) => (self.handle_error_option(worker_data, job, Some(e)), None),
@@ -506,10 +533,11 @@ pub trait JobRunner:
             );
             let (status, mes) = self.job_result_status(&worker_data.retry_policy, data, res);
 
-            // For streaming jobs, we rely on timeout-based cleanup since the stream continues running
-            // The cancellation monitoring will automatically timeout after job_timeout + 30 seconds
+            // For streaming jobs, DO NOT cleanup cancellation monitoring immediately
+            // The process continues running and needs to receive cancellation signals
+            // Cancellation monitoring will timeout automatically after job_timeout + 30 seconds
             tracing::debug!(
-                "Streaming job {} monitoring will auto-cleanup via timeout",
+                "Streaming job {} keeping cancellation monitoring active for process lifetime",
                 job_id.value
             );
 

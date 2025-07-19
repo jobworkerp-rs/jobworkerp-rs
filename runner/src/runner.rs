@@ -43,6 +43,7 @@ use proto::jobworkerp::data::{ResultOutputItem, StreamingOutputType};
 use tonic::async_trait;
 
 pub mod cancellation;
+pub mod cancellation_helper;
 pub mod command;
 pub mod common;
 pub mod docker;
