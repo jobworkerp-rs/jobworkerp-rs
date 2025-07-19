@@ -490,8 +490,12 @@ impl JobApp for RdbChanJobAppImpl {
                             &jid.value
                         );
                         pubsub_repo.publish_result_stream_data(*jid, stream).await?;
+                        // Delete status after streaming data is completely published
+                        self.job_processing_status_repository()
+                            .delete_status(jid)
+                            .await?;
                         tracing::debug!(
-                            "complete_job(direct): stream data published: {}",
+                            "complete_job(direct): stream data published and status deleted: {}",
                             &jid.value
                         );
                     }
@@ -504,12 +508,23 @@ impl JobApp for RdbChanJobAppImpl {
                         .publish_result(id, data, true) // XXX to_listen = worker.broadcast_result (if possible)
                         .await;
                     // broadcast stream data if exists
+                    let had_stream = stream.is_some();
                     if let Some(stream) = stream {
                         let pubsub_repo = self.job_result_pubsub_repository().clone();
                         pubsub_repo.publish_result_stream_data(*jid, stream).await?;
                         tracing::debug!("complete_job: stream data published: {}", &jid.value);
                     }
                     self.delete_job(jid).await?;
+                    // Delete status after delete_job to avoid interference with cancel_job_with_cleanup
+                    if had_stream {
+                        self.job_processing_status_repository()
+                            .delete_status(jid)
+                            .await?;
+                        tracing::debug!(
+                            "complete_job: status deleted after streaming job completion: {}",
+                            &jid.value
+                        );
+                    }
                     r
                 }
                 _ => {

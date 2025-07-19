@@ -305,13 +305,16 @@ impl HybridJobAppImpl {
             }
             Some(JobProcessingStatus::Pending) => {
                 // Pending → Cancelling state change (will be cancelled when Worker picks it up)
-                // XXX: There's a possibility the status changes right after current_status is retrieved,
-                // in which case the cancellation may be ineffective, but this is currently accepted
+                // Note: Due to timing issues, a job might appear as Pending but already be executing.
+                // We broadcast cancellation to ensure running processes are also cancelled.
                 self.job_processing_status_repository()
                     .upsert_status(id, &JobProcessingStatus::Cancelling)
                     .await?;
-                // Pending jobs are handled by state change only (detected by Worker side)
-                tracing::info!("Pending job {} marked as cancelling", id.value);
+                
+                // Broadcast cancellation to handle cases where job is actually running but status hasn't been updated yet
+                self.broadcast_job_cancellation(id).await?;
+                
+                tracing::info!("Pending job {} marked as cancelling with broadcast", id.value);
                 true // Will be properly processed through ResultProcessor on Worker side
             }
             Some(JobProcessingStatus::Cancelling) => {
@@ -662,9 +665,18 @@ impl JobApp for HybridJobAppImpl {
     ) -> Result<bool> {
         tracing::debug!("complete_job: res_id={}", &id.value);
         if let Some(jid) = data.job_id.as_ref() {
-            self.job_processing_status_repository()
-                .delete_status(jid)
-                .await?;
+            // For streaming jobs, don't delete status immediately as the process may still be running
+            let is_streaming_job = stream.is_some();
+            if !is_streaming_job {
+                self.job_processing_status_repository()
+                    .delete_status(jid)
+                    .await?;
+            } else {
+                tracing::debug!(
+                    "complete_job: keeping status for streaming job: {}",
+                    jid.value
+                );
+            }
             match ResponseType::try_from(data.response_type) {
                 Ok(ResponseType::Direct) => {
                     // send result for direct or listen after response
@@ -689,8 +701,12 @@ impl JobApp for HybridJobAppImpl {
                             &jid.value
                         );
                         pubsub_repo.publish_result_stream_data(*jid, stream).await?;
+                        // Delete status after streaming data is completely published
+                        self.job_processing_status_repository()
+                            .delete_status(jid)
+                            .await?;
                         tracing::debug!(
-                            "complete_job(direct): stream data published: {}",
+                            "complete_job(direct): stream data published and status deleted: {}",
                             &jid.value
                         );
                     }
@@ -704,12 +720,23 @@ impl JobApp for HybridJobAppImpl {
                         .publish_result(id, data, true) // XXX to_listen must be set worker.broadcast_results
                         .await;
                     // stream data
+                    let had_stream = stream.is_some();
                     if let Some(stream) = stream {
                         let pubsub_repo = self.job_result_pubsub_repository().clone();
                         pubsub_repo.publish_result_stream_data(*jid, stream).await?;
                         tracing::debug!("complete_job: stream data published: {}", &jid.value);
                     }
                     self.delete_job(jid).await?;
+                    // Delete status after delete_job to avoid interference with cancel_job_with_cleanup
+                    if had_stream {
+                        self.job_processing_status_repository()
+                            .delete_status(jid)
+                            .await?;
+                        tracing::debug!(
+                            "complete_job: status deleted after streaming job completion: {}",
+                            &jid.value
+                        );
+                    }
                     r
                 }
                 _ => {
@@ -835,7 +862,6 @@ impl JobApp for HybridJobAppImpl {
     {
         // 1. Get all job statuses
         let all_statuses = self
-            .redis_job_repository()
             .job_processing_status_repository()
             .find_status_all()
             .await?;

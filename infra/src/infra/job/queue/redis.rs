@@ -524,7 +524,7 @@ impl JobQueueCancellationRepository for RedisJobQueueRepositoryImpl {
                                 Ok(payload_bytes) => {
                                     match <Self as UseJobqueueAndCodec>::deserialize_message::<JobId>(&payload_bytes) {
                                         Ok(job_id) => {
-                                            tracing::trace!("Received cancellation message for job {}", job_id.value);
+                                            tracing::debug!("Received cancellation message for job {}", job_id.value);
                                             if let Err(e) = callback(job_id).await {
                                                 tracing::error!("Cancellation callback error: {:?}", e);
                                             }
@@ -541,12 +541,12 @@ impl JobQueueCancellationRepository for RedisJobQueueRepositoryImpl {
                         }
                         Ok(None) => {
                             // Pubsub stream ended
-                            tracing::info!("Pubsub connection ended");
+                            tracing::debug!("Pubsub connection ended");
                             break;
                         }
                         Err(_timeout) => {
                             // Application-level timeout occurred
-                            tracing::info!("Pubsub connection timed out after {} ms", pubsub_timeout.as_millis());
+                            tracing::debug!("Pubsub connection timed out after {} ms", pubsub_timeout.as_millis());
                             break;
                         }
                     }

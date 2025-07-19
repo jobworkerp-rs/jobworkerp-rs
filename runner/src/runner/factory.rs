@@ -126,7 +126,6 @@ impl RunnerSpecFactory {
                         &mut self,
                         _job_id: &proto::jobworkerp::data::JobId,
                         _job_data: &proto::jobworkerp::data::JobData,
-                        _cancellation_helper: &mut crate::runner::common::cancellation_helper::CancellationHelper,
                     ) -> anyhow::Result<crate::runner::cancellation::CancellationSetupResult>
                     {
                         Ok(crate::runner::cancellation::CancellationSetupResult::MonitoringStarted)
@@ -134,6 +133,14 @@ impl RunnerSpecFactory {
 
                     async fn cleanup_monitoring(&mut self) -> anyhow::Result<()> {
                         Ok(())
+                    }
+
+                    async fn get_token(&self) -> tokio_util::sync::CancellationToken {
+                        tokio_util::sync::CancellationToken::new()
+                    }
+
+                    fn is_cancelled(&self) -> bool {
+                        false
                     }
                 }
 

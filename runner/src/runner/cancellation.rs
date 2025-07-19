@@ -11,7 +11,6 @@ use proto::jobworkerp::data::{JobData, JobId, JobResult};
 use crate::runner::RunnerTrait;
 
 // Import for CancellationHelper integration
-use super::common::cancellation_helper::CancellationHelper;
 
 /// キャンセル監視のセットアップ結果
 #[derive(Debug)]
@@ -31,11 +30,18 @@ pub trait RunnerCancellationManager: Send + Sync + std::fmt::Debug {
         &mut self,
         job_id: &JobId,
         job_data: &JobData,
-        cancellation_helper: &mut CancellationHelper,
     ) -> Result<CancellationSetupResult>;
 
     /// Cleanup cancellation monitoring
     async fn cleanup_monitoring(&mut self) -> Result<()>;
+
+    /// Get cancellation token directly from Manager
+    /// Manager manages cancellation_token and returns pubsub-integrated token
+    async fn get_token(&self) -> tokio_util::sync::CancellationToken;
+
+    /// Check if token is cancelled
+    /// Check if the token managed by Manager is cancelled
+    fn is_cancelled(&self) -> bool;
 }
 
 /// Simple mixin trait for adding cancellation monitoring to runners
