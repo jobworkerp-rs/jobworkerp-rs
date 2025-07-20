@@ -30,6 +30,7 @@ use proto::jobworkerp::data::{
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Clone, Debug)]
 pub struct HybridJobAppImpl {
@@ -281,9 +282,8 @@ impl HybridJobAppImpl {
 
     /// Internal implementation: Proper cancellation processing + cleanup
     async fn cancel_job_with_cleanup(&self, id: &JobId) -> Result<bool> {
-        // 1. Check current job status
+        // Check current job status
         let current_status = self
-            .redis_job_repository()
             .job_processing_status_repository()
             .find_status(id)
             .await?;
@@ -291,8 +291,7 @@ impl HybridJobAppImpl {
         let cancellation_result = match current_status {
             Some(JobProcessingStatus::Running) => {
                 // Running → Cancelling state change
-                self.redis_job_repository()
-                    .job_processing_status_repository()
+                self.job_processing_status_repository()
                     .upsert_status(id, &JobProcessingStatus::Cancelling)
                     .await?;
 
@@ -307,14 +306,19 @@ impl HybridJobAppImpl {
             }
             Some(JobProcessingStatus::Pending) => {
                 // Pending → Cancelling state change (will be cancelled when Worker picks it up)
-                // XXX: There's a possibility the status changes right after current_status is retrieved,
-                // in which case the cancellation may be ineffective, but this is currently accepted
-                self.redis_job_repository()
-                    .job_processing_status_repository()
+                // Note: Due to timing issues, a job might appear as Pending but already be executing.
+                // We broadcast cancellation to ensure running processes are also cancelled.
+                self.job_processing_status_repository()
                     .upsert_status(id, &JobProcessingStatus::Cancelling)
                     .await?;
-                // Pending jobs are handled by state change only (detected by Worker side)
-                tracing::info!("Pending job {} marked as cancelling", id.value);
+
+                // Broadcast cancellation to handle cases where job is actually running but status hasn't been updated yet
+                self.broadcast_job_cancellation(id).await?;
+
+                tracing::info!(
+                    "Pending job {} marked as cancelling with broadcast",
+                    id.value
+                );
                 true // Will be properly processed through ResultProcessor on Worker side
             }
             Some(JobProcessingStatus::Cancelling) => {
@@ -338,34 +342,35 @@ impl HybridJobAppImpl {
                 false // Cancellation failed due to invalid state
             }
             None => {
-                // Status doesn't exist (already completed or non-existent job)
+                // Status doesn't exist - job likely doesn't exist
                 tracing::info!(
-                    "Job {} status not found, may be already completed",
+                    "Job {} status not found, job likely doesn't exist",
                     id.value
                 );
-                false // Cancellation failed
+                false // Cannot cancel non-existent job
             }
         };
 
-        // 3. Cancellation state setting complete (result processing executed by Worker-side ResultProcessor)
-
-        // 4. DB/cache deletion (if necessary)
+        // DB/cache deletion (if necessary)
         let db_deletion_result = match self.rdb_job_repository().delete(id).await {
             Ok(r) => {
                 let _ = self
                     .memory_cache
                     .delete_cache(&Arc::new(Self::find_cache_key(id)))
                     .await;
-                self.redis_job_repository()
-                    .delete(id)
-                    .await
-                    .map(|r2| r || r2)
+                Ok(r)
             }
             Err(e) => Err(e),
         };
+        let redis_deletion_result = self.redis_job_repository().delete(id).await;
+        self.job_processing_status_repository()
+            .delete_status(id)
+            .await?;
 
         // Cancellation success or DB deletion success
-        Ok(cancellation_result || db_deletion_result.unwrap_or(false))
+        Ok(cancellation_result
+            || db_deletion_result.unwrap_or_default()
+            || redis_deletion_result.unwrap_or_default())
     }
 
     /// Active cancellation of running jobs (distributed Worker notification)
@@ -665,10 +670,7 @@ impl JobApp for HybridJobAppImpl {
     ) -> Result<bool> {
         tracing::debug!("complete_job: res_id={}", &id.value);
         if let Some(jid) = data.job_id.as_ref() {
-            self.job_processing_status_repository()
-                .delete_status(jid)
-                .await?;
-            match ResponseType::try_from(data.response_type) {
+            let res = match ResponseType::try_from(data.response_type) {
                 Ok(ResponseType::Direct) => {
                     // send result for direct or listen after response
                     let res = self
@@ -693,11 +695,10 @@ impl JobApp for HybridJobAppImpl {
                         );
                         pubsub_repo.publish_result_stream_data(*jid, stream).await?;
                         tracing::debug!(
-                            "complete_job(direct): stream data published: {}",
+                            "complete_job(direct): stream data published and status deleted: {}",
                             &jid.value
                         );
                     }
-                    // tokio::time::sleep(Duration::from_secs(3)).await;
                     res
                 }
                 Ok(_rtype) => {
@@ -712,16 +713,21 @@ impl JobApp for HybridJobAppImpl {
                         pubsub_repo.publish_result_stream_data(*jid, stream).await?;
                         tracing::debug!("complete_job: stream data published: {}", &jid.value);
                     }
-                    self.delete_job(jid).await?;
+                    tracing::debug!(
+                        "complete_job: status deleted after streaming job completion: {}",
+                        &jid.value
+                    );
                     r
                 }
                 _ => {
                     tracing::warn!("complete_job: invalid response_type: {:?}", &data);
                     // abnormal response type, no publish
-                    self.delete_job(jid).await?;
                     Ok(false)
                 }
-            }
+            };
+            self.delete_job(jid).await?;
+
+            res
         } else {
             // something wrong
             tracing::error!("no job found from result: {:?}", data);
@@ -739,37 +745,36 @@ impl JobApp for HybridJobAppImpl {
     where
         Self: Send + 'static,
     {
-        let k = Arc::new(Self::find_cache_key(id));
-        // XXX negative memory cache exists
-        self.memory_cache
-            .with_cache(&k, || async {
-                // find from redis as cache
-                let v = self.redis_job_repository().find(id).await;
-                match v {
-                    Ok(opt) => match opt {
-                        Some(v) => Ok(vec![v]),
-                        None => {
-                            let rv = self
-                                .rdb_job_repository()
-                                .find(id)
-                                .await
-                                .map(|r| r.map(|o| vec![o]).unwrap_or_default())?;
-                            if let Some(Job {
-                                id: Some(_),
-                                data: Some(r),
-                                metadata: _, // not store metadata in db
-                            }) = rv.first()
-                            {
-                                self.redis_job_repository().create(id, r).await?;
-                            }
-                            Ok(rv)
-                        }
-                    },
-                    Err(e) => Err(e),
+        // Search order optimization: Redis individual key -> RDB
+
+        // 1. Check Redis individual TTL key first (for running jobs)
+        if let Ok(Some(job)) = self.redis_job_repository().find(id).await {
+            tracing::debug!("Found job {} from Redis individual TTL key", id.value);
+            return Ok(Some(job));
+        }
+
+        // 2. Check RDB and cache result if found
+        if let Ok(Some(job)) = self.rdb_job_repository().find(id).await {
+            tracing::debug!("Found job {} from RDB", id.value);
+
+            // Cache in Redis with appropriate TTL for future lookups
+            if let Some(job_data) = &job.data {
+                // Use default TTL of 1 hour for RDB-retrieved jobs
+                let ttl = Duration::from_secs(3600);
+                if let Err(e) = self
+                    .redis_job_repository()
+                    .create_with_expire(id, job_data, ttl)
+                    .await
+                {
+                    tracing::warn!("Failed to cache job {} in Redis: {:?}", id.value, e);
                 }
-            })
-            .await
-            .map(|r| r.first().map(|o| (*o).clone()))
+            }
+            return Ok(Some(job));
+        }
+
+        // 3. Not found anywhere
+        tracing::debug!("Job {} not found in any storage", id.value);
+        Ok(None)
     }
 
     async fn find_job_list(&self, limit: Option<&i32>, offset: Option<&i64>) -> Result<Vec<Job>>
@@ -838,7 +843,6 @@ impl JobApp for HybridJobAppImpl {
     {
         // 1. Get all job statuses
         let all_statuses = self
-            .redis_job_repository()
             .job_processing_status_repository()
             .find_status_all()
             .await?;
@@ -851,6 +855,11 @@ impl JobApp for HybridJobAppImpl {
             .take(*limit.unwrap_or(&100) as usize)
             .collect();
 
+        tracing::debug!(
+            "find_list_with_processing_status: found {} job IDs for status {:?}",
+            target_job_ids.len(),
+            status
+        );
         // 3. Get corresponding job data
         let mut target_jobs = Vec::new();
         for job_id in target_job_ids {
@@ -960,10 +969,7 @@ impl UseRedisRepositoryModule for HybridJobAppImpl {
 }
 impl UseJobProcessingStatusRepository for HybridJobAppImpl {
     fn job_processing_status_repository(&self) -> Arc<dyn JobProcessingStatusRepository> {
-        self.repositories
-            .redis_job_repository()
-            .job_processing_status_repository()
-            .clone()
+        self.repositories.job_processing_status_repository()
     }
 }
 impl UseIdGenerator for HybridJobAppImpl {
@@ -1163,7 +1169,7 @@ pub mod tests {
                         metadata.clone(),
                         Some(&worker_id1),
                         None,
-                        jarg1,
+                        jarg1.clone(),
                         None,
                         0,
                         0,
@@ -1184,14 +1190,25 @@ pub mod tests {
                             .unwrap(),
                     )
                     .await
+                    .unwrap()
                     .unwrap();
-                assert!(job.is_none());
+                assert_eq!(job.id, Some(jid));
+                assert_eq!(job.data.as_ref().unwrap().worker_id, Some(worker_id1));
+                assert_eq!(job.data.as_ref().unwrap().args, jarg1);
+                assert_eq!(job.data.as_ref().unwrap().uniq_key, None);
+                assert!(job.data.as_ref().unwrap().enqueue_time > 0);
+                assert_eq!(job.data.as_ref().unwrap().grabbed_until_time, None);
+                assert_eq!(job.data.as_ref().unwrap().run_after_time, 0);
+                assert_eq!(job.data.as_ref().unwrap().retried, 0);
+                assert_eq!(job.data.as_ref().unwrap().priority, 0);
+                assert_eq!(job.data.as_ref().unwrap().timeout, 0);
+                assert!(!job.data.as_ref().unwrap().request_streaming);
                 assert_eq!(
                     app1.job_processing_status_repository()
                         .find_status(&jid)
                         .await
                         .unwrap(),
-                    None
+                    Some(JobProcessingStatus::Pending)
                 );
 
                 (jid, job_res)

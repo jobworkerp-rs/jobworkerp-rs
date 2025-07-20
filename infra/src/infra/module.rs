@@ -2,6 +2,10 @@ pub mod rdb;
 pub mod redis;
 
 use self::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
+use super::job::queue::{JobQueueCancellationRepository, UseJobQueueCancellationRepository};
+use super::job::status::memory::MemoryJobProcessingStatusRepository;
+use super::job::status::redis::RedisJobProcessingStatusRepository;
+use super::job::status::{JobProcessingStatusRepository, UseJobProcessingStatusRepository};
 use super::{IdGeneratorWrapper, InfraConfigModule, JobQueueConfig};
 use jobworkerp_runner::runner::factory::RunnerSpecFactory;
 use rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
@@ -67,6 +71,21 @@ impl UseRdbChanRepositoryModule for HybridRepositoryModule {
         &self.rdb_chan_module
     }
 }
+impl UseJobQueueCancellationRepository for HybridRepositoryModule {
+    fn job_queue_cancellation_repository(&self) -> Arc<dyn JobQueueCancellationRepository> {
+        // In Hybrid mode, Redis is used preferentially
+        Arc::new(self.redis_module.redis_job_queue_repository.clone())
+    }
+}
+
+impl UseJobProcessingStatusRepository for HybridRepositoryModule {
+    fn job_processing_status_repository(&self) -> Arc<dyn JobProcessingStatusRepository> {
+        // In Hybrid mode, Redis is used preferentially
+        Arc::new(RedisJobProcessingStatusRepository::new(
+            self.redis_module.redis_pool,
+        ))
+    }
+}
 
 // for app module container
 #[derive(Clone, Debug)]
@@ -95,6 +114,25 @@ impl From<Arc<HybridRepositoryModule>> for RedisRdbOptionalRepositoryModule {
         RedisRdbOptionalRepositoryModule {
             redis_module: Some(Arc::new(hybrid_module.redis_module.clone())),
             rdb_module: Some(Arc::new(hybrid_module.rdb_chan_module.clone())),
+        }
+    }
+}
+impl UseJobQueueCancellationRepository for RedisRdbOptionalRepositoryModule {
+    fn job_queue_cancellation_repository(&self) -> Arc<dyn JobQueueCancellationRepository> {
+        match (&self.redis_module, &self.rdb_module) {
+            (Some(redis), _) => Arc::new(redis.redis_job_queue_repository.clone()),
+            (None, Some(rdb)) => Arc::new(rdb.chan_job_queue_repository.clone()),
+            (None, None) => panic!("No repository module available"),
+        }
+    }
+}
+
+impl UseJobProcessingStatusRepository for RedisRdbOptionalRepositoryModule {
+    fn job_processing_status_repository(&self) -> Arc<dyn JobProcessingStatusRepository> {
+        match (&self.redis_module, &self.rdb_module) {
+            (Some(redis), _) => Arc::new(RedisJobProcessingStatusRepository::new(redis.redis_pool)),
+            (None, Some(_rdb)) => Arc::new(MemoryJobProcessingStatusRepository::new()),
+            (None, None) => panic!("No repository module available"),
         }
     }
 }

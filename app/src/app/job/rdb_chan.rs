@@ -20,8 +20,11 @@ use infra::infra::job_result::pubsub::chan::{
 use infra::infra::job_result::pubsub::{JobResultPublisher, JobResultSubscriber};
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
-use infra_utils::infra::cache::{MokaCacheImpl, UseMokaCache};
 use infra_utils::infra::rdb::UseRdbPool;
+use infra_utils::infra::{
+    lock::RwLockWithKey,
+    memory::{self, MemoryCacheConfig, UseMemoryCache},
+};
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, QueueType,
@@ -29,24 +32,55 @@ use proto::jobworkerp::data::{
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
+use stretto::AsyncCache;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RdbChanJobAppImpl {
     app_config_module: Arc<AppConfigModule>,
     id_generator: Arc<IdGeneratorWrapper>,
     repositories: Arc<RdbChanRepositoryModule>,
     worker_app: Arc<dyn WorkerApp + 'static>,
-    memory_cache: MokaCacheImpl<Arc<String>, Job>,
+    // Previous: memory_cache: MokaCacheImpl<Arc<String>, Job>,
+    // UseMemoryCache implementation (Stretto-based)
+    memory_cache: AsyncCache<Arc<String>, Job>,
+    key_lock: Arc<RwLockWithKey<Arc<String>>>,
+    job_cache_ttl: Duration,
     job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository>,
 }
 
+impl std::fmt::Debug for RdbChanJobAppImpl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RdbChanJobAppImpl")
+            .field("app_config_module", &self.app_config_module)
+            .field("id_generator", &self.id_generator)
+            .field("repositories", &self.repositories)
+            .field("worker_app", &"Arc<dyn WorkerApp>")
+            .field("memory_cache", &"AsyncCache<Arc<String>, Job>")
+            .field("key_lock", &"Arc<RwLockWithKey<Arc<String>>>")
+            .field("job_cache_ttl", &self.job_cache_ttl)
+            .field(
+                "job_queue_cancellation_repository",
+                &"Arc<dyn JobQueueCancellationRepository>",
+            )
+            .finish()
+    }
+}
+
 impl RdbChanJobAppImpl {
+    // Configuration constants for UseMemoryCache
+    const MEMORY_CACHE_CONFIG: MemoryCacheConfig = MemoryCacheConfig {
+        num_counters: 12960, // Number of cacheable entries
+        max_cost: 12960,     // Maximum cost (number of items)
+        use_metrics: false,  // Metrics disabled for performance optimization
+    };
+    const JOB_DEFAULT_TTL: Duration = Duration::from_secs(3600); // Default 1 hour TTL
+
     pub fn new(
         app_config_module: Arc<AppConfigModule>,
         id_generator: Arc<IdGeneratorWrapper>,
         repositories: Arc<RdbChanRepositoryModule>,
         worker_app: Arc<dyn WorkerApp + 'static>,
-        memory_cache: MokaCacheImpl<Arc<String>, Job>,
         job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository>,
     ) -> Self {
         Self {
@@ -54,7 +88,13 @@ impl RdbChanJobAppImpl {
             id_generator,
             repositories,
             worker_app,
-            memory_cache,
+
+            // Initialize UseMemoryCache
+            memory_cache: memory::new_memory_cache(&Self::MEMORY_CACHE_CONFIG),
+            key_lock: Arc::new(RwLockWithKey::new(
+                Self::MEMORY_CACHE_CONFIG.max_cost as usize,
+            )),
+            job_cache_ttl: Self::JOB_DEFAULT_TTL,
             job_queue_cancellation_repository,
         }
     }
@@ -122,19 +162,17 @@ impl RdbChanJobAppImpl {
             }
         };
 
-        // 3. Cancellation state setting completed (result processing will be done by Worker's ResultProcessor)
+        let db_deletion_result = self.rdb_job_repository().delete(id).await;
 
-        // 4. DB/cache deletion (if necessary)
-        let db_deletion_result = match self.rdb_job_repository().delete(id).await {
-            Ok(r) => {
-                let _ = self
-                    .memory_cache
-                    .delete_cache(&Arc::new(Self::find_cache_key(id)))
-                    .await;
-                Ok(r)
-            }
-            Err(e) => Err(e),
-        };
+        let cache_key = Arc::new(Self::find_cache_key(id));
+        let _ = self.delete_cache(&cache_key).await.inspect_err(|e| {
+            tracing::warn!("Failed to delete job cache for {}: {:?}", id.value, e)
+        });
+
+        let _ = self
+            .job_processing_status_repository()
+            .delete_status(id)
+            .await?;
 
         // Cancellation success or DB deletion success
         let db_result = db_deletion_result.unwrap_or(false);
@@ -249,7 +287,10 @@ impl RdbChanJobAppImpl {
                     data: Some(data.to_owned()),
                     metadata: (*metadata).clone(),
                 };
-                self.enqueue_job_sync(&job, w).await
+
+                let result = self.enqueue_job_sync(&job, w).await?;
+
+                Ok(result)
             } else if w.periodic_interval > 0 || self.is_run_after_job_data(&data) {
                 let job = Job {
                     id: Some(jid),
@@ -278,7 +319,11 @@ impl RdbChanJobAppImpl {
                 if w.queue_type == QueueType::WithBackup as i32 {
                     // instant job (store rdb for backup, and enqueue to chan)
                     match self.rdb_job_repository().create(&job).await {
-                        Ok(_id) => self.enqueue_job_sync(&job, w).await,
+                        Ok(_id) => {
+                            let result = self.enqueue_job_sync(&job, w).await?;
+
+                            Ok(result)
+                        }
                         Err(e) => Err(e),
                     }
                 } else if w.queue_type == QueueType::ForcedRdb as i32 {
@@ -296,7 +341,8 @@ impl RdbChanJobAppImpl {
                     }
                 } else {
                     // instant job (enqueue to chan only)
-                    self.enqueue_job_sync(&job, w).await
+                    let result = self.enqueue_job_sync(&job, w).await?;
+                    Ok(result)
                 }
             }
         } else {
@@ -440,10 +486,11 @@ impl JobApp for RdbChanJobAppImpl {
                 let res = res_chan.or(res_db);
                 match res {
                     Ok(_updated) => {
-                        let _ = self
-                            .memory_cache
-                            .delete_cache(&Arc::new(Self::find_cache_key(jid)))
-                            .await; // ignore error
+                        // Remove job from cache to ensure consistency
+                        let cache_key = Arc::new(Self::find_cache_key(jid));
+                        let _ = self.delete_cache(&cache_key).await.inspect_err(|e| {
+                            tracing::warn!("Failed to delete job cache for {}: {:?}", jid.value, e)
+                        });
                         Ok(())
                     }
                     Err(e) => Err(e),
@@ -464,10 +511,8 @@ impl JobApp for RdbChanJobAppImpl {
     ) -> Result<bool> {
         tracing::debug!("complete_job: res_id={}", &id.value);
         if let Some(jid) = data.job_id.as_ref() {
-            self.job_processing_status_repository()
-                .delete_status(jid)
-                .await?;
-            match ResponseType::try_from(data.response_type) {
+            // For streaming jobs, don't delete status immediately as the process may still be running
+            let res = match ResponseType::try_from(data.response_type) {
                 Ok(ResponseType::Direct) => {
                     let res = self
                         .job_result_pubsub_repository()
@@ -486,6 +531,10 @@ impl JobApp for RdbChanJobAppImpl {
                             &jid.value
                         );
                     }
+                    tracing::debug!(
+                        "Deleted memory cache for Direct Response job: {}",
+                        jid.value
+                    );
                     res
                 }
                 Ok(_res) => {
@@ -500,16 +549,16 @@ impl JobApp for RdbChanJobAppImpl {
                         pubsub_repo.publish_result_stream_data(*jid, stream).await?;
                         tracing::debug!("complete_job: stream data published: {}", &jid.value);
                     }
-                    self.delete_job(jid).await?;
                     r
                 }
                 _ => {
                     tracing::warn!("complete_job: invalid response_type: {:?}", &data);
                     // abnormal response type, no publish
-                    self.delete_job(jid).await?;
                     Ok(false)
                 }
-            }
+            };
+            self.delete_job(jid).await?;
+            res
         } else {
             // something wrong
             tracing::error!("no job found from result: {:?}", data);
@@ -518,7 +567,6 @@ impl JobApp for RdbChanJobAppImpl {
     }
 
     async fn delete_job(&self, id: &JobId) -> Result<bool> {
-        // Phase 4.5: Updated to use proper cancellation instead of simple deletion
         self.cancel_job_with_cleanup(id).await
     }
 
@@ -528,9 +576,37 @@ impl JobApp for RdbChanJobAppImpl {
         Self: Send + 'static,
     {
         let k = Arc::new(Self::find_cache_key(id));
-        self.memory_cache
-            .with_cache_if_some(&k, || async { self.rdb_job_repository().find(id).await })
-            .await
+
+        match self.find_cache(&k).await {
+            Some(job) => {
+                tracing::debug!("Found job {} in cache", id.value);
+                return Ok(Some(job));
+            }
+            None => {
+                tracing::debug!("Job {} not found in cache, fetching from RDB", id.value);
+                // Cache job with appropriate TTL based on job characteristics
+                match self.rdb_job_repository().find(id).await? {
+                    Some(job) => {
+                        // Cache job from RDB with individual TTL to prevent premature eviction
+                        if let Some(data) = &job.data {
+                            let job_ttl = Duration::from_millis(data.timeout + 300_000); // timeout + 5min safety buffer
+                            tracing::debug!(
+                                "Found job {} from RDB, caching with TTL {:?}",
+                                id.value,
+                                job_ttl
+                            );
+                            // Store in cache separately with TTL
+                            let _ = self.set_cache(k.clone(), job.clone(), Some(&job_ttl)).await;
+                        }
+                        Ok(Some(job))
+                    }
+                    None => {
+                        tracing::debug!("Job {} not found in RDB", id.value);
+                        Ok(None)
+                    }
+                }
+            }
+        }
     }
 
     async fn find_job_list(&self, limit: Option<&i32>, offset: Option<&i64>) -> Result<Vec<Job>>
@@ -715,6 +791,20 @@ impl JobCacheKeys for RdbChanJobAppImpl {}
 
 impl JobBuilder for RdbChanJobAppImpl {}
 
+impl UseMemoryCache<Arc<String>, Job> for RdbChanJobAppImpl {
+    fn cache(&self) -> &AsyncCache<Arc<String>, Job> {
+        &self.memory_cache
+    }
+
+    fn default_ttl(&self) -> Option<&Duration> {
+        Some(&self.job_cache_ttl)
+    }
+
+    fn key_lock(&self) -> &RwLockWithKey<Arc<String>> {
+        &self.key_lock
+    }
+}
+
 impl UseJobQueueConfig for RdbChanJobAppImpl {
     fn job_queue_config(&self) -> &JobQueueConfig {
         &self.app_config_module.job_queue_config
@@ -754,6 +844,8 @@ pub trait RdbChanJobAppHelper:
     + JobBuilder
     + UseJobQueueConfig
     + UseChanJobResultPubSubRepository
+    + UseMemoryCache<Arc<String>, Job>
+    + JobCacheKeys
 where
     Self: Sized + 'static,
 {
@@ -781,6 +873,22 @@ where
             .await
         {
             Ok(_) => {
+                if let Job {
+                    id: Some(id),
+                    data: Some(job_data),
+                    ..
+                } = &job
+                {
+                    let cache_key = Arc::new(Self::find_cache_key(id));
+                    let job_ttl = Duration::from_millis(job_data.timeout + 300_000); // timeout(ms) + 5min buffer
+
+                    self.set_cache(cache_key, job.clone(), Some(&job_ttl)).await;
+                    tracing::debug!(
+                        "Cached Direct Response job {} with TTL {:?} for running job visibility",
+                        id.value,
+                        job_ttl
+                    );
+                }
                 // update status (not use direct response)
                 self.job_processing_status_repository()
                     .upsert_status(&job_id, &JobProcessingStatus::Pending)
@@ -882,11 +990,12 @@ mod tests {
         } else {
             Arc::new(IdGeneratorWrapper::new())
         };
+        // UseMemoryCache is auto-initialized in RdbChanJobAppImpl::new(), explicit creation unnecessary here
+        // MokaCacheConfig used by other applications (RunnerApp, WorkerApp)
         let moka_config = infra_utils::infra::cache::MokaCacheConfig {
             num_counters: 10000,
             ttl: Some(Duration::from_millis(100)),
         };
-        let job_memory_cache = infra_utils::infra::cache::MokaCacheImpl::new(&moka_config);
         let storage_config = Arc::new(StorageConfig {
             r#type: StorageType::Standalone,
             restore_at_startup: Some(false),
@@ -944,7 +1053,6 @@ mod tests {
                 id_generator,
                 repositories,
                 Arc::new(worker_app),
-                job_memory_cache,
                 job_queue_cancellation_repository,
             ),
             subscrber,
@@ -976,7 +1084,7 @@ mod tests {
             };
             let worker_id = app.worker_app().create(&wd).await?;
             let jargs = JobqueueAndCodec::serialize_message(&proto::TestArgs {
-                args: vec!["/".to_string()],
+                args: vec!["ls".to_string(), "/".to_string()],
             });
             // move
             let worker_id1 = worker_id;
@@ -984,13 +1092,14 @@ mod tests {
             let app1 = app.clone();
             // need waiting for direct response
             let metadata = Arc::new(HashMap::new());
+            let wd1 = wd.clone();
             let jh = tokio::spawn(async move {
                 let res = app1
                     .enqueue_job(
                         metadata.clone(),
                         Some(&worker_id1),
                         None,
-                        jargs1,
+                        jargs1.clone(),
                         None,
                         0,
                         0,
@@ -1002,7 +1111,7 @@ mod tests {
                 let (jid, job_res, _) = res.unwrap();
                 assert!(jid.value > 0);
                 assert!(job_res.is_some());
-                // cannot find job in direct response type
+                // can find job in direct response type until completed
                 let job = app1
                     .find_job(
                         &job_res
@@ -1012,13 +1121,43 @@ mod tests {
                     )
                     .await
                     .unwrap();
-                assert!(job.is_none());
+                assert!(job.is_some());
+                let job = job.unwrap();
+                assert_eq!(job.id.as_ref().unwrap().value, jid.value);
+                assert_eq!(job.data.as_ref().unwrap().worker_id, Some(worker_id1));
+                assert_eq!(job.data.as_ref().unwrap().args, jargs1);
+
+                let job_res = job_res.unwrap();
+                assert_eq!(job_res.id.as_ref().unwrap().value, jid.value);
+                assert_eq!(
+                    job_res.data.as_ref().unwrap().job_id,
+                    Some(JobId { value: jid.value })
+                );
+                assert_eq!(job_res.data.as_ref().unwrap().worker_id, Some(worker_id1));
+                assert_eq!(job_res.data.as_ref().unwrap().worker_name, wd1.name);
+                assert_eq!(job_res.data.as_ref().unwrap().args, jargs1);
+                assert_eq!(
+                    job_res.data.as_ref().unwrap().status,
+                    ResultStatus::Success as i32
+                );
+                assert_eq!(
+                    job_res.data.as_ref().unwrap().output,
+                    Some(ResultOutput {
+                        items: { "test".as_bytes().to_vec() },
+                    })
+                );
+                assert_eq!(
+                    job_res.data.as_ref().unwrap().status,
+                    ResultStatus::Success as i32
+                );
+                // check job processing status
+                // not running worker, only by complete_job()
                 assert_eq!(
                     app1.job_processing_status_repository()
                         .find_status(&jid)
                         .await
                         .unwrap(),
-                    None
+                    Some(JobProcessingStatus::Pending)
                 );
                 (jid, job_res)
             });
@@ -1060,7 +1199,7 @@ mod tests {
             let (jid, job_res) = jh.await?;
             tokio::time::sleep(Duration::from_millis(100)).await;
 
-            assert_eq!(&job_res.unwrap(), &result);
+            assert_eq!(&job_res, &result);
             let job0 = app.find_job(&jid).await?;
             assert!(job0.is_none());
             assert_eq!(

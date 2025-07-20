@@ -4,7 +4,7 @@ use app::app::WorkerConfig;
 use app_wrapper::runner::RunnerFactory;
 use deadpool::managed::{Object, Timeouts};
 use jobworkerp_base::error::JobWorkerError;
-use jobworkerp_runner::runner::RunnerTrait;
+use jobworkerp_runner::runner::cancellation::CancellableRunner;
 use proto::jobworkerp::data::{RunnerData, WorkerData, WorkerId};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -74,7 +74,7 @@ impl RunnerFactoryWithPoolMap {
         &self,
         runner_data: &RunnerData,
         worker_data: &WorkerData,
-    ) -> Result<Box<dyn RunnerTrait + Send + Sync>> {
+    ) -> Result<Box<dyn CancellableRunner + Send + Sync>> {
         let mut r = self
             .runner_factory
             .create_by_name(&runner_data.name, worker_data.use_static)

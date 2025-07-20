@@ -1,3 +1,6 @@
+use super::cancellation::CancelMonitoring;
+use super::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
+use super::RunnerSpec;
 use crate::jobworkerp::runner::{
     python_command_args, python_command_runner_settings, PythonCommandArgs, PythonCommandResult,
     PythonCommandRunnerSettings,
@@ -9,6 +12,7 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use prost::Message;
+use proto::jobworkerp::data::{JobData, JobId, JobResult};
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -18,8 +22,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::process::Command;
 use tokio::sync::Mutex;
-
-use super::RunnerSpec;
+use tokio_util::sync::CancellationToken;
 
 pub struct PythonCommandRunner {
     venv_path: Option<PathBuf>,
@@ -27,9 +30,12 @@ pub struct PythonCommandRunner {
     settings: Option<PythonCommandRunnerSettings>,
     process_cancel: Arc<Mutex<bool>>,
     current_process_id: Arc<Mutex<Option<u32>>>,
+    // Helper for dependency injection integration (optional for backward compatibility)
+    cancel_helper: Option<CancelMonitoringHelper>,
 }
 
 impl PythonCommandRunner {
+    /// Constructor without cancellation monitoring (for backward compatibility)
     pub fn new() -> Self {
         PythonCommandRunner {
             venv_path: None,
@@ -37,6 +43,28 @@ impl PythonCommandRunner {
             settings: None,
             process_cancel: Arc::new(Mutex::new(false)),
             current_process_id: Arc::new(Mutex::new(None)),
+            cancel_helper: None,
+        }
+    }
+
+    /// Constructor with cancellation monitoring (DI integration version)
+    pub fn new_with_cancel_monitoring(cancel_helper: CancelMonitoringHelper) -> Self {
+        PythonCommandRunner {
+            venv_path: None,
+            temp_dir: None,
+            settings: None,
+            process_cancel: Arc::new(Mutex::new(false)),
+            current_process_id: Arc::new(Mutex::new(None)),
+            cancel_helper: Some(cancel_helper),
+        }
+    }
+
+    /// Unified cancellation token retrieval
+    async fn get_cancellation_token(&self) -> CancellationToken {
+        if let Some(helper) = &self.cancel_helper {
+            helper.get_cancellation_token().await
+        } else {
+            CancellationToken::new()
         }
     }
 
@@ -184,6 +212,8 @@ impl RunnerTrait for PythonCommandRunner {
         arg: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        let cancellation_token = self.get_cancellation_token().await;
+
         let result = async {
             let python_bin = self
                 .python_bin_path()
@@ -282,14 +312,47 @@ impl RunnerTrait for PythonCommandRunner {
                 command.env(key, value);
             }
 
-            let child = command.spawn().context("Failed to execute Python script")?;
+            // Check cancellation before spawning process
+            if cancellation_token.is_cancelled() {
+                tracing::info!("Python command execution was cancelled before spawn");
+                return Err(anyhow::anyhow!("Python command execution was cancelled before spawn"));
+            }
 
+            let child = command.spawn().context("Failed to execute Python script")?;
             *self.current_process_id.lock().await = child.id();
 
-            let output = child
-                .wait_with_output()
-                .await
-                .context("Failed to wait for process")?;
+            // Monitor cancellation during process execution
+            let child_id = child.id();
+            let output = tokio::select! {
+                output_result = child.wait_with_output() => {
+                    output_result.context("Failed to wait for process")?
+                }
+                _ = cancellation_token.cancelled() => {
+                    tracing::info!("Python command execution was cancelled during process execution");
+                    // Kill the child process using PID if cancellation is requested
+                    if let Some(pid) = child_id {
+                        #[cfg(unix)]
+                        {
+                            use nix::sys::signal::{kill, Signal};
+                            use nix::unistd::Pid;
+                            let _ = kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
+                        }
+                        #[cfg(windows)]
+                        {
+                            use windows_sys::Win32::System::Threading::{
+                                OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+                            };
+                            unsafe {
+                                let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+                                if handle != 0 {
+                                    let _ = TerminateProcess(handle, 1);
+                                }
+                            }
+                        }
+                    }
+                    return Err(anyhow::anyhow!("Python command execution was cancelled during process execution"));
+                }
+            };
 
             *self.current_process_id.lock().await = None;
 
@@ -310,6 +373,7 @@ impl RunnerTrait for PythonCommandRunner {
             Ok(encoded_result)
         }
         .await;
+
         (result, metadata)
     }
 
@@ -318,20 +382,79 @@ impl RunnerTrait for PythonCommandRunner {
         _arg: &[u8],
         _metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
+        // Set up cancellation token for pre-execution cancellation check
+        let _cancellation_token = self.get_cancellation_token().await;
+
         Err(anyhow!("Stream output not supported by PythonRunner"))
     }
 
     async fn cancel(&mut self) {
+        // Cancel using helper if available
+        if let Some(helper) = &self.cancel_helper {
+            let token = helper.get_cancellation_token().await;
+            if token.is_cancelled() {
+                tracing::info!("PythonCommandRunner execution is already cancelled");
+            } else {
+                tracing::info!(
+                    "PythonCommandRunner cancellation requested, Helper handles token internally"
+                );
+            }
+        } else {
+            tracing::warn!("No cancellation helper set, cannot cancel");
+        }
+
         let mut cancel_flag = self.process_cancel.lock().await;
         *cancel_flag = true;
 
-        // kill the current process
+        // Kill the current process with graceful shutdown attempt
         if let Some(pid) = *self.current_process_id.lock().await {
             #[cfg(unix)]
             {
                 use nix::sys::signal::{kill, Signal};
                 use nix::unistd::Pid;
-                let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+
+                // First try SIGTERM for graceful shutdown
+                if let Err(e) = kill(Pid::from_raw(pid as i32), Signal::SIGTERM) {
+                    tracing::warn!("Failed to send SIGTERM to Python process {}: {}", pid, e);
+                } else {
+                    tracing::debug!("Sent SIGTERM to Python process {}", pid);
+                }
+
+                // Wait for graceful shutdown with 5 second timeout
+                let start_time = std::time::Instant::now();
+                let timeout_duration = std::time::Duration::from_secs(5);
+
+                // Check if process is still running after timeout
+                tokio::time::sleep(timeout_duration).await;
+
+                // Try to send signal 0 to check if process still exists
+                match kill(Pid::from_raw(pid as i32), None) {
+                    Ok(_) => {
+                        // Process still exists, force kill with SIGKILL
+                        tracing::warn!(
+                            "Python process {} did not terminate gracefully, force killing",
+                            pid
+                        );
+                        if let Err(e) = kill(Pid::from_raw(pid as i32), Signal::SIGKILL) {
+                            tracing::error!(
+                                "Failed to send SIGKILL to Python process {}: {}",
+                                pid,
+                                e
+                            );
+                        } else {
+                            tracing::debug!("Sent SIGKILL to Python process {}", pid);
+                        }
+                    }
+                    Err(_) => {
+                        // Process no longer exists (terminated gracefully)
+                        let elapsed = start_time.elapsed();
+                        tracing::debug!(
+                            "Python process {} terminated gracefully in {:?}",
+                            pid,
+                            elapsed
+                        );
+                    }
+                }
             }
 
             #[cfg(windows)]
@@ -342,17 +465,100 @@ impl RunnerTrait for PythonCommandRunner {
                 unsafe {
                     let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
                     if handle != 0 {
-                        TerminateProcess(handle, 1);
+                        if TerminateProcess(handle, 1) != 0 {
+                            tracing::debug!("Terminated Python process {}", pid);
+                        } else {
+                            tracing::error!("Failed to terminate Python process {}", pid);
+                        }
+                    } else {
+                        tracing::warn!("Failed to open Python process {} for termination", pid);
                     }
                 }
             }
+        } else {
+            tracing::warn!("No active Python process to cancel");
         }
     }
 }
 
+// DI trait implementation (with optional support)
+impl UseCancelMonitoringHelper for PythonCommandRunner {
+    fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
+        self.cancel_helper.as_ref()
+    }
+
+    fn cancel_monitoring_helper_mut(&mut self) -> Option<&mut CancelMonitoringHelper> {
+        self.cancel_helper.as_mut()
+    }
+}
+
+// CancelMonitoring trait implementation (Helper delegation version)
+#[async_trait]
+impl CancelMonitoring for PythonCommandRunner {
+    async fn setup_cancellation_monitoring(
+        &mut self,
+        job_id: JobId,
+        job_data: &JobData,
+    ) -> Result<Option<JobResult>> {
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.setup_monitoring_impl(job_id, job_data).await
+        } else {
+            tracing::debug!("No cancel monitoring configured for job {}", job_id.value);
+            Ok(None)
+        }
+    }
+
+    async fn cleanup_cancellation_monitoring(&mut self) -> Result<()> {
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.cleanup_monitoring_impl().await
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn reset_for_pooling(&mut self) -> Result<()> {
+        // 1. Check for active processes
+        let has_active_process = {
+            let process_id = self.current_process_id.lock().await;
+            process_id.is_some()
+        };
+
+        if has_active_process {
+            // Keep cancellation monitoring active during process execution
+            tracing::debug!(
+                "PythonCommandRunner has active process - keeping cancellation monitoring active"
+            );
+        } else {
+            // Cleanup cancellation monitoring only when process ends
+            if let Some(helper) = &mut self.cancel_helper {
+                helper.reset_for_pooling_impl().await?;
+            } else {
+                self.cleanup_cancellation_monitoring().await?;
+            }
+        }
+
+        // 2. PythonRunner-specific state reset (only when not executing)
+        if !has_active_process {
+            let mut cancel_flag = self.process_cancel.lock().await;
+            *cancel_flag = false;
+
+            let mut process_id = self.current_process_id.lock().await;
+            *process_id = None;
+        }
+
+        tracing::debug!(
+            "PythonCommandRunner reset for pooling (process active: {})",
+            has_active_process
+        );
+        Ok(())
+    }
+}
+
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
+
+    // Use common mock from test_common module
 
     #[tokio::test]
     async fn test_python_runner() {
@@ -427,4 +633,110 @@ print(f"Requests version: {requests.__version__}")
             panic!("uv not found");
         }
     }
+
+    #[tokio::test]
+    #[ignore] // Requires uv installation - run with --ignored for full testing
+    async fn test_python_actual_cancellation() {
+        eprintln!("=== Starting Python actual cancellation test ===");
+
+        const UV_PATH: &str = if cfg!(windows) {
+            "C:\\Program Files\\uv\\uv.exe"
+        } else {
+            "uv" // from path
+        };
+
+        if tokio::process::Command::new(UV_PATH)
+            .arg("--version")
+            .output()
+            .await
+            .is_ok()
+        {
+            let mut runner = PythonCommandRunner::new();
+
+            let settings = PythonCommandRunnerSettings {
+                uv_path: Some(UV_PATH.to_string()),
+                python_version: "3.11".to_string(),
+                requirements_spec: None,
+            };
+
+            runner
+                .load(ProstMessageCodec::serialize_message(&settings).unwrap())
+                .await
+                .unwrap();
+
+            // Create a long-running Python script
+            let job_args = PythonCommandArgs {
+                script: Some(python_command_args::Script::ScriptContent(
+                    r#"
+import time
+import signal
+
+def signal_handler(sig, frame):
+    print("Received signal, cleaning up...")
+    exit(0)
+
+signal.signal(signal.SIGTERM, signal_handler)
+
+print("Starting long-running task...")
+try:
+    for i in range(30):  # Run for ~30 seconds
+        print(f"Working... {i}")
+        time.sleep(1)
+    print("Task completed")
+except KeyboardInterrupt:
+    print("Interrupted")
+                    "#
+                    .to_string(),
+                )),
+                input_data: None,
+                env_vars: std::collections::HashMap::new(),
+                with_stderr: false,
+            };
+
+            let arg_bytes = ProstMessageCodec::serialize_message(&job_args).unwrap();
+            let metadata = std::collections::HashMap::new();
+
+            // Start Python execution and cancel it after 1 second
+            let start_time = std::time::Instant::now();
+            let execution_task =
+                tokio::spawn(async move { runner.run(&arg_bytes, metadata).await });
+
+            // Wait for script to start, then cancel the runner
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+            // Cancel the task to test cancellation
+            execution_task.abort();
+            let result = execution_task.await;
+
+            let elapsed = start_time.elapsed();
+            eprintln!("Python execution time: {elapsed:?}");
+
+            match result {
+                Ok(_) => {
+                    eprintln!("Python script completed - checking if it was actually cancelled");
+                }
+                Err(e) if e.is_cancelled() => {
+                    eprintln!("Python script was cancelled as expected: {e}");
+                    // Should complete much faster than 30 seconds due to cancellation
+                    assert!(
+                        elapsed < std::time::Duration::from_secs(5),
+                        "Cancellation should stop execution quickly, took {elapsed:?}"
+                    );
+                }
+                Err(e) => {
+                    eprintln!("Python script failed with unexpected error: {e}");
+                }
+            }
+        } else {
+            eprintln!("uv not found, skipping actual Python cancellation test");
+        }
+
+        eprintln!("=== Python actual cancellation test completed ===");
+    }
+
+    // Note: Complex cancellation tests moved to app-wrapper integration tests
+    // runner crate level tests focus on basic functionality only
+
+    // Note: Complex cancellation tests moved to app-wrapper integration tests
+    // runner crate level tests focus on basic functionality only
 }

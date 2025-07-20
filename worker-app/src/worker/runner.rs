@@ -1,9 +1,14 @@
 pub mod map;
 pub mod pool;
 pub mod result;
+pub mod stream_guard;
+
+#[cfg(test)]
+mod integration_tests;
 
 use self::map::UseRunnerPoolMap;
 use self::result::RunnerResultHandler;
+use self::stream_guard::{StreamWithCancelGuard, StreamWithPoolGuard};
 use anyhow::anyhow;
 use anyhow::Result;
 use app_wrapper::runner::UseRunnerFactory;
@@ -14,7 +19,7 @@ use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::UseIdGenerator;
 use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
-use jobworkerp_runner::runner::RunnerTrait;
+use jobworkerp_runner::runner::cancellation::CancellableRunner;
 use proto::jobworkerp::data::JobResult;
 use proto::jobworkerp::data::JobResultId;
 use proto::jobworkerp::data::ResultOutputItem;
@@ -66,9 +71,31 @@ pub trait JobRunner:
                 .await;
             match p {
                 Ok(Some(runner)) => {
-                    let mut r = runner.lock().await;
-                    tracing::debug!("static runner found: {:?}", r.name());
-                    self.run_job_inner(worker_data, job, &mut r).await
+                    // Check job.data first for streaming determination
+                    let is_streaming = job.data.as_ref().is_some_and(|data| data.request_streaming);
+
+                    if is_streaming {
+                        // Streaming: Keep Pool Object for later return
+                        let mut r = runner.lock().await;
+                        tracing::debug!("static runner found (streaming): {:?}", r.name());
+                        let (job_result, stream) =
+                            self.run_job_inner(worker_data, job, &mut r).await;
+                        drop(r); // unlock
+
+                        let final_stream = stream.map(|stream| {
+                            Box::pin(StreamWithPoolGuard::new(stream, runner))
+                                as BoxStream<'static, _>
+                        });
+
+                        (job_result, final_stream)
+                    } else {
+                        // Non-streaming: Existing behavior (immediate Pool return)
+                        let mut r = runner.lock().await;
+                        tracing::debug!("static runner found (non-streaming): {:?}", r.name());
+                        let result = self.run_job_inner(worker_data, job, &mut r).await;
+                        // runner is automatically dropped and returned to Pool
+                        result
+                    }
                 }
                 Ok(None) => (self.handle_error_option(worker_data, job, None), None),
                 Err(e) => (self.handle_error_option(worker_data, job, Some(e)), None),
@@ -79,9 +106,37 @@ pub trait JobRunner:
                 .get_non_static_runner(runner_data, worker_data)
                 .await;
             match rres {
-                Ok(mut runner) => {
+                Ok(runner) => {
                     tracing::debug!("non-static runner found: {:?}", runner.name());
-                    self.run_job_inner(worker_data, job, &mut runner).await
+
+                    // Streaming determination
+                    let is_streaming = job.data.as_ref().is_some_and(|data| data.request_streaming);
+
+                    if is_streaming {
+                        // Streaming: Clone CancelHelper using type-safe access
+                        let cancel_helper = runner.clone_cancel_helper_for_stream();
+
+                        let mut runner = runner;
+                        let (job_result, stream) =
+                            self.run_job_inner(worker_data, job, &mut runner).await;
+
+                        let final_stream = if let Some(stream) = stream {
+                            if let Some(cancel_helper) = cancel_helper {
+                                Some(Box::pin(StreamWithCancelGuard::new(stream, cancel_helper))
+                                    as BoxStream<'static, _>)
+                            } else {
+                                Some(stream)
+                            }
+                        } else {
+                            None
+                        };
+
+                        (job_result, final_stream)
+                    } else {
+                        // Non-streaming: Existing behavior
+                        let mut runner = runner;
+                        self.run_job_inner(worker_data, job, &mut runner).await
+                    }
                 }
                 Err(e) => (self.handle_error_option(worker_data, job, Some(e)), None),
             }
@@ -118,14 +173,148 @@ pub trait JobRunner:
         )
     }
 
+    /// Setup cancellation monitoring if the runner supports it
+    /// Returns Some(JobResult) if the job should be cancelled immediately, None to continue execution
+    async fn setup_cancellation_monitoring_if_supported(
+        &self,
+        job_id: &proto::jobworkerp::data::JobId,
+        data: &proto::jobworkerp::data::JobData,
+        runner_impl: &mut Box<dyn CancellableRunner + Send + Sync>,
+    ) -> Option<JobResult> {
+        // Type-safe cancellation monitoring setup using CancellableRunner trait
+        tracing::debug!(
+            "Setting up cancellation monitoring for job {}",
+            job_id.value
+        );
+
+        match runner_impl
+            .as_cancel_monitoring()
+            .setup_cancellation_monitoring(*job_id, data)
+            .await
+        {
+            Ok(Some(job_result)) => {
+                tracing::info!("Job {} should be cancelled immediately", job_id.value);
+                Some(job_result)
+            }
+            Ok(None) => {
+                tracing::debug!(
+                    "Cancellation monitoring setup successful for job {}",
+                    job_id.value
+                );
+                None
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to setup cancellation monitoring for job {}: {:?}",
+                    job_id.value,
+                    e
+                );
+                None
+            }
+        }
+    }
+
+    /// Cleanup cancellation monitoring if the runner supports it
+    async fn cleanup_cancellation_monitoring_if_supported(
+        &self,
+        job_id: &proto::jobworkerp::data::JobId,
+        runner_impl: &mut Box<dyn CancellableRunner + Send + Sync>,
+    ) {
+        // Type-safe cancellation monitoring cleanup using CancellableRunner trait
+        tracing::trace!(
+            "Cleaning up cancellation monitoring for job {}",
+            job_id.value
+        );
+
+        if let Err(e) = runner_impl
+            .as_cancel_monitoring()
+            .cleanup_cancellation_monitoring()
+            .await
+        {
+            tracing::warn!(
+                "Failed to cleanup cancellation monitoring for job {}: {:?}",
+                job_id.value,
+                e
+            );
+        }
+    }
+
+    /// Reset cancellation monitoring state for pooling if the runner supports it
+    async fn reset_for_pooling_if_supported(
+        &self,
+        runner_impl: &mut Box<dyn CancellableRunner + Send + Sync>,
+    ) {
+        // Type-safe pooling reset using CancellableRunner trait
+        tracing::trace!("Resetting cancellation monitoring for pooling");
+
+        if let Err(e) = runner_impl.as_cancel_monitoring().reset_for_pooling().await {
+            tracing::warn!(
+                "Failed to reset cancellation monitoring for pooling: {:?}",
+                e
+            );
+        }
+    }
+
+    /// Create result for cancelled job
+    fn create_cancelled_job_result(&self, job: Job, worker_data: &WorkerData) -> JobResult {
+        use command_utils::util::datetime;
+        use std::collections::HashMap;
+
+        let data = job.data.unwrap_or_default();
+        let metadata = HashMap::new();
+
+        let job_result_data = JobResultData {
+            job_id: job.id,
+            worker_id: data.worker_id,
+            worker_name: worker_data.name.clone(),
+            args: data.args,
+            uniq_key: data.uniq_key,
+            status: ResultStatus::Cancelled as i32,
+            output: Some(ResultOutput {
+                items: b"Job was cancelled before execution".to_vec(),
+            }),
+            retried: data.retried,
+            max_retry: 0, // No retry on cancellation
+            priority: data.priority,
+            timeout: data.timeout,
+            request_streaming: data.request_streaming,
+            enqueue_time: data.enqueue_time,
+            run_after_time: data.run_after_time,
+            start_time: datetime::now_millis(),
+            end_time: datetime::now_millis(),
+            response_type: worker_data.response_type,
+            store_success: false,
+            store_failure: true,
+        };
+
+        JobResult {
+            id: Some(JobResultId {
+                value: self.id_generator().generate_id().unwrap_or_default(),
+            }),
+            data: Some(job_result_data),
+            metadata,
+        }
+    }
+
     #[allow(unstable_name_collisions)] // for flatten()
     async fn run_job_inner(
         &'static self,
         worker_data: &WorkerData,
         job: Job,
-        runner_impl: &mut Box<dyn RunnerTrait + Send + Sync>,
+        runner_impl: &mut Box<dyn CancellableRunner + Send + Sync>,
     ) -> (JobResult, Option<BoxStream<'static, ResultOutputItem>>) {
         let data = job.data.as_ref().unwrap(); // XXX unwrap
+
+        // Setup cancellation monitoring if runner supports it
+        let job_id = job.id.as_ref().unwrap();
+        if let Some(cancelled_result) = self
+            .setup_cancellation_monitoring_if_supported(job_id, data, runner_impl)
+            .await
+        {
+            // Job was already cancelled, return the cancellation result immediately
+            return (cancelled_result, None);
+        }
+
         let run_after_time = data.run_after_time;
 
         let wait = run_after_time - datetime::now_millis();
@@ -156,6 +345,15 @@ pub trait JobRunner:
                 end - start,
             );
             let (status, mes) = self.job_result_status(&worker_data.retry_policy, data, res);
+
+            // For streaming jobs, DO NOT cleanup cancellation monitoring immediately
+            // The process continues running and needs to receive cancellation signals
+            // Cancellation monitoring will timeout automatically after job_timeout + 30 seconds
+            tracing::debug!(
+                "Streaming job {} keeping cancellation monitoring active for process lifetime",
+                job_id.value
+            );
+
             (
                 self.job_result_data(
                     job,
@@ -178,6 +376,11 @@ pub trait JobRunner:
             tracing::debug!("end runner: {}, duration:{}(ms)", &name, end - start);
             // TODO
             let (status, mes) = self.job_result_status(&worker_data.retry_policy, data, res);
+
+            // Cleanup cancellation monitoring
+            self.cleanup_cancellation_monitoring_if_supported(job_id, runner_impl)
+                .await;
+
             (
                 self.job_result_data(
                     job,
@@ -197,7 +400,7 @@ pub trait JobRunner:
     async fn run_and_stream<'a>(
         &'static self,
         job: &Job,
-        runner_impl: &mut Box<dyn RunnerTrait + Send + Sync>,
+        runner_impl: &mut Box<dyn CancellableRunner + Send + Sync>,
     ) -> Result<BoxStream<'a, ResultOutputItem>> {
         let metadata = job.metadata.clone();
         let data = job.data.as_ref().unwrap(); // XXX unwrap
@@ -236,7 +439,7 @@ pub trait JobRunner:
     async fn run_and_result(
         &self,
         job: &Job,
-        runner_impl: &mut Box<dyn RunnerTrait + Send + Sync>,
+        runner_impl: &mut Box<dyn CancellableRunner + Send + Sync>,
     ) -> Result<(Result<Vec<u8>>, HashMap<String, String>)> {
         let data = job.data.as_ref().unwrap(); // XXX unwrap
         let metadata = job.metadata.clone();
@@ -245,12 +448,13 @@ pub trait JobRunner:
         if data.timeout > 0 {
             tokio::select! {
                 r = AssertUnwindSafe(
-                        runner_impl.run(args, metadata)
-                ).catch_unwind() => {                r.map_err(|e| {
-                    let msg = format!("Caught panic from runner {name}: {e:?}");
-                    tracing::error!(msg);
-                    anyhow!(msg)
-                })                    .inspect_err(|e| tracing::warn!("error in running runner: {name} : {e:?}"))
+                    runner_impl.run(args, metadata)
+                ).catch_unwind() => {
+                    r.map_err(|e| {
+                        let msg = format!("Caught panic from runner {name}: {e:?}");
+                        tracing::error!(msg);
+                        anyhow!(msg)
+                    }).inspect_err(|e| tracing::warn!("error in running runner: {name} : {e:?}"))
                 },
                 _ = tokio::time::sleep(Duration::from_millis(data.timeout)) => {
                     runner_impl.cancel().await;
@@ -320,7 +524,7 @@ pub trait JobRunner:
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{map::RunnerFactoryWithPoolMap, *};
     use anyhow::Result;
     use app::app::WorkerConfig;

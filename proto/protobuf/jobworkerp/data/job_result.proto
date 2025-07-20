@@ -59,7 +59,7 @@ message JobResultData {
   bool request_streaming = 12;
 
   // # Enqueue Time
-  // Timestamp when the job was registered in the queue (Unix time in seconds)
+  // Timestamp when the job was registered in the queue (Unix time in milliseconds)
   int64 enqueue_time = 13;
 
   // # Run After Time
@@ -67,11 +67,11 @@ message JobResultData {
   int64 run_after_time = 14;
 
   // # Start Time
-  // Timestamp when the job execution started (Unix time in seconds)
+  // Timestamp when the job execution started (Unix time in milliseconds)
   int64 start_time = 15;
 
   // # End Time
-  // Timestamp when the job execution completed (Unix time in seconds)
+  // Timestamp when the job execution completed (Unix time in milliseconds)
   int64 end_time = 16;
 
   // # Response Type

@@ -12,6 +12,9 @@ use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_base::APP_NAME;
 use jobworkerp_runner::jobworkerp::runner::workflow_result::WorkflowStatus;
 use jobworkerp_runner::jobworkerp::runner::{Empty, InlineWorkflowArgs, WorkflowResult};
+use jobworkerp_runner::runner::cancellation_helper::{
+    CancelMonitoringHelper, UseCancelMonitoringHelper,
+};
 use jobworkerp_runner::runner::workflow::InlineWorkflowRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use opentelemetry::trace::TraceContextExt;
@@ -28,12 +31,13 @@ pub struct InlineWorkflowRunner {
     app_module: Arc<AppModule>,
     http_client: ReqwestClient,
     workflow_executor: Option<Arc<WorkflowExecutor>>,
-    canceled: bool,
+    cancel_helper: Option<CancelMonitoringHelper>,
 }
 impl Tracing for InlineWorkflowRunner {}
 impl InlineWorkflowRunner {
     // for workflow file reqwest
 
+    /// Constructor without cancellation monitoring (for backward compatibility)
     pub fn new(
         app_wrapper_module: Arc<crate::modules::AppWrapperModule>,
         app_module: Arc<AppModule>,
@@ -52,8 +56,39 @@ impl InlineWorkflowRunner {
             app_module,
             http_client,
             workflow_executor: None,
-            canceled: false,
+            cancel_helper: None,
         })
+    }
+
+    /// Constructor with cancellation monitoring (DI integration version)
+    pub fn new_with_cancel_monitoring(
+        app_wrapper_module: Arc<crate::modules::AppWrapperModule>,
+        app_module: Arc<AppModule>,
+        cancel_helper: CancelMonitoringHelper,
+    ) -> Result<Self> {
+        let workflow_config = app_wrapper_module.config_module.workflow_config.clone();
+        let http_client = ReqwestClient::new(
+            Some(workflow_config.http_user_agent.as_str()),
+            Some(workflow_config.http_timeout_sec),
+            Some(workflow_config.http_timeout_sec),
+            Some(2),
+        )?;
+
+        Ok(InlineWorkflowRunner {
+            app_wrapper_module,
+            app_module,
+            http_client,
+            workflow_executor: None,
+            cancel_helper: Some(cancel_helper),
+        })
+    }
+
+    /// Set a cancellation helper for this runner instance
+    /// This allows external control over cancellation behavior (for test)
+    #[cfg(any(test, feature = "test-utils"))]
+    #[allow(dead_code)]
+    pub(crate) fn set_cancel_monitoring_helper(&mut self, helper: CancelMonitoringHelper) {
+        self.cancel_helper = Some(helper);
     }
 }
 impl InlineWorkflowRunnerSpec for InlineWorkflowRunner {}
@@ -136,12 +171,15 @@ impl RunnerTrait for InlineWorkflowRunner {
             let arg = InlineWorkflowArgs::decode(args)?;
             tracing::debug!("workflow args: {:#?}", arg);
             let execution_id = ExecutionId::new_opt(arg.execution_id.clone());
-            if self.canceled {
-                return Err(anyhow::anyhow!(
-                    "canceled by user: {}, {:?}",
-                    RunnerType::InlineWorkflow.as_str_name(),
-                    arg
-                ));
+            if let Some(helper) = &self.cancel_helper {
+                let token = helper.get_cancellation_token().await;
+                if token.is_cancelled() {
+                    return Err(anyhow::anyhow!(
+                        "canceled by user: {}, {:?}",
+                        RunnerType::InlineWorkflow.as_str_name(),
+                        arg
+                    ));
+                }
             }
             let input_json = serde_json::from_str(&arg.input)
                 .unwrap_or_else(|_| serde_json::Value::String(arg.input.clone()));
@@ -214,13 +252,16 @@ impl RunnerTrait for InlineWorkflowRunner {
                 match result {
                     Ok(context) => {
                         final_context = Some(context);
-                        if self.canceled {
-                            return Err(JobWorkerError::RuntimeError(format!(
-                                "canceled by user: {}, {:?}",
-                                RunnerType::InlineWorkflow.as_str_name(),
-                                arg
-                            ))
-                            .into());
+                        if let Some(helper) = &self.cancel_helper {
+                            let token = helper.get_cancellation_token().await;
+                            if token.is_cancelled() {
+                                return Err(JobWorkerError::RuntimeError(format!(
+                                    "canceled by user: {}, {:?}",
+                                    RunnerType::InlineWorkflow.as_str_name(),
+                                    arg
+                                ))
+                                .into());
+                            }
                         }
                     }
                     Err(e) => {
@@ -266,12 +307,15 @@ impl RunnerTrait for InlineWorkflowRunner {
 
         let arg = InlineWorkflowArgs::decode(args)?;
         tracing::debug!("workflow args: {:#?}", arg);
-        if self.canceled {
-            return Err(anyhow::anyhow!(
-                "canceled by user: {}, {:?}",
-                RunnerType::InlineWorkflow.as_str_name(),
-                arg
-            ));
+        if let Some(helper) = &self.cancel_helper {
+            let token = helper.get_cancellation_token().await;
+            if token.is_cancelled() {
+                return Err(anyhow::anyhow!(
+                    "canceled by user: {}, {:?}",
+                    RunnerType::InlineWorkflow.as_str_name(),
+                    arg
+                ));
+            }
         }
         let execution_id = ExecutionId::new_opt(arg.execution_id);
         let input_json = serde_json::from_str(&arg.input)
@@ -408,6 +452,68 @@ impl RunnerTrait for InlineWorkflowRunner {
     }
 
     async fn cancel(&mut self) {
-        self.canceled = true;
+        if let Some(helper) = &self.cancel_helper {
+            let token = helper.get_cancellation_token().await;
+            if token.is_cancelled() {
+                tracing::info!("InlineWorkflowRunner execution is already cancelled");
+            } else {
+                tracing::info!(
+                    "InlineWorkflowRunner cancellation requested, Helper handles token internally"
+                );
+            }
+        } else {
+            tracing::warn!("No cancellation helper set, cannot cancel");
+        }
+    }
+}
+
+impl UseCancelMonitoringHelper for InlineWorkflowRunner {
+    fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
+        self.cancel_helper.as_ref()
+    }
+
+    fn cancel_monitoring_helper_mut(&mut self) -> Option<&mut CancelMonitoringHelper> {
+        self.cancel_helper.as_mut()
+    }
+}
+
+#[async_trait]
+impl jobworkerp_runner::runner::cancellation::CancelMonitoring for InlineWorkflowRunner {
+    async fn setup_cancellation_monitoring(
+        &mut self,
+        job_id: proto::jobworkerp::data::JobId,
+        job_data: &proto::jobworkerp::data::JobData,
+    ) -> anyhow::Result<Option<proto::jobworkerp::data::JobResult>> {
+        // Clear helper availability check to avoid optional complexity
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.setup_monitoring_impl(job_id, job_data).await
+        } else {
+            tracing::debug!(
+                "No cancel monitoring configured for InlineWorkflow job {}",
+                job_id.value
+            );
+            Ok(None)
+        }
+    }
+
+    async fn cleanup_cancellation_monitoring(&mut self) -> anyhow::Result<()> {
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.cleanup_monitoring_impl().await
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn reset_for_pooling(&mut self) -> anyhow::Result<()> {
+        // InlineWorkflowRunner typically completes quickly, so always cleanup
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.reset_for_pooling_impl().await?;
+        } else {
+            self.cleanup_cancellation_monitoring().await?;
+        }
+
+        // InlineWorkflowRunner-specific state reset
+        tracing::debug!("InlineWorkflowRunner reset for pooling");
+        Ok(())
     }
 }

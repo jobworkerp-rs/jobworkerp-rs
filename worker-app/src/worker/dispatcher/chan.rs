@@ -1,5 +1,4 @@
 use super::JobDispatcher;
-use crate::worker::manager::{RunningJobManager, UseRunningJobManager};
 use crate::worker::result_processor::{ResultProcessorImpl, UseResultProcessor};
 use crate::worker::runner::map::{RunnerFactoryWithPoolMap, UseRunnerPoolMap};
 use crate::worker::runner::result::RunnerResultHandler;
@@ -16,7 +15,6 @@ use infra::infra::job::queue::chan::{
     ChanJobQueueRepository, ChanJobQueueRepositoryImpl, UseChanJobQueueRepository,
 };
 use infra::infra::job::queue::rdb::RdbJobQueueRepository;
-use infra::infra::job::queue::JobQueueCancellationRepository;
 use infra::infra::job::rdb::{RdbChanJobRepositoryImpl, RdbJobRepository, UseRdbChanJobRepository};
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::job::status::memory::MemoryJobProcessingStatusRepository;
@@ -26,8 +24,7 @@ use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQue
 use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
-    Job, JobProcessingStatus, JobResult, JobResultData, Priority, QueueType, ResponseType,
-    ResultOutput, ResultStatus, Worker,
+    Job, JobProcessingStatus, JobResult, Priority, QueueType, ResponseType, Worker,
 };
 use std::sync::Arc;
 use tokio::task::JoinHandle;
@@ -49,7 +46,7 @@ pub trait ChanJobDispatcher:
     + UseRunnerApp
     + UseJobQueueConfig
     + UseIdGenerator
-    + UseRunningJobManager
+    + JobDispatcher
 {
     fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
     where
@@ -223,114 +220,46 @@ pub trait ChanJobDispatcher:
         }?;
 
         // Check JobProcessingStatus before job execution (detect cancellation request)
-        match self.job_processing_status_repository().find_status(&jid).await? {
-            Some(JobProcessingStatus::Pending) => {
-                // Normal state: continue normal execution
-                tracing::debug!("Job {} is in expected Pending state, proceeding with execution", jid.value);
-            }
-            Some(JobProcessingStatus::Cancelling) => {
-                // Cancellation requested: skip execution and process cancellation with ResultProcessor
-                tracing::info!("Job {} marked for cancellation, skipping execution", jid.value);
-
-                // Directly create cancellation result
-                use command_utils::util::datetime;
-                let job_result_data = JobResultData {
-                    job_id: Some(jid),
-                    status: ResultStatus::Cancelled as i32,
-                    output: Some(ResultOutput {
-                        items: b"Job was cancelled before execution".to_vec(),
-                    }),
-                    start_time: datetime::now_millis(),
-                    end_time: datetime::now_millis(),
-                    worker_id: Some(wid),
-                    args: jdat.args.clone(),
-                    uniq_key: jdat.uniq_key.clone(),
-                    retried: jdat.retried,
-                    max_retry: 0, // No retry on cancellation
-                    priority: jdat.priority,
-                    timeout: jdat.timeout,
-                    request_streaming: jdat.request_streaming,
-                    enqueue_time: jdat.enqueue_time,
-                    run_after_time: jdat.run_after_time,
-                    response_type: wdat.response_type,
-                    store_success: false,
-                    store_failure: true,
-                    worker_name: wdat.name.clone(),
-                };
-
-                let cancelled_result = JobResult {
-                    id: Some(proto::jobworkerp::data::JobResultId {
-                        value: self.id_generator().generate_id()?,
-                    }),
-                    data: Some(job_result_data),
-                    metadata,
-                };
-
-                return self.result_processor().process_result(cancelled_result, None, wdat).await;
-            }
-            Some(JobProcessingStatus::Running) => {
-                // Abnormal state: already running on another worker, prevent duplicate execution
-                tracing::error!("Job {} is already in Running state, preventing duplicate execution", jid.value);
-                return Err(JobWorkerError::RuntimeError(
-                    format!("Job {} is already running", jid.value)
-                ).into());
-            }
-            Some(JobProcessingStatus::WaitResult) => {
-                // Abnormal state: already completed
-                tracing::warn!("Job {} is already in WaitResult state, skipping duplicate execution", jid.value);
-                return Err(JobWorkerError::RuntimeError(
-                    format!("Job {} is already completed", jid.value)
-                ).into());
-            }
-            Some(JobProcessingStatus::Unknown) => {
-                // Abnormal state: unknown status
-                tracing::error!("Job {} has unknown processing status", jid.value);
-                return Err(JobWorkerError::RuntimeError(
-                    format!("Job {} has unknown status", jid.value)
-                ).into());
-            }
-            None => {
-                // Abnormal state: status does not exist (possible race condition under high load)
-                tracing::error!("Job {} has no processing status, may indicate race condition or invalid job", jid.value);
-                return Err(JobWorkerError::RuntimeError(
-                    format!("Job {} has no processing status", jid.value)
-                ).into());
-            }
+        if let Some(cancelled_result) = self
+            .check_cancellation_status(&jid, &wid, &wdat, metadata.clone(), &jdat)
+            .await?
+        {
+            return self.result_processor().process_result(cancelled_result, None, wdat).await;
         }
 
-            if wdat.response_type != ResponseType::Direct as i32
-                && wdat.queue_type == QueueType::WithBackup as i32
+        if wdat.response_type != ResponseType::Direct as i32
+            && wdat.queue_type == QueueType::WithBackup as i32
+        {
+            // grab job in db (only for record as in progress)
+            if self.rdb_job_repository()
+                .grab_job(
+                    &jid,
+                    Some(jdat.timeout),
+                    jdat.grabbed_until_time.unwrap_or(0),
+                )
+                .await?
             {
-                    // grab job in db (only for record as in progress)
-                    if self.rdb_job_repository()
-                        .grab_job(
-                            &jid,
-                            Some(jdat.timeout),
-                            jdat.grabbed_until_time.unwrap_or(0),
-                        )
-                        .await?
-                    {
-                        // change status to running
-                        self.job_processing_status_repository()
-                            .upsert_status(&jid, &JobProcessingStatus::Running)
-                            .await?;
-                    } else {
-                        // already grabbed (strange! (not reset previous process in retry?), but continue processing job)
-                        tracing::warn!("failed to grab job from db: {:?}, {:?}", &jid, &jdat);
-                        return Err(JobWorkerError::AlreadyExists(format!(
-                            "already grabbed: {:?}, {:?}",
-                            &jid, &jdat
-                        ))
-                        .into());
-                    }
-            } else {
                 // change status to running
                 self.job_processing_status_repository()
                     .upsert_status(&jid, &JobProcessingStatus::Running)
                     .await?;
+            } else {
+                // already grabbed (strange! (not reset previous process in retry?), but continue processing job)
+                tracing::warn!("failed to grab job from db: {:?}, {:?}", &jid, &jdat);
+                return Err(JobWorkerError::AlreadyExists(format!(
+                    "already grabbed: {:?}, {:?}",
+                    &jid, &jdat
+                ))
+                .into());
             }
-            // run job
-            let r = self
+        } else {
+            // change status to running
+            self.job_processing_status_repository()
+                .upsert_status(&jid, &JobProcessingStatus::Running)
+                .await?;
+        }
+        // run job
+        let r = self
                 .run_job(
                     &runner_data,
                     &wid,
@@ -345,11 +274,9 @@ pub trait ChanJobDispatcher:
             // TODO execute and return result to result channel.
             tracing::trace!("send result id: {:?}, data: {:?}", &r.0.id, &r.0.data);
             // change status to wait handling result
-            if wdat.response_type != ResponseType::Direct as i32 {
-                self.job_processing_status_repository()
-                    .upsert_status(&jid, &JobProcessingStatus::WaitResult)
-                    .await?;
-            }
+            self.job_processing_status_repository()
+                .upsert_status(&jid, &JobProcessingStatus::WaitResult)
+                .await?;
             self.result_processor().process_result(r.0, r.1, wdat).await
     }
 }
@@ -364,7 +291,6 @@ pub struct ChanJobDispatcherImpl {
     runner_factory: Arc<RunnerFactory>,
     runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
     result_processor: Arc<ResultProcessorImpl>,
-    running_job_manager: Arc<RunningJobManager>,
 }
 
 impl ChanJobDispatcherImpl {
@@ -378,7 +304,6 @@ impl ChanJobDispatcherImpl {
         runner_factory: Arc<RunnerFactory>,
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
         result_processor: Arc<ResultProcessorImpl>,
-        running_job_manager: Arc<RunningJobManager>,
     ) -> Self {
         Self {
             id_generator,
@@ -389,44 +314,7 @@ impl ChanJobDispatcherImpl {
             runner_factory,
             runner_pool_map,
             result_processor,
-            running_job_manager,
         }
-    }
-
-    /// Start receiving cancellation notifications (called at dispatcher startup)
-    pub async fn start_cancellation_subscriber(&self) -> Result<()> {
-        let running_job_manager = self.running_job_manager.clone();
-
-        // Use subscribe_job_cancellation() of ChanJobQueueRepository
-        self.chan_job_queue_repository()
-            .subscribe_job_cancellation(Box::new(move |job_id| {
-                let manager = running_job_manager.clone();
-                Box::pin(async move {
-                    tracing::info!(
-                        "Received cancellation request for job {} in memory worker",
-                        job_id.value
-                    );
-
-                    // Delegate to RunningJobManager to execute cancellation
-                    if manager.cancel_running_job(&job_id).await? {
-                        tracing::info!(
-                            "Successfully processed cancellation for job {}",
-                            job_id.value
-                        );
-                    } else {
-                        tracing::debug!(
-                            "Job {} not running in this worker, no action needed",
-                            job_id.value
-                        );
-                    }
-
-                    Ok(())
-                })
-            }))
-            .await?;
-
-        tracing::info!("Started memory cancellation subscriber in ChanJobDispatcher");
-        Ok(())
     }
 }
 
@@ -499,12 +387,6 @@ impl UseResultProcessor for ChanJobDispatcherImpl {
     }
 }
 
-impl UseRunningJobManager for ChanJobDispatcherImpl {
-    fn running_job_manager(&self) -> &RunningJobManager {
-        &self.running_job_manager
-    }
-}
-
 #[async_trait]
 impl JobDispatcher for ChanJobDispatcherImpl {
     fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
@@ -512,21 +394,6 @@ impl JobDispatcher for ChanJobDispatcherImpl {
         Self: Send + Sync + 'static,
     {
         ChanJobDispatcher::dispatch_jobs(self, lock)
-    }
-
-    async fn start_cancellation_monitoring(&self) -> Result<()> {
-        // Start cleanup task for RunningJobManager
-        self.running_job_manager().start_cleanup_task();
-
-        // Start receiving cancellation notifications
-        self.start_cancellation_subscriber().await?;
-
-        tracing::info!("Started cancellation monitoring for ChanJobDispatcher");
-        Ok(())
-    }
-
-    async fn get_running_job_count(&self) -> usize {
-        self.running_job_manager().get_running_job_count().await
     }
 }
 
