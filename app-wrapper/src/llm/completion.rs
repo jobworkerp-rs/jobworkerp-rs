@@ -67,10 +67,6 @@ impl UseCancelMonitoringHelper for LLMCompletionRunnerImpl {
     fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
         self.cancel_helper.as_ref()
     }
-
-    fn cancel_monitoring_helper_mut(&mut self) -> Option<&mut CancelMonitoringHelper> {
-        self.cancel_helper.as_mut()
-    }
 }
 
 impl Default for LLMCompletionRunnerImpl {

@@ -495,10 +495,6 @@ impl UseCancelMonitoringHelper for McpServerRunnerImpl {
     fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
         self.cancel_helper.as_ref()
     }
-
-    fn cancel_monitoring_helper_mut(&mut self) -> Option<&mut CancelMonitoringHelper> {
-        self.cancel_helper.as_mut()
-    }
 }
 
 // MCP Runner tests are already implemented in integration_tests.rs

@@ -14,6 +14,7 @@ use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::OllamaRunnerSettings;
 use jobworkerp_runner::jobworkerp::runner::llm::{self, LlmChatArgs, LlmChatResult};
 use ollama_rs::generation::chat::ChatMessageResponse;
+use ollama_rs::generation::parameters::{FormatType, JsonStructure};
 use ollama_rs::generation::tools::ToolInfo;
 use ollama_rs::{
     generation::chat::{request::ChatMessageRequest, ChatMessage, MessageRole},
@@ -270,6 +271,7 @@ impl OllamaChatService {
             tools,
             Some(cx.clone()),
             metadata.clone(),
+            args.json_schema,
         )
         .await?;
 
@@ -289,6 +291,7 @@ impl OllamaChatService {
         Ok(chat_result)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn request_chat_internal_with_tracing(
         self: Arc<Self>,
         model: String,
@@ -297,9 +300,25 @@ impl OllamaChatService {
         tools: Arc<Vec<ToolInfo>>,
         parent_context: Option<opentelemetry::Context>,
         metadata: Arc<HashMap<String, String>>,
+        json_schema: Option<String>,
     ) -> Result<ChatMessageResponse> {
         let mut req = ChatMessageRequest::new(model.clone(), messages.lock().await.clone());
         req = req.options(options.clone());
+
+        if let Some(schema_str) = json_schema {
+            match serde_json::from_str(&schema_str) {
+                Ok(schema) => {
+                    let format =
+                        FormatType::StructuredJson(Box::new(JsonStructure::new_for_schema(schema)));
+                    req = req.format(format);
+                    tracing::debug!("Applied JSON schema format: {}", schema_str);
+                }
+                Err(e) => {
+                    tracing::warn!("Invalid JSON schema, ignoring format: {}", e);
+                }
+            }
+        }
+
         if tools.is_empty() {
             tracing::debug!("No tools found");
         } else {
@@ -388,6 +407,7 @@ impl OllamaChatService {
                 tools,
                 Some(updated_context),
                 metadata,
+                None, // json_schema is not used in recursive calls to avoid conflicts
             ))
             .await
         }

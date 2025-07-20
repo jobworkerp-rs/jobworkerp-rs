@@ -6,6 +6,7 @@ use jobworkerp_runner::jobworkerp::runner::llm::llm_completion_result::message_c
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::OllamaRunnerSettings;
 use jobworkerp_runner::jobworkerp::runner::llm::{self, LlmCompletionArgs, LlmCompletionResult};
 use ollama_rs::generation::completion;
+use ollama_rs::generation::parameters::{FormatType, JsonStructure};
 use ollama_rs::{
     generation::completion::{request::GenerationRequest, GenerationResponse},
     models::ModelOptions,
@@ -87,6 +88,26 @@ impl OllamaService {
         self
     }
 
+    fn apply_json_schema_format<'a>(
+        mut request: GenerationRequest<'a>,
+        json_schema: Option<&str>,
+    ) -> GenerationRequest<'a> {
+        if let Some(schema_str) = json_schema {
+            match serde_json::from_str(schema_str) {
+                Ok(schema) => {
+                    let format =
+                        FormatType::StructuredJson(Box::new(JsonStructure::new_for_schema(schema)));
+                    request = request.format(format);
+                    tracing::debug!("Applied JSON schema format: {}", schema_str);
+                }
+                Err(e) => {
+                    tracing::warn!("Invalid JSON schema, ignoring format: {}", e);
+                }
+            }
+        }
+        request
+    }
+
     pub async fn request_stream_generation(
         &self,
         args: LlmCompletionArgs,
@@ -99,6 +120,9 @@ impl OllamaService {
         };
         let mut request = GenerationRequest::new(model, args.prompt);
         request = request.options(options);
+
+        request = Self::apply_json_schema_format(request, args.json_schema.as_deref());
+
         if let Some(system_prompt) = self.system_prompt.clone() {
             request = request.system(system_prompt);
         }
@@ -211,6 +235,9 @@ impl OllamaService {
         let options = Self::create_completion_options(&args);
         let mut request = GenerationRequest::new(self.model.clone(), args.prompt);
         request = request.options(options.clone());
+
+        request = Self::apply_json_schema_format(request, args.json_schema.as_deref());
+
         if let Some(system_prompt) = self.system_prompt.clone() {
             request = request.system(system_prompt);
         }
