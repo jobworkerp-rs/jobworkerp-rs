@@ -121,7 +121,6 @@ impl OllamaService {
         let mut request = GenerationRequest::new(model, args.prompt);
         request = request.options(options);
 
-        // JSON Schema format適用
         request = Self::apply_json_schema_format(request, args.json_schema.as_deref());
 
         if let Some(system_prompt) = self.system_prompt.clone() {
@@ -237,7 +236,6 @@ impl OllamaService {
         let mut request = GenerationRequest::new(self.model.clone(), args.prompt);
         request = request.options(options.clone());
 
-        // JSON Schema format適用
         request = Self::apply_json_schema_format(request, args.json_schema.as_deref());
 
         if let Some(system_prompt) = self.system_prompt.clone() {

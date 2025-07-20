@@ -305,7 +305,6 @@ impl OllamaChatService {
         let mut req = ChatMessageRequest::new(model.clone(), messages.lock().await.clone());
         req = req.options(options.clone());
 
-        // JSON Schema format適用
         if let Some(schema_str) = json_schema {
             match serde_json::from_str(&schema_str) {
                 Ok(schema) => {
@@ -408,7 +407,7 @@ impl OllamaChatService {
                 tools,
                 Some(updated_context),
                 metadata,
-                None, // 再帰呼び出しではjson_schemaは使用しない
+                None, // json_schema is not used in recursive calls to avoid conflicts
             ))
             .await
         }
