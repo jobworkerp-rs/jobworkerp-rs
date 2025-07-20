@@ -210,7 +210,7 @@ impl CancelMonitoring for PluginRunnerWrapperImpl {
         job_id: JobId,
         job_data: &JobData,
     ) -> Result<Option<JobResult>> {
-        // Helper有無の明確な分岐
+        // Clear branching based on helper availability
         if let Some(helper) = &mut self.cancel_helper {
             helper.setup_monitoring_impl(job_id, job_data).await
         } else {

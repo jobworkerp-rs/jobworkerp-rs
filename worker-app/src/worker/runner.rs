@@ -255,7 +255,7 @@ pub trait JobRunner:
         }
     }
 
-    /// キャンセル済みジョブの結果を作成（プラン実装）
+    /// Create result for cancelled job
     fn create_cancelled_job_result(&self, job: Job, worker_data: &WorkerData) -> JobResult {
         use command_utils::util::datetime;
         use std::collections::HashMap;

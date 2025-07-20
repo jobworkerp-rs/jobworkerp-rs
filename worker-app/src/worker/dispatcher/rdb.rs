@@ -330,8 +330,8 @@ impl infra::infra::job::status::UseJobProcessingStatusRepository for RdbJobDispa
     fn job_processing_status_repository(
         &self,
     ) -> Arc<dyn infra::infra::job::status::JobProcessingStatusRepository> {
-        // RdbJobDispatcherは通常job processing statusを使用しないため、ダミー実装
-        // 実際のstatusの必要があればapp_moduleから適切なrepositoryを取得する
+        // RdbJobDispatcher typically doesn't use job processing status, hence dummy implementation
+        // If actual status needed, retrieve appropriate repository from app_module
         Arc::new(infra::infra::job::status::memory::MemoryJobProcessingStatusRepository::new())
     }
 }
@@ -345,11 +345,5 @@ impl JobDispatcher for RdbJobDispatcherImpl {
         Self: Send + Sync + 'static,
     {
         RdbJobDispatcher::dispatch_jobs(self, lock)
-    }
-
-    async fn start_cancellation_monitoring(&self) -> Result<()> {
-        // RdbJobDispatcherはキャンセル機能なし（scheduled/periodicジョブのみ）
-        tracing::info!("RdbJobDispatcher does not support cancellation monitoring");
-        Ok(())
     }
 }

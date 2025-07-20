@@ -6,22 +6,22 @@ use jobworkerp_runner::runner::cancellation_helper::CancelMonitoringHelper;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-/// Pool Object付きStream Wrapper（use_static=true専用）
-/// Stream終了時にPool Objectを自動返却
+/// Stream Wrapper with Pool Object (for use_static=true only)
+/// Automatically returns Pool Object when stream ends
 pub struct StreamWithPoolGuard<T> {
     stream: BoxStream<'static, T>,
     _pool_guard: Option<Object<RunnerPoolManagerImpl>>, // deadpool::Object
 }
 
-/// Cancel Helper付きStream Wrapper（use_static=false専用）
-/// Stream終了時にCancelHelperを自動破棄（キャンセル監視維持のため）
+/// Stream Wrapper with Cancel Helper (for use_static=false only)
+/// Automatically destroys CancelHelper when stream ends (to maintain cancellation monitoring)
 pub struct StreamWithCancelGuard<T> {
     stream: BoxStream<'static, T>,
     _cancel_guard: Option<CancelMonitoringHelper>,
 }
 
 impl<T> StreamWithPoolGuard<T> {
-    /// Pool Guard付きStreamを作成（use_static=true時のみ使用）
+    /// Create Stream with Pool Guard (use only when use_static=true)
     pub fn new(stream: BoxStream<'static, T>, pool_object: Object<RunnerPoolManagerImpl>) -> Self {
         tracing::debug!(
             "Created StreamWithPoolGuard - pool object will be held until stream completion"
@@ -39,7 +39,7 @@ impl<T> Stream for StreamWithPoolGuard<T> {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let result = Pin::new(&mut self.stream).poll_next(cx);
 
-        // Stream終了時にPool Guardを解放
+        // Release pool guard when stream ends
         if let Poll::Ready(None) = result {
             if self._pool_guard.take().is_some() {
                 tracing::debug!(
@@ -63,7 +63,7 @@ impl<T> Drop for StreamWithPoolGuard<T> {
 }
 
 impl<T> StreamWithCancelGuard<T> {
-    /// Cancel Guard付きStreamを作成（use_static=false時のみ使用）
+    /// Create Stream with Cancel Guard (use only when use_static=false)
     pub fn new(stream: BoxStream<'static, T>, cancel_helper: CancelMonitoringHelper) -> Self {
         tracing::debug!(
             "Created StreamWithCancelGuard - cancel helper will be held until stream completion"
@@ -81,7 +81,7 @@ impl<T> Stream for StreamWithCancelGuard<T> {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let result = Pin::new(&mut self.stream).poll_next(cx);
 
-        // Stream終了時にCancel Guardを解放
+        // Release cancel guard when stream ends
         if let Poll::Ready(None) = result {
             if self._cancel_guard.take().is_some() {
                 tracing::debug!("Stream completed, releasing cancel helper (cancellation monitoring cleanup will happen)");
@@ -135,7 +135,7 @@ mod tests {
             Arc::new(WorkerData {
                 runner_settings: Vec::new(),
                 channel: None,
-                use_static: true, // Pool使用
+                use_static: true, // Use pool
                 ..Default::default()
             }),
             Arc::new(runner_factory),
@@ -153,13 +153,13 @@ mod tests {
             let pool = create_test_pool().await?;
             let pool_object = pool.get().await?;
 
-            // テスト用のダミーStream
+            // Create dummy stream for testing
             let test_stream = Box::pin(stream::iter(vec![1, 2, 3]));
 
-            // StreamWithPoolGuard作成
+            // Create StreamWithPoolGuard
             let guard_stream = StreamWithPoolGuard::new(test_stream, pool_object);
 
-            // Stream要素の取得
+            // Get stream elements
             let items: Vec<i32> = guard_stream.collect().await;
             assert_eq!(items, vec![1, 2, 3]);
 
@@ -174,17 +174,17 @@ mod tests {
             let pool = create_test_pool().await?;
             let pool_object = pool.get().await?;
 
-            // テスト用のダミーStream
+            // Create dummy stream for testing
             let test_stream = Box::pin(stream::iter(vec![1, 2, 3]));
 
-            // StreamWithPoolGuard作成
+            // Create StreamWithPoolGuard
             let guard_stream = StreamWithPoolGuard::new(test_stream, pool_object);
 
-            // 途中でDropさせる
+            // Drop midway
             drop(guard_stream);
 
-            // Pool Object が解放されたことを確認
-            // （実際にはログ出力とPool再利用で確認）
+            // Verify pool object was released
+            // (Actually verified through log output and pool reuse)
             let pool_object2 = pool.get().await?;
             assert!(!pool_object2.lock().await.name().is_empty());
 
@@ -199,20 +199,20 @@ mod tests {
             let pool = create_test_pool().await?;
             let pool_object = pool.get().await?;
 
-            // テスト用のダミーStream
+            // Create dummy stream for testing
             let test_stream = Box::pin(stream::iter(vec![1, 2, 3]));
 
-            // StreamWithPoolGuard作成
+            // Create StreamWithPoolGuard
             let mut guard_stream = StreamWithPoolGuard::new(test_stream, pool_object);
 
-            // 手動でStream要素を順次取得
+            // Manually get stream elements sequentially
             use futures::StreamExt;
             assert_eq!(guard_stream.next().await, Some(1));
             assert_eq!(guard_stream.next().await, Some(2));
             assert_eq!(guard_stream.next().await, Some(3));
-            assert_eq!(guard_stream.next().await, None); // ここでPool Guard解放される
+            assert_eq!(guard_stream.next().await, None); // Pool Guard released here
 
-            // Pool Object が解放されたことを確認
+            // Verify pool object was released
             let pool_object2 = pool.get().await?;
             assert!(!pool_object2.lock().await.name().is_empty());
 
@@ -226,7 +226,7 @@ mod tests {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let pool = create_test_pool().await?;
 
-            // 複数のStream + Pool Guardを作成・消費
+            // Create and consume multiple Stream + Pool Guards
             for i in 0..3 {
                 let pool_object = pool.get().await?;
                 let test_stream = Box::pin(stream::iter(vec![i, i + 10]));
@@ -238,7 +238,7 @@ mod tests {
                 tracing::debug!("Completed stream guard cycle {}", i);
             }
 
-            // Pool が正常に機能していることを確認
+            // Verify pool is functioning correctly
             let final_pool_object = pool.get().await?;
             assert!(!final_pool_object.lock().await.name().is_empty());
 

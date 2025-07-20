@@ -443,7 +443,6 @@ impl jobworkerp_runner::runner::cancellation::CancelMonitoring for ReusableWorkf
     }
 }
 
-// DI trait実装（Option対応）
 impl UseCancelMonitoringHelper for ReusableWorkflowRunner {
     fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
         self.cancel_helper.as_ref()

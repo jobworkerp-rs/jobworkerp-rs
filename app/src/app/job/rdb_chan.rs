@@ -41,8 +41,8 @@ pub struct RdbChanJobAppImpl {
     id_generator: Arc<IdGeneratorWrapper>,
     repositories: Arc<RdbChanRepositoryModule>,
     worker_app: Arc<dyn WorkerApp + 'static>,
-    // 変更前: memory_cache: MokaCacheImpl<Arc<String>, Job>,
-    // UseMemoryCache実装（Stretto基盤）
+    // Previous: memory_cache: MokaCacheImpl<Arc<String>, Job>,
+    // UseMemoryCache implementation (Stretto-based)
     memory_cache: AsyncCache<Arc<String>, Job>,
     key_lock: Arc<RwLockWithKey<Arc<String>>>,
     job_cache_ttl: Duration,
@@ -68,13 +68,13 @@ impl std::fmt::Debug for RdbChanJobAppImpl {
 }
 
 impl RdbChanJobAppImpl {
-    // UseMemoryCache用の設定定数
+    // Configuration constants for UseMemoryCache
     const MEMORY_CACHE_CONFIG: MemoryCacheConfig = MemoryCacheConfig {
-        num_counters: 12960, // キャッシュ可能エントリ数
-        max_cost: 12960,     // 最大コスト（アイテム数）
-        use_metrics: false,  // メトリクス無効（パフォーマンス重視）
+        num_counters: 12960, // Number of cacheable entries
+        max_cost: 12960,     // Maximum cost (number of items)
+        use_metrics: false,  // Metrics disabled for performance optimization
     };
-    const JOB_DEFAULT_TTL: Duration = Duration::from_secs(3600); // デフォルト1時間TTL
+    const JOB_DEFAULT_TTL: Duration = Duration::from_secs(3600); // Default 1 hour TTL
 
     pub fn new(
         app_config_module: Arc<AppConfigModule>,
@@ -89,7 +89,7 @@ impl RdbChanJobAppImpl {
             repositories,
             worker_app,
 
-            // UseMemoryCacheの初期化
+            // Initialize UseMemoryCache
             memory_cache: memory::new_memory_cache(&Self::MEMORY_CACHE_CONFIG),
             key_lock: Arc::new(RwLockWithKey::new(
                 Self::MEMORY_CACHE_CONFIG.max_cost as usize,
@@ -486,7 +486,7 @@ impl JobApp for RdbChanJobAppImpl {
                 let res = res_chan.or(res_db);
                 match res {
                     Ok(_updated) => {
-                        // UseMemoryCacheからジョブを削除
+                        // Remove job from cache to ensure consistency
                         let cache_key = Arc::new(Self::find_cache_key(jid));
                         let _ = self.delete_cache(&cache_key).await.inspect_err(|e| {
                             tracing::warn!("Failed to delete job cache for {}: {:?}", jid.value, e)
@@ -584,18 +584,18 @@ impl JobApp for RdbChanJobAppImpl {
             }
             None => {
                 tracing::debug!("Job {} not found in cache, fetching from RDB", id.value);
-                // RDBから取得時はジョブ特性に応じたTTLでキャッシュ
+                // Cache job with appropriate TTL based on job characteristics
                 match self.rdb_job_repository().find(id).await? {
                     Some(job) => {
-                        // RDBから発見したジョブをキャッシュする際の個別TTL設定
+                        // Cache job from RDB with individual TTL to prevent premature eviction
                         if let Some(data) = &job.data {
-                            let job_ttl = Duration::from_millis(data.timeout + 300_000); // timeout + 5分バッファ
+                            let job_ttl = Duration::from_millis(data.timeout + 300_000); // timeout + 5min safety buffer
                             tracing::debug!(
                                 "Found job {} from RDB, caching with TTL {:?}",
                                 id.value,
                                 job_ttl
                             );
-                            // 別途キャッシュに保存（TTL付き）
+                            // Store in cache separately with TTL
                             let _ = self.set_cache(k.clone(), job.clone(), Some(&job_ttl)).await;
                         }
                         Ok(Some(job))
@@ -791,7 +791,6 @@ impl JobCacheKeys for RdbChanJobAppImpl {}
 
 impl JobBuilder for RdbChanJobAppImpl {}
 
-// UseMemoryCacheトレイト実装
 impl UseMemoryCache<Arc<String>, Job> for RdbChanJobAppImpl {
     fn cache(&self) -> &AsyncCache<Arc<String>, Job> {
         &self.memory_cache
@@ -991,8 +990,8 @@ mod tests {
         } else {
             Arc::new(IdGeneratorWrapper::new())
         };
-        // UseMemoryCacheはRdbChanJobAppImpl::new()内で自動初期化されるため、ここでの明示的な作成は不要
-        // 他のアプリケーション（RunnerApp、WorkerApp）で使用するMokaCacheConfig
+        // UseMemoryCache is auto-initialized in RdbChanJobAppImpl::new(), explicit creation unnecessary here
+        // MokaCacheConfig used by other applications (RunnerApp, WorkerApp)
         let moka_config = infra_utils::infra::cache::MokaCacheConfig {
             num_counters: 10000,
             ttl: Some(Duration::from_millis(100)),

@@ -30,7 +30,6 @@ use proto::jobworkerp::data::{
 use std::{collections::HashMap, fmt, sync::Arc, time::Duration};
 
 pub trait JobCacheKeys {
-    // cache keys
     fn find_cache_key(id: &JobId) -> String {
         ["j:eid:", &id.value.to_string()].join("")
     }
@@ -89,7 +88,6 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         Option<BoxStream<'static, ResultOutputItem>>,
     )>;
 
-    // update job with id (redis: upsert, rdb: update)
     async fn update_job(&self, job: &Job) -> Result<()>;
 
     /// Complete job if the job finished
@@ -162,14 +160,12 @@ pub trait UseJobApp {
     fn job_app(&self) -> &Arc<dyn JobApp + 'static>;
 }
 
-// for redis and hybrid
 #[async_trait]
 pub trait RedisJobAppHelper:
     UseRedisJobRepository + JobBuilder + UseJobQueueConfig + UseJobProcessingStatusRepository
 where
     Self: Sized + 'static,
 {
-    // for redis
     async fn enqueue_job_to_redis_with_wait_if_needed(
         &self,
         job: &Job,
@@ -185,43 +181,39 @@ where
     {
         let job_id = job.id.unwrap();
 
-        // For QueueType::Normal jobs, store with individual TTL for visibility during execution
-        if worker.queue_type == QueueType::Normal as i32 {
-            if let Some(job_data) = &job.data {
-                // TTL = job timeout + 5 minutes safety margin (milliseconds to duration)
-                let ttl = Duration::from_millis(job_data.timeout + 300_000);
-                self.redis_job_repository()
-                    .create_with_expire(&job_id, job_data, ttl)
-                    .await?;
-                tracing::debug!(
-                    "Created job {} with TTL {:?} for running job visibility",
-                    job_id.value,
-                    ttl
-                );
-            }
-        }
-
-        // job in the future(need to wait) (use for redis only mode in future)
+        // Wait before processing to handle scheduled jobs
         let res = match if self.is_run_after_job(job) {
-            // schedule
             self.redis_job_repository()
                 .add_run_after_job(job.clone())
                 .await
                 .map(|_| 1i64) // dummy
         } else {
-            // run immediately
             self.redis_job_repository()
                 .enqueue_job(worker.channel.as_ref(), job)
                 .await
         } {
             Ok(_) => {
-                // update status (not use direct response)
                 self.job_processing_status_repository()
                     .upsert_status(&job_id, &JobProcessingStatus::Pending)
                     .await?;
-                // wait for result if direct response type
+                // TTL prevents job orphaning when worker fails unexpectedly
+                if worker.queue_type == QueueType::Normal as i32 {
+                    if let Some(job_data) = &job.data {
+                        // Safety margin prevents premature cleanup during normal completion
+                        let ttl = Duration::from_millis(job_data.timeout + 300_000);
+                        self.redis_job_repository()
+                            .create_with_expire(&job_id, job_data, ttl)
+                            .await?;
+                        tracing::debug!(
+                            "Created job {} with TTL {:?} for running job visibility",
+                            job_id.value,
+                            ttl
+                        );
+                    }
+                }
+                // Direct response requires blocking until job completion
                 if worker.response_type == ResponseType::Direct as i32 {
-                    // XXX keep redis connection until response
+                    // Connection kept open to maintain real-time response capability
                     self._wait_job_for_direct_response(
                         &job_id,
                         job.data.as_ref().map(|d| d.timeout),
@@ -245,7 +237,6 @@ where
         timeout: Option<u64>,
         request_streaming: bool,
     ) -> Result<(JobResult, Option<BoxStream<'static, ResultOutputItem>>)> {
-        // wait for and return result
         self.redis_job_repository()
             .wait_for_result_queue_for_response(job_id, timeout, request_streaming)
             .await

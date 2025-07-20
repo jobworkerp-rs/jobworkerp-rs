@@ -36,9 +36,6 @@ pub trait JobDispatcher:
     where
         Self: Send + Sync + 'static;
 
-    /// Start cancellation monitoring (called externally when Worker starts)
-    async fn start_cancellation_monitoring(&self) -> Result<()>;
-
     /// Check cancellation status and return cancellation result if job is marked for cancellation
     /// This method provides common cancellation detection logic for all dispatchers
     async fn check_cancellation_status(
@@ -246,7 +243,6 @@ impl JobDispatcherFactory {
                         runner_factory,
                         runner_pool_map,
                         result_processor,
-                        Arc::new(redis_repositories.redis_job_queue_repository.clone()),
                     ),
                 })
             }
@@ -287,15 +283,6 @@ impl JobDispatcher for HybridJobDispatcherImpl {
         RdbJobDispatcher::dispatch_jobs(&self.rdb_job_dispatcher, lock.clone())?;
         RedisJobDispatcher::dispatch_jobs(&self.redis_job_dispatcher, lock)
     }
-
-    async fn start_cancellation_monitoring(&self) -> Result<()> {
-        // RdbJobDispatcher does not need cancellation, only start RedisJobDispatcher
-        self.redis_job_dispatcher
-            .start_cancellation_monitoring()
-            .await?;
-        tracing::info!("Started cancellation monitoring for HybridJobDispatcher");
-        Ok(())
-    }
 }
 impl UseJobProcessingStatusRepository for RdbChanJobDispatcherImpl {
     fn job_processing_status_repository(
@@ -325,14 +312,5 @@ impl JobDispatcher for RdbChanJobDispatcherImpl {
     {
         RdbJobDispatcher::dispatch_jobs(&self.rdb_job_dispatcher, lock.clone())?;
         ChanJobDispatcher::dispatch_jobs(&self.chan_job_dispatcher, lock)
-    }
-
-    async fn start_cancellation_monitoring(&self) -> Result<()> {
-        // RdbJobDispatcher does not need cancellation, only start ChanJobDispatcher
-        self.chan_job_dispatcher
-            .start_cancellation_monitoring()
-            .await?;
-        tracing::info!("Started cancellation monitoring for RdbChanJobDispatcher");
-        Ok(())
     }
 }

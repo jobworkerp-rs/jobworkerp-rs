@@ -10,7 +10,6 @@ use jobworkerp_runner::jobworkerp::runner::llm::{LlmCompletionArgs, LlmRunnerSet
 use jobworkerp_runner::runner::cancellation_helper::{
     CancelMonitoringHelper, UseCancelMonitoringHelper,
 };
-// Note: execute_cancellable is no longer needed with new cancellation approach
 use jobworkerp_runner::runner::llm::LLMCompletionRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use ollama::OllamaService;
@@ -29,7 +28,6 @@ pub mod ollama;
 pub struct LLMCompletionRunnerImpl {
     pub ollama: Option<OllamaService>,
     pub genai: Option<GenaiCompletionService>,
-    // Helper for dependency injection integration (optional for backward compatibility)
     cancel_helper: Option<CancelMonitoringHelper>,
 }
 
@@ -153,7 +151,7 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let cancellation_token = self.get_cancellation_token().await;
 
-        // Check cancellation BEFORE any other processing
+        // Early cancellation check prevents wasted LLM service calls
         if cancellation_token.is_cancelled() {
             return (
                 Err(anyhow!("LLM completion execution was cancelled")),
@@ -174,7 +172,6 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
             let args = LlmCompletionArgs::decode(&mut Cursor::new(arg))
                 .map_err(|e| anyhow!("decode error: {}", e))?;
             if let Some(ollama) = self.ollama.as_mut() {
-                // Use cancellable version
                 let res = ollama
                     .request_generation_with_cancellation(
                         args,
@@ -188,7 +185,7 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                     .map_err(|e| anyhow!("encode error: {}", e))?;
                 Ok(buf)
             } else if let Some(genai) = self.genai.as_mut() {
-                // Use tokio::select! for cancellation support
+                // Race between LLM completion and cancellation signal
                 let res = tokio::select! {
                     result = genai.request_chat(args, cx, metadata_clone.clone()) => result?,
                     _ = cancellation_token.cancelled() => {
@@ -213,12 +210,11 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        // Set up cancellation token using manager
         let cancellation_token = self.get_cancellation_token().await;
 
         let args = LlmCompletionArgs::decode(args).map_err(|e| anyhow!("decode error: {}", e))?;
 
-        // Check cancellation before LLM service execution
+        // Early cancellation check prevents wasted LLM service calls
         if cancellation_token.is_cancelled() {
             tracing::info!("LLM completion stream execution was cancelled before service call");
             return Err(anyhow!(
@@ -227,13 +223,12 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         }
 
         if let Some(ollama) = self.ollama.as_mut() {
-            // Get streaming responses from ollama service
             let stream = ollama.request_stream_generation(args).await?;
 
             let req_meta = Arc::new(metadata.clone());
             let cancel_token = cancellation_token.clone();
 
-            // Transform each LlmCompletionResult into ResultOutputItem with cancellation support
+            // Stream processing with mid-stream cancellation capability
             let output_stream = stream! {
                 tokio::pin!(stream);
                 loop {
@@ -241,14 +236,12 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                         item = stream.next() => {
                             match item {
                                 Some(completion_result) => {
-                                    // Encode the completion result to binary if there is content
                                     if completion_result
                                         .content
                                         .as_ref()
                                         .is_some_and(|c| c.content.is_some())
                                     {
                                         let buf = ProstMessageCodec::serialize_message(&completion_result);
-                                        // Add content data item
                                         if let Ok(buf) = buf {
                                             yield ResultOutputItem {
                                                 item: Some(result_output_item::Item::Data(buf)),
@@ -344,7 +337,6 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
     }
 }
 
-// CancelMonitoring trait実装（Helper委譲版）
 #[async_trait]
 impl jobworkerp_runner::runner::cancellation::CancelMonitoring for LLMCompletionRunnerImpl {
     async fn setup_cancellation_monitoring(

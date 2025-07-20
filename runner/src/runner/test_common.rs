@@ -6,7 +6,7 @@ pub mod mock {
     use proto::jobworkerp::data::{JobData, JobId};
     use tokio_util::sync::CancellationToken;
 
-    /// テスト用の共通MockCancellationManager
+    /// Common MockCancellationManager for testing
     #[derive(Debug)]
     pub struct MockCancellationManager {
         token: Option<CancellationToken>,

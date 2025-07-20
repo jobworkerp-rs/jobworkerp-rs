@@ -467,7 +467,6 @@ impl RunnerTrait for InlineWorkflowRunner {
     }
 }
 
-// DI trait実装（Option対応）
 impl UseCancelMonitoringHelper for InlineWorkflowRunner {
     fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
         self.cancel_helper.as_ref()
@@ -478,7 +477,6 @@ impl UseCancelMonitoringHelper for InlineWorkflowRunner {
     }
 }
 
-// CancelMonitoring trait実装（Helper委譲版）
 #[async_trait]
 impl jobworkerp_runner::runner::cancellation::CancelMonitoring for InlineWorkflowRunner {
     async fn setup_cancellation_monitoring(

@@ -45,7 +45,6 @@ impl<T: UseRedisRepositoryModule> UseRedisJobQueueRepository for T {
         &self.redis_repository_module().redis_job_queue_repository
     }
 }
-// RedisRepositoryModule自体への実装
 impl UseJobQueueCancellationRepository for RedisRepositoryModule {
     fn job_queue_cancellation_repository(&self) -> Arc<dyn JobQueueCancellationRepository> {
         Arc::new(self.redis_job_queue_repository.clone())
