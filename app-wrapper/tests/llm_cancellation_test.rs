@@ -440,8 +440,10 @@ async fn test_llm_chat_pre_execution_cancellation() -> Result<()> {
     // Create cancellation manager with pre-cancelled token
     let cancelled_token = CancellationToken::new();
     cancelled_token.cancel();
-    let cancellation_manager = app_wrapper::runner::cancellation::RunnerCancellationManager::new();
+    let mut cancellation_manager =
+        app_wrapper::runner::cancellation::RunnerCancellationManager::new();
     // Set the token internally in the manager (for testing)
+    cancellation_manager.set_cancellation_token(cancelled_token);
     let manager_with_token = Box::new(cancellation_manager);
     runner.set_cancellation_manager(manager_with_token);
 
@@ -649,7 +651,9 @@ async fn test_llm_completion_ollama_pre_execution_cancellation() -> Result<()> {
     // Create cancellation manager with pre-cancelled token
     let cancelled_token = CancellationToken::new();
     cancelled_token.cancel();
-    let cancellation_manager = app_wrapper::runner::cancellation::RunnerCancellationManager::new();
+    let mut cancellation_manager =
+        app_wrapper::runner::cancellation::RunnerCancellationManager::new();
+    cancellation_manager.set_cancellation_token(cancelled_token);
     let manager_with_token = Box::new(cancellation_manager);
     runner.set_cancellation_manager(manager_with_token);
 
@@ -718,7 +722,9 @@ async fn test_llm_completion_genai_pre_execution_cancellation() -> Result<()> {
     // Create cancellation manager with pre-cancelled token
     let cancelled_token = CancellationToken::new();
     cancelled_token.cancel();
-    let cancellation_manager = app_wrapper::runner::cancellation::RunnerCancellationManager::new();
+    let mut cancellation_manager =
+        app_wrapper::runner::cancellation::RunnerCancellationManager::new();
+    cancellation_manager.set_cancellation_token(cancelled_token);
     let manager_with_token = Box::new(cancellation_manager);
     runner.set_cancellation_manager(manager_with_token);
 

@@ -154,6 +154,14 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         // 明確で簡潔なtoken取得
         let cancellation_token = self.get_cancellation_token().await;
 
+        // Check cancellation BEFORE any other processing
+        if cancellation_token.is_cancelled() {
+            return (
+                Err(anyhow!("LLM completion execution was cancelled")),
+                metadata,
+            );
+        }
+
         let metadata_clone = metadata.clone();
 
         let result = async {

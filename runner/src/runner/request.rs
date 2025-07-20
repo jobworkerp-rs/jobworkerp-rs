@@ -547,9 +547,14 @@ pub mod tests {
     async fn test_http_pre_execution_cancellation() {
         let mut runner = RequestRunner::new();
 
-        // Note: In unified architecture, Manager handles token internally
-        // let cancellation_token = tokio_util::sync::CancellationToken::new();
-        // cancellation_token.cancel();
+        // Set up pre-cancelled token via MockCancellationManager
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        cancellation_token.cancel();
+        let mock_manager =
+            crate::runner::test_common::mock::MockCancellationManager::new_with_token(
+                cancellation_token,
+            );
+        runner.set_cancellation_manager(Box::new(mock_manager));
 
         use crate::jobworkerp::runner::HttpRequestArgs;
         let http_args = HttpRequestArgs {

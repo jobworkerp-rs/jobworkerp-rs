@@ -152,6 +152,11 @@ impl RunnerTrait for LLMChatRunnerImpl {
         // Clear and concise token retrieval
         let cancellation_token = self.get_cancellation_token().await;
 
+        // Check cancellation BEFORE any other processing
+        if cancellation_token.is_cancelled() {
+            return (Err(anyhow!("LLM chat execution was cancelled")), metadata);
+        }
+
         let span = Self::otel_span_from_metadata(&metadata, APP_WORKER_NAME, "llm_chat_run");
         let cx = Context::current_with_span(span);
 

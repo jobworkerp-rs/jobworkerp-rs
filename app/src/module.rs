@@ -170,10 +170,6 @@ impl AppModule {
                     id_generator.clone(),
                     repositories.clone(),
                     worker_app.clone(),
-                    infra_utils::infra::cache::MokaCacheImpl::new(&MokaCacheConfig {
-                        num_counters: 10000,
-                        ttl: Some(Duration::from_secs(5)),
-                    }),
                     job_queue_cancellation_repository,
                 ));
                 let function_set_app = Arc::new(FunctionSetAppImpl::new(
