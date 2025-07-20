@@ -1,4 +1,4 @@
-use super::cancellation::{CancelMonitoring, RunnerCancellationManager};
+use super::cancellation::CancelMonitoring;
 use super::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
 use super::RunnerSpec;
 use crate::jobworkerp::runner::{
@@ -30,13 +30,12 @@ pub struct PythonCommandRunner {
     settings: Option<PythonCommandRunnerSettings>,
     process_cancel: Arc<Mutex<bool>>,
     current_process_id: Arc<Mutex<Option<u32>>>,
-    cancellation_manager: Option<Arc<tokio::sync::Mutex<Box<dyn RunnerCancellationManager>>>>,
-    // DI統合用のHelper（Optional）
+    // Helper for dependency injection integration (optional for backward compatibility)
     cancel_helper: Option<CancelMonitoringHelper>,
 }
 
 impl PythonCommandRunner {
-    /// キャンセル監視なしconstructor（既存互換）
+    /// Constructor without cancellation monitoring (for backward compatibility)
     pub fn new() -> Self {
         PythonCommandRunner {
             venv_path: None,
@@ -44,12 +43,11 @@ impl PythonCommandRunner {
             settings: None,
             process_cancel: Arc::new(Mutex::new(false)),
             current_process_id: Arc::new(Mutex::new(None)),
-            cancellation_manager: None,
-            cancel_helper: None, // 明示的にNone
+            cancel_helper: None,
         }
     }
 
-    /// キャンセル監視付きconstructor（DI統合版）
+    /// Constructor with cancellation monitoring (DI integration version)
     pub fn new_with_cancel_monitoring(cancel_helper: CancelMonitoringHelper) -> Self {
         PythonCommandRunner {
             venv_path: None,
@@ -57,30 +55,17 @@ impl PythonCommandRunner {
             settings: None,
             process_cancel: Arc::new(Mutex::new(false)),
             current_process_id: Arc::new(Mutex::new(None)),
-            cancellation_manager: None, // Helper使用時は従来manager不要
-            cancel_helper: Some(cancel_helper), // 明示的にSome
+            cancel_helper: Some(cancel_helper),
         }
     }
 
-    /// 統一されたtoken取得メソッド
+    /// Unified cancellation token retrieval
     async fn get_cancellation_token(&self) -> CancellationToken {
-        // キャンセル監視要否の明確な判定
         if let Some(helper) = &self.cancel_helper {
             helper.get_cancellation_token().await
-        } else if let Some(manager) = &self.cancellation_manager {
-            // 既存manager方式への後方互換
-            manager.lock().await.get_token().await
         } else {
-            // キャンセル監視なし - default token
             CancellationToken::new()
         }
-    }
-
-    pub fn set_cancellation_manager(
-        &mut self,
-        cancellation_manager: Box<dyn RunnerCancellationManager>,
-    ) {
-        self.cancellation_manager = Some(Arc::new(Mutex::new(cancellation_manager)));
     }
 
     fn python_bin_path(&self) -> Option<PathBuf> {
@@ -227,7 +212,6 @@ impl RunnerTrait for PythonCommandRunner {
         arg: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        // 明確で簡潔なtoken取得
         let cancellation_token = self.get_cancellation_token().await;
 
         let result = async {
@@ -390,7 +374,6 @@ impl RunnerTrait for PythonCommandRunner {
         }
         .await;
 
-        // 結果処理も簡素化
         (result, metadata)
     }
 
@@ -406,16 +389,18 @@ impl RunnerTrait for PythonCommandRunner {
     }
 
     async fn cancel(&mut self) {
-        // Cancel using manager
-        if let Some(manager) = &self.cancellation_manager {
-            let manager = manager.lock().await;
-            if manager.is_cancelled() {
+        // Cancel using helper if available
+        if let Some(helper) = &self.cancel_helper {
+            let token = helper.get_cancellation_token().await;
+            if token.is_cancelled() {
                 tracing::info!("PythonCommandRunner execution is already cancelled");
             } else {
-                tracing::info!("PythonCommandRunner cancellation requested, but Manager handles token internally");
+                tracing::info!(
+                    "PythonCommandRunner cancellation requested, Helper handles token internally"
+                );
             }
         } else {
-            tracing::warn!("No cancellation manager set, cannot cancel");
+            tracing::warn!("No cancellation helper set, cannot cancel");
         }
 
         let mut cancel_flag = self.process_cancel.lock().await;
@@ -500,7 +485,7 @@ impl RunnerTrait for PythonCommandRunner {
     }
 }
 
-// DI trait実装（Option対応）
+// DI trait implementation (with optional support)
 impl UseCancelMonitoringHelper for PythonCommandRunner {
     fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
         self.cancel_helper.as_ref()
@@ -511,7 +496,7 @@ impl UseCancelMonitoringHelper for PythonCommandRunner {
     }
 }
 
-// CancelMonitoring trait実装（Helper委譲版）
+// CancelMonitoring trait implementation (Helper delegation version)
 #[async_trait]
 impl CancelMonitoring for PythonCommandRunner {
     async fn setup_cancellation_monitoring(
@@ -519,27 +504,8 @@ impl CancelMonitoring for PythonCommandRunner {
         job_id: JobId,
         job_data: &JobData,
     ) -> Result<Option<JobResult>> {
-        // Helper有無の明確な分岐
         if let Some(helper) = &mut self.cancel_helper {
             helper.setup_monitoring_impl(job_id, job_data).await
-        } else if let Some(manager_arc) = &self.cancellation_manager {
-            // 既存manager方式への後方互換
-            use super::cancellation::CancellationSetupResult;
-            let mut manager = manager_arc.lock().await;
-            let result = manager.setup_monitoring(&job_id, job_data).await?;
-            match result {
-                CancellationSetupResult::MonitoringStarted => {
-                    tracing::trace!("Cancellation monitoring started for job {}", job_id.value);
-                    Ok(None)
-                }
-                CancellationSetupResult::AlreadyCancelled => {
-                    tracing::info!(
-                        "Job {} was already cancelled before execution",
-                        job_id.value
-                    );
-                    Ok(None)
-                }
-            }
         } else {
             tracing::debug!("No cancel monitoring configured for job {}", job_id.value);
             Ok(None)
@@ -549,30 +515,25 @@ impl CancelMonitoring for PythonCommandRunner {
     async fn cleanup_cancellation_monitoring(&mut self) -> Result<()> {
         if let Some(helper) = &mut self.cancel_helper {
             helper.cleanup_monitoring_impl().await
-        } else if let Some(manager_arc) = &self.cancellation_manager {
-            // 既存manager方式への後方互換
-            let mut manager = manager_arc.lock().await;
-            manager.cleanup_monitoring().await?;
-            Ok(())
         } else {
             Ok(())
         }
     }
 
     async fn reset_for_pooling(&mut self) -> Result<()> {
-        // 1. アクティブなプロセスチェック
+        // 1. Check for active processes
         let has_active_process = {
             let process_id = self.current_process_id.lock().await;
             process_id.is_some()
         };
 
         if has_active_process {
-            // プロセス実行中はキャンセル監視を維持
+            // Keep cancellation monitoring active during process execution
             tracing::debug!(
                 "PythonCommandRunner has active process - keeping cancellation monitoring active"
             );
         } else {
-            // プロセス終了時のみキャンセル監視をクリーンアップ
+            // Cleanup cancellation monitoring only when process ends
             if let Some(helper) = &mut self.cancel_helper {
                 helper.reset_for_pooling_impl().await?;
             } else {
@@ -580,7 +541,7 @@ impl CancelMonitoring for PythonCommandRunner {
             }
         }
 
-        // 2. PythonRunner固有の状態リセット（非実行時のみ）
+        // 2. PythonRunner-specific state reset (only when not executing)
         if !has_active_process {
             let mut cancel_flag = self.process_cancel.lock().await;
             *cancel_flag = false;

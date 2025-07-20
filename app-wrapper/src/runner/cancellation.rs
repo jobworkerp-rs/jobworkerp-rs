@@ -20,25 +20,25 @@ pub trait UseRunnerCancellationManager {
 // Import for CancellationHelper integration
 use jobworkerp_runner::runner::cancellation::RunnerCancellationManager as RunnerCancellationManagerTrait;
 
-/// キャンセル監視のセットアップ結果
+/// Cancellation monitoring setup result
 #[derive(Debug)]
 pub enum CancellationSetupResult {
-    /// 正常にセットアップ完了（監視開始）
+    /// Setup completed successfully (monitoring started)
     MonitoringStarted,
-    /// 既にキャンセル済み（即座にキャンセル処理が必要）
+    /// Already cancelled (requires immediate cancellation processing)
     AlreadyCancelled,
 }
 
-/// cleanup結果の詳細情報
+/// Cleanup result details
 #[derive(Debug)]
 pub enum CleanupResult {
     Success,
     TaskError(tokio::task::JoinError),
-    Timeout, // インフラレイヤーのタイムアウトで自動解決
+    Timeout, // Auto-resolved by infrastructure layer timeout
 }
 
-/// pubsubを使ったキャンセル監視のマネージャー（AppModule統合版）
-/// worker-app層でのAppModuleからの依存注入により、infra層への完全統合を実現
+/// Cancellation monitoring manager using pubsub (AppModule integration version)
+/// Achieves complete infra layer integration through AppModule dependency injection at worker-app layer
 #[derive(Debug)]
 pub struct RunnerCancellationManager {
     cancellation_repository: Option<Arc<dyn JobQueueCancellationRepository>>,
@@ -46,7 +46,7 @@ pub struct RunnerCancellationManager {
     pubsub_task_handle: Option<tokio::task::JoinHandle<()>>,
     cleanup_sender: Option<oneshot::Sender<()>>,
 
-    // CancellationHelper機能を統合
+    // Integrate CancellationHelper functionality
     cancellation_token: Option<CancellationToken>,
 }
 
@@ -57,7 +57,7 @@ impl Default for RunnerCancellationManager {
 }
 
 impl RunnerCancellationManager {
-    /// 空のマネージャーを作成（後でリポジトリを設定）
+    /// Create empty manager (repository to be set later)
     pub fn new() -> Self {
         Self {
             cancellation_repository: None,
@@ -68,7 +68,7 @@ impl RunnerCancellationManager {
         }
     }
 
-    /// AppModuleからリポジトリを注入
+    /// Inject repository from AppModule
     pub fn new_with_repository(
         cancellation_repository: Arc<dyn JobQueueCancellationRepository>,
     ) -> Self {
@@ -81,12 +81,12 @@ impl RunnerCancellationManager {
         }
     }
 
-    /// リポジトリを設定
+    /// Set repository
     pub fn set_repository(&mut self, repository: Arc<dyn JobQueueCancellationRepository>) {
         self.cancellation_repository = Some(repository);
     }
 
-    /// 内部token管理 - CancellationHelperの機能を統合
+    /// Internal token management - integrates CancellationHelper functionality
     async fn setup_token(&mut self) -> Result<CancellationToken> {
         let token = if let Some(existing_token) = &self.cancellation_token {
             if existing_token.is_cancelled() {
@@ -102,19 +102,19 @@ impl RunnerCancellationManager {
         Ok(token)
     }
 
-    /// テスト用のtoken設定メソッド (強制キャンセル化)
+    /// Token setting method for testing (forced cancellation)
     #[cfg(any(test, feature = "test-utils"))]
     pub fn set_cancellation_token(&mut self, token: CancellationToken) {
         self.cancellation_token = Some(token);
     }
 
-    /// 指定ジョブのキャンセル監視を開始（完全なpubsub統合版）
+    /// Start cancellation monitoring for specified job (complete pubsub integration version)
     pub async fn setup_monitoring(
         &mut self,
         job_id: &JobId,
         job_timeout_ms: u64,
     ) -> Result<CancellationSetupResult> {
-        // リポジトリが設定されているかチェック
+        // Check if repository is configured
         if self.cancellation_repository.is_none() {
             tracing::warn!("RunnerCancellationManager has no repository set, skipping monitoring");
             return Ok(CancellationSetupResult::MonitoringStarted); // Changed from AlreadyCancelled
@@ -122,7 +122,7 @@ impl RunnerCancellationManager {
 
         self.job_id = Some(*job_id);
 
-        // 内部token管理使用
+        // Use internal token management
         let execution_token = match self.setup_token().await {
             Ok(token) => token,
             Err(_) => {
@@ -137,7 +137,7 @@ impl RunnerCancellationManager {
         let (cleanup_sender, cleanup_receiver) = oneshot::channel();
         self.cleanup_sender = Some(cleanup_sender);
 
-        // 完全なpubsub統合実装
+        // Complete pubsub integration implementation
         let handle = self
             .start_pubsub_listener(job_id, job_timeout_ms, execution_token, cleanup_receiver)
             .await;
@@ -147,28 +147,28 @@ impl RunnerCancellationManager {
         Ok(CancellationSetupResult::MonitoringStarted)
     }
 
-    /// キャンセル監視のクリーンアップ
+    /// Cleanup cancellation monitoring
     pub async fn cleanup_monitoring(&mut self) -> Result<()> {
-        // cleanup信号を送信してsubscribe loopを停止
+        // Send cleanup signal to stop subscribe loop
         if let Some(sender) = self.cleanup_sender.take() {
             if sender.send(()).is_err() {
                 tracing::warn!("Failed to send cleanup signal - receiver may have been dropped");
             }
         }
 
-        // タスクの完了を待機
+        // Wait for task completion
         if let Some(handle) = self.pubsub_task_handle.take() {
             Self::safe_cleanup_task(handle, "Cancellation monitoring").await;
         }
 
         self.job_id = None;
-        self.cancellation_token = None; // token状態もクリア
+        self.cancellation_token = None; // Also clear token state
 
         tracing::debug!("Cleaned up cancellation monitoring");
         Ok(())
     }
 
-    /// 完全なpubsub統合実装
+    /// Complete pubsub integration implementation
     async fn start_pubsub_listener(
         &self,
         job_id: &JobId,
@@ -190,7 +190,7 @@ impl RunnerCancellationManager {
                 target_job_id.value
             );
 
-            // 実際のpubsub統合
+            // Actual pubsub integration
             let result = repository
                 .subscribe_job_cancellation_with_timeout(
                     Box::new(move |received_job_id| {
@@ -205,7 +205,7 @@ impl RunnerCancellationManager {
                                     "Received cancellation request for job {} in Runner - CANCELLING TOKEN",
                                     received_job_id.value
                                 );
-                                token.cancel(); // CancellationHelperのトークンをキャンセル
+                                token.cancel(); // Cancel CancellationHelper token
                             } else {
                                 tracing::debug!(
                                     "Received cancellation for different job {} (target: {})",
@@ -231,7 +231,7 @@ impl RunnerCancellationManager {
         })
     }
 
-    /// cleanup処理を安全に実行
+    /// Safely execute cleanup processing
     async fn safe_cleanup_task(
         task_handle: tokio::task::JoinHandle<()>,
         task_name: &str,

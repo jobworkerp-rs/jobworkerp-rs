@@ -109,7 +109,7 @@ impl AppModule {
     pub async fn new_by_env(config_module: Arc<AppConfigModule>) -> Result<Self> {
         // TODO from env
         //TODO recover redis records from rdb if option is enabled
-        // TODO memory cache をinfraでも利用する場合はinfra層でモジュール化しておく
+        // TODO: modularize memory cache in infra layer if infra also needs to use memory cache
         let mc_config = envy::prefixed("MEMORY_CACHE_")
             .from_env::<infra_utils::infra::memory::MemoryCacheConfig>()
             .unwrap_or_default();
