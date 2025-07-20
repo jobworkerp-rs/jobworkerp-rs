@@ -670,7 +670,7 @@ impl JobApp for HybridJobAppImpl {
     ) -> Result<bool> {
         tracing::debug!("complete_job: res_id={}", &id.value);
         if let Some(jid) = data.job_id.as_ref() {
-            match ResponseType::try_from(data.response_type) {
+            let res = match ResponseType::try_from(data.response_type) {
                 Ok(ResponseType::Direct) => {
                     // send result for direct or listen after response
                     let res = self
@@ -694,14 +694,10 @@ impl JobApp for HybridJobAppImpl {
                             &jid.value
                         );
                         pubsub_repo.publish_result_stream_data(*jid, stream).await?;
-                        self.delete_job(jid).await?;
-                        // Delete status after streaming data is completely published
                         tracing::debug!(
                             "complete_job(direct): stream data published and status deleted: {}",
                             &jid.value
                         );
-                    } else {
-                        self.delete_job(jid).await?;
                     }
                     res
                 }
@@ -717,7 +713,6 @@ impl JobApp for HybridJobAppImpl {
                         pubsub_repo.publish_result_stream_data(*jid, stream).await?;
                         tracing::debug!("complete_job: stream data published: {}", &jid.value);
                     }
-                    self.delete_job(jid).await?;
                     tracing::debug!(
                         "complete_job: status deleted after streaming job completion: {}",
                         &jid.value
@@ -727,10 +722,12 @@ impl JobApp for HybridJobAppImpl {
                 _ => {
                     tracing::warn!("complete_job: invalid response_type: {:?}", &data);
                     // abnormal response type, no publish
-                    self.delete_job(jid).await?;
                     Ok(false)
                 }
-            }
+            };
+            self.delete_job(jid).await?;
+
+            res
         } else {
             // something wrong
             tracing::error!("no job found from result: {:?}", data);

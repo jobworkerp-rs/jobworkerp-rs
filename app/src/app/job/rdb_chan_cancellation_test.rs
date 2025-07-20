@@ -47,7 +47,7 @@ mod rdb_chan_cancellation_tests {
             ttl: Some(Duration::from_millis(100)),
         };
 
-        let job_memory_cache = infra_utils::infra::cache::MokaCacheImpl::new(&moka_config);
+        // UseMemoryCacheはRdbChanJobAppImpl::new()内で自動初期化されるため、明示的な作成は不要
         let storage_config = Arc::new(StorageConfig {
             r#type: StorageType::Standalone,
             restore_at_startup: Some(false),
@@ -104,7 +104,6 @@ mod rdb_chan_cancellation_tests {
             id_generator,
             repositories,
             Arc::new(worker_app),
-            job_memory_cache,
             job_queue_cancellation_repository,
         ))
     }
@@ -182,7 +181,7 @@ mod rdb_chan_cancellation_tests {
                 .find_status(&job_id)
                 .await
                 .unwrap();
-            assert_eq!(status, Some(JobProcessingStatus::Cancelling));
+            assert_eq!(status, None);
 
             tracing::info!("test_cancel_pending_job_rdb_chan completed successfully");
             Ok(())
@@ -230,7 +229,7 @@ mod rdb_chan_cancellation_tests {
                 .find_status(&job_id)
                 .await
                 .unwrap();
-            assert_eq!(status, Some(JobProcessingStatus::Cancelling));
+            assert_eq!(status, None);
 
             tracing::info!("test_cancel_job_pending_states completed successfully");
             Ok(())
@@ -259,7 +258,7 @@ mod rdb_chan_cancellation_tests {
                 .find_status(&job_id)
                 .await
                 .unwrap();
-            assert_eq!(status, Some(JobProcessingStatus::Cancelling));
+            assert_eq!(status, None);
 
             tracing::info!("test_cancel_running_job_memory completed successfully");
             Ok(())

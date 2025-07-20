@@ -152,6 +152,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sqlx",
+ "stretto",
  "strum",
  "strum_macros",
  "tokio",

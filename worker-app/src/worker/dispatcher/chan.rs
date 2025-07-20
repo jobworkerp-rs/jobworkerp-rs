@@ -275,11 +275,9 @@ pub trait ChanJobDispatcher:
             // TODO execute and return result to result channel.
             tracing::trace!("send result id: {:?}, data: {:?}", &r.0.id, &r.0.data);
             // change status to wait handling result
-            if wdat.response_type != ResponseType::Direct as i32 {
-                self.job_processing_status_repository()
-                    .upsert_status(&jid, &JobProcessingStatus::WaitResult)
-                    .await?;
-            }
+            self.job_processing_status_repository()
+                .upsert_status(&jid, &JobProcessingStatus::WaitResult)
+                .await?;
             self.result_processor().process_result(r.0, r.1, wdat).await
     }
 }
