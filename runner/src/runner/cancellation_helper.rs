@@ -83,5 +83,4 @@ impl CancelMonitoringHelper {
 /// For DI integration with AppModule (Option support)
 pub trait UseCancelMonitoringHelper {
     fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper>;
-    fn cancel_monitoring_helper_mut(&mut self) -> Option<&mut CancelMonitoringHelper>;
 }

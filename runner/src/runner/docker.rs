@@ -886,9 +886,6 @@ impl UseCancelMonitoringHelper for DockerExecRunner {
     fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
         self.cancel_helper.as_ref()
     }
-    fn cancel_monitoring_helper_mut(&mut self) -> Option<&mut CancelMonitoringHelper> {
-        self.cancel_helper.as_mut()
-    }
 }
 
 // CancelMonitoring implementation for DockerRunner
@@ -930,9 +927,6 @@ impl super::cancellation::CancelMonitoring for DockerRunner {
 impl UseCancelMonitoringHelper for DockerRunner {
     fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
         self.cancel_helper.as_ref()
-    }
-    fn cancel_monitoring_helper_mut(&mut self) -> Option<&mut CancelMonitoringHelper> {
-        self.cancel_helper.as_mut()
     }
 }
 

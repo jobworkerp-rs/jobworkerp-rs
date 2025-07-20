@@ -129,18 +129,6 @@ impl CommandRunnerImpl {
         }
     }
 
-    /// Take cancel helper for stream lifetime extension (use_static=false)
-    /// Should be called AFTER run_job_inner to avoid affecting cancellation monitoring
-    pub fn take_cancel_helper_for_stream(&mut self) -> Option<CancelMonitoringHelper> {
-        self.cancel_helper.take()
-    }
-
-    /// Clone cancel helper for stream lifetime extension (use_static=false)
-    /// Should be called BEFORE run_job_inner to avoid affecting cancellation monitoring
-    pub fn clone_cancel_helper_for_stream(&self) -> Option<CancelMonitoringHelper> {
-        self.cancel_helper.clone()
-    }
-
     /// Unified token acquisition method
     async fn get_cancellation_token(&self) -> CancellationToken {
         // Clear determination of cancellation monitoring necessity
@@ -1100,10 +1088,6 @@ impl CancelMonitoring for CommandRunnerImpl {
 impl UseCancelMonitoringHelper for CommandRunnerImpl {
     fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
         self.cancel_helper.as_ref()
-    }
-
-    fn cancel_monitoring_helper_mut(&mut self) -> Option<&mut CancelMonitoringHelper> {
-        self.cancel_helper.as_mut()
     }
 }
 

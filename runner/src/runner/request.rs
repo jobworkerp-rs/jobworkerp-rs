@@ -3,7 +3,9 @@ use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
 use super::cancellation::CancelMonitoring;
 use super::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
 use super::{RunnerSpec, RunnerTrait};
-use crate::jobworkerp::runner::{HttpRequestArgs, HttpRequestRunnerSettings, HttpResponseResult};
+use crate::jobworkerp::runner::{
+    http_response_result, HttpRequestArgs, HttpRequestRunnerSettings, HttpResponseResult,
+};
 use crate::{schema_to_json_string, schema_to_json_string_option};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -187,13 +189,13 @@ impl RunnerTrait for RequestRunner {
                                     headers: h
                                         .iter()
                                         .map(
-                                            |(k, v)| crate::jobworkerp::runner::http_response_result::KeyValue {
+                                            |(k, v)| http_response_result::KeyValue {
                                                 key: k.as_str().to_string(),
                                                 value: v.to_str().unwrap().to_string(),
                                             },
                                         )
                                         .collect(),
-                                    response_data: Some(crate::jobworkerp::runner::http_response_result::ResponseData::Content(t)),
+                                    response_data: Some(http_response_result::ResponseData::Content(t)),
                                 };
                                 Ok(ProstMessageCodec::serialize_message(&mes)?)
                             }
@@ -338,12 +340,12 @@ impl RunnerTrait for RequestRunner {
                                             status_code: s as u32,
                                             headers: h
                                                 .iter()
-                                                .map(|(k, v)| crate::jobworkerp::runner::http_response_result::KeyValue {
+                                                .map(|(k, v)| http_response_result::KeyValue {
                                                     key: k.as_str().to_string(),
                                                     value: v.to_str().unwrap_or_default().to_string(),
                                                 })
                                                 .collect(),
-                                            response_data: Some(crate::jobworkerp::runner::http_response_result::ResponseData::Chunk(content_bytes)),
+                                            response_data: Some(http_response_result::ResponseData::Chunk(content_bytes)),
                                         };
 
                                         // Serialize and yield the final result
@@ -407,10 +409,6 @@ impl RunnerTrait for RequestRunner {
 impl UseCancelMonitoringHelper for RequestRunner {
     fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
         self.cancel_helper.as_ref()
-    }
-
-    fn cancel_monitoring_helper_mut(&mut self) -> Option<&mut CancelMonitoringHelper> {
-        self.cancel_helper.as_mut()
     }
 }
 
