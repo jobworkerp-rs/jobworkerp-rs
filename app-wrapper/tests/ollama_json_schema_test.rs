@@ -97,16 +97,13 @@ async fn test_chat_with_json_schema() -> Result<()> {
     )
     .await??;
 
-    // 結果検証
     assert!(result.content.is_some());
     if let Some(content) = result.content {
         if let Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) = content.content {
-            // JSON形式かどうか確認
             let parsed: serde_json::Value = serde_json::from_str(&text)?;
             assert!(parsed.get("answer").is_some());
             assert!(parsed.get("confidence").is_some());
 
-            // confidence値の範囲確認
             if let Some(confidence) = parsed.get("confidence").and_then(|v| v.as_f64()) {
                 assert!((0.0..=1.0).contains(&confidence));
             }
@@ -157,17 +154,14 @@ async fn test_completion_with_json_schema() -> Result<()> {
     )
     .await??;
 
-    // 結果検証
     assert!(result.content.is_some());
     if let Some(content) = result.content {
         if let Some(llm_completion_result::message_content::Content::Text(text)) = content.content {
-            // JSON形式かどうか確認
             let parsed: serde_json::Value = serde_json::from_str(&text)?;
             assert!(parsed.get("translation").is_some());
             assert!(parsed.get("source_language").is_some());
             assert!(parsed.get("target_language").is_some());
 
-            // 内容の妥当性確認
             if let Some(translation) = parsed.get("translation").and_then(|v| v.as_str()) {
                 assert!(!translation.is_empty());
             }
@@ -197,7 +191,6 @@ async fn test_invalid_json_schema_handling() -> Result<()> {
         ..Default::default()
     };
 
-    // 無効なスキーマでもエラーにならず正常に動作することを確認
     let result = timeout(
         TEST_TIMEOUT,
         service.request_chat(args, opentelemetry::Context::current(), HashMap::new()),

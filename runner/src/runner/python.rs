@@ -403,7 +403,6 @@ impl RunnerTrait for PythonCommandRunner {
                 }
                 _ = cancellation_token.cancelled() => {
                     tracing::info!("Python command execution was cancelled during process execution");
-                    // Kill the child process using PID if cancellation is requested
                     if let Some(pid) = child_id {
                         let _ = Self::kill_process_by_pid(pid);
                     }
@@ -463,7 +462,6 @@ impl RunnerTrait for PythonCommandRunner {
         let mut cancel_flag = self.process_cancel.lock().await;
         *cancel_flag = true;
 
-        // Kill the current process with graceful shutdown attempt
         if let Some(pid) = *self.current_process_id.lock().await {
             if let Err(e) = Self::graceful_kill_process_by_pid(pid).await {
                 tracing::error!("Failed to kill Python process {}: {}", pid, e);
