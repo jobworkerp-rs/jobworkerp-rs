@@ -23,7 +23,7 @@ use tonic::{
 };
 
 #[allow(unused_imports)] // Used in CancelMonitoring trait implementations
-use super::cancellation::{CancelMonitoring, CancelMonitoringCapable};
+use super::cancellation::CancelMonitoring;
 use super::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
 use super::{RunnerSpec, RunnerTrait};
 
@@ -488,10 +488,6 @@ impl RunnerTrait for GrpcUnaryRunner {
             token.cancel();
         }
     }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
 }
 
 // CancelMonitoring implementation for GrpcUnaryRunner
@@ -534,13 +530,6 @@ impl UseCancelMonitoringHelper for GrpcUnaryRunner {
     }
     fn cancel_monitoring_helper_mut(&mut self) -> Option<&mut CancelMonitoringHelper> {
         self.cancel_helper.as_mut()
-    }
-}
-
-// CancelMonitoringCapable implementation for GrpcUnaryRunner
-impl super::cancellation::CancelMonitoringCapable for GrpcUnaryRunner {
-    fn as_cancel_monitoring(&mut self) -> &mut dyn super::cancellation::CancelMonitoring {
-        self
     }
 }
 

@@ -8,16 +8,15 @@ use anyhow::Result;
 use async_trait::async_trait;
 use proto::jobworkerp::data::{JobData, JobId, JobResult};
 
+use crate::runner::cancellation_helper::CancelMonitoringHelper;
 use crate::runner::RunnerTrait;
 
-// Import for CancellationHelper integration
-
-/// キャンセル監視のセットアップ結果
+/// Result of cancellation monitoring setup
 #[derive(Debug)]
 pub enum CancellationSetupResult {
-    /// 正常にセットアップ完了（監視開始）
+    /// Successfully set up monitoring and started monitoring
     MonitoringStarted,
-    /// 既にキャンセル済み（即座にキャンセル処理が必要）
+    /// Job was already cancelled, immediate cancellation processing required
     AlreadyCancelled,
 }
 
@@ -36,11 +35,11 @@ pub trait RunnerCancellationManager: Send + Sync + std::fmt::Debug {
     async fn cleanup_monitoring(&mut self) -> Result<()>;
 
     /// Get cancellation token directly from Manager
-    /// Manager manages cancellation_token and returns pubsub-integrated token
+    /// Returns pubsub-integrated token to enable distributed cancellation monitoring
     async fn get_token(&self) -> tokio_util::sync::CancellationToken;
 
     /// Check if token is cancelled
-    /// Check if the token managed by Manager is cancelled
+    /// Provides quick cancellation state check without async overhead
     fn is_cancelled(&self) -> bool;
 }
 
@@ -61,20 +60,44 @@ pub trait CancelMonitoring: Send + Sync {
     /// Cleanup cancellation monitoring
     async fn cleanup_cancellation_monitoring(&mut self) -> Result<()>;
 
-    /// Pool recycling時の完全状態リセット
-    /// Pool返却時にCancellationManager状態を完全にリセットし、次回ジョブでの状態混入を防ぐ
+    /// Complete state reset for pool recycling
+    /// Fully resets CancellationManager state when returning to pool to prevent state contamination for next job
     async fn reset_for_pooling(&mut self) -> Result<()> {
-        // デフォルト実装: cleanup_cancellation_monitoring() + ログ出力
+        // Default implementation: cleanup_cancellation_monitoring() + logging
         self.cleanup_cancellation_monitoring().await?;
         tracing::debug!("CancelMonitoring reset for pooling (default implementation)");
         Ok(())
     }
 }
 
-/// Type-safe integration trait for Runners
+/// Type-safe integration trait for Runners  
 /// Avoids the dangers of downcast_mut()
-pub trait CancelMonitoringCapable: RunnerTrait + CancelMonitoring {
+/// Renamed from CancelMonitoringCapable to provide unified interface
+pub trait CancellableRunner: RunnerTrait + CancelMonitoring {
+    /// Type-safe access to cancel monitoring functionality
     fn as_cancel_monitoring(&mut self) -> &mut dyn CancelMonitoring;
+
+    /// Clone cancel helper for streaming operations
+    /// Used for use_static=false cases where stream lifetime needs extension
+    fn clone_cancel_helper_for_stream(&self) -> Option<CancelMonitoringHelper> {
+        None // Default implementation: no cancellation monitoring
+    }
 }
 
-// Old struct-based implementation removed - now using trait-based approach
+// Provide blanket implementation with streaming support
+use crate::runner::cancellation_helper::UseCancelMonitoringHelper;
+
+impl<T> CancellableRunner for T
+where
+    T: RunnerTrait + CancelMonitoring + UseCancelMonitoringHelper,
+{
+    fn as_cancel_monitoring(&mut self) -> &mut dyn CancelMonitoring {
+        self
+    }
+
+    /// Clone cancel helper for streaming operations
+    /// This implementation leverages UseCancelMonitoringHelper for type-safe access
+    fn clone_cancel_helper_for_stream(&self) -> Option<CancelMonitoringHelper> {
+        self.cancel_monitoring_helper().cloned()
+    }
+}

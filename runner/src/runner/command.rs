@@ -29,7 +29,7 @@ use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, LinesCodec};
 use tokio_util::sync::CancellationToken;
 
-use super::cancellation::{CancelMonitoring, CancelMonitoringCapable};
+use super::cancellation::CancelMonitoring;
 use super::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
 use proto::jobworkerp::data::{JobData, JobId, JobResult};
 
@@ -51,7 +51,7 @@ trait CommandRunner: RunnerTrait {
 pub struct CommandRunnerImpl {
     pub process: Option<Box<Child>>,
     pub stream_process_pid: Arc<RwLock<Option<u32>>>,
-    // DI統合用のHelper（Optional）
+    // Helper for DI integration (Optional)
     cancel_helper: Option<CancelMonitoringHelper>,
 }
 impl Default for CommandRunnerImpl {
@@ -111,21 +111,21 @@ impl CommandRunnerImpl {
         false
     }
 
-    /// キャンセル監視なしconstructor（既存互換）
+    /// Constructor without cancellation monitoring (backward compatibility)
     pub fn new() -> Self {
         Self {
             process: None,
             stream_process_pid: Arc::new(RwLock::new(None)),
-            cancel_helper: None, // 明示的にNone
+            cancel_helper: None, // Explicitly None
         }
     }
 
-    /// キャンセル監視付きconstructor（DI統合版）
+    /// Constructor with cancellation monitoring (DI integration version)
     pub fn new_with_cancel_monitoring(cancel_helper: CancelMonitoringHelper) -> Self {
         Self {
             process: None,
             stream_process_pid: Arc::new(RwLock::new(None)),
-            cancel_helper: Some(cancel_helper), // 明示的にSome
+            cancel_helper: Some(cancel_helper), // Explicitly Some
         }
     }
 
@@ -141,13 +141,13 @@ impl CommandRunnerImpl {
         self.cancel_helper.clone()
     }
 
-    /// 統一されたtoken取得メソッド
+    /// Unified token acquisition method
     async fn get_cancellation_token(&self) -> CancellationToken {
-        // キャンセル監視要否の明確な判定
+        // Clear determination of cancellation monitoring necessity
         if let Some(helper) = &self.cancel_helper {
             helper.get_cancellation_token().await
         } else {
-            // キャンセル監視なし - default token
+            // No cancellation monitoring - default token
             CancellationToken::new()
         }
     }
@@ -224,7 +224,7 @@ impl RunnerTrait for CommandRunnerImpl {
         // let mut metadata = metadata.clone();
         // Self::inject_metadata_from_context(&mut metadata, &cx);
 
-        // 明確で簡潔なtoken取得
+        // Clear and concise token acquisition
         let cancellation_token = self.get_cancellation_token().await;
 
         let res = async {
@@ -479,7 +479,7 @@ impl RunnerTrait for CommandRunnerImpl {
         }.await;
 
         let _ = self.reset().await; // Ignore reset errors in cleanup
-                                    // 結果処理も簡素化
+                                    // Result processing simplified
         (res, metadata)
     }
     async fn run_stream(
@@ -1032,10 +1032,6 @@ impl RunnerTrait for CommandRunnerImpl {
 
         // Note: token cleanup is handled by Manager
     }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
 }
 
 // CancelMonitoring implementation for CommandRunnerImpl
@@ -1047,7 +1043,7 @@ impl CancelMonitoring for CommandRunnerImpl {
         job_id: JobId,
         job_data: &JobData,
     ) -> Result<Option<JobResult>> {
-        // Helper有無の明確な分岐
+        // Clear helper availability check
         if let Some(helper) = &mut self.cancel_helper {
             helper.setup_monitoring_impl(job_id, job_data).await
         } else {
@@ -1065,8 +1061,8 @@ impl CancelMonitoring for CommandRunnerImpl {
         }
     }
 
-    /// Pool recycling時の完全状態リセット
-    /// CommandRunner固有の状態（stream_process_pid等）をリセットして次回ジョブでの状態混入を防ぐ
+    /// Complete state reset for pool recycling
+    /// Resets CommandRunner-specific state (stream_process_pid etc.) to prevent state contamination for next job
     async fn reset_for_pooling(&mut self) -> Result<()> {
         // ストリーミングプロセス実行中チェック
         let has_active_stream_process = {
@@ -1075,11 +1071,11 @@ impl CancelMonitoring for CommandRunnerImpl {
         };
 
         if has_active_stream_process {
-            // ストリーミングプロセス実行中はキャンセル監視を維持
-            // プロセス終了時の自動cleanup（タイムアウトベース）に委ねる
+            // Maintain cancellation monitoring during streaming process execution
+            // Rely on automatic cleanup (timeout-based) when process terminates
             tracing::debug!("CommandRunner has active streaming process - keeping cancellation monitoring active");
         } else {
-            // プロセス終了時のみキャンセル監視をクリーンアップ
+            // Cleanup cancellation monitoring only when process terminates
             if let Some(helper) = &mut self.cancel_helper {
                 helper.reset_for_pooling_impl().await?;
             } else {
@@ -1087,7 +1083,7 @@ impl CancelMonitoring for CommandRunnerImpl {
             }
         }
 
-        // CommandRunner固有の状態リセット（非ストリーミング時のみ）
+        // CommandRunner-specific state reset (non-streaming only)
         if !has_active_stream_process {
             let mut pid_guard = self.stream_process_pid.write().await;
             *pid_guard = None;
@@ -1109,13 +1105,6 @@ impl UseCancelMonitoringHelper for CommandRunnerImpl {
 
     fn cancel_monitoring_helper_mut(&mut self) -> Option<&mut CancelMonitoringHelper> {
         self.cancel_helper.as_mut()
-    }
-}
-
-// CancelMonitoringCapable implementation (type-safe integration trait)
-impl CancelMonitoringCapable for CommandRunnerImpl {
-    fn as_cancel_monitoring(&mut self) -> &mut dyn CancelMonitoring {
-        self
     }
 }
 
@@ -1489,3 +1478,6 @@ mod tests {
     // Note: Complex cancellation tests moved to app-wrapper integration tests
     // runner crate level tests focus on basic functionality only
 }
+
+// CommandRunnerImpl uses the blanket implementation of CancellableRunner
+// The streaming support is provided through the UseCancelMonitoringHelper trait

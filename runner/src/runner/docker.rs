@@ -434,10 +434,6 @@ impl RunnerTrait for DockerExecRunner {
             tracing::warn!("No active Docker container to cancel");
         }
     }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
 }
 
 // confirm local docker
@@ -848,10 +844,6 @@ impl RunnerTrait for DockerRunner {
             tracing::warn!("No active Docker container to cancel");
         }
     }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
 }
 
 // CancelMonitoring implementation for DockerExecRunner
@@ -899,13 +891,6 @@ impl UseCancelMonitoringHelper for DockerExecRunner {
     }
 }
 
-// CancelMonitoringCapable implementation for DockerExecRunner
-impl super::cancellation::CancelMonitoringCapable for DockerExecRunner {
-    fn as_cancel_monitoring(&mut self) -> &mut dyn super::cancellation::CancelMonitoring {
-        self
-    }
-}
-
 // CancelMonitoring implementation for DockerRunner
 #[async_trait]
 impl super::cancellation::CancelMonitoring for DockerRunner {
@@ -948,13 +933,6 @@ impl UseCancelMonitoringHelper for DockerRunner {
     }
     fn cancel_monitoring_helper_mut(&mut self) -> Option<&mut CancelMonitoringHelper> {
         self.cancel_helper.as_mut()
-    }
-}
-
-// CancelMonitoringCapable implementation for DockerRunner
-impl super::cancellation::CancelMonitoringCapable for DockerRunner {
-    fn as_cancel_monitoring(&mut self) -> &mut dyn super::cancellation::CancelMonitoring {
-        self
     }
 }
 

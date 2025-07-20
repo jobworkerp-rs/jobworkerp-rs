@@ -324,10 +324,6 @@ impl RunnerTrait for LLMChatRunnerImpl {
             tracing::warn!("No cancellation helper set, cannot cancel");
         }
     }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
 }
 
 // CancelMonitoring trait implementation (Helper delegation version)

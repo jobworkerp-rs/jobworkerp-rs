@@ -401,10 +401,6 @@ impl RunnerTrait for RequestRunner {
             tracing::warn!("No cancellation helper set, cannot cancel");
         }
     }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
 }
 
 // DI trait implementation (with optional support)

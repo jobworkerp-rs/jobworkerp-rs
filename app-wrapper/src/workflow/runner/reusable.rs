@@ -406,10 +406,6 @@ impl RunnerTrait for ReusableWorkflowRunner {
             executor.cancel().await;
         }
     }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
 }
 
 // CancelMonitoring implementation for ReusableWorkflowRunner
