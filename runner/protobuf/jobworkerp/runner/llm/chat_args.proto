@@ -101,4 +101,7 @@ message LLMChatArgs {
   optional FunctionOptions function_options = 4;
 
   repeated ChatMessage messages = 5;
+  
+  // JSON Schema for structured output (optional)
+  optional string json_schema = 6;
 }

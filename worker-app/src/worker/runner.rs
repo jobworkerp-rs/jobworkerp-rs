@@ -523,7 +523,8 @@ pub trait JobRunner:
     }
 }
 
-#[cfg(test)]
+#[allow(unused_imports)]
+#[cfg(any(test, feature = "test-utils"))]
 pub(crate) mod tests {
     use super::{map::RunnerFactoryWithPoolMap, *};
     use anyhow::Result;
@@ -539,12 +540,14 @@ pub(crate) mod tests {
     use tokio::sync::OnceCell;
 
     // create JobRunner for test
+    #[allow(dead_code)]
     struct MockJobRunner {
         runner_factory: Arc<RunnerFactory>,
         runner_pool: RunnerFactoryWithPoolMap,
         id_generator: IdGeneratorWrapper,
     }
     impl MockJobRunner {
+        #[allow(dead_code)]
         async fn new() -> Self {
             let app_module = Arc::new(app::module::test::create_hybrid_test_app().await.unwrap());
             let app_wrapper_module = Arc::new(

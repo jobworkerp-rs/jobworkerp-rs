@@ -48,6 +48,7 @@ fn create_long_running_chat_args() -> LlmChatArgs {
         }),
         model: Some(TEST_MODEL.to_string()),
         function_options: None,
+        json_schema: None,
     }
 }
 
@@ -75,6 +76,7 @@ fn create_simple_chat_args() -> LlmChatArgs {
         }),
         model: Some(TEST_MODEL.to_string()),
         function_options: None,
+        json_schema: None,
     }
 }
 
@@ -97,6 +99,7 @@ fn create_simple_completion_args() -> LlmCompletionArgs {
             },
         ),
         context: None,
+        json_schema: None,
     }
 }
 
@@ -119,6 +122,7 @@ fn create_long_running_completion_args() -> LlmCompletionArgs {
             },
         ),
         context: None,
+        json_schema: None,
     }
 }
 

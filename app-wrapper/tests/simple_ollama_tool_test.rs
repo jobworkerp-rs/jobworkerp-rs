@@ -89,6 +89,7 @@ fn create_chat_args_with_tools(message: &str) -> LlmChatArgs {
             use_workers_as_function: Some(false),
             function_set_name: Some("ollama_tool_test".to_string()),
         }),
+        json_schema: None,
     }
 }
 
@@ -203,6 +204,7 @@ async fn test_chat_without_tools() -> Result<()> {
         }),
         model: Some(TEST_MODEL.to_string()),
         function_options: None, // No function calling
+        json_schema: None,
     };
 
     let context = opentelemetry::Context::current();

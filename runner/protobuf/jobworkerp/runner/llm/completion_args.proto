@@ -69,4 +69,7 @@ message LLMCompletionArgs {
 
   // The function options to use for the model.
   optional FunctionOptions function_options = 6;
+  
+  // JSON Schema for structured output (optional)
+  optional string json_schema = 7;
 }

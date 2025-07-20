@@ -486,10 +486,6 @@ impl UseCancelMonitoringHelper for PythonCommandRunner {
     fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
         self.cancel_helper.as_ref()
     }
-
-    fn cancel_monitoring_helper_mut(&mut self) -> Option<&mut CancelMonitoringHelper> {
-        self.cancel_helper.as_mut()
-    }
 }
 
 // CancelMonitoring trait implementation (Helper delegation version)
