@@ -47,6 +47,80 @@ impl PythonCommandRunner {
         }
     }
 
+    /// Kill a process by PID with platform-specific implementation
+    fn kill_process_by_pid(pid: u32) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use nix::sys::signal::{kill, Signal};
+            use nix::unistd::Pid;
+            kill(Pid::from_raw(pid as i32), Signal::SIGKILL)
+                .context(format!("Failed to send SIGKILL to process {pid}"))?;
+        }
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::System::Threading::{
+                OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+            };
+            unsafe {
+                let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+                if handle != 0 {
+                    if TerminateProcess(handle, 1) == 0 {
+                        return Err(anyhow!("Failed to terminate process {}", pid));
+                    }
+                } else {
+                    return Err(anyhow!("Failed to open process {} for termination", pid));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Kill a process with graceful shutdown attempt (SIGTERM first, then SIGKILL)
+    async fn graceful_kill_process_by_pid(pid: u32) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use nix::sys::signal::{kill, Signal};
+            use nix::unistd::Pid;
+
+            // First try SIGTERM for graceful shutdown
+            if let Err(e) = kill(Pid::from_raw(pid as i32), Signal::SIGTERM) {
+                tracing::warn!("Failed to send SIGTERM to process {}: {}", pid, e);
+            } else {
+                tracing::debug!("Sent SIGTERM to process {}", pid);
+            }
+
+            // Wait for graceful shutdown with 5 second timeout
+            let timeout_duration = std::time::Duration::from_secs(5);
+            tokio::time::sleep(timeout_duration).await;
+
+            // Try to send signal 0 to check if process still exists
+            match kill(Pid::from_raw(pid as i32), None) {
+                Ok(_) => {
+                    // Process still exists, force kill with SIGKILL
+                    tracing::warn!(
+                        "Process {} did not terminate gracefully, force killing",
+                        pid
+                    );
+                    Self::kill_process_by_pid(pid)?;
+                    tracing::debug!("Sent SIGKILL to process {}", pid);
+                }
+                Err(_) => {
+                    // Process no longer exists (terminated gracefully)
+                    tracing::debug!("Process {} terminated gracefully", pid);
+                }
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            // Windows doesn't have SIGTERM, so we directly terminate
+            Self::kill_process_by_pid(pid)?;
+            tracing::debug!("Terminated process {}", pid);
+        }
+
+        Ok(())
+    }
+
     /// Constructor with cancellation monitoring (DI integration version)
     pub fn new_with_cancel_monitoring(cancel_helper: CancelMonitoringHelper) -> Self {
         PythonCommandRunner {
@@ -329,26 +403,8 @@ impl RunnerTrait for PythonCommandRunner {
                 }
                 _ = cancellation_token.cancelled() => {
                     tracing::info!("Python command execution was cancelled during process execution");
-                    // Kill the child process using PID if cancellation is requested
                     if let Some(pid) = child_id {
-                        #[cfg(unix)]
-                        {
-                            use nix::sys::signal::{kill, Signal};
-                            use nix::unistd::Pid;
-                            let _ = kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
-                        }
-                        #[cfg(windows)]
-                        {
-                            use windows_sys::Win32::System::Threading::{
-                                OpenProcess, TerminateProcess, PROCESS_TERMINATE,
-                            };
-                            unsafe {
-                                let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
-                                if handle != 0 {
-                                    let _ = TerminateProcess(handle, 1);
-                                }
-                            }
-                        }
+                        let _ = Self::kill_process_by_pid(pid);
                     }
                     return Err(anyhow::anyhow!("Python command execution was cancelled during process execution"));
                 }
@@ -406,74 +462,9 @@ impl RunnerTrait for PythonCommandRunner {
         let mut cancel_flag = self.process_cancel.lock().await;
         *cancel_flag = true;
 
-        // Kill the current process with graceful shutdown attempt
         if let Some(pid) = *self.current_process_id.lock().await {
-            #[cfg(unix)]
-            {
-                use nix::sys::signal::{kill, Signal};
-                use nix::unistd::Pid;
-
-                // First try SIGTERM for graceful shutdown
-                if let Err(e) = kill(Pid::from_raw(pid as i32), Signal::SIGTERM) {
-                    tracing::warn!("Failed to send SIGTERM to Python process {}: {}", pid, e);
-                } else {
-                    tracing::debug!("Sent SIGTERM to Python process {}", pid);
-                }
-
-                // Wait for graceful shutdown with 5 second timeout
-                let start_time = std::time::Instant::now();
-                let timeout_duration = std::time::Duration::from_secs(5);
-
-                // Check if process is still running after timeout
-                tokio::time::sleep(timeout_duration).await;
-
-                // Try to send signal 0 to check if process still exists
-                match kill(Pid::from_raw(pid as i32), None) {
-                    Ok(_) => {
-                        // Process still exists, force kill with SIGKILL
-                        tracing::warn!(
-                            "Python process {} did not terminate gracefully, force killing",
-                            pid
-                        );
-                        if let Err(e) = kill(Pid::from_raw(pid as i32), Signal::SIGKILL) {
-                            tracing::error!(
-                                "Failed to send SIGKILL to Python process {}: {}",
-                                pid,
-                                e
-                            );
-                        } else {
-                            tracing::debug!("Sent SIGKILL to Python process {}", pid);
-                        }
-                    }
-                    Err(_) => {
-                        // Process no longer exists (terminated gracefully)
-                        let elapsed = start_time.elapsed();
-                        tracing::debug!(
-                            "Python process {} terminated gracefully in {:?}",
-                            pid,
-                            elapsed
-                        );
-                    }
-                }
-            }
-
-            #[cfg(windows)]
-            {
-                use windows_sys::Win32::System::Threading::{
-                    OpenProcess, TerminateProcess, PROCESS_TERMINATE,
-                };
-                unsafe {
-                    let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
-                    if handle != 0 {
-                        if TerminateProcess(handle, 1) != 0 {
-                            tracing::debug!("Terminated Python process {}", pid);
-                        } else {
-                            tracing::error!("Failed to terminate Python process {}", pid);
-                        }
-                    } else {
-                        tracing::warn!("Failed to open Python process {} for termination", pid);
-                    }
-                }
+            if let Err(e) = Self::graceful_kill_process_by_pid(pid).await {
+                tracing::error!("Failed to kill Python process {}: {}", pid, e);
             }
         } else {
             tracing::warn!("No active Python process to cancel");
@@ -485,10 +476,6 @@ impl RunnerTrait for PythonCommandRunner {
 impl UseCancelMonitoringHelper for PythonCommandRunner {
     fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
         self.cancel_helper.as_ref()
-    }
-
-    fn cancel_monitoring_helper_mut(&mut self) -> Option<&mut CancelMonitoringHelper> {
-        self.cancel_helper.as_mut()
     }
 }
 

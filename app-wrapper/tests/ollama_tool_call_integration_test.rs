@@ -26,7 +26,7 @@ pub mod test {
     /// Test configuration
     const OLLAMA_HOST: &str = "http://ollama.ollama.svc.cluster.local:11434";
     const TEST_MODEL: &str = "qwen3:30b"; // Use qwen3:30b model
-    const TEST_TIMEOUT: Duration = Duration::from_secs(60);
+    const TEST_TIMEOUT: Duration = Duration::from_secs(180);
 
     /// Setup function app with COMMAND runner for tool calls using test infrastructure
     async fn setup_function_app() -> Result<Arc<FunctionAppImpl>> {
@@ -97,6 +97,7 @@ pub mod test {
             use_workers_as_function: Some(false),
             function_set_name: Some("ollama_tool_test".to_string()),
         }),
+        json_schema: None,
     }
     }
 
@@ -298,6 +299,7 @@ pub mod test {
         }),
         model: Some(TEST_MODEL.to_string()),
         function_options: None, // No function calling
+        json_schema: None,
     };
 
         let context = opentelemetry::Context::current();
