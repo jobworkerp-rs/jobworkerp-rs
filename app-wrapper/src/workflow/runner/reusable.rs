@@ -16,6 +16,9 @@ use jobworkerp_runner::jobworkerp::runner::{
     workflow_result::WorkflowStatus, ReusableWorkflowArgs,
 };
 use jobworkerp_runner::jobworkerp::runner::{ReusableWorkflowRunnerSettings, WorkflowResult};
+use jobworkerp_runner::runner::cancellation_helper::{
+    CancelMonitoringHelper, UseCancelMonitoringHelper,
+};
 use jobworkerp_runner::runner::workflow::ReusableWorkflowRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use opentelemetry::trace::TraceContextExt;
@@ -25,8 +28,6 @@ use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::llm::cancellation_helper::CancellationHelper;
-
 #[derive(Debug, Clone)]
 pub struct ReusableWorkflowRunner {
     app_wrapper_module: Arc<crate::modules::AppWrapperModule>,
@@ -34,9 +35,10 @@ pub struct ReusableWorkflowRunner {
     http_client: ReqwestClient,
     workflow_executor: Option<Arc<WorkflowExecutor>>,
     workflow: Option<Arc<WorkflowSchema>>,
-    cancellation_helper: CancellationHelper,
+    cancel_helper: Option<CancelMonitoringHelper>,
 }
 impl ReusableWorkflowRunner {
+    /// Constructor without cancellation monitoring (for backward compatibility)
     pub fn new(
         app_wrapper_module: Arc<crate::modules::AppWrapperModule>,
         app_module: Arc<AppModule>,
@@ -55,15 +57,40 @@ impl ReusableWorkflowRunner {
             http_client,
             workflow_executor: None,
             workflow: None,
-            cancellation_helper: CancellationHelper::new(),
+            cancel_helper: None,
         })
     }
 
-    /// Set a cancellation token for this runner instance
+    /// Constructor with cancellation monitoring (DI integration version)
+    pub fn new_with_cancel_monitoring(
+        app_wrapper_module: Arc<crate::modules::AppWrapperModule>,
+        app_module: Arc<AppModule>,
+        cancel_helper: CancelMonitoringHelper,
+    ) -> Result<Self> {
+        let workflow_config = app_wrapper_module.config_module.workflow_config.clone();
+        let http_client = ReqwestClient::new(
+            Some(workflow_config.http_user_agent.as_str()),
+            Some(workflow_config.http_timeout_sec),
+            Some(workflow_config.http_timeout_sec),
+            Some(2),
+        )?;
+
+        Ok(ReusableWorkflowRunner {
+            app_wrapper_module,
+            app_module,
+            http_client,
+            workflow_executor: None,
+            workflow: None,
+            cancel_helper: Some(cancel_helper),
+        })
+    }
+
+    /// Set a cancellation helper for this runner instance
     /// This allows external control over cancellation behavior (for test)
     #[allow(dead_code)]
-    pub(crate) fn set_cancellation_token(&mut self, token: tokio_util::sync::CancellationToken) {
-        self.cancellation_helper.set_cancellation_token(token);
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn set_cancel_monitoring_helper(&mut self, helper: CancelMonitoringHelper) {
+        self.cancel_helper = Some(helper);
     }
 }
 impl ReusableWorkflowRunnerSpec for ReusableWorkflowRunner {}
@@ -145,7 +172,8 @@ impl RunnerTrait for ReusableWorkflowRunner {
             tracing::debug!("Workflow args: {:#?}", &arg);
             if let Some(workflow) = self.workflow.as_ref() {
                 tracing::debug!("Workflow: {:#?}", workflow);
-                if let Some(token) = self.cancellation_helper.get_token() {
+                if let Some(helper) = &self.cancel_helper {
+                    let token = helper.get_cancellation_token().await;
                     if token.is_cancelled() {
                         return Err(anyhow::anyhow!(
                             "canceled by user: {}, {:?}",
@@ -242,7 +270,8 @@ impl RunnerTrait for ReusableWorkflowRunner {
         let metadata_arc = Arc::new(metadata.clone());
         let execution_id = ExecutionId::new_opt(arg.execution_id.clone());
 
-        if let Some(token) = self.cancellation_helper.get_token() {
+        if let Some(helper) = &self.cancel_helper {
+            let token = helper.get_cancellation_token().await;
             if token.is_cancelled() {
                 return Err(anyhow::anyhow!(
                     "canceled by user: {}, {:?}",
@@ -360,7 +389,19 @@ impl RunnerTrait for ReusableWorkflowRunner {
     }
 
     async fn cancel(&mut self) {
-        self.cancellation_helper.cancel();
+        if let Some(helper) = &self.cancel_helper {
+            let token = helper.get_cancellation_token().await;
+            if token.is_cancelled() {
+                tracing::info!("ReusableWorkflowRunner execution is already cancelled");
+            } else {
+                tracing::info!(
+                    "ReusableWorkflowRunner cancellation requested, Helper handles token internally"
+                );
+            }
+        } else {
+            tracing::warn!("No cancellation helper set, cannot cancel");
+        }
+
         if let Some(executor) = self.workflow_executor.as_ref() {
             executor.cancel().await;
         }
@@ -398,17 +439,21 @@ impl jobworkerp_runner::runner::cancellation::CancelMonitoring for ReusableWorkf
         tracing::trace!("Cleaning up cancellation monitoring for ReusableWorkflowRunner");
 
         // Clear the cancellation helper
-        self.cancellation_helper.clear_token();
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.cleanup_monitoring_impl().await?;
+        }
 
         Ok(())
     }
 }
 
-// CancelMonitoringCapable implementation for ReusableWorkflowRunner
-impl jobworkerp_runner::runner::cancellation::CancelMonitoringCapable for ReusableWorkflowRunner {
-    fn as_cancel_monitoring(
-        &mut self,
-    ) -> &mut dyn jobworkerp_runner::runner::cancellation::CancelMonitoring {
-        self
+// DI trait実装（Option対応）
+impl UseCancelMonitoringHelper for ReusableWorkflowRunner {
+    fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
+        self.cancel_helper.as_ref()
+    }
+
+    fn cancel_monitoring_helper_mut(&mut self) -> Option<&mut CancelMonitoringHelper> {
+        self.cancel_helper.as_mut()
     }
 }

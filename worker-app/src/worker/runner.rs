@@ -71,11 +71,11 @@ pub trait JobRunner:
                 .await;
             match p {
                 Ok(Some(runner)) => {
-                    // ストリーミング判定のためjob.dataを先に確認
+                    // Check job.data first for streaming determination
                     let is_streaming = job.data.as_ref().is_some_and(|data| data.request_streaming);
 
                     if is_streaming {
-                        // ストリーミング時：Pool Objectを後で返却するため保持
+                        // Streaming: Keep Pool Object for later return
                         let mut r = runner.lock().await;
                         tracing::debug!("static runner found (streaming): {:?}", r.name());
                         let (job_result, stream) =
@@ -89,11 +89,11 @@ pub trait JobRunner:
 
                         (job_result, final_stream)
                     } else {
-                        // 非ストリーミング時：既存通り（即座にPool返却）
+                        // Non-streaming: Existing behavior (immediate Pool return)
                         let mut r = runner.lock().await;
                         tracing::debug!("static runner found (non-streaming): {:?}", r.name());
                         let result = self.run_job_inner(worker_data, job, &mut r).await;
-                        // runnerは自動的にdropされてPool返却される
+                        // runner is automatically dropped and returned to Pool
                         result
                     }
                 }
@@ -109,11 +109,11 @@ pub trait JobRunner:
                 Ok(mut runner) => {
                     tracing::debug!("non-static runner found: {:?}", runner.name());
 
-                    // ストリーミング判定
+                    // Streaming determination
                     let is_streaming = job.data.as_ref().is_some_and(|data| data.request_streaming);
 
                     if is_streaming {
-                        // ストリーミング時：CommandRunnerImplからCancelHelperをclone取得
+                        // Streaming: Clone CancelHelper from CommandRunnerImpl
                         use jobworkerp_runner::runner::command::CommandRunnerImpl;
                         let cancel_helper = if let Some(command_runner) =
                             runner.as_any_mut().downcast_mut::<CommandRunnerImpl>()
@@ -140,7 +140,7 @@ pub trait JobRunner:
 
                         (job_result, final_stream)
                     } else {
-                        // 非ストリーミング時：既存通り
+                        // Non-streaming: Existing behavior
                         let mut runner = runner;
                         self.run_job_inner(worker_data, job, &mut runner).await
                     }
@@ -746,7 +746,7 @@ pub trait JobRunner:
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{map::RunnerFactoryWithPoolMap, *};
     use anyhow::Result;
     use app::app::WorkerConfig;

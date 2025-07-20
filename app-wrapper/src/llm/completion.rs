@@ -7,6 +7,10 @@ use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::APP_WORKER_NAME;
 use jobworkerp_runner::jobworkerp::runner::llm::{LlmCompletionArgs, LlmRunnerSettings};
+use jobworkerp_runner::runner::cancellation_helper::{
+    CancelMonitoringHelper, UseCancelMonitoringHelper,
+};
+// Note: execute_cancellable is no longer needed with new cancellation approach
 use jobworkerp_runner::runner::llm::LLMCompletionRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use ollama::OllamaService;
@@ -17,9 +21,6 @@ use proto::jobworkerp::data::{result_output_item, ResultOutputItem, RunnerType};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
-
-use super::cancellation_helper::execute_cancellable;
-use jobworkerp_runner::runner::cancellation::RunnerCancellationManager;
 use tokio_util::sync::CancellationToken;
 
 pub mod genai;
@@ -28,52 +29,51 @@ pub mod ollama;
 pub struct LLMCompletionRunnerImpl {
     pub ollama: Option<OllamaService>,
     pub genai: Option<GenaiCompletionService>,
-    cancellation_manager: Option<Arc<tokio::sync::Mutex<Box<dyn RunnerCancellationManager>>>>,
+    // Helper for dependency injection integration (optional for backward compatibility)
+    cancel_helper: Option<CancelMonitoringHelper>,
 }
 
 impl LLMCompletionRunnerImpl {
+    /// Constructor without cancellation monitoring (for backward compatibility)
     pub fn new() -> Self {
         Self {
             ollama: None,
             genai: None,
-            cancellation_manager: None,
+            cancel_helper: None,
         }
     }
 
-    /// 統一されたtoken取得メソッド
+    /// Constructor with cancellation monitoring (DI integration version)
+    pub fn new_with_cancel_monitoring(cancel_helper: CancelMonitoringHelper) -> Self {
+        Self {
+            ollama: None,
+            genai: None,
+            cancel_helper: Some(cancel_helper),
+        }
+    }
+
+    /// Unified cancellation token retrieval
     async fn get_cancellation_token(&self) -> CancellationToken {
-        if let Some(manager) = &self.cancellation_manager {
-            manager.lock().await.get_token().await
+        if let Some(helper) = &self.cancel_helper {
+            helper.get_cancellation_token().await
         } else {
-            // fallback: basic token
             CancellationToken::new()
-        }
-    }
-
-    pub fn set_cancellation_manager(
-        &mut self,
-        cancellation_manager: Box<dyn RunnerCancellationManager>,
-    ) {
-        self.cancellation_manager = Some(Arc::new(tokio::sync::Mutex::new(cancellation_manager)));
-    }
-
-    /// Test-only cancellation token setting method
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn set_cancellation_token(&mut self, token: tokio_util::sync::CancellationToken) {
-        // For testing: Set token via Manager
-        if let Some(_manager_arc) = &self.cancellation_manager {
-            // Note: In real tests, Manager internal functionality should be used
-            tracing::warn!("Test method: set_cancellation_token called, but Manager should handle token internally");
-        } else {
-            // Create dummy Manager for testing
-            let mock_manager = jobworkerp_runner::runner::test_common::mock::MockCancellationManager::new_with_token(token);
-            self.cancellation_manager =
-                Some(Arc::new(tokio::sync::Mutex::new(Box::new(mock_manager))));
         }
     }
 }
 
 impl Tracing for LLMCompletionRunnerImpl {}
+
+// DI trait implementation (with optional support)
+impl UseCancelMonitoringHelper for LLMCompletionRunnerImpl {
+    fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
+        self.cancel_helper.as_ref()
+    }
+
+    fn cancel_monitoring_helper_mut(&mut self) -> Option<&mut CancelMonitoringHelper> {
+        self.cancel_helper.as_mut()
+    }
+}
 
 impl Default for LLMCompletionRunnerImpl {
     fn default() -> Self {
@@ -151,7 +151,6 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         arg: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        // 明確で簡潔なtoken取得
         let cancellation_token = self.get_cancellation_token().await;
 
         // Check cancellation BEFORE any other processing
@@ -189,12 +188,13 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                     .map_err(|e| anyhow!("encode error: {}", e))?;
                 Ok(buf)
             } else if let Some(genai) = self.genai.as_mut() {
-                let res = execute_cancellable(
-                    genai.request_chat(args, cx, metadata_clone.clone()),
-                    &cancellation_token,
-                    "LLM completion (GenAI) request",
-                )
-                .await?;
+                // Use tokio::select! for cancellation support
+                let res = tokio::select! {
+                    result = genai.request_chat(args, cx, metadata_clone.clone()) => result?,
+                    _ = cancellation_token.cancelled() => {
+                        return Err(anyhow!("LLM completion (GenAI) request was cancelled"));
+                    }
+                };
                 let mut buf = Vec::with_capacity(res.encoded_len());
                 res.encode(&mut buf)
                     .map_err(|e| anyhow!("encode error: {}", e))?;
@@ -205,7 +205,6 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         }
         .await;
 
-        // 結果処理も簡素化
         (result, metadata_clone)
     }
 
@@ -329,16 +328,18 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
     }
 
     async fn cancel(&mut self) {
-        // Cancel using manager
-        if let Some(manager) = &self.cancellation_manager {
-            let manager = manager.lock().await;
-            if manager.is_cancelled() {
+        // Cancel using helper if available
+        if let Some(helper) = &self.cancel_helper {
+            let token = helper.get_cancellation_token().await;
+            if token.is_cancelled() {
                 tracing::info!("LLMCompletionRunner execution is already cancelled");
             } else {
-                tracing::info!("LLMCompletionRunner cancellation requested, but Manager handles token internally");
+                tracing::info!(
+                    "LLMCompletionRunner cancellation requested, Helper handles token internally"
+                );
             }
         } else {
-            tracing::warn!("No cancellation manager set, cannot cancel");
+            tracing::warn!("No cancellation helper set, cannot cancel");
         }
     }
 
@@ -347,45 +348,45 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
     }
 }
 
-// CancelMonitoring implementation for LLMCompletionRunnerImpl
+// CancelMonitoring trait実装（Helper委譲版）
 #[async_trait]
 impl jobworkerp_runner::runner::cancellation::CancelMonitoring for LLMCompletionRunnerImpl {
-    /// Initialize cancellation monitoring for specific job
     async fn setup_cancellation_monitoring(
         &mut self,
         job_id: proto::jobworkerp::data::JobId,
-        _job_data: &proto::jobworkerp::data::JobData,
+        job_data: &proto::jobworkerp::data::JobData,
     ) -> anyhow::Result<Option<proto::jobworkerp::data::JobResult>> {
-        tracing::debug!(
-            "Setting up cancellation monitoring for LLMCompletionRunnerImpl job {}",
-            job_id.value
-        );
-
-        // For LLMCompletionRunnerImpl, we use the same pattern as CommandRunner
-        // The actual cancellation monitoring will be handled by the CancellationHelper
-        // LLM API requests will be cancelled automatically when the token is cancelled
-
-        tracing::trace!("Cancellation monitoring started for job {}", job_id.value);
-        Ok(None) // Continue with normal execution
+        // Helper有無の明確な分岐
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.setup_monitoring_impl(job_id, job_data).await
+        } else {
+            tracing::debug!(
+                "No cancel monitoring configured for LLM Completion job {}",
+                job_id.value
+            );
+            Ok(None)
+        }
     }
 
-    /// Cleanup cancellation monitoring
     async fn cleanup_cancellation_monitoring(&mut self) -> anyhow::Result<()> {
-        tracing::trace!("Cleaning up cancellation monitoring for LLMCompletionRunnerImpl");
-
-        // Clear the cancellation helper
-        // Note: token cleanup is handled by Manager
-
-        Ok(())
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.cleanup_monitoring_impl().await
+        } else {
+            Ok(())
+        }
     }
-}
 
-// CancelMonitoringCapable implementation for LLMCompletionRunnerImpl
-impl jobworkerp_runner::runner::cancellation::CancelMonitoringCapable for LLMCompletionRunnerImpl {
-    fn as_cancel_monitoring(
-        &mut self,
-    ) -> &mut dyn jobworkerp_runner::runner::cancellation::CancelMonitoring {
-        self
+    async fn reset_for_pooling(&mut self) -> anyhow::Result<()> {
+        // LLMCompletionRunnerは通常短時間で完了するため、常にクリーンアップを実行
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.reset_for_pooling_impl().await?;
+        } else {
+            self.cleanup_cancellation_monitoring().await?;
+        }
+
+        // LLMCompletionRunner固有の状態リセット
+        tracing::debug!("LLMCompletionRunnerImpl reset for pooling");
+        Ok(())
     }
 }
 

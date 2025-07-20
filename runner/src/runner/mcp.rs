@@ -3,6 +3,8 @@ use crate::jobworkerp::runner::mcp_server_result::BlobResourceContents;
 use crate::jobworkerp::runner::mcp_server_result::TextResourceContents;
 use crate::jobworkerp::runner::McpServerArgs;
 use crate::jobworkerp::runner::McpServerResult;
+use crate::runner::cancellation::{CancelMonitoring, CancelMonitoringCapable};
+use crate::runner::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
 use crate::runner::RunnerSpec;
 use crate::runner::RunnerTrait;
 use crate::{schema_to_json_string, schema_to_json_string_option};
@@ -17,6 +19,7 @@ use opentelemetry::trace::TraceContextExt;
 use opentelemetry::Context;
 use proto::jobworkerp::data::ResultOutputItem;
 use proto::jobworkerp::data::StreamingOutputType;
+use proto::jobworkerp::data::{JobData, JobId, JobResult};
 use proto::jobworkerp::function::data::McpTool;
 use proto::jobworkerp::function::data::ToolAnnotations;
 use proxy::McpServerProxy;
@@ -37,14 +40,36 @@ pub mod proxy;
 #[derive(Debug)]
 pub struct McpServerRunnerImpl {
     mcp_server: McpServerProxy,
-    cancellation_token: Option<CancellationToken>,
+    // Helper for dependency injection integration (optional for backward compatibility)
+    cancel_helper: Option<CancelMonitoringHelper>,
 }
 
 impl McpServerRunnerImpl {
+    /// Constructor without cancellation monitoring (for backward compatibility)
     pub fn new(server: McpServerProxy) -> Self {
         Self {
             mcp_server: server,
-            cancellation_token: None,
+            cancel_helper: None,
+        }
+    }
+
+    /// Constructor with cancellation monitoring (DI integration version)
+    pub fn new_with_cancel_monitoring(
+        server: McpServerProxy,
+        cancel_helper: CancelMonitoringHelper,
+    ) -> Self {
+        Self {
+            mcp_server: server,
+            cancel_helper: Some(cancel_helper),
+        }
+    }
+
+    /// Unified cancellation token retrieval
+    async fn get_cancellation_token(&self) -> CancellationToken {
+        if let Some(helper) = &self.cancel_helper {
+            helper.get_cancellation_token().await
+        } else {
+            CancellationToken::new()
         }
     }
     pub async fn tools(&self) -> Result<Vec<McpTool>> {
@@ -110,12 +135,7 @@ impl RunnerTrait for McpServerRunnerImpl {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        // Set up cancellation token for this execution if not already set
-        let cancellation_token = self.cancellation_token.clone().unwrap_or_else(|| {
-            let token = CancellationToken::new();
-            self.cancellation_token = Some(token.clone());
-            token
-        });
+        let cancellation_token = self.get_cancellation_token().await;
 
         let result = async {
             // Check for cancellation before starting
@@ -266,8 +286,6 @@ impl RunnerTrait for McpServerRunnerImpl {
         }
         .await;
 
-        // Clear cancellation token after execution
-        self.cancellation_token = None;
         (result, metadata)
     }
 
@@ -276,16 +294,10 @@ impl RunnerTrait for McpServerRunnerImpl {
         arg: &[u8],
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        // Set up cancellation token for pre-execution cancellation check
-        let cancellation_token = self.cancellation_token.clone().unwrap_or_else(|| {
-            let token = CancellationToken::new();
-            self.cancellation_token = Some(token.clone());
-            token
-        });
+        let cancellation_token = self.get_cancellation_token().await;
 
         // Check for cancellation before starting
         if cancellation_token.is_cancelled() {
-            self.cancellation_token = None;
             return Err(anyhow!("MCP stream request was cancelled before execution"));
         }
 
@@ -420,15 +432,82 @@ impl RunnerTrait for McpServerRunnerImpl {
     }
 
     async fn cancel(&mut self) {
-        if let Some(token) = &self.cancellation_token {
-            token.cancel();
-            tracing::info!("MCP server operation cancelled");
+        // Cancel using helper if available
+        if let Some(helper) = &self.cancel_helper {
+            let token = helper.get_cancellation_token().await;
+            if token.is_cancelled() {
+                tracing::info!("MCP server operation is already cancelled");
+            } else {
+                tracing::info!(
+                    "MCP server cancellation requested, Helper handles token internally"
+                );
+            }
         } else {
-            tracing::warn!("No active MCP server operation to cancel");
+            tracing::warn!("No cancellation helper set, cannot cancel MCP operation");
         }
     }
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+// CancelMonitoring implementation for McpServerRunnerImpl
+#[async_trait]
+impl CancelMonitoring for McpServerRunnerImpl {
+    /// Initialize cancellation monitoring for specific job
+    async fn setup_cancellation_monitoring(
+        &mut self,
+        job_id: JobId,
+        job_data: &JobData,
+    ) -> Result<Option<JobResult>> {
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.setup_monitoring_impl(job_id, job_data).await
+        } else {
+            tracing::debug!(
+                "No cancel monitoring configured for MCP job {}",
+                job_id.value
+            );
+            Ok(None)
+        }
+    }
+
+    /// Cleanup cancellation monitoring
+    async fn cleanup_cancellation_monitoring(&mut self) -> Result<()> {
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.cleanup_monitoring_impl().await
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Complete state reset during pool recycling
+    async fn reset_for_pooling(&mut self) -> Result<()> {
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.reset_for_pooling_impl().await?;
+        } else {
+            self.cleanup_cancellation_monitoring().await?;
+        }
+
+        tracing::debug!("McpServerRunnerImpl reset for pooling");
+        Ok(())
+    }
+}
+
+// DI trait implementation (with optional support)
+impl UseCancelMonitoringHelper for McpServerRunnerImpl {
+    fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
+        self.cancel_helper.as_ref()
+    }
+
+    fn cancel_monitoring_helper_mut(&mut self) -> Option<&mut CancelMonitoringHelper> {
+        self.cancel_helper.as_mut()
+    }
+}
+
+// CancelMonitoringCapable implementation (type-safe integration trait)
+impl CancelMonitoringCapable for McpServerRunnerImpl {
+    fn as_cancel_monitoring(&mut self) -> &mut dyn CancelMonitoring {
         self
     }
 }
