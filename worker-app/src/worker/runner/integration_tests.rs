@@ -35,7 +35,7 @@ mod streaming_pool_guard_tests {
             Arc::new(WorkerData {
                 runner_settings: Vec::new(),
                 channel: None,
-                use_static: true, // Pool使用
+                use_static: true, // Enable pool usage for resource efficiency
                 ..Default::default()
             }),
             Arc::new(runner_factory),
@@ -53,7 +53,7 @@ mod streaming_pool_guard_tests {
             let pool = create_test_pool().await?;
             let pool_object = pool.get().await?;
 
-            // CommandRunnerで短いsleepコマンドを実行
+            // Execute a short sleep command to test stream guard behavior
             let mut runner = pool_object.lock().await;
             let arg = CommandArgs {
                 command: "sleep".to_string(),
@@ -71,16 +71,16 @@ mod streaming_pool_guard_tests {
             assert!(stream_result.is_ok());
             let stream = stream_result.unwrap();
 
-            // RunnerをDropして、StreamをStreamWithPoolGuardでラップ
+            // Drop runner to release lock, then wrap stream with pool guard for safe resource management
             drop(runner);
 
             let guard_stream = StreamWithPoolGuard::new(stream, pool_object);
 
-            // Stream要素を消費（これによりPool Guard動作確認）
+            // Consume stream elements to verify pool guard properly manages resource lifecycle
             let items: Vec<_> = guard_stream.collect().await;
             tracing::debug!("Stream items collected: {}", items.len());
 
-            // Pool が再利用可能であることを確認
+            // Verify pool is reusable after guard cleanup to ensure no resource leaks
             let pool_object2 = pool.get().await?;
             assert!(!pool_object2.lock().await.name().is_empty());
 
@@ -94,7 +94,7 @@ mod streaming_pool_guard_tests {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let pool = create_test_pool().await?;
 
-            // 複数回のStream + Pool Guard サイクルを実行
+            // Execute multiple stream + pool guard cycles to test resource management under load
             for i in 0..3 {
                 let pool_object = pool.get().await?;
                 let mut runner = pool_object.lock().await;
@@ -119,14 +119,14 @@ mod streaming_pool_guard_tests {
 
                 let guard_stream = StreamWithPoolGuard::new(stream, pool_object);
 
-                // Stream処理
+                // Process stream to verify guard handles multiple concurrent operations
                 let items: Vec<_> = guard_stream.collect().await;
                 assert!(!items.is_empty());
 
                 tracing::debug!("Completed stream guard cycle {}", i);
             }
 
-            // 最終的にPoolが正常動作することを確認
+            // Verify pool continues functioning correctly after multiple cycles to ensure stability
             let final_pool_object = pool.get().await?;
             assert!(!final_pool_object.lock().await.name().is_empty());
 
@@ -147,7 +147,7 @@ mod streaming_pool_guard_tests {
             use std::collections::HashMap;
             use tokio_util::sync::CancellationToken;
 
-            // テスト用のダミーCancellationManager
+            // Test dummy cancellation manager to simulate real cancellation scenarios
             #[derive(Debug)]
             struct TestCancellationManager {
                 token: CancellationToken,
@@ -184,15 +184,15 @@ mod streaming_pool_guard_tests {
                 }
             }
 
-            // CancelMonitoringHelperを作成
+            // Create cancel monitoring helper to test cancellation integration
             let manager = Box::new(TestCancellationManager::new());
             let cancel_helper = CancelMonitoringHelper::new(manager);
 
-            // CommandRunnerImplを作成（use_static=false想定）
+            // Create CommandRunnerImpl for non-static mode to test dynamic cancellation handling
             let mut runner = Box::new(CommandRunnerImpl::new_with_cancel_monitoring(cancel_helper))
                 as Box<dyn CancellableRunner + Send + Sync>;
 
-            // CancelHelperを取得してからストリーミング実行
+            // Get cancel helper before streaming to ensure cancellation capability is preserved
             let cancel_helper = runner.clone_cancel_helper_for_stream();
 
             let arg = CommandArgs {
@@ -211,12 +211,12 @@ mod streaming_pool_guard_tests {
             assert!(stream_result.is_ok());
             let stream = stream_result.unwrap();
 
-            // StreamWithCancelGuardでラップ
+            // Wrap with cancel guard to ensure proper cleanup on cancellation
             if let Some(cancel_helper) = cancel_helper {
                 use super::super::stream_guard::StreamWithCancelGuard;
                 let guard_stream = StreamWithCancelGuard::new(stream, cancel_helper);
 
-                // Stream要素を消費
+                // Consume stream elements to verify cancel guard handles streaming correctly
                 let items: Vec<_> = guard_stream.collect().await;
                 assert!(!items.is_empty());
 
@@ -234,8 +234,8 @@ mod streaming_pool_guard_tests {
     #[test]
     fn test_real_non_static_streaming_with_cancel_guard() -> Result<()> {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
-            // 既存のMockJobRunnerを使用する代わりに、直接的なアプローチでテスト
-            // 計画書の修正が正しく動作することを確認
+            // Use direct approach instead of MockJobRunner to test the actual implementation
+            // Verify the planned fix works correctly in real scenarios
             tracing::info!("🔍 Testing clone_cancel_helper_for_stream implementation");
 
             use async_trait::async_trait;
@@ -248,7 +248,7 @@ mod streaming_pool_guard_tests {
             use jobworkerp_runner::runner::command::CommandRunnerImpl;
             use tokio_util::sync::CancellationToken;
 
-            // テスト用のダミーCancellationManager
+            // Test dummy cancellation manager for validation scenario
             #[derive(Debug)]
             struct TestCancellationManager {
                 token: CancellationToken,
@@ -288,18 +288,18 @@ mod streaming_pool_guard_tests {
                 }
             }
 
-            // CancelMonitoringHelperを作成
+            // Create cancel monitoring helper for testing the fix
             let manager = Box::new(TestCancellationManager::new());
             let cancel_helper = CancelMonitoringHelper::new(manager);
 
-            // CommandRunnerImplを作成
+            // Create CommandRunnerImpl to test the actual implementation
             let runner = CommandRunnerImpl::new_with_cancel_monitoring(cancel_helper);
 
-            // 修正されたclone_cancel_helper_for_streamをテスト
+            // Test the fixed clone_cancel_helper_for_stream implementation
             let cloned_helper = runner.clone_cancel_helper_for_stream();
             assert!(cloned_helper.is_some(), "Clone should succeed");
 
-            // 元のhelperがまだ残っていることを確認（これが我々の修正のポイント）
+            // Verify original helper still exists after clone (this is the key point of our fix)
             let original_helper = runner.cancel_monitoring_helper();
             assert!(
                 original_helper.is_some(),
@@ -323,7 +323,7 @@ mod streaming_pool_guard_tests {
             let mut runner = pool_object.lock().await;
             let arg = CommandArgs {
                 command: "sleep".to_string(),
-                args: vec!["1.0".to_string()], // 1秒sleep
+                args: vec!["1.0".to_string()], // 1 second sleep to test early drop behavior
                 with_memory_monitoring: false,
             };
 
@@ -341,10 +341,10 @@ mod streaming_pool_guard_tests {
 
             let guard_stream = StreamWithPoolGuard::new(stream, pool_object);
 
-            // Stream を途中で破棄（Pool Guard の Drop 動作確認）
+            // Drop stream early to verify pool guard's drop behavior handles premature cleanup
             drop(guard_stream);
 
-            // Pool が再利用可能であることを確認
+            // Verify pool remains reusable after early drop to ensure robust resource management
             let pool_object2 = pool.get().await?;
             assert!(!pool_object2.lock().await.name().is_empty());
 

@@ -11,7 +11,6 @@ use jobworkerp_runner::jobworkerp::runner::llm::{LlmChatArgs, LlmRunnerSettings}
 use jobworkerp_runner::runner::cancellation_helper::{
     CancelMonitoringHelper, UseCancelMonitoringHelper,
 };
-// Note: execute_cancellable is no longer needed with new cancellation approach
 use jobworkerp_runner::runner::llm_chat::LLMChatRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use ollama::OllamaChatService;
@@ -32,7 +31,6 @@ pub struct LLMChatRunnerImpl {
     pub app: Arc<AppModule>,
     pub ollama: Option<OllamaChatService>,
     pub genai: Option<GenaiChatService>,
-    // Helper for dependency injection integration (optional for backward compatibility)
     cancel_helper: Option<CancelMonitoringHelper>,
 }
 
@@ -152,10 +150,9 @@ impl RunnerTrait for LLMChatRunnerImpl {
         arg: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        // Clear and concise token retrieval
         let cancellation_token = self.get_cancellation_token().await;
 
-        // Check cancellation BEFORE any other processing
+        // Early cancellation check prevents wasted LLM service calls
         if cancellation_token.is_cancelled() {
             return (Err(anyhow!("LLM chat execution was cancelled")), metadata);
         }
@@ -169,7 +166,7 @@ impl RunnerTrait for LLMChatRunnerImpl {
                 .map_err(|e| anyhow!("decode error: {}", e))?;
 
             if let Some(ollama) = self.ollama.as_mut() {
-                // Use tokio::select! for cancellation support
+                // Race between LLM completion and cancellation signal
                 let res = tokio::select! {
                     result = ollama.request_chat(args, cx, metadata_clone.clone()) => result?,
                     _ = cancellation_token.cancelled() => {
@@ -182,7 +179,7 @@ impl RunnerTrait for LLMChatRunnerImpl {
                     .map_err(|e| anyhow!("encode error: {}", e))?;
                 Ok(buf)
             } else if let Some(genai) = self.genai.as_mut() {
-                // Use tokio::select! for cancellation support
+                // Race between LLM completion and cancellation signal
                 let res = tokio::select! {
                     result = genai.request_chat(args, cx, metadata_clone.clone()) => result?,
                     _ = cancellation_token.cancelled() => {
@@ -200,7 +197,6 @@ impl RunnerTrait for LLMChatRunnerImpl {
         }
         .await;
 
-        // Simplified result processing
         (result, metadata_clone)
     }
 
@@ -209,19 +205,17 @@ impl RunnerTrait for LLMChatRunnerImpl {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        // Set up cancellation token using manager
         let cancellation_token = self.get_cancellation_token().await;
 
         let args = LlmChatArgs::decode(args).map_err(|e| anyhow!("decode error: {}", e))?;
 
         if let Some(ollama) = self.ollama.as_mut() {
-            // Get streaming responses from ollama service
             let stream = ollama.request_stream_chat(args).await?;
 
             let req_meta = Arc::new(metadata.clone());
             let cancel_token = cancellation_token.clone();
 
-            // Transform each LlmChatResult into ResultOutputItem with cancellation support
+            // Stream processing with mid-stream cancellation capability
             let output_stream = stream! {
                 tokio::pin!(stream);
                 loop {
@@ -229,14 +223,12 @@ impl RunnerTrait for LLMChatRunnerImpl {
                         item = stream.next() => {
                             match item {
                                 Some(completion_result) => {
-                                    // Encode the completion result to binary if there is content
                                     if completion_result
                                         .content
                                         .as_ref()
                                         .is_some_and(|c| c.content.is_some())
                                     {
                                         let buf = ProstMessageCodec::serialize_message(&completion_result);
-                                        // Add content data item
                                         if let Ok(buf) = buf {
                                             yield ResultOutputItem {
                                                 item: Some(result_output_item::Item::Data(buf)),
@@ -246,7 +238,6 @@ impl RunnerTrait for LLMChatRunnerImpl {
                                         }
                                     }
 
-                                    // If this is the last chunk, add an End item
                                     if completion_result.done {
                                         yield ResultOutputItem {
                                             item: Some(result_output_item::Item::End(
@@ -269,15 +260,10 @@ impl RunnerTrait for LLMChatRunnerImpl {
                 }
             }.boxed();
 
-            // Keep cancellation token for mid-stream cancellation
-            // The token will be used by cancel() method during stream processing
-            // Note: cancellation_token is NOT reset here because stream is still active
             Ok(output_stream)
         } else if let Some(genai) = self.genai.as_mut() {
-            // Get streaming responses from genai service
             let stream = genai.request_chat_stream(args, metadata).await?;
 
-            // Add cancellation support to GenAI stream
             let cancel_token = cancellation_token.clone();
             let cancellable_stream = stream! {
                 tokio::pin!(stream);
@@ -298,19 +284,13 @@ impl RunnerTrait for LLMChatRunnerImpl {
             }
             .boxed();
 
-            // Keep cancellation token for mid-stream cancellation
-            // The token will be used by cancel() method during stream processing
-            // Note: cancellation_token is NOT reset here because stream is still active
             Ok(cancellable_stream)
         } else {
-            // Clear cancellation token even on error
-            // Note: token cleanup is handled by Manager
             Err(anyhow!("llm is not initialized"))
         }
     }
 
     async fn cancel(&mut self) {
-        // Cancel using helper if available
         if let Some(helper) = &self.cancel_helper {
             let token = helper.get_cancellation_token().await;
             if token.is_cancelled() {
@@ -326,7 +306,6 @@ impl RunnerTrait for LLMChatRunnerImpl {
     }
 }
 
-// CancelMonitoring trait implementation (Helper delegation version)
 #[async_trait]
 impl jobworkerp_runner::runner::cancellation::CancelMonitoring for LLMChatRunnerImpl {
     async fn setup_cancellation_monitoring(
@@ -354,14 +333,13 @@ impl jobworkerp_runner::runner::cancellation::CancelMonitoring for LLMChatRunner
     }
 
     async fn reset_for_pooling(&mut self) -> anyhow::Result<()> {
-        // Always cleanup since LLMChatRunner typically completes quickly
+        // Quick completion requires immediate cleanup to prevent resource leaks
         if let Some(helper) = &mut self.cancel_helper {
             helper.reset_for_pooling_impl().await?;
         } else {
             self.cleanup_cancellation_monitoring().await?;
         }
 
-        // LLMChatRunner-specific state reset
         tracing::debug!("LLMChatRunnerImpl reset for pooling");
         Ok(())
     }

@@ -32,7 +32,6 @@ impl<T: UseRdbChanRepositoryModule> UseRdbJobResultRepository for T {
         &self.rdb_repository_module().job_result_repository
     }
 }
-// RdbChanRepositoryModule自体への実装
 impl UseJobQueueCancellationRepository for RdbChanRepositoryModule {
     fn job_queue_cancellation_repository(&self) -> Arc<dyn JobQueueCancellationRepository> {
         Arc::new(self.chan_job_queue_repository.clone())

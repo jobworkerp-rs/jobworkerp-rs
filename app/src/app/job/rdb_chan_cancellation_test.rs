@@ -47,7 +47,7 @@ mod rdb_chan_cancellation_tests {
             ttl: Some(Duration::from_millis(100)),
         };
 
-        // UseMemoryCacheはRdbChanJobAppImpl::new()内で自動初期化されるため、明示的な作成は不要
+        // UseMemoryCache is auto-initialized in RdbChanJobAppImpl::new(), explicit creation unnecessary
         let storage_config = Arc::new(StorageConfig {
             r#type: StorageType::Standalone,
             restore_at_startup: Some(false),
@@ -190,7 +190,7 @@ mod rdb_chan_cancellation_tests {
 
     #[test]
     fn test_cancel_nonexistent_job_rdb_chan() -> Result<()> {
-        // 存在しないジョブのキャンセルテスト
+        // Test cancelling non-existent job
         TEST_RUNTIME.block_on(async {
             let app = create_test_rdb_chan_app(true).await?;
 

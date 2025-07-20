@@ -860,7 +860,7 @@ impl super::cancellation::CancelMonitoring for DockerExecRunner {
             job_id.value
         );
 
-        // Helper有無の明確な分岐
+        // Clear branching based on helper availability
         if let Some(helper) = &mut self.cancel_helper {
             helper.setup_monitoring_impl(job_id, _job_data).await
         } else {
@@ -905,7 +905,7 @@ impl super::cancellation::CancelMonitoring for DockerRunner {
             job_id.value
         );
 
-        // Helper有無の明確な分岐
+        // Clear branching based on helper availability
         if let Some(helper) = &mut self.cancel_helper {
             helper.setup_monitoring_impl(job_id, _job_data).await
         } else {

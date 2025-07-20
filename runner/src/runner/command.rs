@@ -1064,7 +1064,7 @@ impl CancelMonitoring for CommandRunnerImpl {
     /// Complete state reset for pool recycling
     /// Resets CommandRunner-specific state (stream_process_pid etc.) to prevent state contamination for next job
     async fn reset_for_pooling(&mut self) -> Result<()> {
-        // ストリーミングプロセス実行中チェック
+        // Check if streaming process is still running
         let has_active_stream_process = {
             let pid_guard = self.stream_process_pid.read().await;
             pid_guard.is_some()
@@ -1097,7 +1097,6 @@ impl CancelMonitoring for CommandRunnerImpl {
     }
 }
 
-// DI trait実装（Option対応）
 impl UseCancelMonitoringHelper for CommandRunnerImpl {
     fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
         self.cancel_helper.as_ref()

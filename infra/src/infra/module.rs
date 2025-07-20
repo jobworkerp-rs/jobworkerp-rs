@@ -73,14 +73,14 @@ impl UseRdbChanRepositoryModule for HybridRepositoryModule {
 }
 impl UseJobQueueCancellationRepository for HybridRepositoryModule {
     fn job_queue_cancellation_repository(&self) -> Arc<dyn JobQueueCancellationRepository> {
-        // Hybridモードでは Redis を優先使用
+        // In Hybrid mode, Redis is used preferentially
         Arc::new(self.redis_module.redis_job_queue_repository.clone())
     }
 }
 
 impl UseJobProcessingStatusRepository for HybridRepositoryModule {
     fn job_processing_status_repository(&self) -> Arc<dyn JobProcessingStatusRepository> {
-        // Hybridモードでは Redis を優先使用
+        // In Hybrid mode, Redis is used preferentially
         Arc::new(RedisJobProcessingStatusRepository::new(
             self.redis_module.redis_pool,
         ))
