@@ -326,6 +326,16 @@ impl UseResultProcessor for RdbJobDispatcherImpl {
     }
 }
 
+impl infra::infra::job::status::UseJobProcessingStatusRepository for RdbJobDispatcherImpl {
+    fn job_processing_status_repository(
+        &self,
+    ) -> Arc<dyn infra::infra::job::status::JobProcessingStatusRepository> {
+        // RdbJobDispatcher typically doesn't use job processing status, hence dummy implementation
+        // If actual status needed, retrieve appropriate repository from app_module
+        Arc::new(infra::infra::job::status::memory::MemoryJobProcessingStatusRepository::new())
+    }
+}
+
 impl RdbJobDispatcher for RdbJobDispatcherImpl {}
 
 #[async_trait]
@@ -335,16 +345,5 @@ impl JobDispatcher for RdbJobDispatcherImpl {
         Self: Send + Sync + 'static,
     {
         RdbJobDispatcher::dispatch_jobs(self, lock)
-    }
-
-    async fn start_cancellation_monitoring(&self) -> Result<()> {
-        // RdbJobDispatcherはキャンセル機能なし（scheduled/periodicジョブのみ）
-        tracing::info!("RdbJobDispatcher does not support cancellation monitoring");
-        Ok(())
-    }
-
-    async fn get_running_job_count(&self) -> usize {
-        // RdbJobDispatcherは実行中ジョブ管理なし
-        0
     }
 }

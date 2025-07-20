@@ -35,13 +35,16 @@
 //! Defines the core execution interface for job runners, including methods
 //! for initialization, job execution (both streaming and non-streaming), and
 //! job cancellation.
-use std::{any::Any, collections::HashMap};
+use std::any::Any;
+use std::collections::HashMap;
 
 use anyhow::Result;
 use futures::stream::BoxStream;
 use proto::jobworkerp::data::{ResultOutputItem, StreamingOutputType};
 use tonic::async_trait;
 
+pub mod cancellation;
+pub mod cancellation_helper;
 pub mod command;
 pub mod docker;
 pub mod factory;
@@ -55,6 +58,9 @@ pub mod python;
 pub mod request;
 pub mod slack;
 pub mod workflow;
+
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_common;
 
 /// Macro to convert a Rust type to a JSON schema string
 #[macro_export]

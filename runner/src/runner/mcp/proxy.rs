@@ -16,7 +16,7 @@ pub struct McpServerProxy {
     pub name: String,
     pub description: Option<String>,
     pub transport: RunningService<RoleClient, ()>,
-    #[debug_stub = "AsyncCache<Arc<String>, Vec<String>>"]
+    #[debug_stub = "MokaCache<Arc<String>, Vec<String>>"]
     async_cache: MokaCacheImpl<Arc<String>, Vec<Tool>>,
 }
 impl McpServerProxy {

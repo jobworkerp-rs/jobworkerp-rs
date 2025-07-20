@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use app::module::AppModule;
+use async_stream::stream;
 use async_trait::async_trait;
 use futures::stream::{BoxStream, StreamExt};
 use genai::GenaiChatService;
@@ -7,6 +8,9 @@ use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::APP_WORKER_NAME;
 use jobworkerp_runner::jobworkerp::runner::llm::{LlmChatArgs, LlmRunnerSettings};
+use jobworkerp_runner::runner::cancellation_helper::{
+    CancelMonitoringHelper, UseCancelMonitoringHelper,
+};
 use jobworkerp_runner::runner::llm_chat::LLMChatRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use ollama::OllamaChatService;
@@ -17,6 +21,7 @@ use proto::jobworkerp::data::{result_output_item, ResultOutputItem, RunnerType};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 pub mod conversion;
 pub mod genai;
@@ -26,20 +31,56 @@ pub struct LLMChatRunnerImpl {
     pub app: Arc<AppModule>,
     pub ollama: Option<OllamaChatService>,
     pub genai: Option<GenaiChatService>,
+    cancel_helper: Option<CancelMonitoringHelper>,
 }
 
 impl LLMChatRunnerImpl {
+    /// Constructor without cancellation monitoring (for backward compatibility)
     pub fn new(app_module: Arc<AppModule>) -> Self {
         Self {
             app: app_module,
             ollama: None,
             genai: None,
+            cancel_helper: None,
+        }
+    }
+
+    /// Constructor with cancellation monitoring (DI integration version)
+    pub fn new_with_cancel_monitoring(
+        app_module: Arc<AppModule>,
+        cancel_helper: CancelMonitoringHelper,
+    ) -> Self {
+        Self {
+            app: app_module,
+            ollama: None,
+            genai: None,
+            cancel_helper: Some(cancel_helper),
+        }
+    }
+
+    /// Unified cancellation token retrieval
+    async fn get_cancellation_token(&self) -> CancellationToken {
+        if let Some(helper) = &self.cancel_helper {
+            helper.get_cancellation_token().await
+        } else {
+            CancellationToken::new()
         }
     }
 }
 
 impl Tracing for LLMChatRunnerImpl {}
 impl LLMChatRunnerSpec for LLMChatRunnerImpl {}
+
+// DI trait implementation (with optional support)
+impl UseCancelMonitoringHelper for LLMChatRunnerImpl {
+    fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
+        self.cancel_helper.as_ref()
+    }
+
+    fn cancel_monitoring_helper_mut(&mut self) -> Option<&mut CancelMonitoringHelper> {
+        self.cancel_helper.as_mut()
+    }
+}
 impl RunnerSpec for LLMChatRunnerImpl {
     fn name(&self) -> String {
         LLMChatRunnerSpec::name(self)
@@ -109,40 +150,54 @@ impl RunnerTrait for LLMChatRunnerImpl {
         arg: &[u8],
         metadata: HashMap<String, String>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        let cancellation_token = self.get_cancellation_token().await;
+
+        // Early cancellation check prevents wasted LLM service calls
+        if cancellation_token.is_cancelled() {
+            return (Err(anyhow!("LLM chat execution was cancelled")), metadata);
+        }
+
         let span = Self::otel_span_from_metadata(&metadata, APP_WORKER_NAME, "llm_chat_run");
         let cx = Context::current_with_span(span);
-        // let span = cx.span();
-        // let span = Self::tracing_span_from_metadata(&metadata, APP_NAME, "llm_chat_run");
-        // let _ = span.enter();
-        // let cx = span.context();
 
-        // TODO process metadata
         let metadata_clone = metadata.clone();
-        let (result, metadata) = async move {
+        let result = async {
             let args = LlmChatArgs::decode(&mut Cursor::new(arg))
                 .map_err(|e| anyhow!("decode error: {}", e))?;
+
             if let Some(ollama) = self.ollama.as_mut() {
-                let res = ollama
-                    .request_chat(args, cx, metadata_clone.clone())
-                    .await?;
+                // Race between LLM completion and cancellation signal
+                let res = tokio::select! {
+                    result = ollama.request_chat(args, cx, metadata_clone.clone()) => result?,
+                    _ = cancellation_token.cancelled() => {
+                        return Err(anyhow!("LLM chat (Ollama) request was cancelled"));
+                    }
+                };
+
                 let mut buf = Vec::with_capacity(res.encoded_len());
                 res.encode(&mut buf)
                     .map_err(|e| anyhow!("encode error: {}", e))?;
-                anyhow::Ok((Ok(buf), metadata_clone))
+                Ok(buf)
             } else if let Some(genai) = self.genai.as_mut() {
-                //XXX chat only
-                let res = genai.request_chat(args, cx, metadata_clone.clone()).await?;
+                // Race between LLM completion and cancellation signal
+                let res = tokio::select! {
+                    result = genai.request_chat(args, cx, metadata_clone.clone()) => result?,
+                    _ = cancellation_token.cancelled() => {
+                        return Err(anyhow!("LLM chat (GenAI) request was cancelled"));
+                    }
+                };
+
                 let mut buf = Vec::with_capacity(res.encoded_len());
                 res.encode(&mut buf)
                     .map_err(|e| anyhow!("encode error: {}", e))?;
-                anyhow::Ok((Ok(buf), metadata_clone))
+                Ok(buf)
             } else {
-                anyhow::Ok((Err(anyhow!("llm is not initialized")), metadata_clone))
+                Err(anyhow!("llm is not initialized"))
             }
         }
-        .await
-        .unwrap_or_else(|e| (Err(e), HashMap::new()));
-        (result, metadata)
+        .await;
+
+        (result, metadata_clone)
     }
 
     async fn run_stream(
@@ -150,61 +205,142 @@ impl RunnerTrait for LLMChatRunnerImpl {
         args: &[u8],
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
+        let cancellation_token = self.get_cancellation_token().await;
+
         let args = LlmChatArgs::decode(args).map_err(|e| anyhow!("decode error: {}", e))?;
 
         if let Some(ollama) = self.ollama.as_mut() {
-            // Get streaming responses from ollama service
             let stream = ollama.request_stream_chat(args).await?;
 
             let req_meta = Arc::new(metadata.clone());
-            // Transform each LlmChatResult into ResultOutputItem
-            let output_stream = stream
-                .flat_map(move |completion_result| {
-                    let mut result_items = Vec::new();
+            let cancel_token = cancellation_token.clone();
 
-                    // Encode the completion result to binary if there is content
-                    if completion_result
-                        .content
-                        .as_ref()
-                        .is_some_and(|c| c.content.is_some())
-                    {
-                        let buf = ProstMessageCodec::serialize_message(&completion_result);
-                        // Add content data item
-                        if let Ok(buf) = buf {
-                            result_items.push(ResultOutputItem {
-                                item: Some(result_output_item::Item::Data(buf)),
-                            });
-                        } else {
-                            tracing::error!("Failed to serialize LLM completion result");
+            // Stream processing with mid-stream cancellation capability
+            let output_stream = stream! {
+                tokio::pin!(stream);
+                loop {
+                    tokio::select! {
+                        item = stream.next() => {
+                            match item {
+                                Some(completion_result) => {
+                                    if completion_result
+                                        .content
+                                        .as_ref()
+                                        .is_some_and(|c| c.content.is_some())
+                                    {
+                                        let buf = ProstMessageCodec::serialize_message(&completion_result);
+                                        if let Ok(buf) = buf {
+                                            yield ResultOutputItem {
+                                                item: Some(result_output_item::Item::Data(buf)),
+                                            };
+                                        } else {
+                                            tracing::error!("Failed to serialize LLM completion result");
+                                        }
+                                    }
+
+                                    if completion_result.done {
+                                        yield ResultOutputItem {
+                                            item: Some(result_output_item::Item::End(
+                                                proto::jobworkerp::data::Trailer {
+                                                    metadata: (*req_meta).clone(),
+                                                },
+                                            )),
+                                        };
+                                        break;
+                                    }
+                                }
+                                None => break,
+                            }
+                        }
+                        _ = cancel_token.cancelled() => {
+                            tracing::info!("LLM chat stream was cancelled");
+                            break;
                         }
                     }
-
-                    // If this is the last chunk, add an End item
-                    if completion_result.done {
-                        result_items.push(ResultOutputItem {
-                            item: Some(result_output_item::Item::End(
-                                proto::jobworkerp::data::Trailer {
-                                    metadata: (*req_meta).clone(),
-                                },
-                            )),
-                        });
-                    }
-
-                    futures::stream::iter(result_items)
-                })
-                .boxed();
+                }
+            }.boxed();
 
             Ok(output_stream)
         } else if let Some(genai) = self.genai.as_mut() {
-            // Get streaming responses from genai service
             let stream = genai.request_chat_stream(args, metadata).await?;
-            Ok(stream)
+
+            let cancel_token = cancellation_token.clone();
+            let cancellable_stream = stream! {
+                tokio::pin!(stream);
+                loop {
+                    tokio::select! {
+                        item = stream.next() => {
+                            match item {
+                                Some(result_item) => yield result_item,
+                                None => break,
+                            }
+                        }
+                        _ = cancel_token.cancelled() => {
+                            tracing::info!("LLM chat GenAI stream was cancelled");
+                            break;
+                        }
+                    }
+                }
+            }
+            .boxed();
+
+            Ok(cancellable_stream)
         } else {
             Err(anyhow!("llm is not initialized"))
         }
     }
 
     async fn cancel(&mut self) {
-        tracing::warn!("OllamaPromptRunner cancel: not implemented!");
+        if let Some(helper) = &self.cancel_helper {
+            let token = helper.get_cancellation_token().await;
+            if token.is_cancelled() {
+                tracing::info!("LLMChatRunner execution is already cancelled");
+            } else {
+                tracing::info!(
+                    "LLMChatRunner cancellation requested, Helper handles token internally"
+                );
+            }
+        } else {
+            tracing::warn!("No cancellation helper set, cannot cancel");
+        }
+    }
+}
+
+#[async_trait]
+impl jobworkerp_runner::runner::cancellation::CancelMonitoring for LLMChatRunnerImpl {
+    async fn setup_cancellation_monitoring(
+        &mut self,
+        job_id: proto::jobworkerp::data::JobId,
+        job_data: &proto::jobworkerp::data::JobData,
+    ) -> anyhow::Result<Option<proto::jobworkerp::data::JobResult>> {
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.setup_monitoring_impl(job_id, job_data).await
+        } else {
+            tracing::debug!(
+                "No cancel monitoring configured for LLM Chat job {}",
+                job_id.value
+            );
+            Ok(None)
+        }
+    }
+
+    async fn cleanup_cancellation_monitoring(&mut self) -> anyhow::Result<()> {
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.cleanup_monitoring_impl().await
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn reset_for_pooling(&mut self) -> anyhow::Result<()> {
+        // Quick completion requires immediate cleanup to prevent resource leaks
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.reset_for_pooling_impl().await?;
+        } else {
+            self.cleanup_cancellation_monitoring().await?;
+        }
+
+        tracing::debug!("LLMChatRunnerImpl reset for pooling");
+        Ok(())
     }
 }

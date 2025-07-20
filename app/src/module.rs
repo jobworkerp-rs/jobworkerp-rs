@@ -15,7 +15,8 @@ use crate::app::worker::WorkerApp;
 use crate::app::{StorageConfig, WorkerConfig};
 use anyhow::Result;
 use infra::infra::job::queue::redis::UseRedisJobQueueRepository;
-use infra::infra::job::queue::JobQueueCancellationRepository;
+use infra::infra::job::queue::{JobQueueCancellationRepository, UseJobQueueCancellationRepository};
+use infra::infra::job::status::{JobProcessingStatusRepository, UseJobProcessingStatusRepository};
 use infra::infra::module::rdb::RdbChanRepositoryModule;
 use infra::infra::module::{HybridRepositoryModule, RedisRdbOptionalRepositoryModule};
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig};
@@ -108,7 +109,7 @@ impl AppModule {
     pub async fn new_by_env(config_module: Arc<AppConfigModule>) -> Result<Self> {
         // TODO from env
         //TODO recover redis records from rdb if option is enabled
-        // TODO memory cache をinfraでも利用する場合はinfra層でモジュール化しておく
+        // TODO: modularize memory cache in infra layer if infra also needs to use memory cache
         let mc_config = envy::prefixed("MEMORY_CACHE_")
             .from_env::<infra_utils::infra::memory::MemoryCacheConfig>()
             .unwrap_or_default();
@@ -169,10 +170,6 @@ impl AppModule {
                     id_generator.clone(),
                     repositories.clone(),
                     worker_app.clone(),
-                    infra_utils::infra::cache::MokaCacheImpl::new(&MokaCacheConfig {
-                        num_counters: 10000,
-                        ttl: Some(Duration::from_secs(5)),
-                    }),
                     job_queue_cancellation_repository,
                 ));
                 let function_set_app = Arc::new(FunctionSetAppImpl::new(
@@ -360,6 +357,26 @@ impl AppModule {
     async fn load_runner(&self) -> Result<()> {
         self.runner_app.load_runner().await?;
         Ok(())
+    }
+
+    pub fn job_queue_cancellation_repository(&self) -> Arc<dyn JobQueueCancellationRepository> {
+        self.repositories.job_queue_cancellation_repository()
+    }
+
+    pub fn job_processing_status_repository(&self) -> Arc<dyn JobProcessingStatusRepository> {
+        self.repositories.job_processing_status_repository()
+    }
+}
+
+impl UseJobQueueCancellationRepository for AppModule {
+    fn job_queue_cancellation_repository(&self) -> Arc<dyn JobQueueCancellationRepository> {
+        self.job_queue_cancellation_repository()
+    }
+}
+
+impl UseJobProcessingStatusRepository for AppModule {
+    fn job_processing_status_repository(&self) -> Arc<dyn JobProcessingStatusRepository> {
+        self.job_processing_status_repository()
     }
 }
 

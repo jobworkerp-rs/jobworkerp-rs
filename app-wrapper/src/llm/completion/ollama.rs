@@ -14,6 +14,7 @@ use ollama_rs::{
 use proto::jobworkerp::data::RunnerType;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 use super::super::generic_tracing_helper::{
     ChatResponse, GenericLLMTracingHelper, LLMMessage, ModelOptions as GenericModelOptions,
@@ -199,13 +200,14 @@ impl OllamaService {
         Ok(stream)
     }
 
-    pub async fn request_generation(
+    /// Cancellable version of request_generation
+    pub async fn request_generation_with_cancellation(
         &self,
         args: LlmCompletionArgs,
-        _cx: opentelemetry::Context,        // TODO
-        _metadata: HashMap<String, String>, // TODO
+        cancellation_token: CancellationToken,
+        _cx: opentelemetry::Context,
+        _metadata: HashMap<String, String>,
     ) -> Result<LlmCompletionResult> {
-        // let metadata = Arc::new(metadata);
         let options = Self::create_completion_options(&args);
         let mut request = GenerationRequest::new(self.model.clone(), args.prompt);
         request = request.options(options.clone());
@@ -220,12 +222,15 @@ impl OllamaService {
             request = request.context(completion::GenerationContext(context.data));
         }
 
-        // Use tracing-enabled internal call
-        let res = self
-            .ollama
-            .generate(request)
-            .await
-            .map_err(|e| anyhow!("Generation error(generation): {}", e))?;
+        // Cancellable Ollama generation call
+        let res = tokio::select! {
+            generation_result = self.ollama.generate(request) => {
+                generation_result.map_err(|e| anyhow!("Generation error(generation): {}", e))?
+            }
+            _ = cancellation_token.cancelled() => {
+                return Err(anyhow!("Ollama generation was cancelled"));
+            }
+        };
 
         tracing::debug!(
             "END OF generation {}: duration: {}",
@@ -363,13 +368,14 @@ mod test {
     use super::*;
     use jobworkerp_runner::jobworkerp::runner::llm::llm_completion_args::LlmOptions;
     // use tracing::Level;
-    #[ignore = "need to run with local server"]
+    #[ignore = "need to run with ollama server"]
     #[tokio::test]
     async fn test_run() {
         // command_utils::util::tracing::tracing_init_test(Level::DEBUG);
 
         let settings = OllamaRunnerSettings {
-            base_url: Some("http://localhost:11434".to_string()),
+            base_url: Some("http://ollama.ollama.svc.cluster.local:11434".to_string()),
+            // base_url: Some("http://localhost:11434".to_string()),
             model: "phi4".to_string(),
             system_prompt: Some(
                 "次の文章を日本語に翻訳してください。翻訳結果のみを出力してください".to_string(),
@@ -400,8 +406,14 @@ The test checks that the response contains the expected content and meets our qu
             }),
             ..Default::default()
         };
+        let cancellation_token = CancellationToken::new();
         let res = plugin
-            .request_generation(request, opentelemetry::Context::current(), HashMap::new())
+            .request_generation_with_cancellation(
+                request,
+                cancellation_token,
+                opentelemetry::Context::current(),
+                HashMap::new(),
+            )
             .await
             .expect("failed to run plugin");
         println!("response: {:?}", res.content);

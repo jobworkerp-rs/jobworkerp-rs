@@ -16,6 +16,9 @@ use jobworkerp_runner::jobworkerp::runner::{
     workflow_result::WorkflowStatus, ReusableWorkflowArgs,
 };
 use jobworkerp_runner::jobworkerp::runner::{ReusableWorkflowRunnerSettings, WorkflowResult};
+use jobworkerp_runner::runner::cancellation_helper::{
+    CancelMonitoringHelper, UseCancelMonitoringHelper,
+};
 use jobworkerp_runner::runner::workflow::ReusableWorkflowRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use opentelemetry::trace::TraceContextExt;
@@ -32,9 +35,10 @@ pub struct ReusableWorkflowRunner {
     http_client: ReqwestClient,
     workflow_executor: Option<Arc<WorkflowExecutor>>,
     workflow: Option<Arc<WorkflowSchema>>,
-    canceled: bool,
+    cancel_helper: Option<CancelMonitoringHelper>,
 }
 impl ReusableWorkflowRunner {
+    /// Constructor without cancellation monitoring (for backward compatibility)
     pub fn new(
         app_wrapper_module: Arc<crate::modules::AppWrapperModule>,
         app_module: Arc<AppModule>,
@@ -53,8 +57,40 @@ impl ReusableWorkflowRunner {
             http_client,
             workflow_executor: None,
             workflow: None,
-            canceled: false,
+            cancel_helper: None,
         })
+    }
+
+    /// Constructor with cancellation monitoring (DI integration version)
+    pub fn new_with_cancel_monitoring(
+        app_wrapper_module: Arc<crate::modules::AppWrapperModule>,
+        app_module: Arc<AppModule>,
+        cancel_helper: CancelMonitoringHelper,
+    ) -> Result<Self> {
+        let workflow_config = app_wrapper_module.config_module.workflow_config.clone();
+        let http_client = ReqwestClient::new(
+            Some(workflow_config.http_user_agent.as_str()),
+            Some(workflow_config.http_timeout_sec),
+            Some(workflow_config.http_timeout_sec),
+            Some(2),
+        )?;
+
+        Ok(ReusableWorkflowRunner {
+            app_wrapper_module,
+            app_module,
+            http_client,
+            workflow_executor: None,
+            workflow: None,
+            cancel_helper: Some(cancel_helper),
+        })
+    }
+
+    /// Set a cancellation helper for this runner instance
+    /// This allows external control over cancellation behavior (for test)
+    #[allow(dead_code)]
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn set_cancel_monitoring_helper(&mut self, helper: CancelMonitoringHelper) {
+        self.cancel_helper = Some(helper);
     }
 }
 impl ReusableWorkflowRunnerSpec for ReusableWorkflowRunner {}
@@ -136,12 +172,15 @@ impl RunnerTrait for ReusableWorkflowRunner {
             tracing::debug!("Workflow args: {:#?}", &arg);
             if let Some(workflow) = self.workflow.as_ref() {
                 tracing::debug!("Workflow: {:#?}", workflow);
-                if self.canceled {
-                    return Err(anyhow::anyhow!(
-                        "canceled by user: {}, {:?}",
-                        RunnerType::ReusableWorkflow.as_str_name(),
-                        arg
-                    ));
+                if let Some(helper) = &self.cancel_helper {
+                    let token = helper.get_cancellation_token().await;
+                    if token.is_cancelled() {
+                        return Err(anyhow::anyhow!(
+                            "canceled by user: {}, {:?}",
+                            RunnerType::ReusableWorkflow.as_str_name(),
+                            arg
+                        ));
+                    }
                 }
                 let input_json = serde_json::from_str(&arg.input)
                     .unwrap_or_else(|_| serde_json::Value::String(arg.input.clone()));
@@ -231,12 +270,15 @@ impl RunnerTrait for ReusableWorkflowRunner {
         let metadata_arc = Arc::new(metadata.clone());
         let execution_id = ExecutionId::new_opt(arg.execution_id.clone());
 
-        if self.canceled {
-            return Err(anyhow::anyhow!(
-                "canceled by user: {}, {:?}",
-                RunnerType::ReusableWorkflow.as_str_name(),
-                arg
-            ));
+        if let Some(helper) = &self.cancel_helper {
+            let token = helper.get_cancellation_token().await;
+            if token.is_cancelled() {
+                return Err(anyhow::anyhow!(
+                    "canceled by user: {}, {:?}",
+                    RunnerType::ReusableWorkflow.as_str_name(),
+                    arg
+                ));
+            }
         }
 
         let input_json = serde_json::from_str(&arg.input)
@@ -347,9 +389,66 @@ impl RunnerTrait for ReusableWorkflowRunner {
     }
 
     async fn cancel(&mut self) {
-        self.canceled = true;
+        if let Some(helper) = &self.cancel_helper {
+            let token = helper.get_cancellation_token().await;
+            if token.is_cancelled() {
+                tracing::info!("ReusableWorkflowRunner execution is already cancelled");
+            } else {
+                tracing::info!(
+                    "ReusableWorkflowRunner cancellation requested, Helper handles token internally"
+                );
+            }
+        } else {
+            tracing::warn!("No cancellation helper set, cannot cancel");
+        }
+
         if let Some(executor) = self.workflow_executor.as_ref() {
             executor.cancel().await;
         }
+    }
+}
+
+// CancelMonitoring implementation for ReusableWorkflowRunner
+#[async_trait]
+impl jobworkerp_runner::runner::cancellation::CancelMonitoring for ReusableWorkflowRunner {
+    /// Initialize cancellation monitoring for specific job
+    async fn setup_cancellation_monitoring(
+        &mut self,
+        job_id: proto::jobworkerp::data::JobId,
+        _job_data: &proto::jobworkerp::data::JobData,
+    ) -> anyhow::Result<Option<proto::jobworkerp::data::JobResult>> {
+        tracing::debug!(
+            "Setting up cancellation monitoring for ReusableWorkflowRunner job {}",
+            job_id.value
+        );
+
+        // For ReusableWorkflowRunner, we use the same pattern as CommandRunner
+        // The actual cancellation monitoring will be handled by the CancellationHelper
+        // Workflow execution will be cancelled through the executor
+
+        tracing::trace!("Cancellation monitoring started for job {}", job_id.value);
+        Ok(None) // Continue with normal execution
+    }
+
+    /// Cleanup cancellation monitoring
+    async fn cleanup_cancellation_monitoring(&mut self) -> anyhow::Result<()> {
+        tracing::trace!("Cleaning up cancellation monitoring for ReusableWorkflowRunner");
+
+        // Clear the cancellation helper
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.cleanup_monitoring_impl().await?;
+        }
+
+        Ok(())
+    }
+}
+
+impl UseCancelMonitoringHelper for ReusableWorkflowRunner {
+    fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
+        self.cancel_helper.as_ref()
+    }
+
+    fn cancel_monitoring_helper_mut(&mut self) -> Option<&mut CancelMonitoringHelper> {
+        self.cancel_helper.as_mut()
     }
 }
