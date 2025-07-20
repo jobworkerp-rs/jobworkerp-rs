@@ -11,6 +11,7 @@ use app::module::AppModule;
 use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
 use jobworkerp_runner::runner::mcp::McpServerRunnerImpl;
 use jobworkerp_runner::runner::{
+    cancellation::CancellableRunner,
     command::CommandRunnerImpl,
     docker::{DockerExecRunner, DockerRunner},
     grpc_unary::GrpcUnaryRunner,
@@ -18,7 +19,6 @@ use jobworkerp_runner::runner::{
     python::PythonCommandRunner,
     request::RequestRunner,
     slack::SlackPostMessageRunner,
-    RunnerTrait,
 };
 use proto::jobworkerp::data::RunnerType;
 use std::sync::Arc;
@@ -59,7 +59,7 @@ impl RunnerFactory {
         &self,
         name: &str,
         use_static: bool,
-    ) -> Option<Box<dyn RunnerTrait + Send + Sync>> {
+    ) -> Option<Box<dyn CancellableRunner + Send + Sync>> {
         let create_cancel_helper = || {
             use jobworkerp_runner::runner::cancellation_helper::CancelMonitoringHelper;
             let cancellation_repository = self.app_module.job_queue_cancellation_repository();
@@ -74,37 +74,41 @@ impl RunnerFactory {
         match RunnerType::from_str_name(name) {
             Some(RunnerType::Command) => Some(Box::new(
                 CommandRunnerImpl::new_with_cancel_monitoring(create_cancel_helper()),
-            ) as Box<dyn RunnerTrait + Send + Sync>),
+            )
+                as Box<dyn CancellableRunner + Send + Sync>),
             Some(RunnerType::PythonCommand) => Some(Box::new(
                 PythonCommandRunner::new_with_cancel_monitoring(create_cancel_helper()),
             )
-                as Box<dyn RunnerTrait + Send + Sync>),
+                as Box<dyn CancellableRunner + Send + Sync>),
             Some(RunnerType::Docker) if use_static => Some(Box::new(
                 DockerExecRunner::new_with_cancel_monitoring(create_cancel_helper()),
             )
-                as Box<dyn RunnerTrait + Send + Sync>),
+                as Box<dyn CancellableRunner + Send + Sync>),
             Some(RunnerType::Docker) => Some(Box::new(DockerRunner::new_with_cancel_monitoring(
                 create_cancel_helper(),
-            )) as Box<dyn RunnerTrait + Send + Sync>),
+            ))
+                as Box<dyn CancellableRunner + Send + Sync>),
             Some(RunnerType::GrpcUnary) => Some(Box::new(
                 GrpcUnaryRunner::new_with_cancel_monitoring(create_cancel_helper()),
             )
-                as Box<dyn RunnerTrait + Send + Sync>),
+                as Box<dyn CancellableRunner + Send + Sync>),
             Some(RunnerType::HttpRequest) => Some(Box::new(
                 RequestRunner::new_with_cancel_monitoring(create_cancel_helper()),
             )
-                as Box<dyn RunnerTrait + Send + Sync>),
+                as Box<dyn CancellableRunner + Send + Sync>),
             Some(RunnerType::SlackPostMessage) => Some(Box::new(
                 SlackPostMessageRunner::new_with_cancel_monitoring(create_cancel_helper()),
             )
-                as Box<dyn RunnerTrait + Send + Sync>),
+                as Box<dyn CancellableRunner + Send + Sync>),
             Some(RunnerType::InlineWorkflow) => {
                 match InlineWorkflowRunner::new_with_cancel_monitoring(
                     self.app_wrapper_module.clone(),
                     self.app_module.clone(),
                     create_cancel_helper(),
                 ) {
-                    Ok(runner) => Some(Box::new(runner) as Box<dyn RunnerTrait + Send + Sync>),
+                    Ok(runner) => {
+                        Some(Box::new(runner) as Box<dyn CancellableRunner + Send + Sync>)
+                    }
                     Err(err) => {
                         tracing::error!("Failed to create InlineWorkflowRunner: {}", err);
                         None
@@ -117,7 +121,9 @@ impl RunnerFactory {
                     self.app_module.clone(),
                     create_cancel_helper(),
                 ) {
-                    Ok(runner) => Some(Box::new(runner) as Box<dyn RunnerTrait + Send + Sync>),
+                    Ok(runner) => {
+                        Some(Box::new(runner) as Box<dyn CancellableRunner + Send + Sync>)
+                    }
                     Err(err) => {
                         tracing::error!("Failed to create ReusableWorkflowRunner: {}", err);
                         None
@@ -127,19 +133,21 @@ impl RunnerFactory {
             Some(RunnerType::LlmCompletion) => Some(Box::new(
                 LLMCompletionRunnerImpl::new_with_cancel_monitoring(create_cancel_helper()),
             )
-                as Box<dyn RunnerTrait + Send + Sync>),
+                as Box<dyn CancellableRunner + Send + Sync>),
             Some(RunnerType::LlmChat) => {
                 Some(Box::new(LLMChatRunnerImpl::new_with_cancel_monitoring(
                     self.app_module.clone(),
                     create_cancel_helper(),
-                )) as Box<dyn RunnerTrait + Send + Sync>)
+                ))
+                    as Box<dyn CancellableRunner + Send + Sync>)
             }
             _ => {
                 if let Ok(server) = self.mcp_clients.connect_server(name).await {
                     Some(Box::new(McpServerRunnerImpl::new_with_cancel_monitoring(
                         server,
                         create_cancel_helper(),
-                    )) as Box<dyn RunnerTrait + Send + Sync>)
+                    ))
+                        as Box<dyn CancellableRunner + Send + Sync>)
                 } else {
                     // TODO: Add cancellation monitoring support to Plugin Runners
                     self.plugins
@@ -147,7 +155,7 @@ impl RunnerFactory {
                         .write()
                         .await
                         .find_plugin_runner_by_name(name)
-                        .map(|r| Box::new(r) as Box<dyn RunnerTrait + Send + Sync>)
+                        .map(|r| Box::new(r) as Box<dyn CancellableRunner + Send + Sync>)
                 }
             }
         }

@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 use tonic::async_trait;
 
 #[allow(unused_imports)] // Used in CancelMonitoring trait implementations
-use super::cancellation::{CancelMonitoring, CancelMonitoringCapable};
+use super::cancellation::CancelMonitoring;
 use super::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
 use super::RunnerSpec;
 
@@ -245,10 +245,6 @@ impl RunnerTrait for SlackPostMessageRunner {
             tracing::warn!("No cancellation helper set, cannot cancel");
         }
     }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
 }
 
 // CancelMonitoring implementation for SlackPostMessageRunner
@@ -303,13 +299,6 @@ impl UseCancelMonitoringHelper for SlackPostMessageRunner {
     }
     fn cancel_monitoring_helper_mut(&mut self) -> Option<&mut CancelMonitoringHelper> {
         self.cancel_helper.as_mut()
-    }
-}
-
-// CancelMonitoringCapable implementation for SlackPostMessageRunner
-impl super::cancellation::CancelMonitoringCapable for SlackPostMessageRunner {
-    fn as_cancel_monitoring(&mut self) -> &mut dyn super::cancellation::CancelMonitoring {
-        self
     }
 }
 

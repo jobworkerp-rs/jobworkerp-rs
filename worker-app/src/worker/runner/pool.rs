@@ -7,7 +7,7 @@ use deadpool::{
     Runtime,
 };
 use jobworkerp_base::error::JobWorkerError;
-use jobworkerp_runner::runner::RunnerTrait;
+use jobworkerp_runner::runner::cancellation::CancellableRunner;
 use proto::jobworkerp::data::{RunnerData, WorkerData};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -34,99 +34,32 @@ impl RunnerPoolManagerImpl {
     }
 
     /// Reset cancellation monitoring state for pooling if the runner supports it
-    async fn reset_for_pooling_if_supported(runner_impl: &mut Box<dyn RunnerTrait + Send + Sync>) {
-        use jobworkerp_runner::runner::cancellation::CancelMonitoring;
+    async fn reset_for_pooling_if_supported(
+        runner_impl: &mut Box<dyn CancellableRunner + Send + Sync>,
+    ) {
+        // Use the CancellableRunner trait directly to access CancelMonitoring
+        tracing::trace!(
+            "Resetting cancellation monitoring for pooling: {}",
+            runner_impl.name()
+        );
 
-        // Check if runner supports CancelMonitoring
-        // Note: We need to check for concrete types since CancelMonitoringCapable is not object safe
-
-        // Macro to handle runner pooling reset with consistent error handling
-        macro_rules! reset_for_pooling_for_runner {
-            ($runner_type:ty, $runner_name:expr, $runner_var:ident) => {
-                if let Some($runner_var) = runner_impl.as_any_mut().downcast_mut::<$runner_type>() {
-                    tracing::trace!(
-                        "Resetting cancellation monitoring for pooling: {}",
-                        $runner_name
-                    );
-
-                    if let Err(e) = $runner_var.reset_for_pooling().await {
-                        tracing::warn!(
-                            "Failed to reset cancellation monitoring for pooling in {}: {:?}",
-                            $runner_name,
-                            e
-                        );
-                    }
-                    return;
-                }
-            };
+        if let Err(e) = runner_impl.as_cancel_monitoring().reset_for_pooling().await {
+            tracing::warn!(
+                "Failed to reset cancellation monitoring for pooling in {}: {:?}",
+                runner_impl.name(),
+                e
+            );
         }
-
-        // Try each runner type
-        reset_for_pooling_for_runner!(
-            jobworkerp_runner::runner::command::CommandRunnerImpl,
-            "CommandRunner",
-            command_runner
-        );
-        reset_for_pooling_for_runner!(
-            jobworkerp_runner::runner::python::PythonCommandRunner,
-            "PythonCommandRunner",
-            python_runner
-        );
-        reset_for_pooling_for_runner!(
-            jobworkerp_runner::runner::docker::DockerExecRunner,
-            "DockerExecRunner",
-            docker_exec_runner
-        );
-        reset_for_pooling_for_runner!(
-            jobworkerp_runner::runner::docker::DockerRunner,
-            "DockerRunner",
-            docker_runner
-        );
-        reset_for_pooling_for_runner!(
-            jobworkerp_runner::runner::request::RequestRunner,
-            "RequestRunner",
-            request_runner
-        );
-        reset_for_pooling_for_runner!(
-            jobworkerp_runner::runner::grpc_unary::GrpcUnaryRunner,
-            "GrpcUnaryRunner",
-            grpc_runner
-        );
-        reset_for_pooling_for_runner!(
-            jobworkerp_runner::runner::slack::SlackPostMessageRunner,
-            "SlackPostMessageRunner",
-            slack_runner
-        );
-        reset_for_pooling_for_runner!(
-            app_wrapper::llm::completion::LLMCompletionRunnerImpl,
-            "LLMCompletionRunner",
-            llm_completion_runner
-        );
-        reset_for_pooling_for_runner!(
-            app_wrapper::llm::chat::LLMChatRunnerImpl,
-            "LLMChatRunner",
-            llm_chat_runner
-        );
-        reset_for_pooling_for_runner!(
-            app_wrapper::workflow::runner::inline::InlineWorkflowRunner,
-            "InlineWorkflowRunner",
-            inline_workflow_runner
-        );
-        reset_for_pooling_for_runner!(
-            app_wrapper::workflow::runner::reusable::ReusableWorkflowRunner,
-            "ReusableWorkflowRunner",
-            reusable_workflow_runner
-        );
     }
 }
 
 impl Manager for RunnerPoolManagerImpl {
-    type Type = Arc<Mutex<Box<dyn RunnerTrait + Send + Sync>>>;
+    type Type = Arc<Mutex<Box<dyn CancellableRunner + Send + Sync>>>;
     type Error = anyhow::Error;
 
     async fn create(
         &self,
-    ) -> Result<Arc<Mutex<Box<dyn RunnerTrait + Send + Sync>>>, anyhow::Error> {
+    ) -> Result<Arc<Mutex<Box<dyn CancellableRunner + Send + Sync>>>, anyhow::Error> {
         let mut runner = self
             .runner_factory
             .create_by_name(&self.runner_data.name, self.worker.use_static)
@@ -140,7 +73,7 @@ impl Manager for RunnerPoolManagerImpl {
         Ok(Arc::new(Mutex::new(runner)))
     }
 
-    fn detach(&self, _runner: &mut Arc<Mutex<Box<dyn RunnerTrait + Send + Sync>>>) {
+    fn detach(&self, _runner: &mut Arc<Mutex<Box<dyn CancellableRunner + Send + Sync>>>) {
         tracing::warn!(
             "Static Runner detached from pool: maybe re-init: {:?}",
             &self
@@ -157,7 +90,7 @@ impl Manager for RunnerPoolManagerImpl {
 
     async fn recycle(
         &self,
-        runner: &mut Arc<Mutex<Box<dyn RunnerTrait + Send + Sync>>>,
+        runner: &mut Arc<Mutex<Box<dyn CancellableRunner + Send + Sync>>>,
         _metrics: &Metrics,
     ) -> RecycleResult<Self::Error> {
         tracing::debug!("runner recycled");
@@ -329,8 +262,6 @@ mod tests {
     #[cfg(test)]
     mod pool_reset_tests {
         use super::*;
-        use jobworkerp_runner::runner::cancellation::CancelMonitoring;
-        use jobworkerp_runner::runner::RunnerSpec;
         use proto::jobworkerp::data::{JobData, JobId, WorkerId};
         use std::time::Duration;
 
@@ -395,18 +326,14 @@ mod tests {
                 {
                     let mut runner = runner_obj.lock().await;
 
-                    // Setup cancellation monitoring (should work without cancellation manager for this test)
-                    if let Some(cmd_runner) = runner
-                        .as_any_mut()
-                        .downcast_mut::<jobworkerp_runner::runner::command::CommandRunnerImpl>(
-                    ) {
-                        let _result = cmd_runner
-                            .setup_cancellation_monitoring(job_id, &job_data)
-                            .await
-                            .ok();
-                        // Note: We can't easily verify state without exposed helper methods,
-                        // but we can verify reset_for_pooling() completes without error
-                    }
+                    // Setup cancellation monitoring using CancellableRunner trait
+                    let _result = runner
+                        .as_cancel_monitoring()
+                        .setup_cancellation_monitoring(job_id, &job_data)
+                        .await
+                        .ok();
+                    // Note: We can't easily verify state without exposed helper methods,
+                    // but we can verify reset_for_pooling() completes without error
                 }
 
                 // Return runner to pool (triggers recycle with reset_for_pooling)
@@ -450,15 +377,12 @@ mod tests {
                     let runner_obj = factory.get().await?;
                     let mut runner = runner_obj.lock().await;
 
-                    if let Some(cmd_runner) = runner
-                        .as_any_mut()
-                        .downcast_mut::<jobworkerp_runner::runner::command::CommandRunnerImpl>(
-                    ) {
-                        let _result = cmd_runner
-                            .setup_cancellation_monitoring(job_id1, &job_data1)
-                            .await
-                            .ok();
-                    }
+                    // Setup cancellation monitoring using CancellableRunner trait
+                    let _result = runner
+                        .as_cancel_monitoring()
+                        .setup_cancellation_monitoring(job_id1, &job_data1)
+                        .await
+                        .ok();
                     // Runner automatically returned to pool on drop
                 }
 
@@ -467,17 +391,13 @@ mod tests {
                     let runner_obj = factory.get().await?;
                     let mut runner = runner_obj.lock().await;
 
-                    if let Some(cmd_runner) = runner
-                        .as_any_mut()
-                        .downcast_mut::<jobworkerp_runner::runner::command::CommandRunnerImpl>(
-                    ) {
-                        // Should be able to setup new job without issues
-                        let _result = cmd_runner
-                            .setup_cancellation_monitoring(job_id2, &job_data2)
-                            .await
-                            .ok();
-                        assert_eq!(cmd_runner.name(), RunnerType::Command.as_str_name());
-                    }
+                    // Should be able to setup new job without issues
+                    let _result = runner
+                        .as_cancel_monitoring()
+                        .setup_cancellation_monitoring(job_id2, &job_data2)
+                        .await
+                        .ok();
+                    assert_eq!(runner.name(), RunnerType::Command.as_str_name());
                 }
 
                 tracing::debug!("✅ Pool state isolation between jobs test completed");
@@ -495,23 +415,19 @@ mod tests {
                 {
                     let mut runner = runner_obj.lock().await;
 
-                    if let Some(cmd_runner) = runner
-                        .as_any_mut()
-                        .downcast_mut::<jobworkerp_runner::runner::command::CommandRunnerImpl>(
-                    ) {
-                        // Setup state
-                        let _result = cmd_runner
-                            .setup_cancellation_monitoring(job_id, &job_data)
-                            .await
-                            .ok();
+                    // Setup state
+                    let _result = runner
+                        .as_cancel_monitoring()
+                        .setup_cancellation_monitoring(job_id, &job_data)
+                        .await
+                        .ok();
 
-                        // Manually call reset_for_pooling to test cleanup
-                        let reset_result = cmd_runner.reset_for_pooling().await;
-                        assert!(
-                            reset_result.is_ok(),
-                            "reset_for_pooling should complete successfully"
-                        );
-                    }
+                    // Manually call reset_for_pooling to test cleanup
+                    let reset_result = runner.as_cancel_monitoring().reset_for_pooling().await;
+                    assert!(
+                        reset_result.is_ok(),
+                        "reset_for_pooling should complete successfully"
+                    );
                 }
 
                 tracing::debug!("✅ Pool cancellation token cleanup test completed");
@@ -527,7 +443,9 @@ mod tests {
                 // Perform multiple pool get/return cycles
                 for i in 0..10 {
                     let (job_id, job_data) = (
-                        JobId { value: 100000 + i as i64 },
+                        JobId {
+                            value: 100000 + i as i64,
+                        },
                         JobData {
                             worker_id: Some(WorkerId { value: 1 }),
                             args: format!("test_args_{i}").into_bytes(),
@@ -539,7 +457,7 @@ mod tests {
                             priority: 0,
                             timeout: 30,
                             request_streaming: false,
-                        }
+                        },
                     );
 
                     let runner_obj = factory.get().await?;
@@ -547,12 +465,12 @@ mod tests {
                     {
                         let mut runner = runner_obj.lock().await;
 
-                        if let Some(cmd_runner) = runner.as_any_mut()
-                            .downcast_mut::<jobworkerp_runner::runner::command::CommandRunnerImpl>()
-                        {
-                            // Setup some state for each cycle
-                            let _result = cmd_runner.setup_cancellation_monitoring(job_id, &job_data).await.ok();
-                        }
+                        // Setup some state for each cycle
+                        let _result = runner
+                            .as_cancel_monitoring()
+                            .setup_cancellation_monitoring(job_id, &job_data)
+                            .await
+                            .ok();
                     }
 
                     // Return to pool (triggers reset)
@@ -588,15 +506,11 @@ mod tests {
                 {
                     let mut runner = runner_obj.lock().await;
 
-                    if let Some(cmd_runner) = runner
-                        .as_any_mut()
-                        .downcast_mut::<jobworkerp_runner::runner::command::CommandRunnerImpl>(
-                    ) {
-                        let _result = cmd_runner
-                            .setup_cancellation_monitoring(job_id, &job_data)
-                            .await
-                            .ok();
-                    }
+                    let _result = runner
+                        .as_cancel_monitoring()
+                        .setup_cancellation_monitoring(job_id, &job_data)
+                        .await
+                        .ok();
                 }
 
                 // Return to pool - should handle any reset issues gracefully
@@ -687,27 +601,26 @@ mod tests {
                 {
                     let mut runner = runner_obj.lock().await;
 
-                    if let Some(cmd_runner) = runner
-                        .as_any_mut()
-                        .downcast_mut::<jobworkerp_runner::runner::command::CommandRunnerImpl>(
-                    ) {
-                        // Setup state
-                        let _result = cmd_runner
-                            .setup_cancellation_monitoring(job_id, &job_data)
-                            .await
-                            .ok();
+                    // Setup state
+                    let _result = runner
+                        .as_cancel_monitoring()
+                        .setup_cancellation_monitoring(job_id, &job_data)
+                        .await
+                        .ok();
 
-                        // Direct call to reset_for_pooling to verify it works
-                        let reset_result = cmd_runner.reset_for_pooling().await;
-                        assert!(
-                            reset_result.is_ok(),
-                            "Direct reset_for_pooling call should succeed"
-                        );
+                    // Direct call to reset_for_pooling to verify it works
+                    let reset_result = runner.as_cancel_monitoring().reset_for_pooling().await;
+                    assert!(
+                        reset_result.is_ok(),
+                        "Direct reset_for_pooling call should succeed"
+                    );
 
-                        // Cleanup should also work
-                        let cleanup_result = cmd_runner.cleanup_cancellation_monitoring().await;
-                        assert!(cleanup_result.is_ok(), "Cleanup should succeed");
-                    }
+                    // Cleanup should also work
+                    let cleanup_result = runner
+                        .as_cancel_monitoring()
+                        .cleanup_cancellation_monitoring()
+                        .await;
+                    assert!(cleanup_result.is_ok(), "Cleanup should succeed");
                 }
 
                 tracing::debug!("✅ Pool reset method direct call test completed");

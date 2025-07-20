@@ -9,9 +9,8 @@ mod streaming_pool_guard_tests {
     use futures::StreamExt;
     use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
     use jobworkerp_runner::jobworkerp::runner::CommandArgs;
-    use jobworkerp_runner::runner::command::CommandRunnerImpl;
+    use jobworkerp_runner::runner::cancellation::CancellableRunner;
     use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
-    use jobworkerp_runner::runner::RunnerTrait;
     use proto::jobworkerp::data::{RunnerData, RunnerType, WorkerData};
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -56,36 +55,34 @@ mod streaming_pool_guard_tests {
 
             // CommandRunnerで短いsleepコマンドを実行
             let mut runner = pool_object.lock().await;
-            if let Some(command_runner) = runner.as_any_mut().downcast_mut::<CommandRunnerImpl>() {
-                let arg = CommandArgs {
-                    command: "sleep".to_string(),
-                    args: vec!["0.1".to_string()], // 100ms sleep
-                    with_memory_monitoring: false,
-                };
+            let arg = CommandArgs {
+                command: "sleep".to_string(),
+                args: vec!["0.1".to_string()], // 100ms sleep
+                with_memory_monitoring: false,
+            };
 
-                let stream_result = command_runner
-                    .run_stream(
-                        &ProstMessageCodec::serialize_message(&arg).unwrap(),
-                        HashMap::new(),
-                    )
-                    .await;
+            let stream_result = runner
+                .run_stream(
+                    &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                    HashMap::new(),
+                )
+                .await;
 
-                assert!(stream_result.is_ok());
-                let stream = stream_result.unwrap();
+            assert!(stream_result.is_ok());
+            let stream = stream_result.unwrap();
 
-                // RunnerをDropして、StreamをStreamWithPoolGuardでラップ
-                drop(runner);
+            // RunnerをDropして、StreamをStreamWithPoolGuardでラップ
+            drop(runner);
 
-                let guard_stream = StreamWithPoolGuard::new(stream, pool_object);
+            let guard_stream = StreamWithPoolGuard::new(stream, pool_object);
 
-                // Stream要素を消費（これによりPool Guard動作確認）
-                let items: Vec<_> = guard_stream.collect().await;
-                tracing::debug!("Stream items collected: {}", items.len());
+            // Stream要素を消費（これによりPool Guard動作確認）
+            let items: Vec<_> = guard_stream.collect().await;
+            tracing::debug!("Stream items collected: {}", items.len());
 
-                // Pool が再利用可能であることを確認
-                let pool_object2 = pool.get().await?;
-                assert!(!pool_object2.lock().await.name().is_empty());
-            }
+            // Pool が再利用可能であることを確認
+            let pool_object2 = pool.get().await?;
+            assert!(!pool_object2.lock().await.name().is_empty());
 
             tracing::debug!("✅ Command runner with stream guard test completed");
             Ok(())
@@ -102,33 +99,29 @@ mod streaming_pool_guard_tests {
                 let pool_object = pool.get().await?;
                 let mut runner = pool_object.lock().await;
 
-                if let Some(command_runner) =
-                    runner.as_any_mut().downcast_mut::<CommandRunnerImpl>()
-                {
-                    let arg = CommandArgs {
-                        command: "echo".to_string(),
-                        args: vec![format!("test_{}", i)],
-                        with_memory_monitoring: false,
-                    };
+                let arg = CommandArgs {
+                    command: "echo".to_string(),
+                    args: vec![format!("test_{}", i)],
+                    with_memory_monitoring: false,
+                };
 
-                    let stream_result = command_runner
-                        .run_stream(
-                            &ProstMessageCodec::serialize_message(&arg).unwrap(),
-                            HashMap::new(),
-                        )
-                        .await;
+                let stream_result = runner
+                    .run_stream(
+                        &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                        HashMap::new(),
+                    )
+                    .await;
 
-                    assert!(stream_result.is_ok());
-                    let stream = stream_result.unwrap();
+                assert!(stream_result.is_ok());
+                let stream = stream_result.unwrap();
 
-                    drop(runner);
+                drop(runner);
 
-                    let guard_stream = StreamWithPoolGuard::new(stream, pool_object);
+                let guard_stream = StreamWithPoolGuard::new(stream, pool_object);
 
-                    // Stream処理
-                    let items: Vec<_> = guard_stream.collect().await;
-                    assert!(!items.is_empty());
-                }
+                // Stream処理
+                let items: Vec<_> = guard_stream.collect().await;
+                assert!(!items.is_empty());
 
                 tracing::debug!("Completed stream guard cycle {}", i);
             }
@@ -151,7 +144,6 @@ mod streaming_pool_guard_tests {
             };
             use jobworkerp_runner::runner::cancellation_helper::CancelMonitoringHelper;
             use jobworkerp_runner::runner::command::CommandRunnerImpl;
-            use jobworkerp_runner::runner::RunnerTrait;
             use std::collections::HashMap;
             use tokio_util::sync::CancellationToken;
 
@@ -198,43 +190,39 @@ mod streaming_pool_guard_tests {
 
             // CommandRunnerImplを作成（use_static=false想定）
             let mut runner = Box::new(CommandRunnerImpl::new_with_cancel_monitoring(cancel_helper))
-                as Box<dyn RunnerTrait + Send + Sync>;
+                as Box<dyn CancellableRunner + Send + Sync>;
 
             // CancelHelperを取得してからストリーミング実行
-            if let Some(command_runner) = runner.as_any_mut().downcast_mut::<CommandRunnerImpl>() {
-                let cancel_helper = command_runner.take_cancel_helper_for_stream();
+            let cancel_helper = runner.clone_cancel_helper_for_stream();
 
-                let arg = CommandArgs {
-                    command: "echo".to_string(),
-                    args: vec!["streaming_test".to_string()],
-                    with_memory_monitoring: false,
-                };
+            let arg = CommandArgs {
+                command: "echo".to_string(),
+                args: vec!["streaming_test".to_string()],
+                with_memory_monitoring: false,
+            };
 
-                let stream_result = command_runner
-                    .run_stream(
-                        &ProstMessageCodec::serialize_message(&arg).unwrap(),
-                        HashMap::new(),
-                    )
-                    .await;
+            let stream_result = runner
+                .run_stream(
+                    &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                    HashMap::new(),
+                )
+                .await;
 
-                assert!(stream_result.is_ok());
-                let stream = stream_result.unwrap();
+            assert!(stream_result.is_ok());
+            let stream = stream_result.unwrap();
 
-                // StreamWithCancelGuardでラップ
-                if let Some(cancel_helper) = cancel_helper {
-                    use super::super::stream_guard::StreamWithCancelGuard;
-                    let guard_stream = StreamWithCancelGuard::new(stream, cancel_helper);
+            // StreamWithCancelGuardでラップ
+            if let Some(cancel_helper) = cancel_helper {
+                use super::super::stream_guard::StreamWithCancelGuard;
+                let guard_stream = StreamWithCancelGuard::new(stream, cancel_helper);
 
-                    // Stream要素を消費
-                    let items: Vec<_> = guard_stream.collect().await;
-                    assert!(!items.is_empty());
+                // Stream要素を消費
+                let items: Vec<_> = guard_stream.collect().await;
+                assert!(!items.is_empty());
 
-                    tracing::debug!("✅ Non-static streaming with cancel guard test completed");
-                } else {
-                    panic!("CancelHelper should be available");
-                }
+                tracing::debug!("✅ Non-static streaming with cancel guard test completed");
             } else {
-                panic!("Should be able to downcast to CommandRunnerImpl");
+                panic!("CancelHelper should be available");
             }
 
             Ok(())
@@ -333,34 +321,32 @@ mod streaming_pool_guard_tests {
             let pool_object = pool.get().await?;
 
             let mut runner = pool_object.lock().await;
-            if let Some(command_runner) = runner.as_any_mut().downcast_mut::<CommandRunnerImpl>() {
-                let arg = CommandArgs {
-                    command: "sleep".to_string(),
-                    args: vec!["1.0".to_string()], // 1秒sleep
-                    with_memory_monitoring: false,
-                };
+            let arg = CommandArgs {
+                command: "sleep".to_string(),
+                args: vec!["1.0".to_string()], // 1秒sleep
+                with_memory_monitoring: false,
+            };
 
-                let stream_result = command_runner
-                    .run_stream(
-                        &ProstMessageCodec::serialize_message(&arg).unwrap(),
-                        HashMap::new(),
-                    )
-                    .await;
+            let stream_result = runner
+                .run_stream(
+                    &ProstMessageCodec::serialize_message(&arg).unwrap(),
+                    HashMap::new(),
+                )
+                .await;
 
-                assert!(stream_result.is_ok());
-                let stream = stream_result.unwrap();
+            assert!(stream_result.is_ok());
+            let stream = stream_result.unwrap();
 
-                drop(runner);
+            drop(runner);
 
-                let guard_stream = StreamWithPoolGuard::new(stream, pool_object);
+            let guard_stream = StreamWithPoolGuard::new(stream, pool_object);
 
-                // Stream を途中で破棄（Pool Guard の Drop 動作確認）
-                drop(guard_stream);
+            // Stream を途中で破棄（Pool Guard の Drop 動作確認）
+            drop(guard_stream);
 
-                // Pool が再利用可能であることを確認
-                let pool_object2 = pool.get().await?;
-                assert!(!pool_object2.lock().await.name().is_empty());
-            }
+            // Pool が再利用可能であることを確認
+            let pool_object2 = pool.get().await?;
+            assert!(!pool_object2.lock().await.name().is_empty());
 
             tracing::debug!("✅ Stream guard early drop test completed");
             Ok(())

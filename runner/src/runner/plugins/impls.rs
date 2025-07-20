@@ -15,6 +15,10 @@ use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::data::Trailer;
 use tokio::sync::RwLock;
 
+use super::super::cancellation::CancelMonitoring;
+use super::super::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
+use proto::jobworkerp::data::{JobData, JobId, JobResult};
+
 /**
  * PluginRunner wrapper
  * (for self mutability (run(), cancel()))
@@ -23,12 +27,16 @@ use tokio::sync::RwLock;
 pub struct PluginRunnerWrapperImpl {
     #[allow(clippy::borrowed_box)]
     plugin_runner: Arc<RwLock<Box<dyn PluginRunner + Send + Sync>>>,
+    cancel_helper: Option<CancelMonitoringHelper>,
 }
 
 impl PluginRunnerWrapperImpl {
     // #[allow(clippy::borrowed_box)]
     pub fn new(plugin_runner: Arc<RwLock<Box<dyn PluginRunner + Send + Sync>>>) -> Self {
-        Self { plugin_runner }
+        Self {
+            plugin_runner,
+            cancel_helper: None,
+        }
     }
     async fn create(&self, settings: Vec<u8>) -> Result<()> {
         let plugin_runner = Arc::clone(&self.plugin_runner);
@@ -137,13 +145,33 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
             anyhow!("in running pluginRunner: {:?}", e)
         })?;
         let plugin_runner = self.plugin_runner.clone();
+
+        // Get cancellation token if available
+        let cancel_token = if let Some(helper) = &self.cancel_helper {
+            Some(helper.get_cancellation_token().await)
+        } else {
+            None
+        };
+
         let st = async_stream::stream! {
             let mut runner = plugin_runner.write().await;
             loop {
-                let maybe_v = {
-                    // run and receive from stream iteratively
+                let receive_future = async {
                     runner.receive_stream()
                 };
+
+                let maybe_v = if let Some(ref token) = cancel_token {
+                    tokio::select! {
+                        result = receive_future => result,
+                        _ = token.cancelled() => {
+                            tracing::info!("Plugin stream cancelled by token");
+                            break;
+                        }
+                    }
+                } else {
+                    receive_future.await
+                };
+
                 match maybe_v {
                     Ok(Some(v)) => {
                         yield ResultOutputItem { item: Some(result_output_item::Item::Data(v)) }
@@ -172,8 +200,50 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
     async fn cancel(&mut self) {
         let _ = self.plugin_runner.write().await.cancel(); //.map(|mut r| r.cancel());
     }
+}
 
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
+#[async_trait]
+impl CancelMonitoring for PluginRunnerWrapperImpl {
+    /// Initialize cancellation monitoring for specific job
+    async fn setup_cancellation_monitoring(
+        &mut self,
+        job_id: JobId,
+        job_data: &JobData,
+    ) -> Result<Option<JobResult>> {
+        // Helper有無の明確な分岐
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.setup_monitoring_impl(job_id, job_data).await
+        } else {
+            tracing::debug!("No cancel monitoring configured for job {}", job_id.value);
+            Ok(None)
+        }
+    }
+
+    /// Cleanup cancellation monitoring
+    async fn cleanup_cancellation_monitoring(&mut self) -> Result<()> {
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.cleanup_monitoring_impl().await
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Reset for pooling
+    async fn reset_for_pooling(&mut self) -> Result<()> {
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.reset_for_pooling_impl().await
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl UseCancelMonitoringHelper for PluginRunnerWrapperImpl {
+    fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
+        self.cancel_helper.as_ref()
+    }
+
+    fn cancel_monitoring_helper_mut(&mut self) -> Option<&mut CancelMonitoringHelper> {
+        self.cancel_helper.as_mut()
     }
 }

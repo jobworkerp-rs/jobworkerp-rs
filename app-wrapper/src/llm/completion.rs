@@ -342,10 +342,6 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
             tracing::warn!("No cancellation helper set, cannot cancel");
         }
     }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
 }
 
 // CancelMonitoring trait実装（Helper委譲版）
@@ -356,7 +352,7 @@ impl jobworkerp_runner::runner::cancellation::CancelMonitoring for LLMCompletion
         job_id: proto::jobworkerp::data::JobId,
         job_data: &proto::jobworkerp::data::JobData,
     ) -> anyhow::Result<Option<proto::jobworkerp::data::JobResult>> {
-        // Helper有無の明確な分岐
+        // Clear helper availability check to avoid optional complexity
         if let Some(helper) = &mut self.cancel_helper {
             helper.setup_monitoring_impl(job_id, job_data).await
         } else {
@@ -377,14 +373,14 @@ impl jobworkerp_runner::runner::cancellation::CancelMonitoring for LLMCompletion
     }
 
     async fn reset_for_pooling(&mut self) -> anyhow::Result<()> {
-        // LLMCompletionRunnerは通常短時間で完了するため、常にクリーンアップを実行
+        // LLMCompletionRunner typically completes quickly, so always cleanup
         if let Some(helper) = &mut self.cancel_helper {
             helper.reset_for_pooling_impl().await?;
         } else {
             self.cleanup_cancellation_monitoring().await?;
         }
 
-        // LLMCompletionRunner固有の状態リセット
+        // LLMCompletionRunner-specific state reset
         tracing::debug!("LLMCompletionRunnerImpl reset for pooling");
         Ok(())
     }

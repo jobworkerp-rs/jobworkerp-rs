@@ -465,10 +465,6 @@ impl RunnerTrait for InlineWorkflowRunner {
             tracing::warn!("No cancellation helper set, cannot cancel");
         }
     }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
 }
 
 // DI trait実装（Option対応）
@@ -490,7 +486,7 @@ impl jobworkerp_runner::runner::cancellation::CancelMonitoring for InlineWorkflo
         job_id: proto::jobworkerp::data::JobId,
         job_data: &proto::jobworkerp::data::JobData,
     ) -> anyhow::Result<Option<proto::jobworkerp::data::JobResult>> {
-        // Helper有無の明確な分岐
+        // Clear helper availability check to avoid optional complexity
         if let Some(helper) = &mut self.cancel_helper {
             helper.setup_monitoring_impl(job_id, job_data).await
         } else {
@@ -511,14 +507,14 @@ impl jobworkerp_runner::runner::cancellation::CancelMonitoring for InlineWorkflo
     }
 
     async fn reset_for_pooling(&mut self) -> anyhow::Result<()> {
-        // InlineWorkflowRunnerは通常短時間で完了するため、常にクリーンアップを実行
+        // InlineWorkflowRunner typically completes quickly, so always cleanup
         if let Some(helper) = &mut self.cancel_helper {
             helper.reset_for_pooling_impl().await?;
         } else {
             self.cleanup_cancellation_monitoring().await?;
         }
 
-        // InlineWorkflowRunner固有の状態リセット
+        // InlineWorkflowRunner-specific state reset
         tracing::debug!("InlineWorkflowRunner reset for pooling");
         Ok(())
     }

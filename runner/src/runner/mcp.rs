@@ -3,7 +3,7 @@ use crate::jobworkerp::runner::mcp_server_result::BlobResourceContents;
 use crate::jobworkerp::runner::mcp_server_result::TextResourceContents;
 use crate::jobworkerp::runner::McpServerArgs;
 use crate::jobworkerp::runner::McpServerResult;
-use crate::runner::cancellation::{CancelMonitoring, CancelMonitoringCapable};
+use crate::runner::cancellation::CancelMonitoring;
 use crate::runner::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
 use crate::runner::RunnerSpec;
 use crate::runner::RunnerTrait;
@@ -446,10 +446,6 @@ impl RunnerTrait for McpServerRunnerImpl {
             tracing::warn!("No cancellation helper set, cannot cancel MCP operation");
         }
     }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
 }
 
 // CancelMonitoring implementation for McpServerRunnerImpl
@@ -505,11 +501,4 @@ impl UseCancelMonitoringHelper for McpServerRunnerImpl {
     }
 }
 
-// CancelMonitoringCapable implementation (type-safe integration trait)
-impl CancelMonitoringCapable for McpServerRunnerImpl {
-    fn as_cancel_monitoring(&mut self) -> &mut dyn CancelMonitoring {
-        self
-    }
-}
-
-// MCP Runnerのテストはintegration_tests.rsに実装済み
+// MCP Runner tests are already implemented in integration_tests.rs
