@@ -415,25 +415,6 @@ impl RunnerTrait for DockerExecRunner {
         // Clear cancellation token even on error (no-op with new approach)
         Err(anyhow::anyhow!("not implemented"))
     }
-
-    async fn cancel(&mut self) {
-        // Cancel using new helper approach
-        if let Some(helper) = &self.cancel_helper {
-            let token = helper.get_cancellation_token().await;
-            token.cancel();
-        }
-
-        if !self.instant_id.is_empty() {
-            tracing::info!("Stopping Docker container: {}", self.instant_id);
-
-            // Use existing stop method with graceful timeout (10 seconds) and force removal
-            if let Err(e) = self.stop(10, true).await {
-                tracing::error!("Failed to stop Docker container during cancellation: {}", e);
-            }
-        } else {
-            tracing::warn!("No active Docker container to cancel");
-        }
-    }
 }
 
 // confirm local docker
@@ -786,64 +767,6 @@ impl RunnerTrait for DockerRunner {
         // Clear cancellation token even on error (no-op with new approach)
         Err(anyhow::anyhow!("not implemented"))
     }
-
-    async fn cancel(&mut self) {
-        // Cancel using new helper approach
-        if let Some(helper) = &self.cancel_helper {
-            let token = helper.get_cancellation_token().await;
-            token.cancel();
-        }
-
-        if let (Some(docker), Some(container_id)) =
-            (self.docker.as_ref(), &self.current_container_id)
-        {
-            tracing::info!("Stopping Docker container: {}", container_id);
-
-            // Try graceful stop first (SIGTERM to container main process)
-            match docker
-                .stop_container(
-                    container_id,
-                    Some(bollard::container::StopContainerOptions { t: 10 }),
-                )
-                .await
-            {
-                Ok(_) => {
-                    tracing::debug!("Container {} stopped gracefully", container_id);
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to stop container {}: {}", container_id, e);
-
-                    // Force kill if graceful stop failed
-                    match docker.kill_container::<String>(container_id, None).await {
-                        Ok(_) => tracing::debug!("Container {} force killed", container_id),
-                        Err(e) => {
-                            tracing::error!("Failed to kill container {}: {}", container_id, e)
-                        }
-                    }
-                }
-            }
-
-            // Clean up: remove container
-            match docker
-                .remove_container(
-                    container_id,
-                    Some(bollard::container::RemoveContainerOptions {
-                        force: true,
-                        ..Default::default()
-                    }),
-                )
-                .await
-            {
-                Ok(_) => tracing::debug!("Container {} removed", container_id),
-                Err(e) => tracing::warn!("Failed to remove container {}: {}", container_id, e),
-            }
-
-            // Clear the container ID since it's now stopped
-            self.current_container_id = None;
-        } else {
-            tracing::warn!("No active Docker container to cancel");
-        }
-    }
 }
 
 // CancelMonitoring implementation for DockerExecRunner
@@ -877,6 +800,27 @@ impl super::cancellation::CancelMonitoring for DockerExecRunner {
 
         // Clear instant_id if needed (though it might be used for container identification)
         // self.instant_id = String::new(); // Note: Keeping this as it might be needed for container lifecycle
+
+        Ok(())
+    }
+
+    /// Signals cancellation token for DockerExecRunner
+    async fn request_cancellation(&mut self) -> Result<()> {
+        // Signal cancellation token
+        if let Some(helper) = &self.cancel_helper {
+            let token = helper.get_cancellation_token().await;
+            if !token.is_cancelled() {
+                token.cancel();
+                tracing::info!("DockerExecRunner: cancellation token signaled");
+            }
+        } else {
+            tracing::warn!("DockerExecRunner: no cancellation helper available");
+        }
+
+        // DockerExecRunner-specific command execution cleanup
+        // Commands running via docker exec are automatically stopped by cancellation token
+        // Additional cleanup is typically not needed
+        tracing::info!("DockerExecRunner: exec command will be stopped via cancellation token");
 
         Ok(())
     }
@@ -919,6 +863,60 @@ impl super::cancellation::CancelMonitoring for DockerRunner {
 
         // Clear current container ID if needed
         self.current_container_id = None;
+
+        Ok(())
+    }
+
+    /// Cancels containers and cleans up resources for DockerRunner
+    async fn request_cancellation(&mut self) -> Result<()> {
+        // 1. Signal cancellation token
+        if let Some(helper) = &self.cancel_helper {
+            let token = helper.get_cancellation_token().await;
+            if !token.is_cancelled() {
+                token.cancel();
+                tracing::info!("DockerRunner: cancellation token signaled");
+            }
+        }
+
+        // 2. DockerRunner-specific container stop and removal
+        if let Some(container_id) = self.current_container_id.clone() {
+            if let Some(docker) = self.docker.as_ref() {
+                // Graceful stop (SIGTERM)
+                if let Err(e) = docker
+                    .stop_container(
+                        &container_id,
+                        Some(bollard::container::StopContainerOptions { t: 10 }),
+                    )
+                    .await
+                {
+                    tracing::warn!("Failed to stop container {}: {}", container_id, e);
+                }
+
+                // Force remove
+                if let Err(e) = docker
+                    .remove_container(
+                        &container_id,
+                        Some(bollard::container::RemoveContainerOptions {
+                            force: true,
+                            ..Default::default()
+                        }),
+                    )
+                    .await
+                {
+                    tracing::warn!("Failed to remove container {}: {}", container_id, e);
+                }
+
+                tracing::info!(
+                    "DockerRunner: container {} stopped and removed",
+                    container_id
+                );
+            }
+
+            // Clear container ID
+            self.current_container_id = None;
+        } else {
+            tracing::warn!("DockerRunner: no container to stop");
+        }
 
         Ok(())
     }

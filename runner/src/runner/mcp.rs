@@ -430,22 +430,6 @@ impl RunnerTrait for McpServerRunnerImpl {
         // Note: The token will be cleared when cancel() is called
         Ok(Box::pin(stream))
     }
-
-    async fn cancel(&mut self) {
-        // Cancel using helper if available
-        if let Some(helper) = &self.cancel_helper {
-            let token = helper.get_cancellation_token().await;
-            if token.is_cancelled() {
-                tracing::info!("MCP server operation is already cancelled");
-            } else {
-                tracing::info!(
-                    "MCP server cancellation requested, Helper handles token internally"
-                );
-            }
-        } else {
-            tracing::warn!("No cancellation helper set, cannot cancel MCP operation");
-        }
-    }
 }
 
 // CancelMonitoring implementation for McpServerRunnerImpl
@@ -475,6 +459,23 @@ impl CancelMonitoring for McpServerRunnerImpl {
         } else {
             Ok(())
         }
+    }
+
+    /// Signals cancellation token for McpServerRunnerImpl
+    async fn request_cancellation(&mut self) -> Result<()> {
+        // Signal cancellation token
+        if let Some(helper) = &self.cancel_helper {
+            let token = helper.get_cancellation_token().await;
+            if !token.is_cancelled() {
+                token.cancel();
+                tracing::info!("McpServerRunnerImpl: cancellation token signaled");
+            }
+        } else {
+            tracing::warn!("McpServerRunnerImpl: no cancellation helper available");
+        }
+
+        // No additional resource cleanup needed
+        Ok(())
     }
 
     /// Complete state reset during pool recycling

@@ -400,7 +400,7 @@ impl OllamaChatService {
             }
 
             // Recursive call with updated context from tool execution
-            Box::pin(self.request_chat_internal_with_tracing(
+            let result = Box::pin(self.request_chat_internal_with_tracing(
                 model,
                 options,
                 messages,
@@ -409,7 +409,8 @@ impl OllamaChatService {
                 metadata,
                 None, // json_schema is not used in recursive calls to avoid conflicts
             ))
-            .await
+            .await;
+            result
         }
     }
 
@@ -425,7 +426,7 @@ impl OllamaChatService {
         }
         let mut current_context = parent_context.unwrap_or_else(opentelemetry::Context::current);
 
-        for call in tool_calls {
+        for call in tool_calls.iter() {
             tracing::debug!("Tool call: {:?}", call.function);
             tracing::debug!("Tool arguments: {:?}", call.function.arguments);
             tracing::debug!(
@@ -446,15 +447,27 @@ impl OllamaChatService {
                     serde_json::Map::new()
                 });
 
-                function_app
+                // Execute tool and convert any error to a string result for LLM to handle
+                let result = function_app
                     .call_function_for_llm(
                         metadata_clone,
                         &function_name,
                         Some(arguments_obj),
                         DEFAULT_TIMEOUT_SEC,
                     )
-                    .await
-                    .map_err(|e| JobWorkerError::OtherError(format!("Tool execution error: {e}")))
+                    .await;
+
+                let tool_result = match result {
+                    Ok(success_result) => success_result,
+                    Err(error) => {
+                        // Return error as tool result for LLM to process
+                        serde_json::Value::String(format!(
+                            "Error executing tool '{function_name}': {error}"
+                        ))
+                    }
+                };
+
+                Ok(tool_result) // Always return Ok so processing continues
             };
 
             // Execute individual tool call as child span and get updated context
@@ -508,7 +521,8 @@ impl OllamaChatService {
                     serde_json::Map::new()
                 });
 
-            let tool_result = self
+            // Execute tool and convert any error to a string result for LLM to handle
+            let result = self
                 .function_app
                 .call_function_for_llm(
                     metadata.clone(),
@@ -516,7 +530,26 @@ impl OllamaChatService {
                     Some(arguments_obj),
                     DEFAULT_TIMEOUT_SEC,
                 )
-                .await?;
+                .await;
+
+            let tool_result = match result {
+                Ok(success_result) => {
+                    tracing::debug!("Tool execution succeeded: {}", &success_result);
+                    success_result
+                }
+                Err(error) => {
+                    tracing::info!(
+                        "Tool execution failed for: {}, error: {}",
+                        call.function.name,
+                        error
+                    );
+                    // Return error as tool result for LLM to process
+                    serde_json::Value::String(format!(
+                        "Error executing tool '{}': {}",
+                        call.function.name, error
+                    ))
+                }
+            };
 
             tracing::debug!("Tool response: {}", &tool_result);
             messages

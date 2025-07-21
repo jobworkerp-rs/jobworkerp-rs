@@ -96,8 +96,11 @@ impl Manager for RunnerPoolManagerImpl {
         tracing::debug!("runner recycled");
         let mut r = runner.lock().await;
 
-        // Existing cancel() method call
-        r.cancel().await;
+        // Use unified cancellation architecture
+        r.as_cancel_monitoring()
+            .request_cancellation()
+            .await
+            .unwrap();
 
         // Additional: Reset cancellation monitoring state for pooling
         // This prevents state contamination between jobs in pool environment
