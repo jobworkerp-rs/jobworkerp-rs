@@ -418,7 +418,7 @@ pub trait JobRunner:
                     }).flatten()
                 },
                 _ = tokio::time::sleep(Duration::from_millis(data.timeout)) => {
-                    runner_impl.cancel().await;
+                    runner_impl.as_cancel_monitoring().request_cancellation().await.unwrap();
                     tracing::warn!("timeout: {}ms, the job will be dropped: {job:?}", data.timeout);
                     Err(JobWorkerError::TimeoutError(format!("timeout: {}ms", data.timeout)).into())
                 }
@@ -457,7 +457,7 @@ pub trait JobRunner:
                     }).inspect_err(|e| tracing::warn!("error in running runner: {name} : {e:?}"))
                 },
                 _ = tokio::time::sleep(Duration::from_millis(data.timeout)) => {
-                    runner_impl.cancel().await;
+                    runner_impl.as_cancel_monitoring().request_cancellation().await.unwrap();
                     tracing::warn!("timeout: {}ms, the job will be dropped: {job:?}", data.timeout);
                     Err(JobWorkerError::TimeoutError(format!("timeout: {}ms", data.timeout)).into())
                 }

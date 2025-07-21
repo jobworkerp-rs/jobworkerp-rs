@@ -120,5 +120,4 @@ pub trait RunnerTrait: RunnerSpec + Send + Sync {
         arg: &[u8],
         metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>>;
-    async fn cancel(&mut self);
 }
