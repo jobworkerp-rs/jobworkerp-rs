@@ -387,25 +387,6 @@ impl RunnerTrait for ReusableWorkflowRunner {
 
         Ok(output_stream)
     }
-
-    async fn cancel(&mut self) {
-        if let Some(helper) = &self.cancel_helper {
-            let token = helper.get_cancellation_token().await;
-            if token.is_cancelled() {
-                tracing::info!("ReusableWorkflowRunner execution is already cancelled");
-            } else {
-                tracing::info!(
-                    "ReusableWorkflowRunner cancellation requested, Helper handles token internally"
-                );
-            }
-        } else {
-            tracing::warn!("No cancellation helper set, cannot cancel");
-        }
-
-        if let Some(executor) = self.workflow_executor.as_ref() {
-            executor.cancel().await;
-        }
-    }
 }
 
 // CancelMonitoring implementation for ReusableWorkflowRunner
@@ -439,6 +420,32 @@ impl jobworkerp_runner::runner::cancellation::CancelMonitoring for ReusableWorkf
             helper.cleanup_monitoring_impl().await?;
         }
 
+        Ok(())
+    }
+
+    /// Signals cancellation token for ReusableWorkflowRunner
+    async fn request_cancellation(&mut self) -> anyhow::Result<()> {
+        if let Some(helper) = &self.cancel_helper {
+            let token = helper.get_cancellation_token().await;
+            if !token.is_cancelled() {
+                token.cancel();
+                tracing::info!("ReusableWorkflowRunner: cancellation token signaled");
+            }
+        } else {
+            tracing::warn!("ReusableWorkflowRunner: no cancellation helper available");
+        }
+        Ok(())
+    }
+
+    async fn reset_for_pooling(&mut self) -> anyhow::Result<()> {
+        // ReusableWorkflowRunner typically completes quickly, so always cleanup
+        if let Some(helper) = &mut self.cancel_helper {
+            helper.reset_for_pooling_impl().await?;
+        } else {
+            self.cleanup_cancellation_monitoring().await?;
+        }
+
+        tracing::debug!("ReusableWorkflowRunner reset for pooling");
         Ok(())
     }
 }

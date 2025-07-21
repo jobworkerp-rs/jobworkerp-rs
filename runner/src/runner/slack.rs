@@ -229,22 +229,6 @@ impl RunnerTrait for SlackPostMessageRunner {
         // Note: The token will be cleared when cancel() is called
         Ok(Box::pin(stream))
     }
-
-    async fn cancel(&mut self) {
-        // Cancel using helper if available
-        if let Some(helper) = &self.cancel_helper {
-            let token = helper.get_cancellation_token().await;
-            if token.is_cancelled() {
-                tracing::info!("SlackPostMessageRunner execution is already cancelled");
-            } else {
-                tracing::info!(
-                    "SlackPostMessageRunner cancellation requested, Helper handles token internally"
-                );
-            }
-        } else {
-            tracing::warn!("No cancellation helper set, cannot cancel");
-        }
-    }
 }
 
 // CancelMonitoring implementation for SlackPostMessageRunner
@@ -277,6 +261,23 @@ impl super::cancellation::CancelMonitoring for SlackPostMessageRunner {
         } else {
             Ok(())
         }
+    }
+
+    /// Signals cancellation token for SlackPostMessageRunner
+    async fn request_cancellation(&mut self) -> Result<()> {
+        // Signal cancellation token
+        if let Some(helper) = &self.cancel_helper {
+            let token = helper.get_cancellation_token().await;
+            if !token.is_cancelled() {
+                token.cancel();
+                tracing::info!("SlackPostMessageRunner: cancellation token signaled");
+            }
+        } else {
+            tracing::warn!("SlackPostMessageRunner: no cancellation helper available");
+        }
+
+        // No additional resource cleanup needed
+        Ok(())
     }
 
     async fn reset_for_pooling(&mut self) -> Result<()> {

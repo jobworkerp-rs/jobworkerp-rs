@@ -315,22 +315,6 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
             Err(anyhow!("llm is not initialized"))
         }
     }
-
-    async fn cancel(&mut self) {
-        // Cancel using helper if available
-        if let Some(helper) = &self.cancel_helper {
-            let token = helper.get_cancellation_token().await;
-            if token.is_cancelled() {
-                tracing::info!("LLMCompletionRunner execution is already cancelled");
-            } else {
-                tracing::info!(
-                    "LLMCompletionRunner cancellation requested, Helper handles token internally"
-                );
-            }
-        } else {
-            tracing::warn!("No cancellation helper set, cannot cancel");
-        }
-    }
 }
 
 #[async_trait]
@@ -358,6 +342,23 @@ impl jobworkerp_runner::runner::cancellation::CancelMonitoring for LLMCompletion
         } else {
             Ok(())
         }
+    }
+
+    /// Signals cancellation token for LLMCompletionRunnerImpl
+    async fn request_cancellation(&mut self) -> anyhow::Result<()> {
+        // Signal cancellation token
+        if let Some(helper) = &self.cancel_helper {
+            let token = helper.get_cancellation_token().await;
+            if !token.is_cancelled() {
+                token.cancel();
+                tracing::info!("LLMCompletionRunnerImpl: cancellation token signaled");
+            }
+        } else {
+            tracing::warn!("LLMCompletionRunnerImpl: no cancellation helper available");
+        }
+
+        // No additional resource cleanup needed
+        Ok(())
     }
 
     async fn reset_for_pooling(&mut self) -> anyhow::Result<()> {

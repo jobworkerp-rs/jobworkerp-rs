@@ -177,9 +177,9 @@ async fn test_time_mcp_server() -> Result<()> {
 
 #[tokio::test]
 async fn test_mcp_cancellation() -> Result<()> {
+    use crate::runner::cancellation::CancelMonitoring;
     use crate::runner::mcp::config::McpConfig;
     use crate::runner::mcp::McpServerRunnerImpl;
-    use crate::runner::RunnerTrait;
 
     let config = McpConfig {
         server: vec![create_time_mcp_server().await?],
@@ -193,7 +193,7 @@ async fn test_mcp_cancellation() -> Result<()> {
     let mut runner = McpServerRunnerImpl::new(client);
 
     // Test cancellation without active request
-    runner.cancel().await;
+    runner.request_cancellation().await.unwrap();
     eprintln!("MCP cancel completed successfully with no active operation");
 
     // Test basic cancellation functionality is available
@@ -206,6 +206,7 @@ async fn test_mcp_cancellation() -> Result<()> {
 #[tokio::test]
 async fn test_mcp_with_cancel_helper() -> Result<()> {
     use crate::jobworkerp::runner::McpServerArgs;
+
     use crate::runner::cancellation_helper::CancelMonitoringHelper;
     use crate::runner::mcp::config::McpConfig;
     use crate::runner::mcp::McpServerRunnerImpl;
@@ -260,6 +261,7 @@ async fn test_mcp_with_cancel_helper() -> Result<()> {
 #[ignore] // Requires network access and fetch MCP server - run with --ignored for full testing
 async fn test_mcp_cancellation_during_execution() -> Result<()> {
     use crate::jobworkerp::runner::McpServerArgs;
+    use crate::runner::cancellation::CancelMonitoring;
     use crate::runner::mcp::config::McpConfig;
     use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerTrait;
@@ -305,7 +307,7 @@ async fn test_mcp_cancellation_during_execution() -> Result<()> {
     // Trigger cancellation from another task after the fetch has started
     let cancel_task = tokio::spawn(async move {
         let mut runner_guard = runner.lock().await;
-        runner_guard.cancel().await;
+        runner_guard.request_cancellation().await.unwrap();
         eprintln!("Cancellation triggered after 500ms");
     });
 
@@ -356,6 +358,7 @@ async fn test_mcp_cancellation_during_execution() -> Result<()> {
 #[tokio::test]
 async fn test_mcp_stream_execution_normal() -> Result<()> {
     use crate::jobworkerp::runner::McpServerArgs;
+
     use crate::runner::mcp::config::McpConfig;
     use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerTrait;
@@ -438,6 +441,7 @@ async fn test_mcp_stream_execution_normal() -> Result<()> {
 #[tokio::test]
 async fn test_mcp_stream_execution_with_cancellation() -> Result<()> {
     use crate::jobworkerp::runner::McpServerArgs;
+
     use crate::runner::mcp::config::McpConfig;
     use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerTrait;
