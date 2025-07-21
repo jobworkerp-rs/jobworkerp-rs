@@ -68,6 +68,11 @@ pub trait CancelMonitoring: Send + Sync {
         tracing::debug!("CancelMonitoring reset for pooling (default implementation)");
         Ok(())
     }
+
+    /// Request cancellation for the current job
+    /// Each Runner implements this individually (only necessary Runners add additional processing)
+    /// Core method of the unified cancellation architecture
+    async fn request_cancellation(&mut self) -> Result<()>;
 }
 
 /// Type-safe integration trait for Runners  

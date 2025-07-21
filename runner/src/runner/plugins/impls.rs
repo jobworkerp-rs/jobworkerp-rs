@@ -196,10 +196,6 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         .boxed();
         Ok(st)
     }
-
-    async fn cancel(&mut self) {
-        let _ = self.plugin_runner.write().await.cancel(); //.map(|mut r| r.cancel());
-    }
 }
 
 #[async_trait]
@@ -226,6 +222,23 @@ impl CancelMonitoring for PluginRunnerWrapperImpl {
         } else {
             Ok(())
         }
+    }
+
+    /// Signals cancellation token for PluginRunnerWrapperImpl
+    async fn request_cancellation(&mut self) -> Result<()> {
+        // Signal cancellation token
+        if let Some(helper) = &self.cancel_helper {
+            let token = helper.get_cancellation_token().await;
+            if !token.is_cancelled() {
+                token.cancel();
+                tracing::info!("PluginRunnerWrapperImpl: cancellation token signaled");
+            }
+        } else {
+            tracing::warn!("PluginRunnerWrapperImpl: no cancellation helper available");
+        }
+
+        // No additional resource cleanup needed
+        Ok(())
     }
 
     /// Reset for pooling

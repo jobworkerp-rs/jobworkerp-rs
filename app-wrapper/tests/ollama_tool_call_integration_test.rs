@@ -3,6 +3,7 @@ pub mod test {
 
     //! Integration tests for Ollama tool call functionality
     //! These tests require an Ollama server running at http://ollama.ollama.svc.cluster.local:11434
+    //! These tests require a jobworkerp-rs server running for tool call execution
 
     #![allow(clippy::uninlined_format_args)]
     #![allow(clippy::collapsible_match)]

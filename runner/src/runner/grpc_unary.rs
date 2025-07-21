@@ -480,14 +480,6 @@ impl RunnerTrait for GrpcUnaryRunner {
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         unimplemented!("gRPC unary does not support streaming")
     }
-
-    async fn cancel(&mut self) {
-        // Cancel using new helper approach
-        if let Some(helper) = &self.cancel_helper {
-            let token = helper.get_cancellation_token().await;
-            token.cancel();
-        }
-    }
 }
 
 // CancelMonitoring implementation for GrpcUnaryRunner
@@ -520,6 +512,23 @@ impl super::cancellation::CancelMonitoring for GrpcUnaryRunner {
         // Clear the cancellation helper
         // Clear cancellation token (no-op with new approach)
 
+        Ok(())
+    }
+
+    /// Signals cancellation token for GrpcUnaryRunner
+    async fn request_cancellation(&mut self) -> Result<()> {
+        // Signal cancellation token
+        if let Some(helper) = &self.cancel_helper {
+            let token = helper.get_cancellation_token().await;
+            if !token.is_cancelled() {
+                token.cancel();
+                tracing::info!("GrpcUnaryRunner: cancellation token signaled");
+            }
+        } else {
+            tracing::warn!("GrpcUnaryRunner: no cancellation helper available");
+        }
+
+        // No additional resource cleanup needed
         Ok(())
     }
 }

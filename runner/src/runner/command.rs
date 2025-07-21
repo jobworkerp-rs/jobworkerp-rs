@@ -950,76 +950,6 @@ impl RunnerTrait for CommandRunnerImpl {
 
         Ok(Box::pin(stream))
     }
-
-    async fn cancel(&mut self) {
-        // Cancel using helper if available
-        if let Some(helper) = &self.cancel_helper {
-            let token = helper.get_cancellation_token().await;
-            if token.is_cancelled() {
-                tracing::info!("CommandRunner execution is already cancelled");
-            } else {
-                tracing::info!(
-                    "CommandRunner cancellation requested, Helper handles token internally"
-                );
-            }
-        } else {
-            tracing::warn!("No cancellation helper set, cannot cancel");
-        }
-
-        if let Some(mut child) = self.consume_child() {
-            Self::graceful_kill_process(&mut child).await;
-        } else {
-            tracing::warn!("No active command process to cancel");
-        }
-
-        // Also handle stream process if set
-        let stream_pid = {
-            let mut pid_guard = self.stream_process_pid.write().await;
-            pid_guard.take()
-        };
-
-        if let Some(stream_pid) = stream_pid {
-            #[cfg(unix)]
-            {
-                use nix::sys::signal::{kill, Signal};
-                use nix::unistd::Pid;
-
-                tracing::info!(
-                    "Attempting to cancel stream process with PID: {}",
-                    stream_pid
-                );
-
-                // First try SIGTERM for graceful shutdown
-                if let Err(e) = kill(Pid::from_raw(stream_pid as i32), Signal::SIGTERM) {
-                    tracing::warn!(
-                        "Failed to send SIGTERM to stream process {}: {}",
-                        stream_pid,
-                        e
-                    );
-                } else {
-                    tracing::debug!("Sent SIGTERM to stream process {}", stream_pid);
-
-                    // Give it a moment for graceful shutdown
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-                    // Check if still running and force kill if needed
-                    if kill(Pid::from_raw(stream_pid as i32), None).is_ok() {
-                        tracing::warn!(
-                            "Stream process {} still running, sending SIGKILL",
-                            stream_pid
-                        );
-                        let _ = kill(Pid::from_raw(stream_pid as i32), Signal::SIGKILL);
-                    }
-                }
-            }
-            #[cfg(windows)]
-            {
-                tracing::debug!("Windows stream process termination not implemented");
-            }
-        }
-
-        // Note: token cleanup is handled by Manager
-    }
 }
 
 // CancelMonitoring implementation for CommandRunnerImpl
@@ -1047,6 +977,68 @@ impl CancelMonitoring for CommandRunnerImpl {
         } else {
             Ok(())
         }
+    }
+
+    /// Cancels active processes and cleans up resources for CommandRunnerImpl
+    async fn request_cancellation(&mut self) -> Result<()> {
+        // 1. Signal cancellation token
+        if let Some(helper) = &self.cancel_helper {
+            let token = helper.get_cancellation_token().await;
+            if !token.is_cancelled() {
+                token.cancel();
+                tracing::info!("CommandRunner: cancellation token signaled");
+            }
+        }
+
+        // 2. Terminate CommandRunner-specific processes
+        if let Some(mut child) = self.consume_child() {
+            Self::graceful_kill_process(&mut child).await;
+            tracing::info!("CommandRunner: cancelled child process directly");
+        }
+
+        // 3. Terminate streaming processes
+        let stream_pid = {
+            let mut pid_guard = self.stream_process_pid.write().await;
+            pid_guard.take()
+        };
+        if let Some(stream_pid) = stream_pid {
+            #[cfg(unix)]
+            {
+                use nix::sys::signal::{kill, Signal};
+                use nix::unistd::Pid;
+
+                // First try SIGTERM for graceful shutdown
+                if let Err(e) = kill(Pid::from_raw(stream_pid as i32), Signal::SIGTERM) {
+                    tracing::warn!(
+                        "Failed to send SIGTERM to stream process {}: {}",
+                        stream_pid,
+                        e
+                    );
+                } else {
+                    tracing::debug!("Sent SIGTERM to stream process {}", stream_pid);
+                    // Give it a moment for graceful shutdown
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    // Check if still running and force kill if needed
+                    if kill(Pid::from_raw(stream_pid as i32), None).is_ok() {
+                        tracing::warn!(
+                            "Stream process {} still running, sending SIGKILL",
+                            stream_pid
+                        );
+                        let _ = kill(Pid::from_raw(stream_pid as i32), Signal::SIGKILL);
+                    }
+                }
+            }
+            #[cfg(windows)]
+            {
+                tracing::debug!("Windows stream process termination not implemented");
+            }
+            tracing::info!(
+                "CommandRunner: cancelled stream process by PID: {}",
+                stream_pid
+            );
+        }
+
+        Ok(())
     }
 
     /// Complete state reset for pool recycling
@@ -1419,7 +1411,9 @@ mod tests {
 
         // Wait a moment, then test cancel on the second runner (which has no active process)
         sleep(Duration::from_millis(100)).await;
-        runner2.cancel().await; // This should not panic
+        // Use new cancellation API
+        use crate::runner::cancellation::CancelMonitoring;
+        runner2.request_cancellation().await.unwrap(); // This should not panic
         eprintln!("Cancel on runner2 (no active process) completed successfully");
 
         // Wait for the original command to complete or timeout

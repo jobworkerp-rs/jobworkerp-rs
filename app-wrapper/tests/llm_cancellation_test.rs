@@ -480,9 +480,10 @@ async fn test_llm_chat_without_cancellation_helper() -> Result<()> {
         }
     }
 
-    // Try cancel (should log warning but not crash)
-    runner.cancel().await;
-    println!("✓ cancel() called on runner without helper (should log warning)");
+    // Try cancel using CancelMonitoring trait (should log warning but not crash)
+    use jobworkerp_runner::runner::cancellation::CancelMonitoring;
+    runner.request_cancellation().await.unwrap();
+    println!("✓ request_cancellation() called on runner without helper (should log warning)");
 
     println!("✓ LLM chat without cancellation helper test passed");
     Ok(())

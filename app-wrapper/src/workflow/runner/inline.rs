@@ -450,21 +450,6 @@ impl RunnerTrait for InlineWorkflowRunner {
 
         Ok(output_stream)
     }
-
-    async fn cancel(&mut self) {
-        if let Some(helper) = &self.cancel_helper {
-            let token = helper.get_cancellation_token().await;
-            if token.is_cancelled() {
-                tracing::info!("InlineWorkflowRunner execution is already cancelled");
-            } else {
-                tracing::info!(
-                    "InlineWorkflowRunner cancellation requested, Helper handles token internally"
-                );
-            }
-        } else {
-            tracing::warn!("No cancellation helper set, cannot cancel");
-        }
-    }
 }
 
 impl UseCancelMonitoringHelper for InlineWorkflowRunner {
@@ -498,6 +483,20 @@ impl jobworkerp_runner::runner::cancellation::CancelMonitoring for InlineWorkflo
         } else {
             Ok(())
         }
+    }
+
+    /// Signals cancellation token for InlineWorkflowRunner
+    async fn request_cancellation(&mut self) -> anyhow::Result<()> {
+        if let Some(helper) = &self.cancel_helper {
+            let token = helper.get_cancellation_token().await;
+            if !token.is_cancelled() {
+                token.cancel();
+                tracing::info!("InlineWorkflowRunner: cancellation token signaled");
+            }
+        } else {
+            tracing::warn!("InlineWorkflowRunner: no cancellation helper available");
+        }
+        Ok(())
     }
 
     async fn reset_for_pooling(&mut self) -> anyhow::Result<()> {

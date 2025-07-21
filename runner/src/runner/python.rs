@@ -30,12 +30,11 @@ pub struct PythonCommandRunner {
     settings: Option<PythonCommandRunnerSettings>,
     process_cancel: Arc<Mutex<bool>>,
     current_process_id: Arc<Mutex<Option<u32>>>,
-    // Helper for dependency injection integration (optional for backward compatibility)
     cancel_helper: Option<CancelMonitoringHelper>,
 }
 
 impl PythonCommandRunner {
-    /// Constructor without cancellation monitoring (for backward compatibility)
+    /// Constructor without cancellation monitoring
     pub fn new() -> Self {
         PythonCommandRunner {
             venv_path: None,
@@ -93,7 +92,7 @@ impl PythonCommandRunner {
             let timeout_duration = std::time::Duration::from_secs(5);
             tokio::time::sleep(timeout_duration).await;
 
-            // Try to send signal 0 to check if process still exists
+            // Try not to send signal but to check if process still exists
             match kill(Pid::from_raw(pid as i32), None) {
                 Ok(_) => {
                     // Process still exists, force kill with SIGKILL
@@ -121,7 +120,7 @@ impl PythonCommandRunner {
         Ok(())
     }
 
-    /// Constructor with cancellation monitoring (DI integration version)
+    /// Constructor with cancellation monitoring to enable proper resource cleanup
     pub fn new_with_cancel_monitoring(cancel_helper: CancelMonitoringHelper) -> Self {
         PythonCommandRunner {
             venv_path: None,
@@ -133,7 +132,7 @@ impl PythonCommandRunner {
         }
     }
 
-    /// Unified cancellation token retrieval
+    /// Retrieves cancellation token from helper or creates new one to support both DI and standalone usage
     async fn get_cancellation_token(&self) -> CancellationToken {
         if let Some(helper) = &self.cancel_helper {
             helper.get_cancellation_token().await
@@ -179,7 +178,6 @@ impl RunnerSpec for PythonCommandRunner {
         StreamingOutputType::NonStreaming
     }
     fn settings_schema(&self) -> String {
-        // XXX for right oneof structure in json schema
         include_str!("../../schema/PythonCommandRunnerSettings.json").to_string()
     }
     fn arguments_schema(&self) -> String {
@@ -306,11 +304,9 @@ impl RunnerTrait for PythonCommandRunner {
             if let Some(script_spec) = &job_args.script {
                 let script_content = match script_spec {
                     python_command_args::Script::ScriptContent(script) => {
-                        // content
                         script.clone()
                     }
                     python_command_args::Script::ScriptUrl(url) => {
-                        // download from URL
                         let response = reqwest::get(url)
                             .await
                             .context(format!("Failed to download script from URL: {url}"))?;
@@ -367,21 +363,17 @@ impl RunnerTrait for PythonCommandRunner {
                 None
             };
 
-            // execute async
             let mut command = Command::new(&python_bin);
             command.arg("-u");
             command.arg(&script_path);
 
-            // Add input file path as argument if available
             if let Some(input_path) = &input_path {
                 command.arg(input_path);
             }
 
-            // capture stdout/stderr
             command.stdout(std::process::Stdio::piped());
             command.stderr(std::process::Stdio::piped());
 
-            // env
             for (key, value) in &job_args.env_vars {
                 command.env(key, value);
             }
@@ -438,48 +430,18 @@ impl RunnerTrait for PythonCommandRunner {
         _arg: &[u8],
         _metadata: HashMap<String, String>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        // Set up cancellation token for pre-execution cancellation check
         let _cancellation_token = self.get_cancellation_token().await;
 
         Err(anyhow!("Stream output not supported by PythonRunner"))
     }
-
-    async fn cancel(&mut self) {
-        // Cancel using helper if available
-        if let Some(helper) = &self.cancel_helper {
-            let token = helper.get_cancellation_token().await;
-            if token.is_cancelled() {
-                tracing::info!("PythonCommandRunner execution is already cancelled");
-            } else {
-                tracing::info!(
-                    "PythonCommandRunner cancellation requested, Helper handles token internally"
-                );
-            }
-        } else {
-            tracing::warn!("No cancellation helper set, cannot cancel");
-        }
-
-        let mut cancel_flag = self.process_cancel.lock().await;
-        *cancel_flag = true;
-
-        if let Some(pid) = *self.current_process_id.lock().await {
-            if let Err(e) = Self::graceful_kill_process_by_pid(pid).await {
-                tracing::error!("Failed to kill Python process {}: {}", pid, e);
-            }
-        } else {
-            tracing::warn!("No active Python process to cancel");
-        }
-    }
 }
 
-// DI trait implementation (with optional support)
 impl UseCancelMonitoringHelper for PythonCommandRunner {
     fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
         self.cancel_helper.as_ref()
     }
 }
 
-// CancelMonitoring trait implementation (Helper delegation version)
 #[async_trait]
 impl CancelMonitoring for PythonCommandRunner {
     async fn setup_cancellation_monitoring(
@@ -503,20 +465,47 @@ impl CancelMonitoring for PythonCommandRunner {
         }
     }
 
+    /// Cancels active Python process and signals cancellation token
+    async fn request_cancellation(&mut self) -> Result<()> {
+        // Signal cancellation token
+        if let Some(helper) = &self.cancel_helper {
+            let token = helper.get_cancellation_token().await;
+            if !token.is_cancelled() {
+                token.cancel();
+                tracing::info!("PythonCommandRunner: cancellation token signaled");
+            }
+        }
+
+        // Terminate active Python process
+        let mut cancel_flag = self.process_cancel.lock().await;
+        *cancel_flag = true;
+
+        if let Some(pid) = *self.current_process_id.lock().await {
+            let _ = Self::graceful_kill_process_by_pid(pid)
+                .await
+                .map_err(|e| tracing::error!("Failed to kill Python process {}: {}", pid, e));
+            tracing::info!("PythonCommandRunner: cancelled process by PID: {}", pid);
+        } else {
+            tracing::warn!("PythonCommandRunner: no active process to cancel");
+        }
+
+        Ok(())
+    }
+
     async fn reset_for_pooling(&mut self) -> Result<()> {
-        // 1. Check for active processes
+        // Check for active processes to determine cleanup strategy
         let has_active_process = {
             let process_id = self.current_process_id.lock().await;
             process_id.is_some()
         };
 
         if has_active_process {
-            // Keep cancellation monitoring active during process execution
+            // Keep monitoring active during execution to allow proper cancellation
             tracing::debug!(
                 "PythonCommandRunner has active process - keeping cancellation monitoring active"
             );
         } else {
-            // Cleanup cancellation monitoring only when process ends
+            // Safe to cleanup monitoring when no active process
             if let Some(helper) = &mut self.cancel_helper {
                 helper.reset_for_pooling_impl().await?;
             } else {
@@ -524,7 +513,7 @@ impl CancelMonitoring for PythonCommandRunner {
             }
         }
 
-        // 2. PythonRunner-specific state reset (only when not executing)
+        // Reset internal state when safe to do so
         if !has_active_process {
             let mut cancel_flag = self.process_cancel.lock().await;
             *cancel_flag = false;
@@ -545,13 +534,8 @@ impl CancelMonitoring for PythonCommandRunner {
 pub mod tests {
     use super::*;
 
-    // Use common mock from test_common module
-
     #[tokio::test]
     async fn test_python_runner() {
-        // use tracing::Level;
-        // command_utils::util::tracing::tracing_init_test(Level::DEBUG);
-        // XXX use a real path or find a better way to get the path
         const UV_PATH: &str = if cfg!(windows) {
             "C:\\Program Files\\uv\\uv.exe"
         } else {
@@ -720,10 +704,4 @@ except KeyboardInterrupt:
 
         eprintln!("=== Python actual cancellation test completed ===");
     }
-
-    // Note: Complex cancellation tests moved to app-wrapper integration tests
-    // runner crate level tests focus on basic functionality only
-
-    // Note: Complex cancellation tests moved to app-wrapper integration tests
-    // runner crate level tests focus on basic functionality only
 }
