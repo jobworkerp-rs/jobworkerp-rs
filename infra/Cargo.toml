@@ -8,6 +8,7 @@ edition.workspace = true
 
 proto = { path = "../proto" }
 command-utils = { path = "../modules/command-utils" }
+memory-utils = { path = "../modules/memory-utils" }
 infra-utils = { path = "../modules/infra-utils" }
 jobworkerp-base = { path = "../base" }
 jobworkerp-runner = { path = "../runner" }
@@ -54,8 +55,8 @@ tonic = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 
-[build-dependencies]
-tonic-build = { workspace = true }
+#[build-dependencies]
+#tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
 infra = { path = ".", features = ["test-utils"] }

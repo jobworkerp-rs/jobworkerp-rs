@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use debug_stub_derive::DebugStub;
-use infra_utils::infra::cache::{MokaCacheConfig, MokaCacheImpl, UseMokaCache};
+use memory_utils::cache::moka::{MokaCacheConfig, MokaCacheImpl, UseMokaCache};
 
 use crate::workflow::execute::checkpoint::{repository::CheckPointRepository, CheckPointContext};
 
@@ -61,7 +61,7 @@ impl MemoryCheckPointRepositoryImpl {
 }
 
 impl UseMokaCache<String, CheckPointContext> for MemoryCheckPointRepositoryImpl {
-    fn cache(&self) -> &infra_utils::infra::cache::MokaCache<String, CheckPointContext> {
+    fn cache(&self) -> &memory_utils::cache::moka::MokaCache<String, CheckPointContext> {
         self.cache.cache()
     }
 }

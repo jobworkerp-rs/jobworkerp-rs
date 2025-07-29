@@ -1,0 +1,155 @@
+document:
+  dsl: "1.0.0"
+  namespace: "default"
+  name: "large-performance-test-workflow"
+  version: "1.0.0"
+
+input:
+  schema:
+    format: "json"
+
+do:
+  - step1:
+      run:
+        runner:
+          name: "COMMAND"
+          arguments:
+            command: "echo"
+            args: ["Step 1"]
+  - step2:
+      run:
+        runner:
+          name: "COMMAND"
+          arguments:
+            command: "echo"
+            args: ["Step 2"]
+  - step3:
+      run:
+        runner:
+          name: "COMMAND"
+          arguments:
+            command: "echo"
+            args: ["Step 3"]
+  - step4:
+      run:
+        runner:
+          name: "COMMAND"
+          arguments:
+            command: "echo"
+            args: ["Step 4"]
+  - step5:
+      run:
+        runner:
+          name: "COMMAND"
+          arguments:
+            command: "echo"
+            args: ["Step 5"]
+  - step6:
+      run:
+        runner:
+          name: "COMMAND"
+          arguments:
+            command: "echo"
+            args: ["Step 6"]
+  - step7:
+      run:
+        runner:
+          name: "COMMAND"
+          arguments:
+            command: "echo"
+            args: ["Step 7"]
+  - step8:
+      run:
+        runner:
+          name: "COMMAND"
+          arguments:
+            command: "echo"
+            args: ["Step 8"]
+  - step9:
+      run:
+        runner:
+          name: "COMMAND"
+          arguments:
+            command: "echo"
+            args: ["Step 9"]
+  - step10:
+      run:
+        runner:
+          name: "COMMAND"
+          arguments:
+            command: "echo"
+            args: ["Step 10"]
+  - step11:
+      run:
+        runner:
+          name: "COMMAND"
+          arguments:
+            command: "echo"
+            args: ["Step 11"]
+  - step12:
+      run:
+        runner:
+          name: "COMMAND"
+          arguments:
+            command: "echo"
+            args: ["Step 12"]
+  - step13:
+      run:
+        runner:
+          name: "COMMAND"
+          arguments:
+            command: "echo"
+            args: ["Step 13"]
+  - step14:
+      run:
+        runner:
+          name: "COMMAND"
+          arguments:
+            command: "echo"
+            args: ["Step 14"]
+  - step15:
+      run:
+        runner:
+          name: "COMMAND"
+          arguments:
+            command: "echo"
+            args: ["Step 15"]
+  - step16:
+      run:
+        runner:
+          name: "COMMAND"
+          arguments:
+            command: "echo"
+            args: ["Step 16"]
+  - step17:
+      run:
+        runner:
+          name: "COMMAND"
+          arguments:
+            command: "echo"
+            args: ["Step 17"]
+  - step18:
+      run:
+        runner:
+          name: "COMMAND"
+          arguments:
+            command: "echo"
+            args: ["Step 18"]
+  - step19:
+      run:
+        runner:
+          name: "COMMAND"
+          arguments:
+            command: "echo"
+            args: ["Step 19"]
+  - step20:
+      run:
+        runner:
+          name: "COMMAND"
+          arguments:
+            command: "echo"
+            args: ["Step 20"]
+
+output:
+  as:
+    result: "${ .step1 }"

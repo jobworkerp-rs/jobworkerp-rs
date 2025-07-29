@@ -4,7 +4,6 @@ use async_stream::stream;
 use async_trait::async_trait;
 use futures::stream::{BoxStream, StreamExt};
 use genai::GenaiChatService;
-use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::APP_WORKER_NAME;
 use jobworkerp_runner::jobworkerp::runner::llm::{LlmChatArgs, LlmRunnerSettings};
@@ -13,6 +12,7 @@ use jobworkerp_runner::runner::cancellation_helper::{
 };
 use jobworkerp_runner::runner::llm_chat::LLMChatRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
+use net_utils::trace::Tracing;
 use ollama::OllamaChatService;
 use opentelemetry::trace::TraceContextExt;
 use opentelemetry::Context;

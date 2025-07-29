@@ -2,7 +2,8 @@ use crate::workflow::{
     execute::checkpoint::repository::{CheckPointRepositoryWithId, CheckPointRepositoryWithIdImpl},
     WorkflowConfig,
 };
-use infra_utils::infra::{cache::MokaCacheConfig, redis::RedisPool};
+use infra_utils::infra::redis::RedisPool;
+use memory_utils::cache::moka::MokaCacheConfig;
 use std::sync::Arc;
 
 #[derive(Clone, Debug)]

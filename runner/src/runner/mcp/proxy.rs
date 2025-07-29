@@ -1,8 +1,8 @@
 use super::config::{McpConfig, McpServerConfig, McpServerTransportConfig};
 use anyhow::Result;
 use debug_stub_derive::DebugStub;
-use infra_utils::infra::cache::{MokaCache, MokaCacheConfig, MokaCacheImpl, UseMokaCache};
 use jobworkerp_base::error::JobWorkerError;
+use memory_utils::cache::moka::{MokaCache, MokaCacheConfig, MokaCacheImpl, UseMokaCache};
 use rmcp::{
     model::{CallToolRequestParam, CallToolResult, LoggingLevel, Tool},
     service::{QuitReason, RunningService},

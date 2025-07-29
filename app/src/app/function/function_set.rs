@@ -5,9 +5,9 @@ use debug_stub_derive::DebugStub;
 use infra::infra::function_set::rdb::{
     FunctionSetRepository, FunctionSetRepositoryImpl, UseFunctionSetRepository,
 };
-use infra_utils::infra::cache::{MokaCache, MokaCacheImpl, UseMokaCache};
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
+use memory_utils::cache::moka::{MokaCache, MokaCacheImpl, UseMokaCache};
 use proto::jobworkerp::function::data::{FunctionSet, FunctionSetData, FunctionSetId};
 use std::{sync::Arc, time::Duration};
 
@@ -142,7 +142,7 @@ pub struct FunctionSetAppImpl {
 impl FunctionSetAppImpl {
     pub fn new(
         function_set_repository: Arc<FunctionSetRepositoryImpl>,
-        mc_config: &infra_utils::infra::cache::MokaCacheConfig,
+        mc_config: &memory_utils::cache::moka::MokaCacheConfig,
     ) -> Self {
         let memory_cache = MokaCacheImpl::new(mc_config);
         Self {

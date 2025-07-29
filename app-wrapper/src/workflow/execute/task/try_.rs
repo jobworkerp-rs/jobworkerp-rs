@@ -16,7 +16,7 @@ use crate::workflow::{
     execute::expression::UseExpression,
 };
 use app::app::job::execute::JobExecutorWrapper;
-use infra_utils::infra::net::reqwest;
+use net_utils::net::reqwest;
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::RwLock, time::Instant};
 

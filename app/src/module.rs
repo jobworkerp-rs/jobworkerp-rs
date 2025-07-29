@@ -20,8 +20,8 @@ use infra::infra::job::status::{JobProcessingStatusRepository, UseJobProcessingS
 use infra::infra::module::rdb::RdbChanRepositoryModule;
 use infra::infra::module::{HybridRepositoryModule, RedisRdbOptionalRepositoryModule};
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig};
-use infra_utils::infra::cache::{MokaCacheConfig, MokaCacheImpl};
 use jobworkerp_runner::runner::factory::RunnerSpecFactory;
+use memory_utils::cache::moka::{MokaCacheConfig, MokaCacheImpl};
 use proto::jobworkerp::data::StorageType;
 use std::env;
 use std::sync::Arc;
@@ -111,9 +111,9 @@ impl AppModule {
         //TODO recover redis records from rdb if option is enabled
         // TODO: modularize memory cache in infra layer if infra also needs to use memory cache
         let mc_config = envy::prefixed("MEMORY_CACHE_")
-            .from_env::<infra_utils::infra::memory::MemoryCacheConfig>()
+            .from_env::<memory_utils::cache::stretto::MemoryCacheConfig>()
             .unwrap_or_default();
-        let moka_config = infra_utils::infra::cache::MokaCacheConfig {
+        let moka_config = memory_utils::cache::moka::MokaCacheConfig {
             num_counters: mc_config.num_counters,
             ttl: Some(Duration::from_secs(
                 std::env::var("MEMORY_CACHE_TTL_SEC")
@@ -122,7 +122,7 @@ impl AppModule {
                     .unwrap_or(Self::DEFAULT_CACHE_TTL_SEC),
             )),
         };
-        let descriptor_moka_config = infra_utils::infra::cache::MokaCacheConfig {
+        let descriptor_moka_config = memory_utils::cache::moka::MokaCacheConfig {
             num_counters: mc_config.num_counters,
             ttl: None, // no ttl for descriptor cache
         };
@@ -220,7 +220,7 @@ impl AppModule {
             //     let worker_app = Arc::new(RedisWorkerAppImpl::new(
             //         config_module.storage_config.clone(),
             //         id_generator.clone(),
-            //         infra_utils::infra::memory::MemoryCacheImpl::new(
+            //         memory_utils::cache::stretto::MemoryCacheImpl::new(
             //             &mc_config,
             //             Some(Duration::from_secs(60 * 60)),
             //         ),
@@ -284,7 +284,7 @@ impl AppModule {
                     id_generator.clone(),
                     repositories.clone(),
                     worker_app.clone(),
-                    infra_utils::infra::cache::MokaCacheImpl::new(&MokaCacheConfig {
+                    memory_utils::cache::moka::MokaCacheImpl::new(&MokaCacheConfig {
                         num_counters: 10000,
                         ttl: Some(Duration::from_secs(60)),
                     }),
@@ -398,10 +398,10 @@ pub mod test {
         test::new_for_test_config_rdb,
         IdGeneratorWrapper,
     };
-    use infra_utils::infra::cache::MokaCacheConfig;
     use jobworkerp_runner::runner::{
         factory::RunnerSpecFactory, mcp::proxy::McpServerFactory, plugins::Plugins,
     };
+    use memory_utils::cache::moka::MokaCacheConfig;
     use proto::jobworkerp::data::StorageType;
     use std::sync::Arc;
     use tokio::time::Duration;
@@ -430,12 +430,12 @@ pub mod test {
             )
             .await,
         );
-        let mc_config = infra_utils::infra::memory::MemoryCacheConfig {
+        let mc_config = memory_utils::cache::stretto::MemoryCacheConfig {
             num_counters: 10,
             max_cost: 1000000,
             use_metrics: false,
         };
-        let moka_config = infra_utils::infra::cache::MokaCacheConfig {
+        let moka_config = memory_utils::cache::moka::MokaCacheConfig {
             num_counters: 10,
             ttl: Some(Duration::from_secs(AppModule::DEFAULT_CACHE_TTL_SEC)),
         };
@@ -462,7 +462,7 @@ pub mod test {
             descriptor_cache.clone(),
             runner_app.clone(),
         ));
-        let job_memory_cache = infra_utils::infra::cache::MokaCacheImpl::new(&MokaCacheConfig {
+        let job_memory_cache = memory_utils::cache::moka::MokaCacheImpl::new(&MokaCacheConfig {
             num_counters: 10000,
             ttl: Some(Duration::from_secs(5)),
         });

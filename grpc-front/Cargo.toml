@@ -13,6 +13,7 @@ path = "src/bin/front.rs"
 proto = { path = "../proto" }
 command-utils = { path = "../modules/command-utils" }
 infra-utils = { path = "../modules/infra-utils" }
+net-utils = { path = "../modules/net-utils" }
 jobworkerp-base = { path = "../base" }
 jobworkerp-runner = { path = "../runner" }
 infra = { path = "../infra" }
@@ -30,6 +31,7 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
 tonic-health = { workspace = true }
+tonic-prost = { workspace = true }
 tonic-reflection = { workspace = true }
 tonic-tracing-opentelemetry = { version = "0.28" }
 tonic-web = { workspace = true }
@@ -37,4 +39,4 @@ tower = { workspace = true }
 tracing = { workspace = true }
 
 [build-dependencies]
-tonic-build = { workspace = true }
+tonic-prost-build = { workspace = true }

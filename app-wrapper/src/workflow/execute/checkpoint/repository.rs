@@ -6,7 +6,8 @@ use crate::workflow::execute::{
     task::ExecutionId,
 };
 use async_trait::async_trait;
-use infra_utils::infra::{cache::MokaCacheConfig, redis::RedisPool};
+use infra_utils::infra::redis::RedisPool;
+use memory_utils::cache::moka::MokaCacheConfig;
 
 pub mod memory;
 pub mod redis;

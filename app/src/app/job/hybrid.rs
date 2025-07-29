@@ -21,9 +21,9 @@ use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryMod
 use infra::infra::module::redis::{RedisRepositoryModule, UseRedisRepositoryModule};
 use infra::infra::module::HybridRepositoryModule;
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
-use infra_utils::infra::cache::{MokaCacheImpl, UseMokaCache};
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
+use memory_utils::cache::moka::{MokaCacheImpl, UseMokaCache};
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, Priority,
     QueueType, ResponseType, ResultOutputItem, Worker, WorkerData, WorkerId,
@@ -1048,11 +1048,11 @@ pub mod tests {
         } else {
             Arc::new(IdGeneratorWrapper::new())
         };
-        let moka_config = infra_utils::infra::cache::MokaCacheConfig {
+        let moka_config = memory_utils::cache::moka::MokaCacheConfig {
             num_counters: 1000000,
             ttl: Some(Duration::from_millis(100)),
         };
-        let job_memory_cache = infra_utils::infra::cache::MokaCacheImpl::new(&moka_config);
+        let job_memory_cache = memory_utils::cache::moka::MokaCacheImpl::new(&moka_config);
         let storage_config = Arc::new(StorageConfig {
             r#type: StorageType::Scalable,
             restore_at_startup: Some(false),
@@ -1067,7 +1067,7 @@ pub mod tests {
             channel_concurrencies: vec![2],
         });
         let descriptor_cache =
-            Arc::new(infra_utils::infra::cache::MokaCacheImpl::new(&moka_config));
+            Arc::new(memory_utils::cache::moka::MokaCacheImpl::new(&moka_config));
         let runner_app = Arc::new(HybridRunnerAppImpl::new(
             TEST_PLUGIN_DIR.to_string(),
             storage_config.clone(),
