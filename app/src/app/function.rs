@@ -15,10 +15,10 @@ use async_trait::async_trait;
 use core::fmt;
 use helper::{workflow::ReusableWorkflowHelper, FunctionCallHelper, McpNameConverter};
 use infra::infra::runner::rows::RunnerWithSchema;
-use infra_utils::infra::cache::{MokaCacheImpl, UseMokaCache};
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::ReusableWorkflowRunnerSettings;
+use memory_utils::cache::moka::{MokaCacheImpl, UseMokaCache};
 use proto::jobworkerp::data::{RunnerType, StreamingOutputType, WorkerData, WorkerId};
 use proto::jobworkerp::function::data::{
     function_specs, FunctionResult, FunctionSchema, FunctionSpecs, McpToolList, WorkerOptions,
@@ -496,7 +496,7 @@ pub struct FunctionAppImpl {
     worker_app: Arc<dyn crate::app::worker::WorkerApp>,
     job_app: Arc<dyn crate::app::job::JobApp>,
     job_result_app: Arc<dyn crate::app::job_result::JobResultApp>,
-    function_cache: infra_utils::infra::cache::MokaCacheImpl<Arc<String>, Vec<FunctionSpecs>>,
+    function_cache: memory_utils::cache::moka::MokaCacheImpl<Arc<String>, Vec<FunctionSpecs>>,
     descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
 }
 
@@ -508,10 +508,10 @@ impl FunctionAppImpl {
         job_app: Arc<dyn crate::app::job::JobApp>,
         job_result_app: Arc<dyn crate::app::job_result::JobResultApp>,
         descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
-        mc_config: &infra_utils::infra::memory::MemoryCacheConfig,
+        mc_config: &memory_utils::cache::stretto::MemoryCacheConfig,
     ) -> Self {
-        let function_cache = infra_utils::infra::cache::MokaCacheImpl::new(
-            &infra_utils::infra::cache::MokaCacheConfig {
+        let function_cache = memory_utils::cache::moka::MokaCacheImpl::new(
+            &memory_utils::cache::moka::MokaCacheConfig {
                 num_counters: mc_config.num_counters,
                 ttl: Some(std::time::Duration::from_secs(60)), // 60 seconds TTL
             },
@@ -556,8 +556,8 @@ impl UseJobResultApp for FunctionAppImpl {
     }
 }
 
-impl infra_utils::infra::cache::UseMokaCache<Arc<String>, Vec<FunctionSpecs>> for FunctionAppImpl {
-    fn cache(&self) -> &infra_utils::infra::cache::MokaCache<Arc<String>, Vec<FunctionSpecs>> {
+impl UseMokaCache<Arc<String>, Vec<FunctionSpecs>> for FunctionAppImpl {
+    fn cache(&self) -> &memory_utils::cache::moka::MokaCache<Arc<String>, Vec<FunctionSpecs>> {
         self.function_cache.cache()
     }
 }

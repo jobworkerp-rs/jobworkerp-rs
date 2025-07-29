@@ -18,7 +18,7 @@ use async_stream::stream;
 use debug_stub_derive::DebugStub;
 use fork::ForkTaskExecutor;
 use futures::{pin_mut, StreamExt};
-use infra_utils::infra::{net::reqwest, trace::Tracing};
+use net_utils::{net::reqwest, trace::Tracing};
 use jobworkerp_base::APP_NAME;
 use opentelemetry::trace::TraceContextExt;
 use run::RunTaskExecutor;

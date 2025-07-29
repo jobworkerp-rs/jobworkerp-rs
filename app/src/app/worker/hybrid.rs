@@ -9,9 +9,9 @@ use infra::infra::worker::event::UseWorkerPublish;
 use infra::infra::worker::rdb::{RdbWorkerRepository, UseRdbWorkerRepository};
 use infra::infra::worker::redis::{RedisWorkerRepository, UseRedisWorkerRepository};
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
-use infra_utils::infra::cache::{MokaCacheConfig, MokaCacheImpl, UseMokaCache};
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
+use memory_utils::cache::moka::{MokaCacheConfig, MokaCacheImpl, UseMokaCache};
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use std::sync::Arc;
 
@@ -45,9 +45,9 @@ impl HybridWorkerAppImpl {
         descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
         runner_app: Arc<dyn RunnerApp + 'static>,
     ) -> Self {
-        let list_memory_cache = infra_utils::infra::cache::MokaCacheImpl::new(moka_config);
+        let list_memory_cache = memory_utils::cache::moka::MokaCacheImpl::new(moka_config);
 
-        let memory_cache = infra_utils::infra::cache::MokaCacheImpl::new(moka_config);
+        let memory_cache = memory_utils::cache::moka::MokaCacheImpl::new(moka_config);
         Self {
             storage_config,
             id_generator,
@@ -464,8 +464,8 @@ mod tests {
     use infra::infra::module::redis::test::setup_test_redis_module;
     use infra::infra::module::HybridRepositoryModule;
     use infra::infra::IdGeneratorWrapper;
-    use infra_utils::infra::cache::MokaCacheImpl;
     use infra_utils::infra::test::TEST_RUNTIME;
+    use memory_utils::cache::moka::MokaCacheImpl;
     use proto::jobworkerp::data::{RunnerId, StorageType, WorkerData};
     use proto::TestRunnerSettings;
     use std::sync::Arc;
@@ -484,7 +484,7 @@ mod tests {
         } else {
             Arc::new(IdGeneratorWrapper::new())
         };
-        let moka_config = infra_utils::infra::cache::MokaCacheConfig {
+        let moka_config = memory_utils::cache::moka::MokaCacheConfig {
             num_counters: 10000,
             ttl: Some(Duration::from_secs(10)),
         };

@@ -5,9 +5,9 @@ use async_trait::async_trait;
 use base64::Engine;
 use command_utils::protobuf::ProtobufDescriptor;
 use futures::stream::BoxStream;
-use infra_utils::infra::net::grpc::reflection::GrpcReflectionClient;
-use infra_utils::infra::net::grpc::RawBytesCodec;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+use net_utils::grpc::reflection::GrpcReflectionClient;
+use net_utils::grpc::RawBytesCodec;
 use prost_reflect::{DescriptorPool, MessageDescriptor};
 #[allow(unused_imports)] // Used in CancelMonitoring trait implementations
 use proto::jobworkerp::data::{

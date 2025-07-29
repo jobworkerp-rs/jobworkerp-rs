@@ -15,7 +15,7 @@ use app::app::job::execute::JobExecutorWrapper;
 use app::module::AppModule;
 use async_stream::stream;
 use futures::{Stream, StreamExt};
-use infra_utils::infra::{net::reqwest::ReqwestClient, trace::Tracing};
+use net_utils::{net::reqwest::ReqwestClient, trace::Tracing};
 use jobworkerp_base::APP_WORKER_NAME;
 use opentelemetry::{
     trace::{SpanRef, TraceContextExt},

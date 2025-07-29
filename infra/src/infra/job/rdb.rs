@@ -8,15 +8,13 @@ use crate::infra::{JobQueueConfig, UseJobQueueConfig};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use command_utils::util::datetime;
-use infra_utils::infra::{
-    chan::{
-        mpmc::{Chan, UseChanBuffer},
-        ChanBuffer, ChanBufferItem,
-    },
-    rdb::{Rdb, RdbPool, UseRdbPool},
-};
+use infra_utils::infra::rdb::{Rdb, RdbPool, UseRdbPool};
 use itertools::Itertools;
 use jobworkerp_base::{codec::UseProstCodec, error::JobWorkerError};
+use memory_utils::chan::{
+    mpmc::{Chan, UseChanBuffer},
+    ChanBuffer, ChanBufferItem,
+};
 use proto::jobworkerp::data::{Job, JobData, JobId, JobProcessingStatus};
 use sqlx::Executor;
 

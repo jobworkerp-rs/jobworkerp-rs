@@ -474,7 +474,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use infra_utils::infra::cache::{MokaCacheConfig, MokaCacheImpl};
+    use memory_utils::cache::moka::{MokaCacheConfig, MokaCacheImpl};
     use proto::ProtobufHelper;
 
     use super::*;

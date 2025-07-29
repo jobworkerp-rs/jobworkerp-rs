@@ -18,6 +18,8 @@ path = "src/main.rs"
 proto = { path = "../proto" }
 command-utils = { path = "../modules/command-utils" }
 infra-utils = { path = "../modules/infra-utils" }
+memory-utils = { path = "../modules/memory-utils" }
+net-utils = { path = "../modules/net-utils" }
 jobworkerp-base = { path = "../base" }
 jobworkerp-runner = { path = "../runner" }
 infra = { path = "../infra" }
@@ -40,7 +42,7 @@ genai = "0.4.0-alpha.3"
 #genai = { git = "https://github.com/jeremychone/rust-genai", branch = "main" }
 indexmap = "2"
 itertools = { workspace = true }
-jsonschema = "0.30"
+jsonschema = "0.31"
 #kube-client = "0.86"
 libloading = { workspace = true }
 liquid = "0.26"

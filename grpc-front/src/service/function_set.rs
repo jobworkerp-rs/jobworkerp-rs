@@ -14,7 +14,7 @@ use app::app::function::function_set::{FunctionSetApp, FunctionSetAppImpl};
 use app::module::AppModule;
 use async_stream::stream;
 use futures::stream::BoxStream;
-use infra_utils::infra::trace::Tracing;
+use net_utils::trace::Tracing;
 use tonic::Response;
 
 pub trait FunctionSetGrpc {

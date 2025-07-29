@@ -1,10 +1,10 @@
 use anyhow::{anyhow, Result};
 use futures::stream::BoxStream;
 use futures::StreamExt;
-use infra_utils::infra::trace::impls::GenericOtelClient;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_completion_result::message_content;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::OllamaRunnerSettings;
 use jobworkerp_runner::jobworkerp::runner::llm::{self, LlmCompletionArgs, LlmCompletionResult};
+use net_utils::trace::impls::GenericOtelClient;
 use ollama_rs::generation::completion;
 use ollama_rs::generation::parameters::{FormatType, JsonStructure};
 use ollama_rs::{

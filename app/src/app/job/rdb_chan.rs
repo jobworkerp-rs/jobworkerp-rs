@@ -21,11 +21,9 @@ use infra::infra::job_result::pubsub::{JobResultPublisher, JobResultSubscriber};
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use infra_utils::infra::rdb::UseRdbPool;
-use infra_utils::infra::{
-    lock::RwLockWithKey,
-    memory::{self, MemoryCacheConfig, UseMemoryCache},
-};
 use jobworkerp_base::error::JobWorkerError;
+use memory_utils::cache::stretto::{self as memory, MemoryCacheConfig, UseMemoryCache};
+use memory_utils::lock::RwLockWithKey;
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, QueueType,
     ResponseType, ResultOutputItem, Worker, WorkerData, WorkerId,
@@ -992,7 +990,7 @@ mod tests {
         };
         // UseMemoryCache is auto-initialized in RdbChanJobAppImpl::new(), explicit creation unnecessary here
         // MokaCacheConfig used by other applications (RunnerApp, WorkerApp)
-        let moka_config = infra_utils::infra::cache::MokaCacheConfig {
+        let moka_config = memory_utils::cache::moka::MokaCacheConfig {
             num_counters: 10000,
             ttl: Some(Duration::from_millis(100)),
         };
@@ -1010,7 +1008,7 @@ mod tests {
             channel_concurrencies: vec![2],
         });
         let descriptor_cache =
-            Arc::new(infra_utils::infra::cache::MokaCacheImpl::new(&moka_config));
+            Arc::new(memory_utils::cache::moka::MokaCacheImpl::new(&moka_config));
         let runner_app = Arc::new(RdbRunnerAppImpl::new(
             TEST_PLUGIN_DIR.to_string(),
             storage_config.clone(),

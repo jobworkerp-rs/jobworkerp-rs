@@ -9,6 +9,7 @@ edition.workspace = true
 proto = { path = "../proto" }
 command-utils = { path = "../modules/command-utils" }
 infra-utils = { path = "../modules/infra-utils" }
+net-utils = { path = "../modules/net-utils" }
 jobworkerp-base = { path = "../base" }
 jobworkerp-runner = { path = "../runner" }
 infra = { path = "../infra" }

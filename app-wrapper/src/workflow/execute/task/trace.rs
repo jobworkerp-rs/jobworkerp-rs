@@ -1,6 +1,6 @@
 use crate::workflow::definition::workflow::Error;
 use crate::workflow::execute::context::TaskContext;
-use infra_utils::infra::trace::Tracing;
+use net_utils::trace::Tracing;
 use opentelemetry::trace::SpanRef;
 use opentelemetry::KeyValue;
 

@@ -4,9 +4,9 @@ use command_utils::text::TextUtil;
 use infra::infra::module::rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use infra::infra::worker::rdb::{RdbWorkerRepository, UseRdbWorkerRepository};
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
-use infra_utils::infra::cache::{MokaCacheImpl, UseMokaCache};
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
+use memory_utils::cache::moka::{MokaCacheImpl, UseMokaCache};
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use std::sync::Arc;
 
@@ -34,13 +34,13 @@ impl RdbWorkerAppImpl {
     pub fn new(
         storage_config: Arc<StorageConfig>,
         id_generator: Arc<IdGeneratorWrapper>,
-        moka_config: &infra_utils::infra::cache::MokaCacheConfig,
+        moka_config: &memory_utils::cache::moka::MokaCacheConfig,
         repositories: Arc<RdbChanRepositoryModule>,
         descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
         runner_app: Arc<RdbRunnerAppImpl>,
     ) -> Self {
-        let memory_cache = infra_utils::infra::cache::MokaCacheImpl::new(moka_config);
-        let list_memory_cache = infra_utils::infra::cache::MokaCacheImpl::new(moka_config);
+        let memory_cache = memory_utils::cache::moka::MokaCacheImpl::new(moka_config);
+        let list_memory_cache = memory_utils::cache::moka::MokaCacheImpl::new(moka_config);
         Self {
             storage_config,
             id_generator,
@@ -282,8 +282,8 @@ mod tests {
     use infra::infra::job::rows::{JobqueueAndCodec, UseJobqueueAndCodec};
     use infra::infra::module::rdb::test::setup_test_rdb_module;
     use infra::infra::IdGeneratorWrapper;
-    use infra_utils::infra::cache::MokaCacheImpl;
     use infra_utils::infra::test::TEST_RUNTIME;
+    use memory_utils::cache::moka::MokaCacheImpl;
     use proto::jobworkerp::data::{RunnerId, StorageType, WorkerData};
     use proto::TestRunnerSettings;
     use std::sync::Arc;
@@ -300,7 +300,7 @@ mod tests {
         };
 
         // Memory cache configuration
-        let moka_config = infra_utils::infra::cache::MokaCacheConfig {
+        let moka_config = memory_utils::cache::moka::MokaCacheConfig {
             num_counters: 10000,
             ttl: Some(Duration::from_secs(60)),
         };

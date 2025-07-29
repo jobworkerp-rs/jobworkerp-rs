@@ -21,8 +21,8 @@ use infra::infra::job::status::memory::MemoryJobProcessingStatusRepository;
 use infra::infra::job::status::{JobProcessingStatusRepository, UseJobProcessingStatusRepository};
 use infra::infra::runner::rows::RunnerWithSchema;
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
-use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
+use net_utils::trace::Tracing;
 use proto::jobworkerp::data::{
     Job, JobProcessingStatus, JobResult, Priority, QueueType, ResponseType, Worker,
 };

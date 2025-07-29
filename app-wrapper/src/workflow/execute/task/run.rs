@@ -14,7 +14,7 @@ use app::app::{
     job::execute::{JobExecutorWrapper, UseJobExecutor},
     runner::UseRunnerApp,
 };
-use infra_utils::infra::trace::Tracing;
+use net_utils::trace::Tracing;
 use proto::jobworkerp::data::{QueueType, ResponseType, WorkerData};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
@@ -470,3 +470,4 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
         }
     }
 }
+

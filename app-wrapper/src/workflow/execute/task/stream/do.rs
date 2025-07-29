@@ -16,7 +16,7 @@ use async_stream::stream;
 use debug_stub_derive::DebugStub;
 use futures::StreamExt;
 use indexmap::IndexMap;
-use infra_utils::infra::{net::reqwest, trace::Tracing};
+use net_utils::{net::reqwest, trace::Tracing};
 use jobworkerp_base::APP_WORKER_NAME;
 use opentelemetry::trace::TraceContextExt;
 use std::{collections::HashMap, pin::Pin, sync::Arc, time::Duration};
