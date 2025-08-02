@@ -85,6 +85,9 @@ jobs:
         run: |
           apt-get update
           apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip
+          # Install Node.js for setup-protoc action
+          curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+          apt-get install -y nodejs
       - name: Clean up apt cache
         run: |
           apt-get clean
