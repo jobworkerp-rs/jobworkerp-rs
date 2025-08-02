@@ -9,7 +9,7 @@
 	url = https://github.com/modelcontextprotocol/servers.git
 [submodule "modules/net-utils"]
 	path = modules/net-utils
-	url = git@github.com:sutr-app/net-utils.git
+	url = https://github.com/sutr-app/net-utils.git
 [submodule "modules/memory-utils"]
 	path = modules/memory-utils
-	url = git@github.com:sutr-app/memory-utils.git
+	url = https://github.com/sutr-app/memory-utils.git
