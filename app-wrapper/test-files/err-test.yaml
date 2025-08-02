@@ -1,0 +1,69 @@
+document:
+  name: ls-test
+  namespace: default
+  title: Workflow test (ls)
+  version: 0.0.1
+  dsl: 0.0.1
+do:
+  - ListWorker: # worker name for jobworkerp (if not use static, add random suffix as temporary worker)
+      run:
+        runner:
+          name: COMMAND # built-in runner type or plugin name
+          # settings: # initialize settings for runner defined with protobuf
+          arguments: # arguments for the runner defined with protobuf
+            command: ls
+            args: ["${.}"] # args for the command
+          options: 
+            channel: workflow
+            useStatic: false
+            storeSuccess: true
+            storeFailure: true
+            retry:
+              delay:
+                seconds: 2
+              backoff:
+                exponential: {}
+              limit:
+                attempt:
+                  count: 3
+      output:
+        as: |- # transform definition ($${} is used for variable substitution by liquid template, not mixed with plain string)
+          $${
+          {%- assign files = stdout | newline_to_br | split: '<br />' -%}
+          {"files": [
+          {%- for file in files -%}
+          "{{- file |strip_newlines -}}"{% unless forloop.last %},{% endunless -%}
+          {%- endfor -%}
+          ] }
+          }
+  - EachFileIteration:
+      for:
+        each: file # name (default: item)
+        in: ${.files} # must be array (${} is used for variable substitution by jq, not mixed with plain string)
+        at: ind # index name (default: index)
+      #while: ${$ind < 5} # condition for loop
+      do: # run as workflow job
+        - TestSwitch:
+            switch:
+              - test:
+                  when: |-
+                    $${{%- assign head_char = file | slice: 0, 1 -%}{%- if head_char == "d" %}true{% else %}false{% endif -%}}
+                  then: "exit"
+              - default: 
+                  then: "continue"
+        - ListWorkerInner:
+            if: |-
+              $${{%- assign head_char = file | slice: 0, 1 -%}{%- if head_char == "d" %}true{% else %}false{% endif -%}}
+            run:
+              runner:
+                name: COMMAND
+                # settings:
+                arguments:
+                  command: ls
+                  args: ["$${/{{file}}}"]
+                options:
+                  channel: workflow
+                  useStatic: false
+                  storeSuccess: true
+                  storeFailure: true
+            then: continue

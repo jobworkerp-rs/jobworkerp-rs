@@ -8,9 +8,9 @@
 // use crate::workflow::execute::context::{TaskContext, WorkflowContext};
 // use crate::workflow::execute::job::JobExecutorWrapper;
 // use anyhow::Result;
-// use infra_utils::infra::lock::RwLockWithKey;
-// use infra_utils::infra::memory::{MemoryCacheConfig, UseMemoryCache};
-// use infra_utils::infra::net::reqwest;
+// use memory_utils::lock::RwLockWithKey;
+// use memory_utils::cache::stretto::{MemoryCacheConfig, UseMemoryCache};
+// use net_utils::net::reqwest;
 // use serde_json::Map;
 // use std::sync::Arc;
 // use std::time::Duration;
@@ -21,7 +21,7 @@
 //     task: workflow::CallTask,
 //     http_client: reqwest::ReqwestClient,
 //     job_executor_wrapper: Arc<JobExecutorWrapper>,
-//     memory_cache: infra_utils::infra::memory::MemoryCacheImpl<String, workflow::RunTask>,
+//     memory_cache: memory_utils::cache::stretto::MemoryCacheImpl<String, workflow::RunTask>,
 // }
 // impl CallTaskExecutor {
 //     const TIMEOUT_SEC: u64 = 300; // 5 minutes
@@ -36,7 +36,7 @@
 //             task,
 //             http_client,
 //             job_executor_wrapper,
-//             memory_cache: infra_utils::infra::memory::MemoryCacheImpl::new(
+//             memory_cache: memory_utils::cache::stretto::MemoryCacheImpl::new(
 //                 &MemoryCacheConfig::default(),
 //                 Some(Duration::from_secs(Self::TIMEOUT_SEC)),
 //             ),

@@ -6,13 +6,13 @@ use genai::chat::{
 };
 use genai::resolver::{Endpoint, ServiceTargetResolver};
 use genai::{Client, ServiceTarget};
-use infra_utils::infra::trace::impls::GenericOtelClient;
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_completion_result::message_content;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::GenaiRunnerSettings;
 use jobworkerp_runner::jobworkerp::runner::llm::{
     llm_completion_result, LlmCompletionArgs, LlmCompletionResult,
 };
+use net_utils::trace::impls::GenericOtelClient;
 use proto::jobworkerp::data::{result_output_item, ResultOutputItem, Trailer};
 use std::collections::HashMap;
 use std::sync::Arc;

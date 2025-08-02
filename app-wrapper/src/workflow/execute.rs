@@ -14,14 +14,14 @@ use anyhow::Result;
 use app::module::AppModule;
 use futures::pin_mut;
 use futures::StreamExt;
-use infra_utils::infra::net::reqwest::ReqwestClient;
-use infra_utils::infra::trace::Tracing;
+use net_utils::net::reqwest::ReqwestClient;
+use net_utils::trace::Tracing;
 use opentelemetry::trace::TraceContextExt;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 struct TracingImpl;
-impl infra_utils::infra::trace::Tracing for TracingImpl {}
+impl net_utils::trace::Tracing for TracingImpl {}
 /// Executes a workflow schema.
 ///
 /// This function creates a workflow executor and executes the workflow.

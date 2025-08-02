@@ -3,12 +3,12 @@ use std::{sync::Arc, time::Duration};
 use app::module::AppConfigModule;
 use clap::{arg, command, Parser};
 use command_utils::util::tracing::LoggingConfig;
-use infra_utils::infra::net::reqwest::ReqwestClient;
 use jobworkerp_runner::runner::{
     factory::RunnerSpecFactory,
     mcp::{config::McpConfig, proxy::McpServerFactory},
     plugins::Plugins,
 };
+use net_utils::net::reqwest::ReqwestClient;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]

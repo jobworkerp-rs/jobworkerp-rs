@@ -11,8 +11,8 @@ use command_utils::protobuf::ProtobufDescriptor;
 use command_utils::util::scoped_cache::ScopedCache;
 use futures::stream::BoxStream;
 use infra::infra::runner::rows::RunnerWithSchema;
-use infra_utils::infra::cache::MokaCacheImpl;
 use jobworkerp_base::error::JobWorkerError;
+use memory_utils::cache::moka::MokaCacheImpl;
 use proto::jobworkerp::data::{
     JobId, JobResult, Priority, QueueType, ResponseType, ResultOutputItem, ResultStatus,
     RetryPolicy, RetryType, RunnerData, RunnerId, Worker, WorkerData, WorkerId,

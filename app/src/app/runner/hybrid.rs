@@ -9,9 +9,9 @@ use infra::infra::runner::rdb::RunnerRepository;
 use infra::infra::runner::rdb::{RdbRunnerRepositoryImpl, UseRdbRunnerRepository};
 use infra::infra::runner::rows::RunnerWithSchema;
 use infra::infra::IdGeneratorWrapper;
-use infra_utils::infra::cache::{MokaCacheConfig, MokaCacheImpl, UseMokaCache};
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
+use memory_utils::cache::moka::{MokaCacheConfig, MokaCacheImpl, UseMokaCache};
 use moka::future::Cache;
 use proto::jobworkerp::data::{RunnerId, RunnerType};
 use std::sync::Arc;
@@ -279,8 +279,8 @@ mod test {
     use infra::infra::module::redis::test::setup_test_redis_module;
     use infra::infra::module::HybridRepositoryModule;
     use infra::infra::IdGeneratorWrapper;
-    use infra_utils::infra::cache::MokaCacheImpl;
     use infra_utils::infra::test::TEST_RUNTIME;
+    use memory_utils::cache::moka::MokaCacheImpl;
     use proto::jobworkerp::data::RunnerId;
     use std::sync::Arc;
     use std::time::Duration;
@@ -292,7 +292,7 @@ mod test {
             redis_module,
             rdb_chan_module: rdb_module,
         });
-        let moka_config = infra_utils::infra::cache::MokaCacheConfig {
+        let moka_config = memory_utils::cache::moka::MokaCacheConfig {
             num_counters: 1000000,
             ttl: Some(Duration::from_millis(1000)),
         };

@@ -25,8 +25,8 @@ use infra::infra::runner::rows::RunnerWithSchema;
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use infra_utils::infra::redis::{RedisClient, UseRedisClient};
 use infra_utils::infra::redis::{RedisPool, UseRedisPool};
-use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::error::JobWorkerError;
+use net_utils::trace::Tracing;
 use proto::jobworkerp::data::{
     Job, JobProcessingStatus, JobResult, JobResultId, Priority, QueueType, ResponseType, Worker,
 };

@@ -3,8 +3,8 @@
 use std::sync::LazyLock;
 
 use anyhow::{anyhow, Result};
-use infra_utils::infra::net::reqwest::{self, ReqwestClient};
 use jobworkerp_runner::jobworkerp::runner::inline_workflow_args::WorkflowSource;
+use net_utils::net::reqwest::{self, ReqwestClient};
 use serde::de::DeserializeOwned;
 use url::Url;
 
@@ -173,7 +173,7 @@ impl UseLoadUrlOrPath for WorkflowLoader {
 mod test {
     use std::time::Duration;
 
-    use infra_utils::infra::net::reqwest::ReqwestClient;
+    use net_utils::net::reqwest::ReqwestClient;
 
     use crate::workflow::definition::workflow::{self, RetryPolicy};
 

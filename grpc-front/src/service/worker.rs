@@ -13,7 +13,7 @@ use async_stream::stream;
 use futures::stream::BoxStream;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::UseJobQueueConfig;
-use infra_utils::infra::trace::Tracing;
+use net_utils::trace::Tracing;
 use proto::jobworkerp::data::{RetryPolicy, StorageType};
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -25,7 +25,7 @@ pub trait WorkerGrpc {
 
 const DEFAULT_CHANNEL_DISPLAY_NAME: &str = "[default]";
 
-pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig {
+pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig + UseWorkerConfig {
     fn default_queue_type(&self) -> QueueType {
         match self.storage_config().r#type {
             StorageType::Standalone => QueueType::Normal,
@@ -106,6 +106,30 @@ pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig {
         // retry policy should be positive or none
         if let Some(rp) = req.retry_policy.as_ref() {
             self.validate_retry_policy(rp)?
+        }
+        // channel should exist
+        self.validate_channel(req.channel.as_ref())?;
+        Ok(())
+    }
+    #[allow(clippy::result_large_err)]
+    fn validate_channel(&self, channel: Option<&String>) -> Result<(), tonic::Status> {
+        if let Some(ch) = channel {
+            if ch.is_empty() {
+                return Err(tonic::Status::invalid_argument(
+                    "channel name cannot be empty",
+                ));
+            }
+
+            let available_channels: std::collections::HashSet<String> =
+                self.worker_config().get_channels().into_iter().collect();
+
+            if !available_channels.contains(ch) {
+                return Err(tonic::Status::invalid_argument(format!(
+                    "specified channel '{}' does not exist. Available channels: {:?}",
+                    ch,
+                    available_channels.into_iter().collect::<Vec<_>>()
+                )));
+            }
         }
         Ok(())
     }
@@ -350,6 +374,7 @@ impl ResponseProcessor for WorkerGrpcImpl {}
 mod tests {
     use super::*;
     use infra::infra::{job::rows::JobqueueAndCodec, JobQueueConfig};
+    use jobworkerp_base::codec::UseProstCodec;
     use proto::jobworkerp::data::RetryType;
 
     static JOB_QUEUE_CONFIG: JobQueueConfig = infra::infra::JobQueueConfig {
@@ -362,6 +387,7 @@ mod tests {
     };
     struct Validator {
         pub storage_type: StorageType,
+        pub worker_config: WorkerConfig,
     }
     impl RequestValidator for Validator {}
     impl UseJobQueueConfig for Validator {
@@ -376,6 +402,13 @@ mod tests {
             unsafe { &STORAGE_CONFIG }
         }
     }
+    impl UseWorkerConfig for Validator {
+        fn worker_config(&self) -> &WorkerConfig {
+            &self.worker_config
+        }
+    }
+    impl UseProstCodec for Validator {}
+    impl UseJobqueueAndCodec for Validator {}
 
     // #[test]
     // fn test_validate_queue_type() {
@@ -425,6 +458,11 @@ mod tests {
     fn test_validate_retry_policy() {
         let v = Validator {
             storage_type: StorageType::Standalone,
+            worker_config: WorkerConfig {
+                default_concurrency: 4,
+                channels: vec![],
+                channel_concurrencies: vec![],
+            },
         };
         let rp = RetryPolicy {
             r#type: RetryType::Exponential as i32,
@@ -442,10 +480,18 @@ mod tests {
     fn test_validate_worker_by_response_type_for_rdb_storage() {
         let v = Validator {
             storage_type: StorageType::Standalone,
+            worker_config: WorkerConfig {
+                default_concurrency: 4,
+                channels: vec![],
+                channel_concurrencies: vec![],
+            },
         };
-        let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
-            name: "ls".to_string(),
-        });
+        let runner_settings =
+            <JobqueueAndCodec as infra::infra::job::rows::UseJobqueueAndCodec>::serialize_message(
+                &proto::TestRunnerSettings {
+                    name: "ls".to_string(),
+                },
+            );
         let mut w = WorkerData {
             name: "ListCommand".to_string(),
             runner_settings,
@@ -460,6 +506,11 @@ mod tests {
 
         let v = Validator {
             storage_type: StorageType::Scalable,
+            worker_config: WorkerConfig {
+                default_concurrency: 4,
+                channels: vec![],
+                channel_concurrencies: vec![],
+            },
         };
 
         w.response_type = ResponseType::Direct as i32;
@@ -485,10 +536,18 @@ mod tests {
     fn test_validate_worker_by_periodic_interval() {
         let v = Validator {
             storage_type: StorageType::Scalable,
+            worker_config: WorkerConfig {
+                default_concurrency: 4,
+                channels: vec![],
+                channel_concurrencies: vec![],
+            },
         };
-        let runner_settings = JobqueueAndCodec::serialize_message(&proto::TestRunnerSettings {
-            name: "ls".to_string(),
-        });
+        let runner_settings =
+            <JobqueueAndCodec as infra::infra::job::rows::UseJobqueueAndCodec>::serialize_message(
+                &proto::TestRunnerSettings {
+                    name: "ls".to_string(),
+                },
+            );
         let mut w = WorkerData {
             name: "ListCommand".to_string(),
             runner_settings,
@@ -508,5 +567,114 @@ mod tests {
         // in ResponseType::Direct cannot be used by storage_type: RDB
         w.response_type = ResponseType::Direct as i32;
         assert!(v.validate_worker(&w).is_err());
+    }
+
+    #[test]
+    fn test_validate_channel_success() {
+        // Test with default channel (None)
+        let v = Validator {
+            storage_type: StorageType::Standalone,
+            worker_config: WorkerConfig {
+                default_concurrency: 4,
+                channels: vec!["custom-channel".to_string()],
+                channel_concurrencies: vec![2],
+            },
+        };
+
+        // Test with None (should use default channel)
+        assert!(v.validate_channel(None).is_ok());
+
+        // Test with existing custom channel
+        assert!(v
+            .validate_channel(Some(&"custom-channel".to_string()))
+            .is_ok());
+
+        // Test with default channel name explicitly
+        assert!(v
+            .validate_channel(Some(
+                &<Validator as UseJobqueueAndCodec>::DEFAULT_CHANNEL_NAME.to_string()
+            ))
+            .is_ok());
+    }
+
+    #[test]
+    fn test_validate_channel_not_exist() {
+        let v = Validator {
+            storage_type: StorageType::Standalone,
+            worker_config: WorkerConfig {
+                default_concurrency: 4,
+                channels: vec!["valid-channel".to_string()],
+                channel_concurrencies: vec![2],
+            },
+        };
+
+        // Test with non-existing channel
+        let result = v.validate_channel(Some(&"non-existing-channel".to_string()));
+        assert!(result.is_err());
+
+        if let Err(status) = result {
+            assert_eq!(status.code(), tonic::Code::InvalidArgument);
+            let message = status.message();
+            assert!(message.contains("non-existing-channel"));
+            assert!(message.contains("does not exist"));
+        }
+    }
+
+    #[test]
+    fn test_validate_channel_empty_string() {
+        let v = Validator {
+            storage_type: StorageType::Standalone,
+            worker_config: WorkerConfig {
+                default_concurrency: 4,
+                channels: vec![],
+                channel_concurrencies: vec![],
+            },
+        };
+
+        // Test with empty string channel
+        let result = v.validate_channel(Some(&"".to_string()));
+        assert!(result.is_err());
+
+        if let Err(status) = result {
+            assert_eq!(status.code(), tonic::Code::InvalidArgument);
+            assert!(status.message().contains("channel name cannot be empty"));
+        }
+    }
+
+    #[test]
+    fn test_validate_worker_with_channel_validation() {
+        let v = Validator {
+            storage_type: StorageType::Standalone,
+            worker_config: WorkerConfig {
+                default_concurrency: 4,
+                channels: vec!["valid-channel".to_string()],
+                channel_concurrencies: vec![2],
+            },
+        };
+
+        let runner_settings =
+            <JobqueueAndCodec as infra::infra::job::rows::UseJobqueueAndCodec>::serialize_message(
+                &proto::TestRunnerSettings {
+                    name: "ls".to_string(),
+                },
+            );
+
+        // Test with valid channel
+        let w_valid = WorkerData {
+            name: "TestWorker".to_string(),
+            runner_settings: runner_settings.clone(),
+            channel: Some("valid-channel".to_string()),
+            ..Default::default()
+        };
+        assert!(v.validate_worker(&w_valid).is_ok());
+
+        // Test with invalid channel
+        let w_invalid = WorkerData {
+            name: "TestWorker".to_string(),
+            runner_settings,
+            channel: Some("invalid-channel".to_string()),
+            ..Default::default()
+        };
+        assert!(v.validate_worker(&w_invalid).is_err());
     }
 }

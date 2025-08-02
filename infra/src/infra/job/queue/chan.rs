@@ -5,11 +5,11 @@ use crate::infra::UseJobQueueConfig;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
-use infra_utils::infra::chan::broadcast::BroadcastChan;
-use infra_utils::infra::chan::mpmc::{Chan, UseChanBuffer};
-use infra_utils::infra::chan::{ChanBuffer, ChanBufferItem};
 use jobworkerp_base::codec::UseProstCodec;
 use jobworkerp_base::error::JobWorkerError;
+use memory_utils::chan::broadcast::BroadcastChan;
+use memory_utils::chan::mpmc::{Chan, UseChanBuffer};
+use memory_utils::chan::{ChanBuffer, ChanBufferItem};
 use proto::jobworkerp::data::{Job, JobId, Priority};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -517,11 +517,11 @@ mod test {
     use super::*;
     use crate::infra::JobQueueConfig;
     use command_utils::util::datetime;
-    use infra_utils::infra::chan::mpmc::Chan;
-    use infra_utils::infra::chan::mpmc::UseChanBuffer;
-    use infra_utils::infra::chan::ChanBuffer;
-    use infra_utils::infra::chan::ChanBufferItem;
     use jobworkerp_base::codec::ProstMessageCodec;
+    use memory_utils::chan::mpmc::Chan;
+    use memory_utils::chan::mpmc::UseChanBuffer;
+    use memory_utils::chan::ChanBuffer;
+    use memory_utils::chan::ChanBufferItem;
     use proto::jobworkerp::data::{Job, JobData, JobId, WorkerId};
     use std::sync::Arc;
 
@@ -787,7 +787,7 @@ mod test {
     async fn test_job_cancellation_protobuf_broadcast() -> Result<()> {
         use super::super::JobQueueCancellationRepository;
         use futures::future::BoxFuture;
-        use infra_utils::infra::chan::broadcast::BroadcastChan;
+        use memory_utils::chan::broadcast::BroadcastChan;
         use std::sync::Arc;
         use tokio::sync::Mutex;
 

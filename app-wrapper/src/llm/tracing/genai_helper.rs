@@ -76,7 +76,7 @@ pub trait GenaiTracingHelper: GenericLLMTracingHelper {
         options: &Option<ChatOptions>,
         tools: &[Tool],
         metadata: &HashMap<String, String>,
-    ) -> infra_utils::infra::trace::attr::OtelSpanAttributes {
+    ) -> net_utils::trace::attr::OtelSpanAttributes {
         let input_messages = Self::convert_messages_to_input_genai(&chat_req.messages);
         let model_parameters = Self::convert_model_options_to_parameters_genai(options);
 
@@ -204,7 +204,7 @@ pub trait GenaiCompletionTracingHelper: GenericLLMTracingHelper {
         chat_req: &ChatRequest,
         options: &Option<ChatOptions>,
         metadata: &HashMap<String, String>,
-    ) -> infra_utils::infra::trace::attr::OtelSpanAttributes {
+    ) -> net_utils::trace::attr::OtelSpanAttributes {
         // use super::super::chat::genai::GenaiTracingHelper;
         let input_messages =
             super::super::chat::genai::GenaiChatService::convert_messages_to_input_genai(
@@ -216,11 +216,11 @@ pub trait GenaiCompletionTracingHelper: GenericLLMTracingHelper {
             );
 
         // Create completion-specific span attributes
-        let mut span_builder = infra_utils::infra::trace::attr::OtelSpanBuilder::new(format!(
+        let mut span_builder = net_utils::trace::attr::OtelSpanBuilder::new(format!(
             "{}.completions",
             self.get_provider_name()
         ))
-        .span_type(infra_utils::infra::trace::attr::OtelSpanType::Generation)
+        .span_type(net_utils::trace::attr::OtelSpanType::Generation)
         .model(model.to_string())
         .system(self.get_provider_name())
         .operation_name("completion")
@@ -245,7 +245,7 @@ pub trait GenaiCompletionTracingHelper: GenericLLMTracingHelper {
         &self,
         metadata: &HashMap<String, String>,
         parent_context: Option<opentelemetry::Context>,
-        span_attributes: infra_utils::infra::trace::attr::OtelSpanAttributes,
+        span_attributes: net_utils::trace::attr::OtelSpanAttributes,
         action: F,
     ) -> impl std::future::Future<Output = Result<(genai::chat::ChatResponse, opentelemetry::Context)>>
            + Send
