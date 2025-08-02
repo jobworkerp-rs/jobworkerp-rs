@@ -16,7 +16,7 @@ use crate::workflow::{
 use app::app::job::execute::JobExecutorWrapper;
 use debug_stub_derive::DebugStub;
 use futures::{future, Future, StreamExt};
-use infra_utils::infra::{net::reqwest, trace::Tracing};
+use net_utils::{net::reqwest, trace::Tracing};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 use tokio_stream::StreamMap;
@@ -250,7 +250,7 @@ mod tests {
     use super::*;
     use crate::workflow::definition::workflow::Task as WorkflowTask;
     use app::module::test::create_hybrid_test_app;
-    use infra_utils::infra::net::reqwest;
+    use net_utils::net::reqwest;
     use opentelemetry::Context;
     use serde_json::json;
     use std::collections::HashMap;

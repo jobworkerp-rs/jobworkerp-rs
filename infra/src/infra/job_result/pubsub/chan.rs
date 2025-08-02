@@ -3,13 +3,13 @@ use crate::infra::{job::rows::UseJobqueueAndCodec, JobQueueConfig, UseJobQueueCo
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::{future, stream::BoxStream, Stream, StreamExt};
-use infra_utils::infra::chan::{
-    broadcast::{BroadcastChan, UseBroadcastChanBuffer},
-    ChanBuffer, ChanBufferItem,
-};
 use jobworkerp_base::{
     codec::{ProstMessageCodec, UseProstCodec},
     error::JobWorkerError,
+};
+use memory_utils::chan::{
+    broadcast::{BroadcastChan, UseBroadcastChanBuffer},
+    ChanBuffer, ChanBufferItem,
 };
 use proto::jobworkerp::data::{
     result_output_item, JobId, JobResult, JobResultData, JobResultId, ResultOutputItem, WorkerId,
@@ -271,7 +271,7 @@ mod test {
     use super::*;
     use crate::infra::JobQueueConfig;
     use anyhow::Result;
-    use infra_utils::infra::chan::ChanBuffer;
+    use memory_utils::chan::ChanBuffer;
     use proto::jobworkerp::data::{JobResult, JobResultData, JobResultId, ResultOutput};
     use tokio::time::Duration;
 

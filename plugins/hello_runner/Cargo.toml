@@ -28,4 +28,4 @@ tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 
 [build-dependencies]
-tonic-build = { workspace = true }
+tonic-prost-build = { workspace = true }

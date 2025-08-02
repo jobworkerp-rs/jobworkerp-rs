@@ -7,8 +7,6 @@ use app::module::AppModule;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use futures::{pin_mut, StreamExt};
-use infra_utils::infra::net::reqwest::ReqwestClient;
-use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_base::APP_NAME;
@@ -21,6 +19,8 @@ use jobworkerp_runner::runner::cancellation_helper::{
 };
 use jobworkerp_runner::runner::workflow::ReusableWorkflowRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
+use net_utils::net::reqwest::ReqwestClient;
+use net_utils::trace::Tracing;
 use opentelemetry::trace::TraceContextExt;
 use prost::Message;
 use proto::jobworkerp::data::StreamingOutputType;

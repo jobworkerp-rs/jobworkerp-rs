@@ -10,9 +10,9 @@ use crate::infra::job_result::rdb::{RdbJobResultRepositoryImpl, UseRdbJobResultR
 use crate::infra::runner::rdb::RdbRunnerRepositoryImpl;
 use crate::infra::worker::rdb::{RdbWorkerRepositoryImpl, UseRdbWorkerRepository};
 use crate::infra::{IdGeneratorWrapper, InfraConfigModule, JobQueueConfig};
-use infra_utils::infra::chan::broadcast::BroadcastChan;
-use infra_utils::infra::chan::ChanBuffer;
 use jobworkerp_runner::runner::factory::RunnerSpecFactory;
+use memory_utils::chan::broadcast::BroadcastChan;
+use memory_utils::chan::ChanBuffer;
 
 pub trait UseRdbChanRepositoryModule {
     fn rdb_repository_module(&self) -> &RdbChanRepositoryModule;
@@ -139,8 +139,8 @@ pub mod test {
         job::status::memory::MemoryJobProcessingStatusRepository,
         job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl, JobQueueConfig,
     };
-    use infra_utils::infra::chan::broadcast::BroadcastChan;
     use infra_utils::infra::test::setup_test_rdb_from;
+    use memory_utils::chan::broadcast::BroadcastChan;
 
     use jobworkerp_runner::runner::factory::RunnerSpecFactory;
     use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
@@ -149,7 +149,8 @@ pub mod test {
     use std::sync::Arc;
 
     pub async fn setup_test_rdb_module() -> RdbChanRepositoryModule {
-        use infra_utils::infra::{chan::ChanBuffer, test::truncate_tables};
+        use infra_utils::infra::test::truncate_tables;
+        use memory_utils::chan::ChanBuffer;
 
         let dir = if cfg!(feature = "mysql") {
             "../infra/sql/mysql"

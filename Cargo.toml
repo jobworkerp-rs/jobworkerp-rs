@@ -40,7 +40,7 @@ clap = "4.5"
 chrono = "0.4"
 dashmap = "6"
 deadpool = { version = "0.12", features = ["rt_tokio_1"] }
-deadpool-redis = { version = "0.21", features = ["rt_tokio_1", "cluster"] }
+deadpool-redis = { version = "0.22", features = ["rt_tokio_1", "cluster"] }
 debug_stub_derive = "0.3"
 envy = "0.4"
 dotenvy = "0.15"
@@ -60,12 +60,12 @@ num-traits = "0.2"
 once_cell = "1"
 opentelemetry = { version = "0.30" }
 pnet = "0.35"
-prost = "0.13"
-prost-types = "0.13"
-prost-reflect = { version = "0.15", features = ["serde"] }
+prost = "0.14"
+prost-types = "0.14"
+prost-reflect = { version = "0.16", features = ["serde"] }
 rand = "0.9"
 regex = "1.11"
-redis = { version = "0.31", features = [
+redis = { version = "0.32", features = [
     "tokio-rustls-comp",
     "ahash",
     "cluster-async",
@@ -80,7 +80,7 @@ rustls = { version = "0.23", default-features = false, features = [
     "std",
     "tls12",
 ] }
-schemars = { version = "1.0.2", features = ["chrono04"] }
+schemars = { version = "1.0.4", features = ["chrono04"] }
 #schemars = { version = "0.8", features = ["chrono"] }
 serde = "1.0"
 serde_json = "1.0"
@@ -102,12 +102,13 @@ strum = "0.27"
 strum_macros = "0.27"
 tempfile = "3.17"
 thiserror = "2.0"
-toml = { version = "0.8" }
-tonic = { version = "0.13", features = ["tls-ring", "tls-webpki-roots"] }
-tonic-build = "0.13"
-tonic-health = "0.13"
-tonic-reflection = "0.13"
-tonic-web = "0.13"
+toml = { version = "0.9" }
+tonic = { version = "0.14", features = ["tls-ring", "tls-webpki-roots"] }
+tonic-prost-build = "0.14"
+tonic-prost = "0.14"
+tonic-health = "0.14"
+tonic-reflection = "0.14"
+tonic-web = "0.14"
 tokio-stream = { version = "0.1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["full"] }
 tokio = { version = "1", features = ["full"] }

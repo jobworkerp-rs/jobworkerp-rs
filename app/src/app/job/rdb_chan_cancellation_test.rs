@@ -42,7 +42,7 @@ mod rdb_chan_cancellation_tests {
             Arc::new(IdGeneratorWrapper::new())
         };
 
-        let moka_config = infra_utils::infra::cache::MokaCacheConfig {
+        let moka_config = memory_utils::cache::moka::MokaCacheConfig {
             num_counters: 10000,
             ttl: Some(Duration::from_millis(100)),
         };
@@ -63,7 +63,7 @@ mod rdb_chan_cancellation_tests {
         });
 
         let descriptor_cache =
-            Arc::new(infra_utils::infra::cache::MokaCacheImpl::new(&moka_config));
+            Arc::new(memory_utils::cache::moka::MokaCacheImpl::new(&moka_config));
         let runner_app = Arc::new(RdbRunnerAppImpl::new(
             TEST_PLUGIN_DIR.to_string(),
             storage_config.clone(),

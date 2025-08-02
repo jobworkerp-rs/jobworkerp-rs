@@ -6,11 +6,11 @@ use anyhow::{Context, Result};
 use async_stream::stream;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use infra_utils::infra::trace::Tracing;
 use jobworkerp_base::{
     codec::{ProstMessageCodec, UseProstCodec},
     error::JobWorkerError,
 };
+use net_utils::trace::Tracing;
 use proto::jobworkerp::data::{result_output_item::Item, StreamingOutputType};
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use std::collections::HashMap;
