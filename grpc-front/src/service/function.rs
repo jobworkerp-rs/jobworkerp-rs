@@ -114,6 +114,17 @@ impl<T: FunctionGrpc + Tracing + Send + Debug + Sync + 'static> FunctionService 
         let function_app = self.function_app().clone();
         let args_json = serde_json::to_value(req.args_json)
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid args_json: {e}")))?;
+        let args_json = match args_json {
+            serde_json::Value::String(json_str) => {
+                // JSON文字列として再パース
+                match serde_json::from_str::<serde_json::Value>(&json_str) {
+                    Ok(parsed) => parsed,
+                    Err(_) => serde_json::Value::String(json_str), // パース失敗時は元の文字列値を使用
+                }
+            }
+            other => other, // String以外はそのまま
+        };
+
         let uniq_key = req.uniq_key;
 
         // Extract parameters from request and create the stream
@@ -127,7 +138,16 @@ impl<T: FunctionGrpc + Tracing + Send + Debug + Sync + 'static> FunctionService 
                 } else {
                    (None, None)
                 };
-
+                let runner_settings = match runner_settings {
+                    Some(serde_json::Value::String(json_str)) => {
+                        // JSON文字列として再パース
+                        match serde_json::from_str::<serde_json::Value>(&json_str) {
+                            Ok(parsed) => Some(parsed),
+                            Err(_) => Some(serde_json::Value::String(json_str)), // パース失敗時は元の文字列値を使用
+                        }
+                    },
+                    other => other, // String以外はそのまま
+                };
                 Box::pin(stream! {
                     let result_stream = function_app.handle_runner_for_front(
                         meta,
