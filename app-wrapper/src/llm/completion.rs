@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use app::module::AppModule;
 use async_stream::stream;
 use async_trait::async_trait;
 use futures::stream::{BoxStream, StreamExt};
@@ -27,6 +28,7 @@ pub mod mistral;
 pub mod ollama;
 
 pub struct LLMCompletionRunnerImpl {
+    pub app: Arc<AppModule>,
     pub ollama: Option<OllamaService>,
     pub genai: Option<GenaiCompletionService>,
     pub mistral: Option<mistral::MistralCompletionService>,
@@ -35,8 +37,9 @@ pub struct LLMCompletionRunnerImpl {
 
 impl LLMCompletionRunnerImpl {
     /// Constructor without cancellation monitoring (for backward compatibility)
-    pub fn new() -> Self {
+    pub fn new(app: Arc<AppModule>) -> Self {
         Self {
+            app,
             ollama: None,
             genai: None,
             mistral: None,
@@ -45,8 +48,9 @@ impl LLMCompletionRunnerImpl {
     }
 
     /// Constructor with cancellation monitoring (DI integration version)
-    pub fn new_with_cancel_monitoring(cancel_helper: CancelMonitoringHelper) -> Self {
+    pub fn new_with_cancel_monitoring(app: Arc<AppModule>, cancel_helper: CancelMonitoringHelper) -> Self {
         Self {
+            app,
             ollama: None,
             genai: None,
             mistral: None,
@@ -73,11 +77,7 @@ impl UseCancelMonitoringHelper for LLMCompletionRunnerImpl {
     }
 }
 
-impl Default for LLMCompletionRunnerImpl {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// Default trait removed - app parameter is now required
 
 impl LLMCompletionRunnerSpec for LLMCompletionRunnerImpl {}
 impl RunnerSpec for LLMCompletionRunnerImpl {
@@ -145,7 +145,7 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                     settings,
                 ),
             ) => {
-                let mistral = mistral::MistralCompletionService::new(settings).await?;
+                let mistral = mistral::MistralCompletionService::new(settings, self.app.function_app.clone()).await?;
                 tracing::info!(
                     "{} loaded(mistral)",
                     RunnerType::LlmCompletion.as_str_name()

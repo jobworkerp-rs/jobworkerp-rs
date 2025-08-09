@@ -1,8 +1,11 @@
+// Phase 1: 不要な中間レイヤー削除完了
+
 use super::super::mistral::{
-    DefaultLLMRequestConverter, DefaultLLMResultConverter, LLMRequestConverter, LLMResultConverter,
+    DefaultLLMResultConverter, LLMRequestConverter, LLMResultConverter,
     MistralLlmServiceImpl,
 };
 use anyhow::Result;
+use app::app::function::{FunctionAppImpl, UseFunctionApp};
 use futures::stream::{BoxStream, StreamExt};
 use jobworkerp_runner::jobworkerp::runner::llm::{
     llm_runner_settings::LocalRunnerSettings, LlmCompletionArgs, LlmCompletionResult,
@@ -13,12 +16,16 @@ use std::sync::Arc;
 
 pub struct MistralCompletionService {
     pub service: Arc<MistralLlmServiceImpl>,
+    pub function_app: Arc<FunctionAppImpl>,
 }
 
 impl MistralCompletionService {
-    pub async fn new(settings: LocalRunnerSettings) -> Result<Self> {
+    pub async fn new(
+        settings: LocalRunnerSettings,
+        function_app: Arc<FunctionAppImpl>,
+    ) -> Result<Self> {
         let service = Arc::new(MistralLlmServiceImpl::new(&settings).await?);
-        Ok(Self { service })
+        Ok(Self { service, function_app })
     }
 
     pub async fn request_chat(
@@ -27,9 +34,8 @@ impl MistralCompletionService {
         _cx: Context,
         _metadata: HashMap<String, String>,
     ) -> Result<LlmCompletionResult> {
-        // Convert args to request builder
-        let converter = DefaultLLMRequestConverter::new(None);
-        let request_builder = converter.build_completion_request(&args, false).await?;
+        // Convert args to request builder using service's converter
+        let request_builder = self.build_completion_request(&args, false).await?;
 
         // Send request to model (using chat API for completion)
         let response = self.service.request_chat(request_builder).await?;
@@ -73,9 +79,8 @@ impl MistralCompletionService {
         &self,
         args: LlmCompletionArgs,
     ) -> Result<BoxStream<'static, LlmCompletionResult>> {
-        // Convert args to request builder for streaming
-        let converter = DefaultLLMRequestConverter::new(None);
-        let request_builder = converter.build_completion_request(&args, true).await?;
+        // Convert args to request builder for streaming using service's converter
+        let request_builder = self.build_completion_request(&args, true).await?;
 
         // Get the underlying model for streaming
         let model = self.service.model.clone();
@@ -157,3 +162,11 @@ impl MistralCompletionService {
         Ok(rx.boxed())
     }
 }
+
+impl UseFunctionApp for MistralCompletionService {
+    fn function_app(&self) -> &FunctionAppImpl {
+        &self.function_app
+    }
+}
+
+impl LLMRequestConverter for MistralCompletionService {}

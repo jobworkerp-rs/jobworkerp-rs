@@ -8,40 +8,54 @@ pub use self::args::LLMRequestConverter;
 pub use self::core::MistralCoreService;
 use self::model::MistralModelLoader;
 use anyhow::Result;
-pub use args::DefaultLLMRequestConverter;
-use async_stream::stream;
-use futures::{
-    stream::{BoxStream, StreamExt},
-    SinkExt,
-};
-use jobworkerp_base::{
-    codec::{ProstMessageCodec, UseProstCodec},
-    error::JobWorkerError,
-};
+// DefaultLLMRequestConverter removed - LLMRequestConverter used as mixin
+// async_stream::stream removed as it's not used
+use futures::stream::StreamExt;
+use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::llm::{
-    llm_runner_settings::LocalRunnerSettings, LlmChatArgs, LlmCompletionArgs,
+    llm_runner_settings::LocalRunnerSettings, LlmChatArgs,
 };
-use mistralrs::{IsqType as MistralIsqType, Model};
-use proto::jobworkerp::data::ResultOutputItem;
+use mistralrs::Model;
 pub use result::{DefaultLLMResultConverter, LLMResultConverter};
 use std::sync::Arc;
 
-#[derive(Clone, Debug)]
-enum ModelType {
-    TextModel,
-    GgufModel,
+// Phase 1: 新規型定義（設計書211-237行）
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatRole as TextMessageRole;
+
+/// MistralRS用のメッセージ型
+#[derive(Debug, Clone)]
+pub struct MistralRSMessage {
+    pub role: TextMessageRole,
+    pub content: String,
+    pub tool_call_id: Option<String>, // Tool messageで必要
 }
 
-pub struct MistralLlmServiceImpl {
-    // Model parameters and state
-    model_type: ModelType,
-    model_name: String,
-    with_logging: bool,
-    with_paged_attn: bool,
-    isq_type: Option<MistralIsqType>,
-    tok_model_id: Option<String>,
-    gguf_files: Vec<String>,
+/// MistralRS用のツール呼び出し型
+#[derive(Debug, Clone)]
+pub struct MistralRSToolCall {
+    pub id: String,
+    pub function_name: String,
+    pub arguments: String, // JSON文字列
+}
 
+/// ツール実行エラーハンドリング強化（段階的移行用）
+#[derive(Debug, thiserror::Error)]
+pub enum ToolExecutionError {
+    #[error("Tool function not found: {function_name}")]
+    FunctionNotFound { function_name: String },
+    #[error("Invalid tool arguments: {reason}")]
+    InvalidArguments { reason: String },
+    #[error("Tool execution timeout: {function_name} (timeout: {timeout_sec}s)")]
+    Timeout { function_name: String, timeout_sec: u32 },
+    #[error("Tool execution failed: {function_name} - {source}")]
+    ExecutionFailed { function_name: String, source: anyhow::Error },
+}
+
+
+pub struct MistralLlmServiceImpl {
+    // Model name for identification
+    model_name: String,
+    
     // The loaded model
     pub model: Arc<Model>,
 }
@@ -60,18 +74,39 @@ impl MistralCoreService for MistralLlmServiceImpl {
         &self,
         request_builder: mistralrs::RequestBuilder,
     ) -> Result<futures::stream::BoxStream<'static, mistralrs::Response>> {
-        // For Phase 1, we'll implement a placeholder that returns a single response as a stream
-        // This will be properly implemented in Phase 2 with full streaming support
-        let response = self.model.send_chat_request(request_builder).await?;
-        use async_stream::stream;
-        let single_item_stream = stream! {
-            // For Phase 1, create a compatible response using the chat completion format
-            // This is a placeholder implementation - Phase 2 will implement proper streaming
-            if response.choices.len() > 0 {
-                yield mistralrs::Response::Done(response);
+        // Clone the model to avoid lifetime issues
+        let model = self.model.clone();
+        
+        // Use channel-based streaming to handle lifetime issues
+        let (tx, rx) = futures::channel::mpsc::unbounded();
+        
+        // Spawn task to handle MistralRS streaming
+        tokio::spawn(async move {
+            let result = async {
+                let mut stream = model.stream_chat_request(request_builder).await?;
+                
+                loop {
+                    match stream.next().await {
+                        Some(response) => {
+                            if tx.unbounded_send(response).is_err() {
+                                // Receiver dropped, stop streaming
+                                break;
+                            }
+                        },
+                        None => break,
+                    }
+                }
+                
+                anyhow::Result::<()>::Ok(())
+            }.await;
+            
+            if let Err(e) = result {
+                ::tracing::error!("Error in MistralRS stream: {}", e);
             }
-        };
-        Ok(single_item_stream.boxed())
+        });
+        
+        // Convert receiver to BoxStream
+        Ok(rx.boxed())
     }
 
     fn model(&self) -> &Arc<Model> {
@@ -92,43 +127,19 @@ impl MistralLlmServiceImpl {
             Some(jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::local_runner_settings::ModelSettings::TextModel(
                 text_model,
             )) => {
-                let model_type = ModelType::TextModel;
                 let model_name = text_model.model_name_or_path.clone();
-
-                let isq_type = text_model.isq_type.map(Self::convert_isq_type);
-
-                let with_logging = text_model.with_logging;
-                let with_paged_attn = text_model.with_paged_attn;
                 Ok(Self {
                     model,
-                    model_type,
                     model_name,
-                    with_logging,
-                    with_paged_attn,
-                    isq_type,
-                    tok_model_id: None,
-                    gguf_files: vec![],
                 })
             }
             Some(jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::local_runner_settings::ModelSettings::GgufModel(
                 gguf_model,
             )) => {
-                let model_type = ModelType::GgufModel;
                 let model_name = gguf_model.model_name_or_path.clone();
-                let gguf_files = gguf_model.gguf_files.clone();
-
-                let tok_id = gguf_model.tok_model_id.clone();
-
-                let with_logging = gguf_model.with_logging;
                 Ok(Self {
                     model,
-                    model_type,
                     model_name,
-                    with_logging,
-                    with_paged_attn: false, // GGUF models don't use paged attention
-                    isq_type: None,
-                    tok_model_id: tok_id,
-                    gguf_files,
                 })
             }
             None => {
@@ -145,203 +156,79 @@ impl MistralLlmServiceImpl {
         Ok(response)
     }
 
-    async fn run(&mut self, args: &[u8]) -> Result<Vec<Vec<u8>>> {
-        // Get model reference
-        let model = &self.model;
+}
 
-        // Build request based on args type - no function app available in this context
-        // TODO: This should be injected from the caller context for function calling
-        let converter = DefaultLLMRequestConverter::new(None);
-        let request_builder = if let Ok(chat_args) =
-            ProstMessageCodec::deserialize_message::<LlmChatArgs>(args)
-        {
-            converter.build_request(&chat_args, false).await?
-        } else if let Ok(completion_args) =
-            ProstMessageCodec::deserialize_message::<LlmCompletionArgs>(args)
-        {
-            converter
-                .build_completion_request(&completion_args, false)
-                .await?
-        } else {
-            return Err(JobWorkerError::InvalidParameter("Invalid args type".to_string()).into());
-        };
-
-        // Send request to model and get response
-        let response = model.send_chat_request(request_builder).await?;
-        let result =
-            if let Ok(_chat_args) = ProstMessageCodec::deserialize_message::<LlmChatArgs>(args) {
-                DefaultLLMResultConverter::convert_chat_completion_result(&response)
-            } else {
-                // For completion requests, convert differently
-                // TODO: Use appropriate completion conversion method
-                DefaultLLMResultConverter::convert_chat_completion_result(&response)
+// Phase 1: 変換ロジック実装（設計書241-308行）
+impl MistralLlmServiceImpl {
+    /// プロトコルメッセージをMistralRS形式に変換
+    pub fn convert_proto_messages(&self, args: &LlmChatArgs) -> Result<Vec<MistralRSMessage>> {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{ChatRole, message_content};
+        
+        args.messages.iter().map(|msg| {
+            let role = match ChatRole::try_from(msg.role)? {
+                ChatRole::User => TextMessageRole::User,
+                ChatRole::Assistant => TextMessageRole::Assistant,
+                ChatRole::System => TextMessageRole::System,
+                ChatRole::Tool => TextMessageRole::Tool,
+                ChatRole::Unspecified => TextMessageRole::User,
             };
-
-        Ok(vec![ProstMessageCodec::serialize_message(&result)?])
+            
+            match &msg.content {
+                Some(content) => match &content.content {
+                    Some(message_content::Content::Text(text)) => Ok(MistralRSMessage {
+                        role,
+                        content: text.clone(),
+                        tool_call_id: None,
+                    }),
+                    Some(message_content::Content::ToolCalls(_tool_calls)) => {
+                        // Assistant role with tool calls - content is typically empty
+                        Ok(MistralRSMessage {
+                            role: TextMessageRole::Assistant,
+                            content: String::new(),
+                            tool_call_id: None,
+                        })
+                    },
+                    _ => Ok(MistralRSMessage {
+                        role,
+                        content: String::new(),
+                        tool_call_id: None,
+                    }),
+                },
+                None => Ok(MistralRSMessage {
+                    role,
+                    content: String::new(),
+                    tool_call_id: None,
+                }),
+            }
+        }).collect()
     }
 
-    async fn run_stream(&mut self, args: &[u8]) -> Result<BoxStream<'static, ResultOutputItem>> {
-        // Get model reference and clone it to move into the spawned task
-        let model = self.model.clone();
-
-        // Build request based on args type - no function app available in this context
-        // TODO: This should be injected from the caller context for function calling
-        let converter = DefaultLLMRequestConverter::new(None);
-        let request_builder = if let Ok(chat_args) =
-            ProstMessageCodec::deserialize_message::<LlmChatArgs>(args)
-        {
-            converter.build_request(&chat_args, true).await?
-        } else if let Ok(completion_args) =
-            ProstMessageCodec::deserialize_message::<LlmCompletionArgs>(args)
-        {
-            converter
-                .build_completion_request(&completion_args, true)
-                .await?
-        } else {
-            return Err(JobWorkerError::InvalidParameter("Invalid args type".to_string()).into());
-        };
-
-        // Create a channel to send processed chunks through
-        let (mut tx, rx) = futures::channel::mpsc::channel(10);
-
-        // Spawn a task to handle the streaming and channel sending
-        tokio::spawn(async move {
-            // Send request to model and get response stream
-            let result = async {
-                let mut stream = model.stream_chat_request(request_builder).await?;
-
-                // Process chunks until the stream is exhausted
-                while let Some(response) = stream.next().await {
-                    match response {
-                        mistralrs::Response::Chunk(chunk_response) => {
-                            // Convert chunk to LlmResult
-                            let llm_result =
-                                DefaultLLMResultConverter::convert_chat_completion_chunk_result(
-                                    &chunk_response,
-                                );
-                            // Serialize to bytes
-                            match ProstMessageCodec::serialize_message(&llm_result) {
-                                Ok(bytes) => {
-                                    let item = ResultOutputItem {
-                                        item: Some(
-                                            proto::jobworkerp::data::result_output_item::Item::Data(
-                                                bytes,
-                                            ),
-                                        ),
-                                    };
-                                    // Send the item through the channel
-                                    if tx.send(item).await.is_err() {
-                                        // Channel closed, receiver dropped
-                                        break;
-                                    }
-                                    if DefaultLLMResultConverter::is_chat_finished(&chunk_response)
-                                    {
-                                        break;
-                                    }
-                                }
-                                Err(e) => {
-                                    ::tracing::error!("Failed to serialize chunk result: {}", e);
-                                    // Send empty data
-                                    let item = ResultOutputItem {
-                                        item: Some(
-                                            proto::jobworkerp::data::result_output_item::Item::Data(
-                                                Vec::new(),
-                                            ),
-                                        ),
-                                    };
-                                    if tx.send(item).await.is_err() {
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        mistralrs::Response::CompletionChunk(chunk_response) => {
-                            // Convert chunk to LlmResult
-                            let llm_result =
-                                DefaultLLMResultConverter::convert_completion_chunk_result(
-                                    &chunk_response,
-                                );
-                            // Serialize to bytes
-                            match ProstMessageCodec::serialize_message(&llm_result) {
-                                Ok(bytes) => {
-                                    let item = ResultOutputItem {
-                                        item: Some(
-                                            proto::jobworkerp::data::result_output_item::Item::Data(
-                                                bytes,
-                                            ),
-                                        ),
-                                    };
-                                    // Send the item through the channel
-                                    if tx.send(item).await.is_err() {
-                                        // Channel closed, receiver dropped
-                                        break;
-                                    }
-                                    if DefaultLLMResultConverter::is_completion_finished(
-                                        &chunk_response,
-                                    ) {
-                                        break;
-                                    }
-                                }
-                                Err(e) => {
-                                    ::tracing::error!("Failed to serialize chunk result: {}", e);
-                                    // Send empty data
-                                    let item = ResultOutputItem {
-                                        item: Some(
-                                            proto::jobworkerp::data::result_output_item::Item::Data(
-                                                Vec::new(),
-                                            ),
-                                        ),
-                                    };
-                                    if tx.send(item).await.is_err() {
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        _ => {
-                            ::tracing::warn!("Received unexpected response type from LLM");
-                            // Send empty data
-                            let item = ResultOutputItem {
-                                item: Some(
-                                    proto::jobworkerp::data::result_output_item::Item::Data(
-                                        Vec::new(),
-                                    ),
-                                ),
-                            };
-                            if tx.send(item).await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                // Send end marker
-                let end_item = ResultOutputItem {
-                    item: Some(proto::jobworkerp::data::result_output_item::Item::End(
-                        proto::jobworkerp::data::Trailer {
-                            metadata: std::collections::HashMap::new(),
-                        },
-                    )),
-                };
-
-                // Ignoring result - if this fails, the receiver is already gone
-                let _ = tx.send(end_item).await;
-
-                Ok::<_, anyhow::Error>(())
+    /// MistralRS APIからTool calls抽出
+    pub fn extract_tool_calls_from_response(&self, response: &mistralrs::ChatCompletionResponse) -> Result<Vec<MistralRSToolCall>> {
+        if let Some(first_choice) = response.choices.first() {
+            if let Some(tool_calls) = &first_choice.message.tool_calls {
+                return Ok(tool_calls.iter().map(|tc| MistralRSToolCall {
+                    id: tc.id.clone(),
+                    function_name: tc.function.name.clone(),
+                    arguments: tc.function.arguments.clone(),
+                }).collect());
             }
-            .await;
-
-            if let Err(e) = result {
-                ::tracing::error!("Error processing LLM stream: {}", e);
-            }
-        });
-
-        // Convert the receiver to a BoxStream and return it
-        Ok(rx.boxed())
+        }
+        Ok(vec![])
     }
 
-    async fn cancel(&mut self) {
-        ::tracing::warn!("cannot cancel request until timeout")
+    /// ストリーミング用Tool calls抽出
+    pub fn extract_tool_calls_from_chunk_response(&self, response: &mistralrs::ChatCompletionChunkResponse) -> Result<Vec<MistralRSToolCall>> {
+        if let Some(first_choice) = response.choices.first() {
+            if let Some(tool_calls) = &first_choice.delta.tool_calls {
+                return Ok(tool_calls.iter().map(|tc| MistralRSToolCall {
+                    id: tc.id.clone(),
+                    function_name: tc.function.name.clone(),
+                    arguments: tc.function.arguments.clone(),
+                }).collect());
+            }
+        }
+        Ok(vec![])
     }
 }
 
@@ -352,10 +239,13 @@ impl MistralLlmServiceImpl {
 mod tests {
     use super::*;
     use anyhow::Result;
+    use app::app::function::{FunctionAppImpl, UseFunctionApp};
+    use app::module::test::create_hybrid_test_app;
     use futures::stream::StreamExt;
+    // removed ProstMessageCodec import as it's not used anymore
     use jobworkerp_runner::jobworkerp::runner::llm::{
         llm_runner_settings::LocalRunnerSettings,
-        LlmChatArgs, LlmCompletionArgs,
+        LlmChatArgs, LlmChatResult, LlmCompletionArgs,
     };
 
     #[ignore]
@@ -370,9 +260,22 @@ mod tests {
         // Create completion args
         let args = create_completion_args(false)?;
 
-        // Convert to request builder
-        let converter = DefaultLLMRequestConverter::new(None);
-        let request_builder = converter.build_completion_request(&args, false).await?;
+        // Create function app for converter
+        let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+
+        // Create test service with mixin
+        struct TestLLMService {
+            function_app: Arc<FunctionAppImpl>,
+        }
+        impl UseFunctionApp for TestLLMService {
+            fn function_app(&self) -> &FunctionAppImpl {
+                &self.function_app
+            }
+        }
+        impl LLMRequestConverter for TestLLMService {}
+        
+        let test_service = TestLLMService { function_app: app_module.function_app.clone() };
+        let request_builder = test_service.build_completion_request(&args, false).await?;
 
         // Send request
         let response = service.request_chat(request_builder).await?;
@@ -410,10 +313,22 @@ mod tests {
         // Create chat args
         let args = create_chat_args(false)?;
 
-        // Convert to request builder
-        let request_builder = DefaultLLMRequestConverter::new(None)
-            .build_request(&args, false)
-            .await?;
+        // Create function app for converter
+        let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+
+        // Create test service with mixin
+        struct TestChatService {
+            function_app: Arc<FunctionAppImpl>,
+        }
+        impl UseFunctionApp for TestChatService {
+            fn function_app(&self) -> &FunctionAppImpl {
+                &self.function_app
+            }
+        }
+        impl LLMRequestConverter for TestChatService {}
+        
+        let test_service = TestChatService { function_app: app_module.function_app.clone() };
+        let request_builder = test_service.build_request(&args, false).await?;
 
         // Send request
         let response = service.request_chat(request_builder).await?;
@@ -445,10 +360,22 @@ mod tests {
         // Create chat args
         let args = create_chat_args(false)?;
 
-        // Convert to request builder
-        let request_builder = DefaultLLMRequestConverter::new(None)
-            .build_request(&args, false)
-            .await?;
+        // Create function app for converter
+        let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+
+        // Create test service with mixin
+        struct TestGGUFService {
+            function_app: Arc<FunctionAppImpl>,
+        }
+        impl UseFunctionApp for TestGGUFService {
+            fn function_app(&self) -> &FunctionAppImpl {
+                &self.function_app
+            }
+        }
+        impl LLMRequestConverter for TestGGUFService {}
+        
+        let test_service = TestGGUFService { function_app: app_module.function_app.clone() };
+        let request_builder = test_service.build_request(&args, false).await?;
 
         // Send request
         let response = service.request_chat(request_builder).await?;
@@ -480,45 +407,64 @@ mod tests {
         // Create chat args for streaming
         let args = create_chat_args(true)?;
 
-        // Convert to request builder
-        let converter = DefaultLLMRequestConverter::new(None);
-        let request_builder = converter.build_request(&args, true).await?;
+        // Create function app for converter
+        let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
-        // Use the internal streaming method directly
-        let args_bytes = ProstMessageCodec::serialize_message(&args)?;
-        let mut service_mut = service; // Make mutable for run_stream
-        let stream = service_mut.run_stream(&args_bytes).await?;
+        // Create test service with mixin for streaming
+        struct TestLLMStreamService {
+            function_app: Arc<FunctionAppImpl>,
+        }
+        impl UseFunctionApp for TestLLMStreamService {
+            fn function_app(&self) -> &FunctionAppImpl {
+                &self.function_app
+            }
+        }
+        impl LLMRequestConverter for TestLLMStreamService {}
+        
+        let test_service = TestLLMStreamService { function_app: app_module.function_app.clone() };
+        let request_builder = test_service.build_request(&args, true).await?;
+
+        // Use MistralCoreService stream_chat method
+        let stream = service.stream_chat(request_builder).await?;
 
         let mut stream = stream;
         let mut count = 0;
         let mut output = Vec::new();
 
-        while let Some(item) = stream.next().await {
-            match item.item {
-                Some(proto::jobworkerp::data::result_output_item::Item::Data(data)) => {
-                    // Deserialize the LLM result
-                    let result = ProstMessageCodec::deserialize_message::<
-                        jobworkerp_runner::jobworkerp::runner::llm::LlmChatResult,
-                    >(&data)?;
-
-                    println!("Stream item: {:?}", &result);
-
-                    if let Some(content) = &result.content {
-                        if let Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) = &content.content {
-                            if !text.is_empty() {
-                                output.push(text.clone());
-                            }
-                        }
-                    }
-
-                    count += 1;
-
-                    if result.done {
-                        break;
+        while let Some(response) = stream.next().await {
+            // Convert MistralRS response to LlmChatResult based on response type
+            let result = match response {
+                mistralrs::Response::Chunk(chunk) => {
+                    DefaultLLMResultConverter::convert_chat_completion_chunk_result(&chunk)
+                }
+                mistralrs::Response::Done(completion) => {
+                    DefaultLLMResultConverter::convert_chat_completion_result(&completion)
+                }
+                _ => {
+                    // Handle other response types
+                    LlmChatResult {
+                        content: None,
+                        reasoning_content: None,
+                        done: true,
+                        usage: None,
                     }
                 }
-                Some(proto::jobworkerp::data::result_output_item::Item::End(_)) => break,
-                None => break,
+            };
+
+            println!("Stream item done: {}", result.done);
+
+            if let Some(content) = &result.content {
+                if let Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) = &content.content {
+                    if !text.is_empty() {
+                        output.push(text.clone());
+                    }
+                }
+            }
+
+            count += 1;
+
+            if result.done {
+                break;
             }
         }
 
@@ -540,39 +486,62 @@ mod tests {
         // Create chat args for streaming
         let args = create_chat_args(true)?;
 
-        // Use the internal streaming method directly
-        let args_bytes = ProstMessageCodec::serialize_message(&args)?;
-        let mut service_mut = service; // Make mutable for run_stream
-        let stream = service_mut.run_stream(&args_bytes).await?;
+        // Create function app for converter
+        let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+
+        // Create test service with mixin for GGUF streaming
+        struct TestGGUFStreamService {
+            function_app: Arc<FunctionAppImpl>,
+        }
+        impl UseFunctionApp for TestGGUFStreamService {
+            fn function_app(&self) -> &FunctionAppImpl {
+                &self.function_app
+            }
+        }
+        impl LLMRequestConverter for TestGGUFStreamService {}
+        
+        let test_service = TestGGUFStreamService { function_app: app_module.function_app.clone() };
+        let request_builder = test_service.build_request(&args, true).await?;
+
+        // Use MistralCoreService stream_chat method
+        let stream = service.stream_chat(request_builder).await?;
 
         let mut stream = stream;
         let mut count = 0;
         let mut output = Vec::new();
 
-        while let Some(item) = stream.next().await {
-            match item.item {
-                Some(proto::jobworkerp::data::result_output_item::Item::Data(data)) => {
-                    // Deserialize the LLM result
-                    let result = ProstMessageCodec::deserialize_message::<
-                        jobworkerp_runner::jobworkerp::runner::llm::LlmChatResult,
-                    >(&data)?;
-
-                    if let Some(content) = &result.content {
-                        if let Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) = &content.content {
-                            if !text.is_empty() {
-                                output.push(text.clone());
-                            }
-                        }
-                    }
-
-                    count += 1;
-
-                    if result.done {
-                        break;
+        while let Some(response) = stream.next().await {
+            // Convert MistralRS response to LlmChatResult based on response type
+            let result = match response {
+                mistralrs::Response::Chunk(chunk) => {
+                    DefaultLLMResultConverter::convert_chat_completion_chunk_result(&chunk)
+                }
+                mistralrs::Response::Done(completion) => {
+                    DefaultLLMResultConverter::convert_chat_completion_result(&completion)
+                }
+                _ => {
+                    // Handle other response types
+                    LlmChatResult {
+                        content: None,
+                        reasoning_content: None,
+                        done: true,
+                        usage: None,
                     }
                 }
-                Some(proto::jobworkerp::data::result_output_item::Item::End(_)) => break,
-                None => break,
+            };
+
+            if let Some(content) = &result.content {
+                if let Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) = &content.content {
+                    if !text.is_empty() {
+                        output.push(text.clone());
+                    }
+                }
+            }
+
+            count += 1;
+
+            if result.done {
+                break;
             }
         }
 
@@ -585,41 +554,143 @@ mod tests {
     #[ignore]
     #[tokio::test]
     async fn test_llm_tool_runner() -> Result<()> {
+        // NOTE: このテストは現状失敗する想定（Phase 2でtool calling機能完全実装後に成功予定）
+        // Phase 1では基本的なLLM応答確認のみ、実際のtool実行統合は未実装
+        
         // Create tool-capable settings
         let settings = create_mistral_tool_settings()?;
 
         // Create service instance
         let service = MistralLlmServiceImpl::new(&settings).await?;
 
-        // Create tool args
+        // Create tool args with financial data query
         let args = create_tool_args()?;
 
-        // Convert to request builder
-        let request_builder = DefaultLLMRequestConverter::new(None)
-            .build_request(&args, false)
-            .await?;
+        // function_app will automatically resolve available tools from function_sets
+        println!("Using function_app to resolve tools from function_set: HTTP_REQUEST");
 
-        // Send request
+        // Create function app for converter
+        let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+
+        // Create test service with mixin for tool testing
+        struct TestToolService {
+            function_app: Arc<FunctionAppImpl>,
+        }
+        impl UseFunctionApp for TestToolService {
+            fn function_app(&self) -> &FunctionAppImpl {
+                &self.function_app
+            }
+        }
+        impl LLMRequestConverter for TestToolService {}
+        
+        let test_service = TestToolService { function_app: app_module.function_app.clone() };
+        let request_builder = test_service.build_request(&args, false).await?;
+
+        // Send request to LLM with tool schemas
         let response = service.request_chat(request_builder).await?;
 
         // Convert to result
         let result = DefaultLLMResultConverter::convert_chat_completion_result(&response);
 
-        println!("Tool result: {:#?}", &result);
+        println!("Tool execution test result: {:#?}", &result);
 
-        // Check if response contains tool calls or text
-        assert!(result.content.is_some());
+        // Phase 1: 基本的な応答確認（tool calling統合は未実装なので失敗想定）
+        assert!(result.content.is_some(), "Expected some content from LLM");
+        
         if let Some(content) = result.content {
             match content.content {
                 Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::ToolCalls(tool_calls)) => {
-                    assert!(!tool_calls.calls.is_empty(), "Expected tool calls");
-                    println!("Tool calls found: {}", tool_calls.calls.len());
+                    // LLMがtool callsを返した場合（Phase 2で実装予定）
+                    assert!(!tool_calls.calls.is_empty(), "Expected non-empty tool calls");
+                    println!("LLM requested {} tool calls:", tool_calls.calls.len());
+                    for (i, call) in tool_calls.calls.iter().enumerate() {
+                        println!("  Tool call {}: {} with args: {}", i + 1, call.fn_name, call.fn_arguments);
+                    }
+                    // TODO: Phase 2でtool実行とレスポンス統合を実装
+                    println!("NOTE: Actual tool execution not implemented in Phase 1");
                 }
                 Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) => {
+                    // LLMがテキスト応答を返した場合
                     assert!(!text.is_empty(), "Expected non-empty text response");
-                    println!("Text response: {}", text);
+                    println!("LLM text response: {}", text);
+                    println!("NOTE: LLM did not use available tools (expected in Phase 1)");
                 }
-                _ => panic!("Expected either tool calls or text content"),
+                _ => {
+                    panic!("Expected either tool calls or text content from LLM");
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_gguf_llm_tool_runner() -> Result<()> {
+        // NOTE: このテストは現状失敗する想定（Phase 2でtool calling機能完全実装後に成功予定）
+        // GGUF版でのtool calling統合テスト
+        
+        // Create GGUF tool-capable settings
+        let settings = create_gguf_mistral_tool_settings()?;
+
+        // Create service instance
+        let service = MistralLlmServiceImpl::new(&settings).await?;
+
+        // Create tool args with financial data query
+        let args = create_tool_args()?;
+
+        // function_app will automatically resolve available tools from function_sets
+        println!("Using function_app to resolve tools from function_set: HTTP_REQUEST for GGUF LLM");
+
+        // Create function app for converter
+        let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+
+        // Create test service with mixin for GGUF tool testing
+        struct TestGGUFToolService {
+            function_app: Arc<FunctionAppImpl>,
+        }
+        impl UseFunctionApp for TestGGUFToolService {
+            fn function_app(&self) -> &FunctionAppImpl {
+                &self.function_app
+            }
+        }
+        impl LLMRequestConverter for TestGGUFToolService {}
+        
+        let test_service = TestGGUFToolService { function_app: app_module.function_app.clone() };
+        let request_builder = test_service.build_request(&args, false).await?;
+
+        // Send request to GGUF LLM with tool schemas
+        let response = service.request_chat(request_builder).await?;
+
+        // Convert to result
+        let result = DefaultLLMResultConverter::convert_chat_completion_result(&response);
+
+        println!("GGUF Tool execution test result: {:#?}", &result);
+
+        // Phase 1: 基本的な応答確認（tool calling統合は未実装なので失敗想定）
+        assert!(result.content.is_some(), "Expected some content from GGUF LLM");
+        
+        if let Some(content) = result.content {
+            match content.content {
+                Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::ToolCalls(tool_calls)) => {
+                    // GGUF LLMがtool callsを返した場合（Phase 2で実装予定）
+                    assert!(!tool_calls.calls.is_empty(), "Expected non-empty tool calls from GGUF");
+                    println!("GGUF LLM requested {} tool calls:", tool_calls.calls.len());
+                    for (i, call) in tool_calls.calls.iter().enumerate() {
+                        println!("  GGUF Tool call {}: {} with args: {}", i + 1, call.fn_name, call.fn_arguments);
+                    }
+                    // TODO: Phase 2でtool実行とレスポンス統合を実装
+                    println!("NOTE: Actual tool execution not implemented in Phase 1");
+                }
+                Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) => {
+                    // GGUF LLMがテキスト応答を返した場合
+                    assert!(!text.is_empty(), "Expected non-empty text response from GGUF");
+                    println!("GGUF LLM text response: {}", text);
+                    println!("NOTE: GGUF LLM did not use available tools (expected in Phase 1)");
+                }
+                _ => {
+                    panic!("Expected either tool calls or text content from GGUF LLM");
+                }
             }
         }
 
@@ -764,67 +835,14 @@ You SHOULD NOT include any other text in the response.
             }),
             function_options: Some(FunctionOptions {
                 use_function_calling: true,
+                function_set_name: Some("HTTP_REQUEST".to_string()),
                 ..Default::default()
             }),
             ..Default::default()
         };
         Ok(args)
     }
-    fn tool_schemas() -> Vec<String> {
-        vec![
-            serde_json::json!({
-                "name": "financial_ratios.interest_coverage", "description": "Calculate a company's interest coverage ratio given the company name and duration",
-                "parameters": {
-                    "type": "dict",
-                    "properties": {
-                        "company_name": {
-                            "type": "string",
-                            "description": "The name of the company."
-                        },
-                        "years": {
-                            "type": "integer",
-                            "description": "Number of past years to calculate the ratio."
-                        }
-                    },
-                    "required": ["company_name", "years"]
-                }
-            }).to_string(),
-            serde_json::json!({
-                "name": "sales_growth.calculate",
-                "description": "Calculate a company's sales growth rate given the company name and duration",
-                "parameters": {
-                    "type": "dict",
-                    "properties": {
-                        "company": {
-                            "type": "string",
-                            "description": "The company that you want to get the sales growth rate for."
-                        },
-                        "years": {
-                            "type": "integer",
-                            "description": "Number of past years for which to calculate the sales growth rate."
-                        }
-                    },
-                    "required": ["company", "years"]
-                }
-            }).to_string(),
-            serde_json::json!({
-                "name": "weather_forecast",
-                "description": "Retrieve a weather forecast for a specific location and time frame.",
-                "paramenters": {
-                    "type": "dict",
-                    "properties": {
-                        "location": {
-                            "type": "string",
-                            "description": "The city that you want to get the weather for."
-                        },
-                        "days": {
-                            "type": "integer",
-                            "description": "Number of days for the forecast."
-                        }
-                    },
-                    "required": ["location", "days"]
-                }
-            }).to_string(),
-        ]
-    }
+
+    // tool_schemas() function removed - function_app now resolves tools automatically
+    // from function_set_name specified in FunctionOptions
 }

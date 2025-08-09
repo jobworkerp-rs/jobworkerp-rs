@@ -1,5 +1,5 @@
 use anyhow::Result;
-use app::app::function::{FunctionApp, FunctionAppImpl, UseFunctionApp};
+use app::app::function::{FunctionApp, UseFunctionApp};
 use jobworkerp_runner::jobworkerp::runner::llm::{
     llm_chat_args::{message_content, ChatRole, FunctionOptions, LlmOptions},
     llm_completion_args::LlmOptions as CompletionLlmOptions,
@@ -8,7 +8,7 @@ use jobworkerp_runner::jobworkerp::runner::llm::{
 use mistralrs::{Function, RequestBuilder, TextMessageRole, Tool, ToolChoice, ToolType};
 use proto::jobworkerp::function::data::FunctionSpecs;
 use std::collections::HashMap;
-use std::sync::Arc;
+// Arc import removed as it's not used
 
 /// Trait for converting protocol buffer messages to LLM request objects
 pub trait LLMRequestConverter: UseFunctionApp {
@@ -235,22 +235,4 @@ pub trait LLMRequestConverter: UseFunctionApp {
     }
 }
 
-pub struct DefaultLLMRequestConverter {
-    pub function_app: Option<Arc<FunctionAppImpl>>,
-}
-
-impl DefaultLLMRequestConverter {
-    pub fn new(function_app: Option<Arc<FunctionAppImpl>>) -> Self {
-        Self { function_app }
-    }
-}
-
-impl UseFunctionApp for DefaultLLMRequestConverter {
-    fn function_app(&self) -> &FunctionAppImpl {
-        self.function_app
-            .as_ref()
-            .expect("FunctionApp is required for LLM operations with function calling")
-    }
-}
-
-impl LLMRequestConverter for DefaultLLMRequestConverter {}
+// DefaultLLMRequestConverter struct removed - LLMRequestConverter is now used as mixin trait

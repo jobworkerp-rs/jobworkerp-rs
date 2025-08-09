@@ -131,7 +131,7 @@ impl RunnerFactory {
                 }
             }
             Some(RunnerType::LlmCompletion) => Some(Box::new(
-                LLMCompletionRunnerImpl::new_with_cancel_monitoring(create_cancel_helper()),
+                LLMCompletionRunnerImpl::new_with_cancel_monitoring(self.app_module.clone(), create_cancel_helper()),
             )
                 as Box<dyn CancellableRunner + Send + Sync>),
             Some(RunnerType::LlmChat) => {
