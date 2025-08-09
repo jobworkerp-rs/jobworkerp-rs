@@ -147,20 +147,22 @@ impl GenaiChatService {
                 let content = match msg.content {
                     Some(content) => match content.content {
                         Some(ProtoContent::Text(text)) => GenaiMessageContent::Text(text),
+                        // TODO pdf
                         Some(ProtoContent::Image(image)) => {
                             let source = match image.source {
                                 Some(src) => {
                                     if !src.url.is_empty() {
-                                        genai::chat::ImageSource::Url(src.url)
+                                        genai::chat::BinarySource::Url(src.url)
                                     } else if !src.base64.is_empty() {
-                                        genai::chat::ImageSource::Base64(Arc::from(src.base64))
+                                        genai::chat::BinarySource::Base64(Arc::from(src.base64))
                                     } else {
                                         return None;
                                     }
                                 }
                                 None => return None,
                             };
-                            GenaiMessageContent::Parts(vec![genai::chat::ContentPart::Image {
+                            GenaiMessageContent::Parts(vec![genai::chat::ContentPart::Binary {
+                                name: None,
                                 content_type: image.content_type,
                                 source,
                             }])
