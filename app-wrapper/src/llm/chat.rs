@@ -25,12 +25,14 @@ use tokio_util::sync::CancellationToken;
 
 pub mod conversion;
 pub mod genai;
+pub mod mistral;
 pub mod ollama;
 
 pub struct LLMChatRunnerImpl {
     pub app: Arc<AppModule>,
     pub ollama: Option<OllamaChatService>,
     pub genai: Option<GenaiChatService>,
+    pub mistral: Option<mistral::MistralChatService>,
     cancel_helper: Option<CancelMonitoringHelper>,
 }
 
@@ -41,6 +43,7 @@ impl LLMChatRunnerImpl {
             app: app_module,
             ollama: None,
             genai: None,
+            mistral: None,
             cancel_helper: None,
         }
     }
@@ -54,6 +57,7 @@ impl LLMChatRunnerImpl {
             app: app_module,
             ollama: None,
             genai: None,
+            mistral: None,
             cancel_helper: Some(cancel_helper),
         }
     }
@@ -137,6 +141,20 @@ impl RunnerTrait for LLMChatRunnerImpl {
                 self.genai = Some(genai);
                 Ok(())
             }
+            Some(
+                jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::Settings::Local(
+                    settings,
+                ),
+            ) => {
+                let mistral = mistral::MistralChatService::new_with_function_app(
+                    settings.clone(),
+                    self.app.function_app.clone(),
+                )
+                .await?;
+                tracing::info!("{} loaded(local)", RunnerType::LlmChat.as_str_name());
+                self.mistral = Some(mistral);
+                Ok(())
+            }
             _ => Err(anyhow!("model_settings is not set")),
         }
     }
@@ -180,6 +198,19 @@ impl RunnerTrait for LLMChatRunnerImpl {
                     result = genai.request_chat(args, cx, metadata_clone.clone()) => result?,
                     _ = cancellation_token.cancelled() => {
                         return Err(anyhow!("LLM chat (GenAI) request was cancelled"));
+                    }
+                };
+
+                let mut buf = Vec::with_capacity(res.encoded_len());
+                res.encode(&mut buf)
+                    .map_err(|e| anyhow!("encode error: {}", e))?;
+                Ok(buf)
+            } else if let Some(mistral) = self.mistral.as_mut() {
+                // Race between LLM completion and cancellation signal
+                let res = tokio::select! {
+                    result = mistral.request_chat(args, cx, metadata_clone.clone()) => result?,
+                    _ = cancellation_token.cancelled() => {
+                        return Err(anyhow!("LLM chat (Mistral) request was cancelled"));
                     }
                 };
 
@@ -281,6 +312,58 @@ impl RunnerTrait for LLMChatRunnerImpl {
             .boxed();
 
             Ok(cancellable_stream)
+        } else if let Some(mistral) = self.mistral.as_mut() {
+            let stream = mistral.request_stream_chat(args).await?;
+
+            let req_meta = Arc::new(metadata.clone());
+            let cancel_token = cancellation_token.clone();
+
+            // Stream processing with mid-stream cancellation capability
+            let output_stream = stream! {
+                tokio::pin!(stream);
+                loop {
+                    tokio::select! {
+                        item = stream.next() => {
+                            match item {
+                                Some(completion_result) => {
+                                    if completion_result
+                                        .content
+                                        .as_ref()
+                                        .is_some_and(|c| c.content.is_some())
+                                    {
+                                        let buf = ProstMessageCodec::serialize_message(&completion_result);
+                                        if let Ok(buf) = buf {
+                                            yield ResultOutputItem {
+                                                item: Some(result_output_item::Item::Data(buf)),
+                                            };
+                                        } else {
+                                            tracing::error!("Failed to serialize Mistral LLM completion result");
+                                        }
+                                    }
+
+                                    if completion_result.done {
+                                        yield ResultOutputItem {
+                                            item: Some(result_output_item::Item::End(
+                                                proto::jobworkerp::data::Trailer {
+                                                    metadata: (*req_meta).clone(),
+                                                },
+                                            )),
+                                        };
+                                        break;
+                                    }
+                                }
+                                None => break,
+                            }
+                        }
+                        _ = cancel_token.cancelled() => {
+                            tracing::info!("Mistral LLM chat stream was cancelled");
+                            break;
+                        }
+                    }
+                }
+            }.boxed();
+
+            Ok(output_stream)
         } else {
             Err(anyhow!("llm is not initialized"))
         }
