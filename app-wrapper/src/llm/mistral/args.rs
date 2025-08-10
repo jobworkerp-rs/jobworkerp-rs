@@ -12,7 +12,6 @@ use std::collections::HashMap;
 
 /// Trait for converting protocol buffer messages to LLM request objects
 pub trait LLMRequestConverter: UseFunctionApp {
-
     async fn build_request(
         &self,
         args: &LlmChatArgs,
@@ -184,7 +183,21 @@ pub trait LLMRequestConverter: UseFunctionApp {
         // Get function list based on options
         let functions = if let Some(set_name) = &function_opts.function_set_name {
             tracing::debug!("Loading functions from set: {}", set_name);
-            function_app.find_functions_by_set(set_name).await?
+            match function_app.find_functions_by_set(set_name).await {
+                Ok(result) => {
+                    tracing::debug!(
+                        "Found {} functions in set '{}': {:?}",
+                        result.len(),
+                        set_name,
+                        result.iter().map(|f| &f.name).collect::<Vec<_>>()
+                    );
+                    result
+                }
+                Err(e) => {
+                    tracing::error!("Failed to find functions for set '{}': {}", set_name, e);
+                    return Err(e);
+                }
+            }
         } else {
             tracing::debug!(
                 "Loading functions: runners={:?}, workers={:?}",
@@ -207,30 +220,40 @@ pub trait LLMRequestConverter: UseFunctionApp {
 
     /// Convert FunctionSpecs to mistralrs Tools
     fn convert_functions_to_tools(&self, functions: &[FunctionSpecs]) -> Result<Vec<Tool>> {
+        tracing::debug!("Converting {} functions to tools", functions.len());
+        for func in functions {
+            tracing::debug!("Function: {} ({})", func.name, func.description);
+        }
+
         // Convert to ToolInfo format first (reuse existing logic from ollama)
         let tool_infos =
             super::super::chat::conversion::ToolConverter::convert_functions_to_mcp_tools(
                 functions.to_vec(),
             )?;
+        tracing::debug!("Converted to {} tool infos", tool_infos.tools.len());
 
         // Convert ToolInfo to mistralrs Tool format
-        let tools = tool_infos
+        let tools: Vec<Tool> = tool_infos
             .tools
             .iter()
-            .map(|tool| Tool {
-                tp: ToolType::Function,
-                function: Function {
-                    name: tool.name.to_string(),
-                    description: tool.description.clone().map(|d| d.to_string()),
-                    parameters: Some(HashMap::from_iter(
-                        tool.input_schema
-                            .iter()
-                            .map(|(k, v)| (k.clone(), v.clone())),
-                    )),
-                },
+            .map(|tool| {
+                tracing::debug!("Creating MistralRS tool: {}", tool.name);
+                Tool {
+                    tp: ToolType::Function,
+                    function: Function {
+                        name: tool.name.to_string(),
+                        description: tool.description.clone().map(|d| d.to_string()),
+                        parameters: Some(HashMap::from_iter(
+                            tool.input_schema
+                                .iter()
+                                .map(|(k, v)| (k.clone(), v.clone())),
+                        )),
+                    },
+                }
             })
             .collect();
 
+        tracing::debug!("Created {} MistralRS tools", tools.len());
         Ok(tools)
     }
 }

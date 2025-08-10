@@ -134,7 +134,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                 &runner,
                 tool_name_opt,
             )
-            .await;
+            .await?;
             if let RunnerWithSchema {
                 id: Some(_id),
                 data: Some(runner_data),
@@ -403,7 +403,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         request_args: Map<String, Value>,
         runner: &RunnerWithSchema,
         tool_name_opt: Option<String>,
-    ) -> impl Future<Output = (Option<Value>, Value)> + Send + '_ {
+    ) -> impl Future<Output = Result<(Option<Value>, Value)>> + Send + '_ {
         async move {
             let settings = request_args.get("settings").cloned();
             let arguments = if runner
@@ -414,24 +414,28 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                 let mut obj_map = Map::new();
                 obj_map.insert(
                     "tool_name".to_string(),
-                    serde_json::to_value(tool_name_opt).unwrap_or(Value::Null),
+                    serde_json::to_value(tool_name_opt).map_err(|e| {
+                        JobWorkerError::InvalidParameter(format!(
+                            "Failed to parse tool_name: {e:?}"
+                        ))
+                    })?,
                 );
                 obj_map.insert(
                     "arg_json".to_string(),
-                    Value::String(
-                        serde_json::to_string(&request_args)
-                            .inspect_err(|e| {
-                                tracing::error!("Failed to parse settings as json: {}", e)
-                            })
-                            .unwrap_or_default(),
-                    ),
+                    Value::String(serde_json::to_string(&request_args).map_err(|e| {
+                        JobWorkerError::InvalidParameter(format!(
+                            "Failed to parse settings as json: {e:?}"
+                        ))
+                    })?),
                 );
                 Value::Object(obj_map)
             } else {
-                request_args
-                    .get("arguments")
-                    .cloned()
-                    .unwrap_or(Value::Null)
+                request_args.get("arguments").cloned().ok_or_else(|| {
+                    JobWorkerError::InvalidParameter(format!(
+                        "Failed to find 'arguments' in request_args: {:#?}",
+                        &request_args
+                    ))
+                })?
             };
 
             tracing::debug!(
@@ -440,7 +444,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                 arguments
             );
 
-            (settings, arguments)
+            Ok((settings, arguments))
         }
     }
 

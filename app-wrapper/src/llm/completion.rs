@@ -48,7 +48,10 @@ impl LLMCompletionRunnerImpl {
     }
 
     /// Constructor with cancellation monitoring (DI integration version)
-    pub fn new_with_cancel_monitoring(app: Arc<AppModule>, cancel_helper: CancelMonitoringHelper) -> Self {
+    pub fn new_with_cancel_monitoring(
+        app: Arc<AppModule>,
+        cancel_helper: CancelMonitoringHelper,
+    ) -> Self {
         Self {
             app,
             ollama: None,
@@ -145,7 +148,9 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                     settings,
                 ),
             ) => {
-                let mistral = mistral::MistralCompletionService::new(settings, self.app.function_app.clone()).await?;
+                let mistral =
+                    mistral::MistralCompletionService::new(settings, self.app.function_app.clone())
+                        .await?;
                 tracing::info!(
                     "{} loaded(mistral)",
                     RunnerType::LlmCompletion.as_str_name()
