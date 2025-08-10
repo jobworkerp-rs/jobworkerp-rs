@@ -21,35 +21,44 @@ pub trait MistralTracingService {
     ///
     /// This method wraps the given async operation with appropriate tracing spans
     /// and context propagation for distributed tracing.
-    async fn execute_with_tracing<F, T>(&self, action: F, context: Option<Context>) -> Result<T>
+    fn execute_with_tracing<F, T>(
+        &self,
+        action: F,
+        context: Option<Context>,
+    ) -> impl Future<Output = Result<T>> + Send
     where
         F: Future<Output = Result<T, anyhow::Error>> + Send,
-        T: Send;
+        T: Send,
+        Self: std::marker::Sync;
 
     /// Execute an operation with OpenTelemetry span
-    async fn execute_with_span<F, T>(
+    fn execute_with_span<F, T>(
         &self,
         _span_name: &str,
         attributes: OtelSpanAttributes,
         parent_context: Option<Context>,
         action: F,
-    ) -> Result<(T, Context)>
+    ) -> impl Future<Output = Result<(T, Context)>> + Send
     where
         F: Future<Output = Result<T, JobWorkerError>> + Send + 'static,
         T: Send + serde::Serialize + 'static,
+        Self: std::marker::Sync,
     {
-        if let Some(otel_client) = self.get_otel_client() {
-            let parent_ctx = parent_context.unwrap_or_else(opentelemetry::Context::current);
-            let result = otel_client
-                .with_span_result(attributes, Some(parent_ctx.clone()), action)
-                .await
-                .map_err(|e| anyhow::anyhow!("OpenTelemetry span execution failed: {}", e))?;
-            Ok((result, parent_ctx))
-        } else {
-            let result = action.await
-                .map_err(|e| anyhow::anyhow!("Action execution failed: {}", e))?;
-            let context = parent_context.unwrap_or_else(opentelemetry::Context::current);
-            Ok((result, context))
+        async move {
+            if let Some(otel_client) = self.get_otel_client() {
+                let parent_ctx = parent_context.unwrap_or_else(opentelemetry::Context::current);
+                let result = otel_client
+                    .with_span_result(attributes, Some(parent_ctx.clone()), action)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("OpenTelemetry span execution failed: {e}"))?;
+                Ok((result, parent_ctx))
+            } else {
+                let result = action
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Action execution failed: {e}"))?;
+                let context = parent_context.unwrap_or_else(opentelemetry::Context::current);
+                Ok((result, context))
+            }
         }
     }
 

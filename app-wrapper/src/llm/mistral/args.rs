@@ -1,5 +1,5 @@
 use anyhow::Result;
-use app::app::function::{FunctionApp, UseFunctionApp};
+use app::app::function::{FunctionApp, FunctionAppImpl, UseFunctionApp};
 use jobworkerp_runner::jobworkerp::runner::llm::{
     llm_chat_args::{message_content, ChatRole, FunctionOptions, LlmOptions},
     llm_completion_args::LlmOptions as CompletionLlmOptions,
@@ -12,107 +12,116 @@ use std::collections::HashMap;
 
 /// Trait for converting protocol buffer messages to LLM request objects
 pub trait LLMRequestConverter: UseFunctionApp {
-    async fn build_request(
+    fn build_request(
         &self,
         args: &LlmChatArgs,
         _need_stream: bool,
-    ) -> Result<RequestBuilder> {
-        let mut builder = RequestBuilder::new();
+    ) -> impl std::future::Future<Output = Result<RequestBuilder>> + Send {
+        let args = args.clone();
+        let function_app = self.function_app();
+        async move {
+            let mut builder = RequestBuilder::new();
 
-        // Set stream mode based on need_stream parameter
-        // TODO: Add proper stream support to RequestBuilder if available
+            // Note: Streaming is implemented at higher level in mistral.rs stream_chat()
 
-        // Process messages
-        for msg in &args.messages {
-            let role = match ChatRole::try_from(msg.role)? {
-                ChatRole::User => TextMessageRole::User,
-                ChatRole::Assistant => TextMessageRole::Assistant,
-                ChatRole::System => TextMessageRole::System,
-                ChatRole::Tool => TextMessageRole::Tool,
-                ChatRole::Unspecified => TextMessageRole::User, // Default fallback
-            };
+            // Process messages
+            for msg in &args.messages {
+                let role = match ChatRole::try_from(msg.role)? {
+                    ChatRole::User => TextMessageRole::User,
+                    ChatRole::Assistant => TextMessageRole::Assistant,
+                    ChatRole::System => TextMessageRole::System,
+                    ChatRole::Tool => TextMessageRole::Tool,
+                    ChatRole::Unspecified => TextMessageRole::User, // Default fallback
+                };
 
-            // Handle message content
-            match &msg.content {
-                Some(content) => match &content.content {
-                    Some(message_content::Content::Text(text)) => {
-                        // For tool messages, we need to handle tool call ID from metadata if available
-                        if matches!(role, TextMessageRole::Tool) {
-                            // Tool messages should contain the result of a tool call
-                            // The format should include the call_id for proper conversation flow
-                            builder =
-                                builder.add_tool_message(text.clone(), "tool_call_id".to_string());
-                        } else {
-                            builder = builder.add_message(role, text);
+                // Handle message content
+                match &msg.content {
+                    Some(content) => match &content.content {
+                        Some(message_content::Content::Text(text)) => {
+                            // For tool messages, we need to handle tool call ID from metadata if available
+                            if matches!(role, TextMessageRole::Tool) {
+                                // Tool messages should contain the result of a tool call
+                                // The format should include the call_id for proper conversation flow
+                                builder = builder.add_tool_message(
+                                    text.clone(),
+                                    "fixed_tool_call_id".to_string(),
+                                );
+                            } else {
+                                builder = builder.add_message(role, text);
+                            }
                         }
-                    }
-                    Some(message_content::Content::Image(_image)) => {
-                        // TODO: Add support for image content
-                        tracing::warn!("Image content not yet supported for mistralrs");
-                        builder = builder.add_message(role, "[Image content not supported]");
-                    }
-                    Some(message_content::Content::ToolCalls(_tool_calls)) => {
-                        // Tool calls are typically handled at the assistant message level
-                        // For now, just add an empty message - proper tool call handling
-                        // should be done when creating the request with tools
-                        tracing::warn!("Tool calls in message content not fully supported yet in mistralrs converter");
-                        builder = builder.add_message(role, "[Tool calls present]");
-                    }
-                    // Note: ToolResult variant doesn't exist in current proto definition
-                    // Some(message_content::Content::ToolResult(_tool_result)) => {
-                    //     tracing::warn!("Tool results not yet supported for mistralrs");
-                    //     builder = builder.add_message(role, "[Tool result not supported]");
-                    // }
+                        Some(message_content::Content::Image(_image)) => {
+                            // Image support requires VisionModel implementation (future phase)
+                            // Ref: https://github.com/EricLBuehler/mistral.rs/blob/main/mistralrs/examples/phi4mm/main.rs
+                            tracing::warn!("Image content not yet supported for mistralrs, requires VisionModel");
+                            builder = builder.add_message(role, "[Image content not supported]");
+                        }
+                        Some(message_content::Content::ToolCalls(_tool_calls)) => {
+                            // Tool calls are typically handled at the assistant message level
+                            // For now, just add an empty message - proper tool call handling
+                            // should be done when creating the request with tools
+                            tracing::warn!("Tool calls in message content not fully supported yet in mistralrs converter");
+                            // builder = builder.add_message(role, "[Tool calls present]");
+                        }
+                        // Note: ToolResult variant doesn't exist in current proto definition
+                        // Some(message_content::Content::ToolResult(_tool_result)) => {
+                        //     tracing::warn!("Tool results not yet supported for mistralrs");
+                        //     builder = builder.add_message(role, "[Tool result not supported]");
+                        // }
+                        None => {
+                            // Handle empty content
+                            builder = builder.add_message(role, "");
+                        }
+                    },
                     None => {
                         // Handle empty content
                         builder = builder.add_message(role, "");
                     }
-                },
-                None => {
-                    // Handle empty content
-                    builder = builder.add_message(role, "");
                 }
             }
-        }
 
-        // Apply LLM options if provided
-        if let Some(opts) = &args.options {
-            builder = Self::apply_chat_options(builder, opts)?;
-        }
+            // Apply LLM options if provided
+            if let Some(opts) = &args.options {
+                builder = Self::apply_chat_options(builder, opts)?;
+            }
 
-        // Handle function calling options
-        if let Some(function_opts) = &args.function_options {
-            if function_opts.use_function_calling {
-                let tools = self.create_tools_from_options(function_opts).await?;
-                if !tools.is_empty() {
-                    builder = builder.set_tools(tools);
-                    builder = builder.set_tool_choice(ToolChoice::Auto);
+            // Handle function calling options
+            if let Some(function_opts) = &args.function_options {
+                if function_opts.use_function_calling {
+                    let tools =
+                        Self::create_tools_from_options_static(function_opts, function_app).await?;
+                    if !tools.is_empty() {
+                        builder = builder.set_tools(tools);
+                        builder = builder.set_tool_choice(ToolChoice::Auto);
+                    }
                 }
             }
-        }
 
-        Ok(builder)
+            Ok(builder)
+        }
     }
 
-    async fn build_completion_request(
+    fn build_completion_request(
         &self,
         args: &LlmCompletionArgs,
         _need_stream: bool,
-    ) -> Result<RequestBuilder> {
-        let mut builder = RequestBuilder::new();
+    ) -> impl std::future::Future<Output = Result<RequestBuilder>> + Send {
+        let args = args.clone();
+        async move {
+            let mut builder = RequestBuilder::new();
 
-        // Set stream mode based on need_stream parameter
-        // TODO: Add proper stream support to RequestBuilder if available
+            // Note: Streaming is implemented at higher level in mistral.rs stream_chat()
 
-        // Set the prompt as a user message
-        builder = builder.add_message(TextMessageRole::User, &args.prompt);
+            // Set the prompt as a user message
+            builder = builder.add_message(TextMessageRole::User, &args.prompt);
 
-        // Apply completion options if provided
-        if let Some(opts) = &args.options {
-            builder = Self::apply_completion_options(builder, opts)?;
+            // Apply completion options if provided
+            if let Some(opts) = &args.options {
+                builder = Self::apply_completion_options(builder, opts)?;
+            }
+
+            Ok(builder)
         }
-
-        Ok(builder)
     }
 
     fn apply_chat_options(
@@ -134,13 +143,18 @@ pub trait LLMRequestConverter: UseFunctionApp {
             builder = builder.set_sampler_topp(top_p.into());
         }
 
-        // Set repeat penalty
+        // Set repeat penalty (mapped to frequency penalty in MistralRS)
         if let Some(repeat_penalty) = opts.repeat_penalty {
             builder = builder.set_sampler_frequency_penalty(repeat_penalty);
         }
 
-        // TODO: Add support for other options like seed, repeat_last_n, etc.
-        // These may need to be mapped to appropriate mistralrs parameters
+        // Handle unsupported parameters with warnings
+        if opts.repeat_last_n.is_some() {
+            tracing::warn!("repeat_last_n is not supported by MistralRS RequestBuilder, ignoring");
+        }
+        if opts.seed.is_some() {
+            tracing::warn!("seed is not supported by MistralRS RequestBuilder, ignoring");
+        }
 
         Ok(builder)
     }
@@ -164,62 +178,79 @@ pub trait LLMRequestConverter: UseFunctionApp {
             builder = builder.set_sampler_topp(top_p.into());
         }
 
-        // Set repeat penalty
+        // Set repeat penalty (mapped to frequency penalty in MistralRS)
         if let Some(repeat_penalty) = opts.repeat_penalty {
             builder = builder.set_sampler_frequency_penalty(repeat_penalty);
         }
 
-        // TODO: Add support for other options like seed, repeat_last_n, etc.
+        // Handle unsupported parameters with warnings
+        if opts.repeat_last_n.is_some() {
+            tracing::warn!("repeat_last_n is not supported by MistralRS RequestBuilder, ignoring");
+        }
+        if opts.seed.is_some() {
+            tracing::warn!("seed is not supported by MistralRS RequestBuilder, ignoring");
+        }
 
         Ok(builder)
     }
 
-    /// Create tools from function options using function app
-    async fn create_tools_from_options(
-        &self,
+    /// Create tools from function options using function app (static version)
+    fn create_tools_from_options_static(
         function_opts: &FunctionOptions,
-    ) -> Result<Vec<Tool>> {
-        let function_app = self.function_app();
-        // Get function list based on options
-        let functions = if let Some(set_name) = &function_opts.function_set_name {
-            tracing::debug!("Loading functions from set: {}", set_name);
-            match function_app.find_functions_by_set(set_name).await {
-                Ok(result) => {
-                    tracing::debug!(
-                        "Found {} functions in set '{}': {:?}",
-                        result.len(),
-                        set_name,
-                        result.iter().map(|f| &f.name).collect::<Vec<_>>()
-                    );
-                    result
+        function_app: &FunctionAppImpl,
+    ) -> impl std::future::Future<Output = Result<Vec<Tool>>> + Send {
+        let function_opts = function_opts.clone();
+        async move {
+            // Get function list based on options
+            let functions = if let Some(set_name) = &function_opts.function_set_name {
+                tracing::debug!("Loading functions from set: {set_name}");
+                match function_app.find_functions_by_set(set_name).await {
+                    Ok(result) => {
+                        tracing::debug!(
+                            "Found {} functions in set '{set_name}': {:?}",
+                            result.len(),
+                            result.iter().map(|f| &f.name).collect::<Vec<_>>()
+                        );
+                        result
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to find functions for set '{set_name}': {e}");
+                        return Err(e);
+                    }
                 }
-                Err(e) => {
-                    tracing::error!("Failed to find functions for set '{}': {}", set_name, e);
-                    return Err(e);
-                }
-            }
-        } else {
-            tracing::debug!(
-                "Loading functions: runners={:?}, workers={:?}",
-                function_opts.use_runners_as_function,
-                function_opts.use_workers_as_function
-            );
-            function_app
-                .find_functions(
-                    !function_opts.use_runners_as_function.unwrap_or(false),
-                    !function_opts.use_workers_as_function.unwrap_or(false),
-                )
-                .await?
-        };
+            } else {
+                tracing::debug!(
+                    "Loading functions: runners={:?}, workers={:?}",
+                    function_opts.use_runners_as_function,
+                    function_opts.use_workers_as_function
+                );
+                function_app
+                    .find_functions(
+                        !function_opts.use_runners_as_function.unwrap_or(false),
+                        !function_opts.use_workers_as_function.unwrap_or(false),
+                    )
+                    .await?
+            };
 
-        // Convert FunctionSpecs to mistralrs Tools
-        let tools = self.convert_functions_to_tools(&functions)?;
-        tracing::debug!("Created {} tools for mistralrs", tools.len());
-        Ok(tools)
+            // Convert FunctionSpecs to mistralrs Tools
+            let tools = Self::convert_functions_to_tools_static(&functions)?;
+            tracing::debug!("Created {} tools for mistralrs", tools.len());
+            Ok(tools)
+        }
     }
 
-    /// Convert FunctionSpecs to mistralrs Tools
-    fn convert_functions_to_tools(&self, functions: &[FunctionSpecs]) -> Result<Vec<Tool>> {
+    /// Create tools from function options using function app
+    fn create_tools_from_options(
+        &self,
+        function_opts: &FunctionOptions,
+    ) -> impl std::future::Future<Output = Result<Vec<Tool>>> + Send {
+        let function_opts = function_opts.clone();
+        let function_app = self.function_app();
+        async move { Self::create_tools_from_options_static(&function_opts, function_app).await }
+    }
+
+    /// Convert FunctionSpecs to mistralrs Tools (static version)
+    fn convert_functions_to_tools_static(functions: &[FunctionSpecs]) -> Result<Vec<Tool>> {
         tracing::debug!("Converting {} functions to tools", functions.len());
         for func in functions {
             tracing::debug!("Function: {} ({})", func.name, func.description);
@@ -255,6 +286,11 @@ pub trait LLMRequestConverter: UseFunctionApp {
 
         tracing::debug!("Created {} MistralRS tools", tools.len());
         Ok(tools)
+    }
+
+    /// Convert FunctionSpecs to mistralrs Tools
+    fn convert_functions_to_tools(&self, functions: &[FunctionSpecs]) -> Result<Vec<Tool>> {
+        Self::convert_functions_to_tools_static(functions)
     }
 }
 

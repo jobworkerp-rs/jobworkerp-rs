@@ -18,8 +18,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use super::super::generic_tracing_helper::{
-    ChatResponse, GenericLLMTracingHelper, LLMMessage,
-    UsageData,
+    ChatResponse, GenericLLMTracingHelper, LLMMessage, UsageData,
 };
 use crate::llm::ThinkTagHelper;
 
@@ -396,7 +395,7 @@ mod test {
             // base_url: Some("http://localhost:11434".to_string()),
             model: "phi4".to_string(),
             system_prompt: Some(
-                "次の文章を日本語に翻訳してください。翻訳結果のみを出力してください".to_string(),
+                "Please translate the following text to Japanese. Output only the translation result.".to_string(),
             ),
             pull_model: Some(false),
         };
@@ -454,7 +453,7 @@ The test checks that the response contains the expected content and meets our qu
             base_url: Some("http://ollama.ollama.svc.cluster.local:11434".to_string()),
             model: "deepseek-r1:32b".to_string(),
             system_prompt: Some(
-                "次の文章を日本語に翻訳してください。翻訳結果のみを出力してください".to_string(),
+                "Please translate the following text to Japanese. Output only the translation result.".to_string(),
             ),
             pull_model: Some(false),
         };

@@ -25,17 +25,16 @@ use std::future::Future;
 use std::sync::Arc;
 use tokio::time::{timeout, Duration};
 
-/// Phase 2: MistralRSToolCallingService - Ollamaパターン採用
 #[derive(Clone)]
 pub struct MistralRSService {
-    pub core_service: Arc<MistralLlmServiceImpl>, // 具体的型を直接使用
-    pub function_app: Arc<FunctionAppImpl>,       // Tool実行機能（必須）
+    pub core_service: Arc<MistralLlmServiceImpl>, // Direct use of concrete type
+    pub function_app: Arc<FunctionAppImpl>,       // Tool execution functionality (required)
     pub otel_client: Option<Arc<GenericOtelClient>>, // トレーシング
     pub config: ToolCallingConfig,                // Tool calling設定
 }
 
 impl MistralRSService {
-    /// コンストラクター（Composition pattern）
+    /// Constructor (Composition pattern)
     pub async fn new_with_function_app(
         settings: LocalRunnerSettings,
         function_app: Arc<FunctionAppImpl>,
@@ -52,20 +51,19 @@ impl MistralRSService {
         })
     }
 
-    /// メインエントリーポイント - Ollamaパターン準拠 (Phase 3: トレーシング統合)
+    /// Main entry point for chat requests with tool calling support
     pub async fn request_chat(
         &self,
         args: LlmChatArgs,
         cx: Context,
         metadata: HashMap<String, String>,
     ) -> Result<LlmChatResult> {
-        // Phase 3: メインリクエストレベルのトレーシング
         let span_name = "mistral_chat_request";
         let mut main_span_builder = OtelSpanBuilder::new(span_name)
             .span_type(OtelSpanType::Span)
             .level("INFO");
 
-        // メタデータ情報を追加
+        // Add metadata information
         let mut span_metadata = std::collections::HashMap::new();
         span_metadata.insert(
             "mistral.request.messages.count".to_string(),
@@ -76,11 +74,11 @@ impl MistralRSService {
             serde_json::Value::Bool(
                 args.function_options
                     .as_ref()
-                    .map_or(false, |opts| opts.use_function_calling),
+                    .is_some_and(|opts| opts.use_function_calling),
             ),
         );
 
-        // メタデータから重要な属性を抽出
+        // Extract important attributes from metadata
         if let Some(job_id) = metadata.get("job_id") {
             main_span_builder = main_span_builder.session_id(job_id.clone());
         }
@@ -90,9 +88,9 @@ impl MistralRSService {
 
         let main_attributes = main_span_builder.metadata(span_metadata).build();
 
-        // 必要なデータを事前に処理（selfの借用エラーを回避）
+        // Pre-process necessary data (avoid self borrowing errors)
         let messages = self.convert_proto_messages(&args).map_err(|e| {
-            JobWorkerError::OtherError(format!("Convert proto messages failed: {}", e))
+            JobWorkerError::OtherError(format!("Convert proto messages failed: {e}"))
         })?;
 
         let tools = if let Some(function_opts) = &args.function_options {
@@ -108,9 +106,7 @@ impl MistralRSService {
                 let created_tools = self
                     .create_tools_from_options(function_opts)
                     .await
-                    .map_err(|e| {
-                        JobWorkerError::OtherError(format!("Create tools failed: {}", e))
-                    })?;
+                    .map_err(|e| JobWorkerError::OtherError(format!("Create tools failed: {e}")))?;
                 tracing::debug!("Created {} tools successfully", created_tools.len());
                 Arc::new(created_tools)
             } else {
@@ -122,22 +118,22 @@ impl MistralRSService {
             Arc::new(vec![])
         };
 
-        // OpenTelemetryコンテキストのクローンを事前に作成
+        // Create OpenTelemetry context clone in advance
         let cx_clone = cx.clone();
         let self_arc = Arc::new(self.clone());
         let self_arc_clone = Arc::clone(&self_arc);
         let main_action = async move {
-            // 再帰的tool calling処理開始（Arcで包む）
+            // Start recursive tool calling processing (wrapped in Arc)
             let final_response = self_arc
                 .request_chat_internal_with_tracing(messages, tools, Some(cx), Arc::new(metadata))
                 .await
-                .map_err(|e| JobWorkerError::OtherError(format!("Internal chat failed: {}", e)))?;
+                .map_err(|e| JobWorkerError::OtherError(format!("Internal chat failed: {e}")))?;
 
-            // 最終結果をprotobuf形式に変換
+            // Convert final result to protobuf format
             Ok(self_arc_clone.convert_mistral_response_to_final_result(&final_response))
         };
 
-        // OpenTelemetryスパンで実行（wrapper構造体使用）
+        // Execute with OpenTelemetry span (using wrapper struct)
         let (result, _) = self
             .execute_with_span(span_name, main_attributes, Some(cx_clone), main_action)
             .await?;
@@ -151,11 +147,11 @@ impl MistralRSService {
     ) -> Result<futures::stream::BoxStream<'static, LlmChatResult>> {
         use futures::stream::{self, StreamExt};
 
-        // Tool callingが必要かチェック
+        // Check if tool calling is needed
         let has_tools = args
             .function_options
             .as_ref()
-            .map_or(false, |opts| opts.use_function_calling);
+            .is_some_and(|opts| opts.use_function_calling);
 
         if !has_tools {
             // Tool callingなし - 直接ストリーミング
@@ -167,7 +163,7 @@ impl MistralRSService {
         // Tool callingあり - 戦略1: Non-streaming tool calling + 最終結果streaming
         tracing::debug!("Tool calling detected, using non-streaming execution + final streaming");
 
-        // 1. Tool callingを非ストリーミングで完全実行
+        // 1. Execute tool calling completely in non-streaming mode
         let final_result = self
             .request_chat(
                 args,
@@ -176,7 +172,7 @@ impl MistralRSService {
             )
             .await?;
 
-        // 2. 最終結果を単一streamアイテムとして返却
+        // 2. Return final result as single stream item
         let result_stream = stream::once(async move { final_result });
         Ok(result_stream.boxed())
     }
@@ -193,7 +189,7 @@ impl MistralRSService {
         let messages = self.convert_proto_messages(&args)?;
         let request_builder = self.build_request_from_messages(&messages, &[]).await?;
 
-        // MistralCoreServiceのstream_chatを使用
+        // Use MistralCoreService's stream_chat
         let mistral_stream: futures::stream::BoxStream<'static, mistralrs::Response> =
             self.core_service.stream_chat(request_builder).await?;
 
@@ -211,10 +207,10 @@ impl MistralRSService {
                     mistralrs::Response::Done(completion) => {
                         let result = self.convert_mistral_response_to_final_result(&completion);
                         yield result;
-                        break; // Done response で終了
+                        break; // End on Done response
                     }
                     _ => {
-                        // その他のレスポンスタイプ（必要に応じて処理を追加）
+                        // Other response types (add processing as needed)
                         tracing::debug!("Received other response type in stream");
                     }
                 }
@@ -224,7 +220,7 @@ impl MistralRSService {
         Ok(result_stream.boxed())
     }
 
-    /// 再帰的tool calling処理（関数型アプローチ）
+    /// Recursive tool calling processing (functional approach)
     async fn request_chat_internal_with_tracing(
         self: Arc<Self>,
         messages: Vec<MistralRSMessage>, // イミュータブル管理
@@ -242,7 +238,7 @@ impl MistralRSService {
         .await
     }
 
-    /// 反復回数制御付きの内部実装（Phase 3: 階層化トレーシング統合）
+    /// Internal implementation with iteration count control
     async fn request_chat_internal_with_iteration_count(
         self: Arc<Self>,
         mut messages: Vec<MistralRSMessage>,
@@ -270,25 +266,7 @@ impl MistralRSService {
             self.config.max_iterations
         );
 
-        // // 同じツール呼び出しの繰り返しを検出
-        // if iteration_count > 0 {
-        //     // 直前のメッセージでエラーが発生している場合、同じツールの繰り返しを避ける
-        //     if let Some(last_msg) = messages.last() {
-        //         if last_msg.content.contains("Error:") || last_msg.content.contains("Failed") {
-        //             tracing::warn!("Previous tool call failed, iteration: {}", iteration_count);
-        //             if iteration_count >= 2 { // 2回失敗したら停止
-        //                 tracing::error!("Tool calling failed multiple times, stopping to prevent infinite loop");
-        //                 return Err(anyhow::Error::from(
-        //                     ToolExecutionError::MaxIterationsExceeded {
-        //                         max_iterations: iteration_count,
-        //                     },
-        //                 ));
-        //             }
-        //         }
-        //     }
-        // }
-
-        // デバッグ: 会話履歴をログ出力
+        // Debug: Log conversation history
         tracing::debug!("Building request with {} messages:", messages.len());
         for (i, msg) in messages.iter().enumerate() {
             tracing::debug!(
@@ -305,7 +283,6 @@ impl MistralRSService {
             );
         }
 
-        // Phase 3: 階層化トレーシング - tool calling iteration span
         let iteration_attributes = self.create_tool_calling_iteration_attributes(
             iteration_count,
             messages.len(),
@@ -313,7 +290,7 @@ impl MistralRSService {
             &metadata,
         );
 
-        // APIリクエストを1回だけ実行して結果をキャッシュ
+        // Execute API request once and cache result
         let request_builder = self.build_request_from_messages(&messages, &tools).await?;
         let response = self.core_service.request_chat(request_builder).await?;
 
@@ -356,12 +333,7 @@ impl MistralRSService {
                 );
             }
 
-            // // Assistant messageをtool callsと共に会話履歴に追加
-            // let assistant_message =
-            //     self.create_assistant_message_with_tool_calls(&response, &tool_calls)?;
-            // messages.push(assistant_message);
-
-            // 並列Tool実行 (Phase 3: 階層化トレーシング統合)
+            // Parallel tool execution
             let tool_results = if self.config.parallel_execution {
                 self.execute_tool_calls_parallel_with_tracing(
                     &tool_calls,
@@ -378,44 +350,22 @@ impl MistralRSService {
                 .await?
             };
 
-            // 🔧 修正2: Tool結果メッセージを順序保持で追加（extend）
+            // Fix 2: Add tool result messages while preserving order (extend)
             messages.extend(tool_results);
 
-            // 再帰呼び出し (Phase 3: Context継承)
+            // Recursive call
             Box::pin(self.request_chat_internal_with_iteration_count(
-                messages, // 更新されたメッセージを渡す
+                messages, // Pass updated messages
                 tools,
-                parent_context, // parent contextを継承
+                parent_context, // Inherit parent context
                 metadata,
-                iteration_count + 1, // 反復回数をインクリメント
+                iteration_count + 1, // Increment iteration count
             ))
             .await
         }
     }
 
-    // /// Assistant messageとtool calls変換
-    // fn create_assistant_message_with_tool_calls(
-    //     &self,
-    //     response: &mistralrs::ChatCompletionResponse,
-    //     tool_calls: &[MistralRSToolCall],
-    // ) -> Result<MistralRSMessage> {
-    //     // Assistant messageの内容（通常は空文字列またはreasoning）
-    //     let content = response
-    //         .choices
-    //         .first()
-    //         .and_then(|choice| choice.message.content.as_ref())
-    //         .cloned()
-    //         .unwrap_or_default();
-
-    //     Ok(MistralRSMessage {
-    //         role: TextMessageRole::Assistant,
-    //         content,
-    //         tool_call_id: None, // AssistantメッセージはtoolCallIdなし
-    //         tool_calls: Some(tool_calls.to_vec()),
-    //     })
-    // }
-
-    /// 並列Tool実行（spawn + join pattern） - Phase 3: トレーシング統合版
+    /// Parallel tool execution (spawn + join pattern)
     async fn execute_tool_calls_parallel_with_tracing(
         &self,
         tool_calls: &[MistralRSToolCall],
@@ -443,15 +393,15 @@ impl MistralRSService {
 
         let attributes = span_builder.metadata(span_metadata).build();
 
-        // parent_contextをクローンしてmove semanticsに備える
+        // Clone parent_context to prepare for move semantics
         let parent_context_clone = parent_context.clone();
         let tool_calls_vec = tool_calls.to_vec(); // 借用回避のためベクタークローン
-                                                  // selfの必要なフィールドを事前にクローン
+                                                  // Clone necessary fields of self in advance
         let function_app = self.function_app.clone();
         let config = self.config.clone();
         let otel_client = self.otel_client.clone();
         let parallel_action = async move {
-            // 全tool callを並列実行
+            // Execute all tool calls in parallel
             let handles: Vec<_> = tool_calls_vec
                 .iter()
                 .enumerate()
@@ -478,27 +428,27 @@ impl MistralRSService {
                 })
                 .collect();
 
-            // 全タスクの完了を待つ
+            // Wait for all tasks to complete
             let results = future::join_all(handles).await;
 
-            // 結果を順序保持でまとめる（正しいtool_call_idを使用）
+            // Combine results while preserving order (using correct tool_call_id)
             let mut messages = Vec::new();
             for (i, result) in results.into_iter().enumerate() {
                 let tool_call_id = tool_calls_vec
                     .get(i)
                     .map(|call| call.id.clone())
-                    .unwrap_or_else(|| format!("unknown_{}", i));
+                    .unwrap_or_else(|| format!("unknown_{i}"));
 
                 match result {
                     Ok(message) => {
-                        tracing::debug!("Tool call {} succeeded", i);
+                        tracing::debug!("Tool call {i} succeeded");
                         messages.push(message);
                     }
                     Err(join_error) => {
-                        tracing::error!("Tool call {} task failed: {}", i, join_error);
+                        tracing::error!("Tool call {i} task failed: {join_error}");
                         messages.push(MistralRSMessage {
                             role: TextMessageRole::Tool,
-                            content: format!("Task execution failed: {}", join_error),
+                            content: format!("Task execution failed: {join_error}"),
                             tool_call_id: Some(tool_call_id),
                             tool_calls: None,
                         });
@@ -515,7 +465,7 @@ impl MistralRSService {
         Ok(result)
     }
 
-    /// 順次Tool実行 - Phase 3: トレーシング統合版
+    /// Sequential tool execution
     async fn execute_tool_calls_sequential_with_tracing(
         &self,
         tool_calls: &[MistralRSToolCall],
@@ -543,10 +493,10 @@ impl MistralRSService {
 
         let attributes = span_builder.metadata(span_metadata).build();
 
-        // parent_contextをクローンしてmove semanticsに備える
+        // Clone parent_context to prepare for move semantics
         let parent_context_clone = parent_context.clone();
         let tool_calls_vec = tool_calls.to_vec(); // 借用回避のためベクタークローン
-                                                  // selfの必要なフィールドを事前にクローン
+                                                  // Clone necessary fields of self in advance
         let function_app = self.function_app.clone();
         let config = self.config.clone();
         let otel_client = self.otel_client.clone();
@@ -576,7 +526,7 @@ impl MistralRSService {
         Ok(result)
     }
 
-    /// 個別Tool実行（Phase 3: 強化トレーシング統合）
+    /// Individual tool execution with tracing
     async fn execute_single_tool_call_with_enhanced_tracing(
         call: MistralRSToolCall,
         function_app: Arc<FunctionAppImpl>,
@@ -589,7 +539,7 @@ impl MistralRSService {
         // OpenTelemetryトレーシング統合
         if let Some(client) = &otel_client {
             let mut span_builder =
-                OtelSpanBuilder::new(&format!("tool_execution_{}", call.function_name))
+                OtelSpanBuilder::new(format!("tool_execution_{}", call.function_name))
                     .span_type(OtelSpanType::Span)
                     .level("INFO");
 
@@ -611,7 +561,7 @@ impl MistralRSService {
                 serde_json::Value::Number(serde_json::Number::from(call_index)),
             );
 
-            // メタデータから重要な属性を抽出
+            // Extract important attributes from metadata
             if let Some(job_id) = metadata.get("job_id") {
                 span_builder = span_builder.session_id(job_id.clone());
             }
@@ -627,7 +577,7 @@ impl MistralRSService {
                 Ok::<MistralRSMessage, JobWorkerError>(result)
             };
 
-            // span内でtool実行
+            // Execute tool within span
             match client
                 .with_span_result(attributes, Some(parent_ctx), tool_action)
                 .await
@@ -637,7 +587,7 @@ impl MistralRSService {
                     tracing::error!("Tool execution failed with error: {}", e);
                     MistralRSMessage {
                         role: TextMessageRole::Tool,
-                        content: format!("Tool execution failed: {}", e),
+                        content: format!("Tool execution failed: {e}"),
                         tool_call_id: Some(call_index.to_string()),
                         tool_calls: None,
                     }
@@ -649,7 +599,7 @@ impl MistralRSService {
         }
     }
 
-    /// コアのtool実行ロジック（トレーシング分離）
+    /// Core tool execution logic (tracing separated)
     async fn execute_tool_call_core(
         call: MistralRSToolCall,
         function_app: Arc<FunctionAppImpl>,
@@ -659,7 +609,7 @@ impl MistralRSService {
         // 引数パース
         let arguments_obj = serde_json::from_str(&call.arguments).map_err(|e| {
             ToolExecutionError::InvalidArguments {
-                reason: format!("JSON parse error: {}", e),
+                reason: format!("JSON parse error: {e}"),
             }
         });
         if let Err(e) = arguments_obj {
@@ -686,7 +636,7 @@ impl MistralRSService {
         }
         let arguments_obj: serde_json::Map<String, serde_json::Value> = arguments_obj.unwrap();
 
-        // タイムアウト付きでtool実行
+        // Execute tool with timeout
         let tool_execution = async {
             function_app
                 .call_function_for_llm(
@@ -740,7 +690,7 @@ impl MistralRSService {
         }
     }
 
-    /// Phase 3: 階層化tracing用のspan attributes作成
+    /// Create span attributes for tracing
     fn create_tool_calling_iteration_attributes(
         &self,
         iteration_count: usize,
@@ -748,7 +698,7 @@ impl MistralRSService {
         tools_count: usize,
         metadata: &HashMap<String, String>,
     ) -> OtelSpanAttributes {
-        let mut span_builder = OtelSpanBuilder::new(&format!(
+        let mut span_builder = OtelSpanBuilder::new(format!(
             "mistral_tool_calling_iteration_{}",
             iteration_count + 1
         ))
@@ -769,44 +719,12 @@ impl MistralRSService {
             serde_json::Value::Number(serde_json::Number::from(tools_count)),
         );
 
-        // メタデータから重要な属性を抽出
+        // Extract important attributes from metadata
         if let Some(job_id) = metadata.get("job_id") {
             span_builder = span_builder.session_id(job_id.clone());
         }
         if let Some(user_id) = metadata.get("user_id") {
             span_builder = span_builder.user_id(user_id.clone());
-        }
-
-        span_builder.metadata(span_metadata).build()
-    }
-
-    fn create_tool_execution_attributes(
-        &self,
-        tool_call: &MistralRSToolCall,
-        metadata: &HashMap<String, String>,
-    ) -> OtelSpanAttributes {
-        let mut span_builder =
-            OtelSpanBuilder::new(&format!("tool_execution_{}", tool_call.function_name))
-                .span_type(OtelSpanType::Span)
-                .level("INFO");
-
-        let mut span_metadata = std::collections::HashMap::new();
-        span_metadata.insert(
-            "tool.call.id".to_string(),
-            serde_json::Value::String(tool_call.id.clone()),
-        );
-        span_metadata.insert(
-            "tool.function.name".to_string(),
-            serde_json::Value::String(tool_call.function_name.clone()),
-        );
-        span_metadata.insert(
-            "tool.arguments.length".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(tool_call.arguments.len())),
-        );
-
-        // メタデータから重要な属性を抽出
-        if let Some(job_id) = metadata.get("job_id") {
-            span_builder = span_builder.session_id(job_id.clone());
         }
 
         span_builder.metadata(span_metadata).build()
@@ -846,7 +764,7 @@ impl MistralRSService {
         for msg in messages {
             match msg.role {
                 TextMessageRole::Tool => {
-                    // Tool messageは結果として追加
+                    // Add tool message as result
                     if let Some(tool_call_id) = &msg.tool_call_id {
                         tracing::debug!(
                             "Adding tool message: '{}' with call_id: {}",
@@ -870,7 +788,7 @@ impl MistralRSService {
                     }
                 }
                 TextMessageRole::Assistant => {
-                    // Assistant messageにtool callsが含まれている場合の特別処理
+                    // Special handling for assistant messages containing tool calls
                     if let Some(tool_calls) = &msg.tool_calls {
                         if !tool_calls.is_empty() {
                             tracing::debug!(
@@ -937,20 +855,23 @@ impl UseFunctionApp for MistralRSService {
     }
 }
 
-// Phase 3: MistralTracingService完全実装
 impl MistralTracingService for MistralRSService {
     fn get_otel_client(&self) -> Option<&Arc<GenericOtelClient>> {
         self.otel_client.as_ref()
     }
 
-    async fn execute_with_tracing<F, T>(&self, action: F, context: Option<Context>) -> Result<T>
+    fn execute_with_tracing<F, T>(
+        &self,
+        action: F,
+        context: Option<Context>,
+    ) -> impl Future<Output = Result<T>> + Send
     where
         F: Future<Output = Result<T, anyhow::Error>> + Send,
         T: Send,
     {
-        // 簡易実装：OpenTelemetryトレーシングはexecute_with_spanで処理
-        let _ = context; // contextは他のメソッドで使用
-        action.await
+        // Simple implementation: OpenTelemetry tracing handled by execute_with_span
+        let _ = context; // Context is used in other methods
+        action
     }
 }
 

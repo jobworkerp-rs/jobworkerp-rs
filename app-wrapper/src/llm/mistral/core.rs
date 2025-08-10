@@ -8,16 +8,18 @@ use std::sync::Arc;
 /// Chat and Completion APIs, providing a clean interface for model interaction.
 pub trait MistralCoreService {
     /// Send a chat request to the MistralRS model
-    async fn request_chat(
+    fn request_chat(
         &self,
         request_builder: RequestBuilder,
-    ) -> Result<mistralrs::ChatCompletionResponse>;
+    ) -> impl std::future::Future<Output = Result<mistralrs::ChatCompletionResponse>> + Send;
 
     /// Stream a chat request to the MistralRS model
-    async fn stream_chat(
+    fn stream_chat(
         &self,
         request_builder: RequestBuilder,
-    ) -> Result<futures::stream::BoxStream<'static, mistralrs::Response>>;
+    ) -> impl std::future::Future<
+        Output = Result<futures::stream::BoxStream<'static, mistralrs::Response>>,
+    > + Send;
 
     /// Get reference to the underlying model
     fn model(&self) -> &Arc<Model>;

@@ -17,9 +17,7 @@ use proto::jobworkerp::data::{result_output_item, ResultOutputItem, Trailer};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::super::generic_tracing_helper::{
-    GenericLLMTracingHelper, LLMMessage,
-};
+use super::super::generic_tracing_helper::{GenericLLMTracingHelper, LLMMessage};
 use super::super::tracing::genai_helper::GenaiCompletionTracingHelper;
 
 pub struct GenaiLLMConfig {

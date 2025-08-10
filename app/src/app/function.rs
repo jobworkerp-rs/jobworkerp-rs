@@ -43,19 +43,21 @@ pub trait FunctionApp:
     + Send
     + Sync
     + 'static
-{    async fn find_functions(
+{
+    async fn find_functions(
         &self,
         exclude_runner: bool,
         exclude_worker: bool,
     ) -> Result<Vec<FunctionSpecs>> {
-        self.find_functions_all(exclude_runner, exclude_worker, false).await
+        self.find_functions_all(exclude_runner, exclude_worker, false)
+            .await
     }
 
     async fn find_functions_all(
         &self,
         exclude_runner: bool,
         exclude_worker: bool,
-        include_full: bool, // Include full function specs with schema (large data)
+        _include_full: bool, // Include full function specs with schema (large data)
     ) -> Result<Vec<FunctionSpecs>> {
         let mut functions = Vec::new();
 
