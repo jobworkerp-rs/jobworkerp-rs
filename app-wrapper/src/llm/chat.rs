@@ -32,7 +32,7 @@ pub struct LLMChatRunnerImpl {
     pub app: Arc<AppModule>,
     pub ollama: Option<OllamaChatService>,
     pub genai: Option<GenaiChatService>,
-    pub mistral: Option<mistral::MistralRSService>, // Phase 2 service
+    pub mistral: Option<mistral::MistralRSService>,
     cancel_helper: Option<CancelMonitoringHelper>,
 }
 
@@ -210,7 +210,6 @@ impl RunnerTrait for LLMChatRunnerImpl {
                     .map_err(|e| anyhow!("encode error: {}", e))?;
                 Ok(buf)
             } else if let Some(mistral) = self.mistral.as_ref() {
-                // Phase 2: MistralRSToolCallingService完全移行
                 let res = tokio::select! {
                     result = mistral.request_chat(args, cx, metadata_clone.clone()) => result?,
                     _ = cancellation_token.cancelled() => {
@@ -317,7 +316,7 @@ impl RunnerTrait for LLMChatRunnerImpl {
 
             Ok(cancellable_stream)
         } else if let Some(mistral) = self.mistral.as_ref() {
-            // MistralRS streaming実装
+            // MistralRS streaming implementation
             let stream = mistral.request_stream_chat(args).await?;
 
             let req_meta = Arc::new(metadata.clone());

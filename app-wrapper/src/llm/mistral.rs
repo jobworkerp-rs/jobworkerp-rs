@@ -1,15 +1,10 @@
 pub mod args;
-pub mod core;
 pub mod model;
 pub mod result;
-pub mod tracing;
 
 pub use self::args::LLMRequestConverter;
-pub use self::core::MistralCoreService;
 use self::model::MistralModelLoader;
 use anyhow::Result;
-// DefaultLLMRequestConverter removed - LLMRequestConverter used as mixin
-// async_stream::stream removed as it's not used
 use futures::stream::StreamExt;
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::llm::{
@@ -22,7 +17,7 @@ use std::sync::Arc;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatRole as TextMessageRole;
 use mistralrs::ChatCompletionResponse;
 
-/// MistralRS用のメッセージ型
+/// Message type for MistralRS
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MistralRSMessage {
     pub role: TextMessageRole,
@@ -31,7 +26,7 @@ pub struct MistralRSMessage {
     pub tool_calls: Option<Vec<MistralRSToolCall>>, // Tool calls held by assistant messages
 }
 
-/// MistralRS用のツール呼び出し型
+/// Tool call type for MistralRS
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MistralRSToolCall {
     pub id: String,
@@ -127,26 +122,26 @@ pub enum ToolExecutionError {
 /// Tool calling configuration
 #[derive(Debug, Clone)]
 pub struct ToolCallingConfig {
-    pub max_iterations: usize,     // Default: 5
-    pub tool_timeout_sec: u32,     // Default: 30
-    pub parallel_execution: bool,  // Default: true
-    pub error_mode: ToolErrorMode, // Default: Continue
+    pub max_iterations: usize, // Default: 3
+    pub tool_timeout_sec: u32, // Default: 30
+    pub parallel_execution: bool, // Default: true
+                               // pub error_mode: ToolErrorMode, // Default: Continue
 }
 
-#[derive(Debug, Clone)]
-pub enum ToolErrorMode {
-    Continue, // Pass error to LLM and continue
-    Stop,     // Stop processing on error
-    Retry,    // Retry once
-}
+// #[derive(Debug, Clone)]
+// pub enum ToolErrorMode {
+//     Continue, // Pass error to LLM and continue
+//     Stop,     // Stop processing on error
+//     Retry,    // Retry once
+// }
 
 impl Default for ToolCallingConfig {
     fn default() -> Self {
         Self {
-            max_iterations: 2,    // Reduced for testing
-            tool_timeout_sec: 10, // Shortened timeout
+            max_iterations: 3,    // Limited to avoid excessive processing
+            tool_timeout_sec: 30, // Shortened timeout
             parallel_execution: true,
-            error_mode: ToolErrorMode::Continue,
+            // error_mode: ToolErrorMode::Continue,
         }
     }
 }
@@ -160,8 +155,9 @@ pub struct MistralLlmServiceImpl {
 }
 impl MistralModelLoader for MistralLlmServiceImpl {}
 
-impl MistralCoreService for MistralLlmServiceImpl {
-    async fn request_chat(
+impl MistralLlmServiceImpl {
+    /// Send a chat request to the MistralRS model
+    pub async fn request_chat(
         &self,
         request_builder: mistralrs::RequestBuilder,
     ) -> Result<mistralrs::ChatCompletionResponse> {
@@ -169,7 +165,8 @@ impl MistralCoreService for MistralLlmServiceImpl {
         Ok(response)
     }
 
-    async fn stream_chat(
+    /// Stream a chat request to the MistralRS model
+    pub async fn stream_chat(
         &self,
         request_builder: mistralrs::RequestBuilder,
     ) -> Result<futures::stream::BoxStream<'static, mistralrs::Response>> {
@@ -204,21 +201,17 @@ impl MistralCoreService for MistralLlmServiceImpl {
         Ok(rx.boxed())
     }
 
-    fn model(&self) -> &Arc<Model> {
+    /// Get reference to the underlying model
+    pub fn model(&self) -> &Arc<Model> {
         &self.model
     }
 
-    fn model_name(&self) -> &str {
+    /// Get the model name for identification purposes
+    pub fn model_name(&self) -> &str {
         &self.model_name
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
-impl MistralLlmServiceImpl {
-    // Store model metadata from the settings
+    /// Store model metadata from the settings
     pub async fn new(settings: &LocalRunnerSettings) -> Result<Self> {
         let model = Arc::new(Self::load_model(settings).await?);
 
@@ -247,16 +240,6 @@ impl MistralLlmServiceImpl {
         }
     }
 
-    pub async fn request_chat(
-        &self,
-        request_builder: mistralrs::RequestBuilder,
-    ) -> Result<mistralrs::ChatCompletionResponse> {
-        let response = self.model.send_chat_request(request_builder).await?;
-        Ok(response)
-    }
-}
-
-impl MistralLlmServiceImpl {
     /// Convert protocol messages to MistralRS format
     pub fn convert_proto_messages(&self, args: &LlmChatArgs) -> Result<Vec<MistralRSMessage>> {
         use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
@@ -282,13 +265,23 @@ impl MistralLlmServiceImpl {
                             tool_call_id: None,
                             tool_calls: None,
                         }),
-                        Some(message_content::Content::ToolCalls(_tool_calls)) => {
-                            // Assistant role with tool calls - content is typically empty
+                        Some(message_content::Content::ToolCalls(tool_calls)) => {
+                            // Assistant role with tool calls - convert proto tool calls to MistralRSToolCall
+                            let converted_tool_calls: Vec<MistralRSToolCall> = tool_calls
+                                .calls
+                                .iter()
+                                .map(|tc| MistralRSToolCall {
+                                    id: tc.call_id.clone(),
+                                    function_name: tc.fn_name.clone(),
+                                    arguments: tc.fn_arguments.clone(),
+                                })
+                                .collect();
+
                             Ok(MistralRSMessage {
                                 role: TextMessageRole::Assistant,
-                                content: String::new(),
+                                content: String::new(), // MistralRS expects empty content for tool-calling messages
                                 tool_call_id: None,
-                                tool_calls: None, // Conversion from proto tool calls not implemented
+                                tool_calls: Some(converted_tool_calls),
                             })
                         }
                         _ => Ok(MistralRSMessage {
@@ -309,7 +302,7 @@ impl MistralLlmServiceImpl {
             .collect()
     }
 
-    /// MistralRS APIからTool calls抽出
+    /// Extract tool calls from MistralRS API
     pub fn extract_tool_calls_from_response(
         &self,
         response: &mistralrs::ChatCompletionResponse,
@@ -329,7 +322,7 @@ impl MistralLlmServiceImpl {
         Ok(vec![])
     }
 
-    /// ストリーミング用Tool calls抽出
+    /// Extract tool calls for streaming
     pub fn extract_tool_calls_from_chunk_response(
         &self,
         response: &mistralrs::ChatCompletionChunkResponse,
@@ -351,8 +344,6 @@ impl MistralLlmServiceImpl {
 }
 
 // TODO: Re-enable tests after integration completion
-// Too heavy to run on the test environment
-// cargo test --features test-env -- --ignored
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,7 +377,6 @@ mod tests {
         // Create function app for converter
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
-        // Create test service with mixin
         struct TestLLMService {
             function_app: Arc<FunctionAppImpl>,
         }
@@ -412,15 +402,15 @@ mod tests {
         assert!(result.done || result.content.is_some());
         if let Some(content) = result.content {
             if let Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) = content.content {
-                println!("Completion response: {}", text);
+                println!("Completion response: {text}");
                 assert!(!text.is_empty());
             } else {
                 println!("No text content in completion response");
-                assert!(false, "Expected text content in completion response");
+                panic!("Expected text content in completion response");
             }
         } else {
             println!("No content in completion response");
-            assert!(false, "Expected content in completion response");
+            panic!("Expected content in completion response");
         }
 
         Ok(())
@@ -441,7 +431,6 @@ mod tests {
         // Create function app for converter
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
-        // Create test service with mixin
         struct TestChatService {
             function_app: Arc<FunctionAppImpl>,
         }
@@ -468,7 +457,7 @@ mod tests {
         if let Some(content) = result.content {
             if let Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) = content.content {
                 assert!(!text.is_empty());
-                println!("Chat response: {}", text);
+                println!("Chat response: {text}");
             }
         }
 
@@ -490,7 +479,6 @@ mod tests {
         // Create function app for converter
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
-        // Create test service with mixin
         struct TestGGUFService {
             function_app: Arc<FunctionAppImpl>,
         }
@@ -517,7 +505,7 @@ mod tests {
         if let Some(content) = result.content {
             if let Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) = content.content {
                 assert!(!text.is_empty());
-                println!("GGUF response: {}", text);
+                println!("GGUF response: {text}");
             }
         }
 
@@ -599,7 +587,7 @@ mod tests {
             }
         }
 
-        println!("Stream output: {:?}", output);
+        println!("Stream output: {output:?}");
         assert!(count > 0, "Expected at least one stream item");
 
         Ok(())
@@ -678,7 +666,7 @@ mod tests {
             }
         }
 
-        println!("GGUF stream output: {:?}", output);
+        println!("GGUF stream output: {output:?}");
         assert!(count > 0, "Expected at least one stream item");
 
         Ok(())
@@ -694,7 +682,7 @@ mod tests {
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
         let function_set_name = "test_set";
-        create_tool_set(&app_module, function_set_name).await?;
+        let _ = create_tool_set(&app_module, function_set_name).await;
         // Using the new MistralRSToolCallingService
         let service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
@@ -716,8 +704,6 @@ mod tests {
             )
             .await?;
 
-        println!("Tool calling test result: {:#?}", &result);
-
         // Expecting complete tool calling functionality
         assert!(
             result.content.is_some(),
@@ -732,7 +718,7 @@ mod tests {
                 Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) => {
                     // Expecting tool calls to be executed and converted to final text response
                     assert!(!text.is_empty(), "Expected non-empty final text response after tool execution");
-                    println!("Final LLM response after tool execution: {}", text);
+                    println!("Final LLM response after tool execution: {text}");
 
                     // If tool calling worked, response should contain some tool execution results
                     if text.contains("Error") {
@@ -780,8 +766,6 @@ mod tests {
             )
             .await?;
 
-        println!("GGUF Tool calling test result: {:#?}", &result);
-
         // Expecting complete tool calling functionality (GGUF version)
         assert!(
             result.content.is_some(),
@@ -796,7 +780,7 @@ mod tests {
                 Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) => {
                     // Expecting tool calls to be executed and converted to final text response
                     assert!(!text.is_empty(), "Expected non-empty final text response after GGUF tool execution");
-                    println!("GGUF: Final LLM response after tool execution: {}", text);
+                    println!("GGUF: Final LLM response after tool execution: {text}");
 
                     // If tool calling worked, response should contain some tool execution results
                     if text.contains("Error") {
@@ -819,7 +803,7 @@ mod tests {
         let settings = LocalRunnerSettings {
             model_settings: Some(ModelSettings::TextModel(TextModelSettings {
                 // model_name_or_path: "openai/gpt-oss-20b".to_string(),
-                model_name_or_path: "Qwen/Qwen3-4B-Thinking-2507-FP8".to_string(),
+                model_name_or_path: "Qwen/Qwen3-8B-FP8".to_string(),
                 isq_type: None, //Some(IsqType::Q80 as i32),
                 with_logging: true,
                 with_paged_attn: true, //false, // false for mac metal
@@ -834,8 +818,8 @@ mod tests {
         use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::local_runner_settings::*;
         let settings = LocalRunnerSettings {
             model_settings: Some(ModelSettings::TextModel(TextModelSettings {
-                // model_name_or_path: "Qwen/Qwen3-4B-Thinking-2507-FP8".to_string(),
-                model_name_or_path: "microsoft/Phi-4-mini-instruct".to_string(),
+                model_name_or_path: "Qwen/Qwen3-8B-FP8".to_string(),
+                // model_name_or_path: "microsoft/Phi-4-mini-instruct".to_string(),
                 isq_type: None,
                 with_logging: true,
                 with_paged_attn: false,
@@ -966,7 +950,7 @@ mod tests {
                 },
             ],
             options: Some(LlmOptions {
-                max_tokens: Some(100), // Limit response for faster testing
+                max_tokens: Some(100),
                 temperature: Some(0.1),
                 ..Default::default()
             }),
@@ -1024,7 +1008,7 @@ mod tests {
                 if let Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) = &content.content {
                     if !text.is_empty() {
                         output.push(text.clone());
-                        println!("Text chunk: '{}'", text);
+                        println!("Text chunk: '{text}'");
                     }
                 }
             }
@@ -1036,7 +1020,7 @@ mod tests {
             }
         }
 
-        println!("Streaming test completed: {} chunks received", count);
+        println!("Streaming test completed: {count} chunks received");
         println!("Total output: {:?}", output.join(""));
 
         assert!(count > 0, "Expected at least one stream item");
@@ -1098,7 +1082,7 @@ mod tests {
                 match &content.content {
                     Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) => {
                         final_result = Some(text.clone());
-                        println!("Final text result: '{}'", text);
+                        println!("Final text result: '{text}'");
                     }
                     Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::ToolCalls(_)) => {
                         println!("WARNING: Received tool calls in streaming result - this should not happen with Strategy 1");
@@ -1114,7 +1098,7 @@ mod tests {
             }
         }
 
-        println!("Tool streaming test completed: {} items received", count);
+        println!("Tool streaming test completed: {count} items received");
 
         // Strategy 1: Execute tool calling non-streaming, then stream final result once, so count=1 is expected
         assert_eq!(
@@ -1127,7 +1111,7 @@ mod tests {
         );
 
         if let Some(result) = final_result {
-            println!("Final result: {}", result);
+            println!("Final result: {result}");
             // If tool execution succeeded, result should contain HTTP request content
             if result.contains("Error") {
                 println!("WARNING: Tool execution may have failed - check logs");
@@ -1149,7 +1133,7 @@ mod tests {
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
         let function_set_name = "benchmark_set";
-        create_tool_set(&app_module, function_set_name).await?;
+        let _ = create_tool_set(&app_module, function_set_name).await;
 
         let service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
@@ -1170,7 +1154,7 @@ mod tests {
             .await?;
 
         let simple_duration = start_time.elapsed();
-        println!("📊 Simple Chat Response Time: {:?}", simple_duration);
+        println!("📊 Simple Chat Response Time: {simple_duration:?}");
         assert!(simple_result.content.is_some());
 
         // Tool calling benchmark
@@ -1192,7 +1176,7 @@ mod tests {
             .await?;
 
         let tool_duration = start_time.elapsed();
-        println!("📊 Tool Calling Response Time: {:?}", tool_duration);
+        println!("📊 Tool Calling Response Time: {tool_duration:?}");
         println!(
             "📊 Tool Calling Overhead: {:?}",
             tool_duration - simple_duration
@@ -1232,7 +1216,7 @@ mod tests {
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
         let function_set_name = "comparison_set";
-        create_tool_set(&app_module, function_set_name).await?;
+        let _ = create_tool_set(&app_module, function_set_name).await;
 
         // MistralRS measurement
         let mistral_service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
@@ -1258,7 +1242,7 @@ mod tests {
         let mistral_duration = mistral_start.elapsed();
 
         println!("📊 MistralRS Performance:");
-        println!("   - Response Time: {:?}", mistral_duration);
+        println!("   - Response Time: {mistral_duration:?}");
         println!("   - Content Length: {} chars", 
                 mistral_result.content
                     .as_ref()
@@ -1293,7 +1277,7 @@ mod tests {
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
         let function_set_name = "tracing_test_set";
-        create_tool_set(&app_module, function_set_name).await?;
+        let _ = create_tool_set(&app_module, function_set_name).await;
 
         let service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,

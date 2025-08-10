@@ -375,9 +375,9 @@ impl HybridJobAppImpl {
 
     /// Active cancellation of running jobs (distributed Worker notification)
     async fn broadcast_job_cancellation(&self, job_id: &JobId) -> Result<()> {
-        // Phase 2.5 implementation: Use storage-specific broadcast
-        tracing::info!(
-            "Job cancellation broadcast requested for job {} (Phase 2.5 implementation)",
+        // implementation: Use storage-specific broadcast
+        tracing::debug!(
+            "Job cancellation broadcast requested for job {}",
             job_id.value
         );
 
@@ -386,7 +386,7 @@ impl HybridJobAppImpl {
             .broadcast_job_cancellation(job_id)
             .await?;
 
-        tracing::info!(
+        tracing::debug!(
             "Job cancellation broadcast completed for job {}",
             job_id.value
         );

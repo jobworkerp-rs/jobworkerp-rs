@@ -1,27 +1,22 @@
 use crate::llm::generic_tracing_helper::GenericLLMTracingHelper;
-use crate::llm::mistral::core::MistralCoreService;
-use crate::llm::mistral::tracing::MistralTracingService;
 use crate::llm::mistral::{
-    MistralLlmServiceImpl, MistralRSMessage, MistralRSToolCall, SerializableChatResponse,
-    ToolCallingConfig, ToolExecutionError,
+    MistralLlmServiceImpl, MistralRSMessage, MistralRSToolCall, ToolCallingConfig,
+    ToolExecutionError,
 };
 use crate::llm::tracing::mistral_helper::MistralTracingHelper;
+use crate::llm::tracing::LLMTracingHelper;
 use anyhow::Result;
 use app::app::function::{FunctionApp, FunctionAppImpl, UseFunctionApp};
 use async_stream::stream;
-use futures::future;
-use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatRole as TextMessageRole;
 use jobworkerp_runner::jobworkerp::runner::llm::{
     llm_runner_settings::LocalRunnerSettings, LlmChatArgs, LlmChatResult,
 };
 use mistralrs::{RequestBuilder, Tool};
-use net_utils::trace::attr::{OtelSpanAttributes, OtelSpanBuilder, OtelSpanType};
 use net_utils::trace::impls::GenericOtelClient;
 use net_utils::trace::otel_span::GenAIOtelClient;
 use opentelemetry::Context;
 use std::collections::HashMap;
-use std::future::Future;
 use std::sync::Arc;
 use tokio::time::{timeout, Duration};
 
@@ -29,8 +24,8 @@ use tokio::time::{timeout, Duration};
 pub struct MistralRSService {
     pub core_service: Arc<MistralLlmServiceImpl>, // Direct use of concrete type
     pub function_app: Arc<FunctionAppImpl>,       // Tool execution functionality (required)
-    pub otel_client: Option<Arc<GenericOtelClient>>, // トレーシング
-    pub config: ToolCallingConfig,                // Tool calling設定
+    pub otel_client: Option<Arc<GenericOtelClient>>, // Tracing client
+    pub config: ToolCallingConfig,                // Tool calling configuration
 }
 
 impl MistralRSService {
@@ -51,96 +46,72 @@ impl MistralRSService {
         })
     }
 
-    /// Main entry point for chat requests with tool calling support
+    /// Main entry point using unified LLMTracingHelper
     pub async fn request_chat(
         &self,
         args: LlmChatArgs,
         cx: Context,
         metadata: HashMap<String, String>,
     ) -> Result<LlmChatResult> {
-        let span_name = "mistral_chat_request";
-        let mut main_span_builder = OtelSpanBuilder::new(span_name)
-            .span_type(OtelSpanType::Span)
-            .level("INFO");
-
-        // Add metadata information
-        let mut span_metadata = std::collections::HashMap::new();
-        span_metadata.insert(
-            "mistral.request.messages.count".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(args.messages.len())),
-        );
-        span_metadata.insert(
-            "mistral.request.has_function_calling".to_string(),
-            serde_json::Value::Bool(
-                args.function_options
-                    .as_ref()
-                    .is_some_and(|opts| opts.use_function_calling),
-            ),
-        );
-
-        // Extract important attributes from metadata
-        if let Some(job_id) = metadata.get("job_id") {
-            main_span_builder = main_span_builder.session_id(job_id.clone());
-        }
-        if let Some(user_id) = metadata.get("user_id") {
-            main_span_builder = main_span_builder.user_id(user_id.clone());
-        }
-
-        let main_attributes = main_span_builder.metadata(span_metadata).build();
-
-        // Pre-process necessary data (avoid self borrowing errors)
-        let messages = self.convert_proto_messages(&args).map_err(|e| {
-            JobWorkerError::OtherError(format!("Convert proto messages failed: {e}"))
-        })?;
-
-        let tools = if let Some(function_opts) = &args.function_options {
-            tracing::debug!(
-                "Function options found: use_function_calling={}",
-                function_opts.use_function_calling
-            );
+        // 1. Pre-resolve tool information
+        let resolved_tools = if let Some(function_opts) = &args.function_options {
             if function_opts.use_function_calling {
-                tracing::debug!(
-                    "Creating tools from function options: function_set_name={:?}",
-                    function_opts.function_set_name
-                );
-                let created_tools = self
-                    .create_tools_from_options(function_opts)
-                    .await
-                    .map_err(|e| JobWorkerError::OtherError(format!("Create tools failed: {e}")))?;
-                tracing::debug!("Created {} tools successfully", created_tools.len());
-                Arc::new(created_tools)
+                self.create_tools_from_options(function_opts).await?
             } else {
-                tracing::info!("Function calling disabled in options");
-                Arc::new(vec![])
+                vec![]
             }
         } else {
-            tracing::debug!("No function options provided");
-            Arc::new(vec![])
+            vec![]
         };
 
-        // Create OpenTelemetry context clone in advance
-        let cx_clone = cx.clone();
-        let self_arc = Arc::new(self.clone());
-        let self_arc_clone = Arc::clone(&self_arc);
-        let main_action = async move {
-            // Start recursive tool calling processing (wrapped in Arc)
-            let final_response = self_arc
-                .request_chat_internal_with_tracing(messages, tools, Some(cx), Arc::new(metadata))
-                .await
-                .map_err(|e| JobWorkerError::OtherError(format!("Internal chat failed: {e}")))?;
-
-            // Convert final result to protobuf format
-            Ok(self_arc_clone.convert_mistral_response_to_final_result(&final_response))
+        // 2. Prepare actual data for accurate tracing
+        let tracing_data = crate::llm::tracing::mistral_helper::MistralTracingData {
+            args: args.clone(),
+            resolved_tools: resolved_tools.clone(),
+            model_name: self.core_service.model_name().to_string(),
         };
 
-        // Execute with OpenTelemetry span (using wrapper struct)
-        let (result, _) = self
-            .execute_with_span(span_name, main_attributes, Some(cx_clone), main_action)
+        // 3. Start unified LLM tracing
+        let tracing_context = self
+            .start_llm_tracing(
+                crate::llm::tracing::LLMApiType::Chat,
+                &tracing_data,
+                &metadata,
+                Some(cx.clone()),
+            )
             .await?;
+
+        // 4. Execute tool calling with context preservation
+        let result = match self
+            .execute_chat_with_context_preservation(
+                args,
+                Arc::new(resolved_tools),
+                Some(cx.clone()), // Preserve context inheritance
+                metadata.clone(),
+            )
+            .await
+        {
+            Ok(mistral_response) => {
+                // 5. Complete unified tracing
+                let _ = self
+                    .finish_llm_tracing(tracing_context, &mistral_response)
+                    .await;
+                self.convert_mistral_response_to_final_result(&mistral_response)
+            }
+            Err(e) => {
+                // Unified tracing for error cases
+                let job_error = jobworkerp_base::error::JobWorkerError::OtherError(e.to_string());
+                let _ = self
+                    .finish_llm_tracing_with_error(tracing_context, &job_error)
+                    .await;
+                return Err(e);
+            }
+        };
+
         Ok(result)
     }
 
-    /// ストリーミング版のチャット処理 - Tool calling戦略1採用
+    /// Streaming chat processing - Strategy 1 for tool calling
     pub async fn request_stream_chat(
         &self,
         args: LlmChatArgs,
@@ -154,13 +125,13 @@ impl MistralRSService {
             .is_some_and(|opts| opts.use_function_calling);
 
         if !has_tools {
-            // Tool callingなし - 直接ストリーミング
+            // No tool calling - direct streaming
             return Arc::new(self.clone())
                 .request_direct_stream_chat(args)
                 .await;
         }
 
-        // Tool callingあり - 戦略1: Non-streaming tool calling + 最終結果streaming
+        // Tool calling enabled - Strategy 1: Non-streaming tool calling + final result streaming
         tracing::debug!("Tool calling detected, using non-streaming execution + final streaming");
 
         // 1. Execute tool calling completely in non-streaming mode
@@ -177,7 +148,7 @@ impl MistralRSService {
         Ok(result_stream.boxed())
     }
 
-    /// Tool callingなしの直接ストリーミング処理
+    /// Direct streaming processing without tool calling
     async fn request_direct_stream_chat(
         self: Arc<Self>,
         args: LlmChatArgs,
@@ -185,7 +156,7 @@ impl MistralRSService {
         use async_stream::stream;
         use futures::stream::StreamExt;
 
-        // プロトコルメッセージ変換
+        // Convert protocol messages
         let messages = self.convert_proto_messages(&args)?;
         let request_builder = self.build_request_from_messages(&messages, &[]).await?;
 
@@ -193,7 +164,7 @@ impl MistralRSService {
         let mistral_stream: futures::stream::BoxStream<'static, mistralrs::Response> =
             self.core_service.stream_chat(request_builder).await?;
 
-        // MistralRS Response -> LlmChatResult変換ストリーム
+        // Stream converting MistralRS Response to LlmChatResult
         let result_stream = stream! {
             tokio::pin!(mistral_stream);
             while let Some(response) = mistral_stream.next().await {
@@ -220,385 +191,6 @@ impl MistralRSService {
         Ok(result_stream.boxed())
     }
 
-    /// Recursive tool calling processing (functional approach)
-    async fn request_chat_internal_with_tracing(
-        self: Arc<Self>,
-        messages: Vec<MistralRSMessage>, // イミュータブル管理
-        tools: Arc<Vec<Tool>>,
-        parent_context: Option<Context>,
-        metadata: Arc<HashMap<String, String>>,
-    ) -> Result<mistralrs::ChatCompletionResponse> {
-        self.request_chat_internal_with_iteration_count(
-            messages,
-            tools,
-            parent_context,
-            metadata,
-            0,
-        )
-        .await
-    }
-
-    /// Internal implementation with iteration count control
-    async fn request_chat_internal_with_iteration_count(
-        self: Arc<Self>,
-        mut messages: Vec<MistralRSMessage>,
-        tools: Arc<Vec<Tool>>,
-        parent_context: Option<Context>,
-        metadata: Arc<HashMap<String, String>>,
-        iteration_count: usize,
-    ) -> Result<mistralrs::ChatCompletionResponse> {
-        // 最大反復チェック
-        if iteration_count >= self.config.max_iterations {
-            tracing::error!(
-                "Maximum tool calling iterations ({}) exceeded",
-                self.config.max_iterations
-            );
-            return Err(anyhow::Error::from(
-                ToolExecutionError::MaxIterationsExceeded {
-                    max_iterations: self.config.max_iterations,
-                },
-            ));
-        }
-
-        tracing::info!(
-            "Tool calling iteration {}/{}",
-            iteration_count + 1,
-            self.config.max_iterations
-        );
-
-        // Debug: Log conversation history
-        tracing::debug!("Building request with {} messages:", messages.len());
-        for (i, msg) in messages.iter().enumerate() {
-            tracing::debug!(
-                "Message {}: {:?} - '{}' (tool_call_id: {:?}, tool_calls: {})",
-                i,
-                msg.role,
-                if msg.content.len() > 100 {
-                    &msg.content[..100]
-                } else {
-                    &msg.content
-                },
-                msg.tool_call_id,
-                msg.tool_calls.as_ref().map_or(0, |tc| tc.len())
-            );
-        }
-
-        let iteration_attributes = self.create_tool_calling_iteration_attributes(
-            iteration_count,
-            messages.len(),
-            tools.len(),
-            &metadata,
-        );
-
-        // Execute API request once and cache result
-        let request_builder = self.build_request_from_messages(&messages, &tools).await?;
-        let response = self.core_service.request_chat(request_builder).await?;
-
-        // トレーシング用のwrapper作成
-        let serializable_response = SerializableChatResponse::from(&response);
-        let iteration_action =
-            async move { Ok::<SerializableChatResponse, JobWorkerError>(serializable_response) };
-
-        let (_serializable_response, current_context) = self
-            .execute_with_span(
-                &format!("mistral_tool_calling_iteration_{}", iteration_count + 1),
-                iteration_attributes,
-                parent_context.clone(),
-                iteration_action,
-            )
-            .await?;
-
-        // MistralRS APIから直接tool calls抽出
-        let tool_calls = self.extract_tool_calls_from_response(&response)?;
-
-        // debug output
-        if let Some(first_choice) = response.choices.first() {
-            if let Some(content) = &first_choice.message.content {
-                tracing::debug!("Response content: {}", content);
-            }
-            tracing::debug!("Response finish_reason: {}", first_choice.finish_reason);
-        }
-
-        if tool_calls.is_empty() {
-            tracing::debug!("No tool calls found, returning final response");
-            Ok(response)
-        } else {
-            tracing::debug!("Processing {} tool calls", tool_calls.len());
-            for (i, call) in tool_calls.iter().enumerate() {
-                tracing::debug!(
-                    "Tool call {}: {} with args: {}",
-                    i,
-                    call.function_name,
-                    call.arguments
-                );
-            }
-
-            // Parallel tool execution
-            let tool_results = if self.config.parallel_execution {
-                self.execute_tool_calls_parallel_with_tracing(
-                    &tool_calls,
-                    metadata.clone(),
-                    Some(current_context.clone()),
-                )
-                .await?
-            } else {
-                self.execute_tool_calls_sequential_with_tracing(
-                    &tool_calls,
-                    metadata.clone(),
-                    Some(current_context.clone()),
-                )
-                .await?
-            };
-
-            // Fix 2: Add tool result messages while preserving order (extend)
-            messages.extend(tool_results);
-
-            // Recursive call
-            Box::pin(self.request_chat_internal_with_iteration_count(
-                messages, // Pass updated messages
-                tools,
-                parent_context, // Inherit parent context
-                metadata,
-                iteration_count + 1, // Increment iteration count
-            ))
-            .await
-        }
-    }
-
-    /// Parallel tool execution (spawn + join pattern)
-    async fn execute_tool_calls_parallel_with_tracing(
-        &self,
-        tool_calls: &[MistralRSToolCall],
-        metadata: Arc<HashMap<String, String>>,
-        parent_context: Option<Context>,
-    ) -> Result<Vec<MistralRSMessage>> {
-        if tool_calls.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let span_name = "mistral_parallel_tool_execution";
-        let span_builder = OtelSpanBuilder::new(span_name)
-            .span_type(OtelSpanType::Span)
-            .level("INFO");
-
-        let mut span_metadata = std::collections::HashMap::new();
-        span_metadata.insert(
-            "tool.execution.mode".to_string(),
-            serde_json::Value::String("parallel".to_string()),
-        );
-        span_metadata.insert(
-            "tool.calls.count".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(tool_calls.len())),
-        );
-
-        let attributes = span_builder.metadata(span_metadata).build();
-
-        // Clone parent_context to prepare for move semantics
-        let parent_context_clone = parent_context.clone();
-        let tool_calls_vec = tool_calls.to_vec(); // 借用回避のためベクタークローン
-                                                  // Clone necessary fields of self in advance
-        let function_app = self.function_app.clone();
-        let config = self.config.clone();
-        let otel_client = self.otel_client.clone();
-        let parallel_action = async move {
-            // Execute all tool calls in parallel
-            let handles: Vec<_> = tool_calls_vec
-                .iter()
-                .enumerate()
-                .map(|(idx, call)| {
-                    let function_app = function_app.clone();
-                    let metadata = metadata.clone();
-                    let call = call.clone();
-                    let config = config.clone();
-                    let otel_client = otel_client.clone();
-                    let parent_ctx = parent_context_clone.clone();
-
-                    tokio::spawn(async move {
-                        Self::execute_single_tool_call_with_enhanced_tracing(
-                            call,
-                            function_app,
-                            metadata,
-                            config,
-                            otel_client,
-                            parent_ctx,
-                            idx,
-                        )
-                        .await
-                    })
-                })
-                .collect();
-
-            // Wait for all tasks to complete
-            let results = future::join_all(handles).await;
-
-            // Combine results while preserving order (using correct tool_call_id)
-            let mut messages = Vec::new();
-            for (i, result) in results.into_iter().enumerate() {
-                let tool_call_id = tool_calls_vec
-                    .get(i)
-                    .map(|call| call.id.clone())
-                    .unwrap_or_else(|| format!("unknown_{i}"));
-
-                match result {
-                    Ok(message) => {
-                        tracing::debug!("Tool call {i} succeeded");
-                        messages.push(message);
-                    }
-                    Err(join_error) => {
-                        tracing::error!("Tool call {i} task failed: {join_error}");
-                        messages.push(MistralRSMessage {
-                            role: TextMessageRole::Tool,
-                            content: format!("Task execution failed: {join_error}"),
-                            tool_call_id: Some(tool_call_id),
-                            tool_calls: None,
-                        });
-                    }
-                }
-            }
-
-            Ok::<Vec<MistralRSMessage>, JobWorkerError>(messages)
-        };
-
-        let (result, _) = self
-            .execute_with_span(span_name, attributes, parent_context, parallel_action)
-            .await?;
-        Ok(result)
-    }
-
-    /// Sequential tool execution
-    async fn execute_tool_calls_sequential_with_tracing(
-        &self,
-        tool_calls: &[MistralRSToolCall],
-        metadata: Arc<HashMap<String, String>>,
-        parent_context: Option<Context>,
-    ) -> Result<Vec<MistralRSMessage>> {
-        if tool_calls.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let span_name = "mistral_sequential_tool_execution";
-        let span_builder = OtelSpanBuilder::new(span_name)
-            .span_type(OtelSpanType::Span)
-            .level("INFO");
-
-        let mut span_metadata = std::collections::HashMap::new();
-        span_metadata.insert(
-            "tool.execution.mode".to_string(),
-            serde_json::Value::String("sequential".to_string()),
-        );
-        span_metadata.insert(
-            "tool.calls.count".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(tool_calls.len())),
-        );
-
-        let attributes = span_builder.metadata(span_metadata).build();
-
-        // Clone parent_context to prepare for move semantics
-        let parent_context_clone = parent_context.clone();
-        let tool_calls_vec = tool_calls.to_vec(); // 借用回避のためベクタークローン
-                                                  // Clone necessary fields of self in advance
-        let function_app = self.function_app.clone();
-        let config = self.config.clone();
-        let otel_client = self.otel_client.clone();
-        let sequential_action = async move {
-            let mut messages = Vec::new();
-
-            for (idx, call) in tool_calls_vec.iter().enumerate() {
-                let res = Self::execute_single_tool_call_with_enhanced_tracing(
-                    call.clone(),
-                    function_app.clone(),
-                    metadata.clone(),
-                    config.clone(),
-                    otel_client.clone(),
-                    parent_context_clone.clone(),
-                    idx,
-                )
-                .await;
-                messages.push(res);
-            }
-
-            Ok::<Vec<MistralRSMessage>, JobWorkerError>(messages)
-        };
-
-        let (result, _) = self
-            .execute_with_span(span_name, attributes, parent_context, sequential_action)
-            .await?;
-        Ok(result)
-    }
-
-    /// Individual tool execution with tracing
-    async fn execute_single_tool_call_with_enhanced_tracing(
-        call: MistralRSToolCall,
-        function_app: Arc<FunctionAppImpl>,
-        metadata: Arc<HashMap<String, String>>,
-        config: ToolCallingConfig,
-        otel_client: Option<Arc<GenericOtelClient>>,
-        parent_context: Option<Context>,
-        call_index: usize,
-    ) -> MistralRSMessage {
-        // OpenTelemetryトレーシング統合
-        if let Some(client) = &otel_client {
-            let mut span_builder =
-                OtelSpanBuilder::new(format!("tool_execution_{}", call.function_name))
-                    .span_type(OtelSpanType::Span)
-                    .level("INFO");
-
-            let mut span_metadata = std::collections::HashMap::new();
-            span_metadata.insert(
-                "tool.call.id".to_string(),
-                serde_json::Value::String(call.id.clone()),
-            );
-            span_metadata.insert(
-                "tool.function.name".to_string(),
-                serde_json::Value::String(call.function_name.clone()),
-            );
-            span_metadata.insert(
-                "tool.arguments.length".to_string(),
-                serde_json::Value::Number(serde_json::Number::from(call.arguments.len())),
-            );
-            span_metadata.insert(
-                "tool.call.index".to_string(),
-                serde_json::Value::Number(serde_json::Number::from(call_index)),
-            );
-
-            // Extract important attributes from metadata
-            if let Some(job_id) = metadata.get("job_id") {
-                span_builder = span_builder.session_id(job_id.clone());
-            }
-
-            let attributes = span_builder.metadata(span_metadata).build();
-
-            let parent_ctx = parent_context.unwrap_or_else(opentelemetry::Context::current);
-            let _span_name = format!("tool_execution_{}", call.function_name);
-
-            let tool_action = async move {
-                let result =
-                    Self::execute_tool_call_core(call, function_app, metadata, config).await;
-                Ok::<MistralRSMessage, JobWorkerError>(result)
-            };
-
-            // Execute tool within span
-            match client
-                .with_span_result(attributes, Some(parent_ctx), tool_action)
-                .await
-            {
-                Ok(result) => result,
-                Err(e) => {
-                    tracing::error!("Tool execution failed with error: {}", e);
-                    MistralRSMessage {
-                        role: TextMessageRole::Tool,
-                        content: format!("Tool execution failed: {e}"),
-                        tool_call_id: Some(call_index.to_string()),
-                        tool_calls: None,
-                    }
-                }
-            }
-        } else {
-            // トレーシングなしの従来実行
-            Self::execute_tool_call_core(call, function_app, metadata, config).await
-        }
-    }
-
     /// Core tool execution logic (tracing separated)
     async fn execute_tool_call_core(
         call: MistralRSToolCall,
@@ -606,7 +198,7 @@ impl MistralRSService {
         metadata: Arc<HashMap<String, String>>,
         config: ToolCallingConfig,
     ) -> MistralRSMessage {
-        // 引数パース
+        // Parse arguments
         let arguments_obj = serde_json::from_str(&call.arguments).map_err(|e| {
             ToolExecutionError::InvalidArguments {
                 reason: format!("JSON parse error: {e}"),
@@ -690,46 +282,6 @@ impl MistralRSService {
         }
     }
 
-    /// Create span attributes for tracing
-    fn create_tool_calling_iteration_attributes(
-        &self,
-        iteration_count: usize,
-        messages_count: usize,
-        tools_count: usize,
-        metadata: &HashMap<String, String>,
-    ) -> OtelSpanAttributes {
-        let mut span_builder = OtelSpanBuilder::new(format!(
-            "mistral_tool_calling_iteration_{}",
-            iteration_count + 1
-        ))
-        .span_type(OtelSpanType::Span)
-        .level("INFO");
-
-        let mut span_metadata = std::collections::HashMap::new();
-        span_metadata.insert(
-            "mistral.tool_calling.iteration".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(iteration_count)),
-        );
-        span_metadata.insert(
-            "mistral.messages.count".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(messages_count)),
-        );
-        span_metadata.insert(
-            "mistral.tools.count".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(tools_count)),
-        );
-
-        // Extract important attributes from metadata
-        if let Some(job_id) = metadata.get("job_id") {
-            span_builder = span_builder.session_id(job_id.clone());
-        }
-        if let Some(user_id) = metadata.get("user_id") {
-            span_builder = span_builder.user_id(user_id.clone());
-        }
-
-        span_builder.metadata(span_metadata).build()
-    }
-
     // Helper methods that delegate to existing implementations
     fn convert_proto_messages(&self, args: &LlmChatArgs) -> Result<Vec<MistralRSMessage>> {
         // Direct access to MistralLlmServiceImpl
@@ -760,7 +312,7 @@ impl MistralRSService {
         use mistralrs::{TextMessageRole as MistralTextRole, ToolChoice};
         let mut builder = RequestBuilder::new();
 
-        // MistralRSMessage → MistralRS RequestBuilder変換
+        // Convert MistralRSMessage to MistralRS RequestBuilder
         for msg in messages {
             match msg.role {
                 TextMessageRole::Tool => {
@@ -816,7 +368,7 @@ impl MistralRSService {
             }
         }
 
-        // Tools追加
+        // Add tools
         if !tools.is_empty() {
             tracing::debug!("Adding {} tools to MistralRS request", tools.len());
             for (i, tool) in tools.iter().enumerate() {
@@ -855,27 +407,6 @@ impl UseFunctionApp for MistralRSService {
     }
 }
 
-impl MistralTracingService for MistralRSService {
-    fn get_otel_client(&self) -> Option<&Arc<GenericOtelClient>> {
-        self.otel_client.as_ref()
-    }
-
-    fn execute_with_tracing<F, T>(
-        &self,
-        action: F,
-        context: Option<Context>,
-    ) -> impl Future<Output = Result<T>> + Send
-    where
-        F: Future<Output = Result<T, anyhow::Error>> + Send,
-        T: Send,
-    {
-        // Simple implementation: OpenTelemetry tracing handled by execute_with_span
-        let _ = context; // Context is used in other methods
-        action
-    }
-}
-
-// GenericLLMTracingHelperトレイトの実装
 impl GenericLLMTracingHelper for MistralRSService {
     fn get_otel_client(&self) -> Option<&Arc<GenericOtelClient>> {
         self.otel_client.as_ref()
@@ -899,8 +430,379 @@ impl GenericLLMTracingHelper for MistralRSService {
     }
 }
 
-// MistralTracingHelperトレイトの実装
 impl MistralTracingHelper for MistralRSService {}
 
-// LLMRequestConverterトレイトの実装
+impl crate::llm::tracing::LLMTracingHelper for MistralRSService {
+    fn get_otel_client(
+        &self,
+    ) -> Option<&std::sync::Arc<net_utils::trace::impls::GenericOtelClient>> {
+        self.otel_client.as_ref()
+    }
+
+    fn get_provider_name(&self) -> &str {
+        "mistralrs"
+    }
+
+    fn get_default_model(&self) -> String {
+        self.core_service.model_name().to_string()
+    }
+}
+
 impl crate::llm::mistral::args::LLMRequestConverter for MistralRSService {}
+
+impl MistralRSService {
+    /// Tool calling processing with context inheritance
+    async fn execute_chat_with_context_preservation(
+        &self,
+        args: LlmChatArgs,
+        resolved_tools: Arc<Vec<mistralrs::Tool>>,
+        parent_context: Option<Context>, // Preserve context inheritance
+        metadata: HashMap<String, String>,
+    ) -> Result<mistralrs::ChatCompletionResponse> {
+        let messages = self.convert_proto_messages(&args)?;
+
+        // Preserve existing complex logic (remove only non-standard tracing)
+        Arc::new(self.clone())
+            .request_chat_internal_recursively(
+                messages,
+                resolved_tools,
+                parent_context, // Context inheritance
+                Arc::new(metadata),
+                0,
+            )
+            .await
+    }
+
+    /// Internal processing with context inheritance preserved (full functionality maintained)
+    async fn request_chat_internal_recursively(
+        self: Arc<Self>,
+        mut messages: Vec<crate::llm::mistral::MistralRSMessage>,
+        tools: Arc<Vec<mistralrs::Tool>>,
+        parent_context: Option<Context>, // Preserve inheritance
+        metadata: Arc<HashMap<String, String>>,
+        iteration_count: usize,
+    ) -> Result<mistralrs::ChatCompletionResponse> {
+        // Maximum iteration check (preserve existing logic)
+        if iteration_count >= self.config.max_iterations {
+            return Err(anyhow::Error::from(
+                crate::llm::mistral::ToolExecutionError::MaxIterationsExceeded {
+                    max_iterations: self.config.max_iterations,
+                },
+            ));
+        }
+
+        // LLM call (use standard logging only, remove custom spans)
+        let request_builder = self.build_request_from_messages(&messages, &tools).await?;
+        let response = self.core_service.request_chat(request_builder).await?;
+
+        // Tool calls processing (preserve existing logic completely)
+        let tool_calls = self.extract_tool_calls_from_response(&response)?;
+
+        if tool_calls.is_empty() {
+            Ok(response) // Final response
+        } else {
+            // Tool execution (context inheritance preserved, supports parallel/sequential)
+            let tool_results = if self.config.parallel_execution {
+                self.execute_tool_calls_parallel_with_context(
+                    &tool_calls,
+                    metadata.clone(),
+                    parent_context.clone(),
+                )
+                .await?
+            } else {
+                self.execute_tool_calls_sequential_with_context(
+                    &tool_calls,
+                    metadata.clone(),
+                    parent_context.clone(),
+                )
+                .await?
+            };
+
+            messages.extend(tool_results);
+
+            // Recursive call (context inheritance preserved)
+            Box::pin(self.request_chat_internal_recursively(
+                messages,
+                tools,
+                parent_context, // Preserve context inheritance
+                metadata,
+                iteration_count + 1,
+            ))
+            .await
+        }
+    }
+
+    /// Parallel tool execution with unified span tracing (performance-focused)
+    async fn execute_tool_calls_parallel_with_context(
+        &self,
+        tool_calls: &[crate::llm::mistral::MistralRSToolCall],
+        metadata: Arc<HashMap<String, String>>,
+        parent_context: Option<Context>,
+    ) -> Result<Vec<crate::llm::mistral::MistralRSMessage>> {
+        if tool_calls.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let current_context = parent_context.unwrap_or_else(Context::current);
+
+        // Use unified span for parallel execution with tracing
+        if let Some(_client) = LLMTracingHelper::get_otel_client(self) {
+            self.execute_parallel_tools_with_unified_span(tool_calls, metadata, current_context)
+                .await
+        } else {
+            self.execute_parallel_tools_without_tracing(tool_calls, metadata)
+                .await
+        }
+    }
+
+    /// Unified span for parallel tool execution (performance-optimized with statistics)
+    async fn execute_parallel_tools_with_unified_span(
+        &self,
+        tool_calls: &[crate::llm::mistral::MistralRSToolCall],
+        metadata: Arc<HashMap<String, String>>,
+        parent_context: Context,
+    ) -> Result<Vec<crate::llm::mistral::MistralRSMessage>> {
+        use net_utils::trace::attr::{OtelSpanBuilder, OtelSpanType};
+
+        // Create unified span attributes
+        let span_name = "mistralrs.tool_calls.parallel";
+        let mut span_builder = OtelSpanBuilder::new(span_name)
+            .span_type(OtelSpanType::Event)
+            .level("INFO")
+            .input(serde_json::json!({
+                "tool_count": tool_calls.len(),
+                "tools": tool_calls.iter().map(|call| {
+                    serde_json::json!({
+                        "name": call.function_name,
+                        "id": call.id
+                    })
+                }).collect::<Vec<_>>()
+            }));
+
+        // Add metadata
+        if let Some(session_id) = metadata.get("session_id") {
+            span_builder = span_builder.session_id(session_id.clone());
+        }
+        if let Some(user_id) = metadata.get("user_id") {
+            span_builder = span_builder.user_id(user_id.clone());
+        }
+
+        let span_attributes = span_builder.build();
+        let client = LLMTracingHelper::get_otel_client(self).unwrap().clone();
+
+        // Clone data for async block
+        let function_app = self.function_app.clone();
+        let config = self.config.clone();
+        let tool_calls_owned: Vec<_> = tool_calls.to_vec();
+
+        // Execute tools within unified span
+        let results = client.with_span_result(
+            span_attributes,
+            Some(parent_context),
+            async move {
+                // Parallel execution
+                let handles: Vec<_> = tool_calls_owned
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, call)| {
+                        let function_app = function_app.clone();
+                        let metadata = metadata.clone();
+                        let call = call.clone();
+                        let config = config.clone();
+
+                        tokio::spawn(async move {
+                            (idx, Self::execute_tool_call_core(call, function_app, metadata, config).await)
+                        })
+                    })
+                    .collect();
+
+                let results = futures::future::join_all(handles).await;
+                let mut messages = Vec::new();
+                let mut success_count = 0;
+                let mut error_count = 0;
+
+                for result in results.into_iter() {
+                    match result {
+                        Ok((_idx, message)) => {
+                            // Count tool execution success/failure
+                            if message.content.contains("Error") || message.content.contains("Failed") {
+                                error_count += 1;
+                            } else {
+                                success_count += 1;
+                            }
+                            messages.push(message);
+                        }
+                        Err(join_error) => {
+                            error_count += 1;
+                            let tool_call_id = tool_calls_owned
+                                .get(messages.len())
+                                .map(|call| call.id.clone())
+                                .unwrap_or_else(|| format!("unknown_{}", messages.len()));
+
+                            messages.push(crate::llm::mistral::MistralRSMessage {
+                                role: jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatRole::Tool,
+                                content: format!("Task execution failed: {join_error}"),
+                                tool_call_id: Some(tool_call_id),
+                                tool_calls: None,
+                            });
+                        }
+                    }
+                }
+
+                // Log statistics
+                tracing::info!(
+                    "Parallel tool execution completed: {} success, {} errors, {} total",
+                    success_count, error_count, tool_calls_owned.len()
+                );
+
+                Ok::<Vec<crate::llm::mistral::MistralRSMessage>, jobworkerp_base::error::JobWorkerError>(messages)
+            },
+        ).await.map_err(|e| anyhow::anyhow!("Tool execution span error: {e}"))?;
+
+        Ok(results)
+    }
+
+    /// Parallel execution without tracing (preserves existing logic)
+    async fn execute_parallel_tools_without_tracing(
+        &self,
+        tool_calls: &[crate::llm::mistral::MistralRSToolCall],
+        metadata: Arc<HashMap<String, String>>,
+    ) -> Result<Vec<crate::llm::mistral::MistralRSMessage>> {
+        // Existing implementation preserved
+        let handles: Vec<_> = tool_calls
+            .iter()
+            .map(|call| {
+                let function_app = self.function_app.clone();
+                let metadata = metadata.clone();
+                let call = call.clone();
+                let config = self.config.clone();
+                tokio::spawn(async move {
+                    Self::execute_tool_call_core(call, function_app, metadata, config).await
+                })
+            })
+            .collect();
+
+        let results = futures::future::join_all(handles).await;
+        let mut messages = Vec::new();
+
+        for (i, result) in results.into_iter().enumerate() {
+            let tool_call_id = tool_calls
+                .get(i)
+                .map(|call| call.id.clone())
+                .unwrap_or_else(|| format!("unknown_{i}"));
+
+            match result {
+                Ok(message) => messages.push(message),
+                Err(join_error) => {
+                    messages.push(crate::llm::mistral::MistralRSMessage {
+                        role: jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatRole::Tool,
+                        content: format!("Task execution failed: {join_error}"),
+                        tool_call_id: Some(tool_call_id),
+                        tool_calls: None,
+                    });
+                }
+            }
+        }
+
+        Ok(messages)
+    }
+
+    /// Sequential tool execution with detailed individual span tracing (Ollama-style)
+    async fn execute_tool_calls_sequential_with_context(
+        &self,
+        tool_calls: &[crate::llm::mistral::MistralRSToolCall],
+        metadata: Arc<HashMap<String, String>>,
+        parent_context: Option<Context>,
+    ) -> Result<Vec<crate::llm::mistral::MistralRSMessage>> {
+        if tool_calls.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut current_context = parent_context.unwrap_or_else(Context::current);
+        let mut messages = Vec::new();
+
+        for call in tool_calls.iter() {
+            if let Some(_client) = LLMTracingHelper::get_otel_client(self) {
+                // Individual span for detailed tracing (Ollama pattern)
+                let (message, updated_context) = self
+                    .execute_single_tool_with_detailed_tracing(call, &metadata, current_context)
+                    .await?;
+
+                messages.push(message);
+                current_context = updated_context;
+            } else {
+                // Execution without tracing
+                let message = Self::execute_tool_call_core(
+                    call.clone(),
+                    self.function_app.clone(),
+                    metadata.clone(),
+                    self.config.clone(),
+                )
+                .await;
+                messages.push(message);
+            }
+        }
+
+        Ok(messages)
+    }
+
+    /// Execute individual tool with detailed span creation
+    async fn execute_single_tool_with_detailed_tracing(
+        &self,
+        call: &crate::llm::mistral::MistralRSToolCall,
+        metadata: &Arc<HashMap<String, String>>,
+        parent_context: Context,
+    ) -> Result<(crate::llm::mistral::MistralRSMessage, Context)> {
+        // Create span attributes using MistralTracingHelper
+        let tool_attributes = self.create_tool_call_span_from_mistral_call(
+            &call.function_name,
+            &call.arguments,
+            metadata,
+        );
+
+        // Tool execution logic
+        let function_app = self.function_app.clone();
+        let metadata_clone = metadata.clone();
+        let call_clone = call.clone();
+        let config = self.config.clone();
+
+        let tool_action = async move {
+            let message =
+                Self::execute_tool_call_core(call_clone, function_app, metadata_clone, config)
+                    .await;
+
+            // Return tool execution result in JSON format
+            Ok::<serde_json::Value, jobworkerp_base::error::JobWorkerError>(serde_json::json!({
+                "content": message.content,
+                "tool_call_id": message.tool_call_id,
+                "role": "tool"
+            }))
+        };
+
+        // Use MistralTracingHelper's detailed span tracing
+        let (tool_result, updated_context) = MistralTracingHelper::with_tool_response_tracing(
+            self,
+            metadata,
+            parent_context,
+            tool_attributes,
+            &call.function_name,
+            &call.arguments,
+            tool_action,
+        )
+        .await?;
+
+        // Convert result to MistralRSMessage
+        let message = crate::llm::mistral::MistralRSMessage {
+            role: jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatRole::Tool,
+            content: tool_result
+                .get("content")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .to_string(),
+            tool_call_id: call.id.clone().into(),
+            tool_calls: None,
+        };
+
+        Ok((message, updated_context))
+    }
+}

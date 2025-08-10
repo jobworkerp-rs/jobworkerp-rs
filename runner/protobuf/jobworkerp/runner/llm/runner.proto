@@ -65,7 +65,7 @@ message LLMRunnerSettings {
       optional string chat_template = 5; // chat template
     }
 
-    // ggufモデル特有の設定
+    // Settings specific to GGUF models
     message GgufModelSettings {
       string model_name_or_path = 1;     // Directory containing GGUF files
       repeated string gguf_files = 2;    // GGUF file names
