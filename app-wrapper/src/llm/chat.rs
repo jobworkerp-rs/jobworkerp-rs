@@ -32,7 +32,7 @@ pub struct LLMChatRunnerImpl {
     pub app: Arc<AppModule>,
     pub ollama: Option<OllamaChatService>,
     pub genai: Option<GenaiChatService>,
-    pub mistral_v2: Option<mistral::tool_calling_service::MistralRSToolCallingService>, // Phase 2 service
+    pub mistral: Option<mistral::MistralRSService>, // Phase 2 service
     cancel_helper: Option<CancelMonitoringHelper>,
 }
 
@@ -43,7 +43,7 @@ impl LLMChatRunnerImpl {
             app: app_module,
             ollama: None,
             genai: None,
-            mistral_v2: None,
+            mistral: None,
             cancel_helper: None,
         }
     }
@@ -57,7 +57,7 @@ impl LLMChatRunnerImpl {
             app: app_module,
             ollama: None,
             genai: None,
-            mistral_v2: None,
+            mistral: None,
             cancel_helper: Some(cancel_helper),
         }
     }
@@ -146,17 +146,16 @@ impl RunnerTrait for LLMChatRunnerImpl {
                     settings,
                 ),
             ) => {
-                // Phase 2: MistralRSToolCallingServiceを使用（完全移行）
-                let mistral_v2 = mistral::tool_calling_service::MistralRSToolCallingService::new_with_function_app(
+                let mistral = mistral::MistralRSService::new_with_function_app(
                     settings.clone(),
                     self.app.function_app.clone(),
                 )
                 .await?;
                 tracing::info!(
-                    "{} loaded(local-v2-tool-calling)",
+                    "{} loaded(local-tool-calling)",
                     RunnerType::LlmChat.as_str_name()
                 );
-                self.mistral_v2 = Some(mistral_v2);
+                self.mistral = Some(mistral);
 
                 Ok(())
             }
@@ -210,12 +209,12 @@ impl RunnerTrait for LLMChatRunnerImpl {
                 res.encode(&mut buf)
                     .map_err(|e| anyhow!("encode error: {}", e))?;
                 Ok(buf)
-            } else if let Some(mistral_v2) = self.mistral_v2.as_ref() {
+            } else if let Some(mistral) = self.mistral.as_ref() {
                 // Phase 2: MistralRSToolCallingService完全移行
                 let res = tokio::select! {
-                    result = mistral_v2.request_chat(args, cx, metadata_clone.clone()) => result?,
+                    result = mistral.request_chat(args, cx, metadata_clone.clone()) => result?,
                     _ = cancellation_token.cancelled() => {
-                        return Err(anyhow!("LLM chat (MistralRS-v2) request was cancelled"));
+                        return Err(anyhow!("LLM chat (MistralRS) request was cancelled"));
                     }
                 };
 
@@ -317,9 +316,9 @@ impl RunnerTrait for LLMChatRunnerImpl {
             .boxed();
 
             Ok(cancellable_stream)
-        } else if let Some(mistral_v2) = self.mistral_v2.as_ref() {
+        } else if let Some(mistral) = self.mistral.as_ref() {
             // MistralRS streaming実装
-            let stream = mistral_v2.request_stream_chat(args).await?;
+            let stream = mistral.request_stream_chat(args).await?;
 
             let req_meta = Arc::new(metadata.clone());
             let cancel_token = cancellation_token.clone();

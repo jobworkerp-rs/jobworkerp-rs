@@ -690,7 +690,7 @@ mod tests {
         let function_set_name = "test_set";
         create_tool_set(&app_module, function_set_name).await?;
         // // Phase 2: 新しいMistralRSToolCallingServiceを使用
-        let service = crate::llm::chat::mistral::tool_calling_service::MistralRSToolCallingService::new_with_function_app(
+        let service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
             app_module.function_app.clone(),
         ).await?;
@@ -755,7 +755,7 @@ mod tests {
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
         // Phase 2: 新しいMistralRSToolCallingServiceを使用（GGUF版）
-        let service = crate::llm::chat::mistral::tool_calling_service::MistralRSToolCallingService::new_with_function_app(
+        let service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
             app_module.function_app.clone(),
         ).await?;
@@ -995,7 +995,7 @@ mod tests {
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
         // Phase 2: 新しいMistralRSToolCallingServiceを使用
-        let service = crate::llm::chat::mistral::tool_calling_service::MistralRSToolCallingService::new_with_function_app(
+        let service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
             app_module.function_app.clone(),
         ).await?;
@@ -1068,7 +1068,7 @@ mod tests {
             .await; // ignore error
 
         // Phase 2: 新しいMistralRSToolCallingServiceを使用
-        let service = crate::llm::chat::mistral::tool_calling_service::MistralRSToolCallingService::new_with_function_app(
+        let service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
             app_module.function_app.clone(),
         ).await?;
@@ -1140,7 +1140,7 @@ mod tests {
         let function_set_name = "benchmark_set";
         create_tool_set(&app_module, function_set_name).await?;
 
-        let service = crate::llm::chat::mistral::tool_calling_service::MistralRSToolCallingService::new_with_function_app(
+        let service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
             app_module.function_app.clone(),
         ).await?;
@@ -1217,7 +1217,7 @@ mod tests {
         create_tool_set(&app_module, function_set_name).await?;
 
         // MistralRS measurement
-        let mistral_service = crate::llm::chat::mistral::tool_calling_service::MistralRSToolCallingService::new_with_function_app(
+        let mistral_service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
             app_module.function_app.clone(),
         ).await?;
@@ -1276,7 +1276,7 @@ mod tests {
         let function_set_name = "tracing_test_set";
         create_tool_set(&app_module, function_set_name).await?;
 
-        let service = crate::llm::chat::mistral::tool_calling_service::MistralRSToolCallingService::new_with_function_app(
+        let service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
             app_module.function_app.clone(),
         ).await?;
