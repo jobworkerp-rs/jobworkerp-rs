@@ -1,8 +1,7 @@
 // Phase 1: 不要な中間レイヤー削除完了
 
 use super::super::mistral::{
-    DefaultLLMResultConverter, LLMRequestConverter, LLMResultConverter,
-    MistralLlmServiceImpl,
+    DefaultLLMResultConverter, LLMRequestConverter, LLMResultConverter, MistralLlmServiceImpl,
 };
 use anyhow::Result;
 use app::app::function::{FunctionAppImpl, UseFunctionApp};
@@ -25,7 +24,10 @@ impl MistralCompletionService {
         function_app: Arc<FunctionAppImpl>,
     ) -> Result<Self> {
         let service = Arc::new(MistralLlmServiceImpl::new(&settings).await?);
-        Ok(Self { service, function_app })
+        Ok(Self {
+            service,
+            function_app,
+        })
     }
 
     pub async fn request_chat(
