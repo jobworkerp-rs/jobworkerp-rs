@@ -774,15 +774,6 @@ impl GenericLLMTracingHelper for GenaiChatService {
         Self::convert_messages_to_input_genai(&genai_messages)
     }
 
-    fn convert_model_options_to_parameters(
-        &self,
-        _options: &impl GenericModelOptions,
-    ) -> HashMap<String, serde_json::Value> {
-        // For GenAI, we can't directly convert from the generic trait
-        // This would need to be implemented with specific knowledge of the options
-        HashMap::new()
-    }
-
     fn get_provider_name(&self) -> &str {
         "genai"
     }

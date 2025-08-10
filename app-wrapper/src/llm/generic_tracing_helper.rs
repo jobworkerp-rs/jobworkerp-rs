@@ -15,12 +15,6 @@ pub trait GenericLLMTracingHelper {
     /// Convert messages to proper tracing input format (provider-specific implementation)
     fn convert_messages_to_input(&self, messages: &[impl LLMMessage]) -> serde_json::Value;
 
-    /// Convert model options to proper model parameters format (provider-specific implementation)
-    fn convert_model_options_to_parameters(
-        &self,
-        options: &impl ModelOptions,
-    ) -> HashMap<String, serde_json::Value>;
-
     /// Get provider name for span naming
     fn get_provider_name(&self) -> &str;
 
