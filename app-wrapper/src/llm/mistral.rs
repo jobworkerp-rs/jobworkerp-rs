@@ -19,7 +19,6 @@ use mistralrs::Model;
 pub use result::{DefaultLLMResultConverter, LLMResultConverter};
 use std::sync::Arc;
 
-// Phase 1: 新規型定義（設計書211-237行）
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatRole as TextMessageRole;
 use mistralrs::ChatCompletionResponse;
 
@@ -28,8 +27,8 @@ use mistralrs::ChatCompletionResponse;
 pub struct MistralRSMessage {
     pub role: TextMessageRole,
     pub content: String,
-    pub tool_call_id: Option<String>, // Tool messageで必要
-    pub tool_calls: Option<Vec<MistralRSToolCall>>, // Assistant messageでtool calls保持
+    pub tool_call_id: Option<String>, // Required for tool messages
+    pub tool_calls: Option<Vec<MistralRSToolCall>>, // Tool calls held by assistant messages
 }
 
 /// MistralRS用のツール呼び出し型
@@ -37,10 +36,10 @@ pub struct MistralRSMessage {
 pub struct MistralRSToolCall {
     pub id: String,
     pub function_name: String,
-    pub arguments: String, // JSON文字列
+    pub arguments: String, // JSON string
 }
 
-/// OpenTelemetryトレーシング用のシリアライズ可能なwrapper構造体
+/// Serializable wrapper struct for OpenTelemetry tracing
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SerializableChatResponse {
     pub content: String,
@@ -58,13 +57,23 @@ impl From<&ChatCompletionResponse> for SerializableChatResponse {
                 .cloned()
                 .unwrap_or_default(),
             tool_calls_count: first_choice
-                .map(|choice| choice.message.tool_calls.as_ref().map_or(0, |calls| calls.len()))
+                .map(|choice| {
+                    choice
+                        .message
+                        .tool_calls
+                        .as_ref()
+                        .map_or(0, |calls| calls.len())
+                })
                 .unwrap_or(0),
             finish_reason: first_choice
                 .map(|choice| choice.finish_reason.clone())
                 .unwrap_or_else(|| "unknown".to_string()),
-            usage_info: Some(format!("prompt_tokens: {}, completion_tokens: {}, total_tokens: {}", 
-                response.usage.prompt_tokens, response.usage.completion_tokens, response.usage.total_tokens)),
+            usage_info: Some(format!(
+                "prompt_tokens: {}, completion_tokens: {}, total_tokens: {}",
+                response.usage.prompt_tokens,
+                response.usage.completion_tokens,
+                response.usage.total_tokens
+            )),
         }
     }
 }
@@ -79,7 +88,10 @@ pub struct SerializableToolResults {
 
 impl From<&Vec<MistralRSMessage>> for SerializableToolResults {
     fn from(messages: &Vec<MistralRSMessage>) -> Self {
-        let success_count = messages.iter().filter(|msg| !msg.content.starts_with("Error")).count();
+        let success_count = messages
+            .iter()
+            .filter(|msg| !msg.content.starts_with("Error"))
+            .count();
         Self {
             messages: messages.clone(),
             execution_count: messages.len(),
@@ -89,7 +101,7 @@ impl From<&Vec<MistralRSMessage>> for SerializableToolResults {
     }
 }
 
-/// ツール実行エラーハンドリング強化（段階的移行用）
+/// Enhanced tool execution error handling
 #[derive(Debug, thiserror::Error)]
 pub enum ToolExecutionError {
     #[error("Tool function not found: {function_name}")]
@@ -112,27 +124,27 @@ pub enum ToolExecutionError {
     Cancelled,
 }
 
-/// Tool calling設定
+/// Tool calling configuration
 #[derive(Debug, Clone)]
 pub struct ToolCallingConfig {
-    pub max_iterations: usize,     // デフォルト: 5
-    pub tool_timeout_sec: u32,     // デフォルト: 30
-    pub parallel_execution: bool,  // デフォルト: true
-    pub error_mode: ToolErrorMode, // デフォルト: Continue
+    pub max_iterations: usize,     // Default: 5
+    pub tool_timeout_sec: u32,     // Default: 30
+    pub parallel_execution: bool,  // Default: true
+    pub error_mode: ToolErrorMode, // Default: Continue
 }
 
 #[derive(Debug, Clone)]
 pub enum ToolErrorMode {
-    Continue, // エラーをLLMに渡して続行
-    Stop,     // エラー時に処理停止
-    Retry,    // 1回だけリトライ
+    Continue, // Pass error to LLM and continue
+    Stop,     // Stop processing on error
+    Retry,    // Retry once
 }
 
 impl Default for ToolCallingConfig {
     fn default() -> Self {
         Self {
-            max_iterations: 2,    // テスト用に削減
-            tool_timeout_sec: 10, // タイムアウトも短縮
+            max_iterations: 2,    // Reduced for testing
+            tool_timeout_sec: 10, // Shortened timeout
             parallel_execution: true,
             error_mode: ToolErrorMode::Continue,
         }
@@ -172,15 +184,10 @@ impl MistralCoreService for MistralLlmServiceImpl {
             let result = async {
                 let mut stream = model.stream_chat_request(request_builder).await?;
 
-                loop {
-                    match stream.next().await {
-                        Some(response) => {
-                            if tx.unbounded_send(response).is_err() {
-                                // Receiver dropped, stop streaming
-                                break;
-                            }
-                        }
-                        None => break,
+                while let Some(response) = stream.next().await {
+                    if tx.unbounded_send(response).is_err() {
+                        // Receiver dropped, stop streaming
+                        break;
                     }
                 }
 
@@ -249,9 +256,8 @@ impl MistralLlmServiceImpl {
     }
 }
 
-// Phase 1: 変換ロジック実装（設計書241-308行）
 impl MistralLlmServiceImpl {
-    /// プロトコルメッセージをMistralRS形式に変換
+    /// Convert protocol messages to MistralRS format
     pub fn convert_proto_messages(&self, args: &LlmChatArgs) -> Result<Vec<MistralRSMessage>> {
         use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
             message_content, ChatRole,
@@ -282,7 +288,7 @@ impl MistralLlmServiceImpl {
                                 role: TextMessageRole::Assistant,
                                 content: String::new(),
                                 tool_call_id: None,
-                                tool_calls: None, // TODO: Convert from proto tool calls
+                                tool_calls: None, // Conversion from proto tool calls not implemented
                             })
                         }
                         _ => Ok(MistralRSMessage {
@@ -361,7 +367,9 @@ mod tests {
         llm_runner_settings::LocalRunnerSettings, LlmChatArgs, LlmChatResult, LlmCompletionArgs,
     };
     use proto::jobworkerp::data::RunnerType;
-    use proto::jobworkerp::function::data::{FunctionSetData, FunctionSetId, FunctionTarget, FunctionType};
+    use proto::jobworkerp::function::data::{
+        FunctionSetData, FunctionSetId, FunctionTarget, FunctionType,
+    };
 
     #[ignore]
     #[tokio::test]
@@ -679,8 +687,6 @@ mod tests {
     #[ignore]
     #[tokio::test]
     async fn test_llm_tool_runner() -> Result<()> {
-        // Phase 2: MistralRSToolCallingServiceを使用した完全なtool callingテスト
-
         // Create tool-capable settings
         let settings = create_mistral_tool_settings()?;
 
@@ -689,16 +695,17 @@ mod tests {
 
         let function_set_name = "test_set";
         create_tool_set(&app_module, function_set_name).await?;
-        // // Phase 2: 新しいMistralRSToolCallingServiceを使用
+        // Using the new MistralRSToolCallingService
         let service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
             app_module.function_app.clone(),
-        ).await?;
+        )
+        .await?;
 
         // Create tool args with financial data query
         let args = create_tool_args(Some(function_set_name))?;
 
-        println!("Phase 2: Using MistralRSToolCallingService with tool calling support");
+        println!("Using MistralRSToolCallingService with tool calling support");
 
         // Execute tool calling request
         let result = service
@@ -709,9 +716,9 @@ mod tests {
             )
             .await?;
 
-        println!("Phase 2 Tool calling test result: {:#?}", &result);
+        println!("Tool calling test result: {:#?}", &result);
 
-        // Phase 2: Tool callingの完全動作を期待
+        // Expecting complete tool calling functionality
         assert!(
             result.content.is_some(),
             "Expected content from MistralRS tool calling service"
@@ -723,11 +730,11 @@ mod tests {
                     panic!("Unexpected: Final result should not contain tool calls (they should be executed and converted to text)");
                 }
                 Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) => {
-                    // Phase 2では、tool callsが実行されて最終的にtext応答になることを期待
+                    // Expecting tool calls to be executed and converted to final text response
                     assert!(!text.is_empty(), "Expected non-empty final text response after tool execution");
-                    println!("Phase 2: Final LLM response after tool execution: {}", text);
+                    println!("Final LLM response after tool execution: {}", text);
 
-                    // Tool callingが動作した場合、レスポンスに何らかのtool実行結果が含まれているはず
+                    // If tool calling worked, response should contain some tool execution results
                     if text.contains("Error") {
                         println!("WARNING: Tool execution may have failed - check logs");
                     } else {
@@ -746,24 +753,23 @@ mod tests {
     #[ignore]
     #[tokio::test]
     async fn test_gguf_llm_tool_runner() -> Result<()> {
-        // Phase 2: GGUF版MistralRSToolCallingServiceを使用した完全なtool callingテスト
-
         // Create GGUF tool-capable settings
         let settings = create_gguf_mistral_tool_settings()?;
 
         // Create function app for tool execution
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
-        // Phase 2: 新しいMistralRSToolCallingServiceを使用（GGUF版）
+        // Using the new MistralRSToolCallingService (GGUF version)
         let service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
             app_module.function_app.clone(),
-        ).await?;
+        )
+        .await?;
 
         // Create tool args with financial data query
         let args = create_tool_args(None)?;
 
-        println!("Phase 2: Using GGUF MistralRSToolCallingService with tool calling support");
+        println!("Using GGUF MistralRSToolCallingService with tool calling support");
 
         // Execute tool calling request
         let result = service
@@ -774,9 +780,9 @@ mod tests {
             )
             .await?;
 
-        println!("Phase 2 GGUF Tool calling test result: {:#?}", &result);
+        println!("GGUF Tool calling test result: {:#?}", &result);
 
-        // Phase 2: Tool callingの完全動作を期待（GGUF版）
+        // Expecting complete tool calling functionality (GGUF version)
         assert!(
             result.content.is_some(),
             "Expected content from GGUF MistralRS tool calling service"
@@ -788,11 +794,11 @@ mod tests {
                     panic!("Unexpected: Final GGUF result should not contain tool calls (they should be executed and converted to text)");
                 }
                 Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) => {
-                    // Phase 2では、tool callsが実行されて最終的にtext応答になることを期待
+                    // Expecting tool calls to be executed and converted to final text response
                     assert!(!text.is_empty(), "Expected non-empty final text response after GGUF tool execution");
-                    println!("Phase 2 GGUF: Final LLM response after tool execution: {}", text);
+                    println!("GGUF: Final LLM response after tool execution: {}", text);
 
-                    // Tool callingが動作した場合、レスポンスに何らかのtool実行結果が含まれているはず
+                    // If tool calling worked, response should contain some tool execution results
                     if text.contains("Error") {
                         println!("WARNING: GGUF Tool execution may have failed - check logs");
                     } else {
@@ -917,7 +923,7 @@ mod tests {
         Ok(args)
     }
 
-    async fn create_tool_set(app_module: &AppModule ,name: &str) -> Result<FunctionSetId> {
+    async fn create_tool_set(app_module: &AppModule, name: &str) -> Result<FunctionSetId> {
         app_module
             .function_set_app
             .create_function_set(&FunctionSetData {
@@ -937,7 +943,6 @@ mod tests {
             })
             .await
     }
-
 
     fn create_tool_args(function_set_name: Option<&str>) -> Result<LlmChatArgs> {
         use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::*;
@@ -961,7 +966,7 @@ mod tests {
                 },
             ],
             options: Some(LlmOptions {
-                max_tokens: Some(100), // レスポンス制限でテスト高速化
+                max_tokens: Some(100), // Limit response for faster testing
                 temperature: Some(0.1),
                 ..Default::default()
             }),
@@ -973,7 +978,7 @@ mod tests {
                 FunctionOptions {
                     use_function_calling: true,
                     use_runners_as_function: Some(true),
-                    function_set_name: None, 
+                    function_set_name: None,
                     ..Default::default()
                 }
             }),
@@ -985,7 +990,6 @@ mod tests {
     #[ignore]
     #[tokio::test]
     async fn test_mistralrs_tool_calling_stream() -> Result<()> {
-        // Phase 2: MistralRSToolCallingService streaming test
         println!("Testing MistralRS Tool Calling Service streaming...");
 
         // Create tool-capable settings
@@ -994,14 +998,15 @@ mod tests {
         // Create function app for tool execution
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
-        // Phase 2: 新しいMistralRSToolCallingServiceを使用
+        // Using the new MistralRSToolCallingService
         let service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
             app_module.function_app.clone(),
-        ).await?;
+        )
+        .await?;
 
         // Create simple args WITHOUT tool calling for pure streaming test
-        let args = create_chat_args(true)?; // stream=trueでストリーミングテスト
+        let args = create_chat_args(true)?; // stream=true for streaming test
 
         println!("Testing streaming WITHOUT tool calling...");
 
@@ -1033,7 +1038,7 @@ mod tests {
 
         println!("Streaming test completed: {} chunks received", count);
         println!("Total output: {:?}", output.join(""));
-        
+
         assert!(count > 0, "Expected at least one stream item");
 
         Ok(())
@@ -1042,7 +1047,6 @@ mod tests {
     #[ignore]
     #[tokio::test]
     async fn test_mistralrs_tool_calling_stream_with_tools() -> Result<()> {
-        // Phase 2: MistralRSToolCallingService streaming test WITH tool calling
         println!("Testing MistralRS Tool Calling Service streaming with tools...");
 
         // Create tool-capable settings
@@ -1058,20 +1062,19 @@ mod tests {
                 name: function_set_name.to_string(),
                 description: "Test function set for streaming tool calling".to_string(),
                 category: 0,
-                targets: vec![
-                    FunctionTarget {
-                        id: RunnerType::HttpRequest as i64,
-                        r#type: FunctionType::Runner as i32,
-                    },
-                ],
+                targets: vec![FunctionTarget {
+                    id: RunnerType::HttpRequest as i64,
+                    r#type: FunctionType::Runner as i32,
+                }],
             })
             .await; // ignore error
 
-        // Phase 2: 新しいMistralRSToolCallingServiceを使用
+        // Using the new MistralRSToolCallingService
         let service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
             app_module.function_app.clone(),
-        ).await?;
+        )
+        .await?;
 
         // Create args WITH tool calling - should use strategy 1 (non-streaming tool calling + final streaming)
         let args = create_tool_args(Some(function_set_name))?;
@@ -1086,7 +1089,10 @@ mod tests {
         let mut final_result: Option<String> = None;
 
         while let Some(completion_result) = stream.next().await {
-            println!("Tool stream item {}: done={}", count, completion_result.done);
+            println!(
+                "Tool stream item {}: done={}",
+                count, completion_result.done
+            );
 
             if let Some(content) = &completion_result.content {
                 match &content.content {
@@ -1109,14 +1115,20 @@ mod tests {
         }
 
         println!("Tool streaming test completed: {} items received", count);
-        
-        // Strategy 1では、tool callingを非ストリーミングで実行後、最終結果を1回だけstreamingするため、count=1が期待される
-        assert_eq!(count, 1, "Strategy 1 should return exactly 1 stream item (final result)");
-        assert!(final_result.is_some(), "Expected final text result from tool calling");
+
+        // Strategy 1: Execute tool calling non-streaming, then stream final result once, so count=1 is expected
+        assert_eq!(
+            count, 1,
+            "Strategy 1 should return exactly 1 stream item (final result)"
+        );
+        assert!(
+            final_result.is_some(),
+            "Expected final text result from tool calling"
+        );
 
         if let Some(result) = final_result {
             println!("Final result: {}", result);
-            // Tool実行が成功した場合、結果にHTTP requestの内容が含まれているはず
+            // If tool execution succeeded, result should contain HTTP request content
             if result.contains("Error") {
                 println!("WARNING: Tool execution may have failed - check logs");
             } else {
@@ -1127,11 +1139,10 @@ mod tests {
         Ok(())
     }
 
-    // Phase 3: パフォーマンスベンチマーク用テストケース
     #[ignore]
     #[tokio::test]
     async fn test_mistralrs_performance_benchmark() -> Result<()> {
-        println!("=== MistralRS Performance Benchmark (Phase 3) ===");
+        println!("=== MistralRS Performance Benchmark ===");
 
         // Create performance-optimized settings
         let settings = create_mistral_tool_settings()?;
@@ -1143,12 +1154,13 @@ mod tests {
         let service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
             app_module.function_app.clone(),
-        ).await?;
+        )
+        .await?;
 
         // Simple chat benchmark (no tool calling)
         let simple_args = create_chat_args(false)?;
         let start_time = std::time::Instant::now();
-        
+
         let simple_result = service
             .request_chat(
                 simple_args,
@@ -1156,7 +1168,7 @@ mod tests {
                 std::collections::HashMap::new(),
             )
             .await?;
-        
+
         let simple_duration = start_time.elapsed();
         println!("📊 Simple Chat Response Time: {:?}", simple_duration);
         assert!(simple_result.content.is_some());
@@ -1164,7 +1176,7 @@ mod tests {
         // Tool calling benchmark
         let tool_args = create_tool_args(Some(function_set_name))?;
         let start_time = std::time::Instant::now();
-        
+
         let tool_result = service
             .request_chat(
                 tool_args,
@@ -1178,11 +1190,14 @@ mod tests {
                 .collect(),
             )
             .await?;
-        
+
         let tool_duration = start_time.elapsed();
         println!("📊 Tool Calling Response Time: {:?}", tool_duration);
-        println!("📊 Tool Calling Overhead: {:?}", tool_duration - simple_duration);
-        
+        println!(
+            "📊 Tool Calling Overhead: {:?}",
+            tool_duration - simple_duration
+        );
+
         // Verify tool calling worked
         assert!(tool_result.content.is_some());
         if let Some(content) = tool_result.content {
@@ -1196,8 +1211,11 @@ mod tests {
         }
 
         // Memory efficiency check
-        println!("📊 Memory footprint: {} bytes (approx service size)", std::mem::size_of_val(&service));
-        
+        println!(
+            "📊 Memory footprint: {} bytes (approx service size)",
+            std::mem::size_of_val(&service)
+        );
+
         println!("✅ MistralRS Performance Benchmark completed successfully");
         Ok(())
     }
@@ -1205,14 +1223,14 @@ mod tests {
     #[ignore]
     #[tokio::test]
     async fn test_mistralrs_vs_ollama_comparison() -> Result<()> {
-        println!("=== MistralRS vs Ollama Performance Comparison (Phase 3) ===");
-        
+        println!("=== MistralRS vs Ollama Performance Comparison ===");
+
         // Note: This test requires both MistralRS and Ollama to be available
         // In a real scenario, you would run identical workloads on both systems
-        
+
         let settings = create_mistral_tool_settings()?;
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
-        
+
         let function_set_name = "comparison_set";
         create_tool_set(&app_module, function_set_name).await?;
 
@@ -1220,11 +1238,12 @@ mod tests {
         let mistral_service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
             app_module.function_app.clone(),
-        ).await?;
-        
+        )
+        .await?;
+
         let tool_args = create_tool_args(Some(function_set_name))?;
         let mistral_start = std::time::Instant::now();
-        
+
         let mistral_result = mistral_service
             .request_chat(
                 tool_args.clone(),
@@ -1235,9 +1254,9 @@ mod tests {
                     .collect(),
             )
             .await?;
-            
+
         let mistral_duration = mistral_start.elapsed();
-        
+
         println!("📊 MistralRS Performance:");
         println!("   - Response Time: {:?}", mistral_duration);
         println!("   - Content Length: {} chars", 
@@ -1257,10 +1276,10 @@ mod tests {
         println!("     ✅ Function-based message management (no Arc<Mutex<>>)");
         println!("     ✅ Enhanced error handling");
         println!("     ✅ Timeout control per tool");
-        
+
         // Note: For actual Ollama comparison, you would instantiate OllamaChatService
         // and run the same workload, then compare results
-        
+
         println!("✅ Performance comparison framework ready");
         Ok(())
     }
@@ -1268,27 +1287,28 @@ mod tests {
     #[ignore]
     #[tokio::test]
     async fn test_mistralrs_tracing_validation() -> Result<()> {
-        println!("=== MistralRS OpenTelemetry Tracing Validation (Phase 3) ===");
+        println!("=== MistralRS OpenTelemetry Tracing Validation ===");
 
         let settings = create_mistral_tool_settings()?;
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
-        
+
         let function_set_name = "tracing_test_set";
         create_tool_set(&app_module, function_set_name).await?;
 
         let service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
             app_module.function_app.clone(),
-        ).await?;
+        )
+        .await?;
 
         // Verify OpenTelemetry client is active
         println!("📊 Tracing Configuration:");
         println!("   - OTel Client Active: {}", service.otel_client.is_some());
-        
-        if let Some(otel_client) = &service.otel_client {
-            println!("   - Service Name: mistralrs.tool_calling_service");
-            println!("   - Tracing Status: ✅ Enabled");
-        }
+
+        // if let Some(otel_client) = &service.otel_client {
+        //     println!("   - Service Name: mistralrs.tool_calling_service");
+        //     println!("   - Tracing Status: ✅ Enabled");
+        // }
 
         // Test with hierarchical tracing
         let tool_args = create_tool_args(Some(function_set_name))?;
@@ -1313,12 +1333,12 @@ mod tests {
         // Validate tracing worked by checking result
         assert!(result.content.is_some());
         println!("📊 Tracing Integration:");
-        println!("   - Main Request Span: ✅ mistral_chat_request");  
+        println!("   - Main Request Span: ✅ mistral_chat_request");
         println!("   - Iteration Spans: ✅ mistral_tool_calling_iteration_*");
         println!("   - Tool Execution Spans: ✅ mistral_parallel_tool_execution");
         println!("   - Individual Tool Spans: ✅ tool_execution_*");
         println!("   - Context Propagation: ✅ Parent-Child relationships");
-        
+
         println!("✅ OpenTelemetry Tracing validation completed");
         Ok(())
     }

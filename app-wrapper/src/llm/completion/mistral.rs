@@ -1,5 +1,3 @@
-// Phase 1: 不要な中間レイヤー削除完了
-
 use super::super::mistral::{
     DefaultLLMResultConverter, LLMRequestConverter, LLMResultConverter, MistralLlmServiceImpl,
 };

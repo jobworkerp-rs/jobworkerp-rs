@@ -855,13 +855,13 @@ checksum = "ade8366b8bd5ba243f0a58f036cc0ca8a2f069cff1a2351ef1cac6b083e16fc0"
 [[package]]
 name = "candle-core"
 version = "0.9.1"
-source = "git+https://github.com/EricLBuehler/candle.git?rev=95d713f9#95d713f996225a3643b1d0c3eeb5a35c40516625"
+source = "git+https://github.com/EricLBuehler/candle.git?rev=5e6c385#5e6c385147daa6ec06a27e715dbb594581bdefec"
 dependencies = [
  "accelerate-src",
  "byteorder",
  "candle-kernels",
  "candle-metal-kernels",
- "cudarc",
+ "cudarc 0.17.2",
  "float8",
  "gemm 0.17.1",
  "half",
@@ -886,7 +886,7 @@ dependencies = [
 [[package]]
 name = "candle-flash-attn"
 version = "0.9.1"
-source = "git+https://github.com/EricLBuehler/candle.git?rev=95d713f9#95d713f996225a3643b1d0c3eeb5a35c40516625"
+source = "git+https://github.com/EricLBuehler/candle.git?rev=5e6c385#5e6c385147daa6ec06a27e715dbb594581bdefec"
 dependencies = [
  "anyhow",
  "bindgen_cuda 0.1.5",
@@ -897,7 +897,7 @@ dependencies = [
 [[package]]
 name = "candle-kernels"
 version = "0.9.1"
-source = "git+https://github.com/EricLBuehler/candle.git?rev=95d713f9#95d713f996225a3643b1d0c3eeb5a35c40516625"
+source = "git+https://github.com/EricLBuehler/candle.git?rev=5e6c385#5e6c385147daa6ec06a27e715dbb594581bdefec"
 dependencies = [
  "bindgen_cuda 0.1.5",
 ]
@@ -905,7 +905,7 @@ dependencies = [
 [[package]]
 name = "candle-metal-kernels"
 version = "0.9.1"
-source = "git+https://github.com/EricLBuehler/candle.git?rev=95d713f9#95d713f996225a3643b1d0c3eeb5a35c40516625"
+source = "git+https://github.com/EricLBuehler/candle.git?rev=5e6c385#5e6c385147daa6ec06a27e715dbb594581bdefec"
 dependencies = [
  "half",
  "metal 0.27.0",
@@ -917,7 +917,7 @@ dependencies = [
 [[package]]
 name = "candle-nn"
 version = "0.9.1"
-source = "git+https://github.com/EricLBuehler/candle.git?rev=95d713f9#95d713f996225a3643b1d0c3eeb5a35c40516625"
+source = "git+https://github.com/EricLBuehler/candle.git?rev=5e6c385#5e6c385147daa6ec06a27e715dbb594581bdefec"
 dependencies = [
  "accelerate-src",
  "candle-core",
@@ -1459,6 +1459,16 @@ name = "cudarc"
 version = "0.16.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "17200eb07e7d85a243aa1bf4569a7aa998385ba98d14833973a817a63cc86e92"
+dependencies = [
+ "half",
+ "libloading",
+]
+
+[[package]]
+name = "cudarc"
+version = "0.17.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8147ca46109d41cc513fd629b52bbea9bd09b972034c2f32954ce84a92895a91"
 dependencies = [
  "half",
  "libloading",
@@ -2178,11 +2188,11 @@ dependencies = [
 
 [[package]]
 name = "float8"
-version = "0.3.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f498aec3b227cd892ce18967f4033d9d397d28a80a7ab67e9f6b0176a79654e"
+checksum = "834169057ecfb457f079c33f11ba6d427012d803cd0bbe2480372351877596d3"
 dependencies = [
- "cudarc",
+ "cudarc 0.17.2",
  "half",
  "num-traits",
 ]
@@ -4342,7 +4352,7 @@ dependencies = [
 [[package]]
 name = "mistralrs"
 version = "0.6.0"
-source = "git+https://github.com/EricLBuehler/mistral.rs.git#2baaabb630f2457605b01d3ab0d732ceaf4e9097"
+source = "git+https://github.com/EricLBuehler/mistral.rs.git#4c23d41fca60498c6e9279280dba172df9d5c184"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -4364,7 +4374,7 @@ dependencies = [
 [[package]]
 name = "mistralrs-audio"
 version = "0.6.0"
-source = "git+https://github.com/EricLBuehler/mistral.rs.git#2baaabb630f2457605b01d3ab0d732ceaf4e9097"
+source = "git+https://github.com/EricLBuehler/mistral.rs.git#4c23d41fca60498c6e9279280dba172df9d5c184"
 dependencies = [
  "anyhow",
  "apodize",
@@ -4375,7 +4385,7 @@ dependencies = [
 [[package]]
 name = "mistralrs-core"
 version = "0.6.0"
-source = "git+https://github.com/EricLBuehler/mistral.rs.git#2baaabb630f2457605b01d3ab0d732ceaf4e9097"
+source = "git+https://github.com/EricLBuehler/mistral.rs.git#4c23d41fca60498c6e9279280dba172df9d5c184"
 dependencies = [
  "ahash",
  "akin",
@@ -4472,7 +4482,7 @@ dependencies = [
 [[package]]
 name = "mistralrs-mcp"
 version = "0.6.0"
-source = "git+https://github.com/EricLBuehler/mistral.rs.git#2baaabb630f2457605b01d3ab0d732ceaf4e9097"
+source = "git+https://github.com/EricLBuehler/mistral.rs.git#4c23d41fca60498c6e9279280dba172df9d5c184"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4492,7 +4502,7 @@ dependencies = [
 [[package]]
 name = "mistralrs-paged-attn"
 version = "0.6.0"
-source = "git+https://github.com/EricLBuehler/mistral.rs.git#2baaabb630f2457605b01d3ab0d732ceaf4e9097"
+source = "git+https://github.com/EricLBuehler/mistral.rs.git#4c23d41fca60498c6e9279280dba172df9d5c184"
 dependencies = [
  "anyhow",
  "bindgen_cuda 0.1.7",
@@ -4507,7 +4517,7 @@ dependencies = [
 [[package]]
 name = "mistralrs-quant"
 version = "0.6.0"
-source = "git+https://github.com/EricLBuehler/mistral.rs.git#2baaabb630f2457605b01d3ab0d732ceaf4e9097"
+source = "git+https://github.com/EricLBuehler/mistral.rs.git#4c23d41fca60498c6e9279280dba172df9d5c184"
 dependencies = [
  "bindgen_cuda 0.1.7",
  "byteorder",
@@ -4535,7 +4545,7 @@ dependencies = [
 [[package]]
 name = "mistralrs-vision"
 version = "0.6.0"
-source = "git+https://github.com/EricLBuehler/mistral.rs.git#2baaabb630f2457605b01d3ab0d732ceaf4e9097"
+source = "git+https://github.com/EricLBuehler/mistral.rs.git#4c23d41fca60498c6e9279280dba172df9d5c184"
 dependencies = [
  "candle-core",
  "image",
@@ -6328,9 +6338,9 @@ checksum = "d3edd4d5d42c92f0a659926464d4cce56b562761267ecf0f469d85b7de384175"
 
 [[package]]
 name = "redis"
-version = "0.32.4"
+version = "0.32.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1f66bf4cac9733a23bcdf1e0e01effbaaad208567beba68be8f67e5f4af3ee1"
+checksum = "7cd3650deebc68526b304898b192fa4102a4ef0b9ada24da096559cb60e0eef8"
 dependencies = [
  "ahash",
  "bytes",
@@ -9155,7 +9165,7 @@ version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "14053653d0b7fa7b21015aa9a62edc8af2f60aa6f9c54e66386ecce55f22ed29"
 dependencies = [
- "cudarc",
+ "cudarc 0.16.6",
  "half",
  "serde",
  "thiserror 1.0.69",
