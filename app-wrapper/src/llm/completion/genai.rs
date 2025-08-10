@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::super::generic_tracing_helper::{
-    GenericLLMTracingHelper, LLMMessage, ModelOptions as GenericModelOptions,
+    GenericLLMTracingHelper, LLMMessage,
 };
 use super::super::tracing::genai_helper::GenaiCompletionTracingHelper;
 
@@ -427,15 +427,6 @@ impl GenericLLMTracingHelper for GenaiCompletionService {
         super::super::chat::genai::GenaiChatService::convert_messages_to_input_genai(
             &genai_messages,
         )
-    }
-
-    fn convert_model_options_to_parameters(
-        &self,
-        _options: &impl GenericModelOptions,
-    ) -> HashMap<String, serde_json::Value> {
-        // For GenAI completion, we can't directly convert from the generic trait
-        // This would need to be implemented with specific knowledge of the options
-        HashMap::new()
     }
 
     fn get_provider_name(&self) -> &str {

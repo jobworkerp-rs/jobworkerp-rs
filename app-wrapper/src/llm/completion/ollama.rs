@@ -18,7 +18,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use super::super::generic_tracing_helper::{
-    ChatResponse, GenericLLMTracingHelper, LLMMessage, ModelOptions as GenericModelOptions,
+    ChatResponse, GenericLLMTracingHelper, LLMMessage,
     UsageData,
 };
 use crate::llm::ThinkTagHelper;
@@ -372,15 +372,6 @@ impl GenericLLMTracingHelper for OllamaService {
             .map(|m| format!("{}: {}", m.get_role(), m.get_content()))
             .collect();
         serde_json::json!(messages_text)
-    }
-
-    fn convert_model_options_to_parameters(
-        &self,
-        _options: &impl GenericModelOptions,
-    ) -> HashMap<String, serde_json::Value> {
-        // For Ollama completion, we can not directly convert from the generic trait
-        // This would need to be implemented with specific knowledge of the options
-        HashMap::new()
     }
 
     fn get_provider_name(&self) -> &str {

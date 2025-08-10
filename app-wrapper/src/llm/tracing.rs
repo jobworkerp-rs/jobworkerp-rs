@@ -14,6 +14,7 @@ use serde_json;
 
 pub mod genai_helper;
 pub mod ollama_helper;
+pub mod mistral_helper;
 
 /// Tracing context - For internal state management
 #[derive(Debug)]
