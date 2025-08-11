@@ -38,14 +38,15 @@ dotenvy = { workspace = true }
 envy = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
-genai = "0.4.0-alpha.3"
+genai = "0.4.0-alpha.11"
 #genai = { git = "https://github.com/jeremychone/rust-genai", branch = "main" }
 indexmap = "2"
 itertools = { workspace = true }
-jsonschema = "0.31"
+jsonschema = "0.32"
 #kube-client = "0.86"
 libloading = { workspace = true }
 liquid = "0.26"
+mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs.git" }
 nix = { workspace = true, features = ["signal"] }
 ollama-rs = { version = "0.3", features = ["stream"] }
 once_cell = { workspace = true }
@@ -92,3 +93,10 @@ jobworkerp-runner = { path = "../runner", features = ["test-utils"] }
 [features]
 default = []
 test-utils = ["app/test-utils", "infra/test-utils"]
+cuda = ["mistralrs/cuda"]
+cudnn = ["mistralrs/cudnn"]
+metal = ["mistralrs/metal"]
+flash-attn = ["cuda", "mistralrs/flash-attn"]
+accelerate = ["mistralrs/accelerate"]
+mkl = ["mistralrs/mkl"]
+nccl = ["mistralrs/nccl"]

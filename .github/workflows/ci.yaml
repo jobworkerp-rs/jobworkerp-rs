@@ -37,7 +37,7 @@ jobs:
   job-test:
     runs-on: ubuntu-latest
     container:
-      image: nvcr.io/nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+      image: nvcr.io/nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
     timeout-minutes: 30
     services:
       db:
@@ -84,7 +84,7 @@ jobs:
       - name: apt upgrade
         run: |
           apt-get update
-          apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip
+          apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang g++ musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip
           # Install Node.js for setup-protoc action
           curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
           apt-get install -y nodejs
@@ -122,12 +122,14 @@ jobs:
           PLUGINS_RUNNER_DIR: "./target/release/"
           TEST_REDIS_URL: "redis://redis:6379"
           TEST_MYSQL_URL: "mysql://maria:maria@db:3306/test"
+          UV_VENV_CLEAR: 1
       - name: Run test with mysql
         run: |
-          cargo build --features "mysql" --release
-          cargo test --features "mysql" --release -- --test-threads=1
+          cargo build --features "mysql,cuda,cudnn,flash-attn" --release
+          cargo test --features "mysql,cuda,cudnn,flash-attn" --release -- --test-threads=1
           cargo clean
         env:
           PLUGINS_RUNNER_DIR: "./target/release/"
           TEST_REDIS_URL: "redis://redis:6379"
           TEST_MYSQL_URL: "mysql://maria:maria@db:3306/test"
+          UV_VENV_CLEAR: 1

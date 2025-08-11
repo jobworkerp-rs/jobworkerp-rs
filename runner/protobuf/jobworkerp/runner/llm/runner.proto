@@ -31,9 +31,63 @@ message LLMRunnerSettings {
     optional string base_url = 3;
   }
 
+  // local LLM model specific settings
+  message LocalRunnerSettings {
+    enum IsqType {
+      ISQ_TYPE_UNSPECIFIED = 0;
+      Q4_0 = 1;
+      Q4_1 = 2;
+      Q5_0 = 3;
+      Q5_1 = 4;
+      Q8_0 = 5;
+      Q8_1 = 6;
+      Q2K = 7;
+      Q3K = 8;
+      Q4K = 9;
+      Q5K = 10;
+      Q6K = 11;
+      Q8K = 12;
+      HQQ8 = 13;
+      HQQ4 = 14;
+      F8E4M3 = 15;
+    }
+
+    message AutoDeviceMapParams {
+      uint32 max_seq_len = 1;
+      uint32 max_batch_size = 2;
+    }
+
+    message TextModelSettings {
+      string model_name_or_path = 1;     // HF model ID or local path
+      optional IsqType isq_type = 2;     // quantitization type
+      bool with_logging = 3;             // logging or not
+      bool with_paged_attn = 4;          // paged attention or not
+      optional string chat_template = 5; // chat template
+    }
+
+    // Settings specific to GGUF models
+    message GgufModelSettings {
+      string model_name_or_path = 1;     // Directory containing GGUF files
+      repeated string gguf_files = 2;    // GGUF file names
+      optional string tok_model_id = 3;  // tokenizer model ID
+      bool with_logging = 4;             // logging or not
+      optional string chat_template = 5; // chat template
+    }
+
+    // main body
+    // model type specific settings
+    oneof model_settings {
+      TextModelSettings text_model = 1;
+      GgufModelSettings gguf_model = 2;
+    }
+
+    optional AutoDeviceMapParams auto_device_map = 3;
+  }
+
   // runner settings
   oneof settings {
     OllamaRunnerSettings ollama = 1;
     GenaiRunnerSettings genai = 2;
+    LocalRunnerSettings local = 3;
   }
 }

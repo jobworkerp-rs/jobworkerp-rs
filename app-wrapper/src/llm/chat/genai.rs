@@ -147,20 +147,22 @@ impl GenaiChatService {
                 let content = match msg.content {
                     Some(content) => match content.content {
                         Some(ProtoContent::Text(text)) => GenaiMessageContent::Text(text),
+                        // TODO pdf
                         Some(ProtoContent::Image(image)) => {
                             let source = match image.source {
                                 Some(src) => {
                                     if !src.url.is_empty() {
-                                        genai::chat::ImageSource::Url(src.url)
+                                        genai::chat::BinarySource::Url(src.url)
                                     } else if !src.base64.is_empty() {
-                                        genai::chat::ImageSource::Base64(Arc::from(src.base64))
+                                        genai::chat::BinarySource::Base64(Arc::from(src.base64))
                                     } else {
                                         return None;
                                     }
                                 }
                                 None => return None,
                             };
-                            GenaiMessageContent::Parts(vec![genai::chat::ContentPart::Image {
+                            GenaiMessageContent::Parts(vec![genai::chat::ContentPart::Binary {
+                                name: None,
                                 content_type: image.content_type,
                                 source,
                             }])
@@ -770,15 +772,6 @@ impl GenericLLMTracingHelper for GenaiChatService {
             })
             .collect();
         Self::convert_messages_to_input_genai(&genai_messages)
-    }
-
-    fn convert_model_options_to_parameters(
-        &self,
-        _options: &impl GenericModelOptions,
-    ) -> HashMap<String, serde_json::Value> {
-        // For GenAI, we can't directly convert from the generic trait
-        // This would need to be implemented with specific knowledge of the options
-        HashMap::new()
     }
 
     fn get_provider_name(&self) -> &str {

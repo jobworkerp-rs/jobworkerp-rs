@@ -80,7 +80,7 @@ where
             ..Default::default()
         }
     }
-    pub fn to_docker(&self) -> CreateImageOptions<T> {
+    pub fn to_docker(&self) -> CreateImageOptions<'_, T> {
         CreateImageOptions {
             from_image: self.from_image.clone().unwrap_or_default(),
             from_src: self.from_src.clone().unwrap_or_default(),
