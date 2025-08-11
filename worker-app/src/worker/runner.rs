@@ -13,7 +13,7 @@ use anyhow::anyhow;
 use anyhow::Result;
 use app_wrapper::runner::UseRunnerFactory;
 use async_trait::async_trait;
-use command_utils::util::{datetime, result::Flatten};
+use command_utils::util::datetime;
 use futures::{future::FutureExt, stream::BoxStream};
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::UseIdGenerator;
@@ -43,7 +43,6 @@ pub trait JobRunner:
     + Send
     + Sync
 {
-    #[allow(unstable_name_collisions)] // for flatten()
     //#[tracing::instrument(name = "JobRunner", skip(self))]
     #[inline]
     async fn run_job(
@@ -296,7 +295,6 @@ pub trait JobRunner:
         }
     }
 
-    #[allow(unstable_name_collisions)] // for flatten()
     async fn run_job_inner(
         &'static self,
         worker_data: &WorkerData,
@@ -396,7 +394,6 @@ pub trait JobRunner:
         }
     }
 
-    #[allow(unstable_name_collisions)] // for flatten()
     async fn run_and_stream<'a>(
         &'static self,
         job: &Job,
@@ -415,7 +412,7 @@ pub trait JobRunner:
                         let msg = format!("Caught panic from runner {name}: {e:?}");
                         tracing::error!(msg);
                         anyhow!(msg)
-                    }).flatten()
+                    }).and_then(|st| st)
                 },
                 _ = tokio::time::sleep(Duration::from_millis(data.timeout)) => {
                     runner_impl.as_cancel_monitoring().request_cancellation().await.unwrap();
@@ -432,10 +429,9 @@ pub trait JobRunner:
                     tracing::error!(msg);
                     anyhow!(msg)
                 })
-                .flatten()
+                .and_then(|st| st)
         }
     }
-    #[allow(unstable_name_collisions)] // for flatten()
     async fn run_and_result(
         &self,
         job: &Job,

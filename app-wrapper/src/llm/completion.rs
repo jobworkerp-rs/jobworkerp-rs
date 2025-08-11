@@ -36,7 +36,6 @@ pub struct LLMCompletionRunnerImpl {
 }
 
 impl LLMCompletionRunnerImpl {
-    /// Constructor without cancellation monitoring (for backward compatibility)
     pub fn new(app: Arc<AppModule>) -> Self {
         Self {
             app,
@@ -47,7 +46,6 @@ impl LLMCompletionRunnerImpl {
         }
     }
 
-    /// Constructor with cancellation monitoring (DI integration version)
     pub fn new_with_cancel_monitoring(
         app: Arc<AppModule>,
         cancel_helper: CancelMonitoringHelper,
@@ -61,7 +59,6 @@ impl LLMCompletionRunnerImpl {
         }
     }
 
-    /// Unified cancellation token retrieval
     async fn get_cancellation_token(&self) -> CancellationToken {
         if let Some(helper) = &self.cancel_helper {
             helper.get_cancellation_token().await
@@ -73,14 +70,11 @@ impl LLMCompletionRunnerImpl {
 
 impl Tracing for LLMCompletionRunnerImpl {}
 
-// DI trait implementation (with optional support)
 impl UseCancelMonitoringHelper for LLMCompletionRunnerImpl {
     fn cancel_monitoring_helper(&self) -> Option<&CancelMonitoringHelper> {
         self.cancel_helper.as_ref()
     }
 }
-
-// Default trait removed - app parameter is now required
 
 impl LLMCompletionRunnerSpec for LLMCompletionRunnerImpl {}
 impl RunnerSpec for LLMCompletionRunnerImpl {

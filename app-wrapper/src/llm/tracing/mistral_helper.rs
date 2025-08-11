@@ -11,6 +11,13 @@ use super::super::generic_tracing_helper::{
 };
 use crate::llm::mistral::{MistralRSMessage, SerializableChatResponse, SerializableToolResults};
 
+// Import for unified LLM tracing
+use crate::llm::tracing::{
+    LLMInput, LLMOptions, LLMRequestData, LLMResponseData, LLMTool, UsageData as LLMUsageData,
+};
+use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{message_content, ChatRole};
+use jobworkerp_runner::jobworkerp::runner::llm::LlmChatArgs;
+
 // Trait implementations for MistralRS-specific types
 impl LLMMessage for MistralRSMessage {
     fn get_role(&self) -> &str {
@@ -315,5 +322,136 @@ pub trait MistralTracingHelper: GenericLLMTracingHelper {
             }
             Ok(())
         }
+    }
+}
+
+// === Unified LLM Tracing Implementation ===
+
+/// Unified tracing data for MistralRS using actual data
+pub struct MistralTracingData {
+    pub args: LlmChatArgs,                    // Original request arguments
+    pub resolved_tools: Vec<mistralrs::Tool>, // Pre-resolved actual tool information
+    pub model_name: String,                   // Actual model name
+}
+
+impl LLMRequestData for MistralTracingData {
+    /// Extract tracing input from actual messages
+    fn extract_input(&self) -> LLMInput {
+        LLMInput {
+            messages: serde_json::json!(self
+                .args
+                .messages
+                .iter()
+                .map(|m| {
+                    let role_str = match ChatRole::try_from(m.role).unwrap_or(ChatRole::User) {
+                        ChatRole::User => "user",
+                        ChatRole::Assistant => "assistant",
+                        ChatRole::System => "system",
+                        ChatRole::Tool => "tool",
+                        _ => "user",
+                    };
+
+                    let content = m
+                        .content
+                        .as_ref()
+                        .and_then(|c| c.content.as_ref())
+                        .map(|content| match content {
+                            message_content::Content::Text(text) => text.clone(),
+                            message_content::Content::ToolCalls(_) => String::new(), // Do not display tool calls content
+                            message_content::Content::Image(_) => String::new(), // Do not display image content
+                        })
+                        .unwrap_or_default();
+
+                    serde_json::json!({
+                        "role": role_str,
+                        "content": content
+                    })
+                })
+                .collect::<Vec<_>>()),
+            prompt: None, // MistralRS uses message-based interface
+        }
+    }
+
+    /// Extract actual LLM options
+    fn extract_options(&self) -> Option<LLMOptions> {
+        self.args.options.as_ref().map(|opts| LLMOptions {
+            parameters: [
+                ("max_tokens", opts.max_tokens.map(|t| serde_json::json!(t))),
+                (
+                    "temperature",
+                    opts.temperature.map(|t| serde_json::json!(t)),
+                ),
+                ("top_p", opts.top_p.map(|t| serde_json::json!(t))),
+                ("seed", opts.seed.map(|s| serde_json::json!(s))),
+            ]
+            .iter()
+            .filter_map(|(k, v)| v.as_ref().map(|val| (k.to_string(), val.clone())))
+            .collect(),
+        })
+    }
+
+    /// Use actually resolved tool information (excluding dummy data)
+    fn extract_tools(&self) -> Vec<LLMTool> {
+        self.resolved_tools
+            .iter()
+            .map(|tool| LLMTool {
+                name: tool.function.name.clone(),
+                description: tool.function.description.clone().unwrap_or_default(),
+                parameters: if let Some(params) = tool.function.parameters.clone() {
+                    serde_json::to_value(&params)
+                        .unwrap_or_else(|_| serde_json::json!({"type": "object"}))
+                } else {
+                    serde_json::json!({"type": "object"})
+                },
+            })
+            .collect()
+    }
+
+    /// Use actual model name
+    fn extract_model(&self) -> Option<String> {
+        Some(self.model_name.clone())
+    }
+}
+
+/// MistralRS usage data using actual response data
+impl LLMUsageData for mistralrs::Usage {
+    fn to_usage_map(&self) -> std::collections::HashMap<String, i64> {
+        let mut usage = std::collections::HashMap::new();
+        usage.insert("prompt_tokens".to_string(), self.prompt_tokens as i64);
+        usage.insert(
+            "completion_tokens".to_string(),
+            self.completion_tokens as i64,
+        );
+        usage.insert("total_tokens".to_string(), self.total_tokens as i64);
+        usage
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens
+        })
+    }
+}
+
+/// MistralRS response data using actual response content
+impl LLMResponseData for mistralrs::ChatCompletionResponse {
+    fn to_trace_output(&self) -> serde_json::Value {
+        self.choices
+            .first()
+            .and_then(|choice| choice.message.content.as_ref())
+            .map(|content| serde_json::json!(content))
+            .unwrap_or_else(|| serde_json::json!(""))
+    }
+
+    fn extract_usage(&self) -> Option<Box<dyn LLMUsageData>> {
+        Some(Box::new(self.usage.clone()) as Box<dyn LLMUsageData>)
+    }
+
+    fn extract_content(&self) -> Option<String> {
+        self.choices
+            .first()
+            .and_then(|choice| choice.message.content.clone())
     }
 }

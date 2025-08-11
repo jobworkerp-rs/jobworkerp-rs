@@ -38,30 +38,30 @@ pub trait LLMRequestConverter: UseFunctionApp {
                 match &msg.content {
                     Some(content) => match &content.content {
                         Some(message_content::Content::Text(text)) => {
-                            // For tool messages, we need to handle tool call ID from metadata if available
-                            if matches!(role, TextMessageRole::Tool) {
-                                // Tool messages should contain the result of a tool call
-                                // The format should include the call_id for proper conversation flow
-                                builder = builder.add_tool_message(
-                                    text.clone(),
-                                    "fixed_tool_call_id".to_string(),
-                                );
-                            } else {
-                                builder = builder.add_message(role, text);
-                            }
+                            builder = builder.add_message(role, text);
                         }
                         Some(message_content::Content::Image(_image)) => {
-                            // Image support requires VisionModel implementation (future phase)
+                            // Image support requires VisionModel implementation
                             // Ref: https://github.com/EricLBuehler/mistral.rs/blob/main/mistralrs/examples/phi4mm/main.rs
                             tracing::warn!("Image content not yet supported for mistralrs, requires VisionModel");
                             builder = builder.add_message(role, "[Image content not supported]");
                         }
-                        Some(message_content::Content::ToolCalls(_tool_calls)) => {
-                            // Tool calls are typically handled at the assistant message level
-                            // For now, just add an empty message - proper tool call handling
-                            // should be done when creating the request with tools
-                            tracing::warn!("Tool calls in message content not fully supported yet in mistralrs converter");
-                            // builder = builder.add_message(role, "[Tool calls present]");
+                        Some(message_content::Content::ToolCalls(tool_calls)) => {
+                            // Handle tool calls in assistant messages
+                            if matches!(role, TextMessageRole::Assistant) {
+                                // Add assistant message with tool calls - MistralRS expects empty content for tool-calling messages
+                                builder = builder.add_message(role, "");
+                                tracing::debug!(
+                                    "Added assistant message with {} tool calls",
+                                    tool_calls.calls.len()
+                                );
+                            } else {
+                                tracing::warn!(
+                                    "Tool calls in non-assistant message role: {:?}",
+                                    role
+                                );
+                                builder = builder.add_message(role, "[Tool calls present]");
+                            }
                         }
                         // Note: ToolResult variant doesn't exist in current proto definition
                         // Some(message_content::Content::ToolResult(_tool_result)) => {
