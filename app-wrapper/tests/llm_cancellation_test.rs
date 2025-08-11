@@ -224,8 +224,10 @@ async fn test_llm_completion_with_cancellation_helper() -> Result<()> {
     let cancel_helper = CancelMonitoringHelper::new(Box::new(mock_manager));
 
     // Create LLM Completion runner with cancellation helper
+    let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
     let mut runner =
         app_wrapper::llm::completion::LLMCompletionRunnerImpl::new_with_cancel_monitoring(
+            app_module,
             cancel_helper,
         );
 
@@ -381,8 +383,10 @@ async fn test_llm_completion_pre_cancellation() -> Result<()> {
     let cancel_helper = CancelMonitoringHelper::new(Box::new(mock_manager));
 
     // Create LLM Completion runner with pre-cancelled helper
+    let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
     let mut runner =
         app_wrapper::llm::completion::LLMCompletionRunnerImpl::new_with_cancel_monitoring(
+            app_module,
             cancel_helper,
         );
 

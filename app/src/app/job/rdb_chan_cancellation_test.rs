@@ -110,7 +110,7 @@ mod rdb_chan_cancellation_tests {
 
     #[test]
     fn test_cancel_pending_job_rdb_chan() -> Result<()> {
-        // Memory環境でのPendingジョブキャンセルテスト
+        // Test pending job cancellation in memory environment
         TEST_RUNTIME.block_on(async {
             let app = create_test_rdb_chan_app(true).await?;
 

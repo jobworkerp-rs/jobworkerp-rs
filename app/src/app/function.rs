@@ -49,6 +49,16 @@ pub trait FunctionApp:
         exclude_runner: bool,
         exclude_worker: bool,
     ) -> Result<Vec<FunctionSpecs>> {
+        self.find_functions_all(exclude_runner, exclude_worker, false)
+            .await
+    }
+
+    async fn find_functions_all(
+        &self,
+        exclude_runner: bool,
+        exclude_worker: bool,
+        _include_full: bool, // Include full function specs with schema (large data)
+    ) -> Result<Vec<FunctionSpecs>> {
         let mut functions = Vec::new();
 
         // Get runners if not excluded

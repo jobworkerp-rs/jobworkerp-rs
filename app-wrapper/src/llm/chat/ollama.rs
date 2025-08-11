@@ -86,13 +86,6 @@ impl super::super::generic_tracing_helper::GenericLLMTracingHelper for OllamaCha
         Self::convert_messages_to_input_ollama(&ollama_messages)
     }
 
-    fn convert_model_options_to_parameters(
-        &self,
-        _options: &impl super::super::generic_tracing_helper::ModelOptions,
-    ) -> HashMap<String, serde_json::Value> {
-        HashMap::new()
-    }
-
     fn get_provider_name(&self) -> &str {
         "ollama"
     }

@@ -18,8 +18,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use super::super::generic_tracing_helper::{
-    ChatResponse, GenericLLMTracingHelper, LLMMessage, ModelOptions as GenericModelOptions,
-    UsageData,
+    ChatResponse, GenericLLMTracingHelper, LLMMessage, UsageData,
 };
 use crate::llm::ThinkTagHelper;
 
@@ -374,15 +373,6 @@ impl GenericLLMTracingHelper for OllamaService {
         serde_json::json!(messages_text)
     }
 
-    fn convert_model_options_to_parameters(
-        &self,
-        _options: &impl GenericModelOptions,
-    ) -> HashMap<String, serde_json::Value> {
-        // For Ollama completion, we can not directly convert from the generic trait
-        // This would need to be implemented with specific knowledge of the options
-        HashMap::new()
-    }
-
     fn get_provider_name(&self) -> &str {
         "ollama"
     }
@@ -405,7 +395,7 @@ mod test {
             // base_url: Some("http://localhost:11434".to_string()),
             model: "phi4".to_string(),
             system_prompt: Some(
-                "次の文章を日本語に翻訳してください。翻訳結果のみを出力してください".to_string(),
+                "Please translate the following text to Japanese. Output only the translation result.".to_string(),
             ),
             pull_model: Some(false),
         };
@@ -463,7 +453,7 @@ The test checks that the response contains the expected content and meets our qu
             base_url: Some("http://ollama.ollama.svc.cluster.local:11434".to_string()),
             model: "deepseek-r1:32b".to_string(),
             system_prompt: Some(
-                "次の文章を日本語に翻訳してください。翻訳結果のみを出力してください".to_string(),
+                "Please translate the following text to Japanese. Output only the translation result.".to_string(),
             ),
             pull_model: Some(false),
         };
