@@ -14,38 +14,39 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// CREATE_WORKFLOW DB integration test
-/// Verify worker creation and access using actual database
-#[tokio::test]
-async fn test_create_workflow_runner_db_integration() -> Result<()> {
-    println!("🗄️ Starting CREATE_WORKFLOW DB integration test");
+/// Use real DB to verify worker creation and access
+#[test]
+fn test_create_workflow_runner_db_integration() -> Result<()> {
+    println!("🗄️ CREATE_WORKFLOW DB integration test start");
+    TEST_RUNTIME.block_on(async {
+        // Initialize AppModule (hybrid setup for testing)
+        let app = Arc::new(create_hybrid_test_app().await?);
 
-    // Initialize AppModule (hybrid setup for testing)
-    let app = Arc::new(create_hybrid_test_app().await?);
+        // Initialize CreateWorkflowRunnerImpl
+        let mut runner = CreateWorkflowRunnerImpl::new(app.clone())?;
 
-    // Initialize CreateWorkflowRunnerImpl
-    let mut runner = CreateWorkflowRunnerImpl::new(app.clone())?;
-
-    // Test workflow definition
-    let test_workflow = json!({
-        "document": {
-            "dsl": "0.0.1",
-            "namespace": "db-integration-test",
-            "name": "create-workflow-db-test",
-            "version": "1.0.0",
-            "summary": "Workflow for CREATE_WORKFLOW DB integration test"
-        },
-        "input": {
-            "from": ".testInput"
-        },
-        "do": [
-            {
-                "db_test_step": {
-                    "run": {
-                        "runner": {
-                            "name": "COMMAND",
-                            "arguments": {
-                                "command": "echo",
-                                "args": ["Running DB integration test"]
+        // Workflow definition for the test
+        let test_workflow = json!({
+            "document": {
+                "dsl": "0.0.1",
+                "namespace": "db-integration-test",
+                "name": "create-workflow-db-test",
+                "version": "1.0.0",
+                "summary": "CREATE_WORKFLOW workflow for DB integration test"
+            },
+            "input": {
+                "from": ".testInput"
+            },
+            "do": [
+                {
+                    "db_test_step": {
+                        "run": {
+                            "runner": {
+                                "name": "COMMAND",
+                                "arguments": {
+                                    "command": "echo",
+                                    "args": ["Running DB integration test"]
+                                }
                             }
                         }
                     }
@@ -76,92 +77,100 @@ async fn test_create_workflow_runner_db_integration() -> Result<()> {
         }),
     };
 
-    // Proto serialization
-    let serialized_args = ProstMessageCodec::serialize_message(&test_args)?;
-    println!(
-        "✅ Proto serialization completed: {} bytes",
-        serialized_args.len()
-    );
+        // Proto serialization
+        let serialized_args = ProstMessageCodec::serialize_message(&test_args)?;
+        println!(
+            "✅ Proto serialization completed: {} bytes",
+            serialized_args.len()
+        );
 
-    // Execute CREATE_WORKFLOW
-    let metadata = HashMap::new();
-    let (result, _returned_metadata) = runner.run(&serialized_args, metadata).await;
+        // Execute CREATE_WORKFLOW
+        let metadata = HashMap::new();
+        let (result, _returned_metadata) = runner.run(&serialized_args, metadata).await;
 
-    match result {
-        Ok(output_bytes) => {
-            println!("✅ CREATE_WORKFLOW execution successful");
+        match result {
+            Ok(output_bytes) => {
+                println!("✅ CREATE_WORKFLOW executed successfully");
 
-            // Deserialize result
-            let create_result: CreateWorkflowResult =
-                ProstMessageCodec::deserialize_message(&output_bytes)?;
+                // Deserialize result
+                let create_result: CreateWorkflowResult =
+                    ProstMessageCodec::deserialize_message(&output_bytes)?;
 
-            // Verify WorkerID
-            assert!(
-                create_result.worker_id.is_some(),
-                "WorkerId should be present"
-            );
-            let worker_id = create_result.worker_id.unwrap();
-            assert!(worker_id.value > 0, "WorkerId should be valid and positive");
+                // Validate WorkerID
+                assert!(
+                    create_result.worker_id.is_some(),
+                    "WorkerId should be present"
+                );
+                let worker_id = create_result.worker_id.unwrap();
+                assert!(worker_id.value > 0, "WorkerId should be valid and positive");
 
-            println!("✅ WorkerID generation successful: {}", worker_id.value);
+                println!("✅ WorkerID generated: {}", worker_id.value);
 
-            // Verify that worker was created in DB
-            let found_worker = app.worker_app.find_by_name(worker_name).await?;
-            assert!(found_worker.is_some(), "Created worker not found in DB");
+                // Verify that the worker was created in the DB
+                let found_worker = app.worker_app.find_by_name(worker_name).await?;
+                assert!(
+                    found_worker.is_some(),
+                    "Created worker not found in DB"
+                );
 
-            let found_worker = found_worker.unwrap();
-            let worker_data = found_worker.data.as_ref().expect("WorkerData should exist");
-            println!("✅ Worker verification in DB successful:");
-            println!("   - Worker Name: {}", worker_data.name);
-            println!(
-                "   - Worker ID: {}",
-                found_worker.id.as_ref().unwrap().value
-            );
-            println!(
-                "   - Runner ID: {}",
-                worker_data.runner_id.as_ref().unwrap().value
-            );
-            println!("   - Channel: {:?}", worker_data.channel);
+                let found_worker = found_worker.unwrap();
+                let worker_data = found_worker.data.as_ref().expect("WorkerData should exist");
+                println!("✅ Worker found in DB:");
+                println!("   - Worker Name: {}", worker_data.name);
+                println!(
+                    "   - Worker ID: {}",
+                    found_worker.id.as_ref().unwrap().value
+                );
+                println!(
+                    "   - Runner ID: {}",
+                    worker_data.runner_id.as_ref().unwrap().value
+                );
+                println!("   - Channel: {:?}", worker_data.channel);
 
-            // Verify worker details
-            assert_eq!(worker_data.name, worker_name);
-            assert_eq!(found_worker.id.as_ref().unwrap().value, worker_id.value);
-            assert!(worker_data.runner_id.as_ref().unwrap().value > 0);
-            assert_eq!(worker_data.channel.as_deref(), Some("db-test-channel"));
-            assert!(worker_data.store_success);
-            assert!(worker_data.store_failure);
-            assert_eq!(worker_data.response_type, ResponseType::Direct as i32);
-            assert_eq!(
-                worker_data.queue_type,
-                proto::jobworkerp::data::QueueType::ForcedRdb as i32
-            );
-            assert_eq!(
-                worker_data.retry_policy.as_ref().map(|p| p.r#type),
-                Some(RetryType::Exponential as i32)
-            );
-            assert_eq!(
-                worker_data.retry_policy.as_ref().map(|p| p.interval),
-                Some(2000)
-            );
-            assert_eq!(
-                worker_data.retry_policy.as_ref().map(|p| p.max_interval),
-                Some(30000)
-            );
-            assert_eq!(
-                worker_data.retry_policy.as_ref().map(|p| p.max_retry),
-                Some(3)
-            );
-            assert_eq!(
-                worker_data.retry_policy.as_ref().map(|p| p.basis),
-                Some(2.0)
-            );
+                // Verify worker details
+                assert_eq!(worker_data.name, worker_name);
+                assert_eq!(found_worker.id.as_ref().unwrap().value, worker_id.value);
+                assert!(worker_data.runner_id.as_ref().unwrap().value > 0);
+                assert_eq!(worker_data.channel.as_deref(), Some("db-test-channel"));
+                assert!(worker_data.store_success);
+                assert!(worker_data.store_failure);
+                assert_eq!(worker_data.response_type, ResponseType::Direct as i32);
+                assert_eq!(
+                    worker_data.queue_type,
+                    proto::jobworkerp::data::QueueType::ForcedRdb as i32
+                );
+                assert_eq!(
+                    worker_data.retry_policy.as_ref().map(|p| p.r#type),
+                    Some(RetryType::Exponential as i32)
+                );
+                assert_eq!(
+                    worker_data.retry_policy.as_ref().map(|p| p.interval),
+                    Some(2000)
+                );
+                assert_eq!(
+                    worker_data.retry_policy.as_ref().map(|p| p.max_interval),
+                    Some(30000)
+                );
+                assert_eq!(
+                    worker_data.retry_policy.as_ref().map(|p| p.max_retry),
+                    Some(3)
+                );
+                assert_eq!(
+                    worker_data.retry_policy.as_ref().map(|p| p.basis),
+                    Some(2.0)
+                );
 
-            println!("✅ CREATE_WORKFLOW DB integration test successful:");
-            println!("   - Workflow validation: PASSED");
-            println!("   - Worker creation: PASSED");
-            println!("   - Database persistence: PASSED");
-            println!("   - Worker retrieval: PASSED");
-            println!("   - Options configuration: PASSED");
+                println!("✅ CREATE_WORKFLOW DB integration test succeeded:");
+                println!("   - Workflow validation: PASSED");
+                println!("   - Worker creation: PASSED");
+                println!("   - Database persistence: PASSED");
+                println!("   - Worker retrieval: PASSED");
+                println!("   - Options configuration: PASSED");
+            }
+            Err(e) => {
+                println!("❌ CREATE_WORKFLOW execution failed: {e}");
+                return Err(e);
+            }
         }
         Err(e) => {
             println!("❌ CREATE_WORKFLOW execution failed: {e}");
@@ -172,13 +181,14 @@ async fn test_create_workflow_runner_db_integration() -> Result<()> {
     Ok(())
 }
 
-/// CREATE_WORKFLOW WorkflowURL DB integration test
+/// CREATE_WORKFLOW Workflow URL DB integration test
 /// Fetch workflow from URL and create worker
 #[ignore = "local url"]
-#[tokio::test]
-async fn test_create_workflow_url_db_integration() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
-    println!("🌐 Starting CREATE_WORKFLOW URL DB integration test");
+#[test]
+fn test_create_workflow_url_db_integration() -> Result<()> {
+    //command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    println!("🌐 CREATE_WORKFLOW URL DB integration test start");
+    TEST_RUNTIME.block_on(async {
 
     // Initialize AppModule (hybrid setup for testing)
     let app = Arc::new(create_hybrid_test_app().await?);
@@ -272,78 +282,81 @@ async fn test_create_workflow_url_db_integration() -> Result<()> {
     Ok(())
 }
 
-/// CREATE_WORKFLOW error case DB integration test
-/// Verify worker creation failure with invalid data
-#[tokio::test]
-async fn test_create_workflow_error_cases_db_integration() -> Result<()> {
-    println!("❌ Starting CREATE_WORKFLOW error case DB integration test");
+/// CREATE_WORKFLOW error cases DB integration test
+/// Verify failures on invalid input
+#[test]
+fn test_create_workflow_error_cases_db_integration() -> Result<()> {
+    println!("❌ CREATE_WORKFLOW error cases DB integration test start");
+    TEST_RUNTIME.block_on(async {
+        // Initialize AppModule (hybrid setup for testing)
+        let app = Arc::new(create_hybrid_test_app().await?);
 
-    // Initialize AppModule (hybrid setup for testing)
-    let app = Arc::new(create_hybrid_test_app().await?);
+        // Initialize CreateWorkflowRunnerImpl
+        let mut runner = CreateWorkflowRunnerImpl::new(app.clone())?;
 
-    // Initialize CreateWorkflowRunnerImpl
-    let mut runner = CreateWorkflowRunnerImpl::new(app.clone())?;
+        // Test case 1: empty worker name
+        let empty_name_args = CreateWorkflowArgs {
+            workflow_source: Some(WorkflowSource::WorkflowData(json!({
+                "document": {"name": "test", "version": "1.0.0"},
+                "do": [{"step": {"run": {"runner": {"name": "COMMAND", "arguments": {"command": "echo test"}}}}}]
+            }).to_string())),
+            name: "".to_string(),
+            worker_options: None,
+        };
 
-    // Test case 1: Empty worker name
-    let empty_name_args = CreateWorkflowArgs {
-        workflow_source: Some(WorkflowSource::WorkflowData(json!({
-            "document": {"name": "test", "version": "1.0.0"},
-            "do": [{"step": {"run": {"runner": {"name": "COMMAND", "arguments": {"command": "echo test"}}}}}]
-        }).to_string())),
-        name: "".to_string(),
-        worker_options: None,
-    };
+        let serialized = ProstMessageCodec::serialize_message(&empty_name_args)?;
+        let (result, _) = runner.run(&serialized, HashMap::new()).await;
+        assert!(result.is_err(), "Empty name should cause validation error");
+        println!("✅ Empty name rejection: OK");
 
-    let serialized = ProstMessageCodec::serialize_message(&empty_name_args)?;
-    let (result, _) = runner.run(&serialized, HashMap::new()).await;
-    assert!(result.is_err(), "Empty name should cause validation error");
-    println!("✅ Empty name rejection: OK");
+        // Test case 2: invalid JSON
+        let invalid_json_args = CreateWorkflowArgs {
+            workflow_source: Some(WorkflowSource::WorkflowData(
+                "invalid json content".to_string(),
+            )),
+            name: "error-test-worker".to_string(),
+            worker_options: None,
+        };
 
-    // Test case 2: Invalid JSON
-    let invalid_json_args = CreateWorkflowArgs {
-        workflow_source: Some(WorkflowSource::WorkflowData(
-            "invalid json content".to_string(),
-        )),
-        name: "error-test-worker".to_string(),
-        worker_options: None,
-    };
+        let serialized = ProstMessageCodec::serialize_message(&invalid_json_args)?;
+        let (result, _) = runner.run(&serialized, HashMap::new()).await;
+        assert!(result.is_err(), "Invalid JSON should cause parsing error");
+        println!("✅ Invalid JSON rejection: OK");
 
-    let serialized = ProstMessageCodec::serialize_message(&invalid_json_args)?;
-    let (result, _) = runner.run(&serialized, HashMap::new()).await;
-    assert!(result.is_err(), "Invalid JSON should cause parsing error");
-    println!("✅ Invalid JSON rejection: OK");
+        // Test case 3: missing workflow_source
+        let no_source_args = CreateWorkflowArgs {
+            workflow_source: None,
+            name: "no-source-worker".to_string(),
+            worker_options: None,
+        };
 
-    // Test case 3: workflow_source not set
-    let no_source_args = CreateWorkflowArgs {
-        workflow_source: None,
-        name: "no-source-worker".to_string(),
-        worker_options: None,
-    };
+        let serialized = ProstMessageCodec::serialize_message(&no_source_args)?;
+        let (result, _) = runner.run(&serialized, HashMap::new()).await;
+        assert!(
+            result.is_err(),
+            "Missing workflow_source should cause validation error"
+        );
+        println!("✅ Missing workflow_source rejection: OK");
 
-    let serialized = ProstMessageCodec::serialize_message(&no_source_args)?;
-    let (result, _) = runner.run(&serialized, HashMap::new()).await;
-    assert!(
-        result.is_err(),
-        "Missing workflow_source should cause validation error"
-    );
-    println!("✅ Missing workflow_source rejection: OK");
+        // After error cases, verify DB integrity
+        // Ensure invalid workers were not created
+        let found_empty = app.worker_app.find_by_name("").await?;
+        assert!(found_empty.is_none(), "Empty name worker should not be created");
 
-    // Verify DB is normal after error cases
-    // Verify that invalid workers were not created
-    let found_empty = app.worker_app.find_by_name("").await?;
-    assert!(
-        found_empty.is_none(),
-        "Worker with empty name was not created"
-    );
+        let found_error = app.worker_app.find_by_name("error-test-worker").await?;
+        assert!(found_error.is_none(), "Error worker should not be created");
 
-    let found_error = app.worker_app.find_by_name("error-test-worker").await?;
-    assert!(found_error.is_none(), "Error worker was not created");
+        let found_no_source = app.worker_app.find_by_name("no-source-worker").await?;
+        assert!(
+            found_no_source.is_none(),
+            "Worker with missing source should not be created"
+        );
 
-    let found_no_source = app.worker_app.find_by_name("no-source-worker").await?;
-    assert!(
-        found_no_source.is_none(),
-        "Worker with missing source was not created"
-    );
+        println!("✅ CREATE_WORKFLOW error cases DB integration test succeeded:");
+        println!("   - Empty name rejection: PASSED");
+        println!("   - Invalid JSON rejection: PASSED");
+        println!("   - Missing source rejection: PASSED");
+        println!("   - Database integrity: PASSED");
 
     println!("✅ CREATE_WORKFLOW error case DB integration test successful:");
     println!("   - Empty name rejection: PASSED");
