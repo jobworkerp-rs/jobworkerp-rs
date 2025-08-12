@@ -172,6 +172,10 @@ impl RunnerSpecFactory {
                 Some(Box::new(ReusableWorkflowRunnerSpecImpl::new())
                     as Box<dyn RunnerSpec + Send + Sync>)
             }
+            Some(RunnerType::CreateWorkflow) => Some(Box::new(
+                crate::runner::create_workflow::CreateWorkflowRunnerSpecImpl {},
+            )
+                as Box<dyn RunnerSpec + Send + Sync>),
             Some(RunnerType::LlmChat) => {
                 Some(Box::new(LLMChatRunnerSpecImpl::new()) as Box<dyn RunnerSpec + Send + Sync>)
             }

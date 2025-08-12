@@ -1,4 +1,6 @@
-use crate::jobworkerp::runner::{Empty, ReusableWorkflowArgs, WorkflowResult};
+use crate::jobworkerp::runner::{
+    Empty, ReusableWorkflowArgs, ReusableWorkflowRunnerSettings, WorkflowResult,
+};
 use crate::{schema_to_json_string, schema_to_json_string_option};
 
 use super::RunnerSpec;
@@ -132,7 +134,7 @@ impl RunnerSpec for ReusableWorkflowRunnerSpecImpl {
     }
 
     fn settings_schema(&self) -> String {
-        include_str!("../../schema/workflow.json").to_string()
+        schema_to_json_string!(ReusableWorkflowRunnerSettings, "settings_schema")
     }
 
     // TODO add schema for workflow yaml as json schema
