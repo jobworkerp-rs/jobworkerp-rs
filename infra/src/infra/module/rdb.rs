@@ -161,9 +161,10 @@ pub mod test {
         pool.execute("SELECT 1;").await.expect("test connection");
         // not runner
         truncate_tables(pool, vec!["job", "worker", "job_result"]).await;
-        pool.execute("DELETE FROM runner WHERE id > 100;")
+        // for test
+        pool.execute("DELETE FROM runner WHERE id > 1000000;")
             .await
-            .expect("test connection");
+            .expect("delete test runners");
         let runner_factory = RunnerSpecFactory::new(
             Arc::new(Plugins::new()),
             Arc::new(McpServerFactory::default()),
