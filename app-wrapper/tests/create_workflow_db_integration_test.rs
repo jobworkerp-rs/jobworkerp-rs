@@ -184,10 +184,10 @@ fn test_create_workflow_url_db_integration() -> Result<()> {
     println!("🌐 CREATE_WORKFLOW URL DB統合テスト開始");
     TEST_RUNTIME.block_on(async {
 
-    // AppModuleを初期化（test用のhybrid setup）
+    // Initialize AppModule (hybrid setup for testing)
     let app = Arc::new(create_hybrid_test_app().await?);
 
-    // CreateWorkflowRunnerImplを初期化
+    // Initialize CreateWorkflowRunnerImpl
     let mut runner = CreateWorkflowRunnerImpl::new(app.clone())?;
 
     let worker_name = "url-db-test-workflow-worker";
@@ -211,34 +211,34 @@ fn test_create_workflow_url_db_integration() -> Result<()> {
     // Proto serialization
     let serialized_args = ProstMessageCodec::serialize_message(&url_args)?;
 
-    // CREATE_WORKFLOW実行
+    // Execute CREATE_WORKFLOW
     let metadata = HashMap::new();
     let (result, _returned_metadata) = runner.run(&serialized_args, metadata).await;
 
     match result {
         Ok(output_bytes) => {
-            println!("✅ CREATE_WORKFLOW URL実行成功");
+            println!("✅ CREATE_WORKFLOW URL execution successful");
 
-            // 結果のDeserialization
+            // Deserialize result
             let create_result: CreateWorkflowResult =
                 ProstMessageCodec::deserialize_message(&output_bytes)?;
 
-            // WorkerIDの検証
+            // Verify WorkerID
             assert!(create_result.worker_id.is_some());
             let worker_id = create_result.worker_id.unwrap();
 
-            println!("✅ URL経由WorkerID生成: {}", worker_id.value);
+            println!("✅ URL-based WorkerID generation: {}", worker_id.value);
 
-            // DB内でワーカーが作成されたことを確認
+            // Verify that worker was created in DB
             let found_worker = app.worker_app.find_by_name(worker_name).await?;
             assert!(
                 found_worker.is_some(),
-                "URL経由で作成されたワーカーがDBに見つからない"
+                "Worker created via URL not found in DB"
             );
 
             let found_worker = found_worker.unwrap();
             let worker_data = found_worker.data.as_ref().expect("WorkerData should exist");
-            println!("✅ URL経由ワーカーDB確認成功:");
+            println!("✅ URL-based worker DB verification successful:");
             println!("   - Worker Name: {}", worker_data.name);
             println!("   - Source URL: {test_url}");
             println!(
@@ -247,27 +247,27 @@ fn test_create_workflow_url_db_integration() -> Result<()> {
             );
             println!("   - Channel: {:?}", worker_data.channel);
 
-            // オプション検証
+            // Verify options
             assert_eq!(worker_data.name, worker_name);
             assert_eq!(worker_data.channel.as_deref(), Some("url-db-test-channel"));
             assert_eq!(worker_data.response_type, ResponseType::NoResult as i32);
-            // with_backup は queue_type で確認
+            // Verify with_backup via queue_type
             assert_eq!(
                 worker_data.queue_type,
                 proto::jobworkerp::data::QueueType::WithBackup as i32
             );
         }
         Err(e) => {
-            // ネットワークエラーやvalidationエラーは許容
+            // Allow network errors and validation errors
             let error_msg = e.to_string();
             if error_msg.contains("timeout")
                 || error_msg.contains("network")
                 || error_msg.contains("validation")
                 || error_msg.contains("schema")
             {
-                println!("ℹ️  ネットワーク/Validationエラー: {e}");
+                println!("ℹ️  Network/Validation error: {e}");
             } else {
-                println!("❌ 予期しないエラー: {e}");
+                println!("❌ Unexpected error: {e}");
             }
             return Err(e);
         }
