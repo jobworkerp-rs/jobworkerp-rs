@@ -2,6 +2,7 @@ pub mod cancellation;
 
 use crate::llm::chat::LLMChatRunnerImpl;
 use crate::modules::AppWrapperModule;
+use crate::workflow::create_workflow::CreateWorkflowRunnerImpl;
 use crate::workflow::runner::reusable::ReusableWorkflowRunner;
 use crate::{
     llm::completion::LLMCompletionRunnerImpl, workflow::runner::inline::InlineWorkflowRunner,
@@ -34,7 +35,6 @@ pub struct RunnerFactory {
     pub mcp_clients: Arc<McpServerFactory>,
 }
 
-// same as RunnerSpecFactory
 impl RunnerFactory {
     pub fn new(
         app_module: Arc<AppModule>,
@@ -129,6 +129,11 @@ impl RunnerFactory {
                         None
                     }
                 }
+            }
+            Some(RunnerType::CreateWorkflow) => {
+                CreateWorkflowRunnerImpl::new(self.app_module.clone())
+                    .ok()
+                    .map(|runner| Box::new(runner) as Box<dyn CancellableRunner + Send + Sync>)
             }
             Some(RunnerType::LlmCompletion) => Some(Box::new(
                 LLMCompletionRunnerImpl::new_with_cancel_monitoring(

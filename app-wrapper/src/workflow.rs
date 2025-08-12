@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+pub mod create_workflow;
 pub mod definition;
 pub mod execute;
 pub mod runner;
@@ -19,7 +20,7 @@ const DEFAULT_HTTP_REQUEST_TIMEOUT_SEC: u32 = 120; // 2 minutes
 
 impl WorkflowConfig {
     pub fn new(
-        task_default_timeout_sec: Option<u64>, // XXX not in use yet
+        task_default_timeout_sec: Option<u64>,
         http_user_agent: Option<String>,
         http_timeout_sec: Option<u32>,
         checkpoint_expire_sec: Option<u64>,
