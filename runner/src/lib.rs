@@ -8,9 +8,9 @@ pub mod jobworkerp {
         use proto::jobworkerp::data;
         pub type ResultStatus = data::ResultStatus;
         pub type ResultOutput = data::ResultOutput;
-        pub type RetryPolicy = data::RetryPolicy;
-        pub type ResponseType = data::ResponseType;
-        pub type WorkerId = data::WorkerId;
+        // pub type RetryPolicy = data::RetryPolicy;
+        // pub type ResponseType = data::ResponseType;
+        // pub type WorkerId = data::WorkerId;
     }
     pub mod runner {
         tonic::include_proto!("jobworkerp.runner");

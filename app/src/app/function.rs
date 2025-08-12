@@ -13,7 +13,7 @@ use anyhow::Result;
 use async_stream::stream;
 use async_trait::async_trait;
 use core::fmt;
-use helper::{workflow::ReusableWorkflowHelper, FunctionCallHelper, McpNameConverter};
+use helper::{FunctionCallHelper, McpNameConverter};
 use infra::infra::runner::rows::RunnerWithSchema;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
@@ -38,7 +38,6 @@ pub trait FunctionApp:
     + UseRunnerApp
     + UseMokaCache<Arc<String>, Vec<FunctionSpecs>>
     + FunctionSpecConverter
-    + ReusableWorkflowHelper
     + FunctionCallHelper
     + fmt::Debug
     + Send
@@ -509,38 +508,36 @@ pub trait FunctionApp:
                 },
                 tool_name_opt,
             ))) => {
-                match rdata.runner_type() {
-                    // rt if rt == RunnerType::CreateWorkflow as i32 => {
-                    //     // CREATE_WORKFLOW専用の処理
-                    //     // (引数が素のworkflow定義だがREUSABLE_WORKFLOW の引数はjson_dataで指定する必要がある)
-                    //         .await
-                    // }
-                    // runner処理
-                    rt => {
-                        let arguments = self.transform_function_arguments(rt, arguments);
-                        tracing::debug!("call_function_for_llm: {}: {arguments:#?}", rid.value);
-                        // Re-create runner object for standard handling
-                        let runner = RunnerWithSchema {
-                            id: Some(rid),
-                            data: Some(rdata),
-                            settings_schema: String::new(),
-                            arguments_schema: String::new(),
-                            output_schema: None,
-                            tools: Vec::new(),
-                        };
-                        self.handle_runner_call_from_llm(
-                            meta,
-                            arguments,
-                            runner,
-                            tool_name_opt,
-                            None,
-                            None,
-                            timeout_sec,
-                            false,
-                        )
-                        .await
-                    }
-                }
+                // match rdata.runner_type() {
+                //    rt if rt == RunnerType::CreateWorkflow as i32 => {
+                //        // CREATE_WORKFLOW-specific processing
+                //        // (Arguments are raw workflow definitions, but REUSABLE_WORKFLOW arguments must be specified with json_data)
+                //            .await
+                //    }
+                // }
+                // Standard runner processing
+                let arguments = self.transform_function_arguments(rdata.runner_type(), arguments);
+                tracing::debug!("call_function_for_llm: {}: {arguments:#?}", rid.value);
+                // Re-create runner object for standard handling
+                let runner = RunnerWithSchema {
+                    id: Some(rid),
+                    data: Some(rdata),
+                    settings_schema: String::new(),
+                    arguments_schema: String::new(),
+                    output_schema: None,
+                    tools: Vec::new(),
+                };
+                self.handle_runner_call_from_llm(
+                    meta,
+                    arguments,
+                    runner,
+                    tool_name_opt,
+                    None,
+                    None,
+                    timeout_sec,
+                    false,
+                )
+                .await
             }
             Ok(Some((runner, tool_name_opt))) => {
                 self.handle_runner_call_from_llm(
@@ -641,7 +638,6 @@ impl UseMokaCache<Arc<String>, Vec<FunctionSpecs>> for FunctionAppImpl {
 }
 impl FunctionSpecConverter for FunctionAppImpl {}
 impl ProtobufHelper for FunctionAppImpl {}
-impl ReusableWorkflowHelper for FunctionAppImpl {}
 impl McpNameConverter for FunctionAppImpl {}
 impl UseRunnerParserWithCache for FunctionAppImpl {
     fn descriptor_cache(&self) -> &MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor> {

@@ -27,12 +27,13 @@ pub struct CreateWorkflowRunnerImpl {
 }
 
 impl CreateWorkflowRunnerImpl {
+    const USER_AGENT: &'static str = "jobworkerp-rs/create-workflow-runner";
     pub fn new(app_module: Arc<AppModule>) -> Result<Self> {
         let http_client = ReqwestClient::new(
-            Some("jobworkerp-rs/create-workflow-runner"),
+            Some(Self::USER_AGENT),
             Some(Duration::from_secs(30)),
             Some(Duration::from_secs(10)),
-            Some(3), // 3回リトライ
+            Some(3), // 3 retries
         )?;
 
         Ok(Self {
@@ -43,15 +44,33 @@ impl CreateWorkflowRunnerImpl {
         })
     }
 
+    pub fn new_with_cancel_monitoring(
+        app_module: Arc<AppModule>,
+        cancel_helper: CancelMonitoringHelper,
+    ) -> Self {
+        Self {
+            app: app_module,
+            _validator: Box::new(StandardWorkflowValidator),
+            http_client: ReqwestClient::new(
+                Some(Self::USER_AGENT),
+                Some(Duration::from_secs(30)),
+                Some(Duration::from_secs(10)),
+                Some(3), // 3 retries
+            )
+            .unwrap(),
+            cancel_helper: Some(cancel_helper),
+        }
+    }
+
     pub fn new_with_validator(
         app_module: Arc<AppModule>,
         _validator: Box<dyn WorkflowValidator + Send + Sync>,
     ) -> Result<Self> {
         let http_client = ReqwestClient::new(
-            Some("jobworkerp-rs/create-workflow-runner"),
+            Some(Self::USER_AGENT),
             Some(Duration::from_secs(30)),
             Some(Duration::from_secs(10)),
-            Some(3), // 3回リトライ
+            Some(3), // 3 retries
         )?;
 
         Ok(Self {
@@ -79,12 +98,12 @@ impl CreateWorkflowRunnerImpl {
         &self,
         args: &CreateWorkflowArgs,
     ) -> Result<(serde_json::Value, String)> {
-        // 1. worker名の検証
+        // 1. Validate worker name
         if args.name.trim().is_empty() {
             return Err(anyhow!("Worker name cannot be empty"));
         }
 
-        // 2. workflow_sourceの検証
+        // 2. Validate workflow_source
         let workflow_json = match &args.workflow_source {
             Some(workflow_source) => match workflow_source {
                 WorkflowSource::WorkflowData(data) => serde_json::from_str(data)
@@ -96,7 +115,7 @@ impl CreateWorkflowRunnerImpl {
             }
         };
 
-        // TODO workflow構造検証（共通Validatorを使用）
+        // TODO Validate workflow structure (using common Validator)
         // self.validator.validate_workflow(&workflow_json).await?;
         // tracing::debug!(
         //     "Validated workflow JSON: {}",
@@ -109,12 +128,12 @@ impl CreateWorkflowRunnerImpl {
     async fn load_workflow_from_url(&self, url: &str) -> Result<serde_json::Value> {
         use url::Url;
 
-        // URLの妥当性検証
+        // URL validation
         let parsed_url = Url::parse(url).map_err(|e| anyhow!("Invalid URL format: {}", e))?;
 
         tracing::info!("Loading workflow from URL: {}", url);
 
-        // HTTP(S)スキームのみサポート
+        // Only HTTP(S) schemes are supported
         if !matches!(parsed_url.scheme(), "http" | "https") {
             return Err(anyhow!(
                 "Unsupported URL scheme: {}. Only http/https are supported",
@@ -122,7 +141,7 @@ impl CreateWorkflowRunnerImpl {
             ));
         }
 
-        // ReqwestClientを使用してワークフロー定義を取得
+        // Fetch workflow definition using ReqwestClient
         let response = self
             .http_client
             .client()
@@ -131,7 +150,7 @@ impl CreateWorkflowRunnerImpl {
             .await
             .map_err(|e| anyhow!("Failed to fetch workflow from URL: {}", e))?;
 
-        // レスポンス状態の確認
+        // Check response status
         if !response.status().is_success() {
             return Err(anyhow!(
                 "HTTP error while fetching workflow: {} {}",
@@ -140,7 +159,7 @@ impl CreateWorkflowRunnerImpl {
             ));
         }
 
-        // レスポンス本文の取得
+        // Get response body
         let body = response
             .text()
             .await
@@ -148,7 +167,7 @@ impl CreateWorkflowRunnerImpl {
 
         tracing::debug!("Fetched workflow content: {} chars", body.len());
 
-        // JSON/YAMLパース（YAMLも対応）
+        // Parse JSON/YAML (YAML also supported)
         let workflow_json = serde_json::from_str(&body).or_else(|json_err| {
             serde_yaml::from_str(&body).map_err(|yaml_err| {
                 anyhow!(
@@ -162,7 +181,7 @@ impl CreateWorkflowRunnerImpl {
         Ok(workflow_json)
     }
 
-    async fn create_worker_with_app(
+    async fn create_worker_with_name(
         &self,
         workflow_def: serde_json::Value,
         worker_name: String,
@@ -170,21 +189,21 @@ impl CreateWorkflowRunnerImpl {
     ) -> Result<CreateWorkflowWorkerId> {
         tracing::debug!("Creating worker with name: {}", worker_name);
 
-        // WorkerDataの構築（設計書に従った正しい方法）
+        // Build WorkerData (correct method according to design document)
         let worker_data =
             self.build_worker_data(worker_name.clone(), workflow_def, worker_options)?;
 
-        // WorkerApp APIを使用してworkerを作成
+        // Create worker using WorkerApp API
         let worker = self
             .app
             .worker_app
             .create(&worker_data)
             .await
-            .context("Failed to create worker via worker_app")?;
+            .context("Failed to create worker")?;
 
         tracing::info!("CREATE_WORKFLOW Worker created: {:?}", worker);
 
-        // WorkerIdをCreateWorkflowWorkerIdに変換して返す
+        // Convert WorkerId to CreateWorkflowWorkerId and return
         let create_workflow_worker_id = CreateWorkflowWorkerId {
             value: worker.value,
         };
@@ -200,7 +219,7 @@ impl CreateWorkflowRunnerImpl {
         use prost::Message;
         use proto::jobworkerp::data::{ResponseType, RunnerId, RunnerType};
 
-        // workflow定義からdescriptionを抽出
+        // Extract description from workflow definition
         let document = workflow_def.get("document");
         let workflow_description = document
             .and_then(|d| d.get("summary"))
@@ -208,15 +227,15 @@ impl CreateWorkflowRunnerImpl {
             .unwrap_or("")
             .to_string();
 
-        // デフォルトオプション設定
+        // Set default options
         let opts = worker_options.unwrap_or_default();
 
-        // REUSABLE_WORKFLOWのRunnerIdを構築（設計書に従い65532を使用）
+        // Build RunnerId for REUSABLE_WORKFLOW (using 65532 according to design document)
         let runner_id = RunnerId {
-            value: RunnerType::ReusableWorkflow as i64, // i64型を使用
+            value: RunnerType::ReusableWorkflow as i64, // Use i64 type
         };
 
-        // runner_settingsをproto形式でシリアライズ（REUSABLE_WORKFLOWのsettings形式）
+        // Serialize runner_settings in proto format (REUSABLE_WORKFLOW settings format)
         let runner_settings = {
             use jobworkerp_runner::jobworkerp::runner::ReusableWorkflowRunnerSettings;
 
@@ -231,7 +250,7 @@ impl CreateWorkflowRunnerImpl {
             buf
         };
 
-        // retry_policy設定（参照実装と同様にデフォルト設定）
+        // Set retry_policy (default settings same as reference implementation)
         let retry_policy = opts
             .retry_policy
             .map(|rp| proto::jobworkerp::data::RetryPolicy {
@@ -253,7 +272,7 @@ impl CreateWorkflowRunnerImpl {
             store_success: opts.store_success,
             store_failure: opts.store_failure,
             use_static: opts.use_static,
-            queue_type: opts.queue_type, // QueueTypeを直接使用 (same sequential number)
+            queue_type: opts.queue_type, // Use QueueType directly (same sequential number)
             retry_policy,
             periodic_interval: 0,
         })
@@ -299,7 +318,7 @@ impl RunnerSpec for CreateWorkflowRunnerImpl {
 #[async_trait]
 impl RunnerTrait for CreateWorkflowRunnerImpl {
     async fn load(&mut self, _settings: Vec<u8>) -> Result<()> {
-        // 設定の読み込みは不要（CREATE_WORKFLOWは設定なし）
+        // No need to load settings (CREATE_WORKFLOW has no settings)
         Ok(())
     }
 
@@ -311,7 +330,7 @@ impl RunnerTrait for CreateWorkflowRunnerImpl {
         tracing::info!("Starting CREATE_WORKFLOW execution");
 
         let result: Result<Vec<u8>> = async {
-            // 1. 引数をデシリアライズ（実際のproto deserialization）
+            // 1. Deserialize arguments (actual proto deserialization)
             let create_args = if args.is_empty() {
                 return Err(anyhow!("CREATE_WORKFLOW requires arguments"));
             } else {
@@ -321,20 +340,32 @@ impl RunnerTrait for CreateWorkflowRunnerImpl {
 
             tracing::info!("CREATE_WORKFLOW request for worker: {}", create_args.name);
 
-            // 2. 引数の妥当性検証とパース
+            // 2. Validate and parse arguments
             let (workflow_def, worker_name) = self.validate_and_parse_args(&create_args).await?;
             // tracing::debug!("Validated workflow definition for worker: {}", worker_name);
 
-            // 3. 実際のworker作成（AppModuleを使用）
+            if self.cancel_helper.is_some()
+                && self
+                    .cancel_helper
+                    .as_ref()
+                    .unwrap()
+                    .get_cancellation_token()
+                    .await
+                    .is_cancelled()
+            {
+                tracing::warn!("CREATE_WORKFLOW execution cancelled before creating worker");
+                return Err(anyhow!("CREATE_WORKFLOW execution cancelled"));
+            }
+            // 3. Create actual worker (using AppModule)
             let worker_id = self
-                .create_worker_with_app(
+                .create_worker_with_name(
                     workflow_def,
                     worker_name.clone(),
                     create_args.worker_options,
                 )
                 .await?;
 
-            // 4. 結果を返す
+            // 4. Return result
             let result = CreateWorkflowResult {
                 worker_id: Some(worker_id),
             };
@@ -345,7 +376,7 @@ impl RunnerTrait for CreateWorkflowRunnerImpl {
                 worker_id.value
             );
 
-            // 5. 結果をシリアライズ（実際のproto serialization）
+            // 5. Serialize result (actual proto serialization)
             ProstMessageCodec::serialize_message(&result)
                 .context("Failed to serialize CreateWorkflowResult to proto")
         }
@@ -375,7 +406,7 @@ impl RunnerTrait for CreateWorkflowRunnerImpl {
             >,
         >,
     > {
-        // CREATE_WORKFLOWはストリーミング非対応
+        // CREATE_WORKFLOW does not support streaming
         Err(anyhow!("CREATE_WORKFLOW does not support streaming"))
     }
 }
@@ -388,21 +419,16 @@ impl jobworkerp_runner::runner::cancellation::CancelMonitoring for CreateWorkflo
         _job_data: &proto::jobworkerp::data::JobData,
     ) -> anyhow::Result<Option<proto::jobworkerp::data::JobResult>> {
         tracing::debug!(
-            "Setting up cancellation monitoring for ReusableWorkflowRunner job {}",
+            "Setting up cancellation monitoring for CreateWorkflowRunner job {}",
             job_id.value
         );
 
-        // For ReusableWorkflowRunner, we use the same pattern as CommandRunner
-        // The actual cancellation monitoring will be handled by the CancellationHelper
-        // Workflow execution will be cancelled through the executor
-
-        tracing::trace!("Cancellation monitoring started for job {}", job_id.value);
         Ok(None) // Continue with normal execution
     }
 
     /// Cleanup cancellation monitoring
     async fn cleanup_cancellation_monitoring(&mut self) -> anyhow::Result<()> {
-        tracing::trace!("Cleaning up cancellation monitoring for ReusableWorkflowRunner");
+        tracing::trace!("Cleaning up cancellation monitoring for CreateWorkflowRunner");
 
         // Clear the cancellation helper
         if let Some(helper) = &mut self.cancel_helper {
@@ -412,29 +438,29 @@ impl jobworkerp_runner::runner::cancellation::CancelMonitoring for CreateWorkflo
         Ok(())
     }
 
-    /// Signals cancellation token for ReusableWorkflowRunner
+    /// Signals cancellation token for CreateWorkflowRunner
     async fn request_cancellation(&mut self) -> anyhow::Result<()> {
         if let Some(helper) = &self.cancel_helper {
             let token = helper.get_cancellation_token().await;
             if !token.is_cancelled() {
                 token.cancel();
-                tracing::info!("ReusableWorkflowRunner: cancellation token signaled");
+                tracing::info!("CreateWorkflowRunner: cancellation token signaled");
             }
         } else {
-            tracing::warn!("ReusableWorkflowRunner: no cancellation helper available");
+            tracing::warn!("CreateWorkflowRunner: no cancellation helper available");
         }
         Ok(())
     }
 
     async fn reset_for_pooling(&mut self) -> anyhow::Result<()> {
-        // ReusableWorkflowRunner typically completes quickly, so always cleanup
+        // CreateWorkflowRunner typically completes quickly, so always cleanup
         if let Some(helper) = &mut self.cancel_helper {
             helper.reset_for_pooling_impl().await?;
         } else {
             self.cleanup_cancellation_monitoring().await?;
         }
 
-        tracing::debug!("ReusableWorkflowRunner reset for pooling");
+        tracing::debug!("CreateWorkflowRunner reset for pooling");
         Ok(())
     }
 }

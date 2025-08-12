@@ -4,7 +4,7 @@ use serde_json;
 use std::sync::LazyLock;
 use tracing;
 
-// 共通のWorkflow Validator（app-wrapperとrunnerで共有）
+// Common Workflow Validator (shared between app-wrapper and runner)
 static WORKFLOW_VALIDATOR: LazyLock<Option<jsonschema::Validator>> = LazyLock::new(|| {
     let schema_content = include_str!("../../../runner/schema/workflow_minimal_fix.json");
     let schema = serde_json::from_str(schema_content)
@@ -65,18 +65,18 @@ impl WorkflowValidator for StandardWorkflowValidator {
         definition: &serde_json::Value,
         input: &str,
     ) -> Result<()> {
-        // 入力スキーマバリデーション（必要に応じて実装）
-        let _ = (definition, input); // unused parameter warning回避
+        // Input schema validation (implement as needed)
+        let _ = (definition, input); // Avoid unused parameter warning
         Ok(())
     }
 }
 
-// 既存のapp-wrapper用の関数形式インターフェース（互換性のため）
+// Existing functional interface for app-wrapper (for compatibility)
 pub async fn validate_workflow_schema(instance: &serde_json::Value) -> Result<()> {
     StandardWorkflowValidator.validate_workflow(instance).await
 }
 
-// app-wrapper/src/workflow/definition.rs の migrate 用関数
+// Migration function for app-wrapper/src/workflow/definition.rs
 pub fn get_workflow_validator() -> &'static Option<jsonschema::Validator> {
     &WORKFLOW_VALIDATOR
 }

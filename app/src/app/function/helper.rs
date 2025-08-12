@@ -15,8 +15,6 @@ use std::{
 };
 use tracing;
 
-pub mod workflow;
-
 pub trait McpNameConverter {
     const DELIMITER: &str = "___";
     fn combine_names(server_name: &str, tool_name: &str) -> String {
