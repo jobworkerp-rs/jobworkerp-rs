@@ -193,7 +193,10 @@ impl RunnerApp for RdbRunnerAppImpl {
     where
         Self: Send + 'static,
     {
-        if let Some(all) = self.find_cache(&Self::find_all_list_cache_key()).await {
+        if let Some(all) = self
+            .find_cache(&Self::find_list_cache_key(limit, offset))
+            .await
+        {
             if let Some(lim) = limit {
                 let offset = offset.map(|o| *o as usize).unwrap_or(0);
                 Ok(all.into_iter().skip(offset).take(*lim as usize).collect())

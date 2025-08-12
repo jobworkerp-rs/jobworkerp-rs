@@ -5,7 +5,7 @@ use infra_utils::infra::{
 };
 use jobworkerp_base::error::JobWorkerError;
 
-const SQLITE_SCHEMA: &str = include_str!("../../sql/sqlite/001_schema.sql");
+const SQLITE_SCHEMA: &str = include_str!("../../sql/sqlite/002_schema.sql");
 
 static RDB_POOL: tokio::sync::OnceCell<RdbPool> = tokio::sync::OnceCell::const_new();
 
