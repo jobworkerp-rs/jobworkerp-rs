@@ -24,6 +24,7 @@ use proto::jobworkerp::function::data::{
     function_specs, FunctionResult, FunctionSchema, FunctionSpecs, McpToolList, WorkerOptions,
 };
 use proto::ProtobufHelper;
+use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -452,6 +453,42 @@ pub trait FunctionApp:
         })
     }
 
+    fn transform_function_arguments(
+        &self,
+        rt: RunnerType,
+        arguments: Option<serde_json::Map<String, serde_json::Value>>,
+    ) -> Option<serde_json::Map<String, serde_json::Value>> {
+        // For CREATE_WORKFLOW runner, process arguments as workflow JSON
+        // When called from LLM, only workflow JSON is expected as arguments for proper workflow creation
+        // Settings are specified via worker options
+        if rt == RunnerType::CreateWorkflow {
+            arguments.map(|mut a| {
+                let args = match a.remove("arguments") {
+                    Some(serde_json::Value::String(v)) => serde_json::from_str(v.as_str()).ok(),
+                    v => v,
+                };
+                let worker_opts = a.remove("settings");
+                tracing::debug!("transforming arguments (CreateWorkflow): {:#?}", args);
+                let n = args.as_ref().map(|v| {
+                    v.get("document")
+                        .and_then(|v| v.get("name"))
+                        .and_then(|n| n.as_str())
+                        .unwrap_or_else(|| rt.as_str_name())
+                });
+                let s = json!({
+                    "name": n,
+                    "workflow_data": args.map(|v| v.to_string()).unwrap_or_default(),
+                    "worker_options": worker_opts,
+                });
+                let mut r = serde_json::Map::new();
+                r.insert("arguments".to_string(), s);
+                tracing::debug!("transformed arguments (CreateWorkflow): {:#?}", r);
+                r
+            })
+        } else {
+            arguments
+        }
+    }
     // for LLM function calling (LLM_CHAT runner)
     async fn call_function_for_llm(
         &self,
@@ -461,6 +498,7 @@ pub trait FunctionApp:
         timeout_sec: u32,
     ) -> Result<serde_json::Value> {
         tracing::debug!("call_tool: {}: {:?}", name, &arguments);
+        // self.handle_create_workflow(name, arguments, rid, rdata)
 
         match self.find_runner_by_name_with_mcp(name).await {
             Ok(Some((
@@ -469,10 +507,40 @@ pub trait FunctionApp:
                     data: Some(rdata),
                     ..
                 },
-                _,
-            ))) if rdata.runner_type == RunnerType::ReusableWorkflow as i32 => {
-                self.handle_reusable_workflow(name, arguments, rid, rdata)
-                    .await
+                tool_name_opt,
+            ))) => {
+                match rdata.runner_type() {
+                    // rt if rt == RunnerType::CreateWorkflow as i32 => {
+                    //     // CREATE_WORKFLOW専用の処理
+                    //     // (引数が素のworkflow定義だがREUSABLE_WORKFLOW の引数はjson_dataで指定する必要がある)
+                    //         .await
+                    // }
+                    // runner処理
+                    rt => {
+                        let arguments = self.transform_function_arguments(rt, arguments);
+                        tracing::debug!("call_function_for_llm: {}: {arguments:#?}", rid.value);
+                        // Re-create runner object for standard handling
+                        let runner = RunnerWithSchema {
+                            id: Some(rid),
+                            data: Some(rdata),
+                            settings_schema: String::new(),
+                            arguments_schema: String::new(),
+                            output_schema: None,
+                            tools: Vec::new(),
+                        };
+                        self.handle_runner_call_from_llm(
+                            meta,
+                            arguments,
+                            runner,
+                            tool_name_opt,
+                            None,
+                            None,
+                            timeout_sec,
+                            false,
+                        )
+                        .await
+                    }
+                }
             }
             Ok(Some((runner, tool_name_opt))) => {
                 self.handle_runner_call_from_llm(

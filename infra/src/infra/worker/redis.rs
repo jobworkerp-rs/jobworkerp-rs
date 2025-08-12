@@ -33,6 +33,8 @@ where
     async fn upsert(&self, worker: &Worker) -> Result<bool> {
         self._upsert_by_name(worker).await?;
         if let (Some(i), Some(d)) = (worker.id.as_ref(), worker.data.as_ref()) {
+            // XXX 2 caches
+            self._upsert_by_name(worker).await?;
             self._upsert_by_id(i, d).await
         } else if let Some(i) = worker.id.as_ref() {
             self.delete(i).await?;

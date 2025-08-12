@@ -79,7 +79,12 @@ enum RunnerType {
   // Allows users to define, save, and reuse workflow definitions across
   // multiple executions Workflows are stored in the system and can be executed
   // by reference
-  REUSABLE_WORKFLOW = -1;
+  REUSABLE_WORKFLOW = 65532;
+
+  // # Create Workflow Runner
+  // Creates workflow definitions that can be stored and reused
+  // This runner is specifically designed for workflow creation, separate from execution
+  CREATE_WORKFLOW = -1;
 }
 
 // # Priority Level
