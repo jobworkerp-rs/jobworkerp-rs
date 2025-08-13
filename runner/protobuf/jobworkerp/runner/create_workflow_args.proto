@@ -1,0 +1,106 @@
+syntax = "proto3";
+
+package jobworkerp.runner;
+
+// # Create Workflow Arguments
+// Arguments for creating workflow-based worker definitions
+message CreateWorkflowArgs {
+  // # Retry Policy (local definition)
+  // Configuration for job retry behavior on failure
+  message RetryPolicy {
+    // # Retry Type
+    // Strategy for retry intervals
+    enum RetryType {
+      NONE = 0;
+      EXPONENTIAL = 1;
+      LINEAR = 2;
+      CONSTANT = 3;
+    }
+
+    RetryType type = 1;
+    uint32 interval = 2;
+    uint32 max_interval = 3;
+    uint32 max_retry = 4;
+    float basis = 5;
+  }
+
+  // # Queue Type
+  // Defines how jobs are queued and persisted
+  enum QueueType {
+    // # Normal Queue
+    // Standard in-memory queue with no persistence
+    NORMAL = 0;
+
+    // # Queue with Backup
+    // In-memory queue with database backup for recovery (slower)
+    WITH_BACKUP = 1;
+
+    // # Database-Only Queue
+    // Forces all jobs to be stored in database (slowest)
+    FORCED_RDB = 2;
+  }
+
+  // # Response Type (local definition)
+  // How the worker responds to job requests
+  enum ResponseType {
+    NO_RESULT = 0;
+    DIRECT = 1;
+  }
+
+  // # Worker Options
+  // Configuration for worker execution behavior
+  message WorkerOptions {
+    // # Retry Policy
+    // Configuration for job retry behavior on failure
+    optional RetryPolicy retry_policy = 1;
+
+    // # Channel Name
+    // Message channel for job (if empty, default channel will be used)
+    optional string channel = 2;
+
+    // # With Backup Flag
+    // If true, enqueued job will be backed up to database during execution
+    QueueType queue_type = 3;
+
+    // # Response Type
+    // How the worker responds to job requests (Direct, Queue, etc.)
+    optional ResponseType response_type = 4;
+
+    // # Store Success Flag
+    // If true, job results will be stored in database when execution succeeds
+    bool store_success = 5;
+
+    // # Store Failure Flag
+    // If true, job results will be stored in database when execution fails
+    bool store_failure = 6;
+
+    // # Static Execution Flag
+    // If true, keep a fixed number instance of this worker running in memory
+    bool use_static = 7;
+
+    // # Output Broadcast Flag
+    // Broadcast job results to all result listeners or not
+    bool broadcast_results = 8;
+  }
+
+  // # Workflow Definition
+  // Workflow definition source specification
+  oneof workflow_source {
+    // # Workflow URL
+    // Path or URL to the workflow definition file (JSON or YAML)
+    string workflow_url = 1;
+    // # Workflow Data
+    // The workflow definition as a JSON or YAML string
+    string workflow_data = 2;
+  }
+
+  // # Worker Name
+  // Name for the worker to be created from this workflow
+  // This name will be used to reference and execute the worker
+  string name = 3;
+
+  // # Worker Options Configuration
+  // Optional worker execution options (if not specified, default values will be
+  // used)
+  optional WorkerOptions worker_options = 4;
+}

@@ -46,6 +46,7 @@ use tonic::async_trait;
 pub mod cancellation;
 pub mod cancellation_helper;
 pub mod command;
+pub mod create_workflow;
 pub mod docker;
 pub mod factory;
 pub mod grpc_unary;

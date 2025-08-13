@@ -424,7 +424,7 @@ $ ./target/release/jobworkerp-client job enqueue-workflow -i '/path/to/list' -w 
 
 Database schema:
 - [MySQL schema](infra/sql/mysql/002_worker.sql)
-- [SQLite schema](infra/sql/sqlite/001_schema.sql)
+- [SQLite schema](infra/sql/sqlite/002_schema.sql)
 
 (The runner table contains fixed records as built-in features)
 

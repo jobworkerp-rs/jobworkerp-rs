@@ -21,75 +21,73 @@ jobs:
       contents: read
       packages: write
     steps:
-    - name: apt upgrade
-      run: |
-        apt-get update
-        apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang g++ musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip ca-certificates curl gnupg lsb-release docker.io
-    - uses: actions/checkout@v4
-      with:
-        submodules: true
-    - name: Install last version of Protoc
-      uses: arduino/setup-protoc@v2
-      with:
-        version: '24.x'
-    - uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          target/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-    - uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-    # build with mysql
-    - uses: actions-rs/cargo@v1
-      with:
-        command: build
-        args: --release --features "mysql,cuda,cudnn,flash-attn"
-    # Uses the `docker/login-action` action to log in to the Container registry registry using the account and password that will publish the packages. Once published, the packages are scoped to the account defined here.
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-    - name: Log in to the Container registry
-      uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
-      with:
-        registry: ${{ env.REGISTRY }}
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-#    # This step uses [docker/metadata-action](https://github.com/docker/metadata-action#about) to extract tags and labels that will be applied to the specified image. The `id` "meta" allows the output of this step to be referenced in a subsequent step. The `images` value provides the base name for the tags and labels.
-#    - name: Extract metadata (tags, labels) for Docker
-#      id: meta
-#      uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
-#      with:
-#        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-    # This step uses the `docker/build-push-action` action to build the image, based on your repository's `Dockerfile`. If the build succeeds, it pushes the image to GitHub Packages.
-    # It uses the `context` parameter to define the build's context as the set of files located in the specified path. For more information, see "[Usage](https://github.com/docker/build-push-action#usage)" in the README of the `docker/build-push-action` repository.
-    # It uses the `tags` and `labels` parameters to tag and label the image with the output from the "meta" step.
+      - name: apt upgrade
+        run: |
+          apt-get update
+          apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang g++ musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip ca-certificates curl gnupg lsb-release docker.io
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Install last version of Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          version: "24.x"
+      - uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      # build with mysql
+      - uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --features "mysql,cuda,flash-attn" #,cudnn
+      # Uses the `docker/login-action` action to log in to the Container registry registry using the account and password that will publish the packages. Once published, the packages are scoped to the account defined here.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to the Container registry
+        uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      #    # This step uses [docker/metadata-action](https://github.com/docker/metadata-action#about) to extract tags and labels that will be applied to the specified image. The `id` "meta" allows the output of this step to be referenced in a subsequent step. The `images` value provides the base name for the tags and labels.
+      #    - name: Extract metadata (tags, labels) for Docker
+      #      id: meta
+      #      uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
+      #      with:
+      #        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+      # This step uses the `docker/build-push-action` action to build the image, based on your repository's `Dockerfile`. If the build succeeds, it pushes the image to GitHub Packages.
+      # It uses the `context` parameter to define the build's context as the set of files located in the specified path. For more information, see "[Usage](https://github.com/docker/build-push-action#usage)" in the README of the `docker/build-push-action` repository.
+      # It uses the `tags` and `labels` parameters to tag and label the image with the output from the "meta" step.
 
-    - name: Build and push front Docker image
-      uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
-      with:
-        context: .
-        file: grpc-front/Dockerfile
-        push: true
-        tags: |
-          ghcr.io/${{ github.repository_owner }}/grpc-front:latest
-          ghcr.io/${{ github.repository_owner }}/grpc-front:${{ github.ref_name }}
-#        labels: ${{ steps.meta.outputs.labels }}
-
-    - name: Build and push worker Docker image
-      uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
-      with:
-        context: .
-        file: worker-main/Dockerfile
-        push: true
-        tags: |
-          ghcr.io/${{ github.repository_owner }}/worker:latest
-          ghcr.io/${{ github.repository_owner }}/worker:${{ github.ref_name }}
-#        labels: ${{ steps.meta.outputs.labels }}
-
+      - name: Build and push front Docker image
+        uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
+        with:
+          context: .
+          file: grpc-front/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/grpc-front:latest
+            ghcr.io/${{ github.repository_owner }}/grpc-front:${{ github.ref_name }}
+      #        labels: ${{ steps.meta.outputs.labels }}
+      - name: Build and push worker Docker image
+        uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
+        with:
+          context: .
+          file: worker-main/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/worker:latest
+            ghcr.io/${{ github.repository_owner }}/worker:${{ github.ref_name }}
+  #        labels: ${{ steps.meta.outputs.labels }}
   build-and-push-all-in-one-image:
     runs-on: ubuntu-latest
     container:
@@ -100,89 +98,90 @@ jobs:
       contents: read
       packages: write
     steps:
-    - name: apt upgrade
-      run: |
-        apt-get update
-        apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip ca-certificates curl gnupg lsb-release docker.io
-    - uses: actions/checkout@v4
-      with:
-        submodules: true
-    - name: Install last version of Protoc
-      uses: arduino/setup-protoc@v2
-      with:
-        version: '24.x'
-    - uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          target/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-    - uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-    # build with sqlite
-    - uses: actions-rs/cargo@v1
-      with:
-        command: build
-        args: --release
-    # Uses the `docker/login-action` action to log in to the Container registry registry using the account and password that will publish the packages. Once published, the packages are scoped to the account defined here.
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-    - name: Log in to the Container registry
-      uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
-      with:
-        registry: ${{ env.REGISTRY }}
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-    - name: Build and push jobworkerp Docker image
-      uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
-      with:
-        context: .
-        file: Dockerfile
-        push: true
-        tags: |
-          ghcr.io/${{ github.repository_owner }}/jobworkerp:latest
-          ghcr.io/${{ github.repository_owner }}/jobworkerp:${{ github.ref_name }}
-#        labels: ${{ steps.meta.outputs.labels }}
-
+      - name: apt upgrade
+        run: |
+          apt-get update
+          apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip ca-certificates curl gnupg lsb-release docker.io
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Install last version of Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          version: "24.x"
+      - uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      # build with sqlite
+      - uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --features "mysql,cuda,flash-attn" #,cudnn
+          #args: --release
+      # Uses the `docker/login-action` action to log in to the Container registry registry using the account and password that will publish the packages. Once published, the packages are scoped to the account defined here.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to the Container registry
+        uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push jobworkerp Docker image
+        uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/jobworkerp:latest
+            ghcr.io/${{ github.repository_owner }}/jobworkerp:${{ github.ref_name }}
+  #        labels: ${{ steps.meta.outputs.labels }}
   publish-proto:
     runs-on: ubuntu-latest
     # needs: build-and-push-image
     env:
       PROTO_REPOSITORY: jobworkerp-rs/jobworkerp-protobuf
     steps:
-    - name: checkout repository
-      uses: actions/checkout@v4
-      with:
-        path: repo
-        token: ${{ secrets.PAT_TOKEN }}
-    - name: checkout proto repository
-      uses: actions/checkout@v4
-      with:
-        repository: ${{ env.PROTO_REPOSITORY }}
-        path: proto
-        token: ${{ secrets.PAT_TOKEN }}
-    - name: copy only proto files to proto repository dir
-      run: |
-        rm -rf proto/*
-        cp -r repo/proto/protobuf/* proto/
-        ls -la proto
-    - name: publish proto files
-      working-directory: proto
-      run: |
-        git add -A .
-        git checkout origin/main -- ./LICENSE
-        git reset --soft origin/main
-        # git add ./LICENSE
-        test 0 -eq $(git diff --cached | wc -l) && exit 0
-        git config --local user.email "91235033+sutr-app@users.noreply.github.com"
-        git config --local user.name "github-actions[bot]"
-        git commit -m "${{ github.ref_name }}"
-        git tag ${{ github.ref_name }}
-        git push origin main
+      - name: checkout repository
+        uses: actions/checkout@v4
+        with:
+          path: repo
+          token: ${{ secrets.PAT_TOKEN }}
+      - name: checkout proto repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PROTO_REPOSITORY }}
+          path: proto
+          token: ${{ secrets.PAT_TOKEN }}
+      - name: copy only proto files to proto repository dir
+        run: |
+          rm -rf proto/*
+          cp -r repo/proto/protobuf/* proto/
+          ls -la proto
+      - name: publish proto files
+        working-directory: proto
+        run: |
+          git add -A .
+          git checkout origin/main -- ./LICENSE
+          git reset --soft origin/main
+          # git add ./LICENSE
+          test 0 -eq $(git diff --cached | wc -l) && exit 0
+          git config --local user.email "91235033+sutr-app@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git commit -m "${{ github.ref_name }}"
+          git tag ${{ github.ref_name }}
+          git push origin main
+
 #    - name: Push changes
 #      uses: ad-m/github-push-action@master
 #      with:
