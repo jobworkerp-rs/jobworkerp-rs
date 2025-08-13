@@ -13,11 +13,18 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - name: Install last version of Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "24.x"
-      #        repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: apt upgrade
+        run: |
+          apt-get update
+          apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang libclang-dev  gobjc gnustep gnustep-devel g++ musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip
+          # Install Node.js for setup-protoc action
+          curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+          apt-get install -y nodejs
+      # - name: Install last version of Protoc
+      #   uses: arduino/setup-protoc@v2
+      #   with:
+      #     version: "24.x"
+      # #        repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Checkout Crate
         uses: actions/checkout@v4
         with:
@@ -84,18 +91,17 @@ jobs:
       - name: apt upgrade
         run: |
           apt-get update
-          apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang g++ musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip
-          # Install Node.js for setup-protoc action
+          apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang libclang-dev  gobjc gnustep gnustep-devel g++ musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip # cudnn9-cuda-12-8          # Install Node.js for setup-protoc action
           curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
           apt-get install -y nodejs
       - name: Clean up apt cache
         run: |
           apt-get clean
           rm -rf /var/lib/apt/lists/*
-      - name: Install last version of Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "24.x"
+      # - name: Install last version of Protoc
+      #   uses: arduino/setup-protoc@v2
+      #   with:
+      #     version: "24.x"
       #        repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/checkout@v4
         with:
@@ -113,7 +119,7 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --all-features
+          args: --features "mysql,cuda,flash-attn" --release #cudnn,
       - name: Run test
         run: |
           cargo build --release
@@ -125,8 +131,12 @@ jobs:
           UV_VENV_CLEAR: 1
       - name: Run test with mysql
         run: |
-          cargo build --features "mysql,cuda,cudnn,flash-attn" --release
-          cargo test --features "mysql,cuda,cudnn,flash-attn" --release -- --test-threads=1
+          rm -f app/test_db.sqlite3*
+          rm -f app-wrapper/test_db.sqlite3*
+          rm -f infra/test_db.sqlite3*
+          rm -f worker-app/test_db.sqlite3*
+          cargo build --features "mysql,cuda,flash-attn" --release #,cudnn
+          cargo test --features "mysql,cuda,flash-attn" --release -- --test-threads=1 #,cudnn
           cargo clean
         env:
           PLUGINS_RUNNER_DIR: "./target/release/"

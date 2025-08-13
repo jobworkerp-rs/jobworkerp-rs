@@ -101,8 +101,12 @@ INSERT OR IGNORE INTO runner (`id`, `name`, `description`,`definition`, `type`) 
   'Executes a workflow defined directly within the job request. Steps are run sequentially and the definition is not stored for future reuse. Uses the same schema as REUSABLE_WORKFLOW for workflow definition.',
   'builtin65535', 65535
 ), (
-  -1, 'REUSABLE_WORKFLOW',
+  65532, 'REUSABLE_WORKFLOW',
   'Defines and saves workflow definitions that can be executed multiple times using their ID reference. These workflows can be reused across different job requests.',
+  'builtin65532', 65532
+), (
+  -1, 'CREATE_WORKFLOW',
+  'Creates a new REUSABLE_WORKFLOW worker from a workflow definition. The workflow is validated and stored as a worker that can be executed multiple times.',
   'builtin-1', -1
 );
 

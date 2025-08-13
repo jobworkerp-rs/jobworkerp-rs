@@ -15,8 +15,6 @@ use std::{
 };
 use tracing;
 
-pub mod workflow;
-
 pub trait McpNameConverter {
     const DELIMITER: &str = "___";
     fn combine_names(server_name: &str, tool_name: &str) -> String {
@@ -28,7 +26,7 @@ pub trait McpNameConverter {
         let mut v: std::collections::VecDeque<&str> = combined.split(delimiter).collect();
         match v.len().cmp(&2) {
             std::cmp::Ordering::Less => {
-                tracing::error!("Failed to parse combined name: {:#?}", &combined);
+                tracing::debug!("Failed to parse combined name: {:#?}", &combined);
                 None
             }
             std::cmp::Ordering::Equal => Some((v[0].to_string(), v[1].to_string())),
@@ -181,7 +179,6 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                     tracing::error!("Failed to find worker: {}", e);
                 })?
                 .ok_or_else(|| {
-                    tracing::warn!("worker not found");
                     JobWorkerError::WorkerNotFound(format!("worker or mcp tool not found: {name}"))
                 })?;
             let args = if let Some(tool_name) = tool_name_opt {
@@ -400,12 +397,12 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
     }
 
     fn prepare_runner_call_arguments(
-        request_args: Map<String, Value>,
+        mut request_args: Map<String, Value>,
         runner: &RunnerWithSchema,
         tool_name_opt: Option<String>,
     ) -> impl Future<Output = Result<(Option<Value>, Value)>> + Send + '_ {
         async move {
-            let settings = request_args.get("settings").cloned();
+            let settings = request_args.remove("settings");
             let arguments = if runner
                 .data
                 .as_ref()

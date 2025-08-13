@@ -124,7 +124,7 @@ impl WorkerApp for HybridWorkerAppImpl {
             id
         };
         tracing::debug!("created worker: {:?}", wid);
-        let _ = self.redis_worker_repository().delete_all().await;
+        // let _ = self.redis_worker_repository().delete_all().await;
         // clear caches (name and list)
         self.clear_cache_by_name(&worker.name).await;
         tracing::debug!("clear cache by name: {}", worker.name);
@@ -194,7 +194,8 @@ impl WorkerApp for HybridWorkerAppImpl {
                     .await?;
                 tx.commit().await.map_err(JobWorkerError::DBError)?;
 
-                let _ = self.redis_worker_repository().delete_all().await;
+                // let _ = self.redis_worker_repository().delete_all().await;
+                let _ = self.redis_worker_repository().delete(id).await;
                 // clear memory cache (XXX without limit offset cache)
                 self.clear_cache(id).await;
                 self.clear_cache_by_name(&w.name).await;
