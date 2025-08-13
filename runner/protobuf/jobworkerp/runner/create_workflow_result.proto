@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package jobworkerp.runner;
+
+// # Create Workflow Result
+// Result of workflow-based worker creation (success only)
+message CreateWorkflowResult {
+  // # Worker ID (local definition)
+  // Unique identifier for the created worker
+  message WorkerId {
+    int64 value = 1;
+  }
+  
+  // # Worker ID
+  // Unique identifier for the created worker
+  optional WorkerId worker_id = 1;
+}
