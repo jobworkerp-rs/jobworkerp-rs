@@ -305,6 +305,18 @@ pub trait RunnerCacheHelper {
     fn find_all_list_cache_key() -> Arc<String> {
         Arc::new("runner_list:all".to_string())
     }
+    // XXX cannot expire properly (should make it hash key?)
+    fn find_list_cache_key(limit: Option<&i32>, offset: Option<&i64>) -> Arc<String> {
+        if limit.is_none() && offset.is_none() {
+            Self::find_all_list_cache_key()
+        } else {
+            Arc::new(format!(
+                "runner_list:{}-{}",
+                limit.map_or("none".to_string(), |l| l.to_string()),
+                offset.map_or("0".to_string(), |o| o.to_string())
+            ))
+        }
+    }
 }
 
 // #[cfg(test)]
@@ -325,7 +337,7 @@ pub mod test {
             runner_type: RunnerType::Plugin as i32,
             result_output_proto: None,
             output_type: StreamingOutputType::NonStreaming as i32,
-            definition: "./target/debug/libTest.so".to_string(),
+            definition: "./target/debug/libplugin_runner_test.so".to_string(),
         }
     }
     pub fn test_runner_with_schema(id: &RunnerId, name: &str) -> RunnerWithSchema {

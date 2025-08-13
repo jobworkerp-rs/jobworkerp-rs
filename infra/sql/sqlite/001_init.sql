@@ -1,0 +1,7 @@
+PRAGMA encoding = 'UTF-8';
+
+DROP TABLE IF EXISTS worker;
+DROP TABLE IF EXISTS job;
+DROP TABLE IF EXISTS runner;
+DROP TABLE IF EXISTS function_set;
+DROP TABLE IF EXISTS function_set_target;
