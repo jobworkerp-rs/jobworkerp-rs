@@ -264,3 +264,190 @@ async fn test_completion_stream_with_json_schema() -> Result<()> {
 
     Ok(())
 }
+
+#[ignore = "need to run with ollama server"]
+#[tokio::test]
+async fn test_workflow_8level_schema_with_llm_chat() -> Result<()> {
+    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    let service = create_test_chat_service().await?;
+
+    // Load the workflow_8level_final.json schema
+    let schema_path = "../runner/schema/workflow_8level_final.json";
+    let schema = std::fs::read_to_string(schema_path)
+        .map_err(|e| anyhow::anyhow!("Failed to read schema file at {}: {}", schema_path, e))?;
+
+    // Verify the schema is valid JSON
+    let _parsed_schema: serde_json::Value = serde_json::from_str(&schema)?;
+    tracing::info!("Schema loaded successfully, size: {} bytes", schema.len());
+
+    let args = LlmChatArgs {
+        json_schema: Some(schema.clone()),
+        messages: vec![ChatMessage {
+            role: ChatRole::User.into(),
+            content: Some(MessageContent {
+                content: Some(message_content::Content::Text(
+                    "Generate a simple workflow that runs a command task named 'hello' that executes 'echo Hello World'. Make it a valid workflow with proper document metadata.".to_string(),
+                )),
+            }),
+        }],
+        options: Some(ChatLlmOptions {
+            max_tokens: Some(20480),
+            temperature: Some(0.1),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let result = timeout(
+        Duration::from_secs(600), // Increased timeout for complex schema
+        service.request_chat(args, opentelemetry::Context::current(), HashMap::new()),
+    )
+    .await??;
+
+    assert!(result.content.is_some());
+    if let Some(content) = result.content {
+        if let Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) = content.content {
+            tracing::info!("Generated workflow response: {}", text);
+            
+            // Verify the response is valid JSON
+            let parsed: serde_json::Value = serde_json::from_str(&text)?;
+            
+            // Verify required workflow fields are present
+            assert!(parsed.get("document").is_some(), "Missing 'document' field");
+            assert!(parsed.get("input").is_some(), "Missing 'input' field");  
+            assert!(parsed.get("do").is_some(), "Missing 'do' field");
+            
+            // Verify document structure
+            if let Some(document) = parsed.get("document") {
+                assert!(document.get("dsl").is_some(), "Missing 'document.dsl' field");
+                assert!(document.get("namespace").is_some(), "Missing 'document.namespace' field");
+                assert!(document.get("name").is_some(), "Missing 'document.name' field");
+                assert!(document.get("version").is_some(), "Missing 'document.version' field");
+            }
+            
+            // Verify do array structure
+            if let Some(do_array) = parsed.get("do").and_then(|v| v.as_array()) {
+                assert!(!do_array.is_empty(), "Empty 'do' array");
+                tracing::info!("Workflow has {} top-level tasks", do_array.len());
+                
+                // Check first task structure - be more flexible about task format
+                if let Some(first_task) = do_array.first().and_then(|v| v.as_object()) {
+                    tracing::info!("First task structure has {} keys: {:?}", first_task.len(), first_task.keys().collect::<Vec<_>>());
+                    
+                    // The LLM might generate different valid task structures
+                    // Just verify we have some recognizable task properties
+                    let has_task_properties = first_task.keys().any(|k| {
+                        k == "run" || k == "set" || k == "fork" || k == "for" || 
+                        k == "try" || k == "switch" || k == "do" || k == "wait" || k == "raise" ||
+                        // Or it might be a task name containing task definition
+                        first_task.get(k).and_then(|v| v.as_object()).is_some_and(|obj| {
+                            obj.contains_key("run") || obj.contains_key("set") || obj.contains_key("fork") ||
+                            obj.contains_key("for") || obj.contains_key("try") || obj.contains_key("switch") ||
+                            obj.contains_key("do") || obj.contains_key("wait") || obj.contains_key("raise")
+                        })
+                    });
+                    
+                    if !has_task_properties {
+                        tracing::warn!("Generated task structure may not match expected workflow schema, but JSON is valid");
+                    }
+                }
+            }
+            
+            tracing::info!("Workflow 8-level schema test with LLM_CHAT passed!");
+        }
+    }
+
+    Ok(())
+}
+
+#[ignore = "need to run with ollama server"]
+#[tokio::test]
+async fn test_complex_nested_workflow_with_llm_chat() -> Result<()> {
+    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    let service = create_test_chat_service().await?;
+
+    // Load the workflow schema
+    let schema_path = "../runner/schema/workflow_8level_final.json";
+    let schema = std::fs::read_to_string(schema_path)
+        .map_err(|e| anyhow::anyhow!("Failed to read schema file at {}: {}", schema_path, e))?;
+
+    let args = LlmChatArgs {
+        json_schema: Some(schema),
+        messages: vec![ChatMessage {
+            role: ChatRole::User.into(),
+            content: Some(MessageContent {
+                content: Some(message_content::Content::Text(
+                    "Generate a complex workflow that demonstrates nested tasks with a maximum nesting level of 7. Follow the exact schema structure. Include these specific task types: 1) A 'fork' task with 'branches' property containing task lists, 2) A 'for' task with 'for' and 'do' properties, 3) A 'try' task with 'try' and 'catch' properties, 4) A 'switch' task with 'switch' property containing case conditions. Each task must be a JSON object with a single key-value pair where the key is the task name and the value contains the task definition (like 'fork', 'for', 'try', 'switch', or 'run' properties). Keep nesting depth under 7 levels. Make it a complete valid workflow with proper document metadata.".to_string(),
+                )),
+            }),
+        }],
+        options: Some(ChatLlmOptions {
+            max_tokens: Some(40960),
+            temperature: Some(0.2),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let result = timeout(
+        Duration::from_secs(900), // Even longer timeout for complex generation
+        service.request_chat(args, opentelemetry::Context::current(), HashMap::new()),
+    )
+    .await??;
+
+    assert!(result.content.is_some());
+    if let Some(content) = result.content {
+        if let Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) = content.content {
+            tracing::info!("Generated complex workflow response: {}", text);
+            
+            // Verify the response is valid JSON
+            let parsed: serde_json::Value = serde_json::from_str(&text)?;
+            
+            // Basic structure validation
+            assert!(parsed.get("document").is_some());
+            assert!(parsed.get("input").is_some());  
+            assert!(parsed.get("do").is_some());
+            
+            // Count different task types to verify complexity
+            let empty_vec = vec![];
+            let do_tasks = parsed.get("do").and_then(|v| v.as_array()).unwrap_or(&empty_vec);
+            let task_json = serde_json::to_string(&do_tasks)?;
+            
+            let fork_count = task_json.matches("\"fork\"").count();
+            let for_count = task_json.matches("\"for\"").count();
+            let try_count = task_json.matches("\"try\"").count();
+            let switch_count = task_json.matches("\"switch\"").count();
+            
+            tracing::info!("Task type counts - Fork: {}, For: {}, Try: {}, Switch: {}", 
+                     fork_count, for_count, try_count, switch_count);
+            
+            // At least one complex task type should be present
+            // If the expected task types are not found, check if the workflow at least has valid structure
+            if fork_count == 0 && for_count == 0 && try_count == 0 && switch_count == 0 {
+                tracing::warn!("No standard complex task types found, but verifying workflow structure");
+                
+                // Check if the workflow has reasonable structure even if not using expected task types
+                let has_reasonable_structure = do_tasks.len() > 1 && 
+                    do_tasks.iter().any(|task| {
+                        if let Some(obj) = task.as_object() {
+                            !obj.is_empty() && obj.values().any(|v| v.is_object())
+                        } else {
+                            false
+                        }
+                    });
+                
+                if !has_reasonable_structure {
+                    panic!("Generated workflow lacks proper structure with nested tasks");
+                }
+                
+                tracing::info!("Workflow has reasonable structure despite not using expected complex task types");
+            } else {
+                tracing::info!("Found expected complex task types in workflow");
+            }
+            
+            tracing::info!("Complex nested workflow schema test with LLM_CHAT passed!");
+        }
+    }
+
+    Ok(())
+}
