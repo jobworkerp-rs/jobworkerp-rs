@@ -36,13 +36,14 @@ pub trait RunnerApp: fmt::Debug + Send + Sync {
 
     async fn find_runner_list(
         &self,
+        include_full: bool,
         limit: Option<&i32>,
         offset: Option<&i64>,
     ) -> Result<Vec<RunnerWithSchema>>
     where
         Self: Send + 'static;
 
-    async fn find_runner_all_list(&self) -> Result<Vec<RunnerWithSchema>>
+    async fn find_runner_all_list(&self, include_full: bool) -> Result<Vec<RunnerWithSchema>>
     where
         Self: Send + 'static;
 
@@ -302,16 +303,24 @@ pub trait RunnerCacheHelper {
         Arc::new(["runner_name:", name].join(""))
     }
 
-    fn find_all_list_cache_key() -> Arc<String> {
-        Arc::new("runner_list:all".to_string())
+    fn find_all_list_cache_key(include_full: bool) -> Arc<String> {
+        Arc::new(format!(
+            "runner_list:all{}",
+            if include_full { ":full" } else { "" }
+        ))
     }
     // XXX cannot expire properly (should make it hash key?)
-    fn find_list_cache_key(limit: Option<&i32>, offset: Option<&i64>) -> Arc<String> {
+    fn find_list_cache_key(
+        include_full: bool,
+        limit: Option<&i32>,
+        offset: Option<&i64>,
+    ) -> Arc<String> {
         if limit.is_none() && offset.is_none() {
-            Self::find_all_list_cache_key()
+            Self::find_all_list_cache_key(include_full)
         } else {
             Arc::new(format!(
-                "runner_list:{}-{}",
+                "runner_list{}:{}-{}",
+                if include_full { ":full" } else { "" },
                 limit.map_or("none".to_string(), |l| l.to_string()),
                 offset.map_or("0".to_string(), |o| o.to_string())
             ))

@@ -57,13 +57,16 @@ pub trait FunctionApp:
         &self,
         exclude_runner: bool,
         exclude_worker: bool,
-        _include_full: bool, // Include full function specs with schema (large data)
+        include_full: bool, // Include full function specs with schema (large data)
     ) -> Result<Vec<FunctionSpecs>> {
         let mut functions = Vec::new();
 
         // Get runners if not excluded
         if !exclude_runner {
-            let runners = self.runner_app().find_runner_list(None, None).await?;
+            let runners = self
+                .runner_app()
+                .find_runner_list(include_full, None, None)
+                .await?;
             for runner in runners {
                 functions.push(Self::convert_runner_to_function_specs(runner));
             }
