@@ -1026,6 +1026,7 @@
           "additionalProperties": false,
           "oneOf": [
             {
+              "type": "object",
               "title": "ConstantBackoff",
               "properties": {
                 "constant": {
@@ -1038,6 +1039,7 @@
               ]
             },
             {
+              "type": "object",
               "title": "ExponentialBackOff",
               "properties": {
                 "exponential": {
@@ -1050,6 +1052,7 @@
               ]
             },
             {
+              "type": "object",
               "title": "LinearBackoff",
               "properties": {
                 "linear": {
@@ -1105,9 +1108,11 @@
       },
       "oneOf": [
         {
+          "type": "object",
           "title": "SchemaInline",
           "properties": {
             "document": {
+              "type": "object",
               "description": "Inline schema definition."
             }
           },
@@ -1116,6 +1121,7 @@
           ]
         },
         {
+          "type": "object",
           "title": "SchemaExternal",
           "properties": {
             "resource": {
@@ -1146,33 +1152,455 @@
         "after"
       ]
     },
-    "processResult": {
+    "forkTaskBase": {
       "type": "object",
-      "title": "ProcessResult",
-      "description": "Process execution result when return type is 'all'.",
+      "$ref": "#/$defs/taskBase",
+      "title": "ForkTaskBase",
+      "description": "Execute multiple tasks concurrently, optionally competing for single result.",
+      "required": ["fork"],
       "additionalProperties": false,
       "properties": {
-        "code": {
-          "type": "integer",
-          "title": "ProcessExitCode",
-          "description": "Process exit code."
-        },
-        "stdout": {
-          "type": "string",
-          "title": "ProcessStandardOutput",
-          "description": "Process STDOUT content."
-        },
-        "stderr": {
-          "type": "string",
-          "title": "ProcessStandardError",
-          "description": "Process STDERR content."
+        "fork": {
+          "type": "object",
+          "title": "ForkTaskConfiguration",
+          "description": "Concurrent branch configuration.",
+          "additionalProperties": false,
+          "required": ["branches"],
+          "properties": {
+            "compete": {
+              "type": "boolean",
+              "title": "ForkCompete",
+              "description": "Enable competition mode where first completed task wins.",
+              "default": false
+            }
+          }
         }
-      },
-      "required": [
-        "code",
-        "stdout",
-        "stderr"
-      ]
+      }
+    },
+    "forkTask_L0": {
+      "$ref": "#/$defs/forkTaskBase",
+      "properties": {
+        "fork": {
+          "properties": {
+            "branches": {"$ref": "#/$defs/taskList_L1"}
+          }
+        }
+      }
+    },
+    "forkTask_L1": {
+      "$ref": "#/$defs/forkTaskBase",
+      "properties": {
+        "fork": {
+          "properties": {
+            "branches": {"$ref": "#/$defs/taskList_L2"}
+          }
+        }
+      }
+    },
+    "forkTask_L2": {
+      "$ref": "#/$defs/forkTaskBase",
+      "properties": {
+        "fork": {
+          "properties": {
+            "branches": {"$ref": "#/$defs/taskList_L3"}
+          }
+        }
+      }
+    },
+    "forkTask_L3": {
+      "$ref": "#/$defs/forkTaskBase",
+      "properties": {
+        "fork": {
+          "properties": {
+            "branches": {"$ref": "#/$defs/taskList_L4"}
+          }
+        }
+      }
+    },
+    "forkTask_L4": {
+      "$ref": "#/$defs/forkTaskBase",
+      "properties": {
+        "fork": {
+          "properties": {
+            "branches": {"$ref": "#/$defs/taskList_L5"}
+          }
+        }
+      }
+    },
+    "forkTask_L5": {
+      "$ref": "#/$defs/forkTaskBase",
+      "properties": {
+        "fork": {
+          "properties": {
+            "branches": {"$ref": "#/$defs/taskList_L6"}
+          }
+        }
+      }
+    },
+    "forkTask_L6": {
+      "$ref": "#/$defs/forkTaskBase",
+      "properties": {
+        "fork": {
+          "properties": {
+            "branches": {"$ref": "#/$defs/taskList_L7"}
+          }
+        }
+      }
+    },
+    "forkTask_L7": {
+      "$ref": "#/$defs/forkTaskBase",
+      "properties": {
+        "fork": {
+          "properties": {
+            "branches": {"$ref": "#/$defs/taskList_L8"}
+          }
+        }
+      }
+    },
+    "doTaskBase": {
+      "type": "object",
+      "$ref": "#/$defs/taskBase",
+      "title": "DoTaskBase",
+      "description": "Execute tasks sequentially. Note: for property not allowed.",
+      "required": ["do"],
+      "additionalProperties": false
+    },
+    "doTask_L0": {
+      "$ref": "#/$defs/doTaskBase",
+      "properties": {
+        "do": {"$ref": "#/$defs/taskList_L1"}
+      }
+    },
+    "doTask_L1": {
+      "$ref": "#/$defs/doTaskBase",
+      "properties": {
+        "do": {"$ref": "#/$defs/taskList_L2"}
+      }
+    },
+    "doTask_L2": {
+      "$ref": "#/$defs/doTaskBase",
+      "properties": {
+        "do": {"$ref": "#/$defs/taskList_L3"}
+      }
+    },
+    "doTask_L3": {
+      "$ref": "#/$defs/doTaskBase",
+      "properties": {
+        "do": {"$ref": "#/$defs/taskList_L4"}
+      }
+    },
+    "doTask_L4": {
+      "$ref": "#/$defs/doTaskBase",
+      "properties": {
+        "do": {"$ref": "#/$defs/taskList_L5"}
+      }
+    },
+    "doTask_L5": {
+      "$ref": "#/$defs/doTaskBase",
+      "properties": {
+        "do": {"$ref": "#/$defs/taskList_L6"}
+      }
+    },
+    "doTask_L6": {
+      "$ref": "#/$defs/doTaskBase",
+      "properties": {
+        "do": {"$ref": "#/$defs/taskList_L7"}
+      }
+    },
+    "doTask_L7": {
+      "$ref": "#/$defs/doTaskBase",
+      "properties": {
+        "do": {"$ref": "#/$defs/taskList_L8"}
+      }
+    },
+    "forTaskBase": {
+      "type": "object",
+      "$ref": "#/$defs/taskBase",
+      "title": "ForTaskBase",
+      "description": "Iterate over collection, executing subtasks for each item.",
+      "required": ["for", "do"],
+      "additionalProperties": false,
+      "properties": {
+        "for": {
+          "type": "object",
+          "title": "ForTaskConfiguration",
+          "description": "Loop iteration configuration.",
+          "additionalProperties": false,
+          "required": ["in"],
+          "properties": {
+            "each": {
+              "type": "string",
+              "title": "ForEach",
+              "description": "Variable name for current item.",
+              "default": "item"
+            },
+            "in": {
+              "type": "string",
+              "title": "ForIn",
+              "description": "Runtime expression returning collection to iterate."
+            },
+            "at": {
+              "type": "string",
+              "title": "ForAt",
+              "description": "Variable name for current index.",
+              "default": "index"
+            }
+          }
+        },
+        "while": {
+          "type": "string",
+          "title": "While",
+          "description": "Runtime expression for loop continuation condition."
+        },
+        "inParallel": {
+          "type": "boolean",
+          "title": "ForInParallel",
+          "description": "Execute subtasks in parallel.",
+          "default": false
+        }
+      }
+    },
+    "forTask_L0": {
+      "$ref": "#/$defs/forTaskBase",
+      "properties": {
+        "do": {"$ref": "#/$defs/taskList_L1"}
+      }
+    },
+    "forTask_L1": {
+      "$ref": "#/$defs/forTaskBase",
+      "properties": {
+        "do": {"$ref": "#/$defs/taskList_L2"}
+      }
+    },
+    "forTask_L2": {
+      "$ref": "#/$defs/forTaskBase",
+      "properties": {
+        "do": {"$ref": "#/$defs/taskList_L3"}
+      }
+    },
+    "forTask_L3": {
+      "$ref": "#/$defs/forTaskBase",
+      "properties": {
+        "do": {"$ref": "#/$defs/taskList_L4"}
+      }
+    },
+    "forTask_L4": {
+      "$ref": "#/$defs/forTaskBase",
+      "properties": {
+        "do": {"$ref": "#/$defs/taskList_L5"}
+      }
+    },
+    "forTask_L5": {
+      "$ref": "#/$defs/forTaskBase",
+      "properties": {
+        "do": {"$ref": "#/$defs/taskList_L6"}
+      }
+    },
+    "forTask_L6": {
+      "$ref": "#/$defs/forTaskBase",
+      "properties": {
+        "do": {"$ref": "#/$defs/taskList_L7"}
+      }
+    },
+    "forTask_L7": {
+      "$ref": "#/$defs/forTaskBase",
+      "properties": {
+        "do": {"$ref": "#/$defs/taskList_L8"}
+      }
+    },
+    "switchTaskBase": {
+      "type": "object",
+      "$ref": "#/$defs/taskBase",
+      "title": "SwitchTaskBase",
+      "description": "Conditional branching based on runtime conditions.",
+      "required": ["switch"],
+      "additionalProperties": false,
+      "properties": {
+        "switch": {
+          "type": "array",
+          "title": "SwitchTaskConfiguration",
+          "description": "Switch case definitions.",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "title": "SwitchItem",
+            "minProperties": 1,
+            "maxProperties": 1,
+            "additionalProperties": {
+              "type": "object",
+              "title": "SwitchCase",
+              "description": "Case condition and action definition.",
+              "additionalProperties": false,
+              "required": ["then"],
+              "properties": {
+                "when": {
+                  "type": "string",
+                  "title": "SwitchCaseCondition",
+                  "description": "Runtime expression for case matching."
+                },
+                "then": {
+                  "$ref": "#/$defs/flowDirective",
+                  "title": "SwitchCaseOutcome",
+                  "description": "Flow directive for matching case."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "switchTask_L0": {"$ref": "#/$defs/switchTaskBase"},
+    "switchTask_L1": {"$ref": "#/$defs/switchTaskBase"},
+    "switchTask_L2": {"$ref": "#/$defs/switchTaskBase"},
+    "switchTask_L3": {"$ref": "#/$defs/switchTaskBase"},
+    "switchTask_L4": {"$ref": "#/$defs/switchTaskBase"},
+    "switchTask_L5": {"$ref": "#/$defs/switchTaskBase"},
+    "switchTask_L6": {"$ref": "#/$defs/switchTaskBase"},
+    "switchTask_L7": {"$ref": "#/$defs/switchTaskBase"},
+    "tryTaskBase": {
+      "type": "object",
+      "$ref": "#/$defs/taskBase",
+      "title": "TryTaskBase",
+      "description": "Error handling with retry and fallback mechanisms.",
+      "required": ["try", "catch"],
+      "additionalProperties": false,
+      "properties": {
+        "catch": {
+          "type": "object",
+          "title": "TryTaskCatch",
+          "description": "Error handling configuration.",
+          "additionalProperties": false,
+          "properties": {
+            "errors": {
+              "type": "object",
+              "title": "CatchErrors",
+              "properties": {
+                "with": {
+                  "$ref": "#/$defs/errorFilter"
+                }
+              },
+              "description": "Static error filter configuration."
+            },
+            "as": {
+              "type": "string",
+              "title": "CatchAs",
+              "description": "Variable name to store caught error (defaults to 'error')."
+            },
+            "when": {
+              "type": "string",
+              "title": "CatchWhen",
+              "description": "Runtime expression to enable error catching."
+            },
+            "exceptWhen": {
+              "type": "string",
+              "title": "CatchExceptWhen",
+              "description": "Runtime expression to disable error catching."
+            },
+            "retry": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/retryPolicy",
+                  "title": "RetryPolicyDefinition",
+                  "description": "Retry policy configuration."
+                },
+                {
+                  "type": "string",
+                  "title": "RetryPolicyReference",
+                  "description": "Reference to named retry policy."
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "tryTask_L0": {
+      "$ref": "#/$defs/tryTaskBase",
+      "properties": {
+        "try": {"$ref": "#/$defs/taskList_L1"},
+        "catch": {
+          "properties": {
+            "do": {"$ref": "#/$defs/taskList_L1"}
+          }
+        }
+      }
+    },
+    "tryTask_L1": {
+      "$ref": "#/$defs/tryTaskBase",
+      "properties": {
+        "try": {"$ref": "#/$defs/taskList_L2"},
+        "catch": {
+          "properties": {
+            "do": {"$ref": "#/$defs/taskList_L2"}
+          }
+        }
+      }
+    },
+    "tryTask_L2": {
+      "$ref": "#/$defs/tryTaskBase",
+      "properties": {
+        "try": {"$ref": "#/$defs/taskList_L3"},
+        "catch": {
+          "properties": {
+            "do": {"$ref": "#/$defs/taskList_L3"}
+          }
+        }
+      }
+    },
+    "tryTask_L3": {
+      "$ref": "#/$defs/tryTaskBase",
+      "properties": {
+        "try": {"$ref": "#/$defs/taskList_L4"},
+        "catch": {
+          "properties": {
+            "do": {"$ref": "#/$defs/taskList_L4"}
+          }
+        }
+      }
+    },
+    "tryTask_L4": {
+      "$ref": "#/$defs/tryTaskBase",
+      "properties": {
+        "try": {"$ref": "#/$defs/taskList_L5"},
+        "catch": {
+          "properties": {
+            "do": {"$ref": "#/$defs/taskList_L5"}
+          }
+        }
+      }
+    },
+    "tryTask_L5": {
+      "$ref": "#/$defs/tryTaskBase",
+      "properties": {
+        "try": {"$ref": "#/$defs/taskList_L6"},
+        "catch": {
+          "properties": {
+            "do": {"$ref": "#/$defs/taskList_L6"}
+          }
+        }
+      }
+    },
+    "tryTask_L6": {
+      "$ref": "#/$defs/tryTaskBase",
+      "properties": {
+        "try": {"$ref": "#/$defs/taskList_L7"},
+        "catch": {
+          "properties": {
+            "do": {"$ref": "#/$defs/taskList_L7"}
+          }
+        }
+      }
+    },
+    "tryTask_L7": {
+      "$ref": "#/$defs/tryTaskBase",
+      "properties": {
+        "try": {"$ref": "#/$defs/taskList_L8"},
+        "catch": {
+          "properties": {
+            "do": {"$ref": "#/$defs/taskList_L8"}
+          }
+        }
+      }
     },
     "plainString": {
       "type": "string",

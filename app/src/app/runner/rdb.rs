@@ -46,7 +46,7 @@ impl RdbRunnerAppImpl {
     }
     // load runners from db in initialization
     async fn load_runners_from_db(&self) {
-        if let Ok(runners) = self.runner_repository().find_list(None, None).await {
+        if let Ok(runners) = self.runner_repository().find_list(true, None, None).await {
             for data in runners.into_iter().flat_map(|r| r.data) {
                 if let Err(e) = match data.runner_type {
                     val if val == RunnerType::McpServer as i32 => self
@@ -86,7 +86,7 @@ impl RdbRunnerAppImpl {
         self.runner_repository().add_from_mcp_config_file().await?;
         self.load_runners_from_db().await;
         let _ = self
-            .delete_cache_locked(&Self::find_all_list_cache_key())
+            .delete_cache_locked(&Self::find_all_list_cache_key(true))
             .await;
         Ok(())
     }
@@ -129,7 +129,10 @@ impl RunnerApp for RdbRunnerAppImpl {
             .into()),
         }?;
         let _ = self
-            .delete_cache_locked(&Self::find_all_list_cache_key())
+            .delete_cache_locked(&Self::find_all_list_cache_key(true))
+            .await;
+        let _ = self
+            .delete_cache_locked(&Self::find_all_list_cache_key(false))
             .await;
         Ok(id)
     }
@@ -141,7 +144,10 @@ impl RunnerApp for RdbRunnerAppImpl {
             .delete_cache_locked(&Self::find_cache_key(&id.value))
             .await;
         let _ = self
-            .delete_cache_locked(&Self::find_all_list_cache_key())
+            .delete_cache_locked(&Self::find_all_list_cache_key(true))
+            .await;
+        let _ = self
+            .delete_cache_locked(&Self::find_all_list_cache_key(false))
             .await;
         Ok(res)
     }
@@ -187,6 +193,7 @@ impl RunnerApp for RdbRunnerAppImpl {
     // XXX no cache
     async fn find_runner_list(
         &self,
+        include_full: bool,
         limit: Option<&i32>,
         offset: Option<&i64>,
     ) -> Result<Vec<RunnerWithSchema>>
@@ -194,7 +201,7 @@ impl RunnerApp for RdbRunnerAppImpl {
         Self: Send + 'static,
     {
         if let Some(all) = self
-            .find_cache(&Self::find_list_cache_key(limit, offset))
+            .find_cache(&Self::find_list_cache_key(include_full, limit, offset))
             .await
         {
             if let Some(lim) = limit {
@@ -204,17 +211,21 @@ impl RunnerApp for RdbRunnerAppImpl {
                 Ok(all)
             }
         } else {
-            self.runner_repository().find_list(limit, offset).await
+            self.runner_repository()
+                .find_list(include_full, limit, offset)
+                .await
         }
     }
 
-    async fn find_runner_all_list(&self) -> Result<Vec<RunnerWithSchema>>
+    async fn find_runner_all_list(&self, include_full: bool) -> Result<Vec<RunnerWithSchema>>
     where
         Self: Send + 'static,
     {
-        let k = Arc::new(Self::find_all_list_cache_key());
+        let k = Arc::new(Self::find_all_list_cache_key(include_full));
         self.with_cache(&k, || async {
-            self.runner_repository().find_list(None, None).await
+            self.runner_repository()
+                .find_list(include_full, None, None)
+                .await
         })
         .await
     }
@@ -254,7 +265,10 @@ impl RunnerApp for RdbRunnerAppImpl {
         self.store_proto_cache(runner_id, &runner_data).await;
         // clear memory cache
         let _ = self
-            .delete_cache_locked(&Self::find_all_list_cache_key())
+            .delete_cache_locked(&Self::find_all_list_cache_key(false))
+            .await;
+        let _ = self
+            .delete_cache_locked(&Self::find_all_list_cache_key(true))
             .await;
         Ok(runner_data)
     }
