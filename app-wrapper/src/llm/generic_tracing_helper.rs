@@ -89,7 +89,7 @@ pub trait GenericLLMTracingHelper {
         &self,
         metadata: &HashMap<String, String>,
         parent_context: Option<opentelemetry::Context>,
-        span_attributes: OtelSpanAttributes,
+        mut span_attributes: OtelSpanAttributes,
         action: F,
     ) -> impl std::future::Future<Output = Result<(R, opentelemetry::Context)>> + Send
     where
@@ -103,49 +103,35 @@ pub trait GenericLLMTracingHelper {
 
         async move {
             let (result, context) = if let Some(client) = &otel_client {
-                let response_parser = {
-                    let session_id = session_id.clone();
-                    let user_id = user_id.clone();
-                    let provider = provider.clone();
-                    move |response: &R| -> Option<OtelSpanAttributes> {
-                        let response_output = response.to_json();
+                // Execute action first to get response
+                let result = action.await.map_err(|e| anyhow::anyhow!("Action failed: {}", e))?;
+                
+                // Add response output to main span attributes
+                let response_output = result.to_json();
+                span_attributes.data.output = Some(response_output);
 
-                        let mut response_span_builder =
-                            OtelSpanBuilder::new(format!("{provider}.chat.response"))
-                                .span_type(OtelSpanType::Event)
-                                .output(response_output)
-                                .level("INFO");
-
-                        let mut metadata = HashMap::new();
-                        metadata
-                            .insert("event_type".to_string(), serde_json::json!("chat_response"));
-                        response_span_builder = response_span_builder.metadata(metadata);
-
-                        if let Some(session_id) = &session_id {
-                            response_span_builder =
-                                response_span_builder.session_id(session_id.clone());
-                        }
-                        if let Some(user_id) = &user_id {
-                            response_span_builder = response_span_builder.user_id(user_id.clone());
-                        }
-
-                        Some(response_span_builder.build())
-                    }
+                // Use parser that returns None to prevent overwriting our response data
+                let response_parser = |_: &R| -> Option<OtelSpanAttributes> {
+                    None // Return None to skip default output processing
                 };
 
                 let current_context = parent_context.clone();
-                let result = client
+                
+                // Create a dummy action that just returns the result
+                let dummy_action = async move { Ok::<R, JobWorkerError>(result) };
+                
+                let final_result = client
                     .with_span_result_and_response_parser(
                         span_attributes,
                         parent_context,
-                        action,
+                        dummy_action,
                         Some(response_parser),
                     )
                     .await
                     .map_err(|e| anyhow::anyhow!("Error in traced span: {}", e))?;
 
                 (
-                    result,
+                    final_result,
                     current_context.unwrap_or(opentelemetry::Context::current()),
                 )
             } else {

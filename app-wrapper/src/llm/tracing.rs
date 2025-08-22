@@ -22,6 +22,7 @@ pub struct LLMTracingContext {
     parent_context: Option<Context>,
     metadata: HashMap<String, String>,
     api_type: LLMApiType,
+    main_span_attributes: Option<OtelSpanAttributes>,
 }
 
 /// API type enumeration
@@ -130,31 +131,20 @@ pub trait LLMTracingHelper: Send + Sync {
                 metadata,
             );
 
-            // Add main span to OpenTelemetry
-            if let Some(client) = self.get_otel_client() {
+            // Store span attributes for later use in finish_llm_tracing
+            if let Some(_client) = self.get_otel_client() {
                 let span_name = format!(
                     "{}.{}.completions",
                     self.get_provider_name(),
                     api_type.to_string()
                 );
-                tracing::info!("Starting LLM tracing span: {span_name}");
-
-                // Send main span to OpenTelemetry
-                client
-                    .with_span_result(span_attributes, parent_context.clone(), async move {
-                        // Only start the span (finish is done in finish_llm_tracing)
-                        Ok::<(), JobWorkerError>(())
-                    })
-                    .await
-                    .map_err(|e| {
-                        JobWorkerError::OtherError(format!("Error starting main span: {e}"))
-                    })?;
             }
 
             Ok(LLMTracingContext {
                 parent_context,
                 metadata: metadata.clone(),
                 api_type,
+                main_span_attributes: Some(span_attributes),
             })
         }
     }
@@ -168,14 +158,75 @@ pub trait LLMTracingHelper: Send + Sync {
     where
         T: LLMResponseData + 'static,
     {
+        let otel_client = self.get_otel_client().cloned();
+        let response_output = response_data.to_trace_output();
+        let usage = response_data.extract_usage();
+        let content = response_data.extract_content();
+
         async move {
-            // Execute response tracing
+            // Create and execute main span containing all LLM operation details
+            if let Some(client) = otel_client {
+                if let Some(ref main_span_attributes) = context.main_span_attributes {
+                    // Add response output to main span attributes (only one field)
+                    let mut updated_attributes = main_span_attributes.clone();
+                    
+                    // Create assistant message in the same format as input messages
+                    // Input uses: [{"role": "user", "content": "..."}, ...]
+                    // Output should use: [{"role": "assistant", "content": "..."}]
+                    
+                    let assistant_content = if let serde_json::Value::String(content) = &response_output {
+                        content.clone()
+                    } else {
+                        serde_json::to_string(&response_output).unwrap_or_default()
+                    };
+                    
+                    // Create completion message array in same format as input messages
+                    let completion_messages = serde_json::json!([{
+                        "role": "assistant",
+                        "content": assistant_content
+                    }]);
+                    
+                    // Set both output (for langfuse.observation.output) and completion messages
+                    updated_attributes.data.output = Some(completion_messages.clone());
+                    
+                    // DEBUG: Log what we're about to send
+                    tracing::info!("FINAL TRACE: data.output = {:?}", completion_messages);
+                    tracing::info!("FINAL TRACE: span attributes about to be sent = {:?}", updated_attributes.name);
+                    
+                    // Clear any interfering metadata
+                    updated_attributes.data.metadata = None;
+
+                    // Add usage information to main span if available
+                    if let Some(usage_ref) = usage.as_ref() {
+                        updated_attributes.usage = Some(usage_ref.to_usage_map());
+                    }
+
+                    // Use with_span_result_and_response_parser to preserve our response data
+                    client
+                        .with_span_result_and_response_parser(
+                            updated_attributes,
+                            context.parent_context.clone(),
+                            async move { Ok::<(), JobWorkerError>(()) },
+                            Some(|_: &()| None), // Parser that returns None to skip default output overwrite
+                        )
+                        .await
+                        .map_err(|e| {
+                            tracing::error!("Failed to create main LLM span: {}", e);
+                            JobWorkerError::OtherError(format!("Error in main LLM span: {e}"))
+                        })?;
+
+                    tracing::debug!("Main LLM span created successfully with response data");
+                } else {
+                    tracing::warn!("Main span attributes not available for tracing completion");
+                }
+            }
+
+            // Also execute separate response tracing for detailed breakdown
             self.trace_response(&context, response_data).await?;
 
             // Execute usage tracing
-            if let Some(usage) = response_data.extract_usage() {
-                let content = response_data.extract_content();
-                self.trace_usage_internal(&context, usage.as_ref(), content.as_deref())
+            if let Some(usage_ref) = usage {
+                self.trace_usage_internal(&context, usage_ref.as_ref(), content.as_deref())
                     .await?;
             }
 
@@ -189,7 +240,43 @@ pub trait LLMTracingHelper: Send + Sync {
         context: LLMTracingContext,
         error: &JobWorkerError,
     ) -> impl Future<Output = Result<(), JobWorkerError>> + Send {
+        let otel_client = self.get_otel_client().cloned();
+        let error_message = error.to_string();
+
         async move {
+            // Create main span with error information
+            if let Some(client) = otel_client {
+                if let Some(ref main_span_attributes) = context.main_span_attributes {
+                    // Add error information to main span attributes (only one field)
+                    let mut updated_attributes = main_span_attributes.clone();
+                    let error_output = serde_json::json!({
+                        "error": error_message,
+                        "error_type": "llm_api_error"
+                    });
+                    updated_attributes.data.output = Some(error_output); // Use only OpenInference standard field
+                    updated_attributes.level = Some("ERROR".to_string());
+
+                    // Use with_span_result_and_response_parser to preserve our error data
+                    client
+                        .with_span_result_and_response_parser(
+                            updated_attributes,
+                            context.parent_context.clone(),
+                            async move { Ok::<(), JobWorkerError>(()) },
+                            Some(|_: &()| None), // Parser that returns None to skip default output overwrite
+                        )
+                        .await
+                        .map_err(|e| {
+                            tracing::error!("Failed to create main LLM error span: {}", e);
+                            JobWorkerError::OtherError(format!("Error in main LLM error span: {e}"))
+                        })?;
+
+                    tracing::debug!("Main LLM error span created successfully");
+                } else {
+                    tracing::warn!("Main span attributes not available for error tracing");
+                }
+            }
+
+            // Also execute separate error tracing
             self.trace_error(&context, error).await?;
             Ok(())
         }
@@ -242,7 +329,7 @@ pub trait LLMTracingHelper: Send + Sync {
                     })
                 })
                 .collect::<Vec<_>>());
-            tracing::info!(
+            tracing::debug!(
                 "TODO: Should Be Adding tools to span: {}",
                 tools_json.to_string()
             );
@@ -275,7 +362,7 @@ pub trait LLMTracingHelper: Send + Sync {
         let otel_client = self.get_otel_client().cloned();
         let provider = self.get_provider_name().to_string();
         let api_type = context.api_type.to_string().to_string();
-        let response_output = response_data.to_trace_output();
+        let _response_output = response_data.to_trace_output(); // Not used in trace_response
         let parent_context = context.parent_context.clone();
 
         async move {
@@ -283,8 +370,10 @@ pub trait LLMTracingHelper: Send + Sync {
                 let mut response_span_builder =
                     OtelSpanBuilder::new(format!("{provider}.{api_type}.response"))
                         .span_type(OtelSpanType::Event)
-                        .output(response_output)
-                        .level("INFO");
+                        .output(serde_json::json!("DUMMY_RESPONSE_EVENT_OUTPUT_TEST")) // TESTING: Dummy data
+                        .trace_output(serde_json::json!("DUMMY_RESPONSE_TRACE_OUTPUT_TEST")) // TESTING: Also add to trace_output
+                        .level("INFO")
+                        .openinference_span_kind("LLM");
 
                 let mut metadata = HashMap::new();
                 metadata.insert(
