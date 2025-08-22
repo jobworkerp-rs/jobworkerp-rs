@@ -1,6 +1,7 @@
 use super::super::tracing::ollama_helper::OllamaTracingHelper;
 use super::conversion::ToolConverter;
 use crate::llm::tracing::LLMTracingHelper;
+use crate::llm::generic_tracing_helper::GenericLLMTracingHelper;
 use crate::llm::ThinkTagHelper;
 use anyhow::{anyhow, Result};
 use app::app::function::{FunctionApp, FunctionAppImpl};
@@ -328,29 +329,33 @@ impl OllamaChatService {
                 .map_err(|e| JobWorkerError::OtherError(format!("Chat API error: {e}")))
         };
 
-        // Execute chat API call and get both result and context
-        let (res, current_context) = if let Some(otel_client) = self.get_otel_client() {
-            // Create span attributes for chat API call
-            let span_attributes = self
-                .create_chat_span_from_request(
-                    &model,
-                    messages.clone(),
-                    &options,
-                    &tools,
-                    &metadata,
-                )
-                .await;
+        // Execute chat API call using generic_tracing_helper approach
+        let (res, current_context) = if GenericLLMTracingHelper::get_otel_client(&*self).is_some() {
+            // Create span attributes using generic helper
+            let messages_locked = messages.lock().await;
+            let input_messages = Self::convert_messages_to_input_ollama(&messages_locked);
+            let model_parameters = Self::convert_model_options_to_parameters_ollama(&options);
+
+            let span_attributes = self.create_chat_completion_span_attributes(
+                &model,
+                input_messages,
+                Some(&model_parameters),
+                &tools,
+                &metadata,
+            );
 
             // Use provided parent_context or current context as parent for the span
             let parent_ctx = parent_context.unwrap_or_else(opentelemetry::Context::current);
 
-            // Execute chat API call with tracing span
-            let result = otel_client
-                .with_span_result(span_attributes, Some(parent_ctx.clone()), chat_api_action)
-                .await?;
-            let context = parent_ctx;
-
-            (result, context)
+            // Execute chat API call with generic tracing
+            GenericLLMTracingHelper::with_chat_response_tracing(
+                &*self,
+                &metadata,
+                Some(parent_ctx),
+                span_attributes,
+                chat_api_action,
+            )
+            .await?
         } else {
             let result = chat_api_action.await?;
             // Use provided parent_context or current context
@@ -371,7 +376,7 @@ impl OllamaChatService {
 
             // Process tool calls and get updated context for each tool call
             let mut updated_context = current_context;
-            if self.get_otel_client().is_some() {
+            if GenericLLMTracingHelper::get_otel_client(&*self).is_some() {
                 // Process tool calls with tracing using current context as parent
                 updated_context = self
                     .process_tool_calls_with_tracing(
@@ -414,7 +419,7 @@ impl OllamaChatService {
         parent_context: Option<opentelemetry::Context>,
         metadata: Arc<HashMap<String, String>>,
     ) -> Result<opentelemetry::Context> {
-        if parent_context.is_none() && self.get_otel_client().is_some() {
+        if parent_context.is_none() && GenericLLMTracingHelper::get_otel_client(&*self).is_some() {
             tracing::warn!("No parent context provided for tool calls, using current context");
         }
         let mut current_context = parent_context.unwrap_or_else(opentelemetry::Context::current);

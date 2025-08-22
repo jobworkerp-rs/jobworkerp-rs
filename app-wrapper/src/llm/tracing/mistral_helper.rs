@@ -61,7 +61,14 @@ impl ChatResponse for SerializableChatResponse {
             "content": self.content,
             "tool_calls_count": self.tool_calls_count,
             "finish_reason": self.finish_reason,
-            "usage_info": self.usage_info
+            "usage_info": self.usage_info,
+            "usage": {
+                "prompt_tokens": self.usage.prompt_tokens,
+                "completion_tokens": self.usage.completion_tokens,
+                "total_tokens": self.usage.total_tokens
+            },
+            "model": self.model,
+            "response_id": self.response_id
         })
     }
 }
@@ -438,11 +445,52 @@ impl LLMUsageData for mistralrs::Usage {
 /// MistralRS response data using actual response content
 impl LLMResponseData for mistralrs::ChatCompletionResponse {
     fn to_trace_output(&self) -> serde_json::Value {
-        self.choices
-            .first()
-            .and_then(|choice| choice.message.content.as_ref())
-            .map(|content| serde_json::json!(content))
-            .unwrap_or_else(|| serde_json::json!(""))
+        // Follow Ollama's simple approach - just return the content as string
+        // This works for Ollama, so it should work for MistralRS too
+        
+        let first_choice = self.choices.first();
+        if first_choice.is_none() {
+            return serde_json::json!("");
+        }
+
+        // Check if there are tool calls
+        let has_tool_calls = first_choice
+            .and_then(|choice| choice.message.tool_calls.as_ref())
+            .map(|calls| !calls.is_empty())
+            .unwrap_or(false);
+            
+        if has_tool_calls {
+            // For tool calls, include complete information as JSON
+            let tool_calls = first_choice
+                .and_then(|choice| choice.message.tool_calls.as_ref())
+                .map(|calls| {
+                    calls.iter().map(|tc| {
+                        serde_json::json!({
+                            "id": tc.id,
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments
+                            }
+                        })
+                    }).collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+                
+            // Return tool calls as JSON structure
+            serde_json::json!({
+                "role": "assistant",
+                "tool_calls": tool_calls,
+                "finish_reason": first_choice.map(|c| &c.finish_reason).unwrap_or(&"unknown".to_string())
+            })
+        } else {
+            // For regular content, follow Ollama's approach - just return the content string
+            let content = first_choice
+                .and_then(|choice| choice.message.content.as_ref())
+                .cloned()
+                .unwrap_or_else(|| "".to_string());
+                
+            serde_json::json!(content)
+        }
     }
 
     fn extract_usage(&self) -> Option<Box<dyn LLMUsageData>> {

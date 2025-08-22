@@ -46,7 +46,7 @@ impl MistralRSService {
         })
     }
 
-    /// Main entry point using unified LLMTracingHelper
+    /// Main entry point using generic_tracing_helper approach
     pub async fn request_chat(
         &self,
         args: LlmChatArgs,
@@ -64,51 +64,91 @@ impl MistralRSService {
             vec![]
         };
 
-        // 2. Prepare actual data for accurate tracing
-        let tracing_data = crate::llm::tracing::mistral_helper::MistralTracingData {
-            args: args.clone(),
-            resolved_tools: resolved_tools.clone(),
-            model_name: self.core_service.model_name().to_string(),
+        // 2. Convert messages to MistralRSMessage for processing
+        let messages: Vec<_> = args
+            .messages
+            .iter()
+            .map(|m| {
+                let role = TextMessageRole::try_from(m.role).unwrap_or(TextMessageRole::User);
+                let content = m
+                    .content
+                    .as_ref()
+                    .and_then(|c| c.content.as_ref())
+                    .map(|content| match content {
+                        jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::message_content::Content::Text(text) => text.clone(),
+                        _ => String::new(),
+                    })
+                    .unwrap_or_default();
+
+                crate::llm::mistral::MistralRSMessage {
+                    role,
+                    content,
+                    tool_call_id: None,
+                    tool_calls: None,
+                }
+            })
+            .collect();
+
+        // 3. Create span attributes using generic helper
+        let model_options = crate::llm::tracing::mistral_helper::MistralModelOptions {
+            temperature: args.options.as_ref().and_then(|o| o.temperature),
+            max_tokens: args.options.as_ref().and_then(|o| o.max_tokens.map(|t| t as u32)),
+            top_p: args.options.as_ref().and_then(|o| o.top_p),
         };
 
-        // 3. Start unified LLM tracing
-        let tracing_context = self
-            .start_llm_tracing(
-                crate::llm::tracing::LLMApiType::Chat,
-                &tracing_data,
-                &metadata,
-                Some(cx.clone()),
-            )
-            .await?;
-
-        // 4. Execute tool calling with context preservation
-        let result = match self
-            .execute_chat_with_context_preservation(
-                args,
-                Arc::new(resolved_tools),
-                Some(cx.clone()), // Preserve context inheritance
-                metadata.clone(),
-            )
-            .await
-        {
-            Ok(mistral_response) => {
-                // 5. Complete unified tracing
-                let _ = self
-                    .finish_llm_tracing(tracing_context, &mistral_response)
-                    .await;
-                self.convert_mistral_response_to_final_result(&mistral_response)
+        let model_parameters = {
+            let mut parameters = HashMap::new();
+            if let Some(temp) = model_options.temperature {
+                parameters.insert("temperature".to_string(), serde_json::json!(temp));
             }
-            Err(e) => {
-                // Unified tracing for error cases
-                let job_error = jobworkerp_base::error::JobWorkerError::OtherError(e.to_string());
-                let _ = self
-                    .finish_llm_tracing_with_error(tracing_context, &job_error)
-                    .await;
-                return Err(e);
+            if let Some(max_tokens) = model_options.max_tokens {
+                parameters.insert("max_tokens".to_string(), serde_json::json!(max_tokens));
+            }
+            if let Some(top_p) = model_options.top_p {
+                parameters.insert("top_p".to_string(), serde_json::json!(top_p));
+            }
+            parameters
+        };
+        let span_attributes = self.create_chat_completion_span_attributes(
+            &self.core_service.model_name(),
+            self.convert_messages_to_input(&messages),
+            Some(&model_parameters),
+            &resolved_tools,
+            &metadata,
+        );
+
+        // 4. Execute chat with tracing using generic helper
+        let chat_action = {
+            let args_clone = args.clone();
+            let resolved_tools_arc = Arc::new(resolved_tools);
+            let cx_clone = cx.clone();
+            let metadata_clone = metadata.clone();
+            let service = self.clone();
+            
+            async move {
+                service
+                    .execute_chat_with_context_preservation(
+                        args_clone,
+                        resolved_tools_arc,
+                        Some(cx_clone),
+                        metadata_clone,
+                    )
+                    .await
+                    .map_err(|e| jobworkerp_base::error::JobWorkerError::OtherError(e.to_string()))
             }
         };
 
-        Ok(result)
+        let (mistral_response, _context) = GenericLLMTracingHelper::with_chat_response_tracing(
+            self,
+            &metadata,
+            Some(cx),
+            span_attributes,
+            chat_action,
+        )
+        .await?;
+
+        // 5. Convert response to final result
+        Ok(self.convert_mistral_response_to_final_result(&mistral_response))
     }
 
     /// Streaming chat processing - Strategy 1 for tool calling
@@ -806,3 +846,4 @@ impl MistralRSService {
         Ok((message, updated_context))
     }
 }
+
