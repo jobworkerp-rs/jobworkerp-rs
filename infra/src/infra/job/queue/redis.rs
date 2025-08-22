@@ -380,7 +380,7 @@ impl JobQueueCancellationRepository for RedisJobQueueRepositoryImpl {
 
         pubsub.subscribe(JOB_CANCELLATION_CHANNEL).await?;
 
-        tracing::info!(
+        tracing::debug!(
             "Started job cancellation subscription with {} ms timeout on channel: {}",
             pubsub_timeout.as_millis(),
             JOB_CANCELLATION_CHANNEL

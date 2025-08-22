@@ -41,7 +41,66 @@ impl GenericToolInfo for ToolInfo {
 
 impl ChatResponse for ChatMessageResponse {
     fn to_json(&self) -> serde_json::Value {
-        serde_json::json!(self.message.content)
+        // Follow MistralRS approach - include comprehensive response information
+        let has_tool_calls = !self.message.tool_calls.is_empty();
+        
+        if has_tool_calls {
+            // For tool calls, include complete information as JSON
+            let tool_calls = self.message.tool_calls
+                .iter()
+                .map(|tc| {
+                    serde_json::json!({
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+                
+            // Return tool calls as JSON structure with available fields
+            let mut response = serde_json::json!({
+                "role": "assistant",
+                "tool_calls": tool_calls,
+                "content": self.message.content,
+                "model": self.model,
+                "created_at": self.created_at,
+                "done": self.done
+            });
+            
+            // Add final_data information if available
+            if let Some(ref final_data) = self.final_data {
+                response["total_duration"] = serde_json::json!(final_data.total_duration);
+                response["load_duration"] = serde_json::json!(final_data.load_duration);
+                response["prompt_eval_count"] = serde_json::json!(final_data.prompt_eval_count);
+                response["prompt_eval_duration"] = serde_json::json!(final_data.prompt_eval_duration);
+                response["eval_count"] = serde_json::json!(final_data.eval_count);
+                response["eval_duration"] = serde_json::json!(final_data.eval_duration);
+            }
+            
+            response
+        } else {
+            // For regular content, include full response information with available fields
+            let mut response = serde_json::json!({
+                "role": "assistant",
+                "content": self.message.content,
+                "model": self.model,
+                "created_at": self.created_at,
+                "done": self.done
+            });
+            
+            // Add final_data information if available
+            if let Some(ref final_data) = self.final_data {
+                response["total_duration"] = serde_json::json!(final_data.total_duration);
+                response["load_duration"] = serde_json::json!(final_data.load_duration);
+                response["prompt_eval_count"] = serde_json::json!(final_data.prompt_eval_count);
+                response["prompt_eval_duration"] = serde_json::json!(final_data.prompt_eval_duration);
+                response["eval_count"] = serde_json::json!(final_data.eval_count);
+                response["eval_duration"] = serde_json::json!(final_data.eval_duration);
+            }
+            
+            response
+        }
     }
 }
 
