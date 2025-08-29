@@ -447,7 +447,7 @@ impl LLMResponseData for mistralrs::ChatCompletionResponse {
     fn to_trace_output(&self) -> serde_json::Value {
         // Follow Ollama's simple approach - just return the content as string
         // This works for Ollama, so it should work for MistralRS too
-        
+
         let first_choice = self.choices.first();
         if first_choice.is_none() {
             return serde_json::json!("");
@@ -458,24 +458,27 @@ impl LLMResponseData for mistralrs::ChatCompletionResponse {
             .and_then(|choice| choice.message.tool_calls.as_ref())
             .map(|calls| !calls.is_empty())
             .unwrap_or(false);
-            
+
         if has_tool_calls {
             // For tool calls, include complete information as JSON
             let tool_calls = first_choice
                 .and_then(|choice| choice.message.tool_calls.as_ref())
                 .map(|calls| {
-                    calls.iter().map(|tc| {
-                        serde_json::json!({
-                            "id": tc.id,
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments
-                            }
+                    calls
+                        .iter()
+                        .map(|tc| {
+                            serde_json::json!({
+                                "id": tc.id,
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments
+                                }
+                            })
                         })
-                    }).collect::<Vec<_>>()
+                        .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-                
+
             // Return tool calls as JSON structure
             serde_json::json!({
                 "role": "assistant",
@@ -488,7 +491,7 @@ impl LLMResponseData for mistralrs::ChatCompletionResponse {
                 .and_then(|choice| choice.message.content.as_ref())
                 .cloned()
                 .unwrap_or_else(|| "".to_string());
-                
+
             serde_json::json!(content)
         }
     }

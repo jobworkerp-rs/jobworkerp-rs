@@ -1,6 +1,5 @@
 use super::super::tracing::ollama_helper::OllamaTracingHelper;
 use super::conversion::ToolConverter;
-use crate::llm::tracing::LLMTracingHelper;
 use crate::llm::generic_tracing_helper::GenericLLMTracingHelper;
 use crate::llm::ThinkTagHelper;
 use anyhow::{anyhow, Result};
@@ -13,7 +12,6 @@ use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::OllamaRunnerSettings;
 use jobworkerp_runner::jobworkerp::runner::llm::{self, LlmChatArgs, LlmChatResult};
 use net_utils::trace::impls::GenericOtelClient;
-use net_utils::trace::otel_span::GenAIOtelClient;
 use ollama_rs::generation::chat::ChatMessageResponse;
 use ollama_rs::generation::parameters::{FormatType, JsonStructure};
 use ollama_rs::generation::tools::ToolInfo;
@@ -299,12 +297,14 @@ impl OllamaChatService {
         let mut req = ChatMessageRequest::new(model.clone(), messages.lock().await.clone());
         req = req.options(options.clone());
 
-        if let Some(schema_str) = json_schema {
+        let mut schema_applied = false;
+        if let Some(ref schema_str) = json_schema {
             match serde_json::from_str(&schema_str) {
                 Ok(schema) => {
                     let format =
                         FormatType::StructuredJson(Box::new(JsonStructure::new_for_schema(schema)));
                     req = req.format(format);
+                    schema_applied = true;
                     tracing::debug!("Applied JSON schema format: {}", schema_str);
                 }
                 Err(e) => {
@@ -321,12 +321,62 @@ impl OllamaChatService {
         }
 
         let ollama_clone = self.ollama.clone();
+        let json_schema_clone = json_schema.clone();
+        let model_clone = model.clone();
+        let tools_clone = tools.clone();
+
         // closure of Execute chat API call
         let chat_api_action = async move {
-            ollama_clone
-                .send_chat_messages(req)
-                .await
-                .map_err(|e| JobWorkerError::OtherError(format!("Chat API error: {e}")))
+            tracing::debug!(
+                "Sending Ollama chat request: model={}, tools_count={}, schema_applied={}",
+                model_clone,
+                tools_clone.len(),
+                schema_applied
+            );
+            let result = ollama_clone.send_chat_messages(req).await.map_err(|e| {
+                // Detailed error analysis for Reqwest errors
+                let error_details = if e.to_string().contains("Connection refused") {
+                    "Ollama server connection refused. Check if Ollama is running and accessible."
+                } else if e.to_string().contains("timeout") {
+                    "Ollama request timeout. Consider increasing timeout or checking server load."
+                } else if e.to_string().contains("invalid JSON schema") {
+                    "Invalid JSON schema format. Check if the schema is compatible with Ollama."
+                } else {
+                    "Unknown Ollama API error"
+                };
+
+                // Add context information to error
+                let schema_info = if let Some(ref schema_str) = json_schema_clone {
+                    format!("schema_size: {}", schema_str.len())
+                } else {
+                    "no_schema".to_string()
+                };
+
+                let context_info = format!(
+                    "model: {}, tools: {}, {}",
+                    model_clone,
+                    tools_clone.len(),
+                    schema_info
+                );
+
+                tracing::error!(
+                    "Ollama chat API error - {}: {:?} [{}]",
+                    error_details,
+                    e,
+                    context_info
+                );
+                JobWorkerError::OtherError(format!(
+                    "Chat API error: {} ({:?}) [{}]",
+                    error_details, e, context_info
+                ))
+            });
+
+            match &result {
+                Ok(_) => tracing::debug!("Ollama chat request successful"),
+                Err(e) => tracing::error!("Ollama chat request failed: {:?}", e),
+            }
+
+            result
         };
 
         // Execute chat API call using generic_tracing_helper approach
