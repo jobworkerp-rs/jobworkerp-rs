@@ -169,30 +169,34 @@ pub trait LLMTracingHelper: Send + Sync {
                 if let Some(ref main_span_attributes) = context.main_span_attributes {
                     // Add response output to main span attributes (only one field)
                     let mut updated_attributes = main_span_attributes.clone();
-                    
+
                     // Create assistant message in the same format as input messages
                     // Input uses: [{"role": "user", "content": "..."}, ...]
                     // Output should use: [{"role": "assistant", "content": "..."}]
-                    
-                    let assistant_content = if let serde_json::Value::String(content) = &response_output {
-                        content.clone()
-                    } else {
-                        serde_json::to_string(&response_output).unwrap_or_default()
-                    };
-                    
+
+                    let assistant_content =
+                        if let serde_json::Value::String(content) = &response_output {
+                            content.clone()
+                        } else {
+                            serde_json::to_string(&response_output).unwrap_or_default()
+                        };
+
                     // Create completion message array in same format as input messages
                     let completion_messages = serde_json::json!([{
                         "role": "assistant",
                         "content": assistant_content
                     }]);
-                    
+
                     // Set both output (for langfuse.observation.output) and completion messages
                     updated_attributes.data.output = Some(completion_messages.clone());
-                    
+
                     // DEBUG: Log what we're about to send
                     tracing::info!("FINAL TRACE: data.output = {:?}", completion_messages);
-                    tracing::info!("FINAL TRACE: span attributes about to be sent = {:?}", updated_attributes.name);
-                    
+                    tracing::info!(
+                        "FINAL TRACE: span attributes about to be sent = {:?}",
+                        updated_attributes.name
+                    );
+
                     // Clear any interfering metadata
                     updated_attributes.data.metadata = None;
 

@@ -96,16 +96,19 @@ pub trait GenericLLMTracingHelper {
         F: std::future::Future<Output = Result<R, JobWorkerError>> + Send + 'static,
         R: ChatResponse + Send + 'static + serde::Serialize,
     {
-        let session_id = metadata.get("session_id").cloned();
-        let user_id = metadata.get("user_id").cloned();
+        let _session_id = metadata.get("session_id").cloned();
+        let _user_id = metadata.get("user_id").cloned();
         let otel_client = self.get_otel_client().cloned();
-        let provider = self.get_provider_name().to_string();
+        let _provider = self.get_provider_name().to_string();
 
         async move {
             let (result, context) = if let Some(client) = &otel_client {
                 // Execute action first to get response
-                let result = action.await.map_err(|e| anyhow::anyhow!("Action failed: {}", e))?;
-                
+                let result = action.await.map_err(|e| {
+                    tracing::error!("LLM action failed: {:?}", e);
+                    anyhow::anyhow!("Action failed: {}", e)
+                })?;
+
                 // Add response output to main span attributes
                 let response_output = result.to_json();
                 span_attributes.data.output = Some(response_output);
@@ -116,10 +119,10 @@ pub trait GenericLLMTracingHelper {
                 };
 
                 let current_context = parent_context.clone();
-                
+
                 // Create a dummy action that just returns the result
                 let dummy_action = async move { Ok::<R, JobWorkerError>(result) };
-                
+
                 let final_result = client
                     .with_span_result_and_response_parser(
                         span_attributes,
