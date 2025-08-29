@@ -92,7 +92,10 @@ impl MistralRSService {
         // 3. Create span attributes using generic helper
         let model_options = crate::llm::tracing::mistral_helper::MistralModelOptions {
             temperature: args.options.as_ref().and_then(|o| o.temperature),
-            max_tokens: args.options.as_ref().and_then(|o| o.max_tokens.map(|t| t as u32)),
+            max_tokens: args
+                .options
+                .as_ref()
+                .and_then(|o| o.max_tokens.map(|t| t as u32)),
             top_p: args.options.as_ref().and_then(|o| o.top_p),
         };
 
@@ -124,7 +127,7 @@ impl MistralRSService {
             let cx_clone = cx.clone();
             let metadata_clone = metadata.clone();
             let service = self.clone();
-            
+
             async move {
                 service
                     .execute_chat_with_context_preservation(
@@ -846,4 +849,3 @@ impl MistralRSService {
         Ok((message, updated_context))
     }
 }
-
