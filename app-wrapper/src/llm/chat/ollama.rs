@@ -299,7 +299,7 @@ impl OllamaChatService {
 
         let mut schema_applied = false;
         if let Some(ref schema_str) = json_schema {
-            match serde_json::from_str(&schema_str) {
+            match serde_json::from_str(schema_str) {
                 Ok(schema) => {
                     let format =
                         FormatType::StructuredJson(Box::new(JsonStructure::new_for_schema(schema)));
@@ -366,8 +366,7 @@ impl OllamaChatService {
                     context_info
                 );
                 JobWorkerError::OtherError(format!(
-                    "Chat API error: {} ({:?}) [{}]",
-                    error_details, e, context_info
+                    "Chat API error: {error_details} ({e:?}) [{context_info}]"
                 ))
             });
 
@@ -469,7 +468,7 @@ impl OllamaChatService {
         parent_context: Option<opentelemetry::Context>,
         metadata: Arc<HashMap<String, String>>,
     ) -> Result<opentelemetry::Context> {
-        if parent_context.is_none() && GenericLLMTracingHelper::get_otel_client(&*self).is_some() {
+        if parent_context.is_none() && GenericLLMTracingHelper::get_otel_client(self).is_some() {
             tracing::warn!("No parent context provided for tool calls, using current context");
         }
         let mut current_context = parent_context.unwrap_or_else(opentelemetry::Context::current);
