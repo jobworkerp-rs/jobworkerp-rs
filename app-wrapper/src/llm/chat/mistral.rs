@@ -113,7 +113,7 @@ impl MistralRSService {
             parameters
         };
         let span_attributes = self.create_chat_completion_span_attributes(
-            &self.core_service.model_name(),
+            self.core_service.model_name(),
             self.convert_messages_to_input(&messages),
             Some(&model_parameters),
             &resolved_tools,
