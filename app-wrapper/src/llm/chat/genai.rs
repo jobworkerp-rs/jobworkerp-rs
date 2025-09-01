@@ -436,7 +436,7 @@ impl GenaiChatService {
         parent_context: Option<opentelemetry::Context>,
         metadata: Arc<HashMap<String, String>>,
     ) -> Result<opentelemetry::Context> {
-        if parent_context.is_none() && GenericLLMTracingHelper::get_otel_client(&*self).is_some() {
+        if parent_context.is_none() && GenericLLMTracingHelper::get_otel_client(self).is_some() {
             tracing::warn!("No parent context provided for tool calls, using current context");
         }
         let mut current_context = parent_context.unwrap_or_else(opentelemetry::Context::current);

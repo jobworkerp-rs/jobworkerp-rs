@@ -266,7 +266,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         use proto::jobworkerp::data::ResultStatus;
                         if result_data.status != ResultStatus::Success as i32 {
                             tracing::warn!(
-                                "enqueue_for_stream: job {} failed with status {}, returning gRPC error with trailers", 
+                                "enqueue_for_stream: job {} failed with status {}, returning gRPC error with trailers",
                                 id.value, result_data.status
                             );
 
