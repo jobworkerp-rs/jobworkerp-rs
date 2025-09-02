@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: nvcr.io/nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
-    timeout-minutes: 30
+    timeout-minutes: 50
     services:
       db:
         image: mariadb:10.9
@@ -119,27 +119,29 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --features "mysql,cuda,flash-attn" --release #cudnn,
+          args: --features "mysql,cuda,flash-attn" #cudnn,
       - name: Run test
         run: |
-          cargo build --release
-          cargo test --release -- --test-threads=1
+          cargo build
+          cargo test -- --test-threads=1
         env:
-          PLUGINS_RUNNER_DIR: "./target/release/"
+          PLUGINS_RUNNER_DIR: "./target/debug/"
           TEST_REDIS_URL: "redis://redis:6379"
           TEST_MYSQL_URL: "mysql://maria:maria@db:3306/test"
           UV_VENV_CLEAR: 1
+          RUST_BACKTRACE: 1
       - name: Run test with mysql
         run: |
           rm -f app/test_db.sqlite3*
           rm -f app-wrapper/test_db.sqlite3*
           rm -f infra/test_db.sqlite3*
           rm -f worker-app/test_db.sqlite3*
-          cargo build --features "mysql,cuda,flash-attn" --release #,cudnn
-          cargo test --features "mysql,cuda,flash-attn" --release -- --test-threads=1 #,cudnn
+          cargo build --features "mysql,cuda,flash-attn" #,cudnn
+          cargo test --features "mysql,cuda,flash-attn" -- --test-threads=1 #,cudnn
           cargo clean
         env:
-          PLUGINS_RUNNER_DIR: "./target/release/"
+          PLUGINS_RUNNER_DIR: "./target/debug/"
           TEST_REDIS_URL: "redis://redis:6379"
           TEST_MYSQL_URL: "mysql://maria:maria@db:3306/test"
           UV_VENV_CLEAR: 1
+          RUST_BACKTRACE: 1

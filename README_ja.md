@@ -420,7 +420,7 @@ $ ./target/release/jobworkerp-client job enqueue-workflow -i '/path/to/list' -w 
 
 データベーススキーマ：
 - [MySQL schema](infra/sql/mysql/002_worker.sql)
-- [SQLite schema](infra/sql/sqlite/001_schema.sql)
+- [SQLite schema](infra/sql/sqlite/002_schema.sql)
 
 (runnerテーブルには組み込み機能としての固定レコードが存在します)
 

@@ -192,7 +192,10 @@ impl RunnerApp for HybridRunnerAppImpl {
     where
         Self: Send + 'static,
     {
-        if let Some(all) = self.find_cache(&Self::find_all_list_cache_key()).await {
+        if let Some(all) = self
+            .find_cache(&Self::find_list_cache_key(limit, offset))
+            .await
+        {
             if let Some(lim) = limit {
                 let offset = offset.map(|o| *o as usize).unwrap_or(0);
                 Ok(all.into_iter().skip(offset).take(*lim as usize).collect())
@@ -242,7 +245,7 @@ impl RunnerApp for HybridRunnerAppImpl {
                 id: runner_id.value,
                 name: name.to_string(),
                 description: runner_data.runner_data.description.clone(),
-                definition: format!("./target/debug/lib{name}.so"),
+                definition: format!("./target/debug/libplugin_runner_{}.so", name.to_lowercase()),
                 r#type: RunnerType::Plugin as i32,
             })
             .await?;
