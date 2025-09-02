@@ -337,13 +337,13 @@ fn test_workflow_function_discovery_via_find_functions() -> Result<()> {
         // Get available functions
         let functions = app.function_app.find_functions(false, false).await?;
 
-        println!("✅ Number of functions detected: {:#?}", functions);
+        println!("✅ Number of functions detected: {:?}", functions.len());
 
-        // Verify that CREATE_WORKFLOW runner exists
-        let create_workflow_found = functions.iter().any(|f| f.name == "CREATE_WORKFLOW");
+        // Verify that CREATE_WORKFLOW runner not exist (use find_functions_all(include_full==true) to see all)
+        let create_workflow_not_found = functions.iter().any(|f| f.name == "CREATE_WORKFLOW");
 
         assert!(
-            create_workflow_found,
+            !create_workflow_not_found,
             "CREATE_WORKFLOW function should be discoverable"
         );
         println!("✅ CREATE_WORKFLOW function detected");

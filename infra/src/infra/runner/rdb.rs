@@ -249,7 +249,7 @@ pub trait RunnerRepository:
                 `definition`,
                 `type`
                 ) VALUES (?,?,?,?,?)
-                 ON DUPLICATE KEY UPDATE 
+                 ON DUPLICATE KEY UPDATE
                  `name` = VALUES(`name`),
                  `description` = VALUES(`description`),
                  `definition` = VALUES(`definition`),
