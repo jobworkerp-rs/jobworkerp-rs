@@ -491,6 +491,78 @@ pub trait FunctionApp:
             arguments
         }
     }
+    /// Find a single function by runner ID
+    async fn find_function_by_runner_id(
+        &self,
+        runner_id: &proto::jobworkerp::data::RunnerId,
+    ) -> Result<Option<FunctionSpecs>>
+    where
+        Self: Send + 'static,
+    {
+        match self.runner_app().find_runner(runner_id).await? {
+            Some(runner) => Ok(Some(Self::convert_runner_to_function_specs(runner))),
+            None => Ok(None),
+        }
+    }
+
+    /// Find a single function by worker ID
+    async fn find_function_by_worker_id(
+        &self,
+        worker_id: &proto::jobworkerp::data::WorkerId,
+    ) -> Result<Option<FunctionSpecs>>
+    where
+        Self: Send + 'static,
+    {
+        match self.worker_app().find(worker_id).await? {
+            Some(proto::jobworkerp::data::Worker {
+                id: Some(wid),
+                data: Some(data),
+            }) if data.runner_id.is_some() => {
+                let runner_id = data.runner_id.unwrap();
+                if let Some(runner) = self.runner_app().find_runner(&runner_id).await? {
+                    let specs = Self::convert_worker_to_function_specs(wid, data, runner)?;
+                    Ok(Some(specs))
+                } else {
+                    Ok(None)
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Find a single function by runner name
+    async fn find_function_by_runner_name(&self, runner_name: &str) -> Result<Option<FunctionSpecs>>
+    where
+        Self: Send + 'static,
+    {
+        match self.runner_app().find_runner_by_name(runner_name).await? {
+            Some(runner) => Ok(Some(Self::convert_runner_to_function_specs(runner))),
+            None => Ok(None),
+        }
+    }
+
+    /// Find a single function by worker name
+    async fn find_function_by_worker_name(&self, worker_name: &str) -> Result<Option<FunctionSpecs>>
+    where
+        Self: Send + 'static,
+    {
+        match self.worker_app().find_by_name(worker_name).await? {
+            Some(proto::jobworkerp::data::Worker {
+                id: Some(wid),
+                data: Some(data),
+            }) if data.runner_id.is_some() => {
+                let runner_id = data.runner_id.unwrap();
+                if let Some(runner) = self.runner_app().find_runner(&runner_id).await? {
+                    let specs = Self::convert_worker_to_function_specs(wid, data, runner)?;
+                    Ok(Some(specs))
+                } else {
+                    Ok(None)
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
     // for LLM function calling (LLM_CHAT runner)
     async fn call_function_for_llm(
         &self,
@@ -653,6 +725,7 @@ impl FunctionCallHelper for FunctionAppImpl {
         30 * 60 // 30 minutes
     }
 }
+
 impl FunctionApp for FunctionAppImpl {}
 
 pub trait UseFunctionApp {

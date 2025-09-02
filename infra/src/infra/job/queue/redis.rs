@@ -358,7 +358,7 @@ impl JobQueueCancellationRepository for RedisJobQueueRepositoryImpl {
 
     /// Subscribe to job cancellation notifications with timeout and cleanup support
     ///
-    /// **Leak prevention**: Job timeout + margin for automatic disconnection  
+    /// **Leak prevention**: Job timeout + margin for automatic disconnection
     /// **Simple design**: No complex control needed, leverages redis-rs standard functionality
     async fn subscribe_job_cancellation_with_timeout(
         &self,
@@ -380,7 +380,7 @@ impl JobQueueCancellationRepository for RedisJobQueueRepositoryImpl {
 
         pubsub.subscribe(JOB_CANCELLATION_CHANNEL).await?;
 
-        tracing::info!(
+        tracing::debug!(
             "Started job cancellation subscription with {} ms timeout on channel: {}",
             pubsub_timeout.as_millis(),
             JOB_CANCELLATION_CHANNEL

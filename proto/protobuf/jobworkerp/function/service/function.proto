@@ -3,6 +3,8 @@ syntax = "proto3";
 package jobworkerp.function.service;
 
 import "jobworkerp/data/common.proto";
+import "jobworkerp/data/runner.proto";
+import "jobworkerp/data/worker.proto";
 import "jobworkerp/function/data/function.proto";
 
 message FindFunctionRequest {
@@ -13,6 +15,30 @@ message FindFunctionRequest {
 message FindFunctionSetRequest {
   // FunctionSet name
   string name = 1;
+}
+
+// Function search request by ID
+message FindFunctionByIdRequest {
+  // Target ID to search for (specify either runner ID or worker ID)
+  oneof id {
+    jobworkerp.data.RunnerId runner_id = 1;
+    jobworkerp.data.WorkerId worker_id = 2;
+  }
+}
+
+// Function search request by name
+message FindFunctionByNameRequest {
+  // Target name to search for (specify either runner name or worker name)
+  oneof name {
+    string runner_name = 1;
+    string worker_name = 2;
+  }
+}
+
+// Function search response (for consistency with existing services)
+message OptionalFunctionSpecsResponse {
+  // Search result (None if not found)
+  optional jobworkerp.function.data.FunctionSpecs data = 1;
 }
 // runner parameters to create as a worker
 message RunnerParameters {
@@ -48,4 +74,10 @@ service FunctionService {
       returns (stream jobworkerp.function.data.FunctionSpecs);
   rpc Call(FunctionCallRequest)
       returns (stream jobworkerp.function.data.FunctionResult);
+  
+  // Function search by function ID
+  rpc Find(FindFunctionByIdRequest) returns (OptionalFunctionSpecsResponse);
+  
+  // Function search by function name
+  rpc FindByName(FindFunctionByNameRequest) returns (OptionalFunctionSpecsResponse);
 }
