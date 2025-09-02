@@ -48,12 +48,12 @@ pub trait CreateWorkflowRunnerSpec {
     }
 
     fn settings_schema(&self) -> String {
-        // XXX WORKFLOWの設定: WorkerOptions (ただしrunner_settingsではない)
+        // XXX WORKFLOW settings: WorkerOptions (not runner_settings though)
         schema_to_json_string!(WorkerOptions, "settings_schema")
     }
 
     fn arguments_schema(&self) -> String {
-        // XXX WORKFLOWのJSONスキーマ
+        // XXX WORKFLOW JSON schema
         include_str!("../../schema/workflow.json").to_string()
     }
 

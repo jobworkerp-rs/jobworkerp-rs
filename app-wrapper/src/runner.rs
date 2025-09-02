@@ -130,11 +130,13 @@ impl RunnerFactory {
                     }
                 }
             }
-            Some(RunnerType::CreateWorkflow) => {
-                CreateWorkflowRunnerImpl::new(self.app_module.clone())
-                    .ok()
-                    .map(|runner| Box::new(runner) as Box<dyn CancellableRunner + Send + Sync>)
-            }
+            Some(RunnerType::CreateWorkflow) => Some(Box::new(
+                CreateWorkflowRunnerImpl::new_with_cancel_monitoring(
+                    self.app_module.clone(),
+                    create_cancel_helper(),
+                ),
+            )
+                as Box<dyn CancellableRunner + Send + Sync>),
             Some(RunnerType::LlmCompletion) => Some(Box::new(
                 LLMCompletionRunnerImpl::new_with_cancel_monitoring(
                     self.app_module.clone(),
