@@ -102,6 +102,12 @@ pub trait MistralModelLoader {
                     builder = builder.with_logging();
                 }
 
+                // Setup paged attention if enabled (same logic as TextModel)
+                if gguf_model.with_paged_attn {
+                    builder = builder
+                        .with_paged_attn(|| PagedAttentionMetaBuilder::default().build())?;
+                }
+
                 // Set auto device mapping if configured
                 if let Some(adm) = &mistral_settings.auto_device_map {
                     let auto_map_params = AutoDeviceMapParams::Text {

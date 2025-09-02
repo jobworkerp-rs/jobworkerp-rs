@@ -72,6 +72,7 @@ message LLMRunnerSettings {
       optional string tok_model_id = 3;  // tokenizer model ID
       bool with_logging = 4;             // logging or not
       optional string chat_template = 5; // chat template
+      bool with_paged_attn = 6;          // paged attention or not
     }
 
     // main body
