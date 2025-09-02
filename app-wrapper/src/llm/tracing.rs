@@ -133,7 +133,7 @@ pub trait LLMTracingHelper: Send + Sync {
 
             // Store span attributes for later use in finish_llm_tracing
             if let Some(_client) = self.get_otel_client() {
-                let span_name = format!(
+                let _span_name = format!(
                     "{}.{}.completions",
                     self.get_provider_name(),
                     api_type.to_string()

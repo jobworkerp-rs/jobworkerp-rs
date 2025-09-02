@@ -7,7 +7,8 @@ use crate::proto::jobworkerp::function::data::FunctionResult;
 use crate::proto::jobworkerp::function::data::FunctionSpecs;
 use crate::proto::jobworkerp::function::service::function_service_server::FunctionService;
 use crate::proto::jobworkerp::function::service::{
-    FindFunctionRequest, FindFunctionSetRequest, FunctionCallRequest,
+    FindFunctionByIdRequest, FindFunctionByNameRequest, FindFunctionRequest,
+    FindFunctionSetRequest, FunctionCallRequest, OptionalFunctionSpecsResponse,
 };
 use crate::service::error_handle::handle_error;
 use app::app::function::{FunctionApp, FunctionAppImpl};
@@ -19,7 +20,9 @@ use tonic::Response;
 
 pub trait FunctionGrpc {
     fn function_app(&self) -> &Arc<FunctionAppImpl>;
+}
 
+pub trait FunctionRequestValidator {
     #[allow(clippy::result_large_err)]
     fn validate_function_call_request(
         &self,
@@ -32,11 +35,63 @@ pub trait FunctionGrpc {
 
         Ok(())
     }
+
+    #[allow(clippy::result_large_err)]
+    fn validate_find_by_id_request(
+        &self,
+        req: &FindFunctionByIdRequest,
+    ) -> Result<(), tonic::Status> {
+        match &req.id {
+            Some(crate::proto::jobworkerp::function::service::find_function_by_id_request::Id::RunnerId(runner_id)) => {
+                if runner_id.value <= 0 {
+                    return Err(tonic::Status::invalid_argument("id must be greater than 0"));
+                }
+                Ok(())
+            }
+            Some(crate::proto::jobworkerp::function::service::find_function_by_id_request::Id::WorkerId(worker_id)) => {
+                if worker_id.value <= 0 {
+                    return Err(tonic::Status::invalid_argument("id must be greater than 0"));
+                }
+                Ok(())
+            }
+            None => Err(tonic::Status::invalid_argument("id must be specified"))
+        }
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn validate_find_by_name_request(
+        &self,
+        req: &FindFunctionByNameRequest,
+    ) -> Result<(), tonic::Status> {
+        match &req.name {
+            Some(crate::proto::jobworkerp::function::service::find_function_by_name_request::Name::RunnerName(runner_name)) => {
+                if runner_name.is_empty() {
+                    return Err(tonic::Status::invalid_argument("name cannot be empty"));
+                }
+                if runner_name.len() > 128 {
+                    return Err(tonic::Status::invalid_argument("name too long (max 128 characters)"));
+                }
+                Ok(())
+            }
+            Some(crate::proto::jobworkerp::function::service::find_function_by_name_request::Name::WorkerName(worker_name)) => {
+                if worker_name.is_empty() {
+                    return Err(tonic::Status::invalid_argument("name cannot be empty"));
+                }
+                if worker_name.len() > 128 {
+                    return Err(tonic::Status::invalid_argument("name too long (max 128 characters)"));
+                }
+                Ok(())
+            }
+            None => Err(tonic::Status::invalid_argument("name must be specified"))
+        }
+    }
 }
 const DEFAULT_TIMEOUT_SEC: u32 = 300; // Default timeout for function calls in seconds
 
 #[tonic::async_trait]
-impl<T: FunctionGrpc + Tracing + Send + Debug + Sync + 'static> FunctionService for T {
+impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync + 'static>
+    FunctionService for T
+{
     type FindListStream = BoxStream<'static, Result<FunctionSpecs, tonic::Status>>;
 
     #[tracing::instrument(level = "info", skip(self, request), fields(method = "find_list"))]
@@ -116,13 +171,13 @@ impl<T: FunctionGrpc + Tracing + Send + Debug + Sync + 'static> FunctionService 
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid args_json: {e}")))?;
         let args_json = match args_json {
             serde_json::Value::String(json_str) => {
-                // JSON文字列として再パース
+                // Re-parse as JSON string
                 match serde_json::from_str::<serde_json::Value>(&json_str) {
                     Ok(parsed) => parsed,
-                    Err(_) => serde_json::Value::String(json_str), // パース失敗時は元の文字列値を使用
+                    Err(_) => serde_json::Value::String(json_str), // Use original string value when parsing fails
                 }
             }
-            other => other, // String以外はそのまま
+            other => other, // Keep non-String values as-is
         };
 
         let uniq_key = req.uniq_key;
@@ -140,13 +195,13 @@ impl<T: FunctionGrpc + Tracing + Send + Debug + Sync + 'static> FunctionService 
                 };
                 let runner_settings = match runner_settings {
                     Some(serde_json::Value::String(json_str)) => {
-                        // JSON文字列として再パース
+                        // Re-parse as JSON string
                         match serde_json::from_str::<serde_json::Value>(&json_str) {
                             Ok(parsed) => Some(parsed),
-                            Err(_) => Some(serde_json::Value::String(json_str)), // パース失敗時は元の文字列値を使用
+                            Err(_) => Some(serde_json::Value::String(json_str)), // Use original string value when parsing fails
                         }
                     },
-                    other => other, // String以外はそのまま
+                    other => other, // Keep non-String values as-is
                 };
                 Box::pin(stream! {
                     let result_stream = function_app.handle_runner_for_front(
@@ -190,6 +245,74 @@ impl<T: FunctionGrpc + Tracing + Send + Debug + Sync + 'static> FunctionService 
             Err(e) => Err(handle_error(&e)),
         }))))
     }
+
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "find"))]
+    async fn find(
+        &self,
+        request: tonic::Request<FindFunctionByIdRequest>,
+    ) -> Result<tonic::Response<OptionalFunctionSpecsResponse>, tonic::Status> {
+        let _s = Self::trace_request("function", "find", &request);
+        let req = request.into_inner();
+
+        // Validate request
+        self.validate_find_by_id_request(&req)?;
+
+        match req.id {
+            Some(crate::proto::jobworkerp::function::service::find_function_by_id_request::Id::RunnerId(runner_id)) => {
+                match self.function_app().find_function_by_runner_id(&runner_id).await {
+                    Ok(Some(function_specs)) => Ok(Response::new(OptionalFunctionSpecsResponse {
+                        data: Some(function_specs)
+                    })),
+                    Ok(None) => Ok(Response::new(OptionalFunctionSpecsResponse { data: None })),
+                    Err(e) => Err(handle_error(&e)),
+                }
+            }
+            Some(crate::proto::jobworkerp::function::service::find_function_by_id_request::Id::WorkerId(worker_id)) => {
+                match self.function_app().find_function_by_worker_id(&worker_id).await {
+                    Ok(Some(function_specs)) => Ok(Response::new(OptionalFunctionSpecsResponse {
+                        data: Some(function_specs)
+                    })),
+                    Ok(None) => Ok(Response::new(OptionalFunctionSpecsResponse { data: None })),
+                    Err(e) => Err(handle_error(&e)),
+                }
+            }
+            None => unreachable!("Validation should catch this case")
+        }
+    }
+
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "find_by_name"))]
+    async fn find_by_name(
+        &self,
+        request: tonic::Request<FindFunctionByNameRequest>,
+    ) -> Result<tonic::Response<OptionalFunctionSpecsResponse>, tonic::Status> {
+        let _s = Self::trace_request("function", "find_by_name", &request);
+        let req = request.into_inner();
+
+        // Validate request
+        self.validate_find_by_name_request(&req)?;
+
+        match req.name {
+            Some(crate::proto::jobworkerp::function::service::find_function_by_name_request::Name::RunnerName(runner_name)) => {
+                match self.function_app().find_function_by_runner_name(&runner_name).await {
+                    Ok(Some(function_specs)) => Ok(Response::new(OptionalFunctionSpecsResponse {
+                        data: Some(function_specs)
+                    })),
+                    Ok(None) => Ok(Response::new(OptionalFunctionSpecsResponse { data: None })),
+                    Err(e) => Err(handle_error(&e)),
+                }
+            }
+            Some(crate::proto::jobworkerp::function::service::find_function_by_name_request::Name::WorkerName(worker_name)) => {
+                match self.function_app().find_function_by_worker_name(&worker_name).await {
+                    Ok(Some(function_specs)) => Ok(Response::new(OptionalFunctionSpecsResponse {
+                        data: Some(function_specs)
+                    })),
+                    Ok(None) => Ok(Response::new(OptionalFunctionSpecsResponse { data: None })),
+                    Err(e) => Err(handle_error(&e)),
+                }
+            }
+            None => unreachable!("Validation should catch this case")
+        }
+    }
 }
 
 #[derive(DebugStub)]
@@ -209,6 +332,8 @@ impl FunctionGrpc for FunctionGrpcImpl {
         &self.app_module.function_app
     }
 }
+
+impl FunctionRequestValidator for FunctionGrpcImpl {}
 
 // Implement tracing for FunctionGrpcImpl
 impl Tracing for FunctionGrpcImpl {}
