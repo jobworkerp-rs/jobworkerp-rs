@@ -1263,7 +1263,7 @@ mod tests {
 
         println!("📊 MistralRS Performance:");
         println!("   - Response Time: {mistral_duration:?}");
-        println!("   - Content Length: {} chars", 
+        println!("   - Content Length: {} chars",
                 mistral_result.content
                     .as_ref()
                     .and_then(|c| match &c.content {
@@ -1402,9 +1402,9 @@ mod tests {
             let completion_tokens = usage.completion_tokens.unwrap_or(0);
             let total_tokens = prompt_tokens + completion_tokens;
 
-            println!("   - Prompt tokens: {}", prompt_tokens);
-            println!("   - Completion tokens: {}", completion_tokens);
-            println!("   - Total tokens: {}", total_tokens);
+            println!("   - Prompt tokens: {prompt_tokens}");
+            println!("   - Completion tokens: {completion_tokens}");
+            println!("   - Total tokens: {total_tokens}");
 
             assert!(total_tokens > 0, "Expected positive token usage");
         } else {

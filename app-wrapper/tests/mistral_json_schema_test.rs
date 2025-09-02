@@ -1,13 +1,28 @@
-//! JSON Schema format support test for Ollama integration
-//! This test requires an Ollama server running at http://ollama.ollama.svc.cluster.local:11434
+//! JSON Schema format support test for MistralRS integration
+//! This test requires a MistralRS model server running locally
+//!
+//! # Environment Variables
+//! - `MISTRAL_TEST_MODEL_ID`: Override the test model ID (default: "microsoft/Phi-3.5-mini-instruct")
+//! - `MISTRAL_TEST_TIMEOUT`: Override test timeout in seconds (default: 300)
+//! - `MISTRAL_TEST_LOGGING`: Enable/disable logging (default: "true")
+//! - `MISTRAL_TEST_PAGED_ATTN`: Enable/disable paged attention (default: "false")
+//! - `MISTRAL_TEST_CHAT_TEMPLATE`: Override chat template (optional)
+//!
+//! # Example Usage
+//! ```bash
+//! MISTRAL_TEST_MODEL_ID="microsoft/Phi-3-mini-4k-instruct" \
+//! MISTRAL_TEST_TIMEOUT=600 \
+//! MISTRAL_TEST_LOGGING=true \
+//! cargo test --package app-wrapper --test mistral_json_schema_test
+//! ```
 
 #![allow(clippy::uninlined_format_args)]
 #![allow(clippy::collapsible_match)]
 
 use anyhow::Result;
 use app::module::test::create_hybrid_test_app;
-use app_wrapper::llm::chat::ollama::OllamaChatService;
-use app_wrapper::llm::completion::ollama::OllamaService;
+use app_wrapper::llm::chat::mistral::MistralRSService;
+use app_wrapper::llm::completion::mistral::MistralCompletionService;
 use futures::StreamExt;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
     message_content, ChatRole, LlmOptions as ChatLlmOptions,
@@ -15,50 +30,247 @@ use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{ChatMessage, MessageContent};
 use jobworkerp_runner::jobworkerp::runner::llm::llm_completion_args::LlmOptions as CompletionLlmOptions;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_completion_result;
-use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::OllamaRunnerSettings;
+use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::local_runner_settings::GgufModelSettings;
+use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::{
+    local_runner_settings::{ModelSettings, TextModelSettings},
+    LocalRunnerSettings,
+};
 use jobworkerp_runner::jobworkerp::runner::llm::{LlmChatArgs, LlmCompletionArgs};
 use std::collections::HashMap;
 use tokio::time::{timeout, Duration};
-use tokio_util::sync::CancellationToken;
 
 /// Test configuration
-const OLLAMA_HOST: &str = "http://ollama.ollama.svc.cluster.local:11434";
-const TEST_MODEL: &str = "qwen3:30b"; // Use a model that supports structured output
+const TEST_MODEL_ID: &str = "Qwen/Qwen3-8B-FP8"; //"microsoft/Phi-3.5-mini-instruct"; // Use a model that supports structured output
+#[allow(dead_code)]
 const TEST_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Get model ID from environment variable or use default
+fn get_test_model_id() -> String {
+    std::env::var("MISTRAL_TEST_MODEL_ID").unwrap_or_else(|_| TEST_MODEL_ID.to_string())
+}
+
+/// Get test timeout from environment variable or use default
+fn get_test_timeout() -> Duration {
+    if let Ok(timeout_str) = std::env::var("MISTRAL_get_test_timeout()") {
+        if let Ok(timeout_secs) = timeout_str.parse::<u64>() {
+            return Duration::from_secs(timeout_secs);
+        }
+    }
+    get_test_timeout()
+}
+
+/// Create common model settings for tests
+fn create_test_model_settings() -> LocalRunnerSettings {
+    let with_logging = std::env::var("MISTRAL_TEST_LOGGING")
+        .map(|v| v.to_lowercase() == "true")
+        .unwrap_or(true);
+    let _with_paged_attn = std::env::var("MISTRAL_TEST_PAGED_ATTN")
+        .map(|v| v.to_lowercase() == "true")
+        .unwrap_or(true);
+
+    // LocalRunnerSettings {
+    //     model_settings: Some(ModelSettings::TextModel(TextModelSettings {
+    //         model_name_or_path: get_test_model_id(),
+    //         isq_type: None,
+    //         with_logging,
+    //         with_paged_attn,
+    //         chat_template: None, //std::env::var("MISTRAL_TEST_CHAT_TEMPLATE").ok(),
+    //     })),
+    //     auto_device_map: None,
+    // }
+    LocalRunnerSettings {
+        model_settings: Some(ModelSettings::GgufModel(GgufModelSettings {
+            // model_name_or_path: "Qwen/Qwen3-30B-A3B-GGUF".to_string(),
+            // gguf_files: vec!["Qwen3-30B-A3B-Q4_K_M.gguf".to_string()],
+            // tok_model_id: Some("Qwen/Qwen3-30B-A3B-FP8".to_string()),
+            model_name_or_path: "Qwen/Qwen3-14B-GGUF".to_string(),
+            gguf_files: vec!["Qwen3-14B-Q4_K_M.gguf".to_string()],
+            tok_model_id: Some("Qwen/Qwen3-14B".to_string()),
+            with_logging,
+            chat_template: None, //std::env::var("MISTRAL_TEST_CHAT_TEMPLATE").ok(),
+            with_paged_attn: true,
+        })),
+        auto_device_map: None,
+    }
+}
+
+/// Create custom model settings for tests with parameters
+fn create_custom_model_settings(
+    model_name_or_path: &str,
+    with_logging: bool,
+    with_paged_attn: bool,
+    chat_template: Option<String>,
+) -> LocalRunnerSettings {
+    LocalRunnerSettings {
+        model_settings: Some(ModelSettings::TextModel(TextModelSettings {
+            model_name_or_path: model_name_or_path.to_string(),
+            isq_type: None,
+            with_logging,
+            with_paged_attn,
+            chat_template,
+        })),
+        auto_device_map: None,
+    }
+}
+
 /// Create test chat service
-async fn create_test_chat_service() -> Result<OllamaChatService> {
+async fn create_test_chat_service() -> Result<MistralRSService> {
+    let settings = create_test_model_settings();
     let app_module = create_hybrid_test_app().await?;
-
-    let settings = OllamaRunnerSettings {
-        model: TEST_MODEL.to_string(),
-        base_url: Some(OLLAMA_HOST.to_string()),
-        system_prompt: Some(
-            "You are a helpful assistant. Always respond in valid JSON format when a schema is provided."
-                .to_string(),
-        ),
-        pull_model: Some(false),
-    };
-
-    OllamaChatService::new(app_module.function_app.clone(), settings)
+    MistralRSService::new_with_function_app(settings, app_module.function_app.clone()).await
 }
 
 /// Create test completion service
-async fn create_test_completion_service() -> Result<OllamaService> {
-    let settings = OllamaRunnerSettings {
-        base_url: Some(OLLAMA_HOST.to_string()),
-        model: TEST_MODEL.to_string(),
-        system_prompt: Some(
-            "You are a helpful assistant. Always respond in valid JSON format when instructed."
-                .to_string(),
-        ),
-        pull_model: Some(false),
-    };
-
-    OllamaService::new(settings).await
+async fn create_test_completion_service() -> Result<MistralCompletionService> {
+    let settings = create_test_model_settings();
+    let app_module = create_hybrid_test_app().await?;
+    MistralCompletionService::new(settings, app_module.function_app.clone()).await
 }
 
-#[ignore = "need to run with ollama server"]
+#[ignore = "need to run with mistralrs model server"]
+#[tokio::test]
+async fn test_simple_chat_with_textmodel() -> Result<()> {
+    // Use TextModelSettings instead of GgufModelSettings
+    let settings = create_custom_model_settings(
+        &get_test_model_id(),
+        true,  // with_logging: true
+        false, // with_paged_attn: false to prevent stack overflow
+        None,  // chat_template: None
+    );
+    let app_module = create_hybrid_test_app().await?;
+    let service =
+        MistralRSService::new_with_function_app(settings, app_module.function_app.clone()).await?;
+
+    let args = LlmChatArgs {
+        json_schema: None, // No JSON schema to test basic functionality
+        messages: vec![ChatMessage {
+            role: ChatRole::User.into(),
+            content: Some(MessageContent {
+                content: Some(message_content::Content::Text("What is 2+2?".to_string())),
+            }),
+        }],
+        options: Some(ChatLlmOptions {
+            max_tokens: Some(100),
+            temperature: Some(0.2),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let result = timeout(
+        get_test_timeout(),
+        service.request_chat(args, opentelemetry::Context::current(), HashMap::new()),
+    )
+    .await??;
+
+    assert!(result.content.is_some());
+    println!("Simple chat with TextModelSettings test passed!");
+    Ok(())
+}
+
+#[ignore = "need to run with mistralrs model server"]
+#[tokio::test]
+async fn test_simple_chat_without_schema() -> Result<()> {
+    let service = create_test_chat_service().await?;
+
+    let args = LlmChatArgs {
+        json_schema: None, // No JSON schema to test basic functionality
+        messages: vec![ChatMessage {
+            role: ChatRole::User.into(),
+            content: Some(MessageContent {
+                content: Some(message_content::Content::Text("What is 2+2?".to_string())),
+            }),
+        }],
+        options: Some(ChatLlmOptions {
+            max_tokens: Some(100),
+            temperature: Some(0.2),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let result = timeout(
+        get_test_timeout(),
+        service.request_chat(args, opentelemetry::Context::current(), HashMap::new()),
+    )
+    .await??;
+
+    assert!(result.content.is_some());
+    println!("Simple chat without schema test passed!");
+    Ok(())
+}
+
+#[ignore = "need to run with mistralrs model server"]
+#[tokio::test]
+async fn test_chat_with_json_schema_large_stack() -> Result<()> {
+    // Use std::thread with larger stack size to avoid stack overflow in tests
+    let result = std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024) // 8MB stack
+        .spawn(|| {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let service = create_test_chat_service().await?;
+
+                let schema = r#"{
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "type": "object",
+                    "properties": {
+                        "answer": {"type": "string"},
+                        "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+                    },
+                    "required": ["answer", "confidence"]
+                }"#;
+
+                let args = LlmChatArgs {
+                    json_schema: Some(schema.to_string()),
+                    messages: vec![ChatMessage {
+                        role: ChatRole::User.into(),
+                        content: Some(MessageContent {
+                            content: Some(message_content::Content::Text(
+                                "What is 2+2? Respond with your answer and confidence level.".to_string(),
+                            )),
+                        }),
+                    }],
+                    options: Some(ChatLlmOptions {
+                        max_tokens: Some(3512),
+                        temperature: Some(0.2),
+                        extract_reasoning_content: Some(true),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                };
+
+                let result = timeout(
+                    get_test_timeout(),
+                    service.request_chat(args, opentelemetry::Context::current(), HashMap::new()),
+                )
+                .await??;
+
+                assert!(result.content.is_some());
+                if let Some(content) = result.content {
+                    if let Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) = content.content {
+                        let parsed: serde_json::Value = serde_json::from_str(&text)?;
+                        assert!(parsed.get("answer").is_some());
+                        assert!(parsed.get("confidence").is_some());
+
+                        if let Some(confidence) = parsed.get("confidence").and_then(|v| v.as_f64()) {
+                            assert!((0.0..=1.0).contains(&confidence));
+                        }
+
+                        println!("MistralRS Chat JSON Schema test passed (large stack). Response: {}", text);
+                    }
+                }
+
+                anyhow::Ok(())
+            })
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+
+    result
+}
+
+#[ignore = "need to run with mistralrs model server"]
 #[tokio::test]
 async fn test_chat_with_json_schema() -> Result<()> {
     let service = create_test_chat_service().await?;
@@ -84,15 +296,16 @@ async fn test_chat_with_json_schema() -> Result<()> {
             }),
         }],
         options: Some(ChatLlmOptions {
-            max_tokens: Some(512),
-            temperature: Some(0.1),
+            max_tokens: Some(3512),
+            temperature: Some(0.2),
+            extract_reasoning_content: Some(true),
             ..Default::default()
         }),
         ..Default::default()
     };
 
     let result = timeout(
-        TEST_TIMEOUT,
+        get_test_timeout(),
         service.request_chat(args, opentelemetry::Context::current(), HashMap::new()),
     )
     .await??;
@@ -108,14 +321,14 @@ async fn test_chat_with_json_schema() -> Result<()> {
                 assert!((0.0..=1.0).contains(&confidence));
             }
 
-            println!("Chat JSON Schema test passed. Response: {}", text);
+            println!("MistralRS Chat JSON Schema test passed. Response: {}", text);
         }
     }
 
     Ok(())
 }
 
-#[ignore = "need to run with ollama server"]
+#[ignore = "need to run with mistralrs model server"]
 #[tokio::test]
 async fn test_completion_with_json_schema() -> Result<()> {
     let service = create_test_completion_service().await?;
@@ -135,22 +348,16 @@ async fn test_completion_with_json_schema() -> Result<()> {
         json_schema: Some(schema.to_string()),
         prompt: "Translate 'Hello world' to Japanese".to_string(),
         options: Some(CompletionLlmOptions {
-            max_tokens: Some(256),
-            temperature: Some(0.1),
+            max_tokens: Some(25600),
+            temperature: Some(0.3),
             ..Default::default()
         }),
         ..Default::default()
     };
 
-    let cancellation_token = CancellationToken::new();
     let result = timeout(
-        TEST_TIMEOUT,
-        service.request_generation_with_cancellation(
-            args,
-            cancellation_token,
-            opentelemetry::Context::current(),
-            HashMap::new(),
-        ),
+        get_test_timeout(),
+        service.request_chat(args, opentelemetry::Context::current(), HashMap::new()),
     )
     .await??;
 
@@ -166,14 +373,17 @@ async fn test_completion_with_json_schema() -> Result<()> {
                 assert!(!translation.is_empty());
             }
 
-            println!("Completion JSON Schema test passed. Response: {}", text);
+            println!(
+                "MistralRS Completion JSON Schema test passed. Response: {}",
+                text
+            );
         }
     }
 
     Ok(())
 }
 
-#[ignore = "need to run with ollama server"]
+#[ignore = "need to run with mistralrs model server"]
 #[tokio::test]
 async fn test_invalid_json_schema_handling() -> Result<()> {
     let service = create_test_chat_service().await?;
@@ -192,17 +402,17 @@ async fn test_invalid_json_schema_handling() -> Result<()> {
     };
 
     let result = timeout(
-        TEST_TIMEOUT,
+        get_test_timeout(),
         service.request_chat(args, opentelemetry::Context::current(), HashMap::new()),
     )
     .await??;
 
     assert!(result.content.is_some());
-    println!("Invalid JSON schema gracefully handled");
+    println!("Invalid JSON schema gracefully handled by MistralRS");
     Ok(())
 }
 
-#[ignore = "need to run with ollama server"]
+#[ignore = "need to run with mistralrs model server"]
 #[tokio::test]
 async fn test_completion_stream_with_json_schema() -> Result<()> {
     let service = create_test_completion_service().await?;
@@ -229,7 +439,7 @@ async fn test_completion_stream_with_json_schema() -> Result<()> {
     };
 
     // Request the streaming response
-    let stream_result = timeout(TEST_TIMEOUT, service.request_stream_generation(args)).await??;
+    let stream_result = timeout(get_test_timeout(), service.request_stream_chat(args)).await??;
 
     // Collect all chunks to verify the streaming functionality
     let responses = stream_result.collect::<Vec<_>>().await;
@@ -257,7 +467,7 @@ async fn test_completion_stream_with_json_schema() -> Result<()> {
         assert!(parsed.get("items").is_some());
 
         println!(
-            "Streaming JSON Schema test passed. Response: {}",
+            "MistralRS Streaming JSON Schema test passed. Response: {}",
             combined_text
         );
     }
@@ -265,9 +475,9 @@ async fn test_completion_stream_with_json_schema() -> Result<()> {
     Ok(())
 }
 
-#[ignore = "need to run with ollama server"]
+#[ignore = "need to run with mistralrs model server"]
 #[tokio::test]
-async fn test_workflow_8level_schema_with_llm_chat() -> Result<()> {
+async fn test_workflow_8level_schema_with_mistral_chat() -> Result<()> {
     command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
     let service = create_test_chat_service().await?;
 
@@ -353,17 +563,26 @@ async fn test_workflow_8level_schema_with_llm_chat() -> Result<()> {
                 }
             }
 
-            tracing::info!("Workflow 8-level schema test with LLM_CHAT passed!");
+            tracing::info!("MistralRS Workflow 8-level schema test with LLM_CHAT passed!");
         }
     }
 
     Ok(())
 }
 
-#[ignore = "need to run with ollama server"]
+#[ignore = "need to run with mistralrs model server"]
 #[tokio::test]
-async fn test_complex_nested_workflow_with_llm_chat() -> Result<()> {
+async fn test_complex_nested_workflow_with_mistral_chat() -> Result<()> {
     command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+
+    // Use custom settings with verbose logging for complex workflow test
+    // let custom_settings = create_custom_model_settings(
+    //     &get_test_model_id(),
+    //     true,  // with_logging: true for debugging
+    //     false, // with_paged_attn: false
+    //     None,  // chat_template: None
+    // );
+    let _custom_settings = create_test_model_settings();
     let service = create_test_chat_service().await?;
 
     // Load the workflow schema
@@ -445,7 +664,7 @@ async fn test_complex_nested_workflow_with_llm_chat() -> Result<()> {
                 tracing::info!("Found expected complex task types in workflow");
             }
 
-            tracing::info!("Complex nested workflow schema test with LLM_CHAT passed!");
+            tracing::info!("MistralRS Complex nested workflow schema test with LLM_CHAT passed!");
         }
     }
 
