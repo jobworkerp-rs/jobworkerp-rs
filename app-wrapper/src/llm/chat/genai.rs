@@ -294,7 +294,7 @@ impl GenaiChatService {
         metadata: Arc<HashMap<String, String>>,
     ) -> Result<genai::chat::ChatResponse> {
         let current_messages = messages.lock().await.clone();
-        
+
         // Execute with tracing using generic_tracing_helper approach
         let (res, current_context) = if GenericLLMTracingHelper::get_otel_client(&*self).is_some() {
             // Create span attributes using generic helper
@@ -382,7 +382,8 @@ impl GenaiChatService {
                 tracing::debug!("Tool calls in response: {:#?}", &tool_calls);
 
                 // Process tool calls
-                let updated_context = if GenericLLMTracingHelper::get_otel_client(&*self).is_some() {
+                let updated_context = if GenericLLMTracingHelper::get_otel_client(&*self).is_some()
+                {
                     self.process_tool_calls_with_tracing(
                         messages.clone(),
                         &tool_calls,
@@ -480,16 +481,17 @@ impl GenaiChatService {
             );
 
             // Execute tool call with response tracing and get both result and updated context
-            let (tool_result, updated_context) = GenericLLMTracingHelper::with_tool_response_tracing(
-                self,
-                &metadata,
-                current_context,
-                tool_attributes,
-                &call.fn_name,
-                call.fn_arguments.clone(),
-                tool_action,
-            )
-            .await?;
+            let (tool_result, updated_context) =
+                GenericLLMTracingHelper::with_tool_response_tracing(
+                    self,
+                    &metadata,
+                    current_context,
+                    tool_attributes,
+                    &call.fn_name,
+                    call.fn_arguments.clone(),
+                    tool_action,
+                )
+                .await?;
 
             tracing::debug!("Tool response: {}", &tool_result);
 
