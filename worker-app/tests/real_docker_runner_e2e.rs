@@ -145,6 +145,7 @@ fn create_test_data() -> (WorkerData, RunnerData) {
 }
 
 /// Test basic Docker container execution with real container management
+#[ignore = "Requires Docker daemon(CI environment have Docker in docker but socket not mounted)"]
 #[tokio::test]
 async fn test_real_docker_basic_execution() -> Result<()> {
     // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
@@ -182,6 +183,7 @@ async fn test_real_docker_basic_execution() -> Result<()> {
 }
 
 /// Test Docker container with actual Linux command execution
+#[ignore = "Requires Docker daemon(CI environment have Docker in docker but socket file not mounted)"]
 #[tokio::test]
 async fn test_real_docker_linux_commands() -> Result<()> {
     let job_runner = get_real_job_runner().await;
@@ -219,6 +221,7 @@ async fn test_real_docker_linux_commands() -> Result<()> {
 }
 
 /// Test Docker container with actual file system operations
+#[ignore = "Requires Docker daemon(CI environment have Docker in docker but socket not mounted)"]
 #[tokio::test]
 async fn test_real_docker_filesystem_operations() -> Result<()> {
     let job_runner = get_real_job_runner().await;
@@ -264,6 +267,7 @@ async fn test_real_docker_filesystem_operations() -> Result<()> {
 }
 
 /// Test Docker container with basic operations
+#[ignore = "Requires Docker daemon(CI environment have Docker in docker but socket not mounted)"]
 #[tokio::test]
 async fn test_real_docker_package_operations() -> Result<()> {
     let job_runner = get_real_job_runner().await;
@@ -307,6 +311,7 @@ async fn test_real_docker_package_operations() -> Result<()> {
 }
 
 /// Test Docker error handling with actual failing container
+#[ignore = "Requires Docker daemon(CI environment have Docker in docker but socket not mounted)"]
 #[tokio::test]
 async fn test_real_docker_error_handling() -> Result<()> {
     let job_runner = get_real_job_runner().await;
@@ -344,6 +349,7 @@ async fn test_real_docker_error_handling() -> Result<()> {
 }
 
 /// Test Docker timeout with actual long-running container
+#[ignore = "Requires Docker daemon(CI environment have Docker in docker but socket not mounted)"]
 #[tokio::test]
 async fn test_real_docker_timeout() -> Result<()> {
     let job_runner = get_real_job_runner().await;
@@ -384,6 +390,7 @@ async fn test_real_docker_timeout() -> Result<()> {
 }
 
 /// Test Docker with nonexistent image for error handling
+#[ignore = "Requires Docker daemon(CI environment have Docker in docker but socket not mounted)"]
 #[tokio::test]
 async fn test_real_docker_nonexistent_image() -> Result<()> {
     let job_runner = get_real_job_runner().await;
@@ -415,6 +422,7 @@ async fn test_real_docker_nonexistent_image() -> Result<()> {
 }
 
 /// Integration test demonstrating complete DOCKER runner real workflow
+#[ignore = "Requires Docker daemon(CI environment have Docker in docker but socket not mounted)"]
 #[tokio::test]
 async fn test_real_docker_runner_complete_workflow() -> Result<()> {
     println!("=== Real DOCKER Runner Complete Workflow Test ===");
