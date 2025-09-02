@@ -228,7 +228,7 @@ print("All mathematical computations verified successfully")
     assert_eq!(command_result.exit_code, 0);
     let stdout = command_result.output;
 
-    println!("Command stdout:\n{}", stdout);
+    println!("Command stdout:\n{stdout}");
     // Verify computational outputs
     assert!(stdout.contains("Sum result: 499500"));
     assert!(stdout.contains("Pi calculation: 314.15927"));
@@ -575,8 +575,7 @@ print(f"Memory test completed with result: {total}")
     let data4 = result4.data.unwrap();
     assert_eq!(data4.status, ResultStatus::Success as i32);
 
-    // Verify memory monitoring worked
-    let command_result: PythonCommandResult =
+    let _command_result: PythonCommandResult =
         ProstMessageCodec::deserialize_message(&data4.output.unwrap().items)?;
 
     println!("=== Real PYTHON_COMMAND Runner Complete Workflow Test PASSED ===");
