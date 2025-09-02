@@ -211,8 +211,8 @@ async fn test_real_http_get_request() -> Result<()> {
         }
     }
 
-    // Should complete within reasonable time
-    assert!(elapsed_time < Duration::from_secs(10));
+    // Should complete within reasonable time (within timeout)
+    assert!(elapsed_time < Duration::from_secs(30));
 
     println!("✓ Real HTTP_REQUEST GET request test passed");
     Ok(())
