@@ -18,6 +18,7 @@ use opentelemetry::trace::TraceContextExt;
 use opentelemetry::Context;
 use prost::Message;
 use proto::jobworkerp::data::{result_output_item, ResultOutputItem, RunnerType};
+use serde_json;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -181,8 +182,26 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
             );
             let cx = Context::current_with_span(span);
 
-            let args = LlmCompletionArgs::decode(&mut Cursor::new(arg))
+            let mut args = LlmCompletionArgs::decode(&mut Cursor::new(arg))
                 .map_err(|e| anyhow!("decode error: {}", e))?;
+
+            // Handle potentially escaped JSON schema string from grpc-web
+            if let Some(json_schema) = &args.json_schema {
+                let schema_value = serde_json::to_value(json_schema)
+                    .map_err(|e| anyhow!("Invalid json_schema format: {}", e))?;
+                let processed_schema = match schema_value {
+                    serde_json::Value::String(json_str) => {
+                        // Try to parse as JSON string (in case it's escaped)
+                        match serde_json::from_str::<serde_json::Value>(&json_str) {
+                            Ok(_) => json_str,             // Valid JSON string, use as-is
+                            Err(_) => json_schema.clone(), // Parse failed, use original
+                        }
+                    }
+                    _ => json_schema.clone(), // Not a string, use original
+                };
+                args.json_schema = Some(processed_schema);
+            }
+
             if let Some(ollama) = self.ollama.as_mut() {
                 let res = ollama
                     .request_generation_with_cancellation(
@@ -236,7 +255,25 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let cancellation_token = self.get_cancellation_token().await;
 
-        let args = LlmCompletionArgs::decode(args).map_err(|e| anyhow!("decode error: {}", e))?;
+        let mut args =
+            LlmCompletionArgs::decode(args).map_err(|e| anyhow!("decode error: {}", e))?;
+
+        // Handle potentially escaped JSON schema string from grpc-web
+        if let Some(json_schema) = &args.json_schema {
+            let schema_value = serde_json::to_value(json_schema)
+                .map_err(|e| anyhow!("Invalid json_schema format: {}", e))?;
+            let processed_schema = match schema_value {
+                serde_json::Value::String(json_str) => {
+                    // Try to parse as JSON string (in case it's escaped)
+                    match serde_json::from_str::<serde_json::Value>(&json_str) {
+                        Ok(_) => json_str,             // Valid JSON string, use as-is
+                        Err(_) => json_schema.clone(), // Parse failed, use original
+                    }
+                }
+                _ => json_schema.clone(), // Not a string, use original
+            };
+            args.json_schema = Some(processed_schema);
+        }
 
         // Early cancellation check prevents wasted LLM service calls
         if cancellation_token.is_cancelled() {

@@ -376,10 +376,13 @@ pub trait RunnerRepository:
 
     async fn find_list(
         &self,
+        include_full: bool,
         limit: Option<&i32>,
         offset: Option<&i64>,
     ) -> Result<Vec<RunnerWithSchema>> {
-        let rows = self.find_row_list_tx(self.db_pool(), limit, offset).await?;
+        let rows = self
+            .find_row_list_tx(self.db_pool(), include_full, limit, offset)
+            .await?;
         let mut results = Vec::new();
         for row in rows {
             if let Some(r) = self
@@ -396,20 +399,27 @@ pub trait RunnerRepository:
     async fn find_row_list_tx<'c, E: Executor<'c, Database = Rdb>>(
         &self,
         tx: E,
+        include_full: bool,
         limit: Option<&i32>,
         offset: Option<&i64>,
     ) -> Result<Vec<RunnerRow>> {
         if let Some(l) = limit {
-            sqlx::query_as::<_, RunnerRow>(
-                "SELECT * FROM `runner` ORDER BY `id` DESC LIMIT ? OFFSET ?;",
-            )
+            sqlx::query_as::<_, RunnerRow>(if include_full {
+                "SELECT * FROM `runner` ORDER BY `id` DESC LIMIT ? OFFSET ?;"
+            } else {
+                "SELECT * FROM `runner` WHERE id > 0 ORDER BY `id` DESC LIMIT ? OFFSET ?;"
+            })
             .bind(l)
             .bind(offset.unwrap_or(&0i64))
             .fetch_all(tx)
         } else {
             // fetch all!
-            sqlx::query_as::<_, RunnerRow>("SELECT * FROM `runner` ORDER BY `id` DESC;")
-                .fetch_all(tx)
+            sqlx::query_as::<_, RunnerRow>(if include_full {
+                "SELECT * FROM `runner` ORDER BY `id` DESC;"
+            } else {
+                "SELECT * FROM `runner` WHERE id > 0 ORDER BY `id` DESC;"
+            })
+            .fetch_all(tx)
         }
         .await
         .map_err(JobWorkerError::DBError)
@@ -671,7 +681,7 @@ mod test {
             assert_eq!(after_count - before_count, 2,);
 
             let rows = repository
-                .find_row_list_tx(repository.db_pool(), None, None)
+                .find_row_list_tx(repository.db_pool(), false, None, None)
                 .await?;
             let mcp_servers: Vec<&RunnerRow> = rows
                 .iter()

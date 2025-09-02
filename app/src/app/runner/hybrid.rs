@@ -50,7 +50,7 @@ impl HybridRunnerAppImpl {
     async fn load_runners_from_db(&self) {
         if let Ok(runners) = self
             .runner_repository()
-            .find_row_list_tx(self.runner_repository().db_pool(), None, None)
+            .find_row_list_tx(self.runner_repository().db_pool(), true, None, None)
             .await
         {
             for data in runners.into_iter() {
@@ -102,7 +102,9 @@ impl RunnerApp for HybridRunnerAppImpl {
             .await?;
         self.runner_repository().add_from_mcp_config_file().await?;
         self.load_runners_from_db().await;
-        let _ = self.delete_cache(&Self::find_all_list_cache_key()).await;
+        let _ = self
+            .delete_cache(&Self::find_all_list_cache_key(true))
+            .await;
         Ok(true)
     }
 
@@ -131,7 +133,10 @@ impl RunnerApp for HybridRunnerAppImpl {
         }?;
         // clear memory cache
         let _ = self
-            .delete_cache_locked(&Self::find_all_list_cache_key())
+            .delete_cache_locked(&Self::find_all_list_cache_key(true))
+            .await;
+        let _ = self
+            .delete_cache_locked(&Self::find_all_list_cache_key(false))
             .await;
         Ok(r)
     }
@@ -143,7 +148,10 @@ impl RunnerApp for HybridRunnerAppImpl {
             .delete_cache_locked(&Self::find_cache_key(&id.value))
             .await;
         let _ = self
-            .delete_cache_locked(&Self::find_all_list_cache_key())
+            .delete_cache_locked(&Self::find_all_list_cache_key(true))
+            .await;
+        let _ = self
+            .delete_cache_locked(&Self::find_all_list_cache_key(false))
             .await;
         Ok(res)
     }
@@ -186,6 +194,7 @@ impl RunnerApp for HybridRunnerAppImpl {
     // XXX no cache
     async fn find_runner_list(
         &self,
+        include_full: bool,
         limit: Option<&i32>,
         offset: Option<&i64>,
     ) -> Result<Vec<RunnerWithSchema>>
@@ -193,7 +202,7 @@ impl RunnerApp for HybridRunnerAppImpl {
         Self: Send + 'static,
     {
         if let Some(all) = self
-            .find_cache(&Self::find_list_cache_key(limit, offset))
+            .find_cache(&Self::find_list_cache_key(include_full, limit, offset))
             .await
         {
             if let Some(lim) = limit {
@@ -203,16 +212,20 @@ impl RunnerApp for HybridRunnerAppImpl {
                 Ok(all)
             }
         } else {
-            self.runner_repository().find_list(limit, offset).await
+            self.runner_repository()
+                .find_list(include_full, limit, offset)
+                .await
         }
     }
 
-    async fn find_runner_all_list(&self) -> Result<Vec<RunnerWithSchema>>
+    async fn find_runner_all_list(&self, include_full: bool) -> Result<Vec<RunnerWithSchema>>
     where
         Self: Send + 'static,
     {
-        self.with_cache(&Self::find_all_list_cache_key(), || async {
-            self.runner_repository().find_list(None, None).await
+        self.with_cache(&Self::find_all_list_cache_key(include_full), || async {
+            self.runner_repository()
+                .find_list(include_full, None, None)
+                .await
         })
         .await
     }
@@ -252,7 +265,10 @@ impl RunnerApp for HybridRunnerAppImpl {
         self.store_proto_cache(runner_id, &runner_data).await;
         // clear memory cache
         let _ = self
-            .delete_cache_locked(&Self::find_all_list_cache_key())
+            .delete_cache_locked(&Self::find_all_list_cache_key(true))
+            .await;
+        let _ = self
+            .delete_cache_locked(&Self::find_all_list_cache_key(false))
             .await;
         Ok(runner_data)
     }
@@ -326,7 +342,7 @@ mod test {
             let app = create_test_app().await.unwrap();
             let res = app.find_runner(&RunnerId { value: 1 }).await.unwrap();
             assert!(res.is_some());
-            let res = app.find_runner_list(None, None).await.unwrap();
+            let res = app.find_runner_list(true, None, None).await.unwrap();
             assert!(!res.is_empty());
         });
     }

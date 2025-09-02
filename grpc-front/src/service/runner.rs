@@ -107,7 +107,7 @@ impl<T: RunnerGrpc + Tracing + Send + Debug + Sync + 'static> RunnerService for 
         let req = request.get_ref();
         match self
             .app()
-            .find_runner_list(req.limit.as_ref(), req.offset.as_ref())
+            .find_runner_list(false, req.limit.as_ref(), req.offset.as_ref())
             .await
         {
             Ok(list) => {
