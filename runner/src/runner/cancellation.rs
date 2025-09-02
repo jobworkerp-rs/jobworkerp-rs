@@ -75,7 +75,7 @@ pub trait CancelMonitoring: Send + Sync {
     async fn request_cancellation(&mut self) -> Result<()>;
 }
 
-/// Type-safe integration trait for Runners  
+/// Type-safe integration trait for Runners
 /// Avoids the dangers of downcast_mut()
 /// Renamed from CancelMonitoringCapable to provide unified interface
 pub trait CancellableRunner: RunnerTrait + CancelMonitoring {
