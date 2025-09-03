@@ -1,4 +1,5 @@
 use anyhow::Result;
+use command_utils::trace::impls::GenericOtelClient;
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use genai::chat::{
@@ -12,7 +13,6 @@ use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::GenaiRunner
 use jobworkerp_runner::jobworkerp::runner::llm::{
     llm_completion_result, LlmCompletionArgs, LlmCompletionResult,
 };
-use net_utils::trace::impls::GenericOtelClient;
 use proto::jobworkerp::data::{result_output_item, ResultOutputItem, Trailer};
 use std::collections::HashMap;
 use std::sync::Arc;

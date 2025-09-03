@@ -1,8 +1,8 @@
 use anyhow::Result;
+use command_utils::trace::attr::OtelSpanAttributes;
+use command_utils::trace::otel_span::GenAIOtelClient;
 use jobworkerp_base::error::JobWorkerError;
 use mistralrs::{ChatCompletionResponse, Tool};
-use net_utils::trace::attr::OtelSpanAttributes;
-use net_utils::trace::otel_span::GenAIOtelClient;
 use std::collections::HashMap;
 
 use super::super::generic_tracing_helper::{
@@ -306,11 +306,12 @@ pub trait MistralTracingHelper: GenericLLMTracingHelper {
                     "usage": wrapper.to_json()
                 });
 
-                let mut span_builder = net_utils::trace::attr::OtelSpanBuilder::new(&name_owned)
-                    .span_type(net_utils::trace::attr::OtelSpanType::Event)
-                    .usage(usage)
-                    .output(output)
-                    .level("INFO");
+                let mut span_builder =
+                    command_utils::trace::attr::OtelSpanBuilder::new(&name_owned)
+                        .span_type(command_utils::trace::attr::OtelSpanType::Event)
+                        .usage(usage)
+                        .output(output)
+                        .level("INFO");
 
                 if let Some(session_id) = metadata_owned.get("session_id") {
                     span_builder = span_builder.session_id(session_id.clone());

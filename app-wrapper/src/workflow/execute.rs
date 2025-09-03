@@ -12,16 +12,16 @@ use crate::workflow::execute::workflow::WorkflowExecutor;
 use anyhow::anyhow;
 use anyhow::Result;
 use app::module::AppModule;
+use command_utils::trace::Tracing;
 use futures::pin_mut;
 use futures::StreamExt;
 use net_utils::net::reqwest::ReqwestClient;
-use net_utils::trace::Tracing;
 use opentelemetry::trace::TraceContextExt;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 struct TracingImpl;
-impl net_utils::trace::Tracing for TracingImpl {}
+impl command_utils::trace::Tracing for TracingImpl {}
 /// Executes a workflow schema.
 ///
 /// This function creates a workflow executor and executes the workflow.

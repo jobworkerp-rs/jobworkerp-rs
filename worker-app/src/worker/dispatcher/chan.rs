@@ -10,6 +10,7 @@ use app::app::{UseWorkerConfig, WorkerConfig};
 use app::module::AppModule;
 use app_wrapper::runner::{RunnerFactory, UseRunnerFactory};
 use async_trait::async_trait;
+use command_utils::trace::Tracing;
 use command_utils::util::shutdown::ShutdownLock;
 use infra::infra::job::queue::chan::{
     ChanJobQueueRepository, ChanJobQueueRepositoryImpl, UseChanJobQueueRepository,
@@ -22,7 +23,6 @@ use infra::infra::job::status::{JobProcessingStatusRepository, UseJobProcessingS
 use infra::infra::runner::rows::RunnerWithSchema;
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQueueConfig};
 use jobworkerp_base::error::JobWorkerError;
-use net_utils::trace::Tracing;
 use proto::jobworkerp::data::{
     Job, JobProcessingStatus, JobResult, Priority, QueueType, ResponseType, Worker,
 };
