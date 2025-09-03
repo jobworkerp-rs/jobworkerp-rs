@@ -9,8 +9,8 @@ use crate::service::error_handle::handle_error;
 use app::app::job::JobApp;
 use app::module::AppModule;
 use async_stream::stream;
+use command_utils::trace::Tracing;
 use futures::stream::BoxStream;
-use net_utils::trace::Tracing;
 use proto::jobworkerp::data::Job;
 use tonic::Response;
 

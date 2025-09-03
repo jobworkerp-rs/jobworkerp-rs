@@ -11,6 +11,7 @@ use app::app::{UseWorkerConfig, WorkerConfig};
 use app::module::{AppConfigModule, AppModule};
 use app_wrapper::runner::{RunnerFactory, UseRunnerFactory};
 use async_trait::async_trait;
+use command_utils::trace::Tracing;
 use command_utils::util::shutdown::ShutdownLock;
 use futures::TryFutureExt;
 use infra::infra::job::queue::rdb::RdbJobQueueRepository;
@@ -26,7 +27,6 @@ use infra::infra::{IdGeneratorWrapper, JobQueueConfig, UseIdGenerator, UseJobQue
 use infra_utils::infra::redis::{RedisClient, UseRedisClient};
 use infra_utils::infra::redis::{RedisPool, UseRedisPool};
 use jobworkerp_base::error::JobWorkerError;
-use net_utils::trace::Tracing;
 use proto::jobworkerp::data::{
     Job, JobProcessingStatus, JobResult, JobResultId, Priority, QueueType, ResponseType, Worker,
 };

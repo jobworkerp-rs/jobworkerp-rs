@@ -11,9 +11,9 @@ use crate::service::error_handle::handle_error;
 use app::app::runner::RunnerApp;
 use app::module::AppModule;
 use async_stream::stream;
+use command_utils::trace::Tracing;
 use futures::stream::BoxStream;
 use jobworkerp_base::error::JobWorkerError;
-use net_utils::trace::Tracing;
 use tonic::Response;
 
 pub trait RunnerGrpc {

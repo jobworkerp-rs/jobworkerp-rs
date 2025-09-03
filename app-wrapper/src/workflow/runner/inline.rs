@@ -4,6 +4,7 @@ use crate::workflow::{definition::WorkflowLoader, execute::workflow::WorkflowExe
 use anyhow::Result;
 use app::module::AppModule;
 use async_trait::async_trait;
+use command_utils::trace::Tracing;
 use futures::stream::BoxStream;
 use futures::{pin_mut, StreamExt};
 use jobworkerp_base::error::JobWorkerError;
@@ -16,7 +17,6 @@ use jobworkerp_runner::runner::cancellation_helper::{
 use jobworkerp_runner::runner::workflow::InlineWorkflowRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use net_utils::net::reqwest::ReqwestClient;
-use net_utils::trace::Tracing;
 use opentelemetry::trace::TraceContextExt;
 use prost::Message;
 use proto::jobworkerp::data::StreamingOutputType;
