@@ -16,9 +16,9 @@ use tokio::sync::OnceCell;
 // Import JobRunner infrastructure
 use app::app::WorkerConfig;
 use app_wrapper::runner::{RunnerFactory, UseRunnerFactory};
+use command_utils::trace::Tracing;
 use infra::infra::job::rows::UseJobqueueAndCodec;
 use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
-use net_utils::trace::Tracing;
 use worker_app::worker::runner::map::{RunnerFactoryWithPoolMap, UseRunnerPoolMap};
 use worker_app::worker::runner::result::RunnerResultHandler;
 use worker_app::worker::runner::JobRunner;

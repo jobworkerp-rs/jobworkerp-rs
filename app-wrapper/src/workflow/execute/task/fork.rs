@@ -14,9 +14,10 @@ use crate::workflow::{
     execute::expression::UseExpression,
 };
 use app::app::job::execute::JobExecutorWrapper;
+use command_utils::trace::Tracing;
 use debug_stub_derive::DebugStub;
 use futures::{future, Future, StreamExt};
-use net_utils::{net::reqwest, trace::Tracing};
+use net_utils::net::reqwest;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 use tokio_stream::StreamMap;

@@ -3,11 +3,11 @@ use std::future::Future;
 use std::sync::Arc;
 
 use anyhow::Result;
+use command_utils::trace::attr::{OtelSpanAttributes, OtelSpanBuilder, OtelSpanType};
+use command_utils::trace::impls::GenericOtelClient;
+use command_utils::trace::otel_span::GenAIOtelClient;
 use genai::chat::Usage as GenaiUsage;
 use jobworkerp_base::error::JobWorkerError;
-use net_utils::trace::attr::{OtelSpanAttributes, OtelSpanBuilder, OtelSpanType};
-use net_utils::trace::impls::GenericOtelClient;
-use net_utils::trace::otel_span::GenAIOtelClient;
 use ollama_rs::generation::chat::{ChatMessageFinalResponseData, ChatMessageResponse};
 use opentelemetry::Context;
 use serde_json;
