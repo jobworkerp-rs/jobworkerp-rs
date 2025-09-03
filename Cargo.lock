@@ -1136,10 +1136,12 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tonic 0.14.1",
  "tonic-prost-build",
  "tracing",
  "tracing-opentelemetry 0.31.0",
  "tracing-subscriber",
+ "uuid 1.18.0",
 ]
 
 [[package]]

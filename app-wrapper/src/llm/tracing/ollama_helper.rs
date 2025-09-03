@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
+use command_utils::trace::attr::OtelSpanAttributes;
 use jobworkerp_base::error::JobWorkerError;
-use net_utils::trace::attr::OtelSpanAttributes;
 use ollama_rs::generation::chat::{ChatMessage, ChatMessageFinalResponseData, ChatMessageResponse};
 use ollama_rs::generation::tools::ToolInfo;
 use ollama_rs::models::ModelOptions;

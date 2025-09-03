@@ -14,9 +14,10 @@ use crate::workflow::{
 };
 use anyhow::Result;
 use app::app::job::execute::JobExecutorWrapper;
+use command_utils::trace::Tracing;
 use futures::stream::{self, Stream, StreamExt};
 use jobworkerp_base::APP_WORKER_NAME;
-use net_utils::{net::reqwest, trace::Tracing};
+use net_utils::net::reqwest;
 use opentelemetry::trace::TraceContextExt;
 use std::{collections::HashMap, pin::Pin, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, Mutex, RwLock};

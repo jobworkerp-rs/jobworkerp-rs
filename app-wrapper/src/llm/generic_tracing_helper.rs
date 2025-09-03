@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
+use command_utils::trace::attr::{OtelSpanAttributes, OtelSpanBuilder, OtelSpanType};
+use command_utils::trace::impls::GenericOtelClient;
+use command_utils::trace::otel_span::GenAIOtelClient;
 use jobworkerp_base::error::JobWorkerError;
-use net_utils::trace::attr::{OtelSpanAttributes, OtelSpanBuilder, OtelSpanType};
-use net_utils::trace::impls::GenericOtelClient;
-use net_utils::trace::otel_span::GenAIOtelClient;
 use serde_json::json;
 
 /// Generic trait for OpenTelemetry tracing functionality in LLM services

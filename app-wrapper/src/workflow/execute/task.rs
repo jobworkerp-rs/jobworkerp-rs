@@ -15,11 +15,12 @@ use crate::workflow::{
 use anyhow::Result;
 use app::app::job::execute::JobExecutorWrapper;
 use async_stream::stream;
+use command_utils::trace::Tracing;
 use debug_stub_derive::DebugStub;
 use fork::ForkTaskExecutor;
 use futures::{pin_mut, StreamExt};
 use jobworkerp_base::APP_NAME;
-use net_utils::{net::reqwest, trace::Tracing};
+use net_utils::net::reqwest;
 use opentelemetry::trace::TraceContextExt;
 use run::RunTaskExecutor;
 use set::SetTaskExecutor;

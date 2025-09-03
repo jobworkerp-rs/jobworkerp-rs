@@ -14,9 +14,10 @@ use anyhow::Result;
 use app::app::job::execute::JobExecutorWrapper;
 use app::module::AppModule;
 use async_stream::stream;
+use command_utils::trace::Tracing;
 use futures::{Stream, StreamExt};
 use jobworkerp_base::APP_WORKER_NAME;
-use net_utils::{net::reqwest::ReqwestClient, trace::Tracing};
+use net_utils::net::reqwest::ReqwestClient;
 use opentelemetry::{
     trace::{SpanRef, TraceContextExt},
     Context,

@@ -13,11 +13,12 @@ use crate::workflow::{
 use anyhow::Result;
 use app::app::job::execute::JobExecutorWrapper;
 use async_stream::stream;
+use command_utils::trace::Tracing;
 use debug_stub_derive::DebugStub;
 use futures::StreamExt;
 use indexmap::IndexMap;
 use jobworkerp_base::APP_WORKER_NAME;
-use net_utils::{net::reqwest, trace::Tracing};
+use net_utils::net::reqwest;
 use opentelemetry::trace::TraceContextExt;
 use std::{collections::HashMap, pin::Pin, sync::Arc, time::Duration};
 use tokio::sync::RwLock;

@@ -8,13 +8,13 @@ use crate::llm::tracing::LLMTracingHelper;
 use anyhow::Result;
 use app::app::function::{FunctionApp, FunctionAppImpl, UseFunctionApp};
 use async_stream::stream;
+use command_utils::trace::impls::GenericOtelClient;
+use command_utils::trace::otel_span::GenAIOtelClient;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatRole as TextMessageRole;
 use jobworkerp_runner::jobworkerp::runner::llm::{
     llm_runner_settings::LocalRunnerSettings, LlmChatArgs, LlmChatResult,
 };
 use mistralrs::{RequestBuilder, Tool};
-use net_utils::trace::impls::GenericOtelClient;
-use net_utils::trace::otel_span::GenAIOtelClient;
 use opentelemetry::Context;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -478,7 +478,7 @@ impl MistralTracingHelper for MistralRSService {}
 impl crate::llm::tracing::LLMTracingHelper for MistralRSService {
     fn get_otel_client(
         &self,
-    ) -> Option<&std::sync::Arc<net_utils::trace::impls::GenericOtelClient>> {
+    ) -> Option<&std::sync::Arc<command_utils::trace::impls::GenericOtelClient>> {
         self.otel_client.as_ref()
     }
 
@@ -605,7 +605,7 @@ impl MistralRSService {
         metadata: Arc<HashMap<String, String>>,
         parent_context: Context,
     ) -> Result<Vec<crate::llm::mistral::MistralRSMessage>> {
-        use net_utils::trace::attr::{OtelSpanBuilder, OtelSpanType};
+        use command_utils::trace::attr::{OtelSpanBuilder, OtelSpanType};
 
         // Create unified span attributes
         let span_name = "mistralrs.tool_calls.parallel";
