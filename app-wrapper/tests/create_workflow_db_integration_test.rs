@@ -51,30 +51,31 @@ fn test_create_workflow_runner_db_integration() -> Result<()> {
                         }
                     }
                 }
-            ]
-        });
+            }
+        ]
+    });
 
-        let worker_name = "db-test-create-workflow-worker";
-        let test_args = CreateWorkflowArgs {
-            workflow_source: Some(WorkflowSource::WorkflowData(test_workflow.to_string())),
-            name: worker_name.to_string(),
-            worker_options: Some(WorkerOptions {
-                channel: Some("db-test-channel".to_string()),
-                response_type: Some(ResponseType::Direct as i32),
-                broadcast_results: true,
-                queue_type: proto::jobworkerp::data::QueueType::ForcedRdb as i32,
-                store_success: true,
-                store_failure: true,
-                use_static: false,
-                retry_policy: Some(RetryPolicy {
-                    r#type: RetryType::Exponential as i32,
-                    interval: 2000,
-                    max_interval: 30000,
-                    max_retry: 3,
-                    basis: 2.0,
-                }),
+    let worker_name = "db-test-create-workflow-worker";
+    let test_args = CreateWorkflowArgs {
+        workflow_source: Some(WorkflowSource::WorkflowData(test_workflow.to_string())),
+        name: worker_name.to_string(),
+        worker_options: Some(WorkerOptions {
+            channel: Some("db-test-channel".to_string()),
+            response_type: Some(ResponseType::Direct as i32),
+            broadcast_results: true,
+            queue_type: proto::jobworkerp::data::QueueType::ForcedRdb as i32,
+            store_success: true,
+            store_failure: true,
+            use_static: false,
+            retry_policy: Some(RetryPolicy {
+                r#type: RetryType::Exponential as i32,
+                interval: 2000,
+                max_interval: 30000,
+                max_retry: 3,
+                basis: 2.0,
             }),
-        };
+        }),
+    };
 
         // Proto serialization
         let serialized_args = ProstMessageCodec::serialize_message(&test_args)?;
@@ -171,8 +172,13 @@ fn test_create_workflow_runner_db_integration() -> Result<()> {
                 return Err(e);
             }
         }
-        Ok(())
-    })
+        Err(e) => {
+            println!("❌ CREATE_WORKFLOW execution failed: {e}");
+            return Err(e);
+        }
+    }
+
+    Ok(())
 }
 
 /// CREATE_WORKFLOW Workflow URL DB integration test
@@ -274,7 +280,6 @@ fn test_create_workflow_url_db_integration() -> Result<()> {
     }
 
     Ok(())
-})
 }
 
 /// CREATE_WORKFLOW error cases DB integration test
@@ -353,6 +358,11 @@ fn test_create_workflow_error_cases_db_integration() -> Result<()> {
         println!("   - Missing source rejection: PASSED");
         println!("   - Database integrity: PASSED");
 
-        Ok(())
-    })
+    println!("✅ CREATE_WORKFLOW error case DB integration test successful:");
+    println!("   - Empty name rejection: PASSED");
+    println!("   - Invalid JSON rejection: PASSED");
+    println!("   - Missing source rejection: PASSED");
+    println!("   - Database integrity: PASSED");
+
+    Ok(())
 }
