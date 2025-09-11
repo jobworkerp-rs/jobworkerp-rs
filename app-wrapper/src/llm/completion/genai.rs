@@ -336,14 +336,9 @@ impl GenaiCompletionService {
                                 });
                             }
                             // Add final content if available
-                            if let Some(text) = end.captured_content.as_ref().and_then(|c| c.first()).and_then(|mc| {
-                                match mc {
-                                    GenaiMessageContent::Text(text) => Some(text.clone()),
-                                    _ => None,
-                                }
-                            }) {
+                            if let Some(text) = end.captured_content.as_ref().and_then(|c| c.first_text()) {
                                 llm_result.content = Some(llm_completion_result::MessageContent {
-                                    content: Some(message_content::Content::Text(text)),
+                                    content: Some(message_content::Content::Text(text.to_string())),
                                 });
                             }
                             // Add final reasoning content if available
@@ -418,7 +413,7 @@ impl GenericLLMTracingHelper for GenaiCompletionService {
                         genai::chat::ChatRole::User
                     }
                 },
-                content: GenaiMessageContent::Text(m.get_content().to_string()),
+                content: GenaiMessageContent::from_text(m.get_content().to_string()),
                 options: None,
             })
             .collect();

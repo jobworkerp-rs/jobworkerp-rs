@@ -1,7 +1,7 @@
 use super::super::generic_tracing_helper::GenericLLMTracingHelper;
 use crate::llm::generic_tracing_helper::LLMMessage;
 use anyhow::Result;
-use genai::chat::{ChatMessage, ChatOptions, ChatRequest, MessageContent, Tool};
+use genai::chat::{ChatMessage, ChatOptions, ChatRequest, Tool};
 use jobworkerp_base::error::JobWorkerError;
 use std::collections::HashMap;
 
@@ -18,21 +18,21 @@ pub trait GenaiTracingHelper: GenericLLMTracingHelper {
                 });
 
                 // Add additional content info for non-text messages
-                match &m.content {
-                    MessageContent::Parts(parts) => {
-                        msg_json["parts_count"] = serde_json::json!(parts.len());
-                    }
-                    MessageContent::ToolCalls(calls) => {
-                        msg_json["tool_calls"] = serde_json::json!(calls
-                            .iter()
-                            .map(|tc| serde_json::json!({
-                                "call_id": tc.call_id,
-                                "fn_name": tc.fn_name,
-                                "fn_arguments": tc.fn_arguments
-                            }))
-                            .collect::<Vec<_>>());
-                    }
-                    _ => {}
+                let parts = m.content.parts();
+                if parts.len() > 1 {
+                    msg_json["parts_count"] = serde_json::json!(parts.len());
+                }
+                
+                let tool_calls = m.content.tool_calls();
+                if !tool_calls.is_empty() {
+                    msg_json["tool_calls"] = serde_json::json!(tool_calls
+                        .iter()
+                        .map(|tc| serde_json::json!({
+                            "call_id": tc.call_id,
+                            "fn_name": tc.fn_name,
+                            "fn_arguments": tc.fn_arguments
+                        }))
+                        .collect::<Vec<_>>());
                 }
 
                 msg_json
@@ -122,28 +122,25 @@ impl crate::llm::tracing::LLMRequestData for genai::chat::ChatRequest {
                             genai::chat::ChatRole::System => "system",
                             genai::chat::ChatRole::Tool => "tool",
                         },
-                        "content": match &m.content {
-                            genai::chat::MessageContent::Text(text) => text,
-                            _ => "",
-                        }
+                        "content": m.content.joined_texts().unwrap_or_else(|| "[non-text content]".to_string())
                     });
 
                     // Add additional content info for non-text messages
-                    match &m.content {
-                        genai::chat::MessageContent::Parts(parts) => {
-                            msg_json["parts_count"] = serde_json::json!(parts.len());
-                        }
-                        genai::chat::MessageContent::ToolCalls(calls) => {
-                            msg_json["tool_calls"] = serde_json::json!(calls
-                                .iter()
-                                .map(|tc| serde_json::json!({
-                                    "call_id": tc.call_id,
-                                    "fn_name": tc.fn_name,
-                                    "fn_arguments": tc.fn_arguments
-                                }))
-                                .collect::<Vec<_>>());
-                        }
-                        _ => {}
+                    let parts = m.content.parts();
+                    if parts.len() > 1 {
+                        msg_json["parts_count"] = serde_json::json!(parts.len());
+                    }
+                    
+                    let tool_calls = m.content.tool_calls();
+                    if !tool_calls.is_empty() {
+                        msg_json["tool_calls"] = serde_json::json!(tool_calls
+                            .iter()
+                            .map(|tc| serde_json::json!({
+                                "call_id": tc.call_id,
+                                "fn_name": tc.fn_name,
+                                "fn_arguments": tc.fn_arguments
+                            }))
+                            .collect::<Vec<_>>());
                     }
 
                     msg_json
