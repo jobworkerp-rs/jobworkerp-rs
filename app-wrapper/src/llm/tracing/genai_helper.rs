@@ -22,7 +22,7 @@ pub trait GenaiTracingHelper: GenericLLMTracingHelper {
                 if parts.len() > 1 {
                     msg_json["parts_count"] = serde_json::json!(parts.len());
                 }
-                
+
                 let tool_calls = m.content.tool_calls();
                 if !tool_calls.is_empty() {
                     msg_json["tool_calls"] = serde_json::json!(tool_calls
@@ -130,7 +130,7 @@ impl crate::llm::tracing::LLMRequestData for genai::chat::ChatRequest {
                     if parts.len() > 1 {
                         msg_json["parts_count"] = serde_json::json!(parts.len());
                     }
-                    
+
                     let tool_calls = m.content.tool_calls();
                     if !tool_calls.is_empty() {
                         msg_json["tool_calls"] = serde_json::json!(tool_calls
