@@ -1150,8 +1150,7 @@ mod tests {
         let create_request = GrpcUnaryArgs {
             method: format!("/{service_name}/Create"),
             request: format!(
-                r#"{{"name": "{}", "description": "Test as_json flag", "category": 1}}"#,
-                test_set_name
+                r#"{{"name": "{test_set_name}", "description": "Test as_json flag", "category": 1}}"#
             ),
             metadata: HashMap::new(),
             timeout: 5000,
@@ -1176,7 +1175,7 @@ mod tests {
         );
 
         let json_response_str = response_with_json.json_body.as_ref().unwrap();
-        println!("JSON response body: {}", json_response_str);
+        println!("JSON response body: {json_response_str}");
 
         // Verify it's valid JSON
         let json_value: serde_json::Value = serde_json::from_str(json_response_str)?;
@@ -1198,8 +1197,7 @@ mod tests {
         let create_request_binary = GrpcUnaryArgs {
             method: format!("/{service_name}/Create"),
             request: format!(
-                r#"{{"name": "{}-binary", "description": "Test binary response", "category": 1}}"#,
-                test_set_name
+                r#"{{"name": "{test_set_name}-binary", "description": "Test binary response", "category": 1}}"#
             ),
             metadata: HashMap::new(),
             timeout: 5000,
@@ -1262,7 +1260,7 @@ mod tests {
         let find_json_str = find_response.json_body.as_ref().unwrap();
         let find_json: serde_json::Value = serde_json::from_str(find_json_str)?;
         assert!(find_json.is_object(), "Find response should be JSON object");
-        println!("Find response JSON: {}", find_json_str);
+        println!("Find response JSON: {find_json_str}");
 
         // Both binary body and json_body should be present
         assert!(
