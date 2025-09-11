@@ -310,20 +310,26 @@ impl GrpcUnaryRunner {
     }
 
     // Helper method to convert response bytes to JSON using reflection
-    async fn convert_response_to_json(&self, method_path: &str, response_bytes: &[u8]) -> Result<String> {
+    async fn convert_response_to_json(
+        &self,
+        method_path: &str,
+        response_bytes: &[u8],
+    ) -> Result<String> {
         if let Some(ref reflection_client) = self.reflection_client {
             // Get the output message descriptor for the method
             let output_descriptor = self.get_output_message_descriptor(method_path).await?;
             let message_name = output_descriptor.full_name();
-            
+
             tracing::debug!(
                 "Converting response to JSON for method {} with output type {}",
                 method_path,
                 message_name
             );
-            
+
             // Use reflection client to parse bytes to JSON
-            reflection_client.parse_bytes_to_json(message_name, response_bytes).await
+            reflection_client
+                .parse_bytes_to_json(message_name, response_bytes)
+                .await
         } else {
             Err(anyhow!("Reflection client not available"))
         }
@@ -514,7 +520,7 @@ impl RunnerTrait for GrpcUnaryRunner {
                         let metadata = Self::metadata_map_to_hashmap(response.metadata());
                         let response_body = response.into_inner();
                         let mut json_body = None;
-                        
+
                         // Convert to JSON if as_json flag is enabled and reflection is available
                         if req.as_json && self.use_reflection && self.reflection_client.is_some() {
                             match self.convert_response_to_json(&req.method, &response_body).await {
@@ -529,7 +535,7 @@ impl RunnerTrait for GrpcUnaryRunner {
                         } else if req.as_json {
                             tracing::warn!("JSON conversion requested but reflection not available, returning raw bytes");
                         }
-                        
+
                         GrpcUnaryResult {
                             metadata,
                             body: response_body,
@@ -1158,8 +1164,9 @@ mod tests {
                 HashMap::new(),
             )
             .await;
-        
-        let response_with_json = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result?)?;
+
+        let response_with_json =
+            ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result?)?;
         assert_eq!(response_with_json.code, tonic::Code::Ok as i32);
 
         // Verify json_body field is populated when as_json = true
@@ -1167,19 +1174,23 @@ mod tests {
             response_with_json.json_body.is_some(),
             "json_body should be populated when as_json = true"
         );
-        
+
         let json_response_str = response_with_json.json_body.as_ref().unwrap();
         println!("JSON response body: {}", json_response_str);
-        
+
         // Verify it's valid JSON
         let json_value: serde_json::Value = serde_json::from_str(json_response_str)?;
         assert!(json_value.is_object(), "Response should be JSON object");
-        
+
         // Also verify that the body field still contains the binary data
-        assert!(!response_with_json.body.is_empty(), "Binary body should still be present");
-        
+        assert!(
+            !response_with_json.body.is_empty(),
+            "Binary body should still be present"
+        );
+
         // Extract the created function set ID
-        let function_set_id = json_value["id"]["value"].as_str()
+        let function_set_id = json_value["id"]["value"]
+            .as_str()
             .ok_or_else(|| anyhow!("Could not find id in JSON response"))?
             .parse::<i64>()?;
 
@@ -1202,7 +1213,8 @@ mod tests {
             )
             .await;
 
-        let response_binary = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result_binary?)?;
+        let response_binary =
+            ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result_binary?)?;
         assert_eq!(response_binary.code, tonic::Code::Ok as i32);
 
         // Verify json_body field is None when as_json = false
@@ -1210,10 +1222,16 @@ mod tests {
             response_binary.json_body.is_none(),
             "json_body should be None when as_json = false"
         );
-        
+
         // Response body should contain binary protobuf data
-        assert!(!response_binary.body.is_empty(), "Binary body should be present");
-        println!("Binary response body length: {}", response_binary.body.len());
+        assert!(
+            !response_binary.body.is_empty(),
+            "Binary body should be present"
+        );
+        println!(
+            "Binary response body length: {}",
+            response_binary.body.len()
+        );
 
         // Test 3: Find request with as_json = true to verify different method types
         let find_request = GrpcUnaryArgs {
@@ -1231,7 +1249,8 @@ mod tests {
             )
             .await;
 
-        let find_response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&find_result?)?;
+        let find_response =
+            ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&find_result?)?;
         assert_eq!(find_response.code, tonic::Code::Ok as i32);
 
         // Verify json_body field is populated for Find request too
@@ -1239,19 +1258,20 @@ mod tests {
             find_response.json_body.is_some(),
             "json_body should be populated for Find request with as_json = true"
         );
-        
+
         let find_json_str = find_response.json_body.as_ref().unwrap();
         let find_json: serde_json::Value = serde_json::from_str(find_json_str)?;
         assert!(find_json.is_object(), "Find response should be JSON object");
         println!("Find response JSON: {}", find_json_str);
-        
+
         // Both binary body and json_body should be present
-        assert!(!find_response.body.is_empty(), "Binary body should be present");
+        assert!(
+            !find_response.body.is_empty(),
+            "Binary body should be present"
+        );
 
         // Cleanup: Delete the created function sets
-        let delete_requests = vec![
-            format!(r#"{{"value": {function_set_id}}}"#),
-        ];
+        let delete_requests = vec![format!(r#"{{"value": {function_set_id}}}"#)];
 
         for delete_req in delete_requests {
             let delete_request = GrpcUnaryArgs {

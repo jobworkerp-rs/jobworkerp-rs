@@ -27,55 +27,54 @@ fn test_create_workflow_runner_db_integration() -> Result<()> {
 
         // Workflow definition for the test
         let test_workflow = json!({
-            "document": {
-                "dsl": "0.0.1",
-                "namespace": "db-integration-test",
-                "name": "create-workflow-db-test",
-                "version": "1.0.0",
-                "summary": "CREATE_WORKFLOW workflow for DB integration test"
-            },
-            "input": {
-                "from": ".testInput"
-            },
-            "do": [
-                {
-                    "db_test_step": {
-                        "run": {
-                            "runner": {
-                                "name": "COMMAND",
-                                "arguments": {
-                                    "command": "echo",
-                                    "args": ["Running DB integration test"]
+                "document": {
+                    "dsl": "0.0.1",
+                    "namespace": "db-integration-test",
+                    "name": "create-workflow-db-test",
+                    "version": "1.0.0",
+                    "summary": "CREATE_WORKFLOW workflow for DB integration test"
+                },
+                "input": {
+                    "from": ".testInput"
+                },
+                "do": [
+                    {
+                        "db_test_step": {
+                            "run": {
+                                "runner": {
+                                    "name": "COMMAND",
+                                    "arguments": {
+                                        "command": "echo",
+                                        "args": ["Running DB integration test"]
+                                    }
                                 }
                             }
                         }
                     }
-                }
-            }
-        ]
-    });
+                ]
+        });
 
-    let worker_name = "db-test-create-workflow-worker";
-    let test_args = CreateWorkflowArgs {
-        workflow_source: Some(WorkflowSource::WorkflowData(test_workflow.to_string())),
-        name: worker_name.to_string(),
-        worker_options: Some(WorkerOptions {
-            channel: Some("db-test-channel".to_string()),
-            response_type: Some(ResponseType::Direct as i32),
-            broadcast_results: true,
-            queue_type: proto::jobworkerp::data::QueueType::ForcedRdb as i32,
-            store_success: true,
-            store_failure: true,
-            use_static: false,
-            retry_policy: Some(RetryPolicy {
-                r#type: RetryType::Exponential as i32,
-                interval: 2000,
-                max_interval: 30000,
-                max_retry: 3,
-                basis: 2.0,
+        let worker_name = "db-test-create-workflow-worker";
+        let test_args = CreateWorkflowArgs {
+            workflow_source: Some(WorkflowSource::WorkflowData(test_workflow.to_string())),
+            name: worker_name.to_string(),
+            worker_options: Some(WorkerOptions {
+                channel: Some("db-test-channel".to_string()),
+                response_type: Some(ResponseType::Direct as i32),
+                broadcast_results: true,
+                queue_type: proto::jobworkerp::data::QueueType::ForcedRdb as i32,
+                store_success: true,
+                store_failure: true,
+                use_static: false,
+                retry_policy: Some(RetryPolicy {
+                    r#type: RetryType::Exponential as i32,
+                    interval: 2000,
+                    max_interval: 30000,
+                    max_retry: 3,
+                    basis: 2.0,
+                }),
             }),
-        }),
-    };
+        };
 
         // Proto serialization
         let serialized_args = ProstMessageCodec::serialize_message(&test_args)?;
@@ -108,10 +107,7 @@ fn test_create_workflow_runner_db_integration() -> Result<()> {
 
                 // Verify that the worker was created in the DB
                 let found_worker = app.worker_app.find_by_name(worker_name).await?;
-                assert!(
-                    found_worker.is_some(),
-                    "Created worker not found in DB"
-                );
+                assert!(found_worker.is_some(), "Created worker not found in DB");
 
                 let found_worker = found_worker.unwrap();
                 let worker_data = found_worker.data.as_ref().expect("WorkerData should exist");
@@ -166,19 +162,15 @@ fn test_create_workflow_runner_db_integration() -> Result<()> {
                 println!("   - Database persistence: PASSED");
                 println!("   - Worker retrieval: PASSED");
                 println!("   - Options configuration: PASSED");
+
+                Ok(())
             }
             Err(e) => {
                 println!("❌ CREATE_WORKFLOW execution failed: {e}");
-                return Err(e);
+                Err(e)
             }
         }
-        Err(e) => {
-            println!("❌ CREATE_WORKFLOW execution failed: {e}");
-            return Err(e);
-        }
-    }
-
-    Ok(())
+    })
 }
 
 /// CREATE_WORKFLOW Workflow URL DB integration test
@@ -189,97 +181,96 @@ fn test_create_workflow_url_db_integration() -> Result<()> {
     //command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
     println!("🌐 CREATE_WORKFLOW URL DB integration test start");
     TEST_RUNTIME.block_on(async {
+        // Initialize AppModule (hybrid setup for testing)
+        let app = Arc::new(create_hybrid_test_app().await?);
 
-    // Initialize AppModule (hybrid setup for testing)
-    let app = Arc::new(create_hybrid_test_app().await?);
+        // Initialize CreateWorkflowRunnerImpl
+        let mut runner = CreateWorkflowRunnerImpl::new(app.clone())?;
 
-    // Initialize CreateWorkflowRunnerImpl
-    let mut runner = CreateWorkflowRunnerImpl::new(app.clone())?;
+        let worker_name = "url-db-test-workflow-worker";
+        let test_url = "https://gitea.sutr.app/jobworkerp-rs/workflow-files/raw/branch/main/deep-research/workflows/deep_research.yml";
 
-    let worker_name = "url-db-test-workflow-worker";
-    let test_url = "https://gitea.sutr.app/jobworkerp-rs/workflow-files/raw/branch/main/deep-research/workflows/deep_research.yml";
+        let url_args = CreateWorkflowArgs {
+            workflow_source: Some(WorkflowSource::WorkflowUrl(test_url.to_string())),
+            name: worker_name.to_string(),
+            worker_options: Some(WorkerOptions {
+                channel: Some("url-db-test-channel".to_string()),
+                response_type: Some(ResponseType::NoResult as i32),
+                broadcast_results: false,
+                queue_type: proto::jobworkerp::data::QueueType::WithBackup as i32,
+                store_success: true,
+                store_failure: true,
+                use_static: false,
+                retry_policy: None,
+            }),
+        };
 
-    let url_args = CreateWorkflowArgs {
-        workflow_source: Some(WorkflowSource::WorkflowUrl(test_url.to_string())),
-        name: worker_name.to_string(),
-        worker_options: Some(WorkerOptions {
-            channel: Some("url-db-test-channel".to_string()),
-            response_type: Some(ResponseType::NoResult as i32),
-            broadcast_results: false,
-            queue_type: proto::jobworkerp::data::QueueType::WithBackup as i32,
-            store_success: true,
-            store_failure: true,
-            use_static: false,
-            retry_policy: None,
-        }),
-    };
+        // Proto serialization
+        let serialized_args = ProstMessageCodec::serialize_message(&url_args)?;
 
-    // Proto serialization
-    let serialized_args = ProstMessageCodec::serialize_message(&url_args)?;
+        // Execute CREATE_WORKFLOW
+        let metadata = HashMap::new();
+        let (result, _returned_metadata) = runner.run(&serialized_args, metadata).await;
 
-    // Execute CREATE_WORKFLOW
-    let metadata = HashMap::new();
-    let (result, _returned_metadata) = runner.run(&serialized_args, metadata).await;
+        match result {
+            Ok(output_bytes) => {
+                println!("✅ CREATE_WORKFLOW URL execution successful");
 
-    match result {
-        Ok(output_bytes) => {
-            println!("✅ CREATE_WORKFLOW URL execution successful");
+                // Deserialize result
+                let create_result: CreateWorkflowResult =
+                    ProstMessageCodec::deserialize_message(&output_bytes)?;
 
-            // Deserialize result
-            let create_result: CreateWorkflowResult =
-                ProstMessageCodec::deserialize_message(&output_bytes)?;
+                // Verify WorkerID
+                assert!(create_result.worker_id.is_some());
+                let worker_id = create_result.worker_id.unwrap();
 
-            // Verify WorkerID
-            assert!(create_result.worker_id.is_some());
-            let worker_id = create_result.worker_id.unwrap();
+                println!("✅ URL-based WorkerID generation: {}", worker_id.value);
 
-            println!("✅ URL-based WorkerID generation: {}", worker_id.value);
+                // Verify that worker was created in DB
+                let found_worker = app.worker_app.find_by_name(worker_name).await?;
+                assert!(
+                    found_worker.is_some(),
+                    "Worker created via URL not found in DB"
+                );
 
-            // Verify that worker was created in DB
-            let found_worker = app.worker_app.find_by_name(worker_name).await?;
-            assert!(
-                found_worker.is_some(),
-                "Worker created via URL not found in DB"
-            );
+                let found_worker = found_worker.unwrap();
+                let worker_data = found_worker.data.as_ref().expect("WorkerData should exist");
+                println!("✅ URL-based worker DB verification successful:");
+                println!("   - Worker Name: {}", worker_data.name);
+                println!("   - Source URL: {test_url}");
+                println!(
+                    "   - Worker ID: {}",
+                    found_worker.id.as_ref().unwrap().value
+                );
+                println!("   - Channel: {:?}", worker_data.channel);
 
-            let found_worker = found_worker.unwrap();
-            let worker_data = found_worker.data.as_ref().expect("WorkerData should exist");
-            println!("✅ URL-based worker DB verification successful:");
-            println!("   - Worker Name: {}", worker_data.name);
-            println!("   - Source URL: {test_url}");
-            println!(
-                "   - Worker ID: {}",
-                found_worker.id.as_ref().unwrap().value
-            );
-            println!("   - Channel: {:?}", worker_data.channel);
-
-            // Verify options
-            assert_eq!(worker_data.name, worker_name);
-            assert_eq!(worker_data.channel.as_deref(), Some("url-db-test-channel"));
-            assert_eq!(worker_data.response_type, ResponseType::NoResult as i32);
-            // Verify with_backup via queue_type
-            assert_eq!(
-                worker_data.queue_type,
-                proto::jobworkerp::data::QueueType::WithBackup as i32
-            );
-        }
-        Err(e) => {
-            // Allow network errors and validation errors
-            let error_msg = e.to_string();
-            if error_msg.contains("timeout")
-                || error_msg.contains("network")
-                || error_msg.contains("validation")
-                || error_msg.contains("schema")
-            {
-                println!("ℹ️  Network/Validation error: {e}");
-            } else {
-                println!("❌ Unexpected error: {e}");
+                // Verify options
+                assert_eq!(worker_data.name, worker_name);
+                assert_eq!(worker_data.channel.as_deref(), Some("url-db-test-channel"));
+                assert_eq!(worker_data.response_type, ResponseType::NoResult as i32);
+                // Verify with_backup via queue_type
+                assert_eq!(
+                    worker_data.queue_type,
+                    proto::jobworkerp::data::QueueType::WithBackup as i32
+                );
+                Ok(())
             }
-            return Err(e);
+            Err(e) => {
+                // Allow network errors and validation errors
+                let error_msg = e.to_string();
+                if error_msg.contains("timeout")
+                    || error_msg.contains("network")
+                    || error_msg.contains("validation")
+                    || error_msg.contains("schema")
+                {
+                    println!("ℹ️  Network/Validation error: {e}");
+                } else {
+                    println!("❌ Unexpected error: {e}");
+                }
+                Err(e)
+            }
         }
-    }
-
-    Ok(())
+    })
 }
 
 /// CREATE_WORKFLOW error cases DB integration test
@@ -358,11 +349,6 @@ fn test_create_workflow_error_cases_db_integration() -> Result<()> {
         println!("   - Missing source rejection: PASSED");
         println!("   - Database integrity: PASSED");
 
-    println!("✅ CREATE_WORKFLOW error case DB integration test successful:");
-    println!("   - Empty name rejection: PASSED");
-    println!("   - Invalid JSON rejection: PASSED");
-    println!("   - Missing source rejection: PASSED");
-    println!("   - Database integrity: PASSED");
-
-    Ok(())
+        Ok(())
+    })
 }
