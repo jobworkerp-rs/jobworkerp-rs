@@ -22,4 +22,8 @@ message GrpcUnaryArgs {
   // # Timeout
   // Maximum time in milliseconds to wait for the request to complete
   int64 timeout = 4;
+
+  // # AsJson
+  // When true, convert response body from binary protobuf to JSON using reflection
+  bool as_json = 5;
 }
