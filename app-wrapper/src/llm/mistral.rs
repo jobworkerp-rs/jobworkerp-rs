@@ -1,3 +1,5 @@
+#![cfg(feature = "local_llm")]
+
 pub mod args;
 pub mod model;
 pub mod result;

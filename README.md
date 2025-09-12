@@ -100,6 +100,13 @@ $ cargo build --release --features mysql
 # build release binaries (use sqlite)
 $ cargo build --release
 
+# build release binaries with local LLM support (mistralrs)
+$ cargo build --release --features local_llm
+
+# build release binaries with GPU acceleration (automatically enables local_llm)
+$ cargo build --release --features metal    # macOS Metal
+$ cargo build --release --features cuda     # NVIDIA CUDA
+
 # Run the all-in-one server by release binary
 $ ./target/release/all-in-one
 
@@ -202,8 +209,30 @@ Each feature requires setting necessary values in protobuf format for worker.run
 | HTTP_REQUEST | HTTP requests | HTTP communication using reqwest | worker.runner_settings: base URL, job.args: headers, method, body, path, etc. |
 | GRPC_UNARY | gRPC communication | gRPC unary requests | worker.runner_settings: URL+path, job.args: protobuf encoded arguments |
 | DOCKER | Docker container execution | Equivalent to docker run | worker.runner_settings: FromImage/Tag, job.args: Image/Cmd, etc. |
-| LLM_COMPLETION | LLM text generation | Uses various LLMs (external servers) | worker.runner_settings: model settings, job.args: prompts/options |
+| SLACK_POST_MESSAGE | Slack message posting | Posts messages to Slack channels | worker.runner_settings: Slack API settings, job.args: channel, message content, etc. |
+| LLM_COMPLETION | LLM text generation | Uses various LLMs (external servers/local execution) | worker.runner_settings: model settings, job.args: prompts/options |
+| LLM_CHAT | LLM chat completion | Interactive chat with Large Language Models | worker.runner_settings: model settings, job.args: chat messages/options |
+| CREATE_WORKFLOW | Workflow creation | Creates workflow definitions for reusable execution | worker.runner_settings: empty, job.args: workflow definition data |
 | INLINE_WORKFLOW/REUSABLE_WORKFLOW | Workflow execution | Executes multiple jobs in defined order | worker.runner_settings: workflow definition, job.args: input data |
+
+#### LLM_COMPLETION and LLM_CHAT Details
+
+Both LLM_COMPLETION and LLM_CHAT runners support the following LLM execution methods:
+
+- **External servers**: Ollama, OpenAI API-compatible servers, etc.
+- **Local execution**: On-device inference using MistralRS (requires `local_llm` feature)
+
+**Enabling Local LLM Features**:
+```bash
+# Build with local LLM features enabled
+cargo build --release --features local_llm
+
+# Enable GPU acceleration (automatically enables local_llm)
+cargo build --release --features metal  # macOS Metal
+cargo build --release --features cuda   # NVIDIA CUDA
+```
+
+**Note**: When using Settings::Local for either LLM_COMPLETION or LLM_CHAT, you must build with one of the above features. Attempting to use local LLM without the proper feature will display an error message.
 
 ### Job Queue Types
 
@@ -277,16 +306,16 @@ Place the configuration file at the path specified by the `MCP_CONFIG` environme
 #### MCP Proxy Usage Examples
 
 1. Prepare an MCP server configuration file
-2. When creating a worker, specify the numeric ID of the MCP runner as runner_id (you can check this using the `jobworkerp-client runner list` command)
+2. When creating a worker, specify the numeric ID of the specific MCP server as runner_id (you can check available MCP servers using the `jobworkerp-client runner list` command)
 3. Specify tool_name and arg_json in job execution arguments
 
 ```shell
 # First, check the available runner-id
 $ ./target/release/jobworkerp-client runner list
-# Identify the MCP runner's ID here (e.g., 3)
+# Identify the specific MCP server's ID here (e.g., 3 for "time" server)
 
 # Create a worker that uses an MCP server (e.g., time information retrieval)
-# Specify the MCP runner's ID number confirmed above for runner-id
+# Specify the MCP server's ID number confirmed above for runner-id
 $ ./target/release/jobworkerp-client worker create --name "TimeInfo" --description "" --runner-id <runner id> --response-type DIRECT --settings '' --use-static
 
 # Execute a job to retrieve current time information

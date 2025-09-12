@@ -1,3 +1,5 @@
+#![cfg(feature = "local_llm")]
+
 use anyhow::Result;
 use command_utils::trace::attr::OtelSpanAttributes;
 use command_utils::trace::otel_span::GenAIOtelClient;

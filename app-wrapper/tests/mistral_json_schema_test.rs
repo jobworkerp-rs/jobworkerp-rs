@@ -13,9 +13,10 @@
 //! MISTRAL_TEST_MODEL_ID="microsoft/Phi-3-mini-4k-instruct" \
 //! MISTRAL_TEST_TIMEOUT=600 \
 //! MISTRAL_TEST_LOGGING=true \
-//! cargo test --package app-wrapper --test mistral_json_schema_test
+//! cargo test --package app-wrapper --test mistral_json_schema_test --features local_llm
 //! ```
 
+#![cfg(feature = "local_llm")]
 #![allow(clippy::uninlined_format_args)]
 #![allow(clippy::collapsible_match)]
 

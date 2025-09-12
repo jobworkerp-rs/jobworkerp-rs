@@ -44,7 +44,7 @@ jobs:
   job-test:
     runs-on: ubuntu-latest
     container:
-      image: nvcr.io/nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
+      image: ubuntu:24.04
     timeout-minutes: 50
     services:
       db:
@@ -91,7 +91,8 @@ jobs:
       - name: apt upgrade
         run: |
           apt-get update
-          apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang libclang-dev  gobjc gnustep gnustep-devel g++ musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip # cudnn9-cuda-12-8          # Install Node.js for setup-protoc action
+          apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang libclang-dev  gobjc gnustep gnustep-devel g++ musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip
+          # Install Node.js for setup-protoc action
           curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
           apt-get install -y nodejs
       - name: Clean up apt cache
@@ -119,7 +120,7 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --features "mysql,cuda,flash-attn" #cudnn,
+          args: --features "mysql"
       - name: Run test
         run: |
           cargo build
@@ -136,8 +137,8 @@ jobs:
           rm -f app-wrapper/test_db.sqlite3*
           rm -f infra/test_db.sqlite3*
           rm -f worker-app/test_db.sqlite3*
-          cargo build --features "mysql,cuda,flash-attn" #,cudnn
-          cargo test --features "mysql,cuda,flash-attn" -- --test-threads=1 #,cudnn
+          cargo build --features "mysql"
+          cargo test --features "mysql" -- --test-threads=1
           cargo clean
         env:
           PLUGINS_RUNNER_DIR: "./target/debug/"
