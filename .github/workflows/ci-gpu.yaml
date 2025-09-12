@@ -1,0 +1,158 @@
+name: CI GPU Features (Manual)
+on:
+  workflow_dispatch: # 手動実行のみ
+    inputs:
+      features:
+        description: 'GPU features to test'
+        required: true
+        default: 'mysql,cuda,flash-attn'
+        type: string
+permissions:
+  contents: read
+
+jobs:
+  gpu-test:
+    runs-on: ubuntu-latest
+    container:
+      image: nvcr.io/nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
+    timeout-minutes: 90  # GPU ビルドは時間がかかるため延長
+    services:
+      db:
+        image: mariadb:10.9
+        ports:
+          - 3306:3306
+        env:
+          MYSQL_HOST: db
+          MYSQL_USER: maria
+          MYSQL_PASSWORD: maria
+          MYSQL_DATABASE: test
+          MYSQL_ROOT_PASSWORD: ""
+          MYSQL_ALLOW_EMPTY_PASSWORD: yes
+          MYSQL_ROOT_HOST: "0.0.0.0"
+        options: --health-cmd "mysqladmin ping" --health-interval 10s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7
+        env:
+          REDIS_HOST: redis
+        ports:
+          - 6379:6379
+        # Set health checks to wait until redis has started
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis-cluster:
+        image: grokzen/redis-cluster:7.0.10
+        env:
+          REDIS_CLUSTER_IP: 127.0.0.1
+          IP: 127.0.0.1
+          INITIAL_PORT: 7000
+          BIND_ADDRESS: 0.0.0.0
+        ports:
+          - 7000:7000
+          - 7001:7001
+          - 7002:7002
+          - 7003:7003
+          - 7004:7004
+          - 7005:7005
+
+    steps:
+      - name: apt upgrade
+        run: |
+          apt-get update
+          apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang libclang-dev  gobjc gnustep gnustep-devel g++ musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip
+          # Install Node.js for setup-protoc action
+          curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+          apt-get install -y nodejs
+      - name: Clean up apt cache
+        run: |
+          apt-get clean
+          rm -rf /var/lib/apt/lists/*
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Install uv (for test only)
+        uses: astral-sh/setup-uv@v5
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+      - name: Display GPU features
+        run: |
+          echo "Building with features: ${{ github.event.inputs.features }}"
+          # CUDA環境の確認
+          nvidia-smi || echo "nvidia-smi not available (expected in CI)"
+          nvcc --version || echo "nvcc not available"
+      - name: Build with GPU features
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --features "${{ github.event.inputs.features }}"
+      - name: Run test with GPU features
+        run: |
+          cargo build --features "${{ github.event.inputs.features }}"
+          # local_llm フィーチャーを含める場合のテスト実行
+          if [[ "${{ github.event.inputs.features }}" == *"local_llm"* ]] || [[ "${{ github.event.inputs.features }}" == *"cuda"* ]]; then
+            echo "Running tests with local_llm features enabled"
+            cargo test --features "${{ github.event.inputs.features }}" -- --test-threads=1
+          else
+            echo "Running tests without local_llm features"
+            cargo test --features "${{ github.event.inputs.features }}" -- --test-threads=1
+          fi
+        env:
+          PLUGINS_RUNNER_DIR: "./target/debug/"
+          TEST_REDIS_URL: "redis://redis:6379"
+          TEST_MYSQL_URL: "mysql://maria:maria@db:3306/test"
+          UV_VENV_CLEAR: 1
+          RUST_BACKTRACE: 1
+
+  gpu-publish-test:
+    runs-on: ubuntu-latest
+    container:
+      image: nvcr.io/nvidia/cuda:12.8.1-devel-ubuntu24.04
+      options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
+    timeout-minutes: 60
+    steps:
+      - name: apt upgrade
+        run: |
+          apt-get update
+          apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip ca-certificates curl gnupg lsb-release docker.io
+          # Install Node.js for setup-protoc action
+          curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+          apt-get install -y nodejs
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Install last version of Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          version: "24.x"
+      - uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-gpu-${{ hashFiles('**/Cargo.lock') }}
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - name: Display GPU features
+        run: |
+          echo "Building with features: ${{ github.event.inputs.features }}"
+          # CUDA環境の確認
+          nvidia-smi || echo "nvidia-smi not available (expected in CI)"
+          nvcc --version || echo "nvcc not available"
+      # build with GPU features for release simulation
+      - name: Build release with GPU features
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --features "${{ github.event.inputs.features }}"

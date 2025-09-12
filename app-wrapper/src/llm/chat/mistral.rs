@@ -1,3 +1,5 @@
+#![cfg(feature = "local_llm")]
+
 use crate::llm::generic_tracing_helper::GenericLLMTracingHelper;
 use crate::llm::mistral::{
     MistralLlmServiceImpl, MistralRSMessage, MistralRSToolCall, ToolCallingConfig,

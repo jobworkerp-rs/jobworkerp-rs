@@ -1,3 +1,5 @@
+#![cfg(feature = "local_llm")]
+
 use super::super::mistral::{
     DefaultLLMResultConverter, LLMRequestConverter, LLMResultConverter, MistralLlmServiceImpl,
 };

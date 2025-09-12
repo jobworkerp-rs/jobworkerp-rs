@@ -1,3 +1,5 @@
+#![cfg(feature = "local_llm")]
+
 use anyhow::Result;
 use app::app::function::{FunctionApp, FunctionAppImpl, UseFunctionApp};
 use jobworkerp_runner::jobworkerp::runner::llm::{

@@ -95,6 +95,13 @@ $ cargo build --release --features mysql
 # build release binaries (use sqlite)
 $ cargo build --release
 
+# build release binaries with local LLM support (mistralrs)
+$ cargo build --release --features local_llm
+
+# build release binaries with GPU acceleration (automatically enables local_llm)
+$ cargo build --release --features metal    # macOS Metal
+$ cargo build --release --features cuda     # NVIDIA CUDA
+
 # Run the all-in-one server by release binary
 $ ./target/release/all-in-one
 
@@ -195,8 +202,30 @@ worker_runnerに組み込み定義されている機能を以下に記載しま�
 | HTTP_REQUEST | HTTPリクエスト | reqwestによるHTTP通信 | worker.runner_settings: base URL, job.args: headers, method, body, path など |
 | GRPC_UNARY | gRPC通信 | gRPC unaryリクエスト | worker.runner_settings: URL+path, job.args: protobufエンコード引数 |
 | DOCKER | Dockerコンテナ実行 | docker run相当 | worker.runner_settings: FromImage/Tag, job.args: Image/Cmd など |
-| LLM_COMPLETION | LLM文章生成 | 各種LLM(外部サーバ)を利用 | worker.runner_settings: モデル設定, job.args: プロンプト/オプション |
+| SLACK_POST_MESSAGE | Slackメッセージ投稿 | Slackチャンネルにメッセージを投稿 | worker.runner_settings: Slack API設定, job.args: チャンネル、メッセージ内容など |
+| LLM_COMPLETION | LLM文章生成 | 各種LLM(外部サーバ/ローカル実行)を利用 | worker.runner_settings: モデル設定, job.args: プロンプト/オプション |
+| LLM_CHAT | LLMチャット補完 | 大規模言語モデルとの対話的チャット | worker.runner_settings: モデル設定, job.args: チャットメッセージ/オプション |
+| CREATE_WORKFLOW | ワークフロー作成 | 再利用可能なワークフロー定義を作成 | worker.runner_settings: 空, job.args: ワークフロー定義データ |
 | INLINE_WORKFLOW/REUSABLE_WORKFLOW | ワークフロー実行 | 複数のジョブを定義された順序で実行 | worker.runner_settings: ワークフロー定義, job.args: 入力データ |
+
+#### LLM_COMPLETION と LLM_CHAT の詳細
+
+LLM_COMPLETIONとLLM_CHATの両方のランナーは以下のLLM実行方式をサポートしています：
+
+- **外部サーバー**: Ollama、OpenAI API互換サーバー等
+- **ローカル実行**: MistralRSを使用したオンデバイス推論（`local_llm` feature必須）
+
+**ローカルLLM機能の有効化**:
+```bash
+# ローカルLLM機能を有効にしてビルド
+cargo build --release --features local_llm
+
+# GPU加速も有効化（自動的にlocal_llm機能も有効）
+cargo build --release --features metal  # macOS Metal
+cargo build --release --features cuda   # NVIDIA CUDA
+```
+
+**注意**: LLM_COMPLETIONまたはLLM_CHATでSettings::Localを使用する場合は、必ず上記のいずれかのfeatureでビルドしてください。feature無しビルドでローカルLLMを使用しようとするとエラーメッセージが表示されます。
 
 ### ジョブキュー種別
 
@@ -271,16 +300,16 @@ args = ["mcp-server-fetch"]
 #### MCPプロキシの使用例
 
 1. MCPサーバー設定ファイルを準備する
-2. worker作成時にrunner_idにMCPランナーの数値IDを指定（`jobworkerp-client runner list` コマンドで確認できます）
+2. worker作成時にrunner_idに特定のMCPサーバーの数値IDを指定（`jobworkerp-client runner list` コマンドで利用可能なMCPサーバーを確認できます）
 3. ジョブ実行時の引数にtool_nameとarg_jsonを指定する
 
 ```shell
 # まず利用可能なrunner-idを確認する
 $ ./target/release/jobworkerp-client runner list
-# ここでMCPランナーのIDを確認（例: 3）
+# ここで特定のMCPサーバーのIDを確認（例: 3 が "time" サーバー）
 
 # MCPサーバーを使用するワーカーを作成（例：時間情報取得）
-# runner-idには上記で確認したMCPランナーのID番号を指定
+# runner-idには上記で確認したMCPサーバーのID番号を指定
 $ ./target/release/jobworkerp-client worker create --name "TimeInfo" --description "" --runner-id <runner id> --response-type DIRECT --settings '' --use-static
 
 # ジョブを実行して現在の時間情報を取得

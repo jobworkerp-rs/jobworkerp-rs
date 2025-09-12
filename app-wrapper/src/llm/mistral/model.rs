@@ -1,3 +1,5 @@
+#![cfg(feature = "local_llm")]
+
 use anyhow::Result;
 use async_trait::async_trait;
 use jobworkerp_base::error::JobWorkerError;
