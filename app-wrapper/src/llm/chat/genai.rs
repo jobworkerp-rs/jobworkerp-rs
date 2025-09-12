@@ -146,7 +146,7 @@ impl GenaiChatService {
                 let role = self.trans_role(msg.role());
                 let content = match msg.content {
                     Some(content) => match content.content {
-                        Some(ProtoContent::Text(text)) => GenaiMessageContent::Text(text),
+                        Some(ProtoContent::Text(text)) => GenaiMessageContent::from_text(text),
                         // TODO pdf
                         Some(ProtoContent::Image(image)) => {
                             let source = match image.source {
@@ -161,11 +161,13 @@ impl GenaiChatService {
                                 }
                                 None => return None,
                             };
-                            GenaiMessageContent::Parts(vec![genai::chat::ContentPart::Binary {
-                                name: None,
-                                content_type: image.content_type,
-                                source,
-                            }])
+                            GenaiMessageContent::from_parts(vec![genai::chat::ContentPart::Binary(
+                                genai::chat::Binary {
+                                    name: None,
+                                    content_type: image.content_type,
+                                    source,
+                                },
+                            )])
                         }
                         Some(ProtoContent::ToolCalls(tool_calls)) => {
                             let calls = tool_calls
@@ -182,7 +184,7 @@ impl GenaiChatService {
                                     }
                                 })
                                 .collect();
-                            GenaiMessageContent::ToolCalls(calls)
+                            GenaiMessageContent::from_tool_calls(calls)
                         }
                         None => return None,
                     },
@@ -244,7 +246,7 @@ impl GenaiChatService {
                 0,
                 ChatMessage {
                     role: genai::chat::ChatRole::System,
-                    content: GenaiMessageContent::Text(system_prompt),
+                    content: GenaiMessageContent::from_text(system_prompt),
                     options: None,
                 },
             );
@@ -421,12 +423,12 @@ impl GenaiChatService {
         response: &genai::chat::ChatResponse,
     ) -> Option<Vec<genai::chat::ToolCall>> {
         // Check if response contains tool calls
-        for content in &response.content {
-            if let GenaiMessageContent::ToolCalls(calls) = content {
-                return Some(calls.clone());
-            }
+        let tools = response.content.tool_calls();
+        if tools.is_empty() {
+            None
+        } else {
+            Some(tools.into_iter().cloned().collect())
         }
-        None
     }
 
     async fn process_tool_calls_with_tracing(
@@ -498,7 +500,7 @@ impl GenaiChatService {
             // Add tool result to messages
             messages.lock().await.push(ChatMessage {
                 role: genai::chat::ChatRole::Tool,
-                content: GenaiMessageContent::Text(tool_result.to_string()),
+                content: GenaiMessageContent::from_text(tool_result.to_string()),
                 options: None,
             });
 
@@ -544,7 +546,7 @@ impl GenaiChatService {
             // Add tool result to messages
             messages.lock().await.push(ChatMessage {
                 role: genai::chat::ChatRole::Tool,
-                content: GenaiMessageContent::Text(tool_result.to_string()),
+                content: GenaiMessageContent::from_text(tool_result.to_string()),
                 options: None,
             });
         }
@@ -665,14 +667,8 @@ impl GenaiChatService {
                                     });
                                 }
                                 // Add final content if available
-                                if let Some(text) = end
-                                    .captured_content
-                                    .as_ref()
-                                    .and_then(|c| c.first())
-                                    .and_then(|mc| match mc {
-                                        GenaiMessageContent::Text(text) => Some(text.clone()),
-                                        _ => None,
-                                    })
+                                if let Some(text) =
+                                    end.captured_content.as_ref().and_then(|c| c.first_text())
                                 {
                                     llm_result.content = Some(llm_chat_result::MessageContent {
                                         content: Some(message_content::Content::Text(
@@ -737,10 +733,13 @@ impl LLMMessage for ChatMessage {
     }
 
     fn get_content(&self) -> &str {
-        match &self.content {
-            GenaiMessageContent::Text(text) => text,
-            _ => "", // For non-text content, return empty string
+        if self.content.len() > 1 {
+            tracing::warn!(
+                "!! Message content has multiple parts ({}), returning first text part only",
+                self.content.len()
+            );
         }
+        self.content.first_text().unwrap_or("")
     }
 }
 
@@ -820,7 +819,7 @@ impl GenericLLMTracingHelper for GenaiChatService {
                         genai::chat::ChatRole::User
                     }
                 },
-                content: GenaiMessageContent::Text(m.get_content().to_string()),
+                content: GenaiMessageContent::from_text(m.get_content().to_string()),
                 options: None,
             })
             .collect();

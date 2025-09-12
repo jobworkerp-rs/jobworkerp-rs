@@ -197,6 +197,51 @@ impl GrpcUnaryRunner {
         }
     }
 
+    // Helper method to get output message descriptor for a given method
+    async fn get_output_message_descriptor(&self, method_path: &str) -> Result<MessageDescriptor> {
+        let (service_name, method_name) = Self::parse_method_path(method_path)?;
+
+        // First check if we have a reflection client available
+        if let Some(ref reflection_client) = self.reflection_client {
+            // Get service descriptor pool using the reflection client
+            let pool = reflection_client
+                .get_service_with_dependencies(&service_name)
+                .await?;
+
+            // Find the service in the pool
+            if let Some(service) = pool.get_service_by_name(&service_name) {
+                // Find the method
+                if let Some(method) = service.methods().find(|m| m.name() == method_name) {
+                    return Ok(method.output());
+                }
+            }
+            Err(anyhow!(
+                "Method {} not found in service {}",
+                method_name,
+                service_name
+            ))
+        } else if let Some(pool) = &self.descriptor_pool {
+            // Fallback to using cached pool if reflection client is not available
+            // Find the service
+            for service in pool.services() {
+                if service.full_name() == service_name {
+                    // Find the method
+                    if let Some(method) = service.methods().find(|m| m.name() == method_name) {
+                        return Ok(method.output());
+                    }
+                }
+            }
+
+            Err(anyhow!(
+                "Method {} not found in service {}",
+                method_name,
+                service_name
+            ))
+        } else {
+            Err(anyhow!("No reflection client or descriptor pool available"))
+        }
+    }
+
     // Helper method to get input message descriptor for a given method
     async fn get_input_message_descriptor(&self, method_path: &str) -> Result<MessageDescriptor> {
         let (service_name, method_name) = Self::parse_method_path(method_path)?;
@@ -262,6 +307,32 @@ impl GrpcUnaryRunner {
         );
 
         Ok(bytes)
+    }
+
+    // Helper method to convert response bytes to JSON using reflection
+    async fn convert_response_to_json(
+        &self,
+        method_path: &str,
+        response_bytes: &[u8],
+    ) -> Result<String> {
+        if let Some(ref reflection_client) = self.reflection_client {
+            // Get the output message descriptor for the method
+            let output_descriptor = self.get_output_message_descriptor(method_path).await?;
+            let message_name = output_descriptor.full_name();
+
+            tracing::debug!(
+                "Converting response to JSON for method {} with output type {}",
+                method_path,
+                message_name
+            );
+
+            // Use reflection client to parse bytes to JSON
+            reflection_client
+                .parse_bytes_to_json(message_name, response_bytes)
+                .await
+        } else {
+            Err(anyhow!("Reflection client not available"))
+        }
     }
 
     // Helper function to convert MetadataMap to HashMap<String, String>
@@ -445,11 +516,33 @@ impl RunnerTrait for GrpcUnaryRunner {
                     }
                 };
                 let res = match response {
-                    Ok(response) => GrpcUnaryResult {
-                        metadata: Self::metadata_map_to_hashmap(response.metadata()),
-                        body: response.into_inner(),
-                        code: tonic::Code::Ok as i32,
-                        message: None,
+                    Ok(response) => {
+                        let metadata = Self::metadata_map_to_hashmap(response.metadata());
+                        let response_body = response.into_inner();
+                        let mut json_body = None;
+
+                        // Convert to JSON if as_json flag is enabled and reflection is available
+                        if req.as_json && self.use_reflection && self.reflection_client.is_some() {
+                            match self.convert_response_to_json(&req.method, &response_body).await {
+                                Ok(json_str) => {
+                                    tracing::debug!("Converted response to JSON: {}", json_str);
+                                    json_body = Some(json_str);
+                                },
+                                Err(e) => {
+                                    tracing::warn!("Failed to convert response to JSON, using raw bytes: {}", e);
+                                }
+                            }
+                        } else if req.as_json {
+                            tracing::warn!("JSON conversion requested but reflection not available, returning raw bytes");
+                        }
+
+                        GrpcUnaryResult {
+                            metadata,
+                            body: response_body,
+                            code: tonic::Code::Ok as i32,
+                            message: None,
+                            json_body,
+                        }
                     },
                     Err(e) => {
                         tracing::warn!("grpc request error: status={:?}", e);
@@ -458,6 +551,7 @@ impl RunnerTrait for GrpcUnaryRunner {
                             body: e.details().to_vec(),
                             code: e.code() as i32,
                             message: Some(e.message().to_string()),
+                            json_body: None,
                         }
                     }
                 };
@@ -577,6 +671,7 @@ mod tests {
             request: "{}".to_string(),
             metadata: HashMap::new(),
             timeout: 5000,
+            as_json: false,
         };
 
         let start_time = std::time::Instant::now();
@@ -634,6 +729,7 @@ mod tests {
             request: base64_encoded,
             metadata: Default::default(),
             timeout: 0,
+            as_json: false,
         };
 
         let arg = ProstMessageCodec::serialize_message(&arg)?;
@@ -747,6 +843,7 @@ mod tests {
             request: serde_json::to_string(&set_data)?,
             metadata: HashMap::new(),
             timeout: 5000,
+            as_json: true,
         };
 
         let create_result = {
@@ -795,6 +892,7 @@ mod tests {
             request: format!(r#"{{"value": {function_set_id}}}"#),
             metadata: HashMap::new(),
             timeout: 5000,
+            as_json: true,
         };
 
         let find_result = {
@@ -844,6 +942,7 @@ mod tests {
             request: format!(r#"{{"name": "{test_set_name}"}}"#),
             metadata: HashMap::new(),
             timeout: 5000,
+            as_json: true,
         };
 
         let _find_by_name_result = {
@@ -912,6 +1011,7 @@ mod tests {
                 request: serde_json::to_string(&function_set["data"])?,
                 metadata: HashMap::new(),
                 timeout: 5000,
+                as_json: true,
             }
         };
 
@@ -968,6 +1068,7 @@ mod tests {
             request: format!(r#"{{"value": {function_set_id}}}"#),
             metadata: HashMap::new(),
             timeout: 5000,
+            as_json: true,
         };
 
         {
@@ -1016,6 +1117,178 @@ mod tests {
         };
 
         println!("CRUD operations for function set completed successfully");
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires a running gRPC server with reflection enabled
+    async fn test_as_json_flag_functionality() -> Result<()> {
+        let mut runner = GrpcUnaryRunner::new();
+        let settings = GrpcUnaryRunnerSettings {
+            host: "http://localhost".to_string(),
+            port: 9000,
+            tls: false,
+            timeout_ms: Some(5000),
+            max_message_size: None,
+            auth_token: None,
+            tls_config: None,
+            use_reflection: Some(true),
+        };
+
+        runner
+            .load(ProstMessageCodec::serialize_message(&settings)?)
+            .await?;
+        assert!(
+            runner.reflection_client.is_some(),
+            "Reflection client should be initialized"
+        );
+
+        let service_name = "jobworkerp.function.service.FunctionSetService";
+
+        // Test 1: Create request with as_json = true
+        let test_set_name = format!("test-json-flag-{}", uuid::Uuid::new_v4());
+        let create_request = GrpcUnaryArgs {
+            method: format!("/{service_name}/Create"),
+            request: format!(
+                r#"{{"name": "{test_set_name}", "description": "Test as_json flag", "category": 1}}"#
+            ),
+            metadata: HashMap::new(),
+            timeout: 5000,
+            as_json: true,
+        };
+
+        let (result, _) = runner
+            .run(
+                &ProstMessageCodec::serialize_message(&create_request)?,
+                HashMap::new(),
+            )
+            .await;
+
+        let response_with_json =
+            ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result?)?;
+        assert_eq!(response_with_json.code, tonic::Code::Ok as i32);
+
+        // Verify json_body field is populated when as_json = true
+        assert!(
+            response_with_json.json_body.is_some(),
+            "json_body should be populated when as_json = true"
+        );
+
+        let json_response_str = response_with_json.json_body.as_ref().unwrap();
+        println!("JSON response body: {json_response_str}");
+
+        // Verify it's valid JSON
+        let json_value: serde_json::Value = serde_json::from_str(json_response_str)?;
+        assert!(json_value.is_object(), "Response should be JSON object");
+
+        // Also verify that the body field still contains the binary data
+        assert!(
+            !response_with_json.body.is_empty(),
+            "Binary body should still be present"
+        );
+
+        // Extract the created function set ID
+        let function_set_id = json_value["id"]["value"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Could not find id in JSON response"))?
+            .parse::<i64>()?;
+
+        // Test 2: Same request with as_json = false for comparison
+        let create_request_binary = GrpcUnaryArgs {
+            method: format!("/{service_name}/Create"),
+            request: format!(
+                r#"{{"name": "{test_set_name}-binary", "description": "Test binary response", "category": 1}}"#
+            ),
+            metadata: HashMap::new(),
+            timeout: 5000,
+            as_json: false,
+        };
+
+        let (result_binary, _) = runner
+            .run(
+                &ProstMessageCodec::serialize_message(&create_request_binary)?,
+                HashMap::new(),
+            )
+            .await;
+
+        let response_binary =
+            ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result_binary?)?;
+        assert_eq!(response_binary.code, tonic::Code::Ok as i32);
+
+        // Verify json_body field is None when as_json = false
+        assert!(
+            response_binary.json_body.is_none(),
+            "json_body should be None when as_json = false"
+        );
+
+        // Response body should contain binary protobuf data
+        assert!(
+            !response_binary.body.is_empty(),
+            "Binary body should be present"
+        );
+        println!(
+            "Binary response body length: {}",
+            response_binary.body.len()
+        );
+
+        // Test 3: Find request with as_json = true to verify different method types
+        let find_request = GrpcUnaryArgs {
+            method: format!("/{service_name}/Find"),
+            request: format!(r#"{{"value": {function_set_id}}}"#),
+            metadata: HashMap::new(),
+            timeout: 5000,
+            as_json: true,
+        };
+
+        let (find_result, _) = runner
+            .run(
+                &ProstMessageCodec::serialize_message(&find_request)?,
+                HashMap::new(),
+            )
+            .await;
+
+        let find_response =
+            ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&find_result?)?;
+        assert_eq!(find_response.code, tonic::Code::Ok as i32);
+
+        // Verify json_body field is populated for Find request too
+        assert!(
+            find_response.json_body.is_some(),
+            "json_body should be populated for Find request with as_json = true"
+        );
+
+        let find_json_str = find_response.json_body.as_ref().unwrap();
+        let find_json: serde_json::Value = serde_json::from_str(find_json_str)?;
+        assert!(find_json.is_object(), "Find response should be JSON object");
+        println!("Find response JSON: {find_json_str}");
+
+        // Both binary body and json_body should be present
+        assert!(
+            !find_response.body.is_empty(),
+            "Binary body should be present"
+        );
+
+        // Cleanup: Delete the created function sets
+        let delete_requests = vec![format!(r#"{{"value": {function_set_id}}}"#)];
+
+        for delete_req in delete_requests {
+            let delete_request = GrpcUnaryArgs {
+                method: format!("/{service_name}/Delete"),
+                request: delete_req,
+                metadata: HashMap::new(),
+                timeout: 5000,
+                as_json: false, // Use binary for cleanup
+            };
+
+            let _ = runner
+                .run(
+                    &ProstMessageCodec::serialize_message(&delete_request)?,
+                    HashMap::new(),
+                )
+                .await;
+        }
+
+        println!("as_json flag functionality test completed successfully");
         Ok(())
     }
 }

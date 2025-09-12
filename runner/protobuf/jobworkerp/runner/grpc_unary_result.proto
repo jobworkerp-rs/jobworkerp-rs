@@ -21,5 +21,10 @@ message GrpcUnaryResult {
     // # Message
     // Error message describing the result
     optional string message = 4;
+    
+    // # JsonBody
+    // JSON-formatted response body when as_json flag is enabled
+    // Contains the same data as 'body' but in human-readable JSON format
+    optional string json_body = 5;
 }
 
