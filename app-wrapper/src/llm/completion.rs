@@ -144,13 +144,13 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
             }
             Some(
                 jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::Settings::Local(
-                    settings,
+                    _settings,
                 ),
             ) => {
                 #[cfg(feature = "local_llm")]
                 {
                     let mistral =
-                        mistral::MistralCompletionService::new(settings, self.app.function_app.clone())
+                        mistral::MistralCompletionService::new(_settings, self.app.function_app.clone())
                             .await?;
                     tracing::info!(
                         "{} loaded(mistral)",
