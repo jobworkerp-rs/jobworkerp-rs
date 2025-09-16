@@ -147,13 +147,13 @@ impl RunnerTrait for LLMChatRunnerImpl {
             }
             Some(
                 jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::Settings::Local(
-                    settings,
+                    _settings,
                 ),
             ) => {
                 #[cfg(feature = "local_llm")]
                 {
                     let mistral = mistral::MistralRSService::new_with_function_app(
-                        settings.clone(),
+                        _settings.clone(),
                         self.app.function_app.clone(),
                     )
                     .await?;
