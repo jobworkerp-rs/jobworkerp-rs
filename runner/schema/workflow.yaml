@@ -16,7 +16,7 @@ description: >-
   Available context variables:
   - Input data: direct key access
   - Output data: direct key access  
-  - Context vars: set by task.export, setTask (access via $vars for jq)
+  - Context vars: set by task.export, setTask (access via $variable_name for jq, {{ variable_name }} for liquid)
   - Workflow: workflow.id, workflow.definition, workflow.input, workflow.context_variables
   - Task: task.definition, task.input, task.raw_output, task.output, task.flow_directive
 type: object
