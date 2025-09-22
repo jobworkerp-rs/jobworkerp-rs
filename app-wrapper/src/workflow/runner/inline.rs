@@ -338,7 +338,7 @@ impl RunnerTrait for InlineWorkflowRunner {
             serde_json::to_string_pretty(&context_json).unwrap_or_default()
         );
         let source = arg.workflow_source.as_ref().ok_or({
-            tracing::error!("workflow_source is required in workflow args");
+            tracing::warn!("workflow_source is required in workflow args");
             JobWorkerError::InvalidParameter(
                 "workflow_source is required in workflow args".to_string(),
             )
