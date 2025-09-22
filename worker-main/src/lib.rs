@@ -77,24 +77,25 @@ pub async fn boot_all_in_one() -> Result<()> {
         mcp_clients,
     ));
 
-    tracing::info!("start worker");
-    let jh = tokio::spawn(start_worker(
-        app_module.clone(),
-        runner_factory,
-        lock.clone(),
-    ));
-    tracing::info!("start server");
-    let jh2 = tokio::spawn(grpc_front::start_front_server(app_module, lock));
+    tracing::info!("start worker and server");
+    let worker_future = start_worker(app_module.clone(), runner_factory, lock.clone());
+    let server_future = grpc_front::start_front_server(app_module, lock);
+
+    // Run both futures concurrently and wait for both to complete
+    let (worker_result, server_result) = tokio::join!(worker_future, server_future);
+
+    tracing::debug!("worker completed: {:?}", worker_result);
+    tracing::debug!("server completed: {:?}", server_result);
+
+    // Handle results
+    worker_result?;
+    server_result?;
 
     // shutdown
-    tracing::info!("waiting worker");
+    tracing::info!("waiting shutdown signal");
     wait.wait().await;
 
     tracing::debug!("shutdown telemetry");
-
-    tracing::debug!("worker handler");
-    let _ret = jh.await?;
-    let _ret2 = jh2.await?;
 
     command_utils::util::tracing::shutdown_tracer_provider();
     tracing::info!("shutdown normally");
