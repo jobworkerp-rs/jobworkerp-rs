@@ -160,7 +160,7 @@ impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync 
         let options = req.options;
         let timeout_sec = options
             .as_ref()
-            .and_then(|o| (o.timeout_ms.map(|t| (t / 1000) as u32)))
+            .and_then(|o| o.timeout_ms.map(|t| (t / 1000) as u32))
             .unwrap_or(DEFAULT_TIMEOUT_SEC);
         let streaming = options.as_ref().and_then(|o| o.streaming).unwrap_or(false);
         let meta = Arc::new(options.map(|o| o.metadata).unwrap_or_default());
