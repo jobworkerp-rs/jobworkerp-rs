@@ -253,7 +253,7 @@ impl RunnerTrait for LLMChatRunnerImpl {
                 } else {
                     Err(anyhow!("llm is not initialized"))
                 }
-                
+
                 #[cfg(not(feature = "local_llm"))]
                 {
                     Err(anyhow!("llm is not initialized"))
@@ -425,7 +425,7 @@ impl RunnerTrait for LLMChatRunnerImpl {
             } else {
                 Err(anyhow!("llm is not initialized"))
             }
-            
+
             #[cfg(not(feature = "local_llm"))]
             {
                 Err(anyhow!("llm is not initialized"))

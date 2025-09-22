@@ -14,11 +14,11 @@ description: >-
   - liquid syntax: $${..} for templates
   
   Available context variables:
-  - Input data: direct key access
-  - Output data: direct key access  
+  - Task input data: direct key access via ${.key} (only within current task context)
+  - Task output data: direct key access via ${.key} (only within current task context)
   - Context vars: set by task.export, setTask (access via $variable_name for jq, {{ variable_name }} for liquid)
-  - Workflow: workflow.id, workflow.definition, workflow.input, workflow.context_variables
-  - Task: task.definition, task.input, task.raw_output, task.output, task.flow_directive
+  - Workflow: access via $workflow (e.g., $workflow.input.key, $workflow.id, $workflow.definition, $workflow.context_variables)
+  - Task: access via $task (e.g., $task.definition, $task.input, $task.raw_output, $task.output, $task.flow_directive)
 type: object
 required: [document, input, do]
 properties:
@@ -221,7 +221,7 @@ $defs:
           each:
             type: string
             title: ForEach
-            description: Variable name for current item.
+            description: Variable name for current item (access via $variable_name for jq, {{ variable_name }} for liquid).
             default: item
           in:
             type: string
@@ -230,7 +230,7 @@ $defs:
           at:
             type: string
             title: ForAt
-            description: Variable name for current index.
+            description: Variable name for current index (access via $variable_name for jq, {{ variable_name }} for liquid).
             default: index
         required: [in]
       while:

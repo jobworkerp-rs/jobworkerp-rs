@@ -81,9 +81,18 @@ impl GrpcUnaryRunner {
     pub async fn create(&mut self, settings: &GrpcUnaryRunnerSettings) -> Result<()> {
         let host = &settings.host;
         let port = &settings.port;
+        let prtcl = if host.starts_with("http://") || host.starts_with("https://") {
+            ""
+        } else {
+            if settings.tls {
+                "https://"
+            } else {
+                "http://"
+            }
+        };
 
         // Create the base endpoint
-        let mut endpoint = Endpoint::new(format!("{host}:{port}"))?;
+        let mut endpoint = Endpoint::new(format!("{prtcl}{host}:{port}"))?;
 
         // Apply timeout if specified
         if let Some(timeout_ms) = settings.timeout_ms {

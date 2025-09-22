@@ -149,9 +149,11 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
             ) => {
                 #[cfg(feature = "local_llm")]
                 {
-                    let mistral =
-                        mistral::MistralCompletionService::new(_settings, self.app.function_app.clone())
-                            .await?;
+                    let mistral = mistral::MistralCompletionService::new(
+                        _settings,
+                        self.app.function_app.clone(),
+                    )
+                    .await?;
                     tracing::info!(
                         "{} loaded(mistral)",
                         RunnerType::LlmCompletion.as_str_name()
@@ -255,7 +257,7 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                 } else {
                     Err(anyhow!("llm is not initialized"))
                 }
-                
+
                 #[cfg(not(feature = "local_llm"))]
                 {
                     Err(anyhow!("llm is not initialized"))
@@ -453,7 +455,7 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                 // Note: token cleanup is handled by Manager
                 Err(anyhow!("llm is not initialized"))
             }
-            
+
             #[cfg(not(feature = "local_llm"))]
             {
                 // Clear cancellation token even on error
