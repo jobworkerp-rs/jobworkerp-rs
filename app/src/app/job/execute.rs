@@ -592,6 +592,7 @@ pub trait UseJobExecutor:
                 .result_descriptor
                 .and_then(|d| d.get_messages().first().cloned());
 
+            tracing::debug!("job output length: {}", output.len());
             if let Some(desc) = result_descriptor {
                 match ProtobufDescriptor::get_message_from_bytes(desc.clone(), output) {
                     Ok(m) => {

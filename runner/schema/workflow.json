@@ -2,7 +2,7 @@
   "$id": "https://serverlessworkflow.io/schemas/1.0.0/workflow.yaml",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "WorkflowSchema",
-  "description": "Workflow schema supporting job execution with functions and tools.\nRuntime expressions are supported in fields marked in descriptions: - jq syntax: ${.key.subkey} for data access, ${$task.input} for context - liquid syntax: $${..} for templates\nAvailable context variables: - Input data: direct key access - Output data: direct key access   - Context vars: set by task.export, setTask (access via $vars for jq) - Workflow: workflow.id, workflow.definition, workflow.input, workflow.context_variables - Task: task.definition, task.input, task.raw_output, task.output, task.flow_directive",
+  "description": "Workflow schema supporting job execution with functions and tools.\nRuntime expressions are supported in fields marked in descriptions: - jq syntax: ${.key.subkey} for data access, ${$task.input} for context - liquid syntax: $${..} for templates\nAvailable context variables: - Task input data: direct key access via ${.key} (only within current task context) - Task output data: direct key access via ${.key} (only within current task context) - Context vars: set by task.export, setTask (access via $variable_name for jq, {{ variable_name }} for liquid) - Workflow: access via $workflow (e.g., $workflow.input.key, $workflow.id, $workflow.definition, $workflow.context_variables) - Task: access via $task (e.g., $task.definition, $task.input, $task.raw_output, $task.output, $task.flow_directive)",
   "type": "object",
   "required": [
     "document",
@@ -301,7 +301,7 @@
             "each": {
               "type": "string",
               "title": "ForEach",
-              "description": "Variable name for current item.",
+              "description": "Variable name for current item (access via $variable_name for jq, {{ variable_name }} for liquid).",
               "default": "item"
             },
             "in": {
@@ -312,7 +312,7 @@
             "at": {
               "type": "string",
               "title": "ForAt",
-              "description": "Variable name for current index.",
+              "description": "Variable name for current index (access via $variable_name for jq, {{ variable_name }} for liquid).",
               "default": "index"
             }
           },
@@ -330,6 +330,16 @@
           "title": "ForInParallel",
           "description": "Execute subtasks in parallel.",
           "default": false
+        },
+        "onError": {
+          "type": "string",
+          "title": "ForOnError",
+          "description": "Error handling strategy (continue to process remaining items or break the loop).",
+          "enum": [
+            "continue",
+            "break"
+          ],
+          "default": "break"
         },
         "do": {
           "$ref": "#/$defs/taskList",

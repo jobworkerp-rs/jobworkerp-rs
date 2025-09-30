@@ -8165,8 +8165,9 @@ checksum = "8f50febec83f5ee1df3015341d8bd429f2d1cc62bcba7ea2076759d315084683"
 
 [[package]]
 name = "thirtyfour"
-version = "0.35.0"
-source = "git+https://github.com/sutr-app/thirtyfour.git?branch=main#8a7c864a23057c1bc6946af47d08323af2446abf"
+version = "0.36.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "48f1edfb88bbdf0365c6dc161e8694ce8414c0b79d0d3a3663b4baac62236be0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -8183,10 +8184,22 @@ dependencies = [
  "serde_json",
  "serde_repr",
  "stringmatch",
- "thiserror 1.0.69",
+ "thirtyfour-macros",
+ "thiserror 2.0.16",
  "tokio",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "thirtyfour-macros"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5cf0ffc3ba4368e99597bd6afd83f4ff6febad66d9ae541ab46e697d32285fc0"
+dependencies = [
+ "proc-macro2",
+ "quote 1.0.40",
+ "syn 2.0.106",
 ]
 
 [[package]]

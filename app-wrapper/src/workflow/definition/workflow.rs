@@ -1051,6 +1051,75 @@ impl ::std::convert::TryFrom<::std::string::String> for FlowDirectiveEnum {
         value.parse()
     }
 }
+#[doc = "Error handling strategy for ForTask"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ForOnError {
+    #[serde(rename = "continue")]
+    Continue,
+    #[serde(rename = "break")]
+    Break,
+}
+impl ::std::convert::From<&Self> for ForOnError {
+    fn from(value: &ForOnError) -> Self {
+        value.clone()
+    }
+}
+impl ::std::fmt::Display for ForOnError {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Continue => write!(f, "continue"),
+            Self::Break => write!(f, "break"),
+        }
+    }
+}
+impl ::std::str::FromStr for ForOnError {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "continue" => Ok(Self::Continue),
+            "break" => Ok(Self::Break),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ForOnError {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ForOnError {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ForOnError {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::default::Default for ForOnError {
+    fn default() -> Self {
+        ForOnError::Break
+    }
+}
 #[doc = "ForTask"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -1205,6 +1274,9 @@ pub struct ForTask {
         skip_serializing_if = "::std::option::Option::is_none"
     )]
     pub while_: ::std::option::Option<::std::string::String>,
+    #[doc = "Error handling strategy (continue to process remaining items or break the loop)."]
+    #[serde(rename = "onError", default)]
+    pub on_error: ForOnError,
 }
 impl ::std::convert::From<&ForTask> for ForTask {
     fn from(value: &ForTask) -> Self {
@@ -5478,6 +5550,7 @@ pub mod builder {
             ::std::option::Option<::std::string::String>,
             ::std::string::String,
         >,
+        on_error: ::std::result::Result<super::ForOnError, ::std::string::String>,
     }
     impl ::std::default::Default for ForTask {
         fn default() -> Self {
@@ -5494,6 +5567,7 @@ pub mod builder {
                 then: Ok(Default::default()),
                 timeout: Ok(Default::default()),
                 while_: Ok(Default::default()),
+                on_error: Ok(Default::default()),
             }
         }
     }
@@ -5620,6 +5694,16 @@ pub mod builder {
                 .map_err(|e| format!("error converting supplied value for while_: {e}"));
             self
         }
+        pub fn on_error<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<super::ForOnError>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.on_error = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for on_error: {e}"));
+            self
+        }
     }
     impl ::std::convert::TryFrom<ForTask> for super::ForTask {
         type Error = super::error::ConversionError;
@@ -5637,6 +5721,7 @@ pub mod builder {
                 then: value.then?,
                 timeout: value.timeout?,
                 while_: value.while_?,
+                on_error: value.on_error?,
             })
         }
     }
@@ -5655,6 +5740,7 @@ pub mod builder {
                 then: Ok(value.then),
                 timeout: Ok(value.timeout),
                 while_: Ok(value.while_),
+                on_error: Ok(value.on_error),
             }
         }
     }
