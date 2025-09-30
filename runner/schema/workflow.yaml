@@ -242,6 +242,12 @@ $defs:
         title: ForInParallel
         description: Execute subtasks in parallel.
         default: false
+      onError:
+        type: string
+        title: ForOnError
+        description: Error handling strategy (continue to process remaining items or break the loop).
+        enum: [continue, break]
+        default: break
       do:
         $ref: "#/$defs/taskList"
         title: ForTaskDo
