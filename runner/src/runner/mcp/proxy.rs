@@ -6,7 +6,8 @@ use memory_utils::cache::moka::{MokaCache, MokaCacheConfig, MokaCacheImpl, UseMo
 use rmcp::{
     model::{CallToolRequestParam, CallToolResult, LoggingLevel, Tool},
     service::{QuitReason, RunningService},
-    ClientHandler, Peer, RoleClient, ServiceExt,
+    transport::child_process::ConfigureCommandExt,
+    ClientHandler, RoleClient, ServiceExt,
 };
 use std::{borrow::Cow, collections::HashMap, process::Stdio, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
@@ -55,11 +56,9 @@ impl McpServerProxy {
                 envs,
             } => {
                 let transport = rmcp::transport::child_process::TokioChildProcess::new(
-                    tokio::process::Command::new(command)
-                        .args(args)
-                        .envs(envs)
-                        .stderr(Stdio::inherit())
-                        .stdout(Stdio::inherit()),
+                    tokio::process::Command::new(command).configure(|cmd| {
+                        cmd.args(args).envs(envs).stderr(Stdio::inherit());
+                    }),
                 )?;
                 // TODO use handler
                 ().serve(transport).await?
@@ -115,33 +114,34 @@ impl McpServerProxy {
 }
 // TODO use for serve
 impl ClientHandler for McpServerProxy {
-    async fn on_resource_updated(&self, params: rmcp::model::ResourceUpdatedNotificationParam) {
-        let uri = params.uri;
-        tracing::info!("Resource updated: {}", uri);
-        let _ = self.async_cache.clear().await;
-    }
-
-    fn set_peer(&mut self, peer: Peer<RoleClient>) {
-        tracing::warn!("McpServerProxy: set_peer not supported");
-        drop(peer)
-    }
-
-    fn get_peer(&self) -> Option<Peer<RoleClient>> {
-        Some(self.transport.peer().clone())
+    #[allow(clippy::manual_async_fn)]
+    fn on_resource_updated(
+        &self,
+        params: rmcp::model::ResourceUpdatedNotificationParam,
+        _context: rmcp::service::NotificationContext<RoleClient>,
+    ) -> impl std::prelude::rust_2024::Future<Output = ()> + Send + '_ {
+        async move {
+            let uri = params.uri;
+            tracing::info!("Resource updated: {}", uri);
+            let _ = self.async_cache.clear().await;
+        }
     }
 
     #[allow(clippy::manual_async_fn)]
     fn on_tool_list_changed(
         &self,
+        _context: rmcp::service::NotificationContext<RoleClient>,
     ) -> impl std::prelude::rust_2024::Future<Output = ()> + Send + '_ {
         async {
             let _ = self.async_cache.clear().await;
         }
     }
+
     #[allow(clippy::manual_async_fn)]
     fn on_logging_message(
         &self,
         params: rmcp::model::LoggingMessageNotificationParam,
+        _context: rmcp::service::NotificationContext<RoleClient>,
     ) -> impl std::prelude::rust_2024::Future<Output = ()> + Send + '_ {
         async move {
             match params.level {
@@ -179,10 +179,12 @@ impl ClientHandler for McpServerProxy {
             }
         }
     }
+
     #[allow(clippy::manual_async_fn)]
     fn on_progress(
         &self,
         params: rmcp::model::ProgressNotificationParam,
+        _context: rmcp::service::NotificationContext<RoleClient>,
     ) -> impl std::prelude::rust_2024::Future<Output = ()> + Send + '_ {
         async move {
             tracing::info!(
