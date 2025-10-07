@@ -698,9 +698,9 @@ impl StreamTaskExecutorTrait<'_> for ForTaskStreamExecutor {
 mod tests {
     use super::*;
     use crate::workflow::definition::workflow::{
-        Document, ForOnError, ForTask, ForTaskConfiguration, Input, RaiseTask, RaiseTaskConfiguration,
-        SetTask, Task, TaskList, WorkflowName, WorkflowSchema, WorkflowVersion, Error as WorkflowError,
-        UriTemplate,
+        Document, Error as WorkflowError, ForOnError, ForTask, ForTaskConfiguration, Input,
+        RaiseTask, RaiseTaskConfiguration, SetTask, Task, TaskList, UriTemplate, WorkflowName,
+        WorkflowSchema, WorkflowVersion,
     };
     use crate::workflow::execute::context::{TaskContext, WorkflowContext};
     use app::module::test::create_hybrid_test_app;
@@ -1146,4 +1146,3 @@ mod tests {
         });
     }
 }
-

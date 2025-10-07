@@ -5070,6 +5070,7 @@ dependencies = [
  "bytes",
  "http",
  "opentelemetry 0.30.0",
+ "reqwest",
 ]
 
 [[package]]
@@ -5084,6 +5085,7 @@ dependencies = [
  "opentelemetry-proto",
  "opentelemetry_sdk 0.30.0",
  "prost 0.13.5",
+ "reqwest",
  "thiserror 2.0.17",
  "tokio",
  "tonic 0.13.1",
@@ -8123,22 +8125,10 @@ dependencies = [
  "serde_json",
  "serde_repr",
  "stringmatch",
- "thirtyfour-macros",
  "thiserror 2.0.17",
  "tokio",
  "tracing",
  "url",
-]
-
-[[package]]
-name = "thirtyfour-macros"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cf0ffc3ba4368e99597bd6afd83f4ff6febad66d9ae541ab46e697d32285fc0"
-dependencies = [
- "proc-macro2",
- "quote 1.0.41",
- "syn 2.0.106",
 ]
 
 [[package]]
