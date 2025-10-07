@@ -44,9 +44,32 @@ impl McpServerProxy {
     // start connection to mcp server
     async fn start(config: &McpServerTransportConfig) -> Result<RunningService<RoleClient, ()>> {
         let client = match config {
-            McpServerTransportConfig::Sse { url } => {
-                let transport =
-                    rmcp::transport::sse_client::SseClientTransport::start(url.as_str()).await?;
+            McpServerTransportConfig::Sse { url, headers } => {
+                // Create reqwest client with custom headers
+                let mut header_map = reqwest::header::HeaderMap::new();
+                for (key, value) in headers {
+                    let header_name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
+                        .map_err(|e| anyhow::anyhow!("Invalid header name '{}': {}", key, e))?;
+                    let header_value =
+                        reqwest::header::HeaderValue::from_str(value).map_err(|e| {
+                            anyhow::anyhow!("Invalid header value for '{}': {}", key, e)
+                        })?;
+                    header_map.insert(header_name, header_value);
+                }
+
+                let reqwest_client = reqwest::Client::builder()
+                    .default_headers(header_map)
+                    .build()
+                    .map_err(|e| anyhow::anyhow!("Failed to create reqwest client: {}", e))?;
+
+                let transport = rmcp::transport::sse_client::SseClientTransport::start_with_client(
+                    reqwest_client,
+                    rmcp::transport::sse_client::SseClientConfig {
+                        sse_endpoint: url.as_str().into(),
+                        ..Default::default()
+                    },
+                )
+                .await?;
                 // TODO use handler
                 ().serve(transport).await?
             }

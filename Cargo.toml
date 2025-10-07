@@ -72,7 +72,7 @@ redis = { version = "0.32", features = [
 ] }
 reqwest = "0.12"
 #rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", rev = "9a771fb157056b4daa332626b2fa41b16a523756" }
-rmcp = { version = "0.4" }
+rmcp = { version = "0.8" }
 rs-snowflake = "0.6"
 rustls = { version = "0.23", default-features = false, features = [
     "ring",

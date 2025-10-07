@@ -697,17 +697,12 @@ impl StreamTaskExecutorTrait<'_> for ForTaskStreamExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::definition::workflow::{
-        Document, Error as WorkflowError, ForOnError, ForTask, ForTaskConfiguration, Input,
-        RaiseTask, RaiseTaskConfiguration, SetTask, Task, TaskList, UriTemplate, WorkflowName,
-        WorkflowSchema, WorkflowVersion,
-    };
-    use crate::workflow::execute::context::{TaskContext, WorkflowContext};
+    use crate::workflow::definition::workflow::WorkflowSchema;
+    use crate::workflow::execute::context::WorkflowContext;
     use app::module::test::create_hybrid_test_app;
     use std::collections::HashMap;
-    use std::str::FromStr;
     use std::sync::Arc;
-    use tokio::sync::{Mutex, RwLock};
+    use tokio::sync::RwLock;
 
     #[test]
     fn test_for_task_sequential_continue_on_error() {
@@ -933,7 +928,6 @@ mod tests {
         // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
         // Test that with onError: break, processing stops after first error
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
-            use crate::workflow::execute::workflow::WorkflowExecutor;
 
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
