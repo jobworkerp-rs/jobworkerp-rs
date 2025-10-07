@@ -195,44 +195,49 @@ impl RunnerTrait for McpServerRunnerImpl {
             }
             // map res to McpServerResult and encode to Vec<u8>
             let mut mcp_contents = Vec::new();
-            for content in res.content {
-                match content.raw {
-                    rmcp::model::RawContent::Text(rmcp::model::RawTextContent { text }) => {
-                        mcp_contents.push(mcp_server_result::Content {
-                            raw_content: Some(mcp_server_result::content::RawContent::Text(
-                                mcp_server_result::TextContent { text },
-                            )),
-                        });
-                    }
-                    rmcp::model::RawContent::Image(rmcp::model::RawImageContent {
-                        data,
-                        mime_type,
-                    }) => {
-                        mcp_contents.push(mcp_server_result::Content {
-                            raw_content: Some(mcp_server_result::content::RawContent::Image(
-                                mcp_server_result::ImageContent { data, mime_type },
-                            )),
-                        });
-                    }
-                    // wait for raw audio content of raw content
-                    // https://github.com/modelcontextprotocol/rust-sdk/blob/main/crates/rmcp/src/model/content.rs#L55
-                    rmcp::model::RawContent::Audio(_audio) => {
-                        // mcp_contents.push(mcp_server_result::Content {
-                        //     raw_content: Some(mcp_server_result::content::RawContent::Audio(
-                        //         mcp_server_result::AudioContent { data, mime_type },
-                        //     )),
-                        // });
-                        tracing::error!("Audio content not supported yet");
-                    }
-                    rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
-                        resource:
-                            rmcp::model::ResourceContents::TextResourceContents {
-                                uri,
-                                mime_type,
-                                text,
-                            },
-                    }) => {
-                        mcp_contents.push(mcp_server_result::Content {
+            if let Some(contents) = res.content {
+                span.set_attribute(opentelemetry::KeyValue::new(
+                    "output.content_length",
+                    contents.len() as i64,
+                ));
+                for content in contents {
+                    match content.raw {
+                        rmcp::model::RawContent::Text(rmcp::model::RawTextContent { text }) => {
+                            mcp_contents.push(mcp_server_result::Content {
+                                raw_content: Some(mcp_server_result::content::RawContent::Text(
+                                    mcp_server_result::TextContent { text },
+                                )),
+                            });
+                        }
+                        rmcp::model::RawContent::Image(rmcp::model::RawImageContent {
+                            data,
+                            mime_type,
+                        }) => {
+                            mcp_contents.push(mcp_server_result::Content {
+                                raw_content: Some(mcp_server_result::content::RawContent::Image(
+                                    mcp_server_result::ImageContent { data, mime_type },
+                                )),
+                            });
+                        }
+                        // wait for raw audio content of raw content
+                        // https://github.com/modelcontextprotocol/rust-sdk/blob/main/crates/rmcp/src/model/content.rs#L55
+                        rmcp::model::RawContent::Audio(_audio) => {
+                            // mcp_contents.push(mcp_server_result::Content {
+                            //     raw_content: Some(mcp_server_result::content::RawContent::Audio(
+                            //         mcp_server_result::AudioContent { data, mime_type },
+                            //     )),
+                            // });
+                            tracing::error!("Audio content not supported yet");
+                        }
+                        rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
+                            resource:
+                                rmcp::model::ResourceContents::TextResourceContents {
+                                    uri,
+                                    mime_type,
+                                    text,
+                                },
+                        }) => {
+                            mcp_contents.push(mcp_server_result::Content {
                             raw_content: Some(mcp_server_result::content::RawContent::Resource(
                                 mcp_server_result::EmbeddedResource {
                                     resource: Some(
@@ -247,16 +252,16 @@ impl RunnerTrait for McpServerRunnerImpl {
                                 },
                             )),
                         });
-                    }
-                    rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
-                        resource:
-                            rmcp::model::ResourceContents::BlobResourceContents {
-                                uri,
-                                mime_type,
-                                blob,
-                            },
-                    }) => {
-                        mcp_contents.push(mcp_server_result::Content {
+                        }
+                        rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
+                            resource:
+                                rmcp::model::ResourceContents::BlobResourceContents {
+                                    uri,
+                                    mime_type,
+                                    blob,
+                                },
+                        }) => {
+                            mcp_contents.push(mcp_server_result::Content {
                             raw_content: Some(mcp_server_result::content::RawContent::Resource(
                                 mcp_server_result::EmbeddedResource {
                                     resource: Some(
@@ -271,6 +276,7 @@ impl RunnerTrait for McpServerRunnerImpl {
                                 },
                             )),
                         });
+                        }
                     }
                 }
             }
@@ -339,61 +345,63 @@ impl RunnerTrait for McpServerRunnerImpl {
                 Ok(res) => {
                     // Map response to McpServerResult
                     let mut mcp_contents = Vec::new();
-                    for content in res.content {
-                        match content.raw {
-                            rmcp::model::RawContent::Text(rmcp::model::RawTextContent { text }) => {
-                                mcp_contents.push(mcp_server_result::Content {
-                                    raw_content: Some(mcp_server_result::content::RawContent::Text(
-                                        mcp_server_result::TextContent { text },
-                                    )),
-                                });
-                            }
-                            rmcp::model::RawContent::Image(rmcp::model::RawImageContent {
-                                data,
-                                mime_type,
-                            }) => {
-                                mcp_contents.push(mcp_server_result::Content {
-                                    raw_content: Some(mcp_server_result::content::RawContent::Image(
-                                        mcp_server_result::ImageContent { data, mime_type },
-                                    )),
-                                });
-                            }
-                            rmcp::model::RawContent::Audio(_audio) => {
-                                tracing::error!("Audio content not supported yet");
-                            }
-                            rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
-                                resource: rmcp::model::ResourceContents::TextResourceContents {
-                                    uri, mime_type, text,
-                                },
-                            }) => {
-                                mcp_contents.push(mcp_server_result::Content {
-                                    raw_content: Some(mcp_server_result::content::RawContent::Resource(
-                                        mcp_server_result::EmbeddedResource {
-                                            resource: Some(
-                                                mcp_server_result::embedded_resource::Resource::Text(
-                                                    TextResourceContents { uri, mime_type, text },
+                    if let Some(contents) = res.content {
+                        for content in contents {
+                            match content.raw {
+                                rmcp::model::RawContent::Text(rmcp::model::RawTextContent { text }) => {
+                                    mcp_contents.push(mcp_server_result::Content {
+                                        raw_content: Some(mcp_server_result::content::RawContent::Text(
+                                            mcp_server_result::TextContent { text },
+                                        )),
+                                    });
+                                }
+                                rmcp::model::RawContent::Image(rmcp::model::RawImageContent {
+                                    data,
+                                    mime_type,
+                                }) => {
+                                    mcp_contents.push(mcp_server_result::Content {
+                                        raw_content: Some(mcp_server_result::content::RawContent::Image(
+                                            mcp_server_result::ImageContent { data, mime_type },
+                                        )),
+                                    });
+                                }
+                                rmcp::model::RawContent::Audio(_audio) => {
+                                    tracing::error!("Audio content not supported yet");
+                                }
+                                rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
+                                    resource: rmcp::model::ResourceContents::TextResourceContents {
+                                        uri, mime_type, text,
+                                    },
+                                }) => {
+                                    mcp_contents.push(mcp_server_result::Content {
+                                        raw_content: Some(mcp_server_result::content::RawContent::Resource(
+                                            mcp_server_result::EmbeddedResource {
+                                                resource: Some(
+                                                    mcp_server_result::embedded_resource::Resource::Text(
+                                                        TextResourceContents { uri, mime_type, text },
+                                                    ),
                                                 ),
-                                            ),
-                                        },
-                                    )),
-                                });
-                            }
-                            rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
-                                resource: rmcp::model::ResourceContents::BlobResourceContents {
-                                    uri, mime_type, blob,
-                                },
-                            }) => {
-                                mcp_contents.push(mcp_server_result::Content {
-                                    raw_content: Some(mcp_server_result::content::RawContent::Resource(
-                                        mcp_server_result::EmbeddedResource {
-                                            resource: Some(
-                                                mcp_server_result::embedded_resource::Resource::Blob(
-                                                    BlobResourceContents { uri, mime_type, blob },
+                                            },
+                                        )),
+                                    });
+                                }
+                                rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
+                                    resource: rmcp::model::ResourceContents::BlobResourceContents {
+                                        uri, mime_type, blob,
+                                    },
+                                }) => {
+                                    mcp_contents.push(mcp_server_result::Content {
+                                        raw_content: Some(mcp_server_result::content::RawContent::Resource(
+                                            mcp_server_result::EmbeddedResource {
+                                                resource: Some(
+                                                    mcp_server_result::embedded_resource::Resource::Blob(
+                                                        BlobResourceContents { uri, mime_type, blob },
+                                                    ),
                                                 ),
-                                            ),
-                                        },
-                                    )),
-                                });
+                                            },
+                                        )),
+                                    });
+                                }
                             }
                         }
                     }

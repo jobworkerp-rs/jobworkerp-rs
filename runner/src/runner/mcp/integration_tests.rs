@@ -170,7 +170,7 @@ async fn test_time_mcp_server() -> Result<()> {
     println!("Time server result: {result:?}");
 
     // Validate results
-    assert!(!result.content.is_empty());
+    assert!(!result.content.is_none() && !result.content.as_ref().unwrap().is_empty());
 
     Ok(())
 }
