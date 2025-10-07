@@ -33,11 +33,7 @@ once_cell = { workspace = true }
 prost = { workspace = true }
 redis = { workspace = true }
 reqwest = { workspace = true }
-rmcp = { workspace = true, features = [
-    "client",
-    "transport-child-process",
-    "transport-io",
-] }
+#rmcp = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
