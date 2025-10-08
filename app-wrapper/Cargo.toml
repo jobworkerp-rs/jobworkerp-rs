@@ -57,11 +57,13 @@ rand = { workspace = true }
 regex = { workspace = true }
 regress = "0.10"
 reqwest = { workspace = true }
-rmcp = { workspace = true, features = [
-    "client",
-    "transport-child-process",
-    "transport-sse",
-] }
+rmcp = { workspace = true }
+#features = [
+#    "client",
+#    "transport-child-process",
+#    "transport-sse-client",
+#    "reqwest",
+#] }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

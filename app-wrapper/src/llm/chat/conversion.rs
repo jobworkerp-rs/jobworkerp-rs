@@ -3,7 +3,7 @@ use command_utils::util::json_schema::SchemaCombiner;
 use proto::jobworkerp::data::RunnerType;
 use proto::jobworkerp::function::data::{function_specs, FunctionSpecs};
 use rmcp::model::{ListToolsResult, Tool};
-use rmcp::Error as McpError;
+use rmcp::ErrorData as McpError;
 use serde_json;
 use tracing;
 pub const CREATION_TOOL_DESCRIPTION: &str =
