@@ -83,12 +83,10 @@ impl GrpcUnaryRunner {
         let port = &settings.port;
         let prtcl = if host.starts_with("http://") || host.starts_with("https://") {
             ""
+        } else if settings.tls {
+            "https://"
         } else {
-            if settings.tls {
-                "https://"
-            } else {
-                "http://"
-            }
+            "http://"
         };
 
         // Create the base endpoint

@@ -71,8 +71,8 @@ redis = { version = "0.32", features = [
     "cluster-async",
 ] }
 reqwest = "0.12"
-#rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", rev = "3a97917cd7584c4220815194bcb28b648147a3d8" }
-rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", rev = "9a771fb157056b4daa332626b2fa41b16a523756" }
+#rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", rev = "9a771fb157056b4daa332626b2fa41b16a523756" }
+rmcp = { version = "0.8" }
 rs-snowflake = "0.6"
 rustls = { version = "0.23", default-features = false, features = [
     "ring",
@@ -100,8 +100,8 @@ sqlx = { version = "0.8", features = [
 stretto = "0.8"
 strum = "0.27"
 strum_macros = "0.27"
-tempfile = "3.17"
-thiserror = "2.0"
+tempfile = "3"
+thiserror = "2"
 toml = { version = "0.9" }
 tonic = { version = "0.14", features = ["tls-ring", "tls-webpki-roots"] }
 tonic-prost-build = "0.14"

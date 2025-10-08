@@ -9,6 +9,12 @@ use serde_with::skip_serializing_none;
 pub struct SlackMessageClientImpl {
     client: reqwest::Client,
 }
+impl Default for SlackMessageClientImpl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SlackMessageClientImpl {
     const SLACK_API_BASE_URL: &'static str = "https://slack.com/api/";
 

@@ -34,6 +34,8 @@ pub trait UseMcpServerConfigs {
 pub enum McpServerTransportConfig {
     Sse {
         url: String,
+        #[serde(default)]
+        headers: HashMap<String, String>,
     },
     Stdio {
         command: String,
@@ -80,8 +82,9 @@ mod tests {
         assert_eq!(first_server.name, "test-server");
         assert_eq!(first_server.description, Some("test server".to_string()));
         match &first_server.transport {
-            McpServerTransportConfig::Sse { url } => {
+            McpServerTransportConfig::Sse { url, headers } => {
                 assert_eq!(url, "http://localhost:8080");
+                assert!(headers.is_empty());
             }
             _ => panic!("Expected Sse transport"),
         }
@@ -145,8 +148,9 @@ mod tests {
             Some("test server json".to_string())
         );
         match &first_server.transport {
-            McpServerTransportConfig::Sse { url } => {
+            McpServerTransportConfig::Sse { url, headers } => {
                 assert_eq!(url, "http://localhost:8080");
+                assert!(headers.is_empty());
             }
             _ => panic!("Expected Sse transport"),
         }
@@ -165,6 +169,48 @@ mod tests {
                 assert_eq!(envs.get("TEST_ENV"), Some(&"json_value".to_string()));
             }
             _ => panic!("Expected Stdio transport"),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_mcp_config_with_headers() -> Result<()> {
+        let mut temp_file = NamedTempFile::new()?;
+        let config_content = r#"
+            [[server]]
+            name = "test-sse-with-headers"
+            description = "SSE server with custom headers"
+            transport = "sse"
+            url = "http://localhost:8080"
+
+            [server.headers]
+            Authorization = "Bearer test-token"
+            X-Custom-Header = "custom-value"
+        "#;
+
+        write!(temp_file, "{config_content}")?;
+        temp_file.flush()?;
+
+        let config = McpConfig::load(temp_file.path()).await?;
+        assert_eq!(config.server.len(), 1);
+
+        let server = &config.server[0];
+        assert_eq!(server.name, "test-sse-with-headers");
+        match &server.transport {
+            McpServerTransportConfig::Sse { url, headers } => {
+                assert_eq!(url, "http://localhost:8080");
+                assert_eq!(headers.len(), 2);
+                assert_eq!(
+                    headers.get("Authorization"),
+                    Some(&"Bearer test-token".to_string())
+                );
+                assert_eq!(
+                    headers.get("X-Custom-Header"),
+                    Some(&"custom-value".to_string())
+                );
+            }
+            _ => panic!("Expected Sse transport"),
         }
 
         Ok(())

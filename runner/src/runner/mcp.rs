@@ -163,29 +163,39 @@ impl RunnerTrait for McpServerRunnerImpl {
                 "input.arg_json",
                 arg.arg_json.clone(), // XXX clone
             ));
+
+            tracing::debug!(
+                "Calling MCP tool '{}' with args: {}",
+                arg.tool_name,
+                arg.arg_json
+            );
+
             // Call MCP tool with cancellation support
+            // Timeout is managed at the job level
             let res = tokio::select! {
-                call_result = self
-                    .mcp_server
-                    .transport
-                    .call_tool(CallToolRequestParam {
-                        name: std::borrow::Cow::Owned(arg.tool_name),
-                        arguments: serde_json::from_str(arg.arg_json.as_str())
-                            .inspect_err(|e| {
-                                tracing::error!("Failed to parse arguments: {}", e);
-                            })
-                            .ok(),
-                    }) => call_result?,
+                call_result = self.mcp_server.transport.call_tool(CallToolRequestParam {
+                    name: std::borrow::Cow::Owned(arg.tool_name.clone()),
+                    arguments: serde_json::from_str(arg.arg_json.as_str())
+                        .inspect_err(|e| {
+                            tracing::error!("Failed to parse arguments: {}", e);
+                        })
+                        .ok(),
+                }) => {
+                    call_result.map_err(|e| {
+                        tracing::error!("MCP call_tool failed for tool '{}': {}", arg.tool_name, e);
+                        anyhow!("MCP tool '{}' failed: {}", arg.tool_name, e)
+                    })?
+                },
                 _ = cancellation_token.cancelled() => {
+                    tracing::info!("MCP tool call was cancelled for tool '{}'", arg.tool_name);
                     return Err(anyhow!("MCP tool call was cancelled"));
                 }
             };
 
+            tracing::debug!("MCP tool '{}' call completed", arg.tool_name);
+
             if res.is_error.unwrap_or_default() {
-                let error = anyhow!(
-                    "Tool call failed: {}",
-                    serde_json::json!(res.content).to_string()
-                );
+                let error = anyhow!("Tool call failed: {}", serde_json::json!(res.content));
                 span.record_error(error.as_ref());
             } else {
                 span.set_attribute(opentelemetry::KeyValue::new(
@@ -195,9 +205,14 @@ impl RunnerTrait for McpServerRunnerImpl {
             }
             // map res to McpServerResult and encode to Vec<u8>
             let mut mcp_contents = Vec::new();
-            for content in res.content {
+            let contents = res.content;
+            span.set_attribute(opentelemetry::KeyValue::new(
+                "output.content_length",
+                contents.len() as i64,
+            ));
+            for content in contents {
                 match content.raw {
-                    rmcp::model::RawContent::Text(rmcp::model::RawTextContent { text }) => {
+                    rmcp::model::RawContent::Text(rmcp::model::RawTextContent { text, .. }) => {
                         mcp_contents.push(mcp_server_result::Content {
                             raw_content: Some(mcp_server_result::content::RawContent::Text(
                                 mcp_server_result::TextContent { text },
@@ -207,6 +222,7 @@ impl RunnerTrait for McpServerRunnerImpl {
                     rmcp::model::RawContent::Image(rmcp::model::RawImageContent {
                         data,
                         mime_type,
+                        ..
                     }) => {
                         mcp_contents.push(mcp_server_result::Content {
                             raw_content: Some(mcp_server_result::content::RawContent::Image(
@@ -230,7 +246,9 @@ impl RunnerTrait for McpServerRunnerImpl {
                                 uri,
                                 mime_type,
                                 text,
+                                ..
                             },
+                        ..
                     }) => {
                         mcp_contents.push(mcp_server_result::Content {
                             raw_content: Some(mcp_server_result::content::RawContent::Resource(
@@ -254,7 +272,9 @@ impl RunnerTrait for McpServerRunnerImpl {
                                 uri,
                                 mime_type,
                                 blob,
+                                ..
                             },
+                        ..
                     }) => {
                         mcp_contents.push(mcp_server_result::Content {
                             raw_content: Some(mcp_server_result::content::RawContent::Resource(
@@ -271,6 +291,10 @@ impl RunnerTrait for McpServerRunnerImpl {
                                 },
                             )),
                         });
+                    }
+                    rmcp::model::RawContent::ResourceLink(_) => {
+                        // ResourceLink is not supported in proto definition yet
+                        tracing::warn!("ResourceLink content not supported yet");
                     }
                 }
             }
@@ -319,13 +343,21 @@ impl RunnerTrait for McpServerRunnerImpl {
             // Call MCP tool with cancellation support
             let call_result = tokio::select! {
                 result = mcp_transport.call_tool(CallToolRequestParam {
-                    name: std::borrow::Cow::Owned(tool_name),
+                    name: std::borrow::Cow::Owned(tool_name.clone()),
                     arguments: serde_json::from_str(arg_json.as_str())
                         .inspect_err(|e| {
                             tracing::error!("Failed to parse arguments: {}", e);
                         })
                         .ok(),
-                }) => result,
+                }) => {
+                    match result {
+                        Ok(res) => Ok(res),
+                        Err(e) => {
+                            tracing::error!("MCP call_tool failed for tool '{}': {}", tool_name, e);
+                            Err(anyhow!("MCP tool '{}' failed: {}", tool_name, e))
+                        }
+                    }
+                },
                 _ = cancellation_token.cancelled() => {
                     tracing::info!("MCP stream request was cancelled");
                     yield ResultOutputItem {
@@ -339,23 +371,25 @@ impl RunnerTrait for McpServerRunnerImpl {
                 Ok(res) => {
                     // Map response to McpServerResult
                     let mut mcp_contents = Vec::new();
-                    for content in res.content {
+                    let contents = res.content;
+                    for content in contents {
                         match content.raw {
-                            rmcp::model::RawContent::Text(rmcp::model::RawTextContent { text }) => {
-                                mcp_contents.push(mcp_server_result::Content {
-                                    raw_content: Some(mcp_server_result::content::RawContent::Text(
-                                        mcp_server_result::TextContent { text },
-                                    )),
-                                });
+                            rmcp::model::RawContent::Text(rmcp::model::RawTextContent { text, .. }) => {
+                                    mcp_contents.push(mcp_server_result::Content {
+                                        raw_content: Some(mcp_server_result::content::RawContent::Text(
+                                            mcp_server_result::TextContent { text },
+                                        )),
+                                    });
                             }
                             rmcp::model::RawContent::Image(rmcp::model::RawImageContent {
                                 data,
                                 mime_type,
+                                ..
                             }) => {
-                                mcp_contents.push(mcp_server_result::Content {
-                                    raw_content: Some(mcp_server_result::content::RawContent::Image(
-                                        mcp_server_result::ImageContent { data, mime_type },
-                                    )),
+                                    mcp_contents.push(mcp_server_result::Content {
+                                        raw_content: Some(mcp_server_result::content::RawContent::Image(
+                                            mcp_server_result::ImageContent { data, mime_type },
+                                        )),
                                 });
                             }
                             rmcp::model::RawContent::Audio(_audio) => {
@@ -363,37 +397,43 @@ impl RunnerTrait for McpServerRunnerImpl {
                             }
                             rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
                                 resource: rmcp::model::ResourceContents::TextResourceContents {
-                                    uri, mime_type, text,
+                                    uri, mime_type, text, ..
                                 },
+                                ..
                             }) => {
-                                mcp_contents.push(mcp_server_result::Content {
-                                    raw_content: Some(mcp_server_result::content::RawContent::Resource(
-                                        mcp_server_result::EmbeddedResource {
-                                            resource: Some(
-                                                mcp_server_result::embedded_resource::Resource::Text(
-                                                    TextResourceContents { uri, mime_type, text },
+                                    mcp_contents.push(mcp_server_result::Content {
+                                        raw_content: Some(mcp_server_result::content::RawContent::Resource(
+                                            mcp_server_result::EmbeddedResource {
+                                                resource: Some(
+                                                    mcp_server_result::embedded_resource::Resource::Text(
+                                                        TextResourceContents { uri, mime_type, text },
+                                                    ),
                                                 ),
-                                            ),
-                                        },
-                                    )),
+                                            },
+                                        )),
                                 });
                             }
                             rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
                                 resource: rmcp::model::ResourceContents::BlobResourceContents {
-                                    uri, mime_type, blob,
+                                    uri, mime_type, blob, ..
                                 },
+                                ..
                             }) => {
-                                mcp_contents.push(mcp_server_result::Content {
-                                    raw_content: Some(mcp_server_result::content::RawContent::Resource(
-                                        mcp_server_result::EmbeddedResource {
-                                            resource: Some(
-                                                mcp_server_result::embedded_resource::Resource::Blob(
-                                                    BlobResourceContents { uri, mime_type, blob },
+                                    mcp_contents.push(mcp_server_result::Content {
+                                        raw_content: Some(mcp_server_result::content::RawContent::Resource(
+                                            mcp_server_result::EmbeddedResource {
+                                                resource: Some(
+                                                    mcp_server_result::embedded_resource::Resource::Blob(
+                                                        BlobResourceContents { uri, mime_type, blob },
+                                                    ),
                                                 ),
-                                            ),
-                                        },
-                                    )),
+                                            },
+                                        )),
                                 });
+                            }
+                            rmcp::model::RawContent::ResourceLink(_) => {
+                                // ResourceLink is not supported in proto definition yet
+                                tracing::warn!("ResourceLink content not supported yet");
                             }
                         }
                     }
