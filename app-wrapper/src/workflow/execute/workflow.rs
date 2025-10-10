@@ -273,10 +273,11 @@ impl WorkflowExecutor {
                 lock.input.clone()
             };
 
-            // Validate input schema
-            if let Some(schema) = workflow.input.schema.as_ref() {
-                if let Some(schema) = schema.json_schema() {
-                    match jsonschema::validate(schema, &input).map_err(|e| {
+            // Validate input schema and apply defaults
+            let input_with_defaults = if let Some(schema) = workflow.input.schema.as_ref() {
+                if let Some(schema_doc) = schema.json_schema() {
+                    // First, validate the input
+                    match jsonschema::validate(schema_doc, &input).map_err(|e| {
                         anyhow::anyhow!("Failed to validate workflow input schema: {:#?}", e)
                     }) {
                         Ok(_) => {}
@@ -295,17 +296,38 @@ impl WorkflowExecutor {
                             return;
                         }
                     }
+
+                    // After validation, apply default values from schema
+                    match Self::apply_schema_defaults((*input).clone(), schema_doc) {
+                        Ok(merged) => {
+                            tracing::debug!("Schema defaults applied successfully");
+                            Arc::new(merged)
+                        }
+                        Err(e) => {
+                            // Log warning and continue with original input
+                            // Schema validation already passed, so input is valid
+                            tracing::warn!(
+                                "Failed to apply schema defaults, continuing with original input: {:#?}",
+                                e
+                            );
+                            input.clone()
+                        }
+                    }
+                } else {
+                    input.clone()
                 }
-            }
+            } else {
+                input.clone()
+            };
             tracing::debug!(
-                "Workflow input validated: {}, id={}",
+                "Workflow input validated and defaults applied: {}, id={}",
                 workflow.document.name.as_str(),
                 initial_wfc.read().await.id.to_string()
             );
 
             let mut task_context = cp_task_context.unwrap_or(TaskContext::new(
                 None,
-                input.clone(),
+                input_with_defaults.clone(),
                 Arc::new(Mutex::new(serde_json::Map::new())),
             ));
 
@@ -336,9 +358,9 @@ impl WorkflowExecutor {
                 initial_wfc.read().await.id.to_string()
             );
 
-            // Transform input
+            // Transform input (using input with defaults applied)
             let transformed_input = if let Some(from) = workflow.input.from.as_ref() {
-                match WorkflowExecutor::transform_input(input.clone(), from, &expression) {
+                match WorkflowExecutor::transform_input(input_with_defaults.clone(), from, &expression) {
                     Ok(v) => v,
                     Err(e) => {
                         tracing::debug!("Failed to transform input: {:#?}", e);
@@ -355,7 +377,7 @@ impl WorkflowExecutor {
                     }
                 }
             } else {
-                input.clone()
+                input_with_defaults.clone()
             };
             task_context.set_input(transformed_input);
 
@@ -546,6 +568,52 @@ impl WorkflowExecutor {
         {
             lock.status = WorkflowStatus::Cancelled;
         }
+    }
+
+    /// Apply default values from JSON Schema to input.
+    ///
+    /// This function recursively merges default values defined in the schema
+    /// into the input JSON value. User-provided values take precedence over defaults.
+    ///
+    /// # Arguments
+    /// * `input` - The input JSON value to merge defaults into
+    /// * `schema` - The JSON Schema containing default value definitions
+    ///
+    /// # Returns
+    /// A new JSON value with defaults applied, or an error if the operation fails
+    fn apply_schema_defaults(
+        input: serde_json::Value,
+        schema: &serde_json::Value,
+    ) -> Result<serde_json::Value, anyhow::Error> {
+        // Only process object inputs
+        let mut input_obj = match input {
+            serde_json::Value::Object(obj) => obj,
+            other => return Ok(other),
+        };
+
+        // Get properties from schema
+        let properties = match schema.get("properties").and_then(|p| p.as_object()) {
+            Some(props) => props,
+            None => return Ok(serde_json::Value::Object(input_obj)),
+        };
+
+        // Process each property in the schema
+        for (key, prop_schema) in properties.iter() {
+            if let Some(input_val) = input_obj.get_mut(key) {
+                // Value exists in input - check if it's a nested object
+                if input_val.is_object() && prop_schema.get("properties").is_some() {
+                    // Recursively apply defaults to nested object
+                    *input_val = Self::apply_schema_defaults(input_val.clone(), prop_schema)?;
+                }
+            } else {
+                // Value doesn't exist - apply default if available
+                if let Some(default_val) = prop_schema.get("default") {
+                    input_obj.insert(key.clone(), default_val.clone());
+                }
+            }
+        }
+
+        Ok(serde_json::Value::Object(input_obj))
     }
 }
 
@@ -827,6 +895,89 @@ mod tests {
             }),
             do_: task_list,
         }
+    }
+
+    #[test]
+    fn test_apply_schema_defaults() {
+        // Test case 1: Apply defaults to empty input
+        let schema = serde_json::json!({
+            "properties": {
+                "max_iterations": {
+                    "type": "integer",
+                    "default": 5
+                },
+                "target_score": {
+                    "type": "number",
+                    "default": 0.85
+                },
+                "query": {
+                    "type": "string"
+                }
+            }
+        });
+
+        let input = serde_json::json!({
+            "query": "test query"
+        });
+
+        let result = WorkflowExecutor::apply_schema_defaults(input.clone(), &schema).unwrap();
+        assert_eq!(result.get("query").unwrap(), "test query");
+        assert_eq!(result.get("max_iterations").unwrap(), 5);
+        assert_eq!(result.get("target_score").unwrap(), 0.85);
+
+        // Test case 2: User-provided values should not be overwritten
+        let input_with_values = serde_json::json!({
+            "query": "test query",
+            "max_iterations": 10
+        });
+
+        let result2 =
+            WorkflowExecutor::apply_schema_defaults(input_with_values.clone(), &schema).unwrap();
+        assert_eq!(result2.get("query").unwrap(), "test query");
+        assert_eq!(result2.get("max_iterations").unwrap(), 10); // User value preserved
+        assert_eq!(result2.get("target_score").unwrap(), 0.85); // Default applied
+
+        // Test case 3: Nested objects
+        let nested_schema = serde_json::json!({
+            "properties": {
+                "config": {
+                    "type": "object",
+                    "properties": {
+                        "timeout": {
+                            "type": "integer",
+                            "default": 30
+                        },
+                        "retries": {
+                            "type": "integer",
+                            "default": 3
+                        }
+                    }
+                },
+                "name": {
+                    "type": "string",
+                    "default": "default-name"
+                }
+            }
+        });
+
+        let nested_input = serde_json::json!({
+            "config": {
+                "timeout": 60
+            }
+        });
+
+        let result3 =
+            WorkflowExecutor::apply_schema_defaults(nested_input.clone(), &nested_schema).unwrap();
+        assert_eq!(result3.get("name").unwrap(), "default-name");
+        let config = result3.get("config").unwrap().as_object().unwrap();
+        assert_eq!(config.get("timeout").unwrap(), 60); // User value
+        assert_eq!(config.get("retries").unwrap(), 3); // Default applied
+
+        // Test case 4: Non-object input should pass through
+        let non_object_input = serde_json::json!("string value");
+        let result4 =
+            WorkflowExecutor::apply_schema_defaults(non_object_input.clone(), &schema).unwrap();
+        assert_eq!(result4, "string value");
     }
 
     #[test]
