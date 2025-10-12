@@ -20,18 +20,40 @@ pub struct WorkflowLoader {
     pub http_client: reqwest::ReqwestClient,
 }
 
+// JSON Schema validator initialization
+// Benchmark results (see tests/workflow_schema_validation_benchmark.rs and actual_workflow_validation_benchmark.rs):
+// - Validator initialization: ~450ms (acceptable)
+// - Simple workflow validation: ~500ms (acceptable)
+// - Complex workflow validation: 55+ seconds (UNACCEPTABLE)
+//
+// Problem: jsonschema crate has exponential performance degradation with complex nested workflows
+// containing loops, conditionals, and dynamic expressions.
+//
+// Solution: Keep validator initialized for future improvements in jsonschema crate,
+// but use lightweight validation by default. Full schema validation can be enabled
+// via environment variable for testing/debugging.
+//
+// Security: Plugin developers MUST validate their inputs independently.
+// See CLAUDE.md for security guidelines.
 static WORKFLOW_VALIDATOR: LazyLock<Option<jsonschema::Validator>> = LazyLock::new(|| {
     let schema_content = include_str!("../../../runner/schema/workflow.yaml");
     let schema = serde_yaml::from_str(schema_content)
         .inspect_err(|e| tracing::error!("Failed to parse workflow schema: {:?}", e))
         .ok()?;
-    std::thread::spawn(move || {
-        jsonschema::draft202012::new(&schema)
-            .inspect_err(|e| tracing::warn!("Failed to create workflow schema validator: {:?}", e))
-    })
-    .join()
-    .ok()?
-    .ok()
+
+    // Direct initialization (no thread spawning overhead)
+    jsonschema::draft202012::new(&schema)
+        .inspect_err(|e| tracing::warn!("Failed to create workflow schema validator: {:?}", e))
+        .ok()
+});
+
+// Flag to enable/disable full JSON Schema validation
+// Default: false (use lightweight validation only)
+// Set WORKFLOW_ENABLE_FULL_SCHEMA_VALIDATION=true to enable full validation
+static ENABLE_FULL_SCHEMA_VALIDATION: LazyLock<bool> = LazyLock::new(|| {
+    std::env::var("WORKFLOW_ENABLE_FULL_SCHEMA_VALIDATION")
+        .map(|v| v.to_lowercase() == "true" || v == "1")
+        .unwrap_or(false)
 });
 
 impl WorkflowLoader {
@@ -53,10 +75,54 @@ impl WorkflowLoader {
                 .map_err(|e| anyhow!("Failed to load workflow from json={} , err: {}", data, e)),
         }
     }
+    /// Lightweight structural validation for workflow
+    /// Checks essential fields without full JSON Schema validation
+    fn validate_lightweight(wf: &workflow::WorkflowSchema) -> Result<()> {
+        // Check document namespace and name are not empty
+        if wf.document.namespace.is_empty() {
+            return Err(anyhow!("Workflow document.namespace must not be empty"));
+        }
+        if wf.document.name.is_empty() {
+            return Err(anyhow!("Workflow document.name must not be empty"));
+        }
+
+        // Check do_ tasks exist
+        if wf.do_.0.is_empty() {
+            return Err(anyhow!(
+                "Workflow must have at least one task in 'do' section"
+            ));
+        }
+
+        // Warn about plugin input validation requirement
+        tracing::warn!(
+            "⚠️  SECURITY WARNING: Full JSON Schema validation is disabled for performance. \
+             Plugin developers MUST validate their inputs independently to prevent security issues. \
+             Complex workflows may contain malicious inputs that bypass lightweight validation. \
+             See documentation for input validation best practices."
+        );
+
+        Ok(())
+    }
+
+    /// Full JSON Schema validation (expensive, disabled by default)
     async fn validate_schema(&self, instance: &serde_json::Value) -> Result<()> {
-        // validate json schema
+        // Check if full validation is enabled
+        if !*ENABLE_FULL_SCHEMA_VALIDATION {
+            tracing::debug!(
+                "Full JSON Schema validation is disabled. \
+                 Set WORKFLOW_ENABLE_FULL_SCHEMA_VALIDATION=true to enable. \
+                 Using lightweight validation instead."
+            );
+            return Ok(());
+        }
+
+        // Perform full validation if enabled
         if let Some(validator) = &*WORKFLOW_VALIDATOR {
-            // XXX WARN ONLY: (buggy? related: github jsonschema pr 509)
+            tracing::warn!(
+                "Full JSON Schema validation is ENABLED and may take significant time for complex workflows. \
+                 Consider disabling for production use."
+            );
+
             let mut error_details = Vec::new();
             for error in validator.iter_errors(instance) {
                 error_details.push(format!("Path: {}, Message: {}", error.instance_path, error));
@@ -64,7 +130,7 @@ impl WorkflowLoader {
             if error_details.is_empty() {
                 Ok(())
             } else {
-                tracing::warn!(
+                tracing::error!(
                     "Workflow schema validation failed: {}",
                     error_details.join("; ")
                 );
@@ -120,6 +186,10 @@ impl WorkflowLoader {
         } else {
             Err(anyhow!("url_or_path or json_or_yaml_data is required"))
         }?;
+
+        // Perform lightweight structural validation
+        Self::validate_lightweight(&wf)?;
+
         Ok(wf)
     }
 }

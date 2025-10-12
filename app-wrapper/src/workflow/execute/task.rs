@@ -9,7 +9,7 @@ use crate::workflow::{
     },
     execute::{
         checkpoint::{repository::CheckPointRepositoryWithId, CheckPointContext},
-        context::{Then, WorkflowPosition, WorkflowStatus},
+        context::{Then, WorkflowPosition},
     },
 };
 use anyhow::Result;
@@ -902,13 +902,13 @@ pub trait StreamTaskExecutorTrait<'a>: Send + Sync {
 }
 
 pub struct RaiseTaskExecutor {
-    workflow_context: Arc<RwLock<WorkflowContext>>,
+    _workflow_context: Arc<RwLock<WorkflowContext>>,
     task: workflow::RaiseTask,
 }
 impl RaiseTaskExecutor {
     pub fn new(workflow_context: Arc<RwLock<WorkflowContext>>, task: workflow::RaiseTask) -> Self {
         Self {
-            workflow_context,
+            _workflow_context: workflow_context,
             task,
         }
     }
@@ -921,11 +921,10 @@ impl TaskExecutorTrait<'_> for RaiseTaskExecutor {
         task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
         tracing::error!("RaiseTaskExecutor raise error: {:?}", self.task.raise.error);
-        // TODO add error detail information to workflow_context
+        // TODO add detail information to error
         let pos = task_context.position.clone();
         let mut pos = pos.write().await;
         pos.push("raise".to_string());
-        self.workflow_context.write().await.status = WorkflowStatus::Faulted;
         Err(workflow::errors::ErrorFactory::create(
             workflow::errors::ErrorCode::Locked,
             Some(format!("Raise error!: {:?}", self.task.raise.error)),
