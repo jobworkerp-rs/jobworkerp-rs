@@ -301,7 +301,11 @@ impl WorkflowExecutor {
                     match Self::apply_schema_defaults((*input).clone(), schema_doc) {
                         Ok(merged) => {
                             tracing::debug!("Schema defaults applied successfully");
-                            Arc::new(merged)
+                            let input_with_defaults = Arc::new(merged);
+                            // Update workflow_context.input with defaults applied
+                            // This ensures defaults are reflected in checkpoint saves
+                            initial_wfc.write().await.input = input_with_defaults.clone();
+                            input_with_defaults
                         }
                         Err(e) => {
                             // Log warning and continue with original input
