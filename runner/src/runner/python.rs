@@ -536,6 +536,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_python_runner() {
+        command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
         const UV_PATH: &str = if cfg!(windows) {
             "C:\\Program Files\\uv\\uv.exe"
         } else {

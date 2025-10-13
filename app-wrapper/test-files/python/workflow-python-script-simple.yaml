@@ -1,0 +1,41 @@
+document:
+  dsl: 1.0.0
+  namespace: examples
+  name: python-script-simple
+  version: 1.0.0
+  summary: Minimal Python script example for testing
+
+# Simple input
+input:
+  schema:
+    document:
+      type: object
+      properties:
+        name:
+          type: string
+          default: "World"
+
+# Single task
+do:
+  - greet:
+      run:
+        script:
+          language: python
+          code: |
+            import json
+
+            greeting = f"Hello, {name}!"
+            result = {
+                "message": greeting,
+                "length": len(greeting)
+            }
+
+            print(json.dumps(result))
+          arguments:
+            name: ${ .name }
+      metadata:
+        python.version: '3.12'
+
+# Output
+output:
+  from: ${ .greet }

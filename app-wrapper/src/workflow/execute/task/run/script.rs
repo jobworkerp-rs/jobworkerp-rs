@@ -333,6 +333,8 @@ impl ScriptTaskExecutor {
         };
 
         // Step 1: Evaluate runtime expressions in arguments
+        tracing::debug!("Raw arguments from workflow: {:#?}", arguments);
+        tracing::debug!("Task context input: {:#?}", task_context.input);
         let evaluated_args =
             match Self::transform_map(task_context.input.clone(), arguments.clone(), expression) {
                 Ok(args) => args,
@@ -340,6 +342,7 @@ impl ScriptTaskExecutor {
                     return Err(anyhow!("Failed to evaluate runtime expressions: {:?}", e));
                 }
             };
+        tracing::debug!("Evaluated arguments: {:#?}", evaluated_args);
 
         // Step 2: Inject evaluated arguments as global variables via Base64 encoding (secure)
         if let serde_json::Value::Object(ref args_map) = evaluated_args {
@@ -379,6 +382,8 @@ impl ScriptTaskExecutor {
                 script_code.push_str(&external_code);
             }
         }
+
+        tracing::debug!("Generated Python script:\n{}", script_code);
 
         Ok(PythonCommandArgs {
             script: Some(python_command_args::Script::ScriptContent(script_code)),
@@ -420,7 +425,9 @@ impl TaskExecutorTrait<'_> for ScriptTaskExecutor {
         task_name: &str,
         mut task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
-        task_context.add_position_name("script".to_string()).await;
+        // NOTE: Do NOT add/remove position here. The parent RunTaskExecutor (run.rs:486-504)
+        // manages position for consistency with other RunTaskConfiguration cases (worker/runner/function).
+        // Position hierarchy: /ROOT/do/0/taskName/run/script
 
         let script_config = &self.task.script;
 
@@ -522,27 +529,34 @@ impl TaskExecutorTrait<'_> for ScriptTaskExecutor {
             }
         };
 
-        let settings_value = bail_with_position!(
-            task_context,
-            serde_json::to_value(&settings),
-            internal_error,
-            "Failed to serialize runner settings"
-        );
-
+        // Encode PythonCommandRunnerSettings directly to protobuf binary
+        // This is necessary because serde_json::to_value() encodes Rust enum variants
+        // as {"VariantName": {...}}, which violates protobuf JSON encoding rules
+        // where oneof fields should use the field name directly (e.g., "packages" not "Packages")
         let settings_bytes = bail_with_position!(
             task_context,
-            self.job_executor_wrapper
-                .setup_runner_and_settings(&runner, Some(settings_value))
-                .await,
-            service_unavailable,
-            "Failed to setup runner settings"
+            {
+                let mut buf = Vec::new();
+                prost::Message::encode(&settings, &mut buf)
+                    .context("Failed to encode PythonCommandRunnerSettings")
+                    .map(|_| buf)
+            },
+            internal_error,
+            "Failed to encode runner settings to protobuf"
         );
 
-        let args_value = bail_with_position!(
+        // Encode PythonCommandArgs directly to protobuf binary instead of using JSON
+        // This bypasses the JSON serialization issue with oneof fields
+        let args_bytes = bail_with_position!(
             task_context,
-            serde_json::to_value(&args),
+            {
+                let mut buf = Vec::new();
+                prost::Message::encode(&args, &mut buf)
+                    .context("Failed to encode PythonCommandArgs")
+                    .map(|_| buf)
+            },
             internal_error,
-            "Failed to serialize script arguments"
+            "Failed to encode script arguments to protobuf"
         );
 
         // Extract language-agnostic use_static setting from metadata
@@ -573,32 +587,50 @@ impl TaskExecutorTrait<'_> for ScriptTaskExecutor {
         let mut metadata = (*self.metadata).clone();
         super::RunTaskExecutor::inject_metadata_from_context(&mut metadata, &cx);
 
-        let output = bail_with_position!(
+        // Find or create worker for script execution
+        let worker_id = if worker_data.use_static {
+            bail_with_position!(
+                task_context,
+                self.job_executor_wrapper
+                    .find_or_create_worker(&worker_data)
+                    .await,
+                service_unavailable,
+                "Failed to find or create worker"
+            )
+            .id
+        } else {
+            None
+        };
+
+        // Enqueue job with protobuf binary arguments directly
+        let (_job_id, job_result, _stream) = bail_with_position!(
             task_context,
             self.job_executor_wrapper
-                .setup_worker_and_enqueue_with_json(
+                .enqueue_with_worker_or_temp(
                     Arc::new(metadata),
-                    runner_name,
+                    worker_id,
                     worker_data,
-                    args_value,
-                    None, // No unique key
+                    args_bytes, // Use protobuf binary directly, not JSON
+                    None,       // No unique key
                     self.default_task_timeout.as_secs() as u32,
                     false, // No streaming
                 )
                 .await,
             service_unavailable,
-            "Failed to execute script"
+            "Failed to enqueue script execution job"
         );
 
-        // Parse PYTHON_COMMAND result and extract output
-        // Note: output is serde_json::Value, not Vec<u8>
+        // Extract job result output
         let output_bytes = bail_with_position!(
             task_context,
-            serde_json::to_vec(&output),
+            job_result
+                .ok_or_else(|| anyhow!("Job result not found"))
+                .and_then(|res| self.job_executor_wrapper.extract_job_result_output(res)),
             internal_error,
-            "Failed to serialize output for decoding"
+            "Failed to extract job result output"
         );
 
+        // Decode PYTHON_COMMAND result from protobuf binary
         let result: PythonCommandResult = bail_with_position!(
             task_context,
             prost::Message::decode(output_bytes.as_slice()),
@@ -628,7 +660,9 @@ impl TaskExecutorTrait<'_> for ScriptTaskExecutor {
 
         task_context.set_raw_output(script_output);
 
-        task_context.remove_position().await;
+        // NOTE: Do NOT remove position here. The parent TaskExecutor (task.rs:390) will handle
+        // the position cleanup after this method returns.
+        // task_context.remove_position().await;
 
         Ok(task_context)
     }

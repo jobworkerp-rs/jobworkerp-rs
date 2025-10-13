@@ -483,6 +483,8 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                 Ok(task_context)
             }
             workflow::RunTaskConfiguration::Script(run_script) => {
+                task_context.add_position_name("script".to_string()).await;
+
                 let executor = script::ScriptTaskExecutor::new(
                     self.workflow_context.clone(),
                     Duration::from_secs(timeout_sec as u64),
@@ -490,7 +492,16 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                     run_script.clone(),
                     metadata.clone(),
                 );
-                executor.execute(cx, task_name, task_context).await
+                let result = executor.execute(cx, task_name, task_context).await;
+
+                match result {
+                    Ok(tc) => {
+                        tc.remove_position().await; // Remove "script"
+                        tc.remove_position().await; // Remove "run"
+                        Ok(tc)
+                    }
+                    Err(e) => Err(e),
+                }
             } // _ => {
               //     let pos = task_context.position.clone();
               //     let mut pos = pos.write().await;

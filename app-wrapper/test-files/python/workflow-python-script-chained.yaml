@@ -1,0 +1,95 @@
+document:
+  dsl: 1.0.0
+  namespace: examples
+  name: python-script-chained
+  version: 1.0.0
+  summary: Test chaining Python script outputs
+
+# Input data structure
+input:
+  schema:
+    document:
+      type: object
+      properties:
+        initial_value:
+          type: integer
+          default: 10
+
+do:
+  # Task 1: Generate structured data
+  - generateData:
+      run:
+        script:
+          language: python
+          code: |
+            import json
+
+            result = {
+                "value": initial_value,
+                "squared": initial_value ** 2,
+                "metadata": {
+                    "source": "generateData",
+                    "type": "computed"
+                }
+            }
+
+            print(json.dumps(result))
+          arguments:
+            initial_value: ${ .initial_value }
+      metadata:
+        python.version: '3.12'
+
+  # Task 2: Use output from Task 1 as structured data
+  - processData:
+      run:
+        script:
+          language: python
+          code: |
+            import json
+
+            # Access structured data from previous task
+            previous_result = {
+                "original_value": prev_value,
+                "original_squared": prev_squared,
+                "previous_metadata": prev_metadata,
+                "new_computation": prev_value * 3,
+                "combined": prev_value + prev_squared
+            }
+
+            print(json.dumps(previous_result))
+          arguments:
+            prev_value: ${ .generateData.value }
+            prev_squared: ${ .generateData.squared }
+            prev_metadata: ${ .generateData.metadata }
+      metadata:
+        python.version: '3.12'
+
+  # Task 3: Further processing with nested access
+  - finalAnalysis:
+      run:
+        script:
+          language: python
+          code: |
+            import json
+
+            analysis = {
+                "summary": {
+                    "original": original_val,
+                    "processed": processed_val,
+                    "source_type": source_type
+                },
+                "total": original_val + processed_val,
+                "workflow_complete": True
+            }
+
+            print(json.dumps(analysis))
+          arguments:
+            original_val: ${ .generateData.value }
+            processed_val: ${ .processData.new_computation }
+            source_type: ${ .generateData.metadata.type }
+      metadata:
+        python.version: '3.12'
+
+# Output the final result
+output:
+  from: ${ .finalAnalysis }
