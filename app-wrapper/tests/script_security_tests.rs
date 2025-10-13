@@ -281,7 +281,7 @@ mod security_tests {
 ///
 /// Run E2E tests with:
 /// cargo test --package app-wrapper --test script_runner_e2e_test -- --ignored --test-threads=1
-
+///
 /// Performance tests for Base64 encoding overhead
 #[cfg(test)]
 mod performance_tests {

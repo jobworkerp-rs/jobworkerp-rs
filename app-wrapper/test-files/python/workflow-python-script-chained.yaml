@@ -47,7 +47,7 @@ do:
           code: |
             import json
 
-            # Access structured data from previous task
+            # Access structured data from previous task (automatic input)
             previous_result = {
                 "original_value": prev_value,
                 "original_squared": prev_squared,
@@ -58,9 +58,9 @@ do:
 
             print(json.dumps(previous_result))
           arguments:
-            prev_value: ${ .generateData.value }
-            prev_squared: ${ .generateData.squared }
-            prev_metadata: ${ .generateData.metadata }
+            prev_value: ${ .value }
+            prev_squared: ${ .squared }
+            prev_metadata: ${ .metadata }
       metadata:
         python.version: '3.12'
 
@@ -72,11 +72,12 @@ do:
           code: |
             import json
 
+            # Access fields from previous task output
             analysis = {
                 "summary": {
                     "original": original_val,
                     "processed": processed_val,
-                    "source_type": source_type
+                    "has_metadata": prev_metadata is not None
                 },
                 "total": original_val + processed_val,
                 "workflow_complete": True
@@ -84,9 +85,9 @@ do:
 
             print(json.dumps(analysis))
           arguments:
-            original_val: ${ .generateData.value }
-            processed_val: ${ .processData.new_computation }
-            source_type: ${ .generateData.metadata.type }
+            original_val: ${ .original_value }
+            processed_val: ${ .new_computation }
+            prev_metadata: ${ .previous_metadata }
       metadata:
         python.version: '3.12'
 
