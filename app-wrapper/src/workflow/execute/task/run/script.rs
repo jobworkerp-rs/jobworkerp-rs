@@ -58,7 +58,7 @@ impl UseExpressionTransformer for ScriptTaskExecutor {}
 /// Macro to reduce repetitive error handling in execute() method
 ///
 /// Usage:
-/// ```
+/// ```ignore
 /// let result = bail_with_position!(
 ///     task_context,
 ///     some_operation(),
@@ -96,6 +96,9 @@ macro_rules! bail_with_position {
 }
 
 impl ScriptTaskExecutor {
+    /// Maximum recursion depth for nested JSON validation (= max json nest depth)
+    pub const MAX_RECURSIVE_DEPTH: usize = 21;
+
     pub fn new(
         workflow_context: Arc<RwLock<WorkflowContext>>,
         default_task_timeout: Duration,
@@ -156,8 +159,7 @@ impl ScriptTaskExecutor {
 
     /// Recursively validate JSON values for security threats
     fn validate_value_recursive(value: &serde_json::Value, depth: usize) -> Result<()> {
-        const MAX_DEPTH: usize = 10;
-        if depth > MAX_DEPTH {
+        if depth > Self::MAX_RECURSIVE_DEPTH {
             return Err(anyhow!("Maximum nesting depth exceeded"));
         }
 
@@ -421,14 +423,10 @@ impl ScriptTaskExecutor {
 impl TaskExecutorTrait<'_> for ScriptTaskExecutor {
     async fn execute(
         &self,
-        cx: Arc<opentelemetry::Context>,
+        _cx: Arc<opentelemetry::Context>,
         task_name: &str,
         mut task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
-        // NOTE: Do NOT add/remove position here. The parent RunTaskExecutor (run.rs:486-504)
-        // manages position for consistency with other RunTaskConfiguration cases (worker/runner/function).
-        // Position hierarchy: /ROOT/do/0/taskName/run/script
-
         let script_config = &self.task.script;
 
         // Extract language from enum variant
@@ -583,10 +581,6 @@ impl TaskExecutorTrait<'_> for ScriptTaskExecutor {
             broadcast_results: false,
         };
 
-        // Inject metadata from opentelemetry context
-        let mut metadata = (*self.metadata).clone();
-        super::RunTaskExecutor::inject_metadata_from_context(&mut metadata, &cx);
-
         // Find or create worker for script execution
         let worker_id = if worker_data.use_static {
             bail_with_position!(
@@ -607,7 +601,7 @@ impl TaskExecutorTrait<'_> for ScriptTaskExecutor {
             task_context,
             self.job_executor_wrapper
                 .enqueue_with_worker_or_temp(
-                    Arc::new(metadata),
+                    self.metadata.clone(),
                     worker_id,
                     worker_data,
                     args_bytes, // Use protobuf binary directly, not JSON

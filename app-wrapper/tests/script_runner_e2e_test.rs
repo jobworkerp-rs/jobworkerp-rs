@@ -16,6 +16,7 @@ use app::module::test::create_hybrid_test_app;
 use app::module::AppModule;
 use app_wrapper::modules::{AppWrapperConfigModule, AppWrapperModule, AppWrapperRepositoryModule};
 use app_wrapper::workflow::definition::WorkflowLoader;
+use app_wrapper::workflow::execute::task::run::script::ScriptTaskExecutor;
 use app_wrapper::workflow::execute::workflow::WorkflowExecutor;
 use app_wrapper::workflow::WorkflowConfig;
 use futures::{pin_mut, StreamExt};
@@ -156,7 +157,7 @@ fn create_script_workflow(
 
 /// Test 1: Basic inline script execution with Base64-encoded arguments
 #[test]
-#[ignore = "Requires uv and Python installation"]
+#[ignore = "Requires jobworkerp backend, uv and Python installation"]
 fn test_inline_script_with_base64_arguments() -> Result<()> {
     println!("🧪 Test 1: Inline script with Base64-encoded arguments");
 
@@ -208,7 +209,7 @@ print(json.dumps({
 
 /// Test 2: Triple-quote injection attack should be blocked via Base64 encoding
 #[test]
-#[ignore = "Requires uv and Python installation"]
+#[ignore = "Requires jobworkerp backend, uv and Python installation"]
 fn test_triple_quote_injection_blocked() -> Result<()> {
     println!("🧪 Test 2: Triple-quote injection attack blocked via Base64");
 
@@ -391,7 +392,7 @@ fn test_external_script_https_only() -> Result<()> {
 
 /// Test 5: Python package installation via metadata
 #[test]
-#[ignore = "Requires uv and Python installation"]
+#[ignore = "Requires jobworkerp backend, uv and Python installation"]
 fn test_python_package_installation() -> Result<()> {
     println!("🧪 Test 5: Python package installation via metadata");
 
@@ -497,7 +498,7 @@ print(json.dumps({"status": "completed"}))
 
 /// Test 7: use_static pooling behavior
 #[test]
-#[ignore = "Requires uv and Python installation"]
+#[ignore = "Requires jobworkerp backend, uv and Python installation"]
 fn test_use_static_pooling() -> Result<()> {
     println!("🧪 Test 7: use_static pooling behavior");
 
@@ -627,9 +628,9 @@ fn test_max_nesting_depth_limit() -> Result<()> {
     TEST_RUNTIME.block_on(async {
         let app = Arc::new(create_hybrid_test_app().await?);
 
-        // Create deeply nested structure (depth > 10)
+        // Create deeply nested structure (depth > MAX_RECURSIVE_DEPTH)
         let mut deeply_nested = json!({"level_0": "value"});
-        for i in 1..15 {
+        for i in 1..(ScriptTaskExecutor::MAX_RECURSIVE_DEPTH + 1) {
             deeply_nested = json!({
                 format!("level_{}", i): deeply_nested
             });
