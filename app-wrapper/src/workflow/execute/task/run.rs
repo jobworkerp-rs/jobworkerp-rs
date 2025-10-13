@@ -1,3 +1,5 @@
+pub mod script;
+
 use super::TaskExecutorTrait;
 use crate::workflow::{
     definition::{
@@ -44,6 +46,28 @@ impl RunTaskExecutor {
             task,
             job_executor_wrapper,
             metadata,
+        }
+    }
+
+    /// Inject metadata from OpenTelemetry context for remote job execution
+    pub fn inject_metadata_from_context(
+        metadata: &mut HashMap<String, String>,
+        cx: &Arc<opentelemetry::Context>,
+    ) {
+        use opentelemetry::trace::TraceContextExt;
+
+        let span = cx.span();
+        let span_context = span.span_context();
+
+        if span_context.is_valid() {
+            metadata.insert(
+                "otel_trace_id".to_string(),
+                span_context.trace_id().to_string(),
+            );
+            metadata.insert(
+                "otel_span_id".to_string(),
+                span_context.span_id().to_string(),
+            );
         }
     }
     fn function_options_to_worker_data(
@@ -457,6 +481,16 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                 task_context.remove_position().await;
 
                 Ok(task_context)
+            }
+            workflow::RunTaskConfiguration::Script(run_script) => {
+                let executor = script::ScriptTaskExecutor::new(
+                    self.workflow_context.clone(),
+                    Duration::from_secs(timeout_sec as u64),
+                    self.job_executor_wrapper.clone(),
+                    run_script.clone(),
+                    metadata.clone(),
+                );
+                executor.execute(cx, task_name, task_context).await
             } // _ => {
               //     let pos = task_context.position.clone();
               //     let mut pos = pos.write().await;

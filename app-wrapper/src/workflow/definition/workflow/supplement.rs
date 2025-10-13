@@ -260,3 +260,100 @@ impl WorkflowSchema {
         }
     }
 }
+
+// Script runner helpers
+
+/// Runtime language validation for script execution
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidatedLanguage {
+    Python,
+    Javascript,
+}
+
+impl ValidatedLanguage {
+    /// Validate language string at runtime
+    /// Note: Not implementing FromStr trait to avoid confusion with standard trait
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Result<Self, String> {
+        match s.to_lowercase().as_str() {
+            "python" => Ok(Self::Python),
+            "javascript" | "js" => Ok(Self::Javascript),
+            _ => Err(format!("Unsupported script language: {}", s)),
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Python => "python",
+            Self::Javascript => "javascript",
+        }
+    }
+}
+
+/// Python-specific settings extracted from task metadata
+///
+/// Python-specific settings are stored in task metadata with the following keys:
+/// - `python.version`: Python version (default: "3.12")
+/// - `python.packages`: Comma-separated package list (e.g., "numpy,pandas")
+/// - `python.requirements_url`: URL to requirements.txt file
+#[derive(Debug, Clone)]
+pub struct PythonScriptSettings {
+    pub version: String,
+    pub packages: Vec<String>,
+    pub requirements_url: Option<String>,
+}
+
+impl PythonScriptSettings {
+    /// Extract from task metadata (recommended approach)
+    ///
+    /// # Example
+    /// ```yaml
+    /// metadata:
+    ///   python.version: "3.12"
+    ///   python.packages: "numpy,pandas"
+    ///   python.requirements_url: "https://example.com/requirements.txt"
+    /// ```
+    pub fn from_metadata(metadata: &HashMap<String, String>) -> Result<Self, anyhow::Error> {
+        let version = metadata
+            .get("python.version")
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "3.12".to_string());
+
+        let packages: Vec<String> = metadata
+            .get("python.packages")
+            .map(|s| {
+                s.split(',')
+                    .map(|p| p.trim().to_string())
+                    .filter(|p| !p.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let requirements_url = metadata
+            .get("python.requirements_url")
+            .map(|s| s.to_string());
+
+        // Validation: packages and requirements_url are mutually exclusive
+        if !packages.is_empty() && requirements_url.is_some() {
+            return Err(anyhow::anyhow!(
+                "python.packages and python.requirements_url are mutually exclusive"
+            ));
+        }
+
+        Ok(Self {
+            version,
+            packages,
+            requirements_url,
+        })
+    }
+}
+
+impl Default for PythonScriptSettings {
+    fn default() -> Self {
+        Self {
+            version: "3.12".to_string(),
+            packages: vec![],
+            requirements_url: None,
+        }
+    }
+}
