@@ -1,0 +1,149 @@
+document:
+  dsl: 1.0.0
+  namespace: examples
+  name: python-script-basic
+  version: 1.0.0
+  summary: Basic Python script execution example
+
+# Input data structure
+input:
+  schema:
+    document:
+      type: object
+      properties:
+        message:
+          type: string
+          default: "Hello from Workflow!"
+        count:
+          type: integer
+          default: 10
+        arr:
+          type: array
+          items:
+            type: object
+          default: [{"hoge":2}, {"fuga":2}, {"a":3.3}]
+
+# Main workflow tasks
+do:
+  # Task 1: Simple Python script with inline code
+  - simpleScript:
+      run:
+        script:
+          language: python
+          code: |
+            import json
+            import sys
+            # デバッグ: 変数の型を確認
+            print(f"DEBUG: message={message}, type={type(message)}", file=sys.stderr)
+            print(f"DEBUG: count={count}, type={type(count)}", file=sys.stderr)
+            print(f"DEBUG: arr={arr}, type={type(arr)}", file=sys.stderr)
+
+            # Variables are automatically injected from arguments
+            result = {
+                "message": message,
+                "count": count,
+                "doubled": count * 2,
+                "arr_str": [str(x) for x in arr]
+            }
+
+            print(json.dumps(result))
+          arguments:
+            message: ${ .message }
+            count: ${ .count }
+            arr: ${ .arr }
+      metadata:
+        python.version: '3.12'
+
+  # Task 2: Python script with package installation
+  - dataProcessing:
+      run:
+        script:
+          language: python
+          code: |
+            import json
+            import requests
+
+            # Mock data instead of external API call
+            # (To avoid network timeouts in examples)
+            mock_data = {
+                "slideshow": {
+                    "title": "Sample Slide Show",
+                    "author": "Yours Truly",
+                    "date": "date of publication"
+                }
+            }
+
+            # Process data
+            result = {
+                "status": "success",
+                "data_keys": list(mock_data.keys()),
+                "slideshow_title": mock_data.get("slideshow", {}).get("title", "N/A"),
+                "requests_version": requests.__version__
+            }
+
+            print(json.dumps(result))
+          arguments: {}
+      metadata:
+        python.version: '3.12'
+        python.packages: 'requests'  # Auto-install packages
+
+  # Task 3: Mathematical computation
+  - mathComputation:
+      run:
+        script:
+          language: python
+          code: |
+            import json
+            import math
+
+            numbers = input_numbers
+
+            result = {
+                "sum": sum(numbers),
+                "average": sum(numbers) / len(numbers),
+                "max": max(numbers),
+                "min": min(numbers),
+                "std_dev": math.sqrt(sum((x - sum(numbers)/len(numbers))**2 for x in numbers) / len(numbers))
+            }
+
+            print(json.dumps(result))
+          arguments:
+            input_numbers: [10, 20, 30, 40, 50]
+      metadata:
+        python.version: '3.12'
+
+  # Task 4: String processing with validation
+  - textProcessing:
+      run:
+        script:
+          language: python
+          code: |
+            import json
+            import re
+
+            text = input_text
+
+            # Process text
+            words = text.split()
+            word_count = len(words)
+            char_count = len(text)
+
+            # Extract emails (simple pattern)
+            emails = re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', text)
+
+            result = {
+                "word_count": word_count,
+                "char_count": char_count,
+                "emails": emails,
+                "first_word": words[0] if words else ""
+            }
+
+            print(json.dumps(result))
+          arguments:
+            input_text: "Hello world! Contact us at support@example.com or sales@example.com"
+      metadata:
+        python.version: '3.12'
+
+# Expected output structure
+output:
+  from: ${ .dataProcessing }

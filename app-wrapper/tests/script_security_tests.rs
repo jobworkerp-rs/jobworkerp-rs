@@ -273,46 +273,14 @@ mod security_tests {
     }
 }
 
-/// Integration test placeholders
+/// Integration tests are now in script_runner_e2e_test.rs
 ///
-/// These tests require actual Python execution and should be run with --ignored flag
-#[cfg(test)]
-mod integration_tests {
-
-    #[test]
-    #[ignore] // Requires actual workflow execution environment
-    fn test_base64_encoding_in_real_execution() {
-        // This test would verify that Base64-encoded arguments
-        // are correctly decoded in Python and produce expected results
-        println!("Integration test: Base64 encoding in real Python execution");
-        println!("Run with: cargo test --package app-wrapper script_security_tests -- --ignored");
-    }
-
-    #[test]
-    #[ignore] // Requires network access
-    fn test_external_script_download_security() {
-        // This test would verify that:
-        // - Non-HTTPS URLs are rejected
-        // - Large files are rejected (> 1MB)
-        // - Timeouts are enforced (30 seconds)
-        // - TLS verification is enabled
-        println!("Integration test: External script download security");
-        println!("Run with: cargo test --package app-wrapper script_security_tests -- --ignored");
-    }
-
-    #[test]
-    #[ignore] // Requires workflow execution
-    fn test_malicious_payload_rejection() {
-        // This test would verify that all known attack vectors are blocked:
-        // - Triple-quote injection
-        // - eval/exec injection
-        // - __import__ bypass
-        // - os.system injection
-        // - subprocess.call injection
-        println!("Integration test: Malicious payload rejection");
-        println!("Run with: cargo test --package app-wrapper script_security_tests -- --ignored");
-    }
-}
+/// For end-to-end tests including actual Python execution, see:
+/// - github/app-wrapper/tests/script_runner_e2e_test.rs
+/// - github/app-wrapper/tests/README_SCRIPT_E2E_TESTS.md
+///
+/// Run E2E tests with:
+/// cargo test --package app-wrapper --test script_runner_e2e_test -- --ignored --test-threads=1
 
 /// Performance tests for Base64 encoding overhead
 #[cfg(test)]

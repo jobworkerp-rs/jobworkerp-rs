@@ -1,0 +1,193 @@
+document:
+  dsl: 1.0.0
+  namespace: examples
+  name: python-script-advanced
+  version: 1.0.0
+  summary: Advanced Python script examples with external sources, error handling, and data flow
+
+# Input data
+input:
+  schema:
+    document:
+      type: object
+      properties:
+        github_repo:
+          type: string
+          default: "rust-lang/rust"
+        max_results:
+          type: integer
+          default: 5
+
+do:
+  # Task 1: Fetch GitHub repository info using external script from HTTPS
+  - fetchGitHubInfo:
+      run:
+        script:
+          language: python
+          source:
+            # External script must use HTTPS (file:// and http:// are rejected for security)
+            uri: https://raw.githubusercontent.com/example/scripts/main/github_stats.py
+          arguments:
+            repo_name: ${ .github_repo }
+            max_items: ${ .max_results }
+      metadata:
+        python.version: '3.12'
+        python.packages: 'requests,python-dateutil'
+      timeout: 30s
+
+  # Task 2: Data transformation with nested objects
+  - transformData:
+      run:
+        script:
+          language: python
+          code: |
+            import json
+            from datetime import datetime
+
+            # Input data from previous task
+            github_data = ${ .fetchGitHubInfo }
+
+            # Transform data
+            transformed = {
+                "processed_at": datetime.now().isoformat(),
+                "repo": repo_name,
+                "summary": {
+                    "total_items": len(github_data.get("items", [])),
+                    "first_item": github_data.get("items", [{}])[0].get("title", "N/A")
+                },
+                "metadata": {
+                    "workflow": "python-script-advanced",
+                    "version": "1.0.0"
+                }
+            }
+
+            print(json.dumps(transformed))
+          arguments:
+            repo_name: ${ .github_repo }
+      metadata:
+        python.version: '3.12'
+        python.packages: 'python-dateutil'
+
+  # Task 3: Conditional processing with error handling
+  - conditionalProcessing:
+      run:
+        script:
+          language: python
+          code: |
+            import json
+            import sys
+
+            try:
+                data = input_data
+                threshold = threshold_value
+
+                if data.get("summary", {}).get("total_items", 0) > threshold:
+                    result = {
+                        "status": "high_activity",
+                        "action": "detailed_analysis_required",
+                        "count": data["summary"]["total_items"]
+                    }
+                else:
+                    result = {
+                        "status": "low_activity",
+                        "action": "monitoring_only",
+                        "count": data["summary"]["total_items"]
+                    }
+
+                print(json.dumps(result))
+
+            except Exception as e:
+                # Error handling
+                error_result = {
+                    "status": "error",
+                    "error_message": str(e),
+                    "error_type": type(e).__name__
+                }
+                print(json.dumps(error_result), file=sys.stderr)
+                sys.exit(1)
+          arguments:
+            input_data: ${ .transformData }
+            threshold_value: 3
+      metadata:
+        python.version: '3.12'
+
+  # Task 4: Parallel data analysis with multiple packages
+  - dataAnalysis:
+      run:
+        script:
+          language: python
+          code: |
+            import json
+            import numpy as np
+            import pandas as pd
+            from datetime import datetime
+
+            # Sample data analysis
+            data = sample_data
+
+            # Create pandas DataFrame
+            df = pd.DataFrame(data)
+
+            # Statistical analysis
+            analysis = {
+                "timestamp": datetime.now().isoformat(),
+                "statistics": {
+                    "mean": float(df['value'].mean()),
+                    "median": float(df['value'].median()),
+                    "std": float(df['value'].std()),
+                    "total": float(df['value'].sum())
+                },
+                "numpy_operations": {
+                    "percentile_25": float(np.percentile(df['value'], 25)),
+                    "percentile_75": float(np.percentile(df['value'], 75))
+                }
+            }
+
+            print(json.dumps(analysis))
+          arguments:
+            sample_data:
+              - name: "item1"
+                value: 10
+              - name: "item2"
+                value: 20
+              - name: "item3"
+                value: 30
+              - name: "item4"
+                value: 40
+      metadata:
+        python.version: '3.12'
+        python.packages: 'numpy,pandas'
+        script.use_static: 'true'  # Reuse virtual environment for performance
+
+  # Task 5: JSON data validation
+  - validateOutput:
+      run:
+        script:
+          language: python
+          code: |
+            import json
+
+            # Validate previous outputs
+            github_info = ${ .fetchGitHubInfo }
+            transform_result = ${ .transformData }
+            condition_result = ${ .conditionalProcessing }
+            analysis_result = ${ .dataAnalysis }
+
+            # Validation logic
+            validation = {
+                "all_tasks_completed": True,
+                "github_info_valid": github_info is not None,
+                "transform_valid": "processed_at" in transform_result,
+                "condition_valid": "status" in condition_result,
+                "analysis_valid": "statistics" in analysis_result,
+                "final_status": "success"
+            }
+
+            print(json.dumps(validation))
+          arguments: {}
+      metadata:
+        python.version: '3.12'
+
+# Final output
+output:
+  from: ${ .validateOutput }
