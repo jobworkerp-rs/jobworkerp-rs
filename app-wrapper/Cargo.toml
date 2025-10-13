@@ -29,6 +29,7 @@ app = { path = "../app" }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 async-stream = { workspace = true }
+base64 = "0.22"
 chrono = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive"] }
 # dashmap = { workspace = true }

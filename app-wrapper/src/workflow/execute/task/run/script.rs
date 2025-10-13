@@ -14,15 +14,33 @@ use app::app::{
     job::execute::{JobExecutorWrapper, UseJobExecutor},
     runner::UseRunnerApp,
 };
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use jobworkerp_runner::jobworkerp::runner::{
     python_command_args, python_command_runner_settings, PythonCommandArgs, PythonCommandResult,
     PythonCommandRunnerSettings,
 };
+use once_cell::sync::Lazy;
 use proto::jobworkerp::data::{QueueType, ResponseType, WorkerData};
+use regex::Regex;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
+
+// Compile regex patterns once at startup for performance
+static DANGEROUS_FUNC_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)\b(eval|exec|compile|__import__|open|input|execfile)\s*\(")
+        .expect("Invalid regex pattern for dangerous functions")
+});
+
+static SHELL_COMMAND_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)(os\.system|subprocess\.|commands\.|popen)")
+        .expect("Invalid regex pattern for shell commands")
+});
+
+static DUNDER_ACCESS_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"__[a-zA-Z_]+__").expect("Invalid regex pattern for dunder attributes")
+});
 
 /// Script task executor implementing Serverless Workflow v1.0.0 script process
 pub struct ScriptTaskExecutor {
@@ -80,7 +98,7 @@ impl ScriptTaskExecutor {
         !PYTHON_KEYWORDS.contains(&s)
     }
 
-    /// Sanitize arguments to prevent code injection
+    /// Sanitize arguments to prevent code injection with enhanced security validation
     fn sanitize_python_variable(key: &str, value: &serde_json::Value) -> Result<()> {
         // Validate variable name
         if !Self::is_valid_python_identifier(key) {
@@ -90,49 +108,152 @@ impl ScriptTaskExecutor {
             ));
         }
 
-        // Check for dangerous patterns in string values
-        if let serde_json::Value::String(s) = value {
-            const DANGEROUS_PATTERNS: &[&str] = &[
-                "__import__",
-                "eval(",
-                "exec(",
-                "compile(",
-                "open(",
-                "input(",
-                "execfile(",
-            ];
+        // Recursively validate all string values in the JSON structure
+        Self::validate_value_recursive(value, 0)?;
 
-            for pattern in DANGEROUS_PATTERNS {
-                if s.contains(pattern) {
-                    return Err(anyhow!(
-                        "Potentially malicious code detected in argument '{}': {}",
-                        key,
-                        pattern
-                    ));
+        Ok(())
+    }
+
+    /// Recursively validate JSON values for security threats
+    fn validate_value_recursive(value: &serde_json::Value, depth: usize) -> Result<()> {
+        const MAX_DEPTH: usize = 10;
+        if depth > MAX_DEPTH {
+            return Err(anyhow!("Maximum nesting depth exceeded"));
+        }
+
+        match value {
+            serde_json::Value::String(s) => Self::validate_string_content(s),
+            serde_json::Value::Array(arr) => {
+                for item in arr {
+                    Self::validate_value_recursive(item, depth + 1)?;
                 }
+                Ok(())
             }
+            serde_json::Value::Object(obj) => {
+                for (k, v) in obj {
+                    // Validate nested keys as potential Python identifiers
+                    if !Self::is_valid_python_identifier(k) {
+                        return Err(anyhow!(
+                            "Invalid Python identifier in nested object key: '{}'",
+                            k
+                        ));
+                    }
+                    Self::validate_value_recursive(v, depth + 1)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Validate string content for dangerous patterns using regex
+    fn validate_string_content(s: &str) -> Result<()> {
+        // 1. Dangerous function calls (eval, exec, etc.) with flexible whitespace
+        if DANGEROUS_FUNC_REGEX.is_match(s) {
+            return Err(anyhow!(
+                "Dangerous function call detected in argument value: matches pattern for eval/exec/compile/__import__/open/input/execfile"
+            ));
+        }
+
+        // 2. Dunder attribute access (excluding safe common ones)
+        if let Some(matched) = DUNDER_ACCESS_REGEX.find(s) {
+            let dunder = matched.as_str();
+            // Allow common safe patterns
+            const SAFE_DUNDERS: &[&str] = &["__name__", "__doc__", "__version__", "__file__"];
+            if !SAFE_DUNDERS.contains(&dunder) {
+                return Err(anyhow!(
+                    "Dunder attribute access not allowed in argument value: {}",
+                    dunder
+                ));
+            }
+        }
+
+        // 3. Shell command execution patterns
+        if SHELL_COMMAND_REGEX.is_match(s) {
+            return Err(anyhow!(
+                "Shell command execution pattern detected in argument value: matches os.system/subprocess/commands/popen"
+            ));
         }
 
         Ok(())
     }
 
-    /// Download script from external URL
-    async fn download_script(uri: &str) -> Result<String> {
-        let response = reqwest::get(uri)
-            .await
-            .context(format!("Failed to download script from URL: {}", uri))?;
+    /// Download script from external URL with comprehensive security validation
+    async fn download_script_secure(uri: &str) -> Result<String> {
+        // 1. URL schema validation
+        let url = reqwest::Url::parse(uri).context("Invalid URL format")?;
 
-        if !response.status().is_success() {
+        if url.scheme() != "https" {
             return Err(anyhow!(
-                "Failed to download script: HTTP status {}",
-                response.status()
+                "Only HTTPS URLs are allowed for external scripts (got: {})",
+                url.scheme()
             ));
         }
 
-        response
-            .text()
+        // 2. Download with size limit and timeout
+        const MAX_SCRIPT_SIZE: usize = 1024 * 1024; // 1MB
+        const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
+
+        let client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(false) // Explicitly enable TLS verification
+            .timeout(DOWNLOAD_TIMEOUT)
+            .build()
+            .context("Failed to build HTTP client")?;
+
+        let response = client
+            .get(uri)
+            .send()
             .await
-            .context("Failed to read script response as text")
+            .context(format!("Failed to download script from: {}", uri))?;
+
+        if !response.status().is_success() {
+            return Err(anyhow!(
+                "Failed to download script: HTTP {} from {}",
+                response.status(),
+                uri
+            ));
+        }
+
+        // 3. Content-Type validation (optional but recommended)
+        if let Some(content_type) = response.headers().get("content-type") {
+            let ct_str = content_type
+                .to_str()
+                .context("Invalid Content-Type header")?;
+
+            if !ct_str.starts_with("text/")
+                && !ct_str.contains("python")
+                && !ct_str.contains("plain")
+            {
+                tracing::warn!(
+                    "Unexpected Content-Type for script: {} (expected text/* or application/x-python)",
+                    ct_str
+                );
+            }
+        }
+
+        // 4. Stream download with size limit
+        let bytes = response
+            .bytes()
+            .await
+            .context("Failed to read response body")?;
+
+        if bytes.len() > MAX_SCRIPT_SIZE {
+            return Err(anyhow!(
+                "Script size exceeds limit: {} bytes (max: {} bytes)",
+                bytes.len(),
+                MAX_SCRIPT_SIZE
+            ));
+        }
+
+        let content = String::from_utf8(bytes.to_vec()).context("Script contains invalid UTF-8")?;
+
+        tracing::info!(
+            "Downloaded external script from {} ({} bytes)",
+            uri,
+            content.len()
+        );
+
+        Ok(content)
     }
 
     /// Extract URI from ExternalResource
@@ -180,22 +301,27 @@ impl ScriptTaskExecutor {
                 }
             };
 
-        // Step 2: Inject evaluated arguments as global variables
+        // Step 2: Inject evaluated arguments as global variables via Base64 encoding (secure)
         if let serde_json::Value::Object(ref args_map) = evaluated_args {
             if !args_map.is_empty() {
                 script_code.push_str("# Injected arguments (runtime expressions evaluated)\n");
+                script_code.push_str("# Security: Base64 encoding prevents code injection\n");
                 script_code.push_str("import json\n");
+                script_code.push_str("import base64\n\n");
 
                 for (key, value) in args_map {
                     // Security validation
                     Self::sanitize_python_variable(key, value)?;
 
-                    // Use triple-quoted string to safely embed JSON
-                    let json_str = serde_json::to_string(value)?;
+                    // Serialize and Base64 encode (prevents all injection attacks)
+                    let json_str = serde_json::to_string(value)
+                        .context("Failed to serialize argument value")?;
+                    let b64_encoded = STANDARD.encode(json_str.as_bytes());
+
+                    // Inject as Python variable (secure)
                     script_code.push_str(&format!(
-                        "{} = json.loads('''{}''')\n",
-                        key,
-                        json_str.replace('\\', "\\\\").replace("'''", "\\'\\'\\'")
+                        "{} = json.loads(base64.b64decode('{}').decode('utf-8'))\n",
+                        key, b64_encoded
                     ));
                 }
                 script_code.push('\n');
@@ -209,7 +335,7 @@ impl ScriptTaskExecutor {
             }
             Err(source) => {
                 let uri = Self::extract_uri_from_external_resource(source)?;
-                let external_code = Self::download_script(&uri).await?;
+                let external_code = Self::download_script_secure(&uri).await?;
                 script_code.push_str(&external_code);
             }
         }
@@ -234,10 +360,9 @@ impl ScriptTaskExecutor {
                 },
             ))
         } else {
-            python_settings
-                .requirements_url
-                .as_ref()
-                .map(|url| python_command_runner_settings::RequirementsSpec::RequirementsUrl(url.clone()))
+            python_settings.requirements_url.as_ref().map(|url| {
+                python_command_runner_settings::RequirementsSpec::RequirementsUrl(url.clone())
+            })
         };
 
         Ok(PythonCommandRunnerSettings {
