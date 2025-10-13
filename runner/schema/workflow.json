@@ -430,6 +430,9 @@
             },
             {
               "$ref": "#/$defs/runFunction"
+            },
+            {
+              "$ref": "#/$defs/runScript"
             }
           ]
         }
@@ -615,6 +618,69 @@
                 "arguments"
               ],
               "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "runScript": {
+      "type": "object",
+      "title": "RunScript",
+      "description": "Execute inline or external scripts (Serverless Workflow v1.0.0 compliant)",
+      "required": [
+        "script"
+      ],
+      "properties": {
+        "script": {
+          "type": "object",
+          "title": "ScriptConfiguration",
+          "description": "Script execution configuration",
+          "unevaluatedProperties": true,
+          "required": [
+            "language"
+          ],
+          "properties": {
+            "language": {
+              "type": "string",
+              "title": "ScriptLanguage",
+              "description": "Script language identifier (e.g., 'python', 'javascript'). Validated at runtime."
+            },
+            "code": {
+              "type": "string",
+              "title": "InlineCode",
+              "description": "Inline script code to execute"
+            },
+            "source": {
+              "$ref": "#/$defs/externalResource",
+              "title": "ExternalSource",
+              "description": "External script resource reference"
+            },
+            "arguments": {
+              "type": "object",
+              "title": "ScriptArguments",
+              "description": "Arguments passed to the script. Runtime expressions are supported for value transformation. Each key becomes a variable in the script.",
+              "additionalProperties": true
+            },
+            "environment": {
+              "type": "object",
+              "title": "EnvironmentVariables",
+              "description": "Environment variables for script execution",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "oneOf": [
+            {
+              "required": [
+                "code"
+              ]
+            },
+            {
+              "required": [
+                "source"
+              ]
             }
           ]
         }
