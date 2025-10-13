@@ -55,6 +55,46 @@ impl UseExpression for ScriptTaskExecutor {}
 impl UseJqAndTemplateTransformer for ScriptTaskExecutor {}
 impl UseExpressionTransformer for ScriptTaskExecutor {}
 
+/// Macro to reduce repetitive error handling in execute() method
+///
+/// Usage:
+/// ```
+/// let result = bail_with_position!(
+///     task_context,
+///     some_operation(),
+///     bad_argument,
+///     "Operation failed"
+/// );
+/// ```
+macro_rules! bail_with_position {
+    ($task_context:expr, $result:expr, $error_type:ident, $message:expr) => {
+        match $result {
+            Ok(val) => val,
+            Err(e) => {
+                let pos = $task_context.position.read().await;
+                return Err(workflow::errors::ErrorFactory::new().$error_type(
+                    $message.to_string(),
+                    Some(pos.as_error_instance()),
+                    Some(format!("{:?}", e)),
+                ));
+            }
+        }
+    };
+    ($task_context:expr, $result:expr, $error_type:ident, $message:expr, $detail:expr) => {
+        match $result {
+            Ok(val) => val,
+            Err(e) => {
+                let pos = $task_context.position.read().await;
+                return Err(workflow::errors::ErrorFactory::new().$error_type(
+                    $message.to_string(),
+                    Some(pos.as_error_instance()),
+                    Some($detail),
+                ));
+            }
+        }
+    };
+}
+
 impl ScriptTaskExecutor {
     pub fn new(
         workflow_context: Arc<RwLock<WorkflowContext>>,
@@ -431,46 +471,29 @@ impl TaskExecutorTrait<'_> for ScriptTaskExecutor {
         };
 
         // Extract Python-specific settings from metadata
-        let python_settings = match PythonScriptSettings::from_metadata(&self.metadata) {
-            Ok(settings) => settings,
-            Err(e) => {
-                let pos = task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().bad_argument(
-                    "Failed to parse Python settings from metadata".to_string(),
-                    Some(pos.as_error_instance()),
-                    Some(format!("{:?}", e)),
-                ));
-            }
-        };
+        let python_settings = bail_with_position!(
+            task_context,
+            PythonScriptSettings::from_metadata(&self.metadata),
+            bad_argument,
+            "Failed to parse Python settings from metadata"
+        );
 
         // Convert to PYTHON_COMMAND arguments (with runtime expression evaluation)
-        let args = match self
-            .to_python_command_args(script_config, &task_context, &expression)
-            .await
-        {
-            Ok(args) => args,
-            Err(e) => {
-                let pos = task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().bad_argument(
-                    "Failed to prepare script arguments".to_string(),
-                    Some(pos.as_error_instance()),
-                    Some(format!("{:?}", e)),
-                ));
-            }
-        };
+        let args = bail_with_position!(
+            task_context,
+            self.to_python_command_args(script_config, &task_context, &expression)
+                .await,
+            bad_argument,
+            "Failed to prepare script arguments"
+        );
 
         // Convert to PYTHON_COMMAND settings
-        let settings = match self.to_python_runner_settings(&python_settings) {
-            Ok(settings) => settings,
-            Err(e) => {
-                let pos = task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().bad_argument(
-                    "Failed to prepare script settings".to_string(),
-                    Some(pos.as_error_instance()),
-                    Some(format!("{:?}", e)),
-                ));
-            }
-        };
+        let settings = bail_with_position!(
+            task_context,
+            self.to_python_runner_settings(&python_settings),
+            bad_argument,
+            "Failed to prepare script settings"
+        );
 
         // Execute via PYTHON_COMMAND runner
         let runner_name = "PYTHON_COMMAND";
@@ -499,45 +522,28 @@ impl TaskExecutorTrait<'_> for ScriptTaskExecutor {
             }
         };
 
-        let settings_value = match serde_json::to_value(&settings) {
-            Ok(v) => v,
-            Err(e) => {
-                let pos = task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().internal_error(
-                    "Failed to serialize runner settings".to_string(),
-                    Some(pos.as_error_instance()),
-                    Some(format!("{:?}", e)),
-                ));
-            }
-        };
+        let settings_value = bail_with_position!(
+            task_context,
+            serde_json::to_value(&settings),
+            internal_error,
+            "Failed to serialize runner settings"
+        );
 
-        let settings_bytes = match self
-            .job_executor_wrapper
-            .setup_runner_and_settings(&runner, Some(settings_value))
-            .await
-        {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                let pos = task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().service_unavailable(
-                    "Failed to setup runner settings".to_string(),
-                    Some(pos.as_error_instance()),
-                    Some(format!("{:?}", e)),
-                ));
-            }
-        };
+        let settings_bytes = bail_with_position!(
+            task_context,
+            self.job_executor_wrapper
+                .setup_runner_and_settings(&runner, Some(settings_value))
+                .await,
+            service_unavailable,
+            "Failed to setup runner settings"
+        );
 
-        let args_value = match serde_json::to_value(&args) {
-            Ok(v) => v,
-            Err(e) => {
-                let pos = task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().internal_error(
-                    "Failed to serialize script arguments".to_string(),
-                    Some(pos.as_error_instance()),
-                    Some(format!("{:?}", e)),
-                ));
-            }
-        };
+        let args_value = bail_with_position!(
+            task_context,
+            serde_json::to_value(&args),
+            internal_error,
+            "Failed to serialize script arguments"
+        );
 
         // Extract language-agnostic use_static setting from metadata
         let use_static = self
@@ -567,55 +573,38 @@ impl TaskExecutorTrait<'_> for ScriptTaskExecutor {
         let mut metadata = (*self.metadata).clone();
         super::RunTaskExecutor::inject_metadata_from_context(&mut metadata, &cx);
 
-        let output = match self
-            .job_executor_wrapper
-            .setup_worker_and_enqueue_with_json(
-                Arc::new(metadata),
-                runner_name,
-                worker_data,
-                args_value,
-                None, // No unique key
-                self.default_task_timeout.as_secs() as u32,
-                false, // No streaming
-            )
-            .await
-        {
-            Ok(output) => output,
-            Err(e) => {
-                let pos = task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().service_unavailable(
-                    "Failed to execute script".to_string(),
-                    Some(pos.as_error_instance()),
-                    Some(format!("{:?}", e)),
-                ));
-            }
-        };
+        let output = bail_with_position!(
+            task_context,
+            self.job_executor_wrapper
+                .setup_worker_and_enqueue_with_json(
+                    Arc::new(metadata),
+                    runner_name,
+                    worker_data,
+                    args_value,
+                    None, // No unique key
+                    self.default_task_timeout.as_secs() as u32,
+                    false, // No streaming
+                )
+                .await,
+            service_unavailable,
+            "Failed to execute script"
+        );
 
         // Parse PYTHON_COMMAND result and extract output
         // Note: output is serde_json::Value, not Vec<u8>
-        let output_bytes = match serde_json::to_vec(&output) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                let pos = task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().internal_error(
-                    "Failed to serialize output for decoding".to_string(),
-                    Some(pos.as_error_instance()),
-                    Some(format!("{:?}", e)),
-                ));
-            }
-        };
+        let output_bytes = bail_with_position!(
+            task_context,
+            serde_json::to_vec(&output),
+            internal_error,
+            "Failed to serialize output for decoding"
+        );
 
-        let result: PythonCommandResult = match prost::Message::decode(output_bytes.as_slice()) {
-            Ok(result) => result,
-            Err(e) => {
-                let pos = task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().internal_error(
-                    "Failed to decode script result".to_string(),
-                    Some(pos.as_error_instance()),
-                    Some(format!("{:?}", e)),
-                ));
-            }
-        };
+        let result: PythonCommandResult = bail_with_position!(
+            task_context,
+            prost::Message::decode(output_bytes.as_slice()),
+            internal_error,
+            "Failed to decode script result"
+        );
 
         // Check exit code
         if result.exit_code != 0 {
