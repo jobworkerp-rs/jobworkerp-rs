@@ -74,10 +74,8 @@ mod security_tests {
             if should_accept {
                 assert!(parsed_url.is_ok(), "{}", reason);
                 assert_eq!(parsed_url.unwrap().scheme(), "https", "{}", reason);
-            } else {
-                if let Ok(parsed) = parsed_url {
-                    assert_ne!(parsed.scheme(), "https", "{}", reason);
-                }
+            } else if let Ok(parsed) = parsed_url {
+                assert_ne!(parsed.scheme(), "https", "{}", reason);
             }
 
             println!("✓ {}: {}", reason, url);
@@ -98,11 +96,13 @@ mod security_tests {
             "input('prompt')",
         ];
 
+        // Compile regex once outside the loop
+        let regex =
+            regex::Regex::new(r"(?i)\b(eval|exec|compile|__import__|open|input|execfile)\s*\(")
+                .unwrap();
+
         for pattern in dangerous_patterns {
             // These patterns should be detected by DANGEROUS_FUNC_REGEX
-            let regex =
-                regex::Regex::new(r"(?i)\b(eval|exec|compile|__import__|open|input|execfile)\s*\(")
-                    .unwrap();
             assert!(
                 regex.is_match(pattern),
                 "Pattern should be detected: {}",
@@ -122,9 +122,10 @@ mod security_tests {
             "commands.getoutput('ls')",
         ];
 
+        // Compile regex once outside the loop
+        let regex = regex::Regex::new(r"(?i)(os\.system|subprocess\.|commands\.|popen)").unwrap();
+
         for pattern in shell_patterns {
-            let regex =
-                regex::Regex::new(r"(?i)(os\.system|subprocess\.|commands\.|popen)").unwrap();
             assert!(
                 regex.is_match(pattern),
                 "Shell command should be detected: {}",
