@@ -16,7 +16,7 @@ use app::module::test::create_hybrid_test_app;
 use app::module::AppModule;
 use app_wrapper::modules::{AppWrapperConfigModule, AppWrapperModule, AppWrapperRepositoryModule};
 use app_wrapper::workflow::definition::WorkflowLoader;
-use app_wrapper::workflow::execute::task::run::script::ScriptTaskExecutor;
+use app_wrapper::workflow::execute::task::run::python::MAX_RECURSIVE_DEPTH;
 use app_wrapper::workflow::execute::workflow::WorkflowExecutor;
 use app_wrapper::workflow::WorkflowConfig;
 use futures::{pin_mut, StreamExt};
@@ -630,7 +630,7 @@ fn test_max_nesting_depth_limit() -> Result<()> {
 
         // Create deeply nested structure (depth > MAX_RECURSIVE_DEPTH)
         let mut deeply_nested = json!({"level_0": "value"});
-        for i in 1..(ScriptTaskExecutor::MAX_RECURSIVE_DEPTH + 1) {
+        for i in 1..(MAX_RECURSIVE_DEPTH + 1) {
             deeply_nested = json!({
                 format!("level_{}", i): deeply_nested
             });
