@@ -1,4 +1,4 @@
-pub mod script;
+pub mod python;
 
 use super::TaskExecutorTrait;
 use crate::workflow::{
@@ -464,7 +464,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
             workflow::RunTaskConfiguration::Script(run_script) => {
                 task_context.add_position_name("script".to_string()).await;
 
-                let executor = script::ScriptTaskExecutor::new(
+                let executor = python::PythonTaskExecutor::new(
                     self.workflow_context.clone(),
                     Duration::from_secs(timeout_sec as u64),
                     self.job_executor_wrapper.clone(),
