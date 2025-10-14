@@ -43,45 +43,8 @@ impl UseExpression for PythonTaskExecutor {}
 impl UseJqAndTemplateTransformer for PythonTaskExecutor {}
 impl UseExpressionTransformer for PythonTaskExecutor {}
 
-/// Macro to reduce repetitive error handling in execute() method
-///
-/// Usage:
-/// ```ignore
-/// let result = bail_with_position!(
-///     task_context,
-///     some_operation(),
-///     bad_argument,
-///     "Operation failed"
-/// );
-/// ```
-macro_rules! bail_with_position {
-    ($task_context:expr, $result:expr, $error_type:ident, $message:expr) => {
-        match $result {
-            Ok(val) => val,
-            Err(e) => {
-                let pos = $task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().$error_type(
-                    $message.to_string(),
-                    Some(pos.as_error_instance()),
-                    Some(format!("{:?}", e)),
-                ));
-            }
-        }
-    };
-    ($task_context:expr, $result:expr, $error_type:ident, $message:expr, $detail:expr) => {
-        match $result {
-            Ok(val) => val,
-            Err(e) => {
-                let pos = $task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().$error_type(
-                    $message.to_string(),
-                    Some(pos.as_error_instance()),
-                    Some($detail),
-                ));
-            }
-        }
-    };
-}
+// Import the generic error handling macro from workflow::errors module
+use crate::bail_with_position;
 
 impl PythonTaskExecutor {
     pub fn new(
@@ -368,7 +331,7 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
 
         // Create temporary worker for script execution
         let worker_data = WorkerData {
-            name: format!("script_{}", task_name),
+            name: format!("python_{}", task_name),
             description: format!("Script task: {}", task_name),
             runner_id: runner.id,
             runner_settings: settings_bytes,
