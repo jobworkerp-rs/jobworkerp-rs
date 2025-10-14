@@ -197,6 +197,7 @@ dependencies = [
  "app",
  "async-stream",
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "command-utils 0.1.0",

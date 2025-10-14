@@ -3,6 +3,78 @@ use crate::workflow::execute::context::WorkflowPosition;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 
+/// Macro to reduce repetitive error handling with workflow position context
+///
+/// This macro simplifies error handling by automatically capturing the workflow position
+/// and creating appropriate error instances. It's particularly useful in async contexts
+/// where task execution needs to track position information.
+///
+/// # Usage
+///
+/// Basic usage with error type and message:
+/// ```ignore
+/// let result = bail_with_position!(
+///     task_context,
+///     some_operation(),
+///     bad_argument,
+///     "Operation failed"
+/// );
+/// ```
+///
+/// With custom detail message:
+/// ```ignore
+/// let result = bail_with_position!(
+///     task_context,
+///     some_operation(),
+///     bad_argument,
+///     "Operation failed",
+///     "Additional detail information"
+/// );
+/// ```
+///
+/// # Parameters
+///
+/// - `$task_context`: A reference to the task context containing position information
+/// - `$result`: The Result to unwrap or convert to workflow error
+/// - `$error_type`: The error factory method name (e.g., bad_argument, internal_error)
+/// - `$message`: The error message to include in the error
+/// - `$detail` (optional): Additional detail message (defaults to Debug representation of error)
+#[macro_export]
+macro_rules! bail_with_position {
+    ($task_context:expr, $result:expr, $error_type:ident, $message:expr) => {
+        match $result {
+            Ok(val) => val,
+            Err(e) => {
+                let pos = $task_context.position.read().await;
+                return Err(
+                    $crate::workflow::definition::workflow::errors::ErrorFactory::new()
+                        .$error_type(
+                            $message.to_string(),
+                            Some(pos.as_error_instance()),
+                            Some(format!("{:?}", e)),
+                        ),
+                );
+            }
+        }
+    };
+    ($task_context:expr, $result:expr, $error_type:ident, $message:expr, $detail:expr) => {
+        match $result {
+            Ok(val) => val,
+            Err(e) => {
+                let pos = $task_context.position.read().await;
+                return Err(
+                    $crate::workflow::definition::workflow::errors::ErrorFactory::new()
+                        .$error_type(
+                            $message.to_string(),
+                            Some(pos.as_error_instance()),
+                            Some($detail),
+                        ),
+                );
+            }
+        }
+    };
+}
+
 impl super::Error {
     pub fn position(&mut self, position: &WorkflowPosition) -> &mut Self {
         self.instance = Some(position.as_error_instance());

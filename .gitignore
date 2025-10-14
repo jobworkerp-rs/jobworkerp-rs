@@ -337,3 +337,7 @@ ASALocalRun/
 *.sqlite3*
 *.dylib
 ^\._*
+
+*.bak
+*.old
+

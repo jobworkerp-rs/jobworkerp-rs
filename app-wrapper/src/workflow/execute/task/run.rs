@@ -1,4 +1,4 @@
-pub mod script;
+pub mod python;
 
 use super::TaskExecutorTrait;
 use crate::workflow::{
@@ -49,27 +49,6 @@ impl RunTaskExecutor {
         }
     }
 
-    /// Inject metadata from OpenTelemetry context for remote job execution
-    pub fn inject_metadata_from_context(
-        metadata: &mut HashMap<String, String>,
-        cx: &Arc<opentelemetry::Context>,
-    ) {
-        use opentelemetry::trace::TraceContextExt;
-
-        let span = cx.span();
-        let span_context = span.span_context();
-
-        if span_context.is_valid() {
-            metadata.insert(
-                "otel_trace_id".to_string(),
-                span_context.trace_id().to_string(),
-            );
-            metadata.insert(
-                "otel_span_id".to_string(),
-                span_context.span_id().to_string(),
-            );
-        }
-    }
     fn function_options_to_worker_data(
         options: Option<workflow::WorkerOptions>,
         name: &str,
@@ -483,14 +462,25 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                 Ok(task_context)
             }
             workflow::RunTaskConfiguration::Script(run_script) => {
-                let executor = script::ScriptTaskExecutor::new(
+                task_context.add_position_name("script".to_string()).await;
+
+                let executor = python::PythonTaskExecutor::new(
                     self.workflow_context.clone(),
                     Duration::from_secs(timeout_sec as u64),
                     self.job_executor_wrapper.clone(),
                     run_script.clone(),
                     metadata.clone(),
                 );
-                executor.execute(cx, task_name, task_context).await
+                let result = executor.execute(cx, task_name, task_context).await;
+
+                match result {
+                    Ok(tc) => {
+                        tc.remove_position().await; // Remove "script"
+                        tc.remove_position().await; // Remove "run"
+                        Ok(tc)
+                    }
+                    Err(e) => Err(e),
+                }
             } // _ => {
               //     let pos = task_context.position.clone();
               //     let mut pos = pos.write().await;

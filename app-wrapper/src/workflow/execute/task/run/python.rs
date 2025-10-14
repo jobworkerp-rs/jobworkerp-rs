@@ -1,3 +1,8 @@
+mod validation;
+
+// Re-export validation constants for tests
+pub use validation::MAX_RECURSIVE_DEPTH;
+
 use super::super::TaskExecutorTrait;
 use crate::workflow::{
     definition::{
@@ -14,6 +19,7 @@ use app::app::{
     job::execute::{JobExecutorWrapper, UseJobExecutor},
     runner::UseRunnerApp,
 };
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use jobworkerp_runner::jobworkerp::runner::{
     python_command_args, python_command_runner_settings, PythonCommandArgs, PythonCommandResult,
     PythonCommandRunnerSettings,
@@ -24,8 +30,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
-/// Script task executor implementing Serverless Workflow v1.0.0 script process
-pub struct ScriptTaskExecutor {
+/// Python script task executor implementing Serverless Workflow v1.0.0 script process
+pub struct PythonTaskExecutor {
     workflow_context: Arc<RwLock<WorkflowContext>>,
     default_task_timeout: Duration,
     task: workflow::RunScript,
@@ -33,11 +39,14 @@ pub struct ScriptTaskExecutor {
     metadata: Arc<HashMap<String, String>>,
 }
 
-impl UseExpression for ScriptTaskExecutor {}
-impl UseJqAndTemplateTransformer for ScriptTaskExecutor {}
-impl UseExpressionTransformer for ScriptTaskExecutor {}
+impl UseExpression for PythonTaskExecutor {}
+impl UseJqAndTemplateTransformer for PythonTaskExecutor {}
+impl UseExpressionTransformer for PythonTaskExecutor {}
 
-impl ScriptTaskExecutor {
+// Import the generic error handling macro from workflow::errors module
+use crate::bail_with_position;
+
+impl PythonTaskExecutor {
     pub fn new(
         workflow_context: Arc<RwLock<WorkflowContext>>,
         default_task_timeout: Duration,
@@ -52,87 +61,6 @@ impl ScriptTaskExecutor {
             job_executor_wrapper,
             metadata,
         }
-    }
-
-    /// Validate Python variable name against keywords and identifier rules
-    fn is_valid_python_identifier(s: &str) -> bool {
-        if s.is_empty() {
-            return false;
-        }
-
-        // Must not start with digit
-        if s.chars().next().unwrap().is_numeric() {
-            return false;
-        }
-
-        // Must be alphanumeric or underscore
-        if !s.chars().all(|c| c.is_alphanumeric() || c == '_') {
-            return false;
-        }
-
-        // Must not be Python keyword
-        const PYTHON_KEYWORDS: &[&str] = &[
-            "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del",
-            "elif", "else", "except", "False", "finally", "for", "from", "global", "if", "import",
-            "in", "is", "lambda", "None", "nonlocal", "not", "or", "pass", "raise", "return",
-            "True", "try", "while", "with", "yield",
-        ];
-        !PYTHON_KEYWORDS.contains(&s)
-    }
-
-    /// Sanitize arguments to prevent code injection
-    fn sanitize_python_variable(key: &str, value: &serde_json::Value) -> Result<()> {
-        // Validate variable name
-        if !Self::is_valid_python_identifier(key) {
-            return Err(anyhow!(
-                "Invalid Python variable name: '{}'. Must be alphanumeric with underscores only.",
-                key
-            ));
-        }
-
-        // Check for dangerous patterns in string values
-        if let serde_json::Value::String(s) = value {
-            const DANGEROUS_PATTERNS: &[&str] = &[
-                "__import__",
-                "eval(",
-                "exec(",
-                "compile(",
-                "open(",
-                "input(",
-                "execfile(",
-            ];
-
-            for pattern in DANGEROUS_PATTERNS {
-                if s.contains(pattern) {
-                    return Err(anyhow!(
-                        "Potentially malicious code detected in argument '{}': {}",
-                        key,
-                        pattern
-                    ));
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Download script from external URL
-    async fn download_script(uri: &str) -> Result<String> {
-        let response = reqwest::get(uri)
-            .await
-            .context(format!("Failed to download script from URL: {}", uri))?;
-
-        if !response.status().is_success() {
-            return Err(anyhow!(
-                "Failed to download script: HTTP status {}",
-                response.status()
-            ));
-        }
-
-        response
-            .text()
-            .await
-            .context("Failed to read script response as text")
     }
 
     /// Extract URI from ExternalResource
@@ -172,6 +100,8 @@ impl ScriptTaskExecutor {
         };
 
         // Step 1: Evaluate runtime expressions in arguments
+        tracing::debug!("Raw arguments from workflow: {:#?}", arguments);
+        tracing::debug!("Task context input: {:#?}", task_context.input);
         let evaluated_args =
             match Self::transform_map(task_context.input.clone(), arguments.clone(), expression) {
                 Ok(args) => args,
@@ -179,23 +109,29 @@ impl ScriptTaskExecutor {
                     return Err(anyhow!("Failed to evaluate runtime expressions: {:?}", e));
                 }
             };
+        tracing::debug!("Evaluated arguments: {:#?}", evaluated_args);
 
-        // Step 2: Inject evaluated arguments as global variables
+        // Step 2: Inject evaluated arguments as global variables via Base64 encoding (secure)
         if let serde_json::Value::Object(ref args_map) = evaluated_args {
             if !args_map.is_empty() {
                 script_code.push_str("# Injected arguments (runtime expressions evaluated)\n");
+                script_code.push_str("# Security: Base64 encoding prevents code injection\n");
                 script_code.push_str("import json\n");
+                script_code.push_str("import base64\n\n");
 
                 for (key, value) in args_map {
                     // Security validation
-                    Self::sanitize_python_variable(key, value)?;
+                    validation::sanitize_python_variable(key, value)?;
 
-                    // Use triple-quoted string to safely embed JSON
-                    let json_str = serde_json::to_string(value)?;
+                    // Serialize and Base64 encode (prevents all injection attacks)
+                    let json_str = serde_json::to_string(value)
+                        .context("Failed to serialize argument value")?;
+                    let b64_encoded = STANDARD.encode(json_str.as_bytes());
+
+                    // Inject as Python variable (secure)
                     script_code.push_str(&format!(
-                        "{} = json.loads('''{}''')\n",
-                        key,
-                        json_str.replace('\\', "\\\\").replace("'''", "\\'\\'\\'")
+                        "{} = json.loads(base64.b64decode('{}').decode('utf-8'))\n",
+                        key, b64_encoded
                     ));
                 }
                 script_code.push('\n');
@@ -209,10 +145,12 @@ impl ScriptTaskExecutor {
             }
             Err(source) => {
                 let uri = Self::extract_uri_from_external_resource(source)?;
-                let external_code = Self::download_script(&uri).await?;
+                let external_code = validation::download_script_secure(&uri).await?;
                 script_code.push_str(&external_code);
             }
         }
+
+        tracing::debug!("Generated Python script:\n{}", script_code);
 
         Ok(PythonCommandArgs {
             script: Some(python_command_args::Script::ScriptContent(script_code)),
@@ -234,10 +172,9 @@ impl ScriptTaskExecutor {
                 },
             ))
         } else {
-            python_settings
-                .requirements_url
-                .as_ref()
-                .map(|url| python_command_runner_settings::RequirementsSpec::RequirementsUrl(url.clone()))
+            python_settings.requirements_url.as_ref().map(|url| {
+                python_command_runner_settings::RequirementsSpec::RequirementsUrl(url.clone())
+            })
         };
 
         Ok(PythonCommandRunnerSettings {
@@ -248,15 +185,13 @@ impl ScriptTaskExecutor {
     }
 }
 
-impl TaskExecutorTrait<'_> for ScriptTaskExecutor {
+impl TaskExecutorTrait<'_> for PythonTaskExecutor {
     async fn execute(
         &self,
-        cx: Arc<opentelemetry::Context>,
+        _cx: Arc<opentelemetry::Context>,
         task_name: &str,
         mut task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
-        task_context.add_position_name("script".to_string()).await;
-
         let script_config = &self.task.script;
 
         // Extract language from enum variant
@@ -306,46 +241,29 @@ impl TaskExecutorTrait<'_> for ScriptTaskExecutor {
         };
 
         // Extract Python-specific settings from metadata
-        let python_settings = match PythonScriptSettings::from_metadata(&self.metadata) {
-            Ok(settings) => settings,
-            Err(e) => {
-                let pos = task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().bad_argument(
-                    "Failed to parse Python settings from metadata".to_string(),
-                    Some(pos.as_error_instance()),
-                    Some(format!("{:?}", e)),
-                ));
-            }
-        };
+        let python_settings = bail_with_position!(
+            task_context,
+            PythonScriptSettings::from_metadata(&self.metadata),
+            bad_argument,
+            "Failed to parse Python settings from metadata"
+        );
 
         // Convert to PYTHON_COMMAND arguments (with runtime expression evaluation)
-        let args = match self
-            .to_python_command_args(script_config, &task_context, &expression)
-            .await
-        {
-            Ok(args) => args,
-            Err(e) => {
-                let pos = task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().bad_argument(
-                    "Failed to prepare script arguments".to_string(),
-                    Some(pos.as_error_instance()),
-                    Some(format!("{:?}", e)),
-                ));
-            }
-        };
+        let args = bail_with_position!(
+            task_context,
+            self.to_python_command_args(script_config, &task_context, &expression)
+                .await,
+            bad_argument,
+            "Failed to prepare script arguments"
+        );
 
         // Convert to PYTHON_COMMAND settings
-        let settings = match self.to_python_runner_settings(&python_settings) {
-            Ok(settings) => settings,
-            Err(e) => {
-                let pos = task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().bad_argument(
-                    "Failed to prepare script settings".to_string(),
-                    Some(pos.as_error_instance()),
-                    Some(format!("{:?}", e)),
-                ));
-            }
-        };
+        let settings = bail_with_position!(
+            task_context,
+            self.to_python_runner_settings(&python_settings),
+            bad_argument,
+            "Failed to prepare script settings"
+        );
 
         // Execute via PYTHON_COMMAND runner
         let runner_name = "PYTHON_COMMAND";
@@ -374,45 +292,35 @@ impl TaskExecutorTrait<'_> for ScriptTaskExecutor {
             }
         };
 
-        let settings_value = match serde_json::to_value(&settings) {
-            Ok(v) => v,
-            Err(e) => {
-                let pos = task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().internal_error(
-                    "Failed to serialize runner settings".to_string(),
-                    Some(pos.as_error_instance()),
-                    Some(format!("{:?}", e)),
-                ));
-            }
-        };
+        // Encode PythonCommandRunnerSettings directly to protobuf binary
+        // This is necessary because serde_json::to_value() encodes Rust enum variants
+        // as {"VariantName": {...}}, which violates protobuf JSON encoding rules
+        // where oneof fields should use the field name directly (e.g., "packages" not "Packages")
+        let settings_bytes = bail_with_position!(
+            task_context,
+            {
+                let mut buf = Vec::new();
+                prost::Message::encode(&settings, &mut buf)
+                    .context("Failed to encode PythonCommandRunnerSettings")
+                    .map(|_| buf)
+            },
+            internal_error,
+            "Failed to encode runner settings to protobuf"
+        );
 
-        let settings_bytes = match self
-            .job_executor_wrapper
-            .setup_runner_and_settings(&runner, Some(settings_value))
-            .await
-        {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                let pos = task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().service_unavailable(
-                    "Failed to setup runner settings".to_string(),
-                    Some(pos.as_error_instance()),
-                    Some(format!("{:?}", e)),
-                ));
-            }
-        };
-
-        let args_value = match serde_json::to_value(&args) {
-            Ok(v) => v,
-            Err(e) => {
-                let pos = task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().internal_error(
-                    "Failed to serialize script arguments".to_string(),
-                    Some(pos.as_error_instance()),
-                    Some(format!("{:?}", e)),
-                ));
-            }
-        };
+        // Encode PythonCommandArgs directly to protobuf binary instead of using JSON
+        // This bypasses the JSON serialization issue with oneof fields
+        let args_bytes = bail_with_position!(
+            task_context,
+            {
+                let mut buf = Vec::new();
+                prost::Message::encode(&args, &mut buf)
+                    .context("Failed to encode PythonCommandArgs")
+                    .map(|_| buf)
+            },
+            internal_error,
+            "Failed to encode script arguments to protobuf"
+        );
 
         // Extract language-agnostic use_static setting from metadata
         let use_static = self
@@ -423,7 +331,7 @@ impl TaskExecutorTrait<'_> for ScriptTaskExecutor {
 
         // Create temporary worker for script execution
         let worker_data = WorkerData {
-            name: format!("script_{}", task_name),
+            name: format!("python_{}", task_name),
             description: format!("Script task: {}", task_name),
             runner_id: runner.id,
             runner_settings: settings_bytes,
@@ -438,59 +346,56 @@ impl TaskExecutorTrait<'_> for ScriptTaskExecutor {
             broadcast_results: false,
         };
 
-        // Inject metadata from opentelemetry context
-        let mut metadata = (*self.metadata).clone();
-        super::RunTaskExecutor::inject_metadata_from_context(&mut metadata, &cx);
-
-        let output = match self
-            .job_executor_wrapper
-            .setup_worker_and_enqueue_with_json(
-                Arc::new(metadata),
-                runner_name,
-                worker_data,
-                args_value,
-                None, // No unique key
-                self.default_task_timeout.as_secs() as u32,
-                false, // No streaming
+        // Find or create worker for script execution
+        let worker_id = if worker_data.use_static {
+            bail_with_position!(
+                task_context,
+                self.job_executor_wrapper
+                    .find_or_create_worker(&worker_data)
+                    .await,
+                service_unavailable,
+                "Failed to find or create worker"
             )
-            .await
-        {
-            Ok(output) => output,
-            Err(e) => {
-                let pos = task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().service_unavailable(
-                    "Failed to execute script".to_string(),
-                    Some(pos.as_error_instance()),
-                    Some(format!("{:?}", e)),
-                ));
-            }
+            .id
+        } else {
+            None
         };
 
-        // Parse PYTHON_COMMAND result and extract output
-        // Note: output is serde_json::Value, not Vec<u8>
-        let output_bytes = match serde_json::to_vec(&output) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                let pos = task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().internal_error(
-                    "Failed to serialize output for decoding".to_string(),
-                    Some(pos.as_error_instance()),
-                    Some(format!("{:?}", e)),
-                ));
-            }
-        };
+        // Enqueue job with protobuf binary arguments directly
+        let (_job_id, job_result, _stream) = bail_with_position!(
+            task_context,
+            self.job_executor_wrapper
+                .enqueue_with_worker_or_temp(
+                    self.metadata.clone(),
+                    worker_id,
+                    worker_data,
+                    args_bytes, // Use protobuf binary directly, not JSON
+                    None,       // No unique key
+                    self.default_task_timeout.as_secs() as u32,
+                    false, // No streaming
+                )
+                .await,
+            service_unavailable,
+            "Failed to enqueue script execution job"
+        );
 
-        let result: PythonCommandResult = match prost::Message::decode(output_bytes.as_slice()) {
-            Ok(result) => result,
-            Err(e) => {
-                let pos = task_context.position.read().await;
-                return Err(workflow::errors::ErrorFactory::new().internal_error(
-                    "Failed to decode script result".to_string(),
-                    Some(pos.as_error_instance()),
-                    Some(format!("{:?}", e)),
-                ));
-            }
-        };
+        // Extract job result output
+        let output_bytes = bail_with_position!(
+            task_context,
+            job_result
+                .ok_or_else(|| anyhow!("Job result not found"))
+                .and_then(|res| self.job_executor_wrapper.extract_job_result_output(res)),
+            internal_error,
+            "Failed to extract job result output"
+        );
+
+        // Decode PYTHON_COMMAND result from protobuf binary
+        let result: PythonCommandResult = bail_with_position!(
+            task_context,
+            prost::Message::decode(output_bytes.as_slice()),
+            internal_error,
+            "Failed to decode script result"
+        );
 
         // Check exit code
         if result.exit_code != 0 {
@@ -514,7 +419,9 @@ impl TaskExecutorTrait<'_> for ScriptTaskExecutor {
 
         task_context.set_raw_output(script_output);
 
-        task_context.remove_position().await;
+        // NOTE: Do NOT remove position here. The parent TaskExecutor (task.rs:390) will handle
+        // the position cleanup after this method returns.
+        // task_context.remove_position().await;
 
         Ok(task_context)
     }
