@@ -58,13 +58,13 @@ num_cpus = "1.0"
 num-derive = "0.4"
 num-traits = "0.2"
 once_cell = "1"
-opentelemetry = { version = "0.30" }
+opentelemetry = { version = "0.31" }
 pnet = "0.35"
 prost = "0.14"
 prost-types = "0.14"
 prost-reflect = { version = "0.16", features = ["serde"] }
 rand = "0.9"
-regex = "1.11"
+regex = "1.12"
 redis = { version = "0.32", features = [
     "tokio-rustls-comp",
     "ahash",
@@ -119,7 +119,7 @@ tracing-subscriber = { version = "0.3", features = [
     "env-filter",
     "json",
 ] }
-tracing-opentelemetry = { version = "0.31" }
+tracing-opentelemetry = { version = "0.32" }
 url = "2.5"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 
