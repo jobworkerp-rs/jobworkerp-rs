@@ -1,9 +1,8 @@
-#![cfg(feature = "local_llm")]
-
 use super::super::mistral::{
     DefaultLLMResultConverter, LLMRequestConverter, LLMResultConverter, MistralLlmServiceImpl,
 };
 use anyhow::Result;
+use app::app::function::function_set::{FunctionSetAppImpl, UseFunctionSetApp};
 use app::app::function::{FunctionAppImpl, UseFunctionApp};
 use futures::stream::{BoxStream, StreamExt};
 use jobworkerp_runner::jobworkerp::runner::llm::{
@@ -16,17 +15,20 @@ use std::sync::Arc;
 pub struct MistralCompletionService {
     pub service: Arc<MistralLlmServiceImpl>,
     pub function_app: Arc<FunctionAppImpl>,
+    pub function_set_app: Arc<FunctionSetAppImpl>,
 }
 
 impl MistralCompletionService {
     pub async fn new(
         settings: LocalRunnerSettings,
         function_app: Arc<FunctionAppImpl>,
+        function_set_app: Arc<FunctionSetAppImpl>,
     ) -> Result<Self> {
         let service = Arc::new(MistralLlmServiceImpl::new(&settings).await?);
         Ok(Self {
             service,
             function_app,
+            function_set_app,
         })
     }
 
@@ -168,6 +170,12 @@ impl MistralCompletionService {
 impl UseFunctionApp for MistralCompletionService {
     fn function_app(&self) -> &FunctionAppImpl {
         &self.function_app
+    }
+}
+
+impl UseFunctionSetApp for MistralCompletionService {
+    fn function_set_app(&self) -> &FunctionSetAppImpl {
+        &self.function_set_app
     }
 }
 

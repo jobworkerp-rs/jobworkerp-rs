@@ -1,5 +1,3 @@
-#![cfg(feature = "local_llm")]
-
 use crate::llm::generic_tracing_helper::GenericLLMTracingHelper;
 use crate::llm::mistral::{
     MistralLlmServiceImpl, MistralRSMessage, MistralRSToolCall, ToolCallingConfig,
@@ -8,6 +6,7 @@ use crate::llm::mistral::{
 use crate::llm::tracing::mistral_helper::MistralTracingHelper;
 use crate::llm::tracing::LLMTracingHelper;
 use anyhow::Result;
+use app::app::function::function_set::{FunctionSetAppImpl, UseFunctionSetApp};
 use app::app::function::{FunctionApp, FunctionAppImpl, UseFunctionApp};
 use async_stream::stream;
 use command_utils::trace::impls::GenericOtelClient;
@@ -26,6 +25,7 @@ use tokio::time::{timeout, Duration};
 pub struct MistralRSService {
     pub core_service: Arc<MistralLlmServiceImpl>, // Direct use of concrete type
     pub function_app: Arc<FunctionAppImpl>,       // Tool execution functionality (required)
+    pub function_set_app: Arc<FunctionSetAppImpl>, // FunctionSet management (required)
     pub otel_client: Option<Arc<GenericOtelClient>>, // Tracing client
     pub config: ToolCallingConfig,                // Tool calling configuration
 }
@@ -35,12 +35,14 @@ impl MistralRSService {
     pub async fn new_with_function_app(
         settings: LocalRunnerSettings,
         function_app: Arc<FunctionAppImpl>,
+        function_set_app: Arc<FunctionSetAppImpl>,
     ) -> Result<Self> {
         let core_service = Arc::new(MistralLlmServiceImpl::new(&settings).await?);
 
         Ok(Self {
             core_service,
             function_app,
+            function_set_app,
             otel_client: Some(Arc::new(GenericOtelClient::new(
                 "mistralrs.tool_calling_service",
             ))),
@@ -449,6 +451,12 @@ impl MistralRSService {
 impl UseFunctionApp for MistralRSService {
     fn function_app(&self) -> &FunctionAppImpl {
         &self.function_app
+    }
+}
+
+impl UseFunctionSetApp for MistralRSService {
+    fn function_set_app(&self) -> &FunctionSetAppImpl {
+        &self.function_set_app
     }
 }
 

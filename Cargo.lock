@@ -2857,7 +2857,6 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "tonic-reflection",
- "tonic-tracing-opentelemetry",
  "tonic-web",
  "tower 0.5.2",
  "tracing",
@@ -8796,26 +8795,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tonic-tracing-opentelemetry"
-version = "0.28.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a8fbc3ca24a474bf51c7e34eb8f2df647480b14b839f4995d603ff7e6ba5550"
-dependencies = [
- "futures-core",
- "futures-util",
- "http",
- "http-body",
- "hyper",
- "opentelemetry 0.29.1",
- "pin-project-lite",
- "tonic 0.12.3",
- "tower 0.5.2",
- "tracing",
- "tracing-opentelemetry 0.30.0",
- "tracing-opentelemetry-instrumentation-sdk",
-]
-
-[[package]]
 name = "tonic-web"
 version = "0.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9010,18 +8989,6 @@ dependencies = [
  "tracing-log",
  "tracing-subscriber",
  "web-time",
-]
-
-[[package]]
-name = "tracing-opentelemetry-instrumentation-sdk"
-version = "0.28.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d68fa8bb457e8327ee32715a0a9425ebeab621d919a9677332dd1e58852a40aa"
-dependencies = [
- "http",
- "opentelemetry 0.29.1",
- "tracing",
- "tracing-opentelemetry 0.30.0",
 ]
 
 [[package]]

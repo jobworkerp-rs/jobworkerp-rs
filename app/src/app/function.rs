@@ -1,11 +1,7 @@
-use super::function::function_set::FunctionSetAppImpl;
 use super::job::{JobApp, UseJobApp};
 use super::runner::RunnerApp;
 use super::worker::WorkerApp;
-use super::{
-    function::function_set::UseFunctionSetApp, runner::UseRunnerApp, worker::UseWorkerApp,
-};
-use crate::app::function::function_set::FunctionSetApp as BaseFunctionSetApp;
+use super::{runner::UseRunnerApp, worker::UseWorkerApp};
 use crate::app::job::execute::UseJobExecutor;
 use crate::app::job_result::UseJobResultApp;
 use crate::app::runner::{RunnerDataWithDescriptor, UseRunnerParserWithCache};
@@ -33,8 +29,7 @@ pub mod helper;
 
 #[async_trait]
 pub trait FunctionApp:
-    UseFunctionSetApp
-    + UseWorkerApp
+    UseWorkerApp
     + UseRunnerApp
     + UseMokaCache<Arc<String>, Vec<FunctionSpecs>>
     + FunctionSpecConverter
@@ -107,73 +102,6 @@ pub trait FunctionApp:
         }
 
         Ok(functions)
-    }
-    async fn find_functions_by_set(&self, set_name: &str) -> Result<Vec<FunctionSpecs>> {
-        // Get function set by name
-        let function_set = self
-            .function_set_app()
-            .find_function_set_by_name(set_name)
-            .await?;
-
-        if let Some(set) = function_set {
-            if let Some(data) = set.data {
-                let mut functions = Vec::new();
-
-                // Process each target in the function set
-                for target in &data.targets {
-                    match target.r#type {
-                        // Runner type target (FunctionType::Runner = 0)
-                        0 => {
-                            // Create runner ID and find runner
-                            let runner_id = proto::jobworkerp::data::RunnerId { value: target.id };
-                            if let Some(runner) = self.runner_app().find_runner(&runner_id).await? {
-                                functions.push(Self::convert_runner_to_function_specs(runner));
-                            }
-                        }
-                        // Worker type target (FunctionType::Worker = 1)
-                        1 => {
-                            // Create worker ID and find worker
-                            let worker_id = proto::jobworkerp::data::WorkerId { value: target.id };
-                            if let Some(worker) = self.worker_app().find(&worker_id).await? {
-                                if let Some(wid) = worker.id {
-                                    if let Some(worker_data) = worker.data {
-                                        if let Some(rid) = worker_data.runner_id {
-                                            if let Some(runner) =
-                                                self.runner_app().find_runner(&rid).await?
-                                            {
-                                                if let Ok(specs) =
-                                                    Self::convert_worker_to_function_specs(
-                                                        wid,
-                                                        worker_data,
-                                                        runner,
-                                                    )
-                                                {
-                                                    functions.push(specs);
-                                                } else {
-                                                    tracing::warn!(
-                                                        "Failed to convert worker to function specs"
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        // Unknown type, log warning and skip
-                        unknown_type => {
-                            tracing::warn!("Unknown function target type: {}", unknown_type);
-                        }
-                    }
-                }
-
-                Ok(functions)
-            } else {
-                Ok(Vec::new())
-            }
-        } else {
-            Ok(Vec::new())
-        }
     }
     #[allow(clippy::too_many_arguments)]
     fn handle_runner_for_front<'a>(
@@ -563,6 +491,89 @@ pub trait FunctionApp:
         }
     }
 
+    /// Find a single function by FunctionId
+    async fn find_function_by_id(
+        &self,
+        function_id: &proto::jobworkerp::function::data::FunctionId,
+    ) -> Result<Option<FunctionSpecs>>
+    where
+        Self: Send + 'static,
+    {
+        use proto::jobworkerp::function::data::function_id;
+
+        match &function_id.id {
+            Some(function_id::Id::RunnerId(runner_id)) => {
+                self.find_function_by_runner_id(runner_id).await
+            }
+            Some(function_id::Id::WorkerId(worker_id)) => {
+                self.find_function_by_worker_id(worker_id).await
+            }
+            None => {
+                tracing::warn!("FunctionId has no id set. Returning None.");
+                Ok(None)
+            }
+        }
+    }
+
+    /// Convert multiple FunctionIds to FunctionSpecs
+    async fn convert_function_ids_to_specs(
+        &self,
+        function_ids: &[proto::jobworkerp::function::data::FunctionId],
+        context_name: &str,
+    ) -> Result<Vec<FunctionSpecs>>
+    where
+        Self: Send + 'static,
+    {
+        let mut functions = Vec::new();
+        let mut skipped_count = 0u64;
+
+        for function_id in function_ids {
+            match self.find_function_by_id(function_id).await? {
+                Some(specs) => functions.push(specs),
+                None => {
+                    skipped_count += 1;
+                    if let Some(id) = &function_id.id {
+                        use proto::jobworkerp::function::data::function_id;
+                        match id {
+                            function_id::Id::RunnerId(runner_id) => {
+                                tracing::warn!(
+                                    "Runner not found for id: {} in context: {}. Skipping.",
+                                    runner_id.value,
+                                    context_name
+                                );
+                            }
+                            function_id::Id::WorkerId(worker_id) => {
+                                tracing::warn!(
+                                    "Worker not found for id: {} in context: {}. Skipping.",
+                                    worker_id.value,
+                                    context_name
+                                );
+                            }
+                        }
+                    } else {
+                        tracing::warn!(
+                            "FunctionId has no id set in context: {}. Skipping this target.",
+                            context_name
+                        );
+                    }
+                }
+            }
+        }
+
+        // Log metrics for skipped targets
+        if skipped_count > 0 {
+            tracing::info!(
+                target: "metrics",
+                skipped_targets = skipped_count,
+                context = context_name,
+                total_targets = function_ids.len(),
+                "Skipped targets during FunctionId to FunctionSpecs conversion"
+            );
+        }
+
+        Ok(functions)
+    }
+
     // for LLM function calling (LLM_CHAT runner)
     async fn call_function_for_llm(
         &self,
@@ -641,7 +652,6 @@ pub trait FunctionApp:
 
 #[derive(Debug)]
 pub struct FunctionAppImpl {
-    function_set_app: Arc<FunctionSetAppImpl>,
     runner_app: Arc<dyn crate::app::runner::RunnerApp>,
     worker_app: Arc<dyn crate::app::worker::WorkerApp>,
     job_app: Arc<dyn crate::app::job::JobApp>,
@@ -652,7 +662,6 @@ pub struct FunctionAppImpl {
 
 impl FunctionAppImpl {
     pub fn new(
-        function_set_app: Arc<FunctionSetAppImpl>,
         runner_app: Arc<dyn crate::app::runner::RunnerApp>,
         worker_app: Arc<dyn crate::app::worker::WorkerApp>,
         job_app: Arc<dyn crate::app::job::JobApp>,
@@ -667,7 +676,6 @@ impl FunctionAppImpl {
             },
         );
         Self {
-            function_set_app,
             runner_app,
             worker_app,
             job_app,
@@ -675,12 +683,6 @@ impl FunctionAppImpl {
             function_cache,
             descriptor_cache,
         }
-    }
-}
-
-impl UseFunctionSetApp for FunctionAppImpl {
-    fn function_set_app(&self) -> &FunctionSetAppImpl {
-        &self.function_set_app
     }
 }
 

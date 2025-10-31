@@ -14,7 +14,8 @@ use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
 };
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::GenaiRunnerSettings;
 use jobworkerp_runner::jobworkerp::runner::llm::LlmChatArgs;
-use proto::jobworkerp::function::data::{FunctionSetData, FunctionTarget, FunctionType};
+use proto::jobworkerp::data::RunnerId;
+use proto::jobworkerp::function::data::{function_id, FunctionId, FunctionSetData};
 use std::collections::HashMap;
 use tokio::time::{timeout, Duration};
 
@@ -45,19 +46,22 @@ async fn create_test_service() -> Result<GenaiChatService> {
     // If it already exists, ignore the error and continue
     let _result = app_module
         .function_set_app
-        .as_ref()
         .create_function_set(&FunctionSetData {
             name: "genai_tool_test".to_string(),
             description: "Test set for GenAI tool calls - COMMAND runner only".to_string(),
             category: 0,
-            targets: vec![FunctionTarget {
-                id: 1, // COMMAND runner
-                r#type: FunctionType::Runner as i32,
+            targets: vec![FunctionId {
+                id: Some(function_id::Id::RunnerId(RunnerId { value: 1 })),
             }],
         })
         .await;
 
-    let service = GenaiChatService::new(app_module.function_app, settings).await?;
+    let service = GenaiChatService::new(
+        app_module.function_app.clone(),
+        app_module.function_set_app.clone(),
+        settings,
+    )
+    .await?;
     Ok(service)
 }
 

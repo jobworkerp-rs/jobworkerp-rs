@@ -6,6 +6,7 @@ use super::conversion::ToolConverter;
 use crate::llm::tracing::genai_helper::GenaiTracingHelper;
 use crate::llm::ThinkTagHelper;
 use anyhow::Result;
+use app::app::function::function_set::{FunctionSetApp, FunctionSetAppImpl};
 use app::app::function::{FunctionApp, FunctionAppImpl};
 use command_utils::trace::impls::GenericOtelClient;
 use futures::stream::BoxStream;
@@ -36,6 +37,7 @@ pub struct GenaiLLMConfig {
 #[derive(Clone)]
 pub struct GenaiChatService {
     pub function_app: Arc<FunctionAppImpl>,
+    pub function_set_app: Arc<FunctionSetAppImpl>,
     pub client: Client,
     pub model: String,
     pub system_prompt: Option<String>,
@@ -47,6 +49,7 @@ impl ThinkTagHelper for GenaiChatService {}
 impl GenaiChatService {
     pub async fn new(
         function_app: Arc<FunctionAppImpl>,
+        function_set_app: Arc<FunctionSetAppImpl>,
         settings: GenaiRunnerSettings,
     ) -> Result<Self> {
         let model_name = settings.model.clone();
@@ -101,6 +104,7 @@ impl GenaiChatService {
             .build();
         Ok(Self {
             function_app,
+            function_set_app,
             client,
             model: settings.model,
             system_prompt: settings.system_prompt,
@@ -203,7 +207,7 @@ impl GenaiChatService {
             if function_options.use_function_calling {
                 let list_future =
                     if let Some(set_name) = function_options.function_set_name.as_ref() {
-                        self.function_app.find_functions_by_set(set_name)
+                        self.function_set_app.find_functions_by_set(set_name)
                     } else {
                         self.function_app.find_functions(
                             !function_options.use_runners_as_function(),

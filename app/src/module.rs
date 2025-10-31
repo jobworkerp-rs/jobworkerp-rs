@@ -178,9 +178,10 @@ impl AppModule {
                         num_counters: mc_config.num_counters,
                         ttl: Some(Duration::from_secs(60)),
                     },
+                    runner_app.clone(),
+                    worker_app.clone(),
                 ));
                 let function_app = Arc::new(FunctionAppImpl::new(
-                    function_set_app.clone(),
                     runner_app.clone(),
                     worker_app.clone(),
                     job_app.clone(),
@@ -302,9 +303,10 @@ impl AppModule {
                         num_counters: mc_config.num_counters,
                         ttl: Some(Duration::from_secs(60)),
                     },
+                    runner_app.clone(),
+                    worker_app.clone(),
                 ));
                 let function_app = Arc::new(FunctionAppImpl::new(
-                    function_set_app.clone(),
                     runner_app.clone(),
                     worker_app.clone(),
                     job_app.clone(),
@@ -492,9 +494,10 @@ pub mod test {
                 num_counters: mc_config.num_counters,
                 ttl: Some(Duration::from_secs(60)),
             },
+            runner_app.clone(),
+            worker_app.clone(),
         ));
         let function_app = Arc::new(FunctionAppImpl::new(
-            function_set_app.clone(),
             runner_app.clone(),
             worker_app.clone(),
             job_app.clone(),

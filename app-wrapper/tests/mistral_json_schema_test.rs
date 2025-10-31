@@ -118,14 +118,24 @@ fn create_custom_model_settings(
 async fn create_test_chat_service() -> Result<MistralRSService> {
     let settings = create_test_model_settings();
     let app_module = create_hybrid_test_app().await?;
-    MistralRSService::new_with_function_app(settings, app_module.function_app.clone()).await
+    MistralRSService::new_with_function_app(
+        settings,
+        app_module.function_app.clone(),
+        app_module.function_set_app.clone(),
+    )
+    .await
 }
 
 /// Create test completion service
 async fn create_test_completion_service() -> Result<MistralCompletionService> {
     let settings = create_test_model_settings();
     let app_module = create_hybrid_test_app().await?;
-    MistralCompletionService::new(settings, app_module.function_app.clone()).await
+    MistralCompletionService::new(
+        settings,
+        app_module.function_app.clone(),
+        app_module.function_set_app.clone(),
+    )
+    .await
 }
 
 #[ignore = "need to run with mistralrs model server"]
@@ -139,8 +149,12 @@ async fn test_simple_chat_with_textmodel() -> Result<()> {
         None,  // chat_template: None
     );
     let app_module = create_hybrid_test_app().await?;
-    let service =
-        MistralRSService::new_with_function_app(settings, app_module.function_app.clone()).await?;
+    let service = MistralRSService::new_with_function_app(
+        settings,
+        app_module.function_app.clone(),
+        app_module.function_set_app.clone(),
+    )
+    .await?;
 
     let args = LlmChatArgs {
         json_schema: None, // No JSON schema to test basic functionality

@@ -10,8 +10,7 @@ pub mod test {
 
     use anyhow::Result;
     use app::app::function::function_set::FunctionSetApp;
-    use app::app::function::FunctionAppImpl;
-    use app::module::test::create_hybrid_test_app;
+    use app::module::{test::create_hybrid_test_app, AppModule};
     use app_wrapper::llm::chat::ollama::OllamaChatService;
     use jobworkerp_base::error::JobWorkerError;
     use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
@@ -19,7 +18,8 @@ pub mod test {
     };
     use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::OllamaRunnerSettings;
     use jobworkerp_runner::jobworkerp::runner::llm::{llm_chat_args::LlmOptions, LlmChatArgs};
-    use proto::jobworkerp::function::data::{FunctionSetData, FunctionTarget, FunctionType};
+    use proto::jobworkerp::data::RunnerId;
+    use proto::jobworkerp::function::data::{function_id, FunctionId, FunctionSetData};
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::time::{timeout, Duration};
@@ -30,28 +30,26 @@ pub mod test {
     const TEST_TIMEOUT: Duration = Duration::from_secs(180);
 
     /// Setup function app with COMMAND runner for tool calls using test infrastructure
-    async fn setup_function_app() -> Result<Arc<FunctionAppImpl>> {
-        let app_module = create_hybrid_test_app().await?;
+    async fn setup_app_module() -> Result<Arc<AppModule>> {
+        let app_module = Arc::new(create_hybrid_test_app().await?);
         let _result = app_module
             .function_set_app
-            .as_ref()
             .create_function_set(&FunctionSetData {
                 name: "ollama_tool_test".to_string(),
                 description: "Test set for Ollama tool calls - COMMAND runner only".to_string(),
                 category: 0,
-                targets: vec![FunctionTarget {
-                    id: 1, // COMMAND runner
-                    r#type: FunctionType::Runner as i32,
+                targets: vec![FunctionId {
+                    id: Some(function_id::Id::RunnerId(RunnerId { value: 1 })),
                 }],
             })
             .await;
 
-        Ok(app_module.function_app)
+        Ok(app_module)
     }
 
     /// Create Ollama chat service
     async fn create_ollama_service() -> Result<OllamaChatService> {
-        let function_app = setup_function_app().await?;
+        let app_module = setup_app_module().await?;
 
         let settings = OllamaRunnerSettings {
         model: TEST_MODEL.to_string(),
@@ -63,8 +61,12 @@ pub mod test {
         ..Default::default()
     };
 
-        let service = OllamaChatService::new(function_app, settings)
-            .map_err(|e| JobWorkerError::RuntimeError(format!("Service creation failed: {e}")))?;
+        let service = OllamaChatService::new(
+            app_module.function_app.clone(),
+            app_module.function_set_app.clone(),
+            settings,
+        )
+        .map_err(|e| JobWorkerError::RuntimeError(format!("Service creation failed: {e}")))?;
 
         Ok(service)
     }

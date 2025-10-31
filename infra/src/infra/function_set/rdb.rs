@@ -1,4 +1,4 @@
-use super::rows::FunctionSetRow;
+use super::rows::{FunctionSetRow, FunctionSetTargetRow};
 use crate::infra::IdGeneratorWrapper;
 use crate::infra::UseIdGenerator;
 use anyhow::{Context, Result};
@@ -7,8 +7,7 @@ use infra_utils::infra::rdb::Rdb;
 use infra_utils::infra::rdb::RdbPool;
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
-use proto::jobworkerp::function::data::FunctionTarget;
-use proto::jobworkerp::function::data::{FunctionSet, FunctionSetData, FunctionSetId};
+use proto::jobworkerp::function::data::{FunctionId, FunctionSet, FunctionSetData, FunctionSetId};
 use sqlx::{Executor, Transaction};
 use std::sync::Arc;
 
@@ -59,15 +58,26 @@ pub trait FunctionSetRepository: UseRdbPool + UseIdGenerator + Sync + Send {
         &self,
         tx: &mut Transaction<'_, Rdb>,
         set_id: &FunctionSetId,
-        targets: Vec<FunctionTarget>,
+        targets: Vec<FunctionId>,
     ) -> Result<usize> {
         if targets.is_empty() {
             return Ok(0);
         }
 
+        // Convert FunctionId to (target_id, target_type) pairs
+        let target_pairs: Vec<(i64, i32)> = targets
+            .iter()
+            .filter_map(|fid| FunctionSetTargetRow::from_function_id(set_id.value, fid))
+            .collect();
+
+        if target_pairs.is_empty() {
+            return Ok(0);
+        }
+
         // Create query with the appropriate number of VALUE triplets
         let values_placeholder = "(?, ?, ?)".to_string();
-        let values: Vec<String> = std::iter::repeat_n(values_placeholder, targets.len()).collect();
+        let values: Vec<String> =
+            std::iter::repeat_n(values_placeholder, target_pairs.len()).collect();
 
         let query = format!(
             "INSERT INTO `function_set_target` (
@@ -82,8 +92,8 @@ pub trait FunctionSetRepository: UseRdbPool + UseIdGenerator + Sync + Send {
         let mut q = sqlx::query::<Rdb>(&query);
 
         // Bind all parameters for each target
-        for target in &targets {
-            q = q.bind(set_id.value).bind(target.id).bind(target.r#type);
+        for (target_id, target_type) in &target_pairs {
+            q = q.bind(set_id.value).bind(target_id).bind(target_type);
         }
 
         // Execute the query
@@ -316,9 +326,10 @@ mod test {
     use anyhow::Result;
     use infra_utils::infra::rdb::RdbPool;
     use infra_utils::infra::rdb::UseRdbPool;
-    use proto::jobworkerp::function::data::FunctionSet;
-    use proto::jobworkerp::function::data::FunctionSetData;
-    use proto::jobworkerp::function::data::FunctionTarget;
+    use proto::jobworkerp::data::{RunnerId, WorkerId};
+    use proto::jobworkerp::function::data::{
+        function_id, FunctionId, FunctionSet, FunctionSetData,
+    };
     use std::sync::Arc;
 
     async fn _test_repository(pool: &'static RdbPool) -> Result<()> {
@@ -329,8 +340,12 @@ mod test {
             description: "hoge2".to_string(),
             category: 4,
             targets: vec![
-                FunctionTarget { id: 10, r#type: 1 },
-                FunctionTarget { id: 20, r#type: 2 },
+                FunctionId {
+                    id: Some(function_id::Id::RunnerId(RunnerId { value: 10 })),
+                },
+                FunctionId {
+                    id: Some(function_id::Id::WorkerId(WorkerId { value: 20 })),
+                },
             ],
         });
 
@@ -356,8 +371,12 @@ mod test {
             description: "fuga2".to_string(),
             category: 5,
             targets: vec![
-                FunctionTarget { id: 30, r#type: 3 },
-                FunctionTarget { id: 40, r#type: 4 },
+                FunctionId {
+                    id: Some(function_id::Id::RunnerId(RunnerId { value: 30 })),
+                },
+                FunctionId {
+                    id: Some(function_id::Id::WorkerId(WorkerId { value: 40 })),
+                },
             ],
         };
         let updated = repository
@@ -401,5 +420,89 @@ mod test {
             };
             _test_repository(rdb_pool).await
         })
+    }
+
+    #[test]
+    fn test_function_id_roundtrip_conversion() -> Result<()> {
+        use crate::infra::function_set::rows::FunctionSetTargetRow;
+
+        // Test Runner ID conversion
+        let runner_function_id = FunctionId {
+            id: Some(function_id::Id::RunnerId(RunnerId { value: 123 })),
+        };
+
+        let (target_id, target_type) =
+            FunctionSetTargetRow::from_function_id(1, &runner_function_id)
+                .expect("Should convert Runner FunctionId");
+
+        assert_eq!(target_id, 123);
+        assert_eq!(target_type, 0); // RUNNER_TYPE
+
+        let target_row = FunctionSetTargetRow {
+            id: 1,
+            set_id: 1,
+            target_id,
+            target_type,
+        };
+
+        let converted_back = target_row.to_function_id();
+        assert_eq!(converted_back, runner_function_id);
+
+        // Test Worker ID conversion
+        let worker_function_id = FunctionId {
+            id: Some(function_id::Id::WorkerId(WorkerId { value: 456 })),
+        };
+
+        let (target_id, target_type) =
+            FunctionSetTargetRow::from_function_id(2, &worker_function_id)
+                .expect("Should convert Worker FunctionId");
+
+        assert_eq!(target_id, 456);
+        assert_eq!(target_type, 1); // WORKER_TYPE
+
+        let target_row = FunctionSetTargetRow {
+            id: 2,
+            set_id: 2,
+            target_id,
+            target_type,
+        };
+
+        let converted_back = target_row.to_function_id();
+        assert_eq!(converted_back, worker_function_id);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_function_id_none_handling() {
+        use crate::infra::function_set::rows::FunctionSetTargetRow;
+
+        // Test FunctionId with None id
+        let none_function_id = FunctionId { id: None };
+
+        let result = FunctionSetTargetRow::from_function_id(1, &none_function_id);
+        assert!(
+            result.is_none(),
+            "Should return None for FunctionId with no id set"
+        );
+    }
+
+    #[test]
+    fn test_unknown_target_type_handling() {
+        use crate::infra::function_set::rows::FunctionSetTargetRow;
+
+        // Test unknown target_type
+        let target_row = FunctionSetTargetRow {
+            id: 1,
+            set_id: 1,
+            target_id: 999,
+            target_type: 99, // Unknown type
+        };
+
+        let function_id = target_row.to_function_id();
+        assert!(
+            function_id.id.is_none(),
+            "Should return FunctionId with None for unknown target_type"
+        );
     }
 }
