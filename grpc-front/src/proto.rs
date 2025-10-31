@@ -3,10 +3,14 @@
 pub mod jobworkerp {
     pub mod function {
         pub mod data {
+            pub use data::function_id;
             use proto::jobworkerp::function::data;
+            pub type FunctionId = data::FunctionId;
             pub type FunctionSetData = data::FunctionSetData;
             pub type FunctionSet = data::FunctionSet;
             pub type FunctionSetId = data::FunctionSetId;
+            pub type FunctionSetDetail = data::FunctionSetDetail;
+            pub type FunctionSetDetailData = data::FunctionSetDetailData;
             pub type FunctionSpecs = data::FunctionSpecs;
             pub type FunctionSchema = data::FunctionSchema;
             pub type McpToolList = data::McpToolList;

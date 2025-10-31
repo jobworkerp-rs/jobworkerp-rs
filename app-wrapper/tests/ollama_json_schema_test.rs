@@ -40,7 +40,11 @@ async fn create_test_chat_service() -> Result<OllamaChatService> {
         pull_model: Some(false),
     };
 
-    OllamaChatService::new(app_module.function_app.clone(), settings)
+    OllamaChatService::new(
+        app_module.function_app.clone(),
+        app_module.function_set_app.clone(),
+        settings,
+    )
 }
 
 /// Create test completion service

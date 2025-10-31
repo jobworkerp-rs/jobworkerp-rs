@@ -1,4 +1,11 @@
-use proto::jobworkerp::function::data::{FunctionSet, FunctionSetData, FunctionSetId};
+use proto::jobworkerp::data::{RunnerId, WorkerId};
+use proto::jobworkerp::function::data::{
+    function_id, FunctionId, FunctionSet, FunctionSetData, FunctionSetId,
+};
+
+// Constants for target_type values
+const RUNNER_TYPE: i32 = 0;
+const WORKER_TYPE: i32 = 1;
 
 // db row definitions
 #[derive(sqlx::FromRow)]
@@ -20,10 +27,7 @@ impl FunctionSetRow {
                 targets: targets
                     .into_iter()
                     .filter(|t| t.set_id == self.id)
-                    .map(|t| proto::jobworkerp::function::data::FunctionTarget {
-                        id: t.target_id,
-                        r#type: t.target_type,
-                    })
+                    .map(|t| t.to_function_id())
                     .collect(),
             }),
         }
@@ -37,4 +41,42 @@ pub struct FunctionSetTargetRow {
     pub set_id: i64,
     pub target_id: i64,
     pub target_type: i32,
+}
+
+impl FunctionSetTargetRow {
+    // Convert DB row to FunctionId
+    pub fn to_function_id(&self) -> FunctionId {
+        let id = match self.target_type {
+            RUNNER_TYPE => Some(function_id::Id::RunnerId(RunnerId {
+                value: self.target_id,
+            })),
+            WORKER_TYPE => Some(function_id::Id::WorkerId(WorkerId {
+                value: self.target_id,
+            })),
+            _ => {
+                tracing::warn!(
+                    "Unknown target_type: {} for target_id: {}. Treating as None.",
+                    self.target_type,
+                    self.target_id
+                );
+                None
+            }
+        };
+        FunctionId { id }
+    }
+
+    // Convert FunctionId to DB columns (target_id, target_type)
+    pub fn from_function_id(set_id: i64, function_id: &FunctionId) -> Option<(i64, i32)> {
+        match &function_id.id {
+            Some(function_id::Id::RunnerId(runner_id)) => Some((runner_id.value, RUNNER_TYPE)),
+            Some(function_id::Id::WorkerId(worker_id)) => Some((worker_id.value, WORKER_TYPE)),
+            None => {
+                tracing::warn!(
+                    "FunctionId has no id set for set_id: {}. Skipping target.",
+                    set_id
+                );
+                None
+            }
+        }
+    }
 }

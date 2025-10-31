@@ -150,7 +150,10 @@ pub trait UseRedisFunctionSetRepository {
 
 #[tokio::test]
 async fn redis_test() -> Result<()> {
-    use proto::jobworkerp::function::data::{FunctionSetData, FunctionSetId, FunctionTarget};
+    use proto::jobworkerp::data::{RunnerId, WorkerId};
+    use proto::jobworkerp::function::data::{
+        function_id, FunctionId, FunctionSetData, FunctionSetId,
+    };
 
     let pool = infra_utils::infra::test::setup_test_redis_pool().await;
 
@@ -161,8 +164,12 @@ async fn redis_test() -> Result<()> {
         description: "hoge2".to_string(),
         category: 4,
         targets: vec![
-            FunctionTarget { id: 10, r#type: 1 },
-            FunctionTarget { id: 20, r#type: 2 },
+            FunctionId {
+                id: Some(function_id::Id::RunnerId(RunnerId { value: 10 })),
+            },
+            FunctionId {
+                id: Some(function_id::Id::WorkerId(WorkerId { value: 20 })),
+            },
         ],
     };
     // clear first
@@ -178,8 +185,12 @@ async fn redis_test() -> Result<()> {
     function_set2.name = "fuga1".to_string();
     function_set2.description = "fuga2".to_string();
     function_set2.category = 5;
-    function_set2.targets[0] = FunctionTarget { id: 30, r#type: 3 };
-    function_set2.targets[1] = FunctionTarget { id: 40, r#type: 4 };
+    function_set2.targets[0] = FunctionId {
+        id: Some(function_id::Id::RunnerId(RunnerId { value: 30 })),
+    };
+    function_set2.targets[1] = FunctionId {
+        id: Some(function_id::Id::WorkerId(WorkerId { value: 40 })),
+    };
     // update and find
     assert!(!repo.upsert(&id, &function_set2).await?);
     let res2 = repo.find(&id).await?;

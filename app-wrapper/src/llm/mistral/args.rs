@@ -1,6 +1,7 @@
 #![cfg(feature = "local_llm")]
 
 use anyhow::Result;
+use app::app::function::function_set::{FunctionSetApp, FunctionSetAppImpl, UseFunctionSetApp};
 use app::app::function::{FunctionApp, FunctionAppImpl, UseFunctionApp};
 use jobworkerp_runner::jobworkerp::runner::llm::{
     llm_chat_args::{message_content, ChatRole, FunctionOptions, LlmOptions},
@@ -13,7 +14,7 @@ use std::collections::HashMap;
 // Arc import removed as it's not used
 
 /// Trait for converting protocol buffer messages to LLM request objects
-pub trait LLMRequestConverter: UseFunctionApp {
+pub trait LLMRequestConverter: UseFunctionApp + UseFunctionSetApp {
     fn build_request(
         &self,
         args: &LlmChatArgs,
@@ -21,6 +22,7 @@ pub trait LLMRequestConverter: UseFunctionApp {
     ) -> impl std::future::Future<Output = Result<RequestBuilder>> + Send {
         let args = args.clone();
         let function_app = self.function_app();
+        let function_set_app = self.function_set_app();
         async move {
             let mut builder = RequestBuilder::new();
 
@@ -90,8 +92,12 @@ pub trait LLMRequestConverter: UseFunctionApp {
             // Handle function calling options
             if let Some(function_opts) = &args.function_options {
                 if function_opts.use_function_calling {
-                    let tools =
-                        Self::create_tools_from_options_static(function_opts, function_app).await?;
+                    let tools = Self::create_tools_from_options_static(
+                        function_opts,
+                        function_app,
+                        function_set_app,
+                    )
+                    .await?;
                     if !tools.is_empty() {
                         builder = builder.set_tools(tools);
                         builder = builder.set_tool_choice(ToolChoice::Auto);
@@ -200,13 +206,14 @@ pub trait LLMRequestConverter: UseFunctionApp {
     fn create_tools_from_options_static(
         function_opts: &FunctionOptions,
         function_app: &FunctionAppImpl,
+        function_set_app: &FunctionSetAppImpl,
     ) -> impl std::future::Future<Output = Result<Vec<Tool>>> + Send {
         let function_opts = function_opts.clone();
         async move {
             // Get function list based on options
             let functions = if let Some(set_name) = &function_opts.function_set_name {
                 tracing::debug!("Loading functions from set: {set_name}");
-                match function_app.find_functions_by_set(set_name).await {
+                match function_set_app.find_functions_by_set(set_name).await {
                     Ok(result) => {
                         tracing::debug!(
                             "Found {} functions in set '{set_name}': {:?}",
@@ -248,7 +255,11 @@ pub trait LLMRequestConverter: UseFunctionApp {
     ) -> impl std::future::Future<Output = Result<Vec<Tool>>> + Send {
         let function_opts = function_opts.clone();
         let function_app = self.function_app();
-        async move { Self::create_tools_from_options_static(&function_opts, function_app).await }
+        let function_set_app = self.function_set_app();
+        async move {
+            Self::create_tools_from_options_static(&function_opts, function_app, function_set_app)
+                .await
+        }
     }
 
     /// Convert FunctionSpecs to mistralrs Tools (static version)
