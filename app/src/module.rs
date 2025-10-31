@@ -172,15 +172,6 @@ impl AppModule {
                     worker_app.clone(),
                     job_queue_cancellation_repository,
                 ));
-                let function_set_app = Arc::new(FunctionSetAppImpl::new(
-                    repositories.function_set_repository.clone(),
-                    &MokaCacheConfig {
-                        num_counters: mc_config.num_counters,
-                        ttl: Some(Duration::from_secs(60)),
-                    },
-                    runner_app.clone(),
-                    worker_app.clone(),
-                ));
                 let function_app = Arc::new(FunctionAppImpl::new(
                     runner_app.clone(),
                     worker_app.clone(),
@@ -188,6 +179,14 @@ impl AppModule {
                     job_result_app.clone(),
                     descriptor_cache.clone(),
                     &mc_config,
+                ));
+                let function_set_app = Arc::new(FunctionSetAppImpl::new(
+                    repositories.function_set_repository.clone(),
+                    &MokaCacheConfig {
+                        num_counters: mc_config.num_counters,
+                        ttl: Some(Duration::from_secs(60)),
+                    },
+                    function_app.clone(),
                 ));
                 Ok(AppModule {
                     config_module,
@@ -297,15 +296,6 @@ impl AppModule {
                     repositories.clone(),
                     worker_app.clone(),
                 ));
-                let function_set_app = Arc::new(FunctionSetAppImpl::new(
-                    repositories.rdb_chan_module.function_set_repository.clone(),
-                    &MokaCacheConfig {
-                        num_counters: mc_config.num_counters,
-                        ttl: Some(Duration::from_secs(60)),
-                    },
-                    runner_app.clone(),
-                    worker_app.clone(),
-                ));
                 let function_app = Arc::new(FunctionAppImpl::new(
                     runner_app.clone(),
                     worker_app.clone(),
@@ -313,6 +303,14 @@ impl AppModule {
                     job_result_app.clone(),
                     descriptor_cache.clone(),
                     &mc_config,
+                ));
+                let function_set_app = Arc::new(FunctionSetAppImpl::new(
+                    repositories.rdb_chan_module.function_set_repository.clone(),
+                    &MokaCacheConfig {
+                        num_counters: mc_config.num_counters,
+                        ttl: Some(Duration::from_secs(60)),
+                    },
+                    function_app.clone(),
                 ));
                 Ok(AppModule {
                     config_module,
@@ -488,15 +486,6 @@ pub mod test {
             repositories.clone(),
             worker_app.clone(),
         ));
-        let function_set_app = Arc::new(FunctionSetAppImpl::new(
-            repositories.rdb_chan_module.function_set_repository.clone(),
-            &MokaCacheConfig {
-                num_counters: mc_config.num_counters,
-                ttl: Some(Duration::from_secs(60)),
-            },
-            runner_app.clone(),
-            worker_app.clone(),
-        ));
         let function_app = Arc::new(FunctionAppImpl::new(
             runner_app.clone(),
             worker_app.clone(),
@@ -504,6 +493,14 @@ pub mod test {
             job_result_app.clone(),
             descriptor_cache.clone(),
             &mc_config,
+        ));
+        let function_set_app = Arc::new(FunctionSetAppImpl::new(
+            repositories.rdb_chan_module.function_set_repository.clone(),
+            &MokaCacheConfig {
+                num_counters: mc_config.num_counters,
+                ttl: Some(Duration::from_secs(60)),
+            },
+            function_app.clone(),
         ));
 
         Ok(AppModule::new(
