@@ -2,25 +2,16 @@ use anyhow::Result;
 use app::app::function::function_set::FunctionSetApp;
 use app::app::function::FunctionApp;
 use app::module::AppModule;
-use proto::jobworkerp::data::{RunnerType, WorkerData};
+use proto::jobworkerp::data::{RunnerId, WorkerData};
 use proto::jobworkerp::function::data::{function_id, FunctionId, FunctionSetData};
 
 #[tokio::test]
-#[ignore] // Run with --ignored flag (requires full AppModule setup)
 async fn test_find_detail_with_runners_and_workers() -> Result<()> {
     // Setup test environment
     let app_module = setup_test_app_module().await?;
 
-    // Create test runner
-    let runner_id = app_module
-        .runner_app
-        .create_runner(
-            "test_runner",
-            "Test runner for detail test",
-            RunnerType::Command as i32,
-            "{}",
-        )
-        .await?;
+    // Use builtin runner (COMMAND runner has fixed ID=1)
+    let runner_id = RunnerId { value: 1 };
 
     // Create test worker
     let worker_data = WorkerData {
@@ -76,8 +67,7 @@ async fn test_find_detail_with_runners_and_workers() -> Result<()> {
         .iter()
         .find(|spec| spec.runner_id == Some(runner_id))
         .expect("Runner spec should exist");
-    assert_eq!(runner_spec.name, "test_runner");
-    assert_eq!(runner_spec.runner_type, RunnerType::Command as i32);
+    assert_eq!(runner_spec.name, "COMMAND");  // Builtin runner name
     assert!(runner_spec.worker_id.is_none());
 
     // Verify second target (Worker)
@@ -89,54 +79,50 @@ async fn test_find_detail_with_runners_and_workers() -> Result<()> {
     assert_eq!(worker_spec.runner_id, Some(runner_id));
     assert_eq!(worker_spec.worker_id, Some(worker_id));
 
-    // Cleanup
+    // Cleanup (only worker and function_set, not builtin runner)
     app_module
         .function_set_app
         .delete_function_set(&function_set_id)
         .await?;
     app_module.worker_app.delete(&worker_id).await?;
-    app_module.runner_app.delete_runner(&runner_id).await?;
 
     Ok(())
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_convert_function_ids_with_deleted_target() -> Result<()> {
     let app_module = setup_test_app_module().await?;
 
-    // Create and then delete a runner
-    let runner_id = app_module
-        .runner_app
-        .create_runner(
-            "temporary_runner",
-            "Temporary runner to be deleted",
-            RunnerType::Command as i32,
-            "{}",
-        )
-        .await?;
+    // Create a worker and then delete it
+    let temp_worker_data = WorkerData {
+        name: "temporary_worker".to_string(),
+        runner_id: Some(RunnerId { value: 1 }), // COMMAND runner
+        description: "Temporary worker to be deleted".to_string(),
+        runner_settings: Vec::new(),
+        ..Default::default()
+    };
+    let deleted_worker_id = app_module.worker_app.create(&temp_worker_data).await?;
 
-    // Create another runner that will remain
-    let valid_runner_id = app_module
-        .runner_app
-        .create_runner(
-            "valid_runner",
-            "Valid runner that remains",
-            RunnerType::Command as i32,
-            "{}",
-        )
-        .await?;
+    // Create another worker that will remain
+    let valid_worker_data = WorkerData {
+        name: "valid_worker".to_string(),
+        runner_id: Some(RunnerId { value: 2 }), // HTTP_REQUEST runner
+        description: "Valid worker that remains".to_string(),
+        runner_settings: Vec::new(),
+        ..Default::default()
+    };
+    let valid_worker_id = app_module.worker_app.create(&valid_worker_data).await?;
 
-    // Delete the first runner
-    app_module.runner_app.delete_runner(&runner_id).await?;
+    // Delete the first worker
+    app_module.worker_app.delete(&deleted_worker_id).await?;
 
     // Try to convert both (one deleted, one valid)
     let function_ids = vec![
         FunctionId {
-            id: Some(function_id::Id::RunnerId(runner_id)), // Deleted
+            id: Some(function_id::Id::WorkerId(deleted_worker_id)), // Deleted
         },
         FunctionId {
-            id: Some(function_id::Id::RunnerId(valid_runner_id)), // Valid
+            id: Some(function_id::Id::WorkerId(valid_worker_id)), // Valid
         },
     ];
 
@@ -149,34 +135,22 @@ async fn test_convert_function_ids_with_deleted_target() -> Result<()> {
     assert_eq!(
         function_specs.len(),
         1,
-        "Should skip deleted runner and only return valid runner"
+        "Should skip deleted worker and only return valid worker"
     );
-    assert_eq!(function_specs[0].runner_id, Some(valid_runner_id));
+    assert_eq!(function_specs[0].worker_id, Some(valid_worker_id));
 
     // Cleanup
-    app_module
-        .runner_app
-        .delete_runner(&valid_runner_id)
-        .await?;
+    app_module.worker_app.delete(&valid_worker_id).await?;
 
     Ok(())
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_convert_function_ids_with_none_id() -> Result<()> {
     let app_module = setup_test_app_module().await?;
 
-    // Create a valid runner
-    let runner_id = app_module
-        .runner_app
-        .create_runner(
-            "valid_runner_none_test",
-            "Valid runner",
-            RunnerType::Command as i32,
-            "{}",
-        )
-        .await?;
+    // Use builtin runner (HTTP_REQUEST runner has fixed ID=2)
+    let runner_id = RunnerId { value: 2 };
 
     // Create FunctionIds with one having None id
     let function_ids = vec![
@@ -198,9 +172,7 @@ async fn test_convert_function_ids_with_none_id() -> Result<()> {
         "Should skip FunctionId with None and only return valid runner"
     );
     assert_eq!(function_specs[0].runner_id, Some(runner_id));
-
-    // Cleanup
-    app_module.runner_app.delete_runner(&runner_id).await?;
+    assert_eq!(function_specs[0].name, "HTTP_REQUEST");  // Builtin runner name
 
     Ok(())
 }
