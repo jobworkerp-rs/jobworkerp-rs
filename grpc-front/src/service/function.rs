@@ -3,14 +3,14 @@ use futures::StreamExt;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use crate::proto::jobworkerp::function::data::FunctionResult;
-use crate::proto::jobworkerp::function::data::FunctionSpecs;
+use crate::proto::jobworkerp::function::data::{FunctionId, FunctionResult, FunctionSpecs};
 use crate::proto::jobworkerp::function::service::function_service_server::FunctionService;
 use crate::proto::jobworkerp::function::service::{
-    FindFunctionByIdRequest, FindFunctionByNameRequest, FindFunctionRequest,
-    FindFunctionSetRequest, FunctionCallRequest, OptionalFunctionSpecsResponse,
+    FindFunctionByNameRequest, FindFunctionRequest, FindFunctionSetRequest, FunctionCallRequest,
+    OptionalFunctionSpecsResponse,
 };
 use crate::service::error_handle::handle_error;
+use app::app::function::function_set::{FunctionSetApp, FunctionSetAppImpl};
 use app::app::function::{FunctionApp, FunctionAppImpl};
 use app::module::AppModule;
 use async_stream::stream;
@@ -20,6 +20,7 @@ use tonic::Response;
 
 pub trait FunctionGrpc {
     fn function_app(&self) -> &Arc<FunctionAppImpl>;
+    fn function_set_app(&self) -> &Arc<FunctionSetAppImpl>;
 }
 
 pub trait FunctionRequestValidator {
@@ -37,24 +38,23 @@ pub trait FunctionRequestValidator {
     }
 
     #[allow(clippy::result_large_err)]
-    fn validate_find_by_id_request(
-        &self,
-        req: &FindFunctionByIdRequest,
-    ) -> Result<(), tonic::Status> {
-        match &req.id {
-            Some(crate::proto::jobworkerp::function::service::find_function_by_id_request::Id::RunnerId(runner_id)) => {
+    fn validate_function_id(&self, function_id: &FunctionId) -> Result<(), tonic::Status> {
+        use crate::proto::jobworkerp::function::data::function_id;
+
+        match &function_id.id {
+            Some(function_id::Id::RunnerId(runner_id)) => {
                 if runner_id.value <= 0 {
                     return Err(tonic::Status::invalid_argument("id must be greater than 0"));
                 }
                 Ok(())
             }
-            Some(crate::proto::jobworkerp::function::service::find_function_by_id_request::Id::WorkerId(worker_id)) => {
+            Some(function_id::Id::WorkerId(worker_id)) => {
                 if worker_id.value <= 0 {
                     return Err(tonic::Status::invalid_argument("id must be greater than 0"));
                 }
                 Ok(())
             }
-            None => Err(tonic::Status::invalid_argument("id must be specified"))
+            None => Err(tonic::Status::invalid_argument("id must be specified")),
         }
     }
 
@@ -132,8 +132,12 @@ impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync 
         let _s = Self::trace_request("function", "find_list_by_set", &request);
         let req = request.into_inner();
 
-        // Use the FunctionApp to get the list of functions by set
-        let functions = match self.function_app().find_functions_by_set(&req.name).await {
+        // Use FunctionSetApp to get the list of functions by set
+        let functions = match self
+            .function_set_app()
+            .find_functions_by_set(&req.name)
+            .await
+        {
             Ok(funcs) => funcs,
             Err(e) => return Err(handle_error(&e)),
         };
@@ -249,34 +253,44 @@ impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync 
     #[tracing::instrument(level = "info", skip(self, request), fields(method = "find"))]
     async fn find(
         &self,
-        request: tonic::Request<FindFunctionByIdRequest>,
+        request: tonic::Request<FunctionId>,
     ) -> Result<tonic::Response<OptionalFunctionSpecsResponse>, tonic::Status> {
+        use crate::proto::jobworkerp::function::data::function_id;
+
         let _s = Self::trace_request("function", "find", &request);
-        let req = request.into_inner();
+        let function_id = request.into_inner();
 
         // Validate request
-        self.validate_find_by_id_request(&req)?;
+        self.validate_function_id(&function_id)?;
 
-        match req.id {
-            Some(crate::proto::jobworkerp::function::service::find_function_by_id_request::Id::RunnerId(runner_id)) => {
-                match self.function_app().find_function_by_runner_id(&runner_id).await {
+        match function_id.id {
+            Some(function_id::Id::RunnerId(runner_id)) => {
+                match self
+                    .function_app()
+                    .find_function_by_runner_id(&runner_id)
+                    .await
+                {
                     Ok(Some(function_specs)) => Ok(Response::new(OptionalFunctionSpecsResponse {
-                        data: Some(function_specs)
+                        data: Some(function_specs),
                     })),
                     Ok(None) => Ok(Response::new(OptionalFunctionSpecsResponse { data: None })),
                     Err(e) => Err(handle_error(&e)),
                 }
             }
-            Some(crate::proto::jobworkerp::function::service::find_function_by_id_request::Id::WorkerId(worker_id)) => {
-                match self.function_app().find_function_by_worker_id(&worker_id).await {
+            Some(function_id::Id::WorkerId(worker_id)) => {
+                match self
+                    .function_app()
+                    .find_function_by_worker_id(&worker_id)
+                    .await
+                {
                     Ok(Some(function_specs)) => Ok(Response::new(OptionalFunctionSpecsResponse {
-                        data: Some(function_specs)
+                        data: Some(function_specs),
                     })),
                     Ok(None) => Ok(Response::new(OptionalFunctionSpecsResponse { data: None })),
                     Err(e) => Err(handle_error(&e)),
                 }
             }
-            None => unreachable!("Validation should catch this case")
+            None => unreachable!("Validation should catch this case"),
         }
     }
 
@@ -330,6 +344,10 @@ impl FunctionGrpcImpl {
 impl FunctionGrpc for FunctionGrpcImpl {
     fn function_app(&self) -> &Arc<FunctionAppImpl> {
         &self.app_module.function_app
+    }
+
+    fn function_set_app(&self) -> &Arc<FunctionSetAppImpl> {
+        &self.app_module.function_set_app
     }
 }
 

@@ -17,15 +17,6 @@ message FindFunctionSetRequest {
   string name = 1;
 }
 
-// Function search request by ID
-message FindFunctionByIdRequest {
-  // Target ID to search for (specify either runner ID or worker ID)
-  oneof id {
-    jobworkerp.data.RunnerId runner_id = 1;
-    jobworkerp.data.WorkerId worker_id = 2;
-  }
-}
-
 // Function search request by name
 message FindFunctionByNameRequest {
   // Target name to search for (specify either runner name or worker name)
@@ -74,10 +65,10 @@ service FunctionService {
       returns (stream jobworkerp.function.data.FunctionSpecs);
   rpc Call(FunctionCallRequest)
       returns (stream jobworkerp.function.data.FunctionResult);
-  
+
   // Function search by function ID
-  rpc Find(FindFunctionByIdRequest) returns (OptionalFunctionSpecsResponse);
-  
+  rpc Find(jobworkerp.function.data.FunctionId) returns (OptionalFunctionSpecsResponse);
+
   // Function search by function name
   rpc FindByName(FindFunctionByNameRequest) returns (OptionalFunctionSpecsResponse);
 }

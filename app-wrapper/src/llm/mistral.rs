@@ -1,5 +1,3 @@
-#![cfg(feature = "local_llm")]
-
 pub mod args;
 pub mod model;
 pub mod result;
@@ -369,6 +367,7 @@ mod tests {
     use super::*;
     use anyhow::Result;
     use app::app::function::function_set::FunctionSetApp;
+    use app::app::function::function_set::{FunctionSetAppImpl, UseFunctionSetApp};
     use app::app::function::{FunctionAppImpl, UseFunctionApp};
     use app::module::test::create_hybrid_test_app;
     use app::module::AppModule;
@@ -377,9 +376,10 @@ mod tests {
     use jobworkerp_runner::jobworkerp::runner::llm::{
         llm_runner_settings::LocalRunnerSettings, LlmChatArgs, LlmChatResult, LlmCompletionArgs,
     };
+    use proto::jobworkerp::data::RunnerId;
     use proto::jobworkerp::data::RunnerType;
     use proto::jobworkerp::function::data::{
-        FunctionSetData, FunctionSetId, FunctionTarget, FunctionType,
+        function_id, FunctionId, FunctionSetData, FunctionSetId,
     };
 
     #[ignore]
@@ -399,16 +399,23 @@ mod tests {
 
         struct TestLLMService {
             function_app: Arc<FunctionAppImpl>,
+            function_set_app: Arc<FunctionSetAppImpl>,
         }
         impl UseFunctionApp for TestLLMService {
             fn function_app(&self) -> &FunctionAppImpl {
                 &self.function_app
             }
         }
+        impl UseFunctionSetApp for TestLLMService {
+            fn function_set_app(&self) -> &FunctionSetAppImpl {
+                &self.function_set_app
+            }
+        }
         impl LLMRequestConverter for TestLLMService {}
 
         let test_service = TestLLMService {
             function_app: app_module.function_app.clone(),
+            function_set_app: app_module.function_set_app.clone(),
         };
         let request_builder = test_service.build_completion_request(&args, false).await?;
 
@@ -453,16 +460,23 @@ mod tests {
 
         struct TestChatService {
             function_app: Arc<FunctionAppImpl>,
+            function_set_app: Arc<FunctionSetAppImpl>,
         }
         impl UseFunctionApp for TestChatService {
             fn function_app(&self) -> &FunctionAppImpl {
                 &self.function_app
             }
         }
+        impl UseFunctionSetApp for TestChatService {
+            fn function_set_app(&self) -> &FunctionSetAppImpl {
+                &self.function_set_app
+            }
+        }
         impl LLMRequestConverter for TestChatService {}
 
         let test_service = TestChatService {
             function_app: app_module.function_app.clone(),
+            function_set_app: app_module.function_set_app.clone(),
         };
         let request_builder = test_service.build_request(&args, false).await?;
 
@@ -501,16 +515,23 @@ mod tests {
 
         struct TestGGUFService {
             function_app: Arc<FunctionAppImpl>,
+            function_set_app: Arc<FunctionSetAppImpl>,
         }
         impl UseFunctionApp for TestGGUFService {
             fn function_app(&self) -> &FunctionAppImpl {
                 &self.function_app
             }
         }
+        impl UseFunctionSetApp for TestGGUFService {
+            fn function_set_app(&self) -> &FunctionSetAppImpl {
+                &self.function_set_app
+            }
+        }
         impl LLMRequestConverter for TestGGUFService {}
 
         let test_service = TestGGUFService {
             function_app: app_module.function_app.clone(),
+            function_set_app: app_module.function_set_app.clone(),
         };
         let request_builder = test_service.build_request(&args, false).await?;
 
@@ -550,16 +571,23 @@ mod tests {
         // Create test service with mixin for streaming
         struct TestLLMStreamService {
             function_app: Arc<FunctionAppImpl>,
+            function_set_app: Arc<FunctionSetAppImpl>,
         }
         impl UseFunctionApp for TestLLMStreamService {
             fn function_app(&self) -> &FunctionAppImpl {
                 &self.function_app
             }
         }
+        impl UseFunctionSetApp for TestLLMStreamService {
+            fn function_set_app(&self) -> &FunctionSetAppImpl {
+                &self.function_set_app
+            }
+        }
         impl LLMRequestConverter for TestLLMStreamService {}
 
         let test_service = TestLLMStreamService {
             function_app: app_module.function_app.clone(),
+            function_set_app: app_module.function_set_app.clone(),
         };
         let request_builder = test_service.build_request(&args, true).await?;
 
@@ -631,16 +659,23 @@ mod tests {
         // Create test service with mixin for GGUF streaming
         struct TestGGUFStreamService {
             function_app: Arc<FunctionAppImpl>,
+            function_set_app: Arc<FunctionSetAppImpl>,
         }
         impl UseFunctionApp for TestGGUFStreamService {
             fn function_app(&self) -> &FunctionAppImpl {
                 &self.function_app
             }
         }
+        impl UseFunctionSetApp for TestGGUFStreamService {
+            fn function_set_app(&self) -> &FunctionSetAppImpl {
+                &self.function_set_app
+            }
+        }
         impl LLMRequestConverter for TestGGUFStreamService {}
 
         let test_service = TestGGUFStreamService {
             function_app: app_module.function_app.clone(),
+            function_set_app: app_module.function_set_app.clone(),
         };
         let request_builder = test_service.build_request(&args, true).await?;
 
@@ -707,6 +742,7 @@ mod tests {
         let service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
             app_module.function_app.clone(),
+            app_module.function_set_app.clone(),
         )
         .await?;
 
@@ -769,6 +805,7 @@ mod tests {
         let service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
             app_module.function_app.clone(),
+            app_module.function_set_app.clone(),
         )
         .await?;
 
@@ -937,13 +974,15 @@ mod tests {
                 description: "Test function set for tool calling".to_string(),
                 category: 0,
                 targets: vec![
-                    FunctionTarget {
-                        id: RunnerType::Command as i64,
-                        r#type: FunctionType::Runner as i32,
+                    FunctionId {
+                        id: Some(function_id::Id::RunnerId(RunnerId {
+                            value: RunnerType::Command as i64,
+                        })),
                     },
-                    FunctionTarget {
-                        id: RunnerType::HttpRequest as i64,
-                        r#type: FunctionType::Runner as i32,
+                    FunctionId {
+                        id: Some(function_id::Id::RunnerId(RunnerId {
+                            value: RunnerType::HttpRequest as i64,
+                        })),
                     },
                 ],
             })
@@ -1008,6 +1047,7 @@ mod tests {
         let service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
             app_module.function_app.clone(),
+            app_module.function_set_app.clone(),
         )
         .await?;
 
@@ -1068,9 +1108,10 @@ mod tests {
                 name: function_set_name.to_string(),
                 description: "Test function set for streaming tool calling".to_string(),
                 category: 0,
-                targets: vec![FunctionTarget {
-                    id: RunnerType::HttpRequest as i64,
-                    r#type: FunctionType::Runner as i32,
+                targets: vec![FunctionId {
+                    id: Some(function_id::Id::RunnerId(RunnerId {
+                        value: RunnerType::HttpRequest as i64,
+                    })),
                 }],
             })
             .await; // ignore error
@@ -1079,6 +1120,7 @@ mod tests {
         let service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
             app_module.function_app.clone(),
+            app_module.function_set_app.clone(),
         )
         .await?;
 
@@ -1160,6 +1202,7 @@ mod tests {
         let service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
             app_module.function_app.clone(),
+            app_module.function_set_app.clone(),
         )
         .await?;
 
@@ -1244,6 +1287,7 @@ mod tests {
         let mistral_service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
             app_module.function_app.clone(),
+            app_module.function_set_app.clone(),
         )
         .await?;
 
@@ -1304,6 +1348,7 @@ mod tests {
         let service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
             app_module.function_app.clone(),
+            app_module.function_set_app.clone(),
         )
         .await?;
 
@@ -1362,6 +1407,7 @@ mod tests {
         let service = crate::llm::chat::mistral::MistralRSService::new_with_function_app(
             settings,
             app_module.function_app.clone(),
+            app_module.function_set_app.clone(),
         )
         .await?;
 

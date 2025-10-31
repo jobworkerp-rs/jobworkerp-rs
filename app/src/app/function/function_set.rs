@@ -1,20 +1,29 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use core::fmt;
-use debug_stub_derive::DebugStub;
 use infra::infra::function_set::rdb::{
     FunctionSetRepository, FunctionSetRepositoryImpl, UseFunctionSetRepository,
 };
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
 use memory_utils::cache::moka::{MokaCache, MokaCacheImpl, UseMokaCache};
-use proto::jobworkerp::function::data::{FunctionSet, FunctionSetData, FunctionSetId};
+use proto::jobworkerp::function::data::{
+    FunctionSet, FunctionSetData, FunctionSetId, FunctionSpecs,
+};
 use std::{sync::Arc, time::Duration};
+
+// Import for find_functions_by_set
+use super::FunctionSpecConverter;
+use crate::app::runner::{RunnerApp, UseRunnerApp};
+use crate::app::worker::{UseWorkerApp, WorkerApp};
 
 #[async_trait]
 pub trait FunctionSetApp: // XXX 1 impl
     UseFunctionSetRepository
     + UseMokaCache<Arc<String>, FunctionSet>
+    + UseRunnerApp
+    + UseWorkerApp
+    + FunctionSpecConverter
     + fmt::Debug
     + Send
     + Sync
@@ -130,24 +139,123 @@ pub trait FunctionSetApp: // XXX 1 impl
             .count_list_tx(self.function_set_repository().db_pool())
             .await
     }
+
+    async fn find_functions_by_set(&self, set_name: &str) -> Result<Vec<FunctionSpecs>> {
+        // Get function set by name
+        let function_set = self.find_function_set_by_name(set_name).await?;
+
+        if let Some(set) = function_set {
+            if let Some(data) = set.data {
+                let mut functions = Vec::new();
+
+                // Process each target in the function set
+                for target in &data.targets {
+                    if let Some(id) = &target.id {
+                        match id {
+                            // Runner type target
+                            proto::jobworkerp::function::data::function_id::Id::RunnerId(
+                                runner_id,
+                            ) => {
+                                // Find runner
+                                if let Some(runner) =
+                                    self.runner_app().find_runner(runner_id).await?
+                                {
+                                    functions.push(Self::convert_runner_to_function_specs(runner));
+                                } else {
+                                    tracing::warn!(
+                                        "Runner not found for id: {} in FunctionSet: {}. Skipping.",
+                                        runner_id.value,
+                                        set_name
+                                    );
+                                }
+                            }
+                            // Worker type target
+                            proto::jobworkerp::function::data::function_id::Id::WorkerId(
+                                worker_id,
+                            ) => {
+                                // Find worker
+                                if let Some(worker) = self.worker_app().find(worker_id).await? {
+                                    if let Some(wid) = worker.id {
+                                        if let Some(worker_data) = worker.data {
+                                            if let Some(rid) = worker_data.runner_id {
+                                                if let Some(runner) =
+                                                    self.runner_app().find_runner(&rid).await?
+                                                {
+                                                    if let Ok(specs) =
+                                                        Self::convert_worker_to_function_specs(
+                                                            wid,
+                                                            worker_data,
+                                                            runner,
+                                                        )
+                                                    {
+                                                        functions.push(specs);
+                                                    } else {
+                                                        tracing::warn!(
+                                                        "Failed to convert worker to function specs for worker_id: {} in FunctionSet: {}",
+                                                        worker_id.value,
+                                                        set_name
+                                                    );
+                                                    }
+                                                } else {
+                                                    tracing::warn!(
+                                                    "Runner not found for worker_id: {} in FunctionSet: {}. Skipping.",
+                                                    worker_id.value,
+                                                    set_name
+                                                );
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    tracing::warn!(
+                                        "Worker not found for id: {} in FunctionSet: {}. Skipping.",
+                                        worker_id.value,
+                                        set_name
+                                    );
+                                }
+                            }
+                        }
+                    } else {
+                        tracing::warn!(
+                            "FunctionId has no id set in FunctionSet: {}. Skipping this target.",
+                            set_name
+                        );
+                        continue;
+                    }
+                }
+
+                Ok(functions)
+            } else {
+                Ok(Vec::new())
+            }
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
 }
 
-#[derive(DebugStub)]
+#[derive(Debug)]
 pub struct FunctionSetAppImpl {
     function_set_repository: Arc<FunctionSetRepositoryImpl>,
-    #[debug_stub = "MokaCache"]
     memory_cache: MokaCacheImpl<Arc<String>, FunctionSet>,
+    runner_app: Arc<dyn RunnerApp + 'static>,
+    worker_app: Arc<dyn WorkerApp + 'static>,
 }
 
 impl FunctionSetAppImpl {
     pub fn new(
         function_set_repository: Arc<FunctionSetRepositoryImpl>,
         mc_config: &memory_utils::cache::moka::MokaCacheConfig,
+        runner_app: Arc<dyn RunnerApp + 'static>,
+        worker_app: Arc<dyn WorkerApp + 'static>,
     ) -> Self {
         let memory_cache = MokaCacheImpl::new(mc_config);
         Self {
             function_set_repository,
             memory_cache,
+            runner_app,
+            worker_app,
         }
     }
 }
@@ -157,6 +265,21 @@ impl UseFunctionSetRepository for FunctionSetAppImpl {
         &self.function_set_repository
     }
 }
+
+impl UseRunnerApp for FunctionSetAppImpl {
+    fn runner_app(&self) -> Arc<dyn RunnerApp + 'static> {
+        self.runner_app.clone()
+    }
+}
+
+impl UseWorkerApp for FunctionSetAppImpl {
+    fn worker_app(&self) -> &Arc<dyn WorkerApp + 'static> {
+        &self.worker_app
+    }
+}
+
+impl FunctionSpecConverter for FunctionSetAppImpl {}
+
 impl FunctionSetApp for FunctionSetAppImpl {}
 
 impl UseMokaCache<Arc<String>, FunctionSet> for FunctionSetAppImpl {

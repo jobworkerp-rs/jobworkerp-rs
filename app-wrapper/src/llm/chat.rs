@@ -130,7 +130,11 @@ impl RunnerTrait for LLMChatRunnerImpl {
                     settings,
                 ),
             ) => {
-                let ollama = OllamaChatService::new(self.app.function_app.clone(), settings)?;
+                let ollama = OllamaChatService::new(
+                    self.app.function_app.clone(),
+                    self.app.function_set_app.clone(),
+                    settings,
+                )?;
                 tracing::info!("{} loaded(ollama)", RunnerType::LlmChat.as_str_name());
                 self.ollama = Some(ollama);
                 Ok(())
@@ -140,7 +144,12 @@ impl RunnerTrait for LLMChatRunnerImpl {
                     settings,
                 ),
             ) => {
-                let genai = GenaiChatService::new(self.app.function_app.clone(), settings).await?;
+                let genai = GenaiChatService::new(
+                    self.app.function_app.clone(),
+                    self.app.function_set_app.clone(),
+                    settings,
+                )
+                .await?;
                 tracing::info!("{} loaded(genai)", RunnerType::LlmChat.as_str_name());
                 self.genai = Some(genai);
                 Ok(())
@@ -155,6 +164,7 @@ impl RunnerTrait for LLMChatRunnerImpl {
                     let mistral = mistral::MistralRSService::new_with_function_app(
                         _settings.clone(),
                         self.app.function_app.clone(),
+                        self.app.function_set_app.clone(),
                     )
                     .await?;
                     tracing::info!(
