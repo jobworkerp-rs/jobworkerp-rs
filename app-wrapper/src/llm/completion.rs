@@ -152,6 +152,7 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                     let mistral = mistral::MistralCompletionService::new(
                         _settings,
                         self.app.function_app.clone(),
+                        self.app.function_set_app.clone(),
                     )
                     .await?;
                     tracing::info!(

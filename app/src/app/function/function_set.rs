@@ -1,20 +1,26 @@
+use crate::app::function::{FunctionApp, UseFunctionApp};
 use anyhow::Result;
 use async_trait::async_trait;
 use core::fmt;
-use debug_stub_derive::DebugStub;
 use infra::infra::function_set::rdb::{
     FunctionSetRepository, FunctionSetRepositoryImpl, UseFunctionSetRepository,
 };
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
 use memory_utils::cache::moka::{MokaCache, MokaCacheImpl, UseMokaCache};
-use proto::jobworkerp::function::data::{FunctionSet, FunctionSetData, FunctionSetId};
+use proto::jobworkerp::function::data::{
+    FunctionSet, FunctionSetData, FunctionSetId, FunctionSpecs,
+};
 use std::{sync::Arc, time::Duration};
+
+// Import for find_functions_by_set
+use super::FunctionAppImpl;
 
 #[async_trait]
 pub trait FunctionSetApp: // XXX 1 impl
     UseFunctionSetRepository
     + UseMokaCache<Arc<String>, FunctionSet>
+    + UseFunctionApp
     + fmt::Debug
     + Send
     + Sync
@@ -130,24 +136,45 @@ pub trait FunctionSetApp: // XXX 1 impl
             .count_list_tx(self.function_set_repository().db_pool())
             .await
     }
+
+    async fn find_functions_by_set(&self, set_name: &str) -> Result<Vec<FunctionSpecs>> {
+        // Get function set by name
+        let function_set = self.find_function_set_by_name(set_name).await?;
+
+        if let Some(set) = function_set {
+            if let Some(data) = set.data {
+                // Use FunctionApp to convert FunctionIds to FunctionSpecs
+                self.function_app()
+                    .convert_function_ids_to_specs(&data.targets, set_name)
+                    .await
+            } else {
+                Ok(Vec::new())
+            }
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
 }
 
-#[derive(DebugStub)]
+#[derive(Debug)]
 pub struct FunctionSetAppImpl {
     function_set_repository: Arc<FunctionSetRepositoryImpl>,
-    #[debug_stub = "MokaCache"]
     memory_cache: MokaCacheImpl<Arc<String>, FunctionSet>,
+    function_app: Arc<FunctionAppImpl>,
 }
 
 impl FunctionSetAppImpl {
     pub fn new(
         function_set_repository: Arc<FunctionSetRepositoryImpl>,
         mc_config: &memory_utils::cache::moka::MokaCacheConfig,
+        function_app: Arc<FunctionAppImpl>,
     ) -> Self {
         let memory_cache = MokaCacheImpl::new(mc_config);
         Self {
             function_set_repository,
             memory_cache,
+            function_app,
         }
     }
 }
@@ -157,6 +184,13 @@ impl UseFunctionSetRepository for FunctionSetAppImpl {
         &self.function_set_repository
     }
 }
+
+impl UseFunctionApp for FunctionSetAppImpl {
+    fn function_app(&self) -> &FunctionAppImpl {
+        &self.function_app
+    }
+}
+
 impl FunctionSetApp for FunctionSetAppImpl {}
 
 impl UseMokaCache<Arc<String>, FunctionSet> for FunctionSetAppImpl {

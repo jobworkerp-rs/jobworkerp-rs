@@ -6,6 +6,15 @@ import "jobworkerp/data/common.proto";
 import "jobworkerp/data/runner.proto";
 import "jobworkerp/data/worker.proto";
 
+// # Function ID
+// Unified identifier for either a Runner or Worker
+message FunctionId {
+  oneof id {
+    jobworkerp.data.RunnerId runner_id = 1;
+    jobworkerp.data.WorkerId worker_id = 2;
+  }
+}
+
 // # Function Specs
 // Metadata that describes function capabilities and interface for clients
 // Represents either a runner or worker as a function

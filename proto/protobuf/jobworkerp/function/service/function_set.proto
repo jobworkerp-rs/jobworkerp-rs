@@ -13,6 +13,10 @@ message OptionalFunctionSetResponse {
   optional jobworkerp.function.data.FunctionSet data = 1;
 }
 
+message OptionalFunctionSetDetailResponse {
+  optional jobworkerp.function.data.FunctionSetDetail data = 1;
+}
+
 message FindByNameRequest { string name = 1; }
 
 service FunctionSetService {
@@ -29,4 +33,10 @@ service FunctionSetService {
       returns (stream jobworkerp.function.data.FunctionSet);
   rpc Count(jobworkerp.service.CountCondition)
       returns (jobworkerp.service.CountResponse);
+
+  // New APIs for detailed function information
+  rpc FindDetail(jobworkerp.function.data.FunctionSetId)
+      returns (OptionalFunctionSetDetailResponse);
+  rpc FindDetailByName(FindByNameRequest)
+      returns (OptionalFunctionSetDetailResponse);
 }

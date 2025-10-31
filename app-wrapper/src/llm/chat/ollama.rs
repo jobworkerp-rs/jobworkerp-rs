@@ -3,6 +3,7 @@ use super::conversion::ToolConverter;
 use crate::llm::generic_tracing_helper::GenericLLMTracingHelper;
 use crate::llm::ThinkTagHelper;
 use anyhow::{anyhow, Result};
+use app::app::function::function_set::{FunctionSetApp, FunctionSetAppImpl};
 use app::app::function::{FunctionApp, FunctionAppImpl};
 use command_utils::trace::impls::GenericOtelClient;
 use futures::stream::BoxStream;
@@ -28,6 +29,7 @@ use tokio::sync::Mutex;
 #[derive(Debug, Clone)]
 pub struct OllamaChatService {
     pub function_app: Arc<FunctionAppImpl>,
+    pub function_set_app: Arc<FunctionSetAppImpl>,
     pub ollama: Arc<Ollama>,
     pub model: String,
     pub system_prompt: Option<String>,
@@ -96,7 +98,11 @@ impl ThinkTagHelper for OllamaChatService {}
 const DEFAULT_TIMEOUT_SEC: u32 = 300; // Default timeout for Ollama chat requests in seconds
 
 impl OllamaChatService {
-    pub fn new(function_app: Arc<FunctionAppImpl>, settings: OllamaRunnerSettings) -> Result<Self> {
+    pub fn new(
+        function_app: Arc<FunctionAppImpl>,
+        function_set_app: Arc<FunctionSetAppImpl>,
+        settings: OllamaRunnerSettings,
+    ) -> Result<Self> {
         let ollama = Arc::new(Ollama::try_new(
             settings
                 .base_url
@@ -105,6 +111,7 @@ impl OllamaChatService {
 
         Ok(Self {
             function_app,
+            function_set_app,
             ollama,
             model: settings.model,
             system_prompt: settings.system_prompt,
@@ -163,7 +170,7 @@ impl OllamaChatService {
                 let list_future =
                     if let Some(set_name) = function_options.function_set_name.as_ref() {
                         tracing::debug!("Use functions by set: {}", set_name);
-                        self.function_app.find_functions_by_set(set_name)
+                        self.function_set_app.find_functions_by_set(set_name)
                     } else {
                         tracing::debug!(
                             "Use all functions from {}",
