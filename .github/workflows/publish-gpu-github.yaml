@@ -1,0 +1,233 @@
+name: Build GPU images locally and push to GitHub Registry (Gitea Actions)
+
+on:
+  workflow_dispatch: # Manual execution only
+    inputs:
+      features:
+        description: "GPU features to include"
+        required: true
+        default: "mysql,cuda,flash-attn,local_llm"
+        type: string
+      github_registry_owner:
+        description: "GitHub registry owner (username or org)"
+        required: true
+        default: "jobworkerp-rs"
+        type: string
+
+# Target GitHub Container Registry
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.event.inputs.github_registry_owner }}/jobworkerp-rs
+
+# Jobs to build and push GPU-enabled images
+jobs:
+  build-and-push-gpu-image:
+    runs-on: ubuntu-latest
+    container:
+      image: nvcr.io/nvidia/cuda:12.8.1-devel-ubuntu24.04
+      options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang g++ musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip ca-certificates gnupg lsb-release docker.io
+          # Install Node.js for setup-protoc action
+          curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+          apt-get install -y nodejs
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Generate timestamp tag
+        id: timestamp
+        run: |
+          TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          echo "TAG=$TIMESTAMP" >> $GITHUB_OUTPUT
+          echo "Generated timestamp: $TIMESTAMP"
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-gpu-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Display GPU features and environment
+        run: |
+          echo "Building with features: ${{ github.event.inputs.features }}"
+          echo "Target registry: ${{ env.REGISTRY }}/${{ github.event.inputs.github_registry_owner }}"
+          # Check CUDA environment
+          nvidia-smi || echo "nvidia-smi not available (expected in CI)"
+          nvcc --version || echo "nvcc not available"
+
+      - name: Build Rust binaries with GPU features
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --features "${{ github.event.inputs.features }}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          platforms: linux/amd64
+        env:
+          DOCKER_HOST: tcp://docker:2376
+          DOCKER_TLS_CERTDIR: /certs
+          DOCKER_TLS_VERIFY: 1
+          DOCKER_CERT_PATH: /certs/client
+          DOCKER_BUILDKIT: 1
+
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.event.inputs.github_registry_owner }}
+          password: ${{ secrets.PAT_GITHUB }}
+
+      - name: Build and push grpc-front GPU Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: grpc-front/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.event.inputs.github_registry_owner }}/grpc-front:latest
+            ${{ env.REGISTRY }}/${{ github.event.inputs.github_registry_owner }}/grpc-front:${{ steps.timestamp.outputs.TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+        env:
+          DOCKER_HOST: tcp://docker:2376
+          DOCKER_TLS_CERTDIR: /certs
+          DOCKER_TLS_VERIFY: 1
+          DOCKER_CERT_PATH: /certs/client
+          DOCKER_BUILDKIT: 1
+
+      - name: Build and push worker GPU Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: worker-main/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.event.inputs.github_registry_owner }}/worker:latest
+            ${{ env.REGISTRY }}/${{ github.event.inputs.github_registry_owner }}/worker:${{ steps.timestamp.outputs.TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+        env:
+          DOCKER_HOST: tcp://docker:2376
+          DOCKER_TLS_CERTDIR: /certs
+          DOCKER_TLS_VERIFY: 1
+          DOCKER_CERT_PATH: /certs/client
+          DOCKER_BUILDKIT: 1
+
+  build-and-push-all-in-one-gpu-image:
+    runs-on: ubuntu-latest
+    container:
+      image: nvcr.io/nvidia/cuda:12.8.1-devel-ubuntu24.04
+      options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get -y dist-upgrade && apt-get install -y sudo lv zsh git curl build-essential mold clang musl-tools cmake pkg-config libssl-dev protobuf-compiler unzip ca-certificates gnupg lsb-release docker.io
+          # Install Node.js for setup-protoc action
+          curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+          apt-get install -y nodejs
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Generate timestamp tag
+        id: timestamp
+        run: |
+          TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          echo "TAG=$TIMESTAMP" >> $GITHUB_OUTPUT
+          echo "Generated timestamp: $TIMESTAMP"
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          version: "24.x"
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-gpu-aio-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Display GPU features and environment
+        run: |
+          echo "Building with features: ${{ github.event.inputs.features }}"
+          echo "Target registry: ${{ env.REGISTRY }}/${{ github.event.inputs.github_registry_owner }}"
+          # Check CUDA environment
+          nvidia-smi || echo "nvidia-smi not available (expected in CI)"
+          nvcc --version || echo "nvcc not available"
+
+      - name: Build Rust binaries with GPU features
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --features "${{ github.event.inputs.features }}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          platforms: linux/amd64
+        env:
+          DOCKER_HOST: tcp://docker:2376
+          DOCKER_TLS_CERTDIR: /certs
+          DOCKER_TLS_VERIFY: 1
+          DOCKER_CERT_PATH: /certs/client
+          DOCKER_BUILDKIT: 1
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.event.inputs.github_registry_owner }}
+          password: ${{ secrets.PAT_GITHUB }}
+
+      - name: Build and push all-in-one jobworkerp GPU Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.event.inputs.github_registry_owner }}/jobworkerp:latest
+            ${{ env.REGISTRY }}/${{ github.event.inputs.github_registry_owner }}/jobworkerp:${{ steps.timestamp.outputs.TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+        env:
+          DOCKER_HOST: tcp://docker:2376
+          DOCKER_TLS_CERTDIR: /certs
+          DOCKER_TLS_VERIFY: 1
+          DOCKER_CERT_PATH: /certs/client
+          DOCKER_BUILDKIT: 1
