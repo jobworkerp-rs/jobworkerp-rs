@@ -1,0 +1,57 @@
+name: Publish proto files to GitHub repository (Gitea Actions)
+
+on:
+  workflow_dispatch:
+    inputs:
+      github_proto_repo:
+        description: 'GitHub proto repository (owner/repo)'
+        required: true
+        default: 'jobworkerp-rs/jobworkerp-protobuf'
+        type: string
+
+jobs:
+  publish-proto:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Gitea repository (source)
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Generate timestamp tag
+        id: timestamp
+        run: |
+          TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          echo "TAG=$TIMESTAMP" >> $GITHUB_OUTPUT
+          echo "Generated timestamp tag: $TIMESTAMP"
+
+      - name: Checkout GitHub proto repository (destination)
+        run: |
+          git clone https://x-access-token:${{ secrets.PAT_GITHUB }}@github.com/${{ github.event.inputs.github_proto_repo }}.git proto
+          cd proto
+          git config user.email "91235033+sutr-app@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+
+      - name: Copy proto files to proto repository
+        run: |
+          rm -rf proto/*
+          cp -r repo/proto/protobuf/* proto/
+          ls -la proto
+
+      - name: Commit and push proto files to GitHub
+        working-directory: proto
+        run: |
+          git add -A .
+          git checkout origin/main -- ./LICENSE 2>/dev/null || echo "No LICENSE file in remote"
+          git reset --soft origin/main
+
+          # Check if there are changes to commit
+          if [ $(git diff --cached | wc -l) -eq 0 ]; then
+            echo "No changes to commit"
+            exit 0
+          fi
+
+          git commit -m "Update proto files: ${{ steps.timestamp.outputs.TAG }}"
+          git tag ${{ steps.timestamp.outputs.TAG }} || echo "Tag already exists"
+          git push https://x-access-token:${{ secrets.PAT_GITHUB }}@github.com/${{ github.event.inputs.github_proto_repo }}.git main
+          git push https://x-access-token:${{ secrets.PAT_GITHUB }}@github.com/${{ github.event.inputs.github_proto_repo }}.git ${{ steps.timestamp.outputs.TAG }} || echo "Tag push failed (may already exist)"
