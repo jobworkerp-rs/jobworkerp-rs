@@ -1,0 +1,49 @@
+name: Create and publish a Docker image on release
+
+on:
+  release:
+    types: [published]
+
+# Defines two custom environment variables for the workflow. These are used for the Container registry domain, and a name for the Docker image that this workflow builds.
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+# There is a single job in this workflow. It's configured to run on the latest available version of Ubuntu.
+jobs:
+  publish-proto:
+    runs-on: ubuntu-latest
+    # needs: build-and-push-image
+    env:
+      PROTO_REPOSITORY: jobworkerp-rs/jobworkerp-protobuf
+    steps:
+      - name: checkout repository
+        uses: actions/checkout@v4
+        with:
+          path: repo
+          token: ${{ secrets.PAT_GITHUB }}
+      - name: checkout proto repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PROTO_REPOSITORY }}
+          path: proto
+          token: ${{ secrets.PAT_GITHUB }}
+      - name: copy only proto files to proto repository dir
+        run: |
+          rm -rf proto/*
+          cp -r repo/proto/protobuf/* proto/
+          ls -la proto
+      - name: publish proto files
+        working-directory: proto
+        run: |
+          git add -A .
+          git checkout origin/main -- ./LICENSE
+          git reset --soft origin/main
+          # git add ./LICENSE
+          test 0 -eq $(git diff --cached | wc -l) && exit 0
+          git config --local user.email "91235033+sutr-app@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git commit -m "${{ github.ref_name }}"
+          git tag ${{ github.ref_name }}
+          git push origin main
+
