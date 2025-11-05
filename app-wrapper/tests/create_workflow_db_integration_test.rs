@@ -62,7 +62,7 @@ fn test_create_workflow_runner_db_integration() -> Result<()> {
                 channel: Some("db-test-channel".to_string()),
                 response_type: Some(ResponseType::Direct as i32),
                 broadcast_results: true,
-                queue_type: proto::jobworkerp::data::QueueType::ForcedRdb as i32,
+                queue_type: proto::jobworkerp::data::QueueType::DbOnly as i32,
                 store_success: true,
                 store_failure: true,
                 use_static: false,
@@ -133,7 +133,7 @@ fn test_create_workflow_runner_db_integration() -> Result<()> {
                 assert_eq!(worker_data.response_type, ResponseType::Direct as i32);
                 assert_eq!(
                     worker_data.queue_type,
-                    proto::jobworkerp::data::QueueType::ForcedRdb as i32
+                    proto::jobworkerp::data::QueueType::DbOnly as i32
                 );
                 assert_eq!(
                     worker_data.retry_policy.as_ref().map(|p| p.r#type),
