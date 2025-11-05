@@ -49,6 +49,25 @@ impl RunTaskExecutor {
         }
     }
 
+    /// Convert workflow QueueType to proto QueueType
+    fn convert_queue_type(qt: workflow::QueueType) -> i32 {
+        match qt {
+            workflow::QueueType::Normal => proto::jobworkerp::data::QueueType::Normal as i32,
+            workflow::QueueType::WithBackup => {
+                proto::jobworkerp::data::QueueType::WithBackup as i32
+            }
+            workflow::QueueType::DbOnly => proto::jobworkerp::data::QueueType::DbOnly as i32,
+        }
+    }
+
+    /// Convert workflow ResponseType to proto ResponseType
+    fn convert_response_type(rt: workflow::ResponseType) -> i32 {
+        match rt {
+            workflow::ResponseType::NoResult => ResponseType::NoResult as i32,
+            workflow::ResponseType::Direct => ResponseType::Direct as i32,
+        }
+    }
+
     fn function_options_to_worker_data(
         options: Option<workflow::WorkerOptions>,
         name: &str,
@@ -62,14 +81,21 @@ impl RunTaskExecutor {
                 store_failure: options.store_failure.unwrap_or(false),
                 store_success: options.store_success.unwrap_or(false),
                 use_static: options.use_static.unwrap_or(false),
-                queue_type: if options.with_backup.unwrap_or(false) {
+                // Use queue_type from WorkerOptions (fallback to with_backup for backward compatibility)
+                queue_type: if let Some(qt) = options.queue_type {
+                    Self::convert_queue_type(qt)
+                } else if options.with_backup.unwrap_or(false) {
                     proto::jobworkerp::data::QueueType::WithBackup as i32
                 } else {
                     proto::jobworkerp::data::QueueType::Normal as i32
                 },
                 channel: options.channel,
                 retry_policy: options.retry.map(|r| r.to_jobworkerp()),
-                response_type: ResponseType::Direct as i32,
+                // Use response_type from WorkerOptions (default: DIRECT)
+                response_type: options
+                    .response_type
+                    .map(Self::convert_response_type)
+                    .unwrap_or(ResponseType::Direct as i32),
                 ..Default::default()
             };
             Some(worker_data)

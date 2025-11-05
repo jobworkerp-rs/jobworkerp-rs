@@ -554,7 +554,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         }
 
         // 3. RDB + Direct の禁止
-        if worker_data.queue_type == QueueType::ForcedRdb as i32
+        if worker_data.queue_type == QueueType::DbOnly as i32
             && worker_data.response_type == ResponseType::Direct as i32
         {
             return Err(JobWorkerError::InvalidParameter(

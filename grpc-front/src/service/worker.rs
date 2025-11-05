@@ -88,7 +88,7 @@ pub trait RequestValidator: UseJobQueueConfig + UseStorageConfig + UseWorkerConf
             )));
         }
         self.validate_queue_type(req.queue_type())?;
-        if req.queue_type == QueueType::ForcedRdb as i32
+        if req.queue_type == QueueType::DbOnly as i32
             && req.response_type == ResponseType::Direct as i32
         {
             return Err(tonic::Status::invalid_argument(
@@ -416,8 +416,8 @@ mod tests {
     //         storage_type: StorageType::Standalone,
     //     };
     //     assert_eq!(
-    //         v.validate_queue_type(QueueType::ForcedRdb).unwrap(),
-    //         QueueType::ForcedRdb
+    //         v.validate_queue_type(QueueType::DbOnly).unwrap(),
+    //         QueueType::DbOnly
     //     );
     //     /// not valid
     //     assert!(v.validate_queue_type(QueueType::Normal).is_ok());
@@ -428,7 +428,7 @@ mod tests {
     //     // let v = Validator {
     //     //     storage_type: StorageType::OnlyRedis,
     //     // };
-    //     // assert!(v.validate_queue_type(QueueType::ForcedRdb).is_err());
+    //     // assert!(v.validate_queue_type(QueueType::DbOnly).is_err());
     //     // assert_eq!(
     //     //     v.validate_queue_type(QueueType::Normal).unwrap(),
     //     //     QueueType::Normal
@@ -441,8 +441,8 @@ mod tests {
     //         storage_type: StorageType::Scalable,
     //     };
     //     assert_eq!(
-    //         v.validate_queue_type(QueueType::ForcedRdb).unwrap(),
-    //         QueueType::ForcedRdb
+    //         v.validate_queue_type(QueueType::DbOnly).unwrap(),
+    //         QueueType::DbOnly
     //     );
     //     assert_eq!(
     //         v.validate_queue_type(QueueType::Normal).unwrap(),
@@ -495,7 +495,7 @@ mod tests {
         let mut w = WorkerData {
             name: "ListCommand".to_string(),
             runner_settings,
-            queue_type: QueueType::ForcedRdb as i32,
+            queue_type: QueueType::DbOnly as i32,
             response_type: ResponseType::Direct as i32,
             store_failure: true,
             store_success: true,
@@ -515,7 +515,7 @@ mod tests {
 
         w.response_type = ResponseType::Direct as i32;
         assert!(v.validate_worker(&w).is_err());
-        w.queue_type = QueueType::ForcedRdb as i32;
+        w.queue_type = QueueType::DbOnly as i32;
         assert!(v.validate_worker(&w).is_err());
         w.queue_type = QueueType::Normal as i32;
         assert!(v.validate_worker(&w).is_ok());
@@ -524,7 +524,7 @@ mod tests {
 
         w.response_type = ResponseType::NoResult as i32;
         assert!(v.validate_worker(&w).is_ok());
-        w.queue_type = QueueType::ForcedRdb as i32;
+        w.queue_type = QueueType::DbOnly as i32;
         assert!(v.validate_worker(&w).is_ok());
         w.queue_type = QueueType::WithBackup as i32;
         assert!(v.validate_worker(&w).is_ok());
@@ -551,7 +551,7 @@ mod tests {
         let mut w = WorkerData {
             name: "ListCommand".to_string(),
             runner_settings,
-            queue_type: QueueType::ForcedRdb as i32,
+            queue_type: QueueType::DbOnly as i32,
             response_type: ResponseType::NoResult as i32,
             store_failure: true,
             store_success: true,

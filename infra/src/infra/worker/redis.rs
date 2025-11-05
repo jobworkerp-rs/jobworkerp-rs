@@ -276,7 +276,7 @@ async fn redis_test() -> Result<()> {
         }),
         periodic_interval: 11,
         channel: Some("hoge9".to_string()),
-        queue_type: QueueType::ForcedRdb as i32,
+        queue_type: QueueType::DbOnly as i32,
         response_type: ResponseType::NoResult as i32,
         store_success: true,
         store_failure: true,

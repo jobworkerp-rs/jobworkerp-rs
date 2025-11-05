@@ -246,7 +246,7 @@ worker.queue_type
 
 - NORMAL: Immediate execution jobs (regular jobs without time specification) are stored in channel (redis), while periodic and scheduled jobs are stored in db
 - WITH_BACKUP: Immediate execution jobs are stored in both channel and RDB (can restore jobs from RDB during failures)
-- FORCED_RDB: Immediate execution jobs are also stored only in RDB (may result in slower execution)
+- DB_ONLY: Immediate execution jobs are also stored only in RDB (may result in slower execution)
 
 ### Result Storage (worker.store_success, worker.store_failure)
 

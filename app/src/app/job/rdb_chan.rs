@@ -266,7 +266,7 @@ impl RdbChanJobAppImpl {
                 value: self.id_generator().generate_id()?,
             });
             // job fetched by rdb (periodic job) should be positive run_after_time
-            let data = if (w.periodic_interval > 0 || w.queue_type == QueueType::ForcedRdb as i32)
+            let data = if (w.periodic_interval > 0 || w.queue_type == QueueType::DbOnly as i32)
                 && job_data.run_after_time == 0
             {
                 // make job_data.run_after_time datetime::now_millis() and create job by db
@@ -324,7 +324,7 @@ impl RdbChanJobAppImpl {
                         }
                         Err(e) => Err(e),
                     }
-                } else if w.queue_type == QueueType::ForcedRdb as i32 {
+                } else if w.queue_type == QueueType::DbOnly as i32 {
                     // use only rdb queue
                     let created = self.rdb_job_repository().create(&job).await?;
                     if created {
@@ -458,7 +458,7 @@ impl JobApp for RdbChanJobAppImpl {
                 // use db queue (run after, periodic, queue_type=DB worker)
                 let res_db = if is_run_after_job_data
                     || w.periodic_interval > 0
-                    || w.queue_type == QueueType::ForcedRdb as i32
+                    || w.queue_type == QueueType::DbOnly as i32
                     || w.queue_type == QueueType::WithBackup as i32
                 {
                     // XXX should compare grabbed_until_time and update if not changed or not (now not compared)
