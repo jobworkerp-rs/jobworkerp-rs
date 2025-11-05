@@ -38,6 +38,17 @@ pub fn load_worker_config() -> WorkerConfig {
         .unwrap_or_default()
 }
 
+/// Create WorkflowLoader with default HTTP client configuration
+pub fn create_workflow_loader() -> Result<infra::workflow::WorkflowLoader> {
+    let http_client = net_utils::net::reqwest::ReqwestClient::new(
+        Some("jobworkerp-rs/workflow-loader"),
+        Some(std::time::Duration::from_secs(30)), // 30s timeout
+        Some(std::time::Duration::from_secs(10)), // 10s connect timeout
+        Some(2),                                  // 2 retries
+    )?;
+    infra::workflow::WorkflowLoader::new(http_client)
+}
+
 #[derive(Clone, Debug)]
 pub struct AppConfigModule {
     pub storage_config: Arc<StorageConfig>,
@@ -172,6 +183,7 @@ impl AppModule {
                     worker_app.clone(),
                     job_queue_cancellation_repository,
                 ));
+                let workflow_loader = create_workflow_loader()?;
                 let function_app = Arc::new(FunctionAppImpl::new(
                     runner_app.clone(),
                     worker_app.clone(),
@@ -179,6 +191,9 @@ impl AppModule {
                     job_result_app.clone(),
                     descriptor_cache.clone(),
                     &mc_config,
+                    (*config_module.job_queue_config).clone(),
+                    (*config_module.worker_config).clone(),
+                    workflow_loader,
                 ));
                 let function_set_app = Arc::new(FunctionSetAppImpl::new(
                     repositories.function_set_repository.clone(),
@@ -296,6 +311,7 @@ impl AppModule {
                     repositories.clone(),
                     worker_app.clone(),
                 ));
+                let workflow_loader = create_workflow_loader()?;
                 let function_app = Arc::new(FunctionAppImpl::new(
                     runner_app.clone(),
                     worker_app.clone(),
@@ -303,6 +319,9 @@ impl AppModule {
                     job_result_app.clone(),
                     descriptor_cache.clone(),
                     &mc_config,
+                    (*config_module.job_queue_config).clone(),
+                    (*config_module.worker_config).clone(),
+                    workflow_loader,
                 ));
                 let function_set_app = Arc::new(FunctionSetAppImpl::new(
                     repositories.rdb_chan_module.function_set_repository.clone(),
@@ -486,6 +505,7 @@ pub mod test {
             repositories.clone(),
             worker_app.clone(),
         ));
+        let workflow_loader = create_workflow_loader()?;
         let function_app = Arc::new(FunctionAppImpl::new(
             runner_app.clone(),
             worker_app.clone(),
@@ -493,6 +513,9 @@ pub mod test {
             job_result_app.clone(),
             descriptor_cache.clone(),
             &mc_config,
+            (*app_config.job_queue_config).clone(),
+            (*app_config.worker_config).clone(),
+            workflow_loader,
         ));
         let function_set_app = Arc::new(FunctionSetAppImpl::new(
             repositories.rdb_chan_module.function_set_repository.clone(),

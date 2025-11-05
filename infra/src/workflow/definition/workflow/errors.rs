@@ -1,5 +1,5 @@
 use super::*;
-use crate::workflow::execute::context::WorkflowPosition;
+use crate::workflow::position::WorkflowPosition;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 

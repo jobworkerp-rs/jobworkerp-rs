@@ -490,10 +490,24 @@
           "title": "Channel",
           "description": "The channel to use when running the worker (controls execution concurrency)."
         },
-        "withBackup": {
-          "type": "boolean",
-          "title": "WithBackup",
-          "description": "Whether to backup the enqueued job to the database during queueing and execution."
+        "queueType": {
+          "type": "string",
+          "title": "QueueType",
+          "description": "Defines how jobs are queued and persisted.",
+          "enum": [
+            "NORMAL",
+            "WITH_BACKUP",
+            "FORCED_RDB"
+          ]
+        },
+        "responseType": {
+          "type": "string",
+          "title": "ResponseType",
+          "description": "Defines how job results should be returned to the client.",
+          "enum": [
+            "NO_RESULT",
+            "DIRECT"
+          ]
         },
         "storeSuccess": {
           "type": "boolean",

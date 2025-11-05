@@ -142,7 +142,7 @@ fn benchmark_complete_workflow_loading() {
     use net_utils::net::reqwest::ReqwestClient;
     use std::time::Duration;
 
-    let workflow_file_path = "/home/sutr/mnt/works/rust/jobworkerp-rs/message-vectordb/docs/workflows/claude-k-collection-pipeline.yaml";
+    let workflow_file_path = "/home/sutr/mnt/works/rust/jobworkerp-rs/message-vectordb/docs/workflows/claude-code-collection-pipeline.yaml";
 
     // Create HTTP client (unused but kept for completeness)
     let _http_client = ReqwestClient::new(

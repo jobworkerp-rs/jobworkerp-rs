@@ -1,11 +1,18 @@
 use anyhow::Result;
 use futures::StreamExt;
 use std::fmt::Debug;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+
+// Pre-compiled regex pattern for worker name validation (performance optimization)
+static WORKER_NAME_PATTERN: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
+        .expect("Failed to compile worker name validation regex")
+});
 
 use crate::proto::jobworkerp::function::data::{FunctionId, FunctionResult, FunctionSpecs};
 use crate::proto::jobworkerp::function::service::function_service_server::FunctionService;
 use crate::proto::jobworkerp::function::service::{
+    CreateWorkerRequest, CreateWorkerResponse, CreateWorkflowRequest, CreateWorkflowResponse,
     FindFunctionByNameRequest, FindFunctionRequest, FindFunctionSetRequest, FunctionCallRequest,
     OptionalFunctionSpecsResponse,
 };
@@ -84,6 +91,119 @@ pub trait FunctionRequestValidator {
             }
             None => Err(tonic::Status::invalid_argument("name must be specified"))
         }
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn validate_create_worker_request(
+        &self,
+        req: &CreateWorkerRequest,
+    ) -> Result<(), tonic::Status> {
+        use crate::proto::jobworkerp::function::service::create_worker_request;
+
+        // Validate that runner is specified
+        if req.runner.is_none() {
+            return Err(tonic::Status::invalid_argument(
+                "either runner_name or runner_id must be specified",
+            ));
+        }
+
+        // Validate runner_id if specified
+        if let Some(create_worker_request::Runner::RunnerId(runner_id)) = &req.runner {
+            if runner_id.value <= 0 {
+                return Err(tonic::Status::invalid_argument(
+                    "runner_id must be greater than 0",
+                ));
+            }
+        }
+
+        // Validate runner_name if specified
+        if let Some(create_worker_request::Runner::RunnerName(runner_name)) = &req.runner {
+            if runner_name.is_empty() {
+                return Err(tonic::Status::invalid_argument(
+                    "runner_name cannot be empty",
+                ));
+            }
+            if runner_name.len() > 128 {
+                return Err(tonic::Status::invalid_argument(
+                    "runner_name too long (max 128 characters)",
+                ));
+            }
+        }
+
+        // Validate worker name
+        if req.name.is_empty() {
+            return Err(tonic::Status::invalid_argument("name cannot be empty"));
+        }
+        if req.name.len() > 255 {
+            return Err(tonic::Status::invalid_argument(
+                "name too long (max 255 characters)",
+            ));
+        }
+        // Naming convention check (must start with letter, contain only alphanumeric, underscore, hyphen)
+        if !WORKER_NAME_PATTERN.is_match(&req.name) {
+            return Err(tonic::Status::invalid_argument(
+                format!("Worker name '{}' is invalid. Must start with a letter (a-z, A-Z) and contain only alphanumeric characters, underscores, and hyphens", req.name)
+            ));
+        }
+
+        Ok(())
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn validate_create_workflow_request(
+        &self,
+        req: &CreateWorkflowRequest,
+    ) -> Result<(), tonic::Status> {
+        use crate::proto::jobworkerp::function::service::create_workflow_request;
+
+        // Validate that workflow_source is specified
+        if req.workflow_source.is_none() {
+            return Err(tonic::Status::invalid_argument(
+                "either workflow_data or workflow_url must be specified",
+            ));
+        }
+
+        // Validate workflow_data if specified
+        if let Some(create_workflow_request::WorkflowSource::WorkflowData(data)) =
+            &req.workflow_source
+        {
+            if data.is_empty() {
+                return Err(tonic::Status::invalid_argument(
+                    "workflow_data cannot be empty",
+                ));
+            }
+        }
+
+        // Validate workflow_url if specified
+        if let Some(create_workflow_request::WorkflowSource::WorkflowUrl(url)) =
+            &req.workflow_source
+        {
+            if url.is_empty() {
+                return Err(tonic::Status::invalid_argument(
+                    "workflow_url cannot be empty",
+                ));
+            }
+        }
+
+        // Validate worker name if specified
+        if let Some(name) = &req.name {
+            if name.is_empty() {
+                return Err(tonic::Status::invalid_argument("name cannot be empty"));
+            }
+            if name.len() > 255 {
+                return Err(tonic::Status::invalid_argument(
+                    "name too long (max 255 characters)",
+                ));
+            }
+            // Naming convention check (must start with letter, contain only alphanumeric, underscore, hyphen)
+            if !WORKER_NAME_PATTERN.is_match(name) {
+                return Err(tonic::Status::invalid_argument(
+                    format!("Worker name '{}' is invalid. Must start with a letter (a-z, A-Z) and contain only alphanumeric characters, underscores, and hyphens", name)
+                ));
+            }
+        }
+
+        Ok(())
     }
 }
 const DEFAULT_TIMEOUT_SEC: u32 = 300; // Default timeout for function calls in seconds
@@ -171,17 +291,22 @@ impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync 
 
         // Clone the function app to avoid lifetime issues
         let function_app = self.function_app().clone();
+
+        // Note: args_json may be double-encoded JSON string from some clients (e.g., LLM clients)
+        // First serde_json::to_value converts protobuf string to serde_json::Value::String
+        // Then we attempt to parse the inner JSON if it's a valid JSON string
+        // This handles cases where clients send: "'{\"key\":\"value\"}'" instead of: {\"key\":\"value\"}
         let args_json = serde_json::to_value(req.args_json)
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid args_json: {e}")))?;
         let args_json = match args_json {
             serde_json::Value::String(json_str) => {
-                // Re-parse as JSON string
+                // Re-parse as JSON string to handle double-encoded JSON
                 match serde_json::from_str::<serde_json::Value>(&json_str) {
                     Ok(parsed) => parsed,
-                    Err(_) => serde_json::Value::String(json_str), // Use original string value when parsing fails
+                    Err(_) => serde_json::Value::String(json_str), // Use original string value when parsing fails (treat as plain string)
                 }
             }
-            other => other, // Keep non-String values as-is
+            other => other, // Keep non-String values as-is (already proper JSON structures)
         };
 
         let uniq_key = req.uniq_key;
@@ -327,6 +452,91 @@ impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync 
             None => unreachable!("Validation should catch this case")
         }
     }
+
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "create_worker"))]
+    async fn create_worker(
+        &self,
+        request: tonic::Request<CreateWorkerRequest>,
+    ) -> Result<tonic::Response<CreateWorkerResponse>, tonic::Status> {
+        let _s = Self::trace_request("function", "create_worker", &request);
+        let req = request.into_inner();
+
+        // Validate request
+        self.validate_create_worker_request(&req)?;
+
+        // Extract runner information
+        use crate::proto::jobworkerp::function::service::create_worker_request;
+        let (runner_name, runner_id) = match req.runner {
+            Some(create_worker_request::Runner::RunnerName(name)) => (Some(name), None),
+            Some(create_worker_request::Runner::RunnerId(id)) => (None, Some(id)),
+            None => unreachable!("Validation should catch this case"),
+        };
+
+        // Call FunctionApp::create_worker_from_runner
+        match self
+            .function_app()
+            .create_worker_from_runner(
+                runner_name,
+                runner_id,
+                req.name.clone(),
+                req.description,
+                req.settings_json,
+                req.worker_options,
+            )
+            .await
+        {
+            Ok((worker_id, worker_name)) => Ok(Response::new(CreateWorkerResponse {
+                worker_id: Some(worker_id),
+                worker_name,
+            })),
+            Err(e) => Err(handle_error(&e)),
+        }
+    }
+
+    #[tracing::instrument(
+        level = "info",
+        skip(self, request),
+        fields(method = "create_workflow")
+    )]
+    async fn create_workflow(
+        &self,
+        request: tonic::Request<CreateWorkflowRequest>,
+    ) -> Result<tonic::Response<CreateWorkflowResponse>, tonic::Status> {
+        let _s = Self::trace_request("function", "create_workflow", &request);
+        let req = request.into_inner();
+
+        // Validate request
+        self.validate_create_workflow_request(&req)?;
+
+        // Extract workflow source
+        use crate::proto::jobworkerp::function::service::create_workflow_request;
+        let (workflow_data, workflow_url) = match req.workflow_source {
+            Some(create_workflow_request::WorkflowSource::WorkflowData(data)) => (Some(data), None),
+            Some(create_workflow_request::WorkflowSource::WorkflowUrl(url)) => (None, Some(url)),
+            None => unreachable!("Validation should catch this case"),
+        };
+
+        // Call FunctionApp::create_workflow_from_definition
+        match self
+            .function_app()
+            .create_workflow_from_definition(
+                workflow_data,
+                workflow_url,
+                req.name,
+                req.worker_options,
+            )
+            .await
+        {
+            Ok((worker_id, worker_name, workflow_name)) => {
+                Ok(Response::new(CreateWorkflowResponse {
+                    worker_id: Some(worker_id),
+                    worker_name,
+                    workflow_name,
+                }))
+            }
+            Err(e) => Err(handle_error(&e)),
+        }
+    }
 }
 
 #[derive(DebugStub)]
@@ -355,3 +565,151 @@ impl FunctionRequestValidator for FunctionGrpcImpl {}
 
 // Implement tracing for FunctionGrpcImpl
 impl Tracing for FunctionGrpcImpl {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::jobworkerp::function::service::create_worker_request;
+    use crate::proto::jobworkerp::function::service::create_workflow_request;
+
+    struct TestValidator;
+    impl FunctionRequestValidator for TestValidator {}
+
+    #[test]
+    fn test_validate_create_worker_request_with_invalid_names() {
+        let validator = TestValidator;
+
+        // Test various invalid names
+        let too_long = "a".repeat(256);
+        let invalid_names = vec![
+            "",             // Empty
+            "123invalid",   // Starts with number
+            "invalid name", // Contains space
+            "invalid@name", // Contains special char
+            "invalid.name", // Contains dot
+            &too_long,      // Too long (>255 chars)
+        ];
+
+        for invalid_name in invalid_names {
+            let req = CreateWorkerRequest {
+                runner: Some(create_worker_request::Runner::RunnerName(
+                    "COMMAND".to_string(),
+                )),
+                name: invalid_name.to_string(),
+                description: None,
+                settings_json: None,
+                worker_options: None,
+            };
+
+            let result = validator.validate_create_worker_request(&req);
+            assert!(
+                result.is_err(),
+                "Should fail with invalid name: {}",
+                invalid_name
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_create_worker_request_with_valid_names() {
+        let validator = TestValidator;
+
+        // Test various valid names
+        let max_length = "a".repeat(255);
+        let valid_names = vec![
+            "validName",
+            "valid_name",
+            "valid-name",
+            "ValidName123",
+            "a",         // Single char
+            &max_length, // Max length (255 chars)
+        ];
+
+        for valid_name in valid_names {
+            let req = CreateWorkerRequest {
+                runner: Some(create_worker_request::Runner::RunnerName(
+                    "COMMAND".to_string(),
+                )),
+                name: valid_name.to_string(),
+                description: None,
+                settings_json: None,
+                worker_options: None,
+            };
+
+            let result = validator.validate_create_worker_request(&req);
+            assert!(
+                result.is_ok(),
+                "Should succeed with valid name: {}, error: {:?}",
+                valid_name,
+                result
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_create_workflow_request_with_invalid_names() {
+        let validator = TestValidator;
+
+        let too_long = "a".repeat(256);
+        let invalid_names = vec![
+            "",             // Empty
+            "123invalid",   // Starts with number
+            "invalid name", // Contains space
+            "invalid@name", // Contains special char
+            "invalid.name", // Contains dot
+            &too_long,      // Too long (>255 chars)
+        ];
+
+        for invalid_name in invalid_names {
+            let req = CreateWorkflowRequest {
+                workflow_source: Some(create_workflow_request::WorkflowSource::WorkflowData(
+                    r#"{"document":{"dsl":"1.0.0","namespace":"test","name":"test"},"do":[]}"#
+                        .to_string(),
+                )),
+                name: Some(invalid_name.to_string()),
+                worker_options: None,
+            };
+
+            let result = validator.validate_create_workflow_request(&req);
+            assert!(
+                result.is_err(),
+                "Should fail with invalid name: {}",
+                invalid_name
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_create_workflow_request_with_valid_names() {
+        let validator = TestValidator;
+
+        let max_length = "a".repeat(255);
+        let valid_names = vec![
+            "validName",
+            "valid_name",
+            "valid-name",
+            "ValidName123",
+            "a",         // Single char
+            &max_length, // Max length (255 chars)
+        ];
+
+        for valid_name in valid_names {
+            let req = CreateWorkflowRequest {
+                workflow_source: Some(create_workflow_request::WorkflowSource::WorkflowData(
+                    r#"{"document":{"dsl":"1.0.0","namespace":"test","name":"test"},"do":[]}"#
+                        .to_string(),
+                )),
+                name: Some(valid_name.to_string()),
+                worker_options: None,
+            };
+
+            let result = validator.validate_create_workflow_request(&req);
+            assert!(
+                result.is_ok(),
+                "Should succeed with valid name: {}, error: {:?}",
+                valid_name,
+                result
+            );
+        }
+    }
+}

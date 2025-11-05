@@ -25,6 +25,7 @@ debug_stub_derive = { workspace = true }
 dotenvy = { workspace = true }
 futures = { workspace = true }
 prost = { workspace = true }
+regex = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }

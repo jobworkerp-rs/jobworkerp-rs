@@ -34,6 +34,7 @@ pub trait FunctionApp:
     + UseMokaCache<Arc<String>, Vec<FunctionSpecs>>
     + FunctionSpecConverter
     + FunctionCallHelper
+    + infra::workflow::UseWorkflowLoader
     + fmt::Debug
     + Send
     + Sync
@@ -574,6 +575,140 @@ pub trait FunctionApp:
         Ok(functions)
     }
 
+    /// Create a Worker from any Runner with detailed configuration
+    async fn create_worker_from_runner(
+        &self,
+        runner_name: Option<String>,
+        runner_id: Option<proto::jobworkerp::data::RunnerId>,
+        name: String,
+        description: Option<String>,
+        settings_json: Option<String>,
+        worker_options: Option<WorkerOptions>,
+    ) -> Result<(WorkerId, String)> {
+        // 1. Check worker name uniqueness (validation is done at gRPC layer)
+        if let Some(_existing) = self.worker_app().find_by_name(&name).await? {
+            return Err(JobWorkerError::AlreadyExists(format!(
+                "Worker with name '{}' already exists",
+                name
+            ))
+            .into());
+        }
+
+        // 3. Find runner (name or id)
+        let runner = self.find_runner(runner_name, runner_id).await?;
+
+        // 4. Validate and serialize settings_json (use existing setup_runner_and_settings with descriptor cache)
+        let runner_settings_value = settings_json
+            .map(|json| {
+                serde_json::from_str::<serde_json::Value>(&json).map_err(|e| {
+                    JobWorkerError::InvalidParameter(format!(
+                        "Invalid JSON in settings_json: {}",
+                        e
+                    ))
+                })
+            })
+            .transpose()?;
+
+        let runner_settings_bytes = self
+            .setup_runner_and_settings(&runner, runner_settings_value)
+            .await?;
+
+        // 5. Build WorkerData from WorkerOptions
+        let worker_data = self.build_worker_data_from_options(
+            name.clone(),
+            description.unwrap_or_default(),
+            runner.id.unwrap(),
+            runner_settings_bytes,
+            worker_options,
+        )?;
+
+        // 6. Validate WorkerData (periodic/direct/channel etc.)
+        self.validate_worker_options(&worker_data)?;
+
+        // 7. Create Worker via WorkerApp
+        let worker_id = self.worker_app().create(&worker_data).await?;
+
+        Ok((worker_id, name))
+    }
+
+    /// Create a REUSABLE_WORKFLOW Worker from workflow definition
+    async fn create_workflow_from_definition(
+        &self,
+        workflow_data: Option<String>,
+        workflow_url: Option<String>,
+        name: Option<String>,
+        worker_options: Option<WorkerOptions>,
+    ) -> Result<(WorkerId, String, Option<String>)> {
+        // 1. Load workflow definition (data or URL)
+        // Use WorkflowLoader via DI (UseWorkflowLoader trait)
+        let workflow_schema = if let Some(data) = workflow_data {
+            self.workflow_loader()
+                .load_workflow(None, Some(&data), true)
+                .await?
+        } else if let Some(url) = workflow_url {
+            self.workflow_loader()
+                .load_workflow(Some(&url), None, true)
+                .await?
+        } else {
+            return Err(JobWorkerError::InvalidParameter(
+                "Either workflow_data or workflow_url is required".to_string(),
+            )
+            .into());
+        };
+
+        // 2. Workflow validation is already done by load_workflow() with validate_lightweight()
+
+        // 3. Determine worker name (from name parameter or workflow definition)
+        let worker_name = name.unwrap_or_else(|| workflow_schema.document.name.to_string());
+
+        // 4. Check worker name uniqueness (validation is done at gRPC layer)
+        if let Some(_existing) = self.worker_app().find_by_name(&worker_name).await? {
+            return Err(JobWorkerError::AlreadyExists(format!(
+                "Worker with name '{}' already exists",
+                worker_name
+            ))
+            .into());
+        }
+
+        // 6. Get workflow name (document.name)
+        let workflow_name = Some(workflow_schema.document.name.to_string());
+
+        // 7. Create ReusableWorkflowRunnerSettings
+        // Serialize workflow_schema to JSON string
+        let workflow_json_str = serde_json::to_string(&workflow_schema).map_err(|e| {
+            JobWorkerError::InvalidParameter(format!("Failed to serialize workflow schema: {}", e))
+        })?;
+
+        let runner_settings = ReusableWorkflowRunnerSettings {
+            json_data: workflow_json_str,
+        };
+        let runner_settings_bytes = ProstMessageCodec::serialize_message(&runner_settings)?;
+
+        // 8. Get REUSABLE_WORKFLOW Runner ID (65532)
+        let runner_id = proto::jobworkerp::data::RunnerId {
+            value: proto::jobworkerp::data::RunnerType::ReusableWorkflow as i64,
+        };
+
+        // 9. Build WorkerData
+        let description = workflow_schema.document.summary.unwrap_or_default();
+
+        let worker_data = self.build_worker_data_from_options(
+            worker_name.clone(),
+            description,
+            runner_id,
+            runner_settings_bytes,
+            worker_options,
+        )?;
+
+        // 10. Validate WorkerData (periodic/direct/channel etc.)
+        self.validate_worker_options(&worker_data)?;
+
+        // 11. Create Worker via WorkerApp
+        let worker_id = self.worker_app().create(&worker_data).await?;
+
+        Ok((worker_id, worker_name, workflow_name))
+    }
+
     // for LLM function calling (LLM_CHAT runner)
     async fn call_function_for_llm(
         &self,
@@ -658,9 +793,13 @@ pub struct FunctionAppImpl {
     job_result_app: Arc<dyn crate::app::job_result::JobResultApp>,
     function_cache: memory_utils::cache::moka::MokaCacheImpl<Arc<String>, Vec<FunctionSpecs>>,
     descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
+    job_queue_config: infra::infra::JobQueueConfig,
+    worker_config: crate::app::WorkerConfig,
+    workflow_loader: infra::workflow::WorkflowLoader, // Workflow definition loader (DI pattern)
 }
 
 impl FunctionAppImpl {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         runner_app: Arc<dyn crate::app::runner::RunnerApp>,
         worker_app: Arc<dyn crate::app::worker::WorkerApp>,
@@ -668,6 +807,9 @@ impl FunctionAppImpl {
         job_result_app: Arc<dyn crate::app::job_result::JobResultApp>,
         descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
         mc_config: &memory_utils::cache::stretto::MemoryCacheConfig,
+        job_queue_config: infra::infra::JobQueueConfig,
+        worker_config: crate::app::WorkerConfig,
+        workflow_loader: infra::workflow::WorkflowLoader,
     ) -> Self {
         let function_cache = memory_utils::cache::moka::MokaCacheImpl::new(
             &memory_utils::cache::moka::MokaCacheConfig {
@@ -675,6 +817,7 @@ impl FunctionAppImpl {
                 ttl: Some(std::time::Duration::from_secs(60)), // 60 seconds TTL
             },
         );
+
         Self {
             runner_app,
             worker_app,
@@ -682,6 +825,9 @@ impl FunctionAppImpl {
             job_result_app,
             function_cache,
             descriptor_cache,
+            job_queue_config,
+            worker_config,
+            workflow_loader,
         }
     }
 }
@@ -722,13 +868,37 @@ impl UseRunnerParserWithCache for FunctionAppImpl {
     }
 }
 impl UseJobExecutor for FunctionAppImpl {}
+impl infra::infra::UseJobQueueConfig for FunctionAppImpl {
+    fn job_queue_config(&self) -> &infra::infra::JobQueueConfig {
+        &self.job_queue_config
+    }
+}
+impl crate::app::UseWorkerConfig for FunctionAppImpl {
+    fn worker_config(&self) -> &crate::app::WorkerConfig {
+        &self.worker_config
+    }
+}
 impl FunctionCallHelper for FunctionAppImpl {
     fn timeout_sec(&self) -> u32 {
         30 * 60 // 30 minutes
     }
+
+    fn job_queue_config(&self) -> &infra::infra::JobQueueConfig {
+        infra::infra::UseJobQueueConfig::job_queue_config(self)
+    }
+
+    fn worker_config(&self) -> &crate::app::WorkerConfig {
+        crate::app::UseWorkerConfig::worker_config(self)
+    }
 }
 
 impl FunctionApp for FunctionAppImpl {}
+
+impl infra::workflow::UseWorkflowLoader for FunctionAppImpl {
+    fn workflow_loader(&self) -> &infra::workflow::WorkflowLoader {
+        &self.workflow_loader
+    }
+}
 
 pub trait UseFunctionApp {
     fn function_app(&self) -> &FunctionAppImpl;
