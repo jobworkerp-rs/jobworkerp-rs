@@ -1,6 +1,7 @@
 // This file is auto-generated from runner/schema/workflow.yaml
 // Do not edit manually. Use scripts/update_workflow_schema.sh to regenerate.
 
+// Allow clippy warnings for auto-generated code
 #[allow(clippy::redundant_closure_call)]
 #[allow(clippy::needless_lifetimes)]
 #[allow(clippy::match_single_binding)]
@@ -4648,11 +4649,6 @@ impl WaitTask {
 #[doc = "      \"title\": \"UseStaticWorker\","]
 #[doc = "      \"description\": \"Whether to use a static worker (persisted in database with pooled initialization).\","]
 #[doc = "      \"type\": \"boolean\""]
-#[doc = "    },"]
-#[doc = "    \"withBackup\": {"]
-#[doc = "      \"title\": \"WithBackup\","]
-#[doc = "      \"description\": \"(Deprecated: use queueType instead) Whether to backup the enqueued job to the database during queueing and execution.\","]
-#[doc = "      \"type\": \"boolean\""]
 #[doc = "    }"]
 #[doc = "  }"]
 #[doc = "}"]
@@ -4708,13 +4704,6 @@ pub struct WorkerOptions {
         skip_serializing_if = "::std::option::Option::is_none"
     )]
     pub use_static: ::std::option::Option<bool>,
-    #[doc = "(Deprecated: use queueType instead) Whether to backup the enqueued job to the database during queueing and execution."]
-    #[serde(
-        rename = "withBackup",
-        default,
-        skip_serializing_if = "::std::option::Option::is_none"
-    )]
-    pub with_backup: ::std::option::Option<bool>,
 }
 impl ::std::convert::From<&WorkerOptions> for WorkerOptions {
     fn from(value: &WorkerOptions) -> Self {
@@ -4732,7 +4721,6 @@ impl ::std::default::Default for WorkerOptions {
             store_failure: Default::default(),
             store_success: Default::default(),
             use_static: Default::default(),
-            with_backup: Default::default(),
         }
     }
 }
@@ -8532,7 +8520,6 @@ pub mod builder {
         store_failure: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
         store_success: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
         use_static: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
-        with_backup: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
     }
     impl ::std::default::Default for WorkerOptions {
         fn default() -> Self {
@@ -8545,7 +8532,6 @@ pub mod builder {
                 store_failure: Ok(Default::default()),
                 store_success: Ok(Default::default()),
                 use_static: Ok(Default::default()),
-                with_backup: Ok(Default::default()),
             }
         }
     }
@@ -8633,16 +8619,6 @@ pub mod builder {
                 .map_err(|e| format!("error converting supplied value for use_static: {}", e));
             self
         }
-        pub fn with_backup<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<bool>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.with_backup = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for with_backup: {}", e));
-            self
-        }
     }
     impl ::std::convert::TryFrom<WorkerOptions> for super::WorkerOptions {
         type Error = super::error::ConversionError;
@@ -8658,7 +8634,6 @@ pub mod builder {
                 store_failure: value.store_failure?,
                 store_success: value.store_success?,
                 use_static: value.use_static?,
-                with_backup: value.with_backup?,
             })
         }
     }
@@ -8673,7 +8648,6 @@ pub mod builder {
                 store_failure: Ok(value.store_failure),
                 store_success: Ok(value.store_success),
                 use_static: Ok(value.use_static),
-                with_backup: Ok(value.with_backup),
             }
         }
     }

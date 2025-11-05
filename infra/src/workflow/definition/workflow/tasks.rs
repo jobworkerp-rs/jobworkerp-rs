@@ -1,3 +1,6 @@
+// Allow clippy warnings for manually maintained implementations of auto-generated types
+// #![allow(clippy::derivable_impls)]
+
 use super::*;
 
 /////////////////////////
