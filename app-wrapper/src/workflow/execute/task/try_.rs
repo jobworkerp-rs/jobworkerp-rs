@@ -16,7 +16,6 @@ use crate::workflow::{
     execute::expression::UseExpression,
 };
 use app::app::job::execute::JobExecutorWrapper;
-use net_utils::net::reqwest;
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::RwLock, time::Instant};
 
@@ -25,7 +24,6 @@ pub struct TryTaskExecutor {
     default_timeout: Duration,
     task: workflow::TryTask,
     job_executors: Arc<JobExecutorWrapper>,
-    http_client: reqwest::ReqwestClient,
     checkpoint_repository: Option<
         Arc<dyn crate::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId>,
     >,
@@ -39,7 +37,6 @@ impl TryTaskExecutor {
         default_timeout: Duration,
         task: workflow::TryTask,
         job_executors: Arc<JobExecutorWrapper>,
-        http_client: reqwest::ReqwestClient,
         checkpoint_repository: Option<
             Arc<dyn crate::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId>,
         >,
@@ -51,7 +48,6 @@ impl TryTaskExecutor {
             default_timeout,
             task,
             job_executors,
-            http_client,
             checkpoint_repository,
             execution_id,
             metadata,
@@ -204,7 +200,6 @@ impl TryTaskExecutor {
             self.metadata.clone(),
             do_tasks,
             self.job_executors.clone(),
-            self.http_client.clone(),
             self.checkpoint_repository.clone(),
             self.execution_id.clone(),
         ));
@@ -483,9 +478,9 @@ mod tests {
     ) -> (TryTaskExecutor, Arc<RwLock<WorkflowContext>>, TaskContext) {
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
         let job_executors = Arc::new(JobExecutorWrapper::new(app_module));
-        let http_client = reqwest::ReqwestClient::new(None, None, None, None).unwrap();
 
-        let loader = WorkflowLoader::new(http_client.clone()).unwrap();
+        // Use local-only loader for loading local test files (no network access needed)
+        let loader = WorkflowLoader::new_local_only();
         let flow = loader
             .load_workflow(Some("test-files/ls-test.yaml"), None, false)
             .await
@@ -534,7 +529,6 @@ mod tests {
             Duration::from_secs(60), // default timeout
             try_task.clone(),
             job_executors.clone(),
-            http_client,
             None,
             None,
             Arc::new(Default::default()),

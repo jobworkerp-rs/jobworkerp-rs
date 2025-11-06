@@ -58,6 +58,70 @@ message FunctionCallRequest {
   optional jobworkerp.function.data.FunctionCallOptions options = 6;
 }
 
+// # Create Worker Request
+// Create a Worker from any Runner with detailed configuration
+message CreateWorkerRequest {
+  // Runner identification (either name or id required)
+  oneof runner {
+    string runner_name = 1;    // Runner name (e.g., "COMMAND", "HTTP_REQUEST")
+    jobworkerp.data.RunnerId runner_id = 2;
+  }
+
+  // Worker name (unique identifier)
+  string name = 3;
+
+  // Worker description (optional)
+  optional string description = 4;
+
+  // Runner settings in JSON format (from Runner's settings_schema)
+  // Empty string or null if runner requires no settings
+  optional string settings_json = 5;
+
+  // Worker options (execution configuration)
+  optional jobworkerp.function.data.WorkerOptions worker_options = 6;
+}
+
+// # Create Worker Response
+message CreateWorkerResponse {
+  // Created worker ID
+  jobworkerp.data.WorkerId worker_id = 1;
+
+  // Created worker name
+  string worker_name = 2;
+}
+
+// # Create Workflow Request
+// Create a REUSABLE_WORKFLOW Worker from workflow definition
+message CreateWorkflowRequest {
+  // Workflow definition source (either data or url required)
+  oneof workflow_source {
+    // Workflow definition as JSON or YAML string
+    string workflow_data = 1;
+
+    // URL to workflow definition file (JSON or YAML)
+    string workflow_url = 2;
+  }
+
+  // Worker name (unique identifier)
+  // If omitted, uses workflow's document.name field
+  optional string name = 3;
+
+  // Worker options (execution configuration)
+  optional jobworkerp.function.data.WorkerOptions worker_options = 4;
+}
+
+// # Create Workflow Response
+message CreateWorkflowResponse {
+  // Created worker ID
+  jobworkerp.data.WorkerId worker_id = 1;
+
+  // Created worker name
+  string worker_name = 2;
+
+  // Workflow document name (from definition)
+  optional string workflow_name = 3;
+}
+
 service FunctionService {
   rpc FindList(FindFunctionRequest)
       returns (stream jobworkerp.function.data.FunctionSpecs);
@@ -71,4 +135,10 @@ service FunctionService {
 
   // Function search by function name
   rpc FindByName(FindFunctionByNameRequest) returns (OptionalFunctionSpecsResponse);
+
+  // Create a Worker from any Runner with detailed configuration
+  rpc CreateWorker(CreateWorkerRequest) returns (CreateWorkerResponse);
+
+  // Create a REUSABLE_WORKFLOW Worker from workflow definition
+  rpc CreateWorkflow(CreateWorkflowRequest) returns (CreateWorkflowResponse);
 }

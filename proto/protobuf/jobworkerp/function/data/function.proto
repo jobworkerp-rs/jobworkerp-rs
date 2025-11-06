@@ -127,14 +127,12 @@ message ToolAnnotations {
 message WorkerOptions {
   // # Retry Policy
   // Configuration for job retry behavior on failure
-  jobworkerp.data.RetryPolicy retry_policy = 1;
+  optional jobworkerp.data.RetryPolicy retry_policy = 1;
   // # Channel Name
   // Message channel for job (if empty, default channel will be used)
   optional string channel = 2;
-  // # with backup flag
-  // If true, enqueued job will be backed up to database in execution
-  // (if true, set Queue Type WithBackup)
-  bool with_backup = 3;
+  // Deprecated: use queue_type instead
+  reserved 3;
   // # Store Success Flag
   // If true, job results will be stored in database when execution succeeds
   bool store_success = 4;
@@ -150,6 +148,14 @@ message WorkerOptions {
   // If false, cannot use JobResultService/{Listen, ListenStream,
   // ListenByWorker}.
   bool broadcast_results = 7;
+  // # Queue Type
+  // Defines how jobs are queued and persisted
+  // Default: NORMAL (in-memory only, fast)
+  optional jobworkerp.data.QueueType queue_type = 8;
+  // # Response Type
+  // Defines how job results should be returned to the client
+  // Default: DIRECT (synchronous execution with result)
+  optional jobworkerp.data.ResponseType response_type = 9;
 }
 
 // # Function Call Options

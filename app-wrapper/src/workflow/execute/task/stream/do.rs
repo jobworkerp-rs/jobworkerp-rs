@@ -18,7 +18,6 @@ use debug_stub_derive::DebugStub;
 use futures::StreamExt;
 use indexmap::IndexMap;
 use jobworkerp_base::APP_WORKER_NAME;
-use net_utils::net::reqwest;
 use opentelemetry::trace::TraceContextExt;
 use std::{collections::HashMap, pin::Pin, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
@@ -37,8 +36,6 @@ pub struct DoTaskStreamExecutor {
     task: workflow::DoTask,
     #[debug_stub = "AppModule"]
     pub job_executor_wrapper: Arc<JobExecutorWrapper>,
-    #[debug_stub = "reqwest::HttpClient"]
-    pub http_client: reqwest::ReqwestClient,
     #[debug_stub = "Option<Arc<dyn UseCheckPointRepository>>"]
     pub checkpoint_repository: Option<CheckPointRepo>,
     pub execution_id: Option<Arc<ExecutionId>>,
@@ -56,7 +53,6 @@ impl DoTaskStreamExecutor {
         metadata: Arc<HashMap<String, String>>,
         task: workflow::DoTask,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
-        http_client: reqwest::ReqwestClient,
         checkpoint_repository: Option<
             Arc<dyn crate::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId>,
         >,
@@ -68,7 +64,6 @@ impl DoTaskStreamExecutor {
             metadata,
             task,
             job_executor_wrapper,
-            http_client,
             checkpoint_repository,
             execution_id,
         }
@@ -142,7 +137,6 @@ impl DoTaskStreamExecutor {
     ) -> Pin<Box<dyn futures::Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send + '_>>
     {
         let job_exec = self.job_executor_wrapper.clone();
-        let http_client = self.http_client.clone();
         let req_meta = self.metadata.clone();
 
         Box::pin(stream! {
@@ -197,7 +191,6 @@ impl DoTaskStreamExecutor {
                     self.workflow_context.clone(),
                     self.default_timeout,
                     job_exec.clone(),
-                    http_client.clone(),
                     self.checkpoint_repository.clone(),
                     &name,
                     task.clone(),
@@ -400,14 +393,6 @@ mod tests {
     fn test_execute_stream() {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
-            let http_client = reqwest::ReqwestClient::new(
-                Some("test"),
-                Some(std::time::Duration::from_secs(1)),
-                Some(std::time::Duration::from_secs(1)),
-                Some(1),
-            )
-            .unwrap();
-
             let workflow = create_test_workflow();
             let input = Arc::new(serde_json::json!({"test": "input"}));
             let context = Arc::new(serde_json::json!({}));
@@ -426,7 +411,6 @@ mod tests {
                 Arc::new(HashMap::new()),
                 do_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),
-                http_client,
                 None,
                 None,
             );
@@ -469,14 +453,6 @@ mod tests {
     #[test]
     fn test_execute_stream_with_flow_directives() {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
-            let http_client = reqwest::ReqwestClient::new(
-                Some("test"),
-                Some(std::time::Duration::from_secs(1)),
-                Some(std::time::Duration::from_secs(1)),
-                Some(1),
-            )
-            .unwrap();
-
             let mut workflow = create_test_workflow();
 
             let task_list = TaskList(vec![
@@ -574,7 +550,6 @@ mod tests {
                 Arc::new(HashMap::new()),
                 do_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),
-                http_client,
                 None,
                 None,
             );
@@ -617,14 +592,6 @@ mod tests {
     #[test]
     fn test_execute_stream_flow_exit_and_end() {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
-            let http_client = reqwest::ReqwestClient::new(
-                Some("test"),
-                Some(std::time::Duration::from_secs(1)),
-                Some(std::time::Duration::from_secs(1)),
-                Some(1),
-            )
-            .unwrap();
-
             let workflow = create_test_workflow();
             let input = Arc::new(serde_json::json!({"test": "input"}));
             let context = Arc::new(serde_json::json!({}));
@@ -687,7 +654,6 @@ mod tests {
                     Arc::new(HashMap::new()),
                     do_task,
                     Arc::new(JobExecutorWrapper::new(app_module.clone())),
-                    http_client.clone(),
                     None,
                     None,
                 );
@@ -762,7 +728,6 @@ mod tests {
                     Arc::new(HashMap::new()),
                     do_task,
                     Arc::new(JobExecutorWrapper::new(app_module.clone())),
-                    http_client.clone(),
                     None,
                     None,
                 );
@@ -810,14 +775,6 @@ mod tests {
     #[test]
     fn test_execute_stream_task_name_jump() {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
-            let http_client = reqwest::ReqwestClient::new(
-                Some("test"),
-                Some(std::time::Duration::from_secs(1)),
-                Some(std::time::Duration::from_secs(1)),
-                Some(1),
-            )
-            .unwrap();
-
             let input = Arc::new(serde_json::json!({"test": "input"}));
             let context = Arc::new(serde_json::json!({}));
 
@@ -907,7 +864,6 @@ mod tests {
                 Arc::new(HashMap::new()),
                 do_task,
                 Arc::new(JobExecutorWrapper::new(app_module)),
-                http_client,
                 None,
                 None,
             );

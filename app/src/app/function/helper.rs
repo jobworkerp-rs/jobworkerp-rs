@@ -1,4 +1,4 @@
-use crate::app::job::execute::UseJobExecutor;
+use crate::app::{job::execute::UseJobExecutor, WorkerConfig};
 use anyhow::Result;
 use command_utils::{protobuf::ProtobufDescriptor, util::datetime};
 use infra::infra::runner::rows::RunnerWithSchema;
@@ -54,6 +54,8 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
     };
 
     fn timeout_sec(&self) -> u32;
+    fn job_queue_config(&self) -> &infra::infra::JobQueueConfig;
+    fn worker_config(&self) -> &WorkerConfig;
 
     fn find_runner_by_name_with_mcp<'a>(
         &'a self,
@@ -344,7 +346,11 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                     .and_then(|v| v.as_str().map(|s| s.to_string()))
                     .and_then(|s| QueueType::from_str_name(&s).map(|q| q as i32))
                     .unwrap_or(QueueType::Normal as i32),
-                response_type: ResponseType::Direct as i32,
+                response_type: obj
+                    .get("response_type")
+                    .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    .and_then(|s| ResponseType::from_str_name(&s).map(|r| r as i32))
+                    .unwrap_or(ResponseType::Direct as i32),
                 store_success: obj
                     .get("store_success")
                     .and_then(|v| v.as_bool())
@@ -471,6 +477,169 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
             args
         }
     }
+
+    // Build WorkerData from WorkerOptions
+    fn build_worker_data_from_options(
+        &self,
+        name: String,
+        description: String,
+        runner_id: RunnerId,
+        runner_settings: Vec<u8>,
+        worker_options: Option<proto::jobworkerp::function::data::WorkerOptions>,
+    ) -> Result<WorkerData> {
+        let opts = worker_options.unwrap_or_default();
+
+        // queue_type: optional so explicit handling
+        // If not specified, default to NORMAL (fast, memory only)
+        let queue_type = if let Some(qt) = opts.queue_type {
+            QueueType::try_from(qt).map_err(|_| {
+                JobWorkerError::InvalidParameter(format!("Invalid queue_type: {}", qt))
+            })?
+        } else {
+            QueueType::Normal // default
+        };
+
+        // response_type: optional so explicit handling
+        // If not specified, default to DIRECT (synchronous execution, result return)
+        let response_type = if let Some(rt) = opts.response_type {
+            ResponseType::try_from(rt).map_err(|_| {
+                JobWorkerError::InvalidParameter(format!("Invalid response_type: {}", rt))
+            })?
+        } else {
+            ResponseType::Direct // default
+        };
+
+        // retry_policy: optional so pass as is
+        let retry_policy = opts.retry_policy;
+
+        Ok(WorkerData {
+            name,
+            description,
+            runner_id: Some(runner_id),
+            runner_settings,
+            retry_policy,
+            periodic_interval: 0, // CreateWorker always sets to 0 (periodic execution not supported)
+            channel: opts.channel,
+            queue_type: queue_type as i32,
+            response_type: response_type as i32,
+            // bool types: use proto3 default (false) as is
+            store_success: opts.store_success,
+            store_failure: opts.store_failure,
+            use_static: opts.use_static,
+            broadcast_results: opts.broadcast_results,
+        })
+    }
+
+    // Validate worker options (reusing existing validation logic from grpc-front/src/service/worker.rs)
+    fn validate_worker_options(&self, worker_data: &WorkerData) -> Result<()> {
+        // 1. Periodic + Direct禁止
+        if worker_data.periodic_interval != 0
+            && worker_data.response_type == ResponseType::Direct as i32
+        {
+            return Err(JobWorkerError::InvalidParameter(
+                "periodic and direct_response can't be set at the same time".to_string(),
+            )
+            .into());
+        }
+
+        // 2. check Periodic interval and fetch_interval
+        if worker_data.periodic_interval != 0
+            && worker_data.periodic_interval <= self.job_queue_config().fetch_interval
+        {
+            return Err(JobWorkerError::InvalidParameter(format!(
+                "periodic interval can't be set lesser than {}msec",
+                self.job_queue_config().fetch_interval
+            ))
+            .into());
+        }
+
+        // 3. no RDB + Direct
+        if worker_data.queue_type == QueueType::DbOnly as i32
+            && worker_data.response_type == ResponseType::Direct as i32
+        {
+            return Err(JobWorkerError::InvalidParameter(
+                "can't use db queue in direct_response".to_string(),
+            )
+            .into());
+        }
+
+        // 4. Name verification
+        if worker_data.name.is_empty() {
+            return Err(
+                JobWorkerError::InvalidParameter("name should not be empty".to_string()).into(),
+            );
+        }
+
+        // 5. Retry policy verification
+        if let Some(rp) = &worker_data.retry_policy {
+            if rp.basis < 1.0 {
+                return Err(JobWorkerError::InvalidParameter(
+                    "retry_basis should be greater than 1.0".to_string(),
+                )
+                .into());
+            }
+        }
+
+        // 6. Channel verification
+        if let Some(channel) = &worker_data.channel {
+            self.validate_channel(channel)?;
+        }
+
+        Ok(())
+    }
+
+    // Validate channel existence
+    fn validate_channel(&self, channel: &str) -> Result<()> {
+        if channel.is_empty() {
+            return Err(JobWorkerError::InvalidParameter(
+                "channel name cannot be empty".to_string(),
+            )
+            .into());
+        }
+
+        let available_channels: std::collections::HashSet<String> =
+            self.worker_config().get_channels().into_iter().collect();
+
+        if !available_channels.contains(channel) {
+            return Err(JobWorkerError::InvalidParameter(format!(
+                "specified channel '{}' does not exist. Available channels: {:?}",
+                channel,
+                available_channels.into_iter().collect::<Vec<_>>()
+            ))
+            .into());
+        }
+
+        Ok(())
+    }
+
+    // Find runner by name or id
+    fn find_runner(
+        &self,
+        runner_name: Option<String>,
+        runner_id: Option<RunnerId>,
+    ) -> impl Future<Output = Result<RunnerWithSchema>> + Send + '_ {
+        async move {
+            if let Some(name) = runner_name {
+                self.runner_app()
+                    .find_runner_by_name(&name)
+                    .await?
+                    .ok_or_else(|| {
+                        JobWorkerError::NotFound(format!("Runner with name '{}' not found", name))
+                            .into()
+                    })
+            } else if let Some(id) = runner_id {
+                self.runner_app().find_runner(&id).await?.ok_or_else(|| {
+                    JobWorkerError::NotFound(format!("Runner with id '{}' not found", id.value))
+                        .into()
+                })
+            } else {
+                Err(JobWorkerError::InvalidParameter(
+                    "Either runner_name or runner_id is required".to_string(),
+                )
+                .into())
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -534,6 +703,14 @@ mod tests {
     impl FunctionCallHelper for TestFunctionCallHelper {
         fn timeout_sec(&self) -> u32 {
             30 // Default timeout for tests
+        }
+
+        fn job_queue_config(&self) -> &infra::infra::JobQueueConfig {
+            &self.app.config_module.job_queue_config
+        }
+
+        fn worker_config(&self) -> &WorkerConfig {
+            &self.app.config_module.worker_config
         }
     }
 

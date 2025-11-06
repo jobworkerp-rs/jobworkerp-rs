@@ -10,6 +10,7 @@ proto = { path = "../proto" }
 command-utils = { path = "../modules/command-utils" }
 infra-utils = { path = "../modules/infra-utils" }
 memory-utils = { path = "../modules/memory-utils" }
+net-utils = { path = "../modules/net-utils" }
 jobworkerp-base = { path = "../base" }
 jobworkerp-runner = { path = "../runner" }
 infra = { path = "../infra" }
@@ -28,6 +29,7 @@ opentelemetry = { workspace = true }
 prost = { workspace = true }
 prost-reflect = { workspace = true }
 rand = { workspace = true }
+regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

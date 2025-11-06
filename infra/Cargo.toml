@@ -10,6 +10,7 @@ proto = { path = "../proto" }
 command-utils = { path = "../modules/command-utils" }
 memory-utils = { path = "../modules/memory-utils" }
 infra-utils = { path = "../modules/infra-utils" }
+net-utils = { path = "../modules/net-utils" }
 jobworkerp-base = { path = "../base" }
 jobworkerp-runner = { path = "../runner" }
 
@@ -26,17 +27,22 @@ envy = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 itertools = { workspace = true }
+jsonschema = "0.33"
 #kube-client = "0.86"
 libloading = { workspace = true }
+liquid = "0.26"
 nix = { workspace = true, features = ["signal"] }
 once_cell = { workspace = true }
 prost = { workspace = true }
 redis = { workspace = true }
+regex = { workspace = true }
+regress = "0.10"
 reqwest = { workspace = true }
 #rmcp = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
+serde_yaml = { workspace = true }
 signal-hook = { workspace = true }
 signal-hook-tokio = { workspace = true }
 sqlx = { workspace = true }
