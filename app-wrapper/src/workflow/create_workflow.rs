@@ -11,35 +11,23 @@ use jobworkerp_runner::runner::cancellation_helper::{
 use jobworkerp_runner::runner::create_workflow::CreateWorkflowRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use jobworkerp_runner::validation::workflow::{StandardWorkflowValidator, WorkflowValidator};
-use net_utils::net::reqwest::ReqwestClient;
 use prost::Message;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
-use std::time::Duration;
 use tracing;
 
 pub struct CreateWorkflowRunnerImpl {
     pub app: Arc<AppModule>,
     _validator: Box<dyn WorkflowValidator + Send + Sync>, // TODO use validator for workflow json
-    http_client: ReqwestClient,
     cancel_helper: Option<CancelMonitoringHelper>,
 }
 
 impl CreateWorkflowRunnerImpl {
-    const USER_AGENT: &'static str = "jobworkerp-rs/create-workflow-runner";
     pub fn new(app_module: Arc<AppModule>) -> Result<Self> {
-        let http_client = ReqwestClient::new(
-            Some(Self::USER_AGENT),
-            Some(Duration::from_secs(30)),
-            Some(Duration::from_secs(10)),
-            Some(3), // 3 retries
-        )?;
-
         Ok(Self {
             app: app_module,
             _validator: Box::new(StandardWorkflowValidator),
-            http_client,
             cancel_helper: None, // No cancellation monitoring by default
         })
     }
@@ -51,13 +39,6 @@ impl CreateWorkflowRunnerImpl {
         Self {
             app: app_module,
             _validator: Box::new(StandardWorkflowValidator),
-            http_client: ReqwestClient::new(
-                Some(Self::USER_AGENT),
-                Some(Duration::from_secs(30)),
-                Some(Duration::from_secs(10)),
-                Some(3), // 3 retries
-            )
-            .unwrap(),
             cancel_helper: Some(cancel_helper),
         }
     }
@@ -66,32 +47,11 @@ impl CreateWorkflowRunnerImpl {
         app_module: Arc<AppModule>,
         _validator: Box<dyn WorkflowValidator + Send + Sync>,
     ) -> Result<Self> {
-        let http_client = ReqwestClient::new(
-            Some(Self::USER_AGENT),
-            Some(Duration::from_secs(30)),
-            Some(Duration::from_secs(10)),
-            Some(3), // 3 retries
-        )?;
-
         Ok(Self {
             app: app_module,
             _validator,
-            http_client,
             cancel_helper: None,
         })
-    }
-
-    pub fn new_with_http_client(
-        app_module: Arc<AppModule>,
-        _validator: Box<dyn WorkflowValidator + Send + Sync>,
-        http_client: ReqwestClient,
-    ) -> Self {
-        Self {
-            app: app_module,
-            _validator,
-            http_client,
-            cancel_helper: None,
-        }
     }
 
     async fn validate_and_parse_args(
@@ -126,56 +86,19 @@ impl CreateWorkflowRunnerImpl {
     }
 
     async fn load_workflow_from_url(&self, url: &str) -> Result<serde_json::Value> {
-        use url::Url;
-
-        // URL validation
-        let parsed_url = Url::parse(url).map_err(|e| anyhow!("Invalid URL format: {}", e))?;
-
         tracing::info!("Loading workflow from URL: {}", url);
 
-        // Only HTTP(S) schemes are supported
-        if !matches!(parsed_url.scheme(), "http" | "https") {
-            return Err(anyhow!(
-                "Unsupported URL scheme: {}. Only http/https are supported",
-                parsed_url.scheme()
-            ));
-        }
-
-        // Fetch workflow definition using ReqwestClient
-        let response = self
-            .http_client
-            .client()
-            .get(parsed_url)
-            .send()
+        // Use WorkflowLoader from AppModule (handles URL validation, HTTP fetching, and JSON/YAML parsing)
+        let workflow_schema = self
+            .app
+            .workflow_loader
+            .load_workflow(Some(url), None, true)
             .await
-            .map_err(|e| anyhow!("Failed to fetch workflow from URL: {}", e))?;
+            .context("Failed to load workflow from URL")?;
 
-        // Check response status
-        if !response.status().is_success() {
-            return Err(anyhow!(
-                "HTTP error while fetching workflow: {} {}",
-                response.status().as_u16(),
-                response.status().canonical_reason().unwrap_or("Unknown")
-            ));
-        }
-
-        // Get response body
-        let body = response
-            .text()
-            .await
-            .map_err(|e| anyhow!("Failed to read response body: {}", e))?;
-
-        tracing::debug!("Fetched workflow content: {} chars", body.len());
-
-        // Parse JSON/YAML (YAML also supported)
-        let workflow_json = serde_json::from_str(&body).or_else(|json_err| {
-            serde_yaml::from_str(&body).map_err(|yaml_err| {
-                anyhow!(
-                    "Failed to parse workflow content as JSON or YAML. JSON error: {}, YAML error: {}",
-                    json_err, yaml_err
-                )
-            })
-        })?;
+        // Convert WorkflowSchema to serde_json::Value for compatibility with existing code
+        let workflow_json = serde_json::to_value(&workflow_schema)
+            .context("Failed to serialize WorkflowSchema to JSON")?;
 
         tracing::info!("Successfully loaded and parsed workflow from URL: {}", url);
         Ok(workflow_json)

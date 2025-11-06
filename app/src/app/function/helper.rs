@@ -542,7 +542,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
             .into());
         }
 
-        // 2. Periodic interval と fetch_interval の関係
+        // 2. check Periodic interval and fetch_interval
         if worker_data.periodic_interval != 0
             && worker_data.periodic_interval <= self.job_queue_config().fetch_interval
         {
@@ -553,7 +553,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
             .into());
         }
 
-        // 3. RDB + Direct の禁止
+        // 3. no RDB + Direct
         if worker_data.queue_type == QueueType::DbOnly as i32
             && worker_data.response_type == ResponseType::Direct as i32
         {

@@ -585,19 +585,10 @@ pub trait FunctionApp:
         settings_json: Option<String>,
         worker_options: Option<WorkerOptions>,
     ) -> Result<(WorkerId, String)> {
-        // 1. Check worker name uniqueness (validation is done at gRPC layer)
-        if let Some(_existing) = self.worker_app().find_by_name(&name).await? {
-            return Err(JobWorkerError::AlreadyExists(format!(
-                "Worker with name '{}' already exists",
-                name
-            ))
-            .into());
-        }
-
-        // 3. Find runner (name or id)
+        // Find runner (name or id)
         let runner = self.find_runner(runner_name, runner_id).await?;
 
-        // 4. Validate and serialize settings_json (use existing setup_runner_and_settings with descriptor cache)
+        // Validate and serialize settings_json (use existing setup_runner_and_settings with descriptor cache)
         let runner_settings_value = settings_json
             .map(|json| {
                 serde_json::from_str::<serde_json::Value>(&json).map_err(|e| {
@@ -613,7 +604,7 @@ pub trait FunctionApp:
             .setup_runner_and_settings(&runner, runner_settings_value)
             .await?;
 
-        // 5. Build WorkerData from WorkerOptions
+        // Build WorkerData from WorkerOptions
         let worker_data = self.build_worker_data_from_options(
             name.clone(),
             description.unwrap_or_default(),
@@ -622,10 +613,10 @@ pub trait FunctionApp:
             worker_options,
         )?;
 
-        // 6. Validate WorkerData (periodic/direct/channel etc.)
+        // Validate WorkerData (periodic/direct/channel etc.)
         self.validate_worker_options(&worker_data)?;
 
-        // 7. Create Worker via WorkerApp
+        // Create Worker via WorkerApp
         let worker_id = self.worker_app().create(&worker_data).await?;
 
         Ok((worker_id, name))
@@ -639,7 +630,7 @@ pub trait FunctionApp:
         name: Option<String>,
         worker_options: Option<WorkerOptions>,
     ) -> Result<(WorkerId, String, Option<String>)> {
-        // 1. Load workflow definition (data or URL)
+        // Load workflow definition (data or URL)
         // Use WorkflowLoader via DI (UseWorkflowLoader trait)
         let workflow_schema = if let Some(data) = workflow_data {
             self.workflow_loader()
@@ -656,24 +647,13 @@ pub trait FunctionApp:
             .into());
         };
 
-        // 2. Workflow validation is already done by load_workflow() with validate_lightweight()
+        // Get workflow name (document.name)
+        let workflow_name = workflow_schema.document.name.to_string();
 
-        // 3. Determine worker name (from name parameter or workflow definition)
-        let worker_name = name.unwrap_or_else(|| workflow_schema.document.name.to_string());
+        // Determine worker name (from name parameter or workflow definition)
+        let worker_name = name.unwrap_or_else(|| workflow_name.clone());
 
-        // 4. Check worker name uniqueness (validation is done at gRPC layer)
-        if let Some(_existing) = self.worker_app().find_by_name(&worker_name).await? {
-            return Err(JobWorkerError::AlreadyExists(format!(
-                "Worker with name '{}' already exists",
-                worker_name
-            ))
-            .into());
-        }
-
-        // 6. Get workflow name (document.name)
-        let workflow_name = Some(workflow_schema.document.name.to_string());
-
-        // 7. Create ReusableWorkflowRunnerSettings
+        // Create ReusableWorkflowRunnerSettings
         // Serialize workflow_schema to JSON string
         let workflow_json_str = serde_json::to_string(&workflow_schema).map_err(|e| {
             JobWorkerError::InvalidParameter(format!("Failed to serialize workflow schema: {}", e))
@@ -684,12 +664,12 @@ pub trait FunctionApp:
         };
         let runner_settings_bytes = ProstMessageCodec::serialize_message(&runner_settings)?;
 
-        // 8. Get REUSABLE_WORKFLOW Runner ID (65532)
+        // Get REUSABLE_WORKFLOW Runner ID (XXX same as db schema now)
         let runner_id = proto::jobworkerp::data::RunnerId {
             value: proto::jobworkerp::data::RunnerType::ReusableWorkflow as i64,
         };
 
-        // 9. Build WorkerData
+        // Build WorkerData
         let description = workflow_schema.document.summary.unwrap_or_default();
 
         let worker_data = self.build_worker_data_from_options(
@@ -700,13 +680,13 @@ pub trait FunctionApp:
             worker_options,
         )?;
 
-        // 10. Validate WorkerData (periodic/direct/channel etc.)
+        // Validate WorkerData (periodic/direct/channel etc.)
         self.validate_worker_options(&worker_data)?;
 
-        // 11. Create Worker via WorkerApp
+        // Create Worker via WorkerApp
         let worker_id = self.worker_app().create(&worker_data).await?;
 
-        Ok((worker_id, worker_name, workflow_name))
+        Ok((worker_id, worker_name, Some(workflow_name)))
     }
 
     // for LLM function calling (LLM_CHAT runner)
@@ -795,7 +775,7 @@ pub struct FunctionAppImpl {
     descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
     job_queue_config: infra::infra::JobQueueConfig,
     worker_config: crate::app::WorkerConfig,
-    workflow_loader: infra::workflow::WorkflowLoader, // Workflow definition loader (DI pattern)
+    workflow_loader: Arc<infra::workflow::WorkflowLoader>, // Workflow definition loader (DI pattern)
 }
 
 impl FunctionAppImpl {
@@ -809,7 +789,7 @@ impl FunctionAppImpl {
         mc_config: &memory_utils::cache::stretto::MemoryCacheConfig,
         job_queue_config: infra::infra::JobQueueConfig,
         worker_config: crate::app::WorkerConfig,
-        workflow_loader: infra::workflow::WorkflowLoader,
+        workflow_loader: Arc<infra::workflow::WorkflowLoader>,
     ) -> Self {
         let function_cache = memory_utils::cache::moka::MokaCacheImpl::new(
             &memory_utils::cache::moka::MokaCacheConfig {

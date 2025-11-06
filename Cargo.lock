@@ -222,7 +222,6 @@ dependencies = [
  "memory-utils 0.1.0",
  "mistralrs",
  "mockall",
- "net-utils",
  "nix",
  "ollama-rs",
  "once_cell",

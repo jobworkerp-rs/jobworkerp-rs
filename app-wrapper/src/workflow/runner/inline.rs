@@ -1,6 +1,6 @@
 use crate::workflow::execute::checkpoint::CheckPointContext;
 use crate::workflow::execute::task::ExecutionId;
-use crate::workflow::{definition::WorkflowLoader, execute::workflow::WorkflowExecutor};
+use crate::workflow::execute::workflow::WorkflowExecutor;
 use anyhow::Result;
 use app::module::AppModule;
 use async_trait::async_trait;
@@ -16,7 +16,6 @@ use jobworkerp_runner::runner::cancellation_helper::{
 };
 use jobworkerp_runner::runner::workflow::InlineWorkflowRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
-use net_utils::net::reqwest::ReqwestClient;
 use opentelemetry::trace::TraceContextExt;
 use prost::Message;
 use proto::jobworkerp::data::StreamingOutputType;
@@ -29,32 +28,19 @@ use std::sync::Arc;
 pub struct InlineWorkflowRunner {
     app_wrapper_module: Arc<crate::modules::AppWrapperModule>,
     app_module: Arc<AppModule>,
-    http_client: ReqwestClient,
     workflow_executor: Option<Arc<WorkflowExecutor>>,
     cancel_helper: Option<CancelMonitoringHelper>,
 }
 impl Tracing for InlineWorkflowRunner {}
 impl InlineWorkflowRunner {
-    // for workflow file reqwest
-
     /// Constructor without cancellation monitoring (for backward compatibility)
     pub fn new(
         app_wrapper_module: Arc<crate::modules::AppWrapperModule>,
         app_module: Arc<AppModule>,
     ) -> Result<Self> {
-        let workflow_config = app_wrapper_module.config_module.workflow_config.clone();
-        // TODO connection pool and use as global client (move to app module)
-        let http_client = ReqwestClient::new(
-            Some(workflow_config.http_user_agent.as_str()),
-            Some(workflow_config.http_timeout_sec),
-            Some(workflow_config.http_timeout_sec),
-            Some(2),
-        )?;
-
         Ok(InlineWorkflowRunner {
             app_wrapper_module,
             app_module,
-            http_client,
             workflow_executor: None,
             cancel_helper: None,
         })
@@ -66,18 +52,9 @@ impl InlineWorkflowRunner {
         app_module: Arc<AppModule>,
         cancel_helper: CancelMonitoringHelper,
     ) -> Result<Self> {
-        let workflow_config = app_wrapper_module.config_module.workflow_config.clone();
-        let http_client = ReqwestClient::new(
-            Some(workflow_config.http_user_agent.as_str()),
-            Some(workflow_config.http_timeout_sec),
-            Some(workflow_config.http_timeout_sec),
-            Some(2),
-        )?;
-
         Ok(InlineWorkflowRunner {
             app_wrapper_module,
             app_module,
-            http_client,
             workflow_executor: None,
             cancel_helper: Some(cancel_helper),
         })
@@ -201,24 +178,15 @@ impl RunnerTrait for InlineWorkflowRunner {
                 "workflow context_json: {}",
                 serde_json::to_string_pretty(&context_json).unwrap_or_default()
             );
-            let workflow_config = self
-                .app_wrapper_module
-                .config_module
-                .workflow_config
-                .clone();
-            let http_client = ReqwestClient::new(
-                Some(workflow_config.http_user_agent.as_str()),
-                Some(workflow_config.http_timeout_sec),
-                Some(workflow_config.http_timeout_sec),
-                Some(2),
-            )?;
             let source = arg.workflow_source.as_ref().ok_or({
                 tracing::error!("workflow_source is required in workflow args");
                 anyhow::anyhow!("workflow_source is required in workflow args")
             })?;
             tracing::debug!("workflow source: {:?}", source);
-            let workflow = WorkflowLoader::new(http_client.clone())
-                .inspect_err(|e| tracing::error!("Failed to create WorkflowLoader: {:#?}", e))?
+            // Use WorkflowLoader from AppModule (no http_client dependency needed)
+            let workflow = self
+                .app_module
+                .workflow_loader
                 .load_workflow_source(source)
                 .await
                 .inspect_err(|e| tracing::error!("Failed to load workflow: {:#?}", e))?;
@@ -231,7 +199,6 @@ impl RunnerTrait for InlineWorkflowRunner {
             let executor = WorkflowExecutor::init(
                 self.app_wrapper_module.clone(),
                 self.app_module.clone(),
-                http_client,
                 Arc::new(workflow),
                 Arc::new(input_json),
                 execution_id.clone(),
@@ -344,11 +311,11 @@ impl RunnerTrait for InlineWorkflowRunner {
             )
         })?;
         tracing::debug!("workflow source: {:?}", source);
-        let http_client = self.http_client.clone();
         let app_module = self.app_module.clone();
 
-        let workflow = WorkflowLoader::new(http_client.clone())
-            .inspect_err(|e| tracing::error!("Failed to create WorkflowLoader: {:#?}", e))?
+        // Use WorkflowLoader from AppModule (no http_client dependency needed)
+        let workflow = app_module
+            .workflow_loader
             .load_workflow_source(source)
             .await
             .inspect_err(|e| tracing::error!("Failed to load workflow: {:#?}", e))?;
@@ -365,7 +332,6 @@ impl RunnerTrait for InlineWorkflowRunner {
             WorkflowExecutor::init(
                 self.app_wrapper_module.clone(),
                 app_module,
-                http_client,
                 Arc::new(workflow),
                 Arc::new(input_json),
                 execution_id.clone(),

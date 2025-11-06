@@ -21,7 +21,6 @@ use app_wrapper::workflow::execute::workflow::WorkflowExecutor;
 use app_wrapper::workflow::WorkflowConfig;
 use futures::{pin_mut, StreamExt};
 use infra_utils::infra::test::TEST_RUNTIME;
-use net_utils::net::reqwest::ReqwestClient;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -58,14 +57,6 @@ async fn execute_script_workflow(
 ) -> Result<serde_json::Value> {
     let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app.clone()));
 
-    // Create HTTP client for workflow loader
-    let http_client = ReqwestClient::new(
-        Some("test-script-runner"),
-        Some(std::time::Duration::from_secs(30)),
-        Some(std::time::Duration::from_secs(30)),
-        Some(1),
-    )?;
-
     // Load workflow from JSON
     let workflow_yaml = serde_yaml::to_string(&workflow_json)?;
 
@@ -74,7 +65,8 @@ async fn execute_script_workflow(
     println!("{}", workflow_yaml);
     println!("================================\n");
 
-    let loader = WorkflowLoader::new(http_client.clone())?;
+    // Use local-only loader for loading workflow from YAML string (no network access needed)
+    let loader = WorkflowLoader::new_local_only();
     let workflow = loader
         .load_workflow(None, Some(&workflow_yaml), false)
         .await?;
@@ -83,7 +75,6 @@ async fn execute_script_workflow(
     let executor = WorkflowExecutor::init(
         app_wrapper_module,
         app,
-        http_client,
         Arc::new(workflow),
         Arc::new(input_data.clone()),
         None,                     // execution_id
