@@ -139,19 +139,7 @@ fn benchmark_actual_workflow_validation() {
 fn benchmark_complete_workflow_loading() {
     println!("🔄 Benchmarking complete workflow loading process");
 
-    use net_utils::net::reqwest::ReqwestClient;
-    use std::time::Duration;
-
     let workflow_file_path = "/home/sutr/mnt/works/rust/jobworkerp-rs/message-vectordb/docs/workflows/claude-code-collection-pipeline.yaml";
-
-    // Create HTTP client (unused but kept for completeness)
-    let _http_client = ReqwestClient::new(
-        Some("benchmark client"),
-        Some(Duration::from_secs(30)),
-        Some(Duration::from_secs(30)),
-        Some(2),
-    )
-    .expect("Failed to create HTTP client");
 
     // Simulate the actual workflow loading path
     println!("\n📥 Simulating actual WorkflowLoader path...");

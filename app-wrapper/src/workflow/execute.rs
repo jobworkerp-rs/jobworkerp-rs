@@ -15,7 +15,6 @@ use app::module::AppModule;
 use command_utils::trace::Tracing;
 use futures::pin_mut;
 use futures::StreamExt;
-use net_utils::net::reqwest::ReqwestClient;
 use opentelemetry::trace::TraceContextExt;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,7 +27,6 @@ impl command_utils::trace::Tracing for TracingImpl {}
 ///
 /// # Arguments
 /// * `app_module` - An Arc reference to an AppModule instance.
-/// * `http_client` - A ReqwestClient instance.
 /// * `workflow` - An Arc reference to a WorkflowSchema instance.
 /// * `input` - An Arc reference to a serde_json::Value representing the input to the workflow.
 /// * `context` - An Arc reference to a serde_json::Value representing the context of the workflow.
@@ -39,7 +37,6 @@ impl command_utils::trace::Tracing for TracingImpl {}
 pub async fn execute(
     app_wrapper_module: Arc<crate::modules::AppWrapperModule>,
     app_module: Arc<AppModule>,
-    http_client: ReqwestClient,
     workflow: Arc<WorkflowSchema>,
     input: Arc<serde_json::Value>,
     context: Arc<serde_json::Value>,
@@ -56,7 +53,6 @@ pub async fn execute(
     let workflow_executor = WorkflowExecutor::init(
         app_wrapper_module,
         app_module,
-        http_client,
         workflow.clone(),
         input,
         None, // no checkpointing

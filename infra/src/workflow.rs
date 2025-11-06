@@ -27,7 +27,7 @@ pub const WORKER_NAME_METADATA_LABEL: &str = "name";
 
 #[derive(Debug, Clone)]
 pub struct WorkflowLoader {
-    http_client: reqwest::ReqwestClient, // Private to prevent security setting bypass
+    http_client: Option<reqwest::ReqwestClient>, // Private to prevent security setting bypass; None for local-only mode
 }
 
 // JSON Schema validator initialization
@@ -70,13 +70,23 @@ static ENABLE_FULL_SCHEMA_VALIDATION: LazyLock<bool> = LazyLock::new(|| {
 static VALIDATION_WARNING_SHOWN: AtomicBool = AtomicBool::new(false);
 
 impl WorkflowLoader {
+    /// Create a WorkflowLoader with HTTP client for loading workflows from URLs
     pub fn new(http_client: ReqwestClient) -> Result<Self> {
-        Ok(Self { http_client })
+        Ok(Self {
+            http_client: Some(http_client),
+        })
     }
 
-    // Public accessor for http_client
-    pub fn http_client(&self) -> &reqwest::ReqwestClient {
-        &self.http_client
+    /// Create a WorkflowLoader without HTTP client (local file loading only)
+    /// Attempting to load from URL will return an error
+    pub fn new_local_only() -> Self {
+        Self { http_client: None }
+    }
+
+    /// Get HTTP client if available
+    /// Returns None if loader is in local-only mode
+    pub fn http_client(&self) -> Option<&reqwest::ReqwestClient> {
+        self.http_client.as_ref()
     }
 
     pub async fn load_workflow_source(
@@ -235,15 +245,22 @@ impl WorkflowLoader {
 }
 
 pub trait UseLoadUrlOrPath {
-    fn http_client(&self) -> &reqwest::ReqwestClient;
+    fn http_client(&self) -> Option<&reqwest::ReqwestClient>;
     fn load_url_or_path<T: DeserializeOwned + Clone>(
         &self,
         url_or_path: &str,
     ) -> impl std::future::Future<Output = Result<T>> + Send {
-        let http_client = self.http_client().clone();
+        let http_client = self.http_client().cloned();
         async move {
             let body = if let Ok(url) = url_or_path.parse::<Url>() {
-                let res = http_client.client().get(url.clone()).send().await?;
+                // HTTP client is required for URL loading
+                let client = http_client.ok_or_else(|| {
+                    anyhow!(
+                        "HTTP client not available. Cannot load from URL: {}. Use WorkflowLoader::new() instead of new_local_only()",
+                        url
+                    )
+                })?;
+                let res = client.client().get(url.clone()).send().await?;
                 if res.status().is_success() {
                     let body = res.text().await?;
                     Ok(body)
@@ -275,8 +292,8 @@ pub trait UseLoadUrlOrPath {
 }
 
 impl UseLoadUrlOrPath for WorkflowLoader {
-    fn http_client(&self) -> &reqwest::ReqwestClient {
-        &self.http_client
+    fn http_client(&self) -> Option<&reqwest::ReqwestClient> {
+        self.http_client.as_ref()
     }
 }
 
@@ -287,10 +304,6 @@ pub trait UseWorkflowLoader {
 
 #[cfg(test)]
 mod test {
-    use std::time::Duration;
-
-    use net_utils::net::reqwest::ReqwestClient;
-
     use crate::workflow::definition::workflow::{self, RetryPolicy};
 
     // parse example flow yaml
@@ -300,13 +313,8 @@ mod test {
     #[ignore]
     async fn test_parse_example_switch_yaml() -> Result<(), Box<dyn std::error::Error>> {
         // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
-        let http_client = ReqwestClient::new(
-            Some("test client"),
-            Some(Duration::from_secs(30)),
-            Some(Duration::from_secs(30)),
-            Some(2),
-        )?;
-        let loader = super::WorkflowLoader::new(http_client)?;
+        // Use local-only loader for local file testing (no net-utils dependency needed)
+        let loader = super::WorkflowLoader::new_local_only();
         let flow = loader
             .load_workflow(Some("test-files/switch.yaml"), None, true)
             .await?;
@@ -330,13 +338,8 @@ mod test {
     #[ignore]
     async fn test_parse_example_flow_yaml() -> Result<(), Box<dyn std::error::Error>> {
         // command_utils::util::tracing::tracing_init_test(Level::DEBUG);
-        let http_client = ReqwestClient::new(
-            Some("test client"),
-            Some(Duration::from_secs(30)),
-            Some(Duration::from_secs(30)),
-            Some(2),
-        )?;
-        let loader = super::WorkflowLoader::new(http_client)?;
+        // Use local-only loader for local file testing (no net-utils dependency needed)
+        let loader = super::WorkflowLoader::new_local_only();
         let flow = loader
             .load_workflow(Some("test-files/ls-test.yaml"), None, true)
             .await?;

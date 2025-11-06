@@ -20,7 +20,6 @@ use jobworkerp_runner::runner::cancellation_helper::{
 };
 use jobworkerp_runner::runner::workflow::ReusableWorkflowRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
-use net_utils::net::reqwest::ReqwestClient;
 use opentelemetry::trace::TraceContextExt;
 use prost::Message;
 use proto::jobworkerp::data::StreamingOutputType;
@@ -32,7 +31,6 @@ use std::sync::Arc;
 pub struct ReusableWorkflowRunner {
     app_wrapper_module: Arc<crate::modules::AppWrapperModule>,
     app_module: Arc<AppModule>,
-    http_client: ReqwestClient,
     workflow_executor: Option<Arc<WorkflowExecutor>>,
     workflow: Option<Arc<WorkflowSchema>>,
     cancel_helper: Option<CancelMonitoringHelper>,
@@ -43,18 +41,9 @@ impl ReusableWorkflowRunner {
         app_wrapper_module: Arc<crate::modules::AppWrapperModule>,
         app_module: Arc<AppModule>,
     ) -> Result<Self> {
-        let workflow_config = app_wrapper_module.config_module.workflow_config.clone();
-        let http_client = ReqwestClient::new(
-            Some(workflow_config.http_user_agent.as_str()),
-            Some(workflow_config.http_timeout_sec),
-            Some(workflow_config.http_timeout_sec),
-            Some(2),
-        )?;
-
         Ok(ReusableWorkflowRunner {
             app_wrapper_module,
             app_module,
-            http_client,
             workflow_executor: None,
             workflow: None,
             cancel_helper: None,
@@ -67,18 +56,9 @@ impl ReusableWorkflowRunner {
         app_module: Arc<AppModule>,
         cancel_helper: CancelMonitoringHelper,
     ) -> Result<Self> {
-        let workflow_config = app_wrapper_module.config_module.workflow_config.clone();
-        let http_client = ReqwestClient::new(
-            Some(workflow_config.http_user_agent.as_str()),
-            Some(workflow_config.http_timeout_sec),
-            Some(workflow_config.http_timeout_sec),
-            Some(2),
-        )?;
-
         Ok(ReusableWorkflowRunner {
             app_wrapper_module,
             app_module,
-            http_client,
             workflow_executor: None,
             workflow: None,
             cancel_helper: Some(cancel_helper),
@@ -198,7 +178,6 @@ impl RunnerTrait for ReusableWorkflowRunner {
                 let executor = WorkflowExecutor::init(
                     self.app_wrapper_module.clone(),
                     self.app_module.clone(),
-                    self.http_client.clone(),
                     workflow.clone(),
                     Arc::new(input_json),
                     execution_id.clone(),
@@ -314,7 +293,6 @@ impl RunnerTrait for ReusableWorkflowRunner {
             WorkflowExecutor::init(
                 self.app_wrapper_module.clone(),
                 self.app_module.clone(),
-                self.http_client.clone(),
                 workflow,
                 Arc::new(input_json),
                 execution_id.clone(),

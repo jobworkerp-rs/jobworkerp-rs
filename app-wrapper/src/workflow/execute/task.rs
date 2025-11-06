@@ -20,7 +20,6 @@ use debug_stub_derive::DebugStub;
 use fork::ForkTaskExecutor;
 use futures::{pin_mut, StreamExt};
 use jobworkerp_base::APP_NAME;
-use net_utils::net::reqwest;
 use opentelemetry::trace::TraceContextExt;
 use run::RunTaskExecutor;
 use set::SetTaskExecutor;
@@ -54,8 +53,6 @@ pub struct TaskExecutor {
     default_task_timeout: Duration,
     #[debug_stub = "AppModule"]
     pub job_executor_wrapper: Arc<JobExecutorWrapper>,
-    #[debug_stub = "reqwest::HttpClient"]
-    pub http_client: reqwest::ReqwestClient,
     #[debug_stub = "CheckPointRepositoryWithIdImpl"]
     pub checkpoint_repository: Option<CheckPointRepo>,
     pub task_name: String,
@@ -72,7 +69,6 @@ impl TaskExecutor {
         workflow_context: Arc<RwLock<WorkflowContext>>,
         default_task_timeout: Duration,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
-        http_client: reqwest::ReqwestClient,
         checkpoint_repository: Option<Arc<dyn CheckPointRepositoryWithId>>,
         task_name: &str,
         task: Arc<Task>,
@@ -83,7 +79,6 @@ impl TaskExecutor {
             workflow_context,
             default_task_timeout,
             job_executor_wrapper,
-            http_client,
             checkpoint_repository,
             task_name: task_name.to_owned(),
             task,
@@ -586,7 +581,6 @@ impl TaskExecutor {
     ) -> futures::stream::BoxStream<'static, Result<TaskContext, Box<workflow::Error>>> {
         // Prepare owned data for 'static futures
         let job_executor_wrapper = self.job_executor_wrapper.clone();
-        let http_client = self.http_client.clone();
         let task_name = Arc::new(self.task_name.clone());
         // Clone Task enum to own inner data
         let task_enum = (*self.task).clone(); // XXX hard clone
@@ -601,7 +595,6 @@ impl TaskExecutor {
             Task::DoTask(task) => {
                 let task_clone = task.clone();
                 let job_executor_wrapper_clone = job_executor_wrapper.clone();
-                let http_client_clone = http_client.clone();
                 let metadata_clone = self.metadata.clone();
                 let default_task_timeout = self.default_task_timeout;
 
@@ -613,7 +606,6 @@ impl TaskExecutor {
                         metadata_clone,
                         task_clone,
                         job_executor_wrapper_clone,
-                        http_client_clone,
                         checkpoint_repository.clone(),
                         execution_id.clone(),
                     );
@@ -627,7 +619,6 @@ impl TaskExecutor {
             Task::ForTask(task) => {
                 let task_clone = task.clone();
                 let job_executor_wrapper_clone = job_executor_wrapper.clone();
-                let http_client_clone = http_client.clone();
                 let metadata_clone = self.metadata.clone();
 
                 Box::pin(stream! {
@@ -637,7 +628,6 @@ impl TaskExecutor {
                         default_task_timeout,
                         task_clone,
                         job_executor_wrapper_clone,
-                        http_client_clone,
                         checkpoint_repository.clone(),
                         execution_id.clone(),
                         metadata_clone,
@@ -656,7 +646,6 @@ impl TaskExecutor {
                     default_task_timeout,
                     task,
                     job_executor_wrapper.clone(),
-                    http_client.clone(),
                     checkpoint_repository.clone(),
                     execution_id.clone(),
                     self.metadata.clone(),
@@ -820,7 +809,6 @@ impl TaskExecutor {
                     default_task_timeout,
                     task,
                     job_executor_wrapper.clone(),
-                    http_client.clone(),
                     checkpoint_repository.clone(),
                     execution_id.clone(),
                     self.metadata.clone(),

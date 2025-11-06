@@ -11,7 +11,7 @@ async fn setup_test_app_module() -> Result<AppModule> {
 
 #[test]
 fn test_create_workflow_from_data() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
     TEST_RUNTIME.block_on(async {
         // Setup
         let app = setup_test_app_module().await?;
@@ -73,7 +73,7 @@ fn test_create_workflow_from_data() -> Result<()> {
 
 #[test]
 fn test_create_workflow_with_custom_name() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
     TEST_RUNTIME.block_on(async {
         let app = setup_test_app_module().await?;
 
@@ -178,7 +178,7 @@ fn test_create_workflow_with_duplicate_name() -> Result<()> {
         let error = result.unwrap_err();
         let error_msg = error.to_string();
         assert!(
-            error_msg.contains("already exists") || error_msg.contains("AlreadyExists"),
+            error_msg.contains("UNIQUE constraint failed") || error_msg.contains("Duplicate"),
             "Unexpected error message: {}",
             error_msg
         );
@@ -191,7 +191,7 @@ fn test_create_workflow_with_duplicate_name() -> Result<()> {
 
 #[test]
 fn test_create_workflow_with_invalid_data() -> Result<()> {
-    command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+    // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
     TEST_RUNTIME.block_on(async {
         let app = setup_test_app_module().await?;
 

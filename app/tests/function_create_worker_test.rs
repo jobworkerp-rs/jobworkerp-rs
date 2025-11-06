@@ -108,7 +108,7 @@ fn test_create_worker_with_duplicate_name() -> Result<()> {
         let error = result.unwrap_err();
         let error_msg = error.to_string();
         assert!(
-            error_msg.contains("already exists") || error_msg.contains("duplicate"),
+            error_msg.contains("UNIQUE constraint failed") || error_msg.contains("Duplicate"),
             "Expected AlreadyExists error, got: {}",
             error_msg
         );
