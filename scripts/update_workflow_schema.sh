@@ -26,7 +26,7 @@ echo
 # Step 2: Generate Rust types with typify
 echo "Step 2: Generate Rust types with typify..."
 cd runner
-cargo typify schema/workflow.json
+cargo typify --additional-derive PartialEq schema/workflow.json
 cd ..
 echo "✓ Rust types generated: runner/schema/workflow.rs"
 echo
@@ -36,18 +36,21 @@ echo "Step 3: Merge generated code with manual header..."
 HEADER_FILE="/tmp/workflow_header_$$.rs"
 GENERATED_FILE="runner/schema/workflow.rs"
 MERGED_FILE="/tmp/workflow_merged_$$.rs"
-TARGET_FILE="app-wrapper/src/workflow/definition/workflow.rs"
+TARGET_FILE="infra/src/workflow/definition/workflow.rs"
 
-# Extract header (first 13 lines with clippy allows and module declarations)
+# Extract header (clippy allows as outer attributes for module file)
 cat > "$HEADER_FILE" << 'EOF'
-#![allow(clippy::redundant_closure_call)]
-#![allow(clippy::needless_lifetimes)]
-#![allow(clippy::match_single_binding)]
-#![allow(clippy::clone_on_copy)]
-#![allow(irrefutable_let_patterns)]
-#![allow(clippy::derivable_impls)]
-#![allow(clippy::large_enum_variant)]
+// This file is auto-generated from runner/schema/workflow.yaml
+// Do not edit manually. Use scripts/update_workflow_schema.sh to regenerate.
 
+// Allow clippy warnings for auto-generated code
+#[allow(clippy::redundant_closure_call)]
+#[allow(clippy::needless_lifetimes)]
+#[allow(clippy::match_single_binding)]
+#[allow(clippy::clone_on_copy)]
+#[allow(irrefutable_let_patterns)]
+#[allow(clippy::derivable_impls)]
+#[allow(clippy::large_enum_variant)]
 pub mod errors;
 pub mod supplement;
 #[cfg(test)]
@@ -55,6 +58,9 @@ pub mod supplement_test;
 pub mod tasks;
 
 EOF
+
+# Remove inner attributes from generated code (typify generates these but we handle them in header)
+sed -i '/#!\[allow(clippy::/d' "$GENERATED_FILE"
 
 # Merge header with generated code
 cat "$HEADER_FILE" "$GENERATED_FILE" > "$MERGED_FILE"
@@ -78,7 +84,7 @@ rm -f "$HEADER_FILE"
 
 # Step 5: Verify build
 echo "Step 5: Verify build..."
-if cargo check --package app-wrapper --quiet 2>&1 | grep -q "error"; then
+if cargo check --package infra --quiet 2>&1 | grep -q "error"; then
     echo "✗ Build check failed. Please review errors above."
     exit 1
 else
@@ -103,7 +109,7 @@ echo
 echo "Summary:"
 echo "  - JSON schema: runner/schema/workflow.json"
 echo "  - Generated types: runner/schema/workflow.rs"
-echo "  - Final workflow.rs: app-wrapper/src/workflow/definition/workflow.rs"
+echo "  - Final workflow.rs: infra/src/workflow/definition/workflow.rs"
 echo "  - Lines: $(wc -l < "$TARGET_FILE")"
 echo
 

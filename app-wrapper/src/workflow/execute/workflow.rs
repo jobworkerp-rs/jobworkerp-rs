@@ -17,7 +17,6 @@ use async_stream::stream;
 use command_utils::trace::Tracing;
 use futures::{Stream, StreamExt};
 use jobworkerp_base::APP_WORKER_NAME;
-use net_utils::net::reqwest::ReqwestClient;
 use opentelemetry::{
     trace::{SpanRef, TraceContextExt},
     Context,
@@ -31,7 +30,6 @@ use tokio::sync::{Mutex, RwLock};
 pub struct WorkflowExecutor {
     pub default_task_timeout_sec: u64,
     pub job_executors: Arc<JobExecutorWrapper>,
-    pub http_client: ReqwestClient,
     pub workflow: Arc<WorkflowSchema>,
     pub workflow_context: Arc<RwLock<context::WorkflowContext>>,
     pub execution_id: Option<Arc<ExecutionId>>,
@@ -54,7 +52,6 @@ impl WorkflowExecutor {
     pub async fn init(
         app_wrapper_module: Arc<AppWrapperModule>,
         app_module: Arc<AppModule>,
-        http_client: ReqwestClient,
         workflow: Arc<WorkflowSchema>,
         input: Arc<serde_json::Value>,
         execution_id: Option<ExecutionId>,
@@ -134,7 +131,6 @@ impl WorkflowExecutor {
                 .task_default_timeout_sec
                 .unwrap_or(DEFAULT_TASK_TIMEOUT_SEC),
             job_executors,
-            http_client,
             workflow,
             workflow_context,
             execution_id: execution_id.map(Arc::new),
@@ -173,7 +169,6 @@ impl WorkflowExecutor {
         let initial_wfc = self.workflow_context.clone();
         let workflow = self.workflow.clone();
         let job_executors = self.job_executors.clone();
-        let http_client = self.http_client.clone();
         let cxc = cx.clone();
         let metadata = self.metadata.clone();
         let execution_id = self.execution_id.clone();
@@ -396,7 +391,6 @@ impl WorkflowExecutor {
                 initial_wfc.clone(),
                 default_task_timeout,
                 job_executors,
-                http_client,
                 checkpoint_repository.clone(),
                 ROOT_TASK_NAME,
                 Arc::new(Task::DoTask(workflow.create_do_task(metadata.clone()))),
@@ -989,13 +983,6 @@ mod tests {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
             let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
-            let http_client = ReqwestClient::new(
-                Some("test"),
-                Some(std::time::Duration::from_secs(1)),
-                Some(std::time::Duration::from_secs(1)),
-                Some(1),
-            )
-            .unwrap();
 
             let workflow = create_test_workflow();
             let input = Arc::new(serde_json::json!({"test": "input"}));
@@ -1004,7 +991,6 @@ mod tests {
             let executor = WorkflowExecutor::init(
                 app_wrapper_module,
                 app_module,
-                http_client,
                 Arc::new(workflow.clone()),
                 input.clone(),
                 None,
@@ -1043,14 +1029,6 @@ mod tests {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
             let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
-            let http_client = ReqwestClient::new(
-                Some("test"),
-                Some(std::time::Duration::from_secs(1)),
-                Some(std::time::Duration::from_secs(1)),
-                Some(1),
-            )
-            .unwrap();
-
             let workflow = create_test_workflow();
             let input = Arc::new(serde_json::json!({"test": "input"}));
             let context = Arc::new(serde_json::json!({}));
@@ -1058,7 +1036,6 @@ mod tests {
             let executor = WorkflowExecutor::init(
                 app_wrapper_module,
                 app_module,
-                http_client,
                 Arc::new(workflow.clone()),
                 input.clone(),
                 None,
@@ -1084,14 +1061,6 @@ mod tests {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
             let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
-            let http_client = ReqwestClient::new(
-                Some("test"),
-                Some(std::time::Duration::from_secs(30)),
-                Some(std::time::Duration::from_secs(30)),
-                Some(1),
-            )
-            .unwrap();
-
             let workflow = create_test_checkpoint_workflow();
             let input = Arc::new(serde_json::json!({"seed": 12345}));
             let context = Arc::new(serde_json::json!({}));
@@ -1100,7 +1069,6 @@ mod tests {
             let executor = WorkflowExecutor::init(
                 app_wrapper_module.clone(),
                 app_module.clone(),
-                http_client.clone(),
                 Arc::new(workflow.clone()),
                 input.clone(),
                 Some(execution_id.clone()),
@@ -1157,7 +1125,6 @@ mod tests {
             let executor2 = WorkflowExecutor::init(
                 app_wrapper_module.clone(),
                 app_module.clone(),
-                http_client.clone(),
                 Arc::new(workflow.clone()),
                 input.clone(),
                 Some(execution_id.clone()),
@@ -1207,14 +1174,6 @@ mod tests {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
             let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
-            let http_client = ReqwestClient::new(
-                Some("test"),
-                Some(std::time::Duration::from_secs(30)),
-                Some(std::time::Duration::from_secs(30)),
-                Some(1),
-            )
-            .unwrap();
-
             let workflow = create_test_random_checkpoint_workflow();
             let input = Arc::new(serde_json::json!({"base_seed": 42}));
             let context = Arc::new(serde_json::json!({}));
@@ -1225,7 +1184,6 @@ mod tests {
             let executor = WorkflowExecutor::init(
                 app_wrapper_module.clone(),
                 app_module.clone(),
-                http_client.clone(),
                 Arc::new(workflow.clone()),
                 input.clone(),
                 Some(execution_id.clone()),
@@ -1277,7 +1235,6 @@ mod tests {
                 let executor2 = WorkflowExecutor::init(
                     app_wrapper_module.clone(),
                     app_module.clone(),
-                    http_client.clone(),
                     Arc::new(workflow.clone()),
                     input.clone(),
                     ExecutionId::new("test-random-checkpoint-execution-2".to_string()),
@@ -1555,11 +1512,9 @@ mod tests {
             do_: task_list,
         }
     }
-    async fn load_test_workflow_from_yaml(
-        http_client: &ReqwestClient,
-        yaml_path: &str,
-    ) -> WorkflowSchema {
-        let loader = WorkflowLoader::new(http_client.clone()).unwrap();
+    async fn load_test_workflow_from_yaml(yaml_path: &str) -> WorkflowSchema {
+        // Use local-only loader for loading local test files (no network access needed)
+        let loader = WorkflowLoader::new_local_only();
         loader
             .load_workflow(Some(yaml_path), None, false)
             .await
@@ -1572,19 +1527,11 @@ mod tests {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
             let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
-            let http_client = ReqwestClient::new(
-                Some("test"),
-                Some(std::time::Duration::from_secs(30)),
-                Some(std::time::Duration::from_secs(30)),
-                Some(1),
-            )
-            .unwrap();
-
             let workflow_path = concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/test-files/for_task_checkpoint.yaml"
             );
-            let workflow = load_test_workflow_from_yaml(&http_client, workflow_path).await;
+            let workflow = load_test_workflow_from_yaml(workflow_path).await;
             let input = Arc::new(serde_json::json!({"items": [1, 2, 3, 4, 5]}));
             let context = Arc::new(serde_json::json!({}));
             let execution_id =
@@ -1594,7 +1541,6 @@ mod tests {
             let executor = WorkflowExecutor::init(
                 app_wrapper_module.clone(),
                 app_module.clone(),
-                http_client.clone(),
                 Arc::new(workflow.clone()),
                 input.clone(),
                 Some(execution_id.clone()),
@@ -1650,7 +1596,6 @@ mod tests {
             let executor2 = WorkflowExecutor::init(
                 app_wrapper_module.clone(),
                 app_module.clone(),
-                http_client.clone(),
                 Arc::new(workflow.clone()),
                 input.clone(),
                 ExecutionId::new("test-for-task-checkpoint-execution-2".to_string()),
@@ -1697,19 +1642,11 @@ mod tests {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
             let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
-            let http_client = ReqwestClient::new(
-                Some("test"),
-                Some(std::time::Duration::from_secs(30)),
-                Some(std::time::Duration::from_secs(30)),
-                Some(1),
-            )
-            .unwrap();
-
             let workflow_path = concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/test-files/try_task_checkpoint.yaml"
             );
-            let workflow = load_test_workflow_from_yaml(&http_client, workflow_path).await;
+            let workflow = load_test_workflow_from_yaml(workflow_path).await;
             let input = Arc::new(serde_json::json!({"should_fail": false}));
             let context = Arc::new(serde_json::json!({}));
             let execution_id =
@@ -1719,7 +1656,6 @@ mod tests {
             let executor = WorkflowExecutor::init(
                 app_wrapper_module.clone(),
                 app_module.clone(),
-                http_client.clone(),
                 Arc::new(workflow.clone()),
                 input.clone(),
                 Some(execution_id.clone()),
@@ -1776,7 +1712,6 @@ mod tests {
             let executor2 = WorkflowExecutor::init(
                 app_wrapper_module.clone(),
                 app_module.clone(),
-                http_client.clone(),
                 Arc::new(workflow.clone()),
                 input.clone(),
                 ExecutionId::new("test-try-task-checkpoint-execution-2".to_string()),
@@ -1823,19 +1758,11 @@ mod tests {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
             let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
-            let http_client = ReqwestClient::new(
-                Some("test"),
-                Some(std::time::Duration::from_secs(30)),
-                Some(std::time::Duration::from_secs(30)),
-                Some(1),
-            )
-            .unwrap();
-
             let workflow_path = concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/test-files/deep_nested_checkpoint.yaml"
             );
-            let workflow = load_test_workflow_from_yaml(&http_client, workflow_path).await;
+            let workflow = load_test_workflow_from_yaml(workflow_path).await;
             let input = Arc::new(serde_json::json!({"base_value": 100}));
             let context = Arc::new(serde_json::json!({}));
             let execution_id =
@@ -1845,7 +1772,6 @@ mod tests {
             let executor = WorkflowExecutor::init(
                 app_wrapper_module.clone(),
                 app_module.clone(),
-                http_client.clone(),
                 Arc::new(workflow.clone()),
                 input.clone(),
                 Some(execution_id.clone()),
@@ -1901,7 +1827,6 @@ mod tests {
             let executor2 = WorkflowExecutor::init(
                 app_wrapper_module.clone(),
                 app_module.clone(),
-                http_client.clone(),
                 Arc::new(workflow.clone()),
                 input.clone(),
                 ExecutionId::new("test-deep-nested-checkpoint-execution-2".to_string()),

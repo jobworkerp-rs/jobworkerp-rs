@@ -17,7 +17,6 @@ use app::app::job::execute::JobExecutorWrapper;
 use command_utils::trace::Tracing;
 use futures::stream::{self, Stream, StreamExt};
 use jobworkerp_base::APP_WORKER_NAME;
-use net_utils::net::reqwest;
 use opentelemetry::trace::TraceContextExt;
 use std::{collections::HashMap, pin::Pin, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -27,7 +26,6 @@ pub struct ForTaskStreamExecutor {
     default_timeout: Duration,
     task: workflow::ForTask,
     job_executor_wrapper: Arc<JobExecutorWrapper>,
-    http_client: reqwest::ReqwestClient,
     checkpoint_repository: Option<
         Arc<dyn crate::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId>,
     >,
@@ -48,7 +46,6 @@ impl ForTaskStreamExecutor {
         default_timeout: Duration,
         task: workflow::ForTask,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
-        http_client: reqwest::ReqwestClient,
         checkpoint_repository: Option<
             Arc<dyn crate::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId>,
         >,
@@ -60,7 +57,6 @@ impl ForTaskStreamExecutor {
             default_timeout,
             task,
             job_executor_wrapper,
-            http_client,
             checkpoint_repository,
             execution_id,
             metadata,
@@ -278,7 +274,6 @@ impl ForTaskStreamExecutor {
             let tx = tx.clone();
             let do_task_clone = do_task.clone();
             let job_executor_wrapper_clone = self.job_executor_wrapper.clone();
-            let http_client_clone = self.http_client.clone();
             let workflow_context = self.workflow_context.clone();
             let task_name_formatted = Arc::new(format!("{task_name}_{i}"));
             let item_name_clone = item_name.to_string();
@@ -319,7 +314,6 @@ impl ForTaskStreamExecutor {
                     meta.clone(),
                     do_task_clone,
                     job_executor_wrapper_clone,
-                    http_client_clone,
                     checkpoint_repository.clone(),
                     execution_id,
                 );
@@ -496,7 +490,6 @@ impl ForTaskStreamExecutor {
                             self.metadata.clone(),
                             do_task.clone(),
                             self.job_executor_wrapper.clone(),
-                            self.http_client.clone(),
                             self.checkpoint_repository.clone(),
                             self.execution_id.clone(),
                         );
@@ -712,13 +705,6 @@ mod tests {
             use crate::workflow::execute::workflow::WorkflowExecutor;
 
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
-            let http_client = reqwest::ReqwestClient::new(
-                Some("test"),
-                Some(std::time::Duration::from_secs(10)),
-                Some(std::time::Duration::from_secs(10)),
-                Some(1),
-            )
-            .unwrap();
 
             // Create a complete workflow that includes ForTask with error handling
             let workflow_json = serde_json::json!({
@@ -818,7 +804,6 @@ mod tests {
             let executor = WorkflowExecutor {
                 default_task_timeout_sec: 30,
                 job_executors: Arc::new(JobExecutorWrapper::new(app_module)),
-                http_client,
                 workflow: workflow.clone(),
                 workflow_context: workflow_context.clone(),
                 execution_id: None,
@@ -1021,18 +1006,9 @@ mod tests {
             )));
 
             println!("[DEBUG BREAK MODE] Creating WorkflowExecutor for break test...");
-            let http_client = reqwest::ReqwestClient::new(
-                Some("test"),
-                Some(std::time::Duration::from_secs(10)),
-                Some(std::time::Duration::from_secs(10)),
-                Some(1),
-            )
-            .unwrap();
-
             let executor = crate::workflow::execute::workflow::WorkflowExecutor {
                 default_task_timeout_sec: 30,
                 job_executors: Arc::new(JobExecutorWrapper::new(app_module)),
-                http_client,
                 workflow: Arc::new(workflow.clone()),
                 workflow_context: workflow_context.clone(),
                 execution_id: None,

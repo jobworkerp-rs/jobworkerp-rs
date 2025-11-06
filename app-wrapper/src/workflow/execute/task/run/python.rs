@@ -43,8 +43,8 @@ impl UseExpression for PythonTaskExecutor {}
 impl UseJqAndTemplateTransformer for PythonTaskExecutor {}
 impl UseExpressionTransformer for PythonTaskExecutor {}
 
-// Import the generic error handling macro from workflow::errors module
-use crate::bail_with_position;
+// Import the generic error handling macro from infra::workflow::errors module
+use infra::bail_with_position;
 
 impl PythonTaskExecutor {
     pub fn new(

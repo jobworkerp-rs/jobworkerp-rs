@@ -237,7 +237,7 @@ enum QueueType {
 
   // # Database-Only Queue
   // Forces all jobs to be stored in database (slowest)
-  FORCED_RDB = 2;
+  DB_ONLY = 2;
 }
 
 // # Result Output Item

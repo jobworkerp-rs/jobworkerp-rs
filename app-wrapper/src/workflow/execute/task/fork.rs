@@ -17,7 +17,6 @@ use app::app::job::execute::JobExecutorWrapper;
 use command_utils::trace::Tracing;
 use debug_stub_derive::DebugStub;
 use futures::{future, Future, StreamExt};
-use net_utils::net::reqwest;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 use tokio_stream::StreamMap;
@@ -32,8 +31,6 @@ pub struct ForkTaskExecutor {
     default_task_timeout: Duration,
     #[debug_stub = "AppModule"]
     pub job_executor_wrapper: Arc<JobExecutorWrapper>,
-    #[debug_stub = "reqwest::HttpClient"]
-    pub http_client: reqwest::ReqwestClient,
     pub checkpoint_repository: Option<CheckPointRepo>,
     task: workflow::ForkTask,
     execution_id: Option<Arc<ExecutionId>>,
@@ -48,7 +45,6 @@ impl ForkTaskExecutor {
         default_task_timeout: Duration,
         task: workflow::ForkTask,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
-        http_client: reqwest::ReqwestClient,
         checkpoint_repository: Option<
             Arc<dyn crate::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId>,
         >,
@@ -59,7 +55,6 @@ impl ForkTaskExecutor {
             workflow_context,
             default_task_timeout,
             job_executor_wrapper,
-            http_client,
             checkpoint_repository,
             task,
             execution_id,
@@ -70,7 +65,6 @@ impl ForkTaskExecutor {
     pub async fn execute_task(
         name: &str,
         job_executor_wrapper: Arc<JobExecutorWrapper>,
-        http_client: reqwest::ReqwestClient,
         checkpoint_repository: Option<
             Arc<dyn crate::workflow::execute::checkpoint::repository::CheckPointRepositoryWithId>,
         >,
@@ -86,7 +80,6 @@ impl ForkTaskExecutor {
             workflow_context,
             default_task_timeout,
             job_executor_wrapper,
-            http_client,
             checkpoint_repository,
             name,
             task,
@@ -141,7 +134,6 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
                         Self::execute_task(
                             &name,
                             self.job_executor_wrapper.clone(),
-                            self.http_client.clone(),
                             self.checkpoint_repository.clone(),
                             workflow_context_clone,
                             task_context_clone,
@@ -251,7 +243,6 @@ mod tests {
     use super::*;
     use crate::workflow::definition::workflow::Task as WorkflowTask;
     use app::module::test::create_hybrid_test_app;
-    use net_utils::net::reqwest;
     use opentelemetry::Context;
     use serde_json::json;
     use std::collections::HashMap;
@@ -290,13 +281,6 @@ mod tests {
             let metadata = Arc::new(HashMap::new());
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
             let job_executor_wrapper = Arc::new(JobExecutorWrapper::new(app_module));
-            let http_client = reqwest::ReqwestClient::new(
-                Some("test"),
-                Some(std::time::Duration::from_secs(1)),
-                Some(std::time::Duration::from_secs(1)),
-                Some(1),
-            )
-            .unwrap();
 
             let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
                 &crate::workflow::definition::workflow::WorkflowSchema::default(),
@@ -354,7 +338,6 @@ mod tests {
                 Duration::from_secs(1200), // default task timeout
                 fork_task,
                 job_executor_wrapper,
-                http_client,
                 None,
                 None,
                 metadata,
@@ -386,14 +369,6 @@ mod tests {
             let metadata = Arc::new(HashMap::new());
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
             let job_executor_wrapper = Arc::new(JobExecutorWrapper::new(app_module));
-            let http_client = reqwest::ReqwestClient::new(
-                Some("test"),
-                Some(std::time::Duration::from_secs(1)),
-                Some(std::time::Duration::from_secs(1)),
-                Some(1),
-            )
-            .unwrap();
-
             let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
                 &crate::workflow::definition::workflow::WorkflowSchema::default(),
                 Arc::new(json!({})),
@@ -438,7 +413,6 @@ mod tests {
                 Duration::from_secs(1200), // default task timeout
                 fork_task,
                 job_executor_wrapper,
-                http_client,
                 None,
                 None,
                 metadata,
@@ -464,14 +438,6 @@ mod tests {
             let metadata = Arc::new(HashMap::new());
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
             let job_executor_wrapper = Arc::new(JobExecutorWrapper::new(app_module));
-            let http_client = reqwest::ReqwestClient::new(
-                Some("test"),
-                Some(std::time::Duration::from_secs(1)),
-                Some(std::time::Duration::from_secs(1)),
-                Some(1),
-            )
-            .unwrap();
-
             let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
                 &crate::workflow::definition::workflow::WorkflowSchema::default(),
                 Arc::new(json!({})),
@@ -529,7 +495,6 @@ mod tests {
                 Duration::from_secs(1200), // default task timeout
                 fork_task,
                 job_executor_wrapper,
-                http_client,
                 None,
                 None,
                 metadata,

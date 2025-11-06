@@ -152,6 +152,7 @@ fn create_test_data() -> (WorkerData, RunnerData) {
 }
 
 /// Test basic HTTP GET request with real public API
+#[ignore = "depends on external server"]
 #[tokio::test]
 async fn test_real_http_get_request() -> Result<()> {
     command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
@@ -219,6 +220,7 @@ async fn test_real_http_get_request() -> Result<()> {
 }
 
 /// Test HTTP POST request with actual data submission
+#[ignore = "depends on external server"]
 #[tokio::test]
 async fn test_real_http_post_request() -> Result<()> {
     let job_runner = get_real_job_runner().await;
@@ -283,6 +285,7 @@ async fn test_real_http_post_request() -> Result<()> {
 }
 
 /// Test HTTP request with query parameters
+#[ignore = "depends on external server"]
 #[tokio::test]
 async fn test_real_http_query_parameters() -> Result<()> {
     let job_runner = get_real_job_runner().await;
@@ -337,6 +340,7 @@ async fn test_real_http_query_parameters() -> Result<()> {
 }
 
 /// Test HTTP request timeout with actual slow endpoint
+#[ignore = "depends on external server"]
 #[tokio::test]
 async fn test_real_http_timeout() -> Result<()> {
     let job_runner = get_real_job_runner().await;
@@ -371,6 +375,7 @@ async fn test_real_http_timeout() -> Result<()> {
 }
 
 /// Test HTTP error handling with actual error response
+#[ignore = "depends on external server"]
 #[tokio::test]
 async fn test_real_http_error_handling() -> Result<()> {
     let job_runner = get_real_job_runner().await;
@@ -399,6 +404,7 @@ async fn test_real_http_error_handling() -> Result<()> {
 }
 
 /// Test HTTP request with custom headers validation
+#[ignore = "depends on external server"]
 #[tokio::test]
 async fn test_real_http_custom_headers() -> Result<()> {
     let job_runner = get_real_job_runner().await;
@@ -463,6 +469,7 @@ async fn test_real_http_custom_headers() -> Result<()> {
 }
 
 /// Test HTTP PUT request with data update
+#[ignore = "depends on external server"]
 #[tokio::test]
 async fn test_real_http_put_request() -> Result<()> {
     let job_runner = get_real_job_runner().await;
@@ -514,6 +521,7 @@ async fn test_real_http_put_request() -> Result<()> {
 }
 
 /// Integration test demonstrating complete HTTP_REQUEST runner real workflow
+#[ignore = "depends on external server"]
 #[tokio::test]
 async fn test_real_http_request_runner_complete_workflow() -> Result<()> {
     println!("=== Real HTTP_REQUEST Runner Complete Workflow Test ===");

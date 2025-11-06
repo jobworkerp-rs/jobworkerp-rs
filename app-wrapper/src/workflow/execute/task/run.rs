@@ -49,6 +49,23 @@ impl RunTaskExecutor {
         }
     }
 
+    /// Convert workflow QueueType to proto QueueType
+    fn convert_queue_type(qt: workflow::QueueType) -> i32 {
+        match qt {
+            workflow::QueueType::Normal => QueueType::Normal as i32,
+            workflow::QueueType::WithBackup => QueueType::WithBackup as i32,
+            workflow::QueueType::DbOnly => QueueType::DbOnly as i32,
+        }
+    }
+
+    /// Convert workflow ResponseType to proto ResponseType
+    fn convert_response_type(rt: workflow::ResponseType) -> i32 {
+        match rt {
+            workflow::ResponseType::NoResult => ResponseType::NoResult as i32,
+            workflow::ResponseType::Direct => ResponseType::Direct as i32,
+        }
+    }
+
     fn function_options_to_worker_data(
         options: Option<workflow::WorkerOptions>,
         name: &str,
@@ -62,14 +79,18 @@ impl RunTaskExecutor {
                 store_failure: options.store_failure.unwrap_or(false),
                 store_success: options.store_success.unwrap_or(false),
                 use_static: options.use_static.unwrap_or(false),
-                queue_type: if options.with_backup.unwrap_or(false) {
-                    proto::jobworkerp::data::QueueType::WithBackup as i32
-                } else {
-                    proto::jobworkerp::data::QueueType::Normal as i32
-                },
+                // Use queue_type from WorkerOptions (default: NORMAL)
+                queue_type: options
+                    .queue_type
+                    .map(Self::convert_queue_type)
+                    .unwrap_or(QueueType::Normal as i32),
                 channel: options.channel,
                 retry_policy: options.retry.map(|r| r.to_jobworkerp()),
-                response_type: ResponseType::Direct as i32,
+                // Use response_type from WorkerOptions (default: DIRECT)
+                response_type: options
+                    .response_type
+                    .map(Self::convert_response_type)
+                    .unwrap_or(ResponseType::Direct as i32),
                 ..Default::default()
             };
             Some(worker_data)
@@ -492,5 +513,64 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
               //     ))
               // }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RunTaskExecutor;
+    use crate::workflow::definition::workflow;
+    use proto::jobworkerp::data::{QueueType, ResponseType};
+
+    fn worker_options_with_queue_and_response(
+        queue_type: workflow::QueueType,
+        response_type: workflow::ResponseType,
+    ) -> workflow::WorkerOptions {
+        workflow::WorkerOptions {
+            broadcast_results: Some(false),
+            channel: None,
+            queue_type: Some(queue_type),
+            response_type: Some(response_type),
+            retry: None,
+            store_failure: Some(true),
+            store_success: Some(false),
+            use_static: Some(false),
+        }
+    }
+
+    #[test]
+    fn worker_data_respects_queue_and_response_type() {
+        let options = worker_options_with_queue_and_response(
+            workflow::QueueType::DbOnly,
+            workflow::ResponseType::NoResult,
+        );
+
+        let worker_data =
+            RunTaskExecutor::function_options_to_worker_data(Some(options), "test_worker")
+                .expect("worker data should be generated");
+
+        assert_eq!(worker_data.queue_type, QueueType::DbOnly as i32);
+        assert_eq!(worker_data.response_type, ResponseType::NoResult as i32);
+    }
+
+    #[test]
+    fn worker_data_defaults_to_normal_queue_and_direct_response() {
+        let options = workflow::WorkerOptions {
+            broadcast_results: None,
+            channel: None,
+            queue_type: None,
+            response_type: None,
+            retry: None,
+            store_failure: None,
+            store_success: None,
+            use_static: None,
+        };
+
+        let worker_data =
+            RunTaskExecutor::function_options_to_worker_data(Some(options), "legacy_worker")
+                .expect("worker data should be generated");
+
+        assert_eq!(worker_data.queue_type, QueueType::Normal as i32);
+        assert_eq!(worker_data.response_type, ResponseType::Direct as i32);
     }
 }

@@ -1,11 +1,14 @@
-#![allow(clippy::redundant_closure_call)]
-#![allow(clippy::needless_lifetimes)]
-#![allow(clippy::match_single_binding)]
-#![allow(clippy::clone_on_copy)]
-#![allow(irrefutable_let_patterns)]
-#![allow(clippy::derivable_impls)]
-#![allow(clippy::large_enum_variant)]
+// This file is auto-generated from runner/schema/workflow.yaml
+// Do not edit manually. Use scripts/update_workflow_schema.sh to regenerate.
 
+// Allow clippy warnings for auto-generated code
+#[allow(clippy::redundant_closure_call)]
+#[allow(clippy::needless_lifetimes)]
+#[allow(clippy::match_single_binding)]
+#[allow(clippy::clone_on_copy)]
+#[allow(irrefutable_let_patterns)]
+#[allow(clippy::derivable_impls)]
+#[allow(clippy::large_enum_variant)]
 pub mod errors;
 pub mod supplement;
 #[cfg(test)]
@@ -55,7 +58,7 @@ pub mod error {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct CatchErrors {
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub with: ::std::option::Option<ErrorFilter>,
@@ -107,7 +110,7 @@ impl CatchErrors {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct CheckpointConfig {
     #[doc = "Enable checkpoint functionality."]
     pub enabled: bool,
@@ -276,7 +279,7 @@ impl ::std::convert::TryFrom<::std::string::String> for CheckpointConfigStorage 
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct DoTask {
     #[doc = "Save workflow state after this task for checkpoint/restart."]
     #[serde(default)]
@@ -389,7 +392,7 @@ impl DoTask {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct Document {
     #[doc = "DSL version used by this workflow."]
     pub dsl: WorkflowDsl,
@@ -609,7 +612,7 @@ impl<'de> ::serde::Deserialize<'de> for DurationExpression {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum Endpoint {
     UriTemplate(UriTemplate),
@@ -673,7 +676,7 @@ impl ::std::convert::From<UriTemplate> for Endpoint {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct Error {
     #[doc = "Detailed error explanation."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -735,7 +738,7 @@ impl Error {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct ErrorFilter {
     #[doc = "Filter by error details."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -810,7 +813,7 @@ impl ErrorFilter {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct Export {
     #[doc = "Runtime expression to export data to context."]
     #[serde(
@@ -860,7 +863,7 @@ impl Export {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum ExportAs {
     Variant0(::std::string::String),
@@ -906,7 +909,7 @@ impl ::std::convert::From<::serde_json::Map<::std::string::String, ::serde_json:
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct ExternalResource {
     #[doc = "Resource endpoint."]
     pub endpoint: Endpoint,
@@ -951,7 +954,7 @@ impl ExternalResource {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum FlowDirective {
     Variant0(FlowDirectiveEnum),
@@ -1257,7 +1260,7 @@ impl ::std::default::Default for ForOnError {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct ForTask {
     #[doc = "Save workflow state after this task for checkpoint/restart."]
     #[serde(default)]
@@ -1349,7 +1352,7 @@ impl ForTask {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct ForTaskConfiguration {
     #[doc = "Variable name for current index (access via $variable_name for jq, {{ variable_name }} for liquid)."]
     #[serde(default = "defaults::for_task_configuration_at")]
@@ -1459,7 +1462,7 @@ impl ForTaskConfiguration {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct ForkTask {
     #[doc = "Save workflow state after this task for checkpoint/restart."]
     #[serde(default)]
@@ -1528,7 +1531,7 @@ impl ForkTask {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct ForkTaskConfiguration {
     pub branches: TaskList,
     #[doc = "Enable competition mode where first completed task wins."]
@@ -1577,7 +1580,7 @@ impl ForkTaskConfiguration {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct Input {
     #[doc = "Runtime expression to transform input data."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -1623,7 +1626,7 @@ impl Input {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum InputFrom {
     Variant0(::std::string::String),
@@ -1673,7 +1676,7 @@ impl ::std::convert::From<::serde_json::Map<::std::string::String, ::serde_json:
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct Output {
     #[doc = "Runtime expression to transform output data."]
     #[serde(
@@ -1723,7 +1726,7 @@ impl Output {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum OutputAs {
     Variant0(::std::string::String),
@@ -1855,7 +1858,7 @@ impl<'de> ::serde::Deserialize<'de> for PlainString {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct ProcessResult {
     #[doc = "Process exit code."]
     pub code: i64,
@@ -1872,6 +1875,90 @@ impl ::std::convert::From<&ProcessResult> for ProcessResult {
 impl ProcessResult {
     pub fn builder() -> builder::ProcessResult {
         Default::default()
+    }
+}
+#[doc = "Defines how jobs are queued and persisted. Values: NORMAL (default, in-memory only), WITH_BACKUP (in-memory with database backup), DB_ONLY (database only)."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"QueueType\","]
+#[doc = "  \"description\": \"Defines how jobs are queued and persisted. Values: NORMAL (default, in-memory only), WITH_BACKUP (in-memory with database backup), DB_ONLY (database only).\","]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"NORMAL\","]
+#[doc = "    \"WITH_BACKUP\","]
+#[doc = "    \"DB_ONLY\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum QueueType {
+    #[serde(rename = "NORMAL")]
+    Normal,
+    #[serde(rename = "WITH_BACKUP")]
+    WithBackup,
+    #[serde(rename = "DB_ONLY")]
+    DbOnly,
+}
+impl ::std::convert::From<&Self> for QueueType {
+    fn from(value: &QueueType) -> Self {
+        value.clone()
+    }
+}
+impl ::std::fmt::Display for QueueType {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Normal => write!(f, "NORMAL"),
+            Self::WithBackup => write!(f, "WITH_BACKUP"),
+            Self::DbOnly => write!(f, "DB_ONLY"),
+        }
+    }
+}
+impl ::std::str::FromStr for QueueType {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "NORMAL" => Ok(Self::Normal),
+            "WITH_BACKUP" => Ok(Self::WithBackup),
+            "DB_ONLY" => Ok(Self::DbOnly),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for QueueType {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for QueueType {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for QueueType {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
     }
 }
 #[doc = "RaiseTask"]
@@ -1967,7 +2054,7 @@ impl ProcessResult {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct RaiseTask {
     #[doc = "Save workflow state after this task for checkpoint/restart."]
     #[serde(default)]
@@ -2041,7 +2128,7 @@ impl RaiseTask {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct RaiseTaskConfiguration {
     pub error: RaiseTaskError,
 }
@@ -2077,7 +2164,7 @@ impl RaiseTaskConfiguration {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum RaiseTaskError {
     Error(Error),
@@ -2091,6 +2178,85 @@ impl ::std::convert::From<&Self> for RaiseTaskError {
 impl ::std::convert::From<Error> for RaiseTaskError {
     fn from(value: Error) -> Self {
         Self::Error(value)
+    }
+}
+#[doc = "Defines how job results should be returned to the client. Values: NO_RESULT (async, no wait), DIRECT (default, synchronous with result)."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"title\": \"ResponseType\","]
+#[doc = "  \"description\": \"Defines how job results should be returned to the client. Values: NO_RESULT (async, no wait), DIRECT (default, synchronous with result).\","]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"NO_RESULT\","]
+#[doc = "    \"DIRECT\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ResponseType {
+    #[serde(rename = "NO_RESULT")]
+    NoResult,
+    #[serde(rename = "DIRECT")]
+    Direct,
+}
+impl ::std::convert::From<&Self> for ResponseType {
+    fn from(value: &ResponseType) -> Self {
+        value.clone()
+    }
+}
+impl ::std::fmt::Display for ResponseType {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::NoResult => write!(f, "NO_RESULT"),
+            Self::Direct => write!(f, "DIRECT"),
+        }
+    }
+}
+impl ::std::str::FromStr for ResponseType {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "NO_RESULT" => Ok(Self::NoResult),
+            "DIRECT" => Ok(Self::Direct),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ResponseType {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ResponseType {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ResponseType {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
     }
 }
 #[doc = "Backoff strategy for retry durations."]
@@ -2457,7 +2623,7 @@ impl RetryPolicy {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RunFunction {
     #[doc = "Executes a job using a specified function(runner or worker)."]
@@ -2537,7 +2703,7 @@ impl RunFunction {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged, deny_unknown_fields)]
 pub enum RunJobFunction {
     RunnerFunction {
@@ -2603,7 +2769,7 @@ impl ::std::convert::From<&Self> for RunJobFunction {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct RunJobRunner {
     #[doc = "A key/value mapping of arguments to use when running the runner as job. Runtime expressions are supported for value transformation."]
     pub arguments: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
@@ -2655,7 +2821,7 @@ impl RunJobRunner {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct RunJobWorker {
     #[doc = "A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation."]
     pub arguments: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
@@ -2721,7 +2887,7 @@ impl RunJobWorker {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RunRunner {
     pub runner: RunJobRunner,
@@ -2806,7 +2972,7 @@ impl RunRunner {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RunScript {
     pub script: ScriptConfiguration,
@@ -2929,7 +3095,7 @@ impl RunScript {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct RunTask {
     #[doc = "Save workflow state after this task for checkpoint/restart."]
     #[serde(default)]
@@ -3018,7 +3184,7 @@ impl RunTask {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum RunTaskConfiguration {
     Worker(RunWorker),
@@ -3092,7 +3258,7 @@ impl ::std::convert::From<RunScript> for RunTaskConfiguration {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RunWorker {
     pub worker: RunJobWorker,
@@ -3154,7 +3320,7 @@ impl RunWorker {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum Schema {
     Variant0 {
@@ -3236,7 +3402,7 @@ impl ::std::convert::From<&Self> for Schema {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum ScriptConfiguration {
     Variant0 {
@@ -3349,7 +3515,7 @@ impl ::std::convert::From<&Self> for ScriptConfiguration {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct SetTask {
     #[doc = "Save workflow state after this task for checkpoint/restart."]
     #[serde(default)]
@@ -3419,7 +3585,7 @@ impl SetTask {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct SwitchCase {
     #[doc = "Flow directive for matching case."]
     pub then: FlowDirective,
@@ -3537,7 +3703,7 @@ impl SwitchCase {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct SwitchTask {
     #[doc = "Save workflow state after this task for checkpoint/restart."]
     #[serde(default)]
@@ -3620,7 +3786,7 @@ impl SwitchTask {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum Task {
     ForkTask(ForkTask),
@@ -3749,7 +3915,7 @@ impl ::std::convert::From<WaitTask> for Task {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct TaskBase {
     #[doc = "Save workflow state after this task for checkpoint/restart."]
     #[serde(default)]
@@ -3824,7 +3990,7 @@ impl TaskBase {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(transparent)]
 pub struct TaskList(pub ::std::vec::Vec<::std::collections::HashMap<::std::string::String, Task>>);
 impl ::std::ops::Deref for TaskList {
@@ -3876,7 +4042,7 @@ impl ::std::convert::From<::std::vec::Vec<::std::collections::HashMap<::std::str
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum TaskTimeout {
     Timeout(Timeout),
@@ -3915,7 +4081,7 @@ impl ::std::convert::From<Timeout> for TaskTimeout {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct Timeout {
     #[doc = "Timeout duration."]
     pub after: Duration,
@@ -4055,7 +4221,7 @@ impl Timeout {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct TryTask {
     pub catch: TryTaskCatch,
     #[doc = "Save workflow state after this task for checkpoint/restart."]
@@ -4158,7 +4324,7 @@ impl TryTask {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct TryTaskCatch {
     #[doc = "Variable name to store caught error (defaults to 'error')."]
     #[serde(
@@ -4232,7 +4398,7 @@ impl TryTaskCatch {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum TryTaskCatchRetry {
     Variant0(RetryPolicy),
@@ -4383,7 +4549,7 @@ impl ::std::fmt::Display for UriTemplate {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct WaitTask {
     #[doc = "Save workflow state after this task for checkpoint/restart."]
     #[serde(default)]
@@ -4445,6 +4611,25 @@ impl WaitTask {
 #[doc = "      \"description\": \"The channel to use when running the worker (controls execution concurrency).\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    },"]
+#[doc = "    \"queueType\": {"]
+#[doc = "      \"title\": \"QueueType\","]
+#[doc = "      \"description\": \"Defines how jobs are queued and persisted. Values: NORMAL (default, in-memory only), WITH_BACKUP (in-memory with database backup), DB_ONLY (database only).\","]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"NORMAL\","]
+#[doc = "        \"WITH_BACKUP\","]
+#[doc = "        \"DB_ONLY\""]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"responseType\": {"]
+#[doc = "      \"title\": \"ResponseType\","]
+#[doc = "      \"description\": \"Defines how job results should be returned to the client. Values: NO_RESULT (async, no wait), DIRECT (default, synchronous with result).\","]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"NO_RESULT\","]
+#[doc = "        \"DIRECT\""]
+#[doc = "      ]"]
+#[doc = "    },"]
 #[doc = "    \"retry\": {"]
 #[doc = "      \"title\": \"RetryPolicyDefinition\","]
 #[doc = "      \"description\": \"The retry policy to use, if any, when catching errors.\","]
@@ -4464,11 +4649,6 @@ impl WaitTask {
 #[doc = "      \"title\": \"UseStaticWorker\","]
 #[doc = "      \"description\": \"Whether to use a static worker (persisted in database with pooled initialization).\","]
 #[doc = "      \"type\": \"boolean\""]
-#[doc = "    },"]
-#[doc = "    \"withBackup\": {"]
-#[doc = "      \"title\": \"WithBackup\","]
-#[doc = "      \"description\": \"Whether to backup the enqueued job to the database during queueing and execution.\","]
-#[doc = "      \"type\": \"boolean\""]
 #[doc = "    }"]
 #[doc = "  }"]
 #[doc = "}"]
@@ -4486,6 +4666,20 @@ pub struct WorkerOptions {
     #[doc = "The channel to use when running the worker (controls execution concurrency)."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub channel: ::std::option::Option<::std::string::String>,
+    #[doc = "Defines how jobs are queued and persisted. Values: NORMAL (default, in-memory only), WITH_BACKUP (in-memory with database backup), DB_ONLY (database only)."]
+    #[serde(
+        rename = "queueType",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub queue_type: ::std::option::Option<QueueType>,
+    #[doc = "Defines how job results should be returned to the client. Values: NO_RESULT (async, no wait), DIRECT (default, synchronous with result)."]
+    #[serde(
+        rename = "responseType",
+        default,
+        skip_serializing_if = "::std::option::Option::is_none"
+    )]
+    pub response_type: ::std::option::Option<ResponseType>,
     #[doc = "The retry policy to use, if any, when catching errors."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub retry: ::std::option::Option<RetryPolicy>,
@@ -4510,13 +4704,6 @@ pub struct WorkerOptions {
         skip_serializing_if = "::std::option::Option::is_none"
     )]
     pub use_static: ::std::option::Option<bool>,
-    #[doc = "Whether to backup the enqueued job to the database during queueing and execution."]
-    #[serde(
-        rename = "withBackup",
-        default,
-        skip_serializing_if = "::std::option::Option::is_none"
-    )]
-    pub with_backup: ::std::option::Option<bool>,
 }
 impl ::std::convert::From<&WorkerOptions> for WorkerOptions {
     fn from(value: &WorkerOptions) -> Self {
@@ -4528,11 +4715,12 @@ impl ::std::default::Default for WorkerOptions {
         Self {
             broadcast_results: Default::default(),
             channel: Default::default(),
+            queue_type: Default::default(),
+            response_type: Default::default(),
             retry: Default::default(),
             store_failure: Default::default(),
             store_success: Default::default(),
             use_static: Default::default(),
-            with_backup: Default::default(),
         }
     }
 }
@@ -4909,7 +5097,7 @@ impl<'de> ::serde::Deserialize<'de> for WorkflowNamespace {
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug, PartialEq)]
 pub struct WorkflowSchema {
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub checkpointing: ::std::option::Option<CheckpointConfig>,
@@ -8321,23 +8509,29 @@ pub mod builder {
             ::std::option::Option<::std::string::String>,
             ::std::string::String,
         >,
+        queue_type:
+            ::std::result::Result<::std::option::Option<super::QueueType>, ::std::string::String>,
+        response_type: ::std::result::Result<
+            ::std::option::Option<super::ResponseType>,
+            ::std::string::String,
+        >,
         retry:
             ::std::result::Result<::std::option::Option<super::RetryPolicy>, ::std::string::String>,
         store_failure: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
         store_success: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
         use_static: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
-        with_backup: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
     }
     impl ::std::default::Default for WorkerOptions {
         fn default() -> Self {
             Self {
                 broadcast_results: Ok(Default::default()),
                 channel: Ok(Default::default()),
+                queue_type: Ok(Default::default()),
+                response_type: Ok(Default::default()),
                 retry: Ok(Default::default()),
                 store_failure: Ok(Default::default()),
                 store_success: Ok(Default::default()),
                 use_static: Ok(Default::default()),
-                with_backup: Ok(Default::default()),
             }
         }
     }
@@ -8363,6 +8557,26 @@ pub mod builder {
             self.channel = value
                 .try_into()
                 .map_err(|e| format!("error converting supplied value for channel: {}", e));
+            self
+        }
+        pub fn queue_type<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<super::QueueType>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.queue_type = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for queue_type: {}", e));
+            self
+        }
+        pub fn response_type<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<super::ResponseType>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.response_type = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for response_type: {}", e));
             self
         }
         pub fn retry<T>(mut self, value: T) -> Self
@@ -8405,16 +8619,6 @@ pub mod builder {
                 .map_err(|e| format!("error converting supplied value for use_static: {}", e));
             self
         }
-        pub fn with_backup<T>(mut self, value: T) -> Self
-        where
-            T: ::std::convert::TryInto<::std::option::Option<bool>>,
-            T::Error: ::std::fmt::Display,
-        {
-            self.with_backup = value
-                .try_into()
-                .map_err(|e| format!("error converting supplied value for with_backup: {}", e));
-            self
-        }
     }
     impl ::std::convert::TryFrom<WorkerOptions> for super::WorkerOptions {
         type Error = super::error::ConversionError;
@@ -8424,11 +8628,12 @@ pub mod builder {
             Ok(Self {
                 broadcast_results: value.broadcast_results?,
                 channel: value.channel?,
+                queue_type: value.queue_type?,
+                response_type: value.response_type?,
                 retry: value.retry?,
                 store_failure: value.store_failure?,
                 store_success: value.store_success?,
                 use_static: value.use_static?,
-                with_backup: value.with_backup?,
             })
         }
     }
@@ -8437,11 +8642,12 @@ pub mod builder {
             Self {
                 broadcast_results: Ok(value.broadcast_results),
                 channel: Ok(value.channel),
+                queue_type: Ok(value.queue_type),
+                response_type: Ok(value.response_type),
                 retry: Ok(value.retry),
                 store_failure: Ok(value.store_failure),
                 store_success: Ok(value.store_success),
                 use_static: Ok(value.use_static),
-                with_backup: Ok(value.with_backup),
             }
         }
     }

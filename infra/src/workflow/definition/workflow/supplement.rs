@@ -1,4 +1,6 @@
 // cannot generate structure by typist (for serverless workflow version 1.0: generated from 1.0-alpha5)
+// Allow clippy warnings for manually maintained implementations of auto-generated types
+// #![allow(clippy::derivable_impls)]
 
 use std::{collections::HashMap, sync::Arc};
 
