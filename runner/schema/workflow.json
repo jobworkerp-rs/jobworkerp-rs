@@ -490,11 +490,6 @@
           "title": "Channel",
           "description": "The channel to use when running the worker (controls execution concurrency)."
         },
-        "withBackup": {
-          "type": "boolean",
-          "title": "WithBackup",
-          "description": "(Deprecated: use queueType instead) Whether to backup the enqueued job to the database during queueing and execution."
-        },
         "queueType": {
           "type": "string",
           "title": "QueueType",

@@ -43,6 +43,7 @@ cat > "$HEADER_FILE" << 'EOF'
 // This file is auto-generated from runner/schema/workflow.yaml
 // Do not edit manually. Use scripts/update_workflow_schema.sh to regenerate.
 
+// Allow clippy warnings for auto-generated code
 #[allow(clippy::redundant_closure_call)]
 #[allow(clippy::needless_lifetimes)]
 #[allow(clippy::match_single_binding)]
@@ -50,7 +51,6 @@ cat > "$HEADER_FILE" << 'EOF'
 #[allow(irrefutable_let_patterns)]
 #[allow(clippy::derivable_impls)]
 #[allow(clippy::large_enum_variant)]
-
 pub mod errors;
 pub mod supplement;
 #[cfg(test)]
