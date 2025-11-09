@@ -40,7 +40,13 @@ service JobService {
   // TODO Now support only for worker with storage_type: Scalable
   rpc EnqueueForStream(JobRequest)
       returns (stream jobworkerp.data.ResultOutputItem);
+
+  // Delete/Cancel job
+  // - Before execution (PENDING): Deletes the job from queue (no JobResult created)
+  // - During/After execution (RUNNING, WAIT_RESULT): Cancels the job and generates JobResult with CANCELLED status
+  // Note: Job records are always deleted after execution. JobResult records remain for audit purposes.
   rpc Delete(jobworkerp.data.JobId) returns (SuccessResponse);
+
   // only use db or redis+db queue type, run after or periodic worker jobs
   rpc Find(jobworkerp.data.JobId) returns (OptionalJobResponse);
   // only use db or redis+db queue type, run after or periodic worker jobs
