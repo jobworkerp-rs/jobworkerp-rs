@@ -7,19 +7,18 @@ services:
     ports:
       - '6379:6379'
   db:
-    image: mariadb:10.11
+    image: mysql:8.4
     hostname: 127.0.0.1
     ports:
       - '3306:3306'
     volumes:
-      - mariadb-volume:/var/lib/mysql
+      - mysql-volume2:/var/lib/mysql
       - ./infra/sql/mysql/002_worker.sql:/docker-entrypoint-initdb.d/schema.sql
     environment:
-      - MARIADB_HOST=127.0.0.1
-      - MARIADB_USER=maria
-      - MARIADB_PASSWORD=maria
-      - MARIADB_DATABASE=test
-      - MARIADB_ROOT_PASSWORD=maria
+      - MYSQL_ROOT_PASSWORD=mysqlpw
+      - MYSQL_DATABASE=test
+      - MYSQL_USER=mysql
+      - MYSQL_PASSWORD=mysqlpw
   redis-cluster:
     image: grokzen/redis-cluster:7.0.10
     hostname: 127.0.0.1
@@ -41,5 +40,5 @@ services:
     restart: always
 
 volumes:
-  mariadb-volume:
+  mysql-volume2:
 

@@ -21,8 +21,9 @@ CREATE TABLE `worker` (
   `store_success` TINYINT(1) NOT NULL DEFAULT 0, -- store result to db in success
   `store_failure` TINYINT(1) NOT NULL DEFAULT 0, -- store result to db in failure
   -- etc
-  `use_static` TINYINT(1) NOT NULL DEFAULT 0, -- use runner as static 
+  `use_static` TINYINT(1) NOT NULL DEFAULT 0, -- use runner as static
   `broadcast_results` TINYINT(1) NOT NULL DEFAULT 0, -- broadcast results to all listeners
+  `created_at` BIGINT(20) NOT NULL DEFAULT 0, -- record creation timestamp (milliseconds)
   UNIQUE KEY `name` (`name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -77,6 +78,7 @@ CREATE TABLE `runner` (
   `description` TEXT NOT NULL, -- runner description
   `definition` TEXT NOT NULL, -- runner definition (mcp definition or plugin file name)
   `type` INT(10) NOT NULL, -- runner type. enum: command, request, grpc_unary, plugin
+  `created_at` BIGINT(20) NOT NULL DEFAULT 0, -- record creation timestamp (milliseconds)
   UNIQUE KEY `name` (`name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -148,4 +150,15 @@ CREATE TABLE `function_set_target` (
   `target_type` INT(10) NOT NULL DEFAULT 0, -- function set target type (runner: 0 or worker: 1)
   UNIQUE KEY `set_target` (`set_id`, `target_id`, `target_type`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Indexes for admin UI filtering and sorting
+-- Note: MySQL does not support IF NOT EXISTS for CREATE INDEX (SQLite only)
+-- This script runs only once during docker-entrypoint-initdb.d initialization
+CREATE INDEX idx_runner_type ON `runner`(`type`);
+CREATE INDEX idx_runner_created_at ON `runner`(`created_at`);
+
+CREATE INDEX idx_worker_runner_id ON `worker`(`runner_id`);
+CREATE INDEX idx_worker_channel ON `worker`(`channel`);
+CREATE INDEX idx_worker_periodic_interval ON `worker`(`periodic_interval`);
+CREATE INDEX idx_worker_created_at ON `worker`(`created_at`);
 

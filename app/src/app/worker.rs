@@ -129,12 +129,18 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
     where
         Self: Send + 'static;
 
+    #[allow(clippy::too_many_arguments)]
     async fn find_list(
         &self,
         runner_types: Vec<i32>,
         channel: Option<String>,
         limit: Option<i32>,
         offset: Option<i64>,
+        name_filter: Option<String>,
+        is_periodic: Option<bool>,
+        runner_ids: Vec<i64>,
+        sort_by: Option<proto::jobworkerp::data::WorkerSortField>,
+        ascending: Option<bool>,
     ) -> Result<Vec<Worker>>
     where
         Self: Send + 'static;
@@ -180,6 +186,21 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
         Self: Send + 'static;
 
     async fn count(&self) -> Result<i64>
+    where
+        Self: Send + 'static;
+
+    async fn count_by(
+        &self,
+        runner_types: Vec<i32>,
+        channel: Option<String>,
+        name_filter: Option<String>,
+        is_periodic: Option<bool>,
+        runner_ids: Vec<i64>,
+    ) -> Result<i64>
+    where
+        Self: Send + 'static;
+
+    async fn count_by_channel(&self) -> Result<Vec<(String, i64)>>
     where
         Self: Send + 'static;
 

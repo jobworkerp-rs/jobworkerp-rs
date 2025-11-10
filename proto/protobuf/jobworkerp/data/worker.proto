@@ -65,3 +65,14 @@ message Worker {
   WorkerId id = 1;
   WorkerData data = 2;
 }
+
+// # Worker Sort Field
+// Defines the fields available for sorting workers in queries
+enum WorkerSortField {
+  WORKER_SORT_FIELD_UNSPECIFIED = 0;
+  WORKER_SORT_FIELD_ID = 1;
+  WORKER_SORT_FIELD_NAME = 2;
+  WORKER_SORT_FIELD_RUNNER_ID = 3;
+  WORKER_SORT_FIELD_PERIODIC_INTERVAL = 4;
+  WORKER_SORT_FIELD_CREATED_AT = 5;
+}

@@ -11,6 +11,7 @@ pub struct RunnerRow {
     pub description: String,
     pub definition: String,
     pub r#type: i32,
+    pub created_at: i64,
 }
 
 impl RunnerRow {

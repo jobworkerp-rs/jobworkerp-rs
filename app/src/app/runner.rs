@@ -51,6 +51,25 @@ pub trait RunnerApp: fmt::Debug + Send + Sync {
     where
         Self: Send + 'static;
 
+    /// Find runners with filtering and sorting (Admin UI)
+    #[allow(clippy::too_many_arguments)]
+    async fn find_runner_list_by(
+        &self,
+        runner_types: Vec<i32>,
+        name_filter: Option<String>,
+        limit: Option<i32>,
+        offset: Option<i64>,
+        sort_by: Option<proto::jobworkerp::data::RunnerSortField>,
+        ascending: Option<bool>,
+    ) -> Result<Vec<RunnerWithSchema>>
+    where
+        Self: Send + 'static;
+
+    /// Count runners with filtering (Admin UI)
+    async fn count_by(&self, runner_types: Vec<i32>, name_filter: Option<String>) -> Result<i64>
+    where
+        Self: Send + 'static;
+
     // for test
     #[cfg(any(test, feature = "test-utils"))]
     async fn create_test_runner(
