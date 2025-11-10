@@ -1,0 +1,112 @@
+name: Build CPU images and push to GitHub Registry
+
+on:
+  workflow_dispatch: # Manual execution only
+    inputs:
+      github_registry_owner:
+        description: "GitHub registry owner (username or org)"
+        required: true
+        default: "jobworkerp-rs"
+        type: string
+
+# Target GitHub Container Registry
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.event.inputs.github_registry_owner }}/jobworkerp-rs
+
+# Jobs to build and push CPU-only images
+jobs:
+  build-and-push-cpu-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Generate timestamp tag
+        id: timestamp
+        run: |
+          TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          echo "TAG=$TIMESTAMP" >> $GITHUB_OUTPUT
+          echo "Generated timestamp: $TIMESTAMP"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push grpc-front CPU Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: grpc-front/Dockerfile.cpu
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.event.inputs.github_registry_owner }}/grpc-front:cpu-latest
+            ${{ env.REGISTRY }}/${{ github.event.inputs.github_registry_owner }}/grpc-front:cpu-${{ steps.timestamp.outputs.TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push worker CPU Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: worker-main/Dockerfile.cpu
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.event.inputs.github_registry_owner }}/worker:cpu-latest
+            ${{ env.REGISTRY }}/${{ github.event.inputs.github_registry_owner }}/worker:cpu-${{ steps.timestamp.outputs.TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-and-push-all-in-one-cpu-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Generate timestamp tag
+        id: timestamp
+        run: |
+          TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          echo "TAG=$TIMESTAMP" >> $GITHUB_OUTPUT
+          echo "Generated timestamp: $TIMESTAMP"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push all-in-one jobworkerp CPU Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.cpu
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.event.inputs.github_registry_owner }}/jobworkerp:cpu-latest
+            ${{ env.REGISTRY }}/${{ github.event.inputs.github_registry_owner }}/jobworkerp:cpu-${{ steps.timestamp.outputs.TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
