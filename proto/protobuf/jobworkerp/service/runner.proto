@@ -57,9 +57,13 @@ service RunnerService {
   rpc Find(jobworkerp.data.RunnerId) returns (OptionalRunnerResponse);
   rpc FindByName(RunnerNameRequest) returns (OptionalRunnerResponse);
   // Deprecated: Use FindListBy instead. This method will be removed in version 2.0.0
-  rpc FindList(FindListRequest) returns (stream jobworkerp.data.Runner);
+  rpc FindList(FindListRequest) returns (stream jobworkerp.data.Runner) {
+    option deprecated = true;
+  }
   // Deprecated: Use CountBy instead. This method will be removed in version 2.0.0
-  rpc Count(CountCondition) returns (CountResponse);
+  rpc Count(CountCondition) returns (CountResponse) {
+    option deprecated = true;
+  }
   // New methods with filtering and sorting capabilities
   rpc FindListBy(FindRunnerListRequest) returns (stream jobworkerp.data.Runner);
   rpc CountBy(CountRunnerRequest) returns (CountResponse);

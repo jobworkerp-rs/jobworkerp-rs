@@ -99,6 +99,21 @@ impl RdbChanJobAppImpl {
 
     /// Internal implementation: Proper cancellation processing + cleanup
     /// Similar to HybridJobAppImpl implementation for Standalone mode
+    ///
+    /// # TODO: Refactoring Required (see docs/tasks/delete-job-cleanup-separation-investigation.md)
+    ///
+    /// This method has dual purposes causing inconsistent behavior:
+    /// 1. **User-initiated cancellation**: Should preserve status when cancellation fails (WAIT_RESULT)
+    /// 2. **Job completion cleanup**: Called from complete_job(), should always delete status
+    ///
+    /// **Current Issue**:
+    /// - Returns `false` for WAIT_RESULT (cancellation failed)
+    /// - BUT still deletes status unconditionally (line 170-173)
+    /// - Contradicts spec "変更なし" (no change) for WAIT_RESULT state
+    ///
+    /// **Recommended Fix**: Split into two methods:
+    /// - `cancel_job()`: Cancellation logic with conditional cleanup
+    /// - `cleanup_job()`: Unconditional cleanup for complete_job()
     async fn cancel_job_with_cleanup(&self, id: &JobId) -> Result<bool> {
         // 1. Check current job status
         let current_status = self
@@ -136,7 +151,9 @@ impl RdbChanJobAppImpl {
                 true // Already being cancelled but considered success
             }
             Some(JobProcessingStatus::WaitResult) => {
-                // Processing completed, waiting for result - cannot cancel
+                // TODO: Should preserve status here when called from user cancellation
+                // Currently deletes status even when returning false (inconsistent)
+                // See: docs/tasks/delete-job-cleanup-separation-investigation.md
                 tracing::info!(
                     "Job {} is waiting for result processing, cancellation not possible",
                     id.value
@@ -160,6 +177,9 @@ impl RdbChanJobAppImpl {
             }
         };
 
+        // TODO: These cleanup operations should be conditional based on caller intent
+        // - complete_job(): Always cleanup (current behavior is correct)
+        // - User cancellation with WAIT_RESULT: Should NOT cleanup status
         let db_deletion_result = self.rdb_job_repository().delete(id).await;
 
         let cache_key = Arc::new(Self::find_cache_key(id));
@@ -167,6 +187,8 @@ impl RdbChanJobAppImpl {
             tracing::warn!("Failed to delete job cache for {}: {:?}", id.value, e)
         });
 
+        // ISSUE: Unconditional status deletion causes WAIT_RESULT state loss
+        // This breaks the contract: "false = no changes" expectation
         let _ = self
             .job_processing_status_repository()
             .delete_status(id)
@@ -501,6 +523,22 @@ impl JobApp for RdbChanJobAppImpl {
         }
     }
 
+    /// Complete job and perform cleanup
+    ///
+    /// # Purpose
+    /// This method is called after job execution completes (success/failure/cancelled).
+    /// It publishes the result and performs cleanup by calling delete_job().
+    ///
+    /// # TODO: Refactoring Required (see docs/tasks/delete-job-cleanup-separation-investigation.md)
+    ///
+    /// **Current Implementation**:
+    /// - Calls `delete_job()` → `cancel_job_with_cleanup()` for cleanup
+    /// - This reuses cancellation logic, which is semantically incorrect
+    /// - Cleanup should be unconditional (no cancellation state checks needed)
+    ///
+    /// **Recommended Fix**:
+    /// - Call `cleanup_job()` directly instead of `delete_job()`
+    /// - Separates cleanup purpose from cancellation purpose
     async fn complete_job(
         &self,
         id: &JobResultId,
@@ -555,6 +593,8 @@ impl JobApp for RdbChanJobAppImpl {
                     Ok(false)
                 }
             };
+            // TODO: Should call cleanup_job() directly instead of delete_job()
+            // Currently reuses cancellation logic for cleanup purpose (semantically incorrect)
             self.delete_job(jid).await?;
             res
         } else {
@@ -564,6 +604,16 @@ impl JobApp for RdbChanJobAppImpl {
         }
     }
 
+    /// Delete job (Public API for job cancellation)
+    ///
+    /// # Dual Purpose Issue
+    /// This method is used for TWO different purposes:
+    /// 1. **User cancellation** (from gRPC Delete API): Should respect job state
+    /// 2. **Job cleanup** (from complete_job()): Should always delete regardless of state
+    ///
+    /// Due to this dual purpose, the behavior is inconsistent:
+    /// - WAIT_RESULT returns false (cancellation failed) but still deletes status
+    /// - See: docs/tasks/delete-job-cleanup-separation-investigation.md
     async fn delete_job(&self, id: &JobId) -> Result<bool> {
         self.cancel_job_with_cleanup(id).await
     }

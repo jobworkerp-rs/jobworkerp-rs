@@ -215,6 +215,14 @@ pub trait RunnerRepository:
         tx: E,
         runner_row: &RunnerRow,
     ) -> Result<bool> {
+        // Validate created_at is not 0 (prevention of DEFAULT 0 issue)
+        if runner_row.created_at == 0 {
+            return Err(JobWorkerError::InvalidParameter(
+                "created_at must not be 0 (invalid timestamp)".to_string(),
+            )
+            .into());
+        }
+
         let res = sqlx::query::<Rdb>(if cfg!(feature = "mysql") {
             "INSERT IGNORE INTO `runner` (
                 `id`,
@@ -700,7 +708,7 @@ mod test {
             description: "Hello! Plugin".to_string(),
             definition: "./target/debug/libplugin_runner_hello.dylib".to_string(),
             r#type: RunnerType::Plugin as i32,
-            created_at: 0,
+            created_at: command_utils::util::datetime::now_millis(),
         });
         let data = RunnerData {
             name: row.clone().unwrap().name.clone(),
@@ -742,19 +750,21 @@ mod test {
             )
             .await?;
         assert_eq!(row, found);
+        let original_created_at = row.clone().unwrap().created_at;
         let row = RunnerRow {
             id: row.clone().unwrap().id,
             name: row.clone().unwrap().name,
             description: "Hello! Plugin2".to_string(),
             definition: row.clone().unwrap().definition,
             r#type: RunnerType::Plugin as i32,
-            created_at: 0,
+            created_at: original_created_at, // Keep original created_at for upsert (should not change)
         };
         let upserted = repository._upsert_tx(&mut *tx, &row).await?;
         assert!(upserted);
         let found = repository
             .find_row_tx(&mut *tx, &RunnerId { value: row.id })
             .await?;
+        // Compare all fields - created_at should remain unchanged after upsert
         assert_eq!(row, found.unwrap());
         tx.commit().await.context("error in test delete commit")?;
 
@@ -1159,6 +1169,315 @@ mod test {
         Ok(())
     }
 
+    /// Test find_list_by with runner_types filter parameter
+    async fn _test_find_list_by_runner_types(pool: &'static RdbPool) -> Result<()> {
+        let plugins = Arc::new(Plugins::new());
+        let mcp_clients = McpServerFactory::new(McpConfig { server: vec![] });
+        let p = Arc::new(RunnerSpecFactory::new(plugins, Arc::new(mcp_clients)));
+
+        let id_generator = Arc::new(crate::infra::IdGeneratorWrapper::new());
+        let repository = RdbRunnerRepositoryImpl::new(pool, p.clone(), id_generator);
+
+        // Test 1: Filter by COMMAND type
+        let results = repository
+            .find_list_by(
+                vec![RunnerType::Command as i32],
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await?;
+
+        assert_eq!(
+            results.len(),
+            1,
+            "Should find exactly 1 COMMAND type runner"
+        );
+        assert_eq!(
+            results[0].data.as_ref().unwrap().runner_type,
+            RunnerType::Command as i32
+        );
+
+        // Test 2: Filter by HTTP_REQUEST type
+        let results = repository
+            .find_list_by(
+                vec![RunnerType::HttpRequest as i32],
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await?;
+
+        assert_eq!(
+            results.len(),
+            1,
+            "Should find exactly 1 HTTP_REQUEST type runner"
+        );
+        assert_eq!(
+            results[0].data.as_ref().unwrap().runner_type,
+            RunnerType::HttpRequest as i32
+        );
+
+        // Test 3: Filter by multiple types (COMMAND, HTTP_REQUEST, GRPC_UNARY)
+        let results = repository
+            .find_list_by(
+                vec![
+                    RunnerType::Command as i32,
+                    RunnerType::HttpRequest as i32,
+                    RunnerType::GrpcUnary as i32,
+                ],
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await?;
+
+        assert_eq!(
+            results.len(),
+            3,
+            "Should find 3 runners with specified types"
+        );
+
+        // Verify all results have the expected types
+        for runner in &results {
+            let runner_type = runner.data.as_ref().unwrap().runner_type;
+            assert!(
+                runner_type == RunnerType::Command as i32
+                    || runner_type == RunnerType::HttpRequest as i32
+                    || runner_type == RunnerType::GrpcUnary as i32,
+                "Runner type should be one of the specified types"
+            );
+        }
+
+        // Test 4: Combine runner_types with name_filter
+        let results = repository
+            .find_list_by(
+                vec![RunnerType::Command as i32, RunnerType::HttpRequest as i32],
+                Some("HTTP".to_string()),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await?;
+
+        assert_eq!(
+            results.len(),
+            1,
+            "Should find 1 runner with HTTP prefix and HTTP_REQUEST type"
+        );
+        assert_eq!(
+            results[0].data.as_ref().unwrap().runner_type,
+            RunnerType::HttpRequest as i32
+        );
+
+        Ok(())
+    }
+
+    /// Test find_list_by with sort_by and ascending parameters
+    async fn _test_find_list_by_sort(pool: &'static RdbPool) -> Result<()> {
+        let plugins = Arc::new(Plugins::new());
+        let mcp_clients = McpServerFactory::new(McpConfig { server: vec![] });
+        let p = Arc::new(RunnerSpecFactory::new(plugins, Arc::new(mcp_clients)));
+
+        let id_generator = Arc::new(crate::infra::IdGeneratorWrapper::new());
+        let repository = RdbRunnerRepositoryImpl::new(pool, p.clone(), id_generator);
+
+        // Test 1: Sort by NAME ascending
+        let results = repository
+            .find_list_by(
+                vec![],
+                None,
+                None,
+                None,
+                Some(proto::jobworkerp::data::RunnerSortField::Name),
+                Some(true), // ascending
+            )
+            .await?;
+
+        // Verify ascending order
+        for i in 1..results.len() {
+            let prev_name = &results[i - 1].data.as_ref().unwrap().name;
+            let curr_name = &results[i].data.as_ref().unwrap().name;
+            assert!(
+                prev_name <= curr_name,
+                "Names should be in ascending order: {} <= {}",
+                prev_name,
+                curr_name
+            );
+        }
+
+        // Test 2: Sort by NAME descending
+        let results = repository
+            .find_list_by(
+                vec![],
+                None,
+                None,
+                None,
+                Some(proto::jobworkerp::data::RunnerSortField::Name),
+                Some(false), // descending
+            )
+            .await?;
+
+        // Verify descending order
+        for i in 1..results.len() {
+            let prev_name = &results[i - 1].data.as_ref().unwrap().name;
+            let curr_name = &results[i].data.as_ref().unwrap().name;
+            assert!(
+                prev_name >= curr_name,
+                "Names should be in descending order: {} >= {}",
+                prev_name,
+                curr_name
+            );
+        }
+
+        // Test 3: Sort by RUNNER_TYPE ascending
+        let results = repository
+            .find_list_by(
+                vec![],
+                None,
+                None,
+                None,
+                Some(proto::jobworkerp::data::RunnerSortField::RunnerType),
+                Some(true), // ascending
+            )
+            .await?;
+
+        // Verify ascending order by type
+        for i in 1..results.len() {
+            let prev_type = results[i - 1].data.as_ref().unwrap().runner_type;
+            let curr_type = results[i].data.as_ref().unwrap().runner_type;
+            assert!(
+                prev_type <= curr_type,
+                "Types should be in ascending order: {} <= {}",
+                prev_type,
+                curr_type
+            );
+        }
+
+        // Test 4: Sort by ID (default) descending (default)
+        let results = repository
+            .find_list_by(vec![], None, None, None, None, None)
+            .await?;
+
+        // Verify descending order by id (default behavior)
+        for i in 1..results.len() {
+            let prev_id = results[i - 1].id.as_ref().unwrap().value;
+            let curr_id = results[i].id.as_ref().unwrap().value;
+            assert!(
+                prev_id >= curr_id,
+                "IDs should be in descending order by default: {} >= {}",
+                prev_id,
+                curr_id
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Test count_by with various filter combinations
+    async fn _test_count_by_filters(pool: &'static RdbPool) -> Result<()> {
+        let plugins = Arc::new(Plugins::new());
+        let mcp_clients = McpServerFactory::new(McpConfig { server: vec![] });
+        let p = Arc::new(RunnerSpecFactory::new(plugins, Arc::new(mcp_clients)));
+
+        let id_generator = Arc::new(crate::infra::IdGeneratorWrapper::new());
+        let repository = RdbRunnerRepositoryImpl::new(pool, p.clone(), id_generator);
+
+        // Test 1: count_by with no filters - should return all built-in runners
+        let count = repository.count_by(vec![], None).await?;
+        assert!(count >= 5, "Should have at least 5 built-in runners");
+
+        // Test 2: count_by with runner_types filter
+        let count = repository
+            .count_by(vec![RunnerType::Command as i32], None)
+            .await?;
+        assert_eq!(count, 1, "Should have 1 COMMAND type runner");
+
+        // Test 3: count_by with name_filter
+        let count = repository
+            .count_by(vec![], Some("HTTP".to_string()))
+            .await?;
+        assert_eq!(count, 1, "Should have 1 runner with HTTP prefix");
+
+        // Test 4: count_by with both runner_types and name_filter
+        let count = repository
+            .count_by(
+                vec![RunnerType::Command as i32, RunnerType::HttpRequest as i32],
+                Some("HTTP".to_string()),
+            )
+            .await?;
+        assert_eq!(
+            count, 1,
+            "Should have 1 runner with HTTP prefix and specified types"
+        );
+
+        // Test 5: count_by with non-matching filters
+        let count = repository
+            .count_by(vec![], Some("NONEXISTENT".to_string()))
+            .await?;
+        assert_eq!(count, 0, "Should have 0 runners with NONEXISTENT prefix");
+
+        Ok(())
+    }
+
+    /// Test pagination with limit and offset
+    async fn _test_find_list_by_pagination(pool: &'static RdbPool) -> Result<()> {
+        let plugins = Arc::new(Plugins::new());
+        let mcp_clients = McpServerFactory::new(McpConfig { server: vec![] });
+        let p = Arc::new(RunnerSpecFactory::new(plugins, Arc::new(mcp_clients)));
+
+        let id_generator = Arc::new(crate::infra::IdGeneratorWrapper::new());
+        let repository = RdbRunnerRepositoryImpl::new(pool, p.clone(), id_generator);
+
+        // Get total count
+        let total_count = repository.count_by(vec![], None).await?;
+
+        // Test 1: limit = 2, offset = 0
+        let results = repository
+            .find_list_by(vec![], None, Some(2), Some(0), None, None)
+            .await?;
+        assert_eq!(results.len(), 2, "Should return 2 runners");
+
+        // Test 2: limit = 2, offset = 2
+        let results_page2 = repository
+            .find_list_by(vec![], None, Some(2), Some(2), None, None)
+            .await?;
+        assert_eq!(results_page2.len(), 2, "Should return 2 runners");
+
+        // Verify different results
+        let first_id = results[0].id.as_ref().unwrap().value;
+        let second_page_first_id = results_page2[0].id.as_ref().unwrap().value;
+        assert_ne!(
+            first_id, second_page_first_id,
+            "Different pages should return different runners"
+        );
+
+        // Test 3: limit larger than total
+        let results = repository
+            .find_list_by(vec![], None, Some(1000), Some(0), None, None)
+            .await?;
+        assert_eq!(
+            results.len() as i64,
+            total_count,
+            "Should return all runners when limit > total"
+        );
+
+        // Test 4: offset larger than total
+        let results = repository
+            .find_list_by(vec![], None, Some(10), Some(1000), None, None)
+            .await?;
+        assert_eq!(results.len(), 0, "Should return empty when offset > total");
+
+        Ok(())
+    }
+
     #[test]
     fn test_sprint2_parameters() -> Result<()> {
         use infra_utils::infra::test::setup_test_rdb_from;
@@ -1182,7 +1501,13 @@ mod test {
             };
 
             // Run Sprint 2 new parameter tests
-            _test_find_list_by_name_filter(rdb_pool).await
+            _test_find_list_by_name_filter(rdb_pool).await?;
+            _test_find_list_by_runner_types(rdb_pool).await?;
+            _test_find_list_by_sort(rdb_pool).await?;
+            _test_count_by_filters(rdb_pool).await?;
+            _test_find_list_by_pagination(rdb_pool).await?;
+
+            Ok(())
         })
     }
 }

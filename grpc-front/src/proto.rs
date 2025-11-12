@@ -45,6 +45,7 @@ pub mod jobworkerp {
         pub type JobResultId = data::JobResultId;
         pub type JobResultData = data::JobResultData;
         pub type JobResult = data::JobResult;
+        pub type JobResultSortField = data::JobResultSortField;
         pub type ResultOutput = data::ResultOutput;
         pub type ResultOutputItem = data::ResultOutputItem;
         pub type ResultStatus = data::ResultStatus;

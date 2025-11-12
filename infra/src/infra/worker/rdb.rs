@@ -17,6 +17,15 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
     ) -> Result<WorkerId> {
         use command_utils::util::datetime;
 
+        // Validate created_at timestamp before insertion (prevention of DEFAULT 0 issue)
+        let created_at = datetime::now_millis();
+        if created_at == 0 {
+            return Err(JobWorkerError::InvalidParameter(
+                "created_at must not be 0 (invalid timestamp)".to_string(),
+            )
+            .into());
+        }
+
         let rp = worker.retry_policy.as_ref();
         let res = sqlx::query::<Rdb>(
             "INSERT INTO worker (
@@ -62,7 +71,7 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         .bind(worker.store_success)
         .bind(worker.store_failure)
         .bind(worker.broadcast_results)
-        .bind(datetime::now_millis())
+        .bind(created_at)
         .execute(tx)
         .await
         .map_err(JobWorkerError::DBError)?;
