@@ -105,6 +105,7 @@ mod rdb_chan_cancellation_tests {
             repositories,
             Arc::new(worker_app),
             job_queue_cancellation_repository,
+            None, // RDB indexing disabled for test
         ))
     }
 

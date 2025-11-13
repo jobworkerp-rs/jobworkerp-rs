@@ -187,6 +187,9 @@ impl AppModule {
                     repositories.clone(),
                     worker_app.clone(),
                     job_queue_cancellation_repository,
+                    repositories
+                        .rdb_job_processing_status_index_repository
+                        .clone(),
                 ));
                 let workflow_loader = Arc::new(create_workflow_loader()?);
                 let function_app = Arc::new(FunctionAppImpl::new(

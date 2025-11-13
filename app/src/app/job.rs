@@ -10,6 +10,8 @@ pub mod cancellation_test;
 pub mod find_list_with_processing_status_test;
 #[cfg(test)]
 pub mod rdb_chan_cancellation_test;
+#[cfg(test)]
+pub mod rdb_chan_indexing_integration_test;
 
 use super::JobBuilder;
 use anyhow::Result;
@@ -141,6 +143,23 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         Self: Send + 'static;
 
     async fn find_all_job_status(&self) -> Result<Vec<(JobId, JobProcessingStatus)>>
+    where
+        Self: Send + 'static;
+
+    /// Advanced search using RDB index (Sprint 3)
+    ///
+    /// Returns UNIMPLEMENTED error if JOB_STATUS_RDB_INDEXING=false
+    #[allow(clippy::too_many_arguments)]
+    async fn find_by_condition(
+        &self,
+        status: Option<JobProcessingStatus>,
+        worker_id: Option<i64>,
+        channel: Option<String>,
+        min_elapsed_time_ms: Option<i64>,
+        limit: i32,
+        offset: i32,
+        descending: bool,
+    ) -> Result<Vec<infra::infra::job::status::rdb::JobProcessingStatusDetail>>
     where
         Self: Send + 'static;
 
