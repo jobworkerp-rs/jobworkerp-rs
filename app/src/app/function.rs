@@ -72,7 +72,7 @@ pub trait FunctionApp:
         if !exclude_worker {
             let workers = self
                 .worker_app()
-                .find_list(vec![], None, None, None)
+                .find_list(vec![], None, None, None, None, None, vec![], None, None)
                 .await?;
             for worker in workers {
                 if let Some(wid) = worker.id {

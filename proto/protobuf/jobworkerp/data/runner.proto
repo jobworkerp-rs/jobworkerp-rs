@@ -51,3 +51,13 @@ message Runner {
   RunnerId id = 1;
   RunnerData data = 2;
 }
+
+// # Runner Sort Field
+// Defines the fields available for sorting runners in queries
+enum RunnerSortField {
+  RUNNER_SORT_FIELD_UNSPECIFIED = 0;
+  RUNNER_SORT_FIELD_ID = 1;
+  RUNNER_SORT_FIELD_NAME = 2;
+  RUNNER_SORT_FIELD_RUNNER_TYPE = 3;
+  RUNNER_SORT_FIELD_CREATED_AT = 4;
+}

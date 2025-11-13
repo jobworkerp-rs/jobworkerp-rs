@@ -3,6 +3,7 @@ use std::{env, net::SocketAddr};
 
 pub mod codec;
 pub mod error;
+pub mod limits;
 
 pub static APP_NAME: &str = "jobworkerp";
 pub static APP_WORKER_NAME: &str = "jobworkerp-worker";

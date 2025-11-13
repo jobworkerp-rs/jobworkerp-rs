@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS `worker` (
     `store_success` BOOLEAN NOT NULL,
     `store_failure` BOOLEAN NOT NULL,
     `use_static` BOOLEAN NOT NULL,
-    `broadcast_results` BOOLEAN NOT NULL
+    `broadcast_results` BOOLEAN NOT NULL,
+    `created_at` BIGINT NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS `job` (
@@ -60,7 +61,8 @@ CREATE TABLE IF NOT EXISTS `runner` (
     `name` TEXT NOT NULL UNIQUE,
     `description` TEXT NOT NULL,
     `definition` TEXT NOT NULL, -- runner definition (mcp definition or plugin file name)
-    `type` INT(10) NOT NULL -- runner type. enum: command, request, grpc_unary, plugin
+    `type` INT(10) NOT NULL, -- runner type. enum: command, request, grpc_unary, plugin
+    `created_at` BIGINT NOT NULL DEFAULT 0
 );
 
 -- builtin runner definitions (runner.type != 0 cannot edit or delete)
@@ -129,3 +131,12 @@ CREATE TABLE IF NOT EXISTS `function_set_target` (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS `set_target` ON function_set_target(`set_id`, `target_id`, `target_type`);
+
+-- Indexes for admin UI filtering and sorting
+CREATE INDEX IF NOT EXISTS idx_runner_type ON runner(type);
+CREATE INDEX IF NOT EXISTS idx_runner_created_at ON runner(created_at);
+
+CREATE INDEX IF NOT EXISTS idx_worker_runner_id ON worker(runner_id);
+CREATE INDEX IF NOT EXISTS idx_worker_channel ON worker(channel);
+CREATE INDEX IF NOT EXISTS idx_worker_periodic_interval ON worker(periodic_interval);
+CREATE INDEX IF NOT EXISTS idx_worker_created_at ON worker(created_at);
