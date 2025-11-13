@@ -277,6 +277,42 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
             Err(handle_error(&res.err().unwrap()))
         }
     }
+
+    // New methods (Sprint 4) - Stub implementation
+    type FindListByStream = BoxStream<'static, Result<JobResult, tonic::Status>>;
+
+    #[tracing::instrument(level = "info", skip(self, _request), fields(method = "find_list_by"))]
+    async fn find_list_by(
+        &self,
+        _request: tonic::Request<crate::proto::jobworkerp::service::FindJobResultListRequest>,
+    ) -> Result<tonic::Response<Self::FindListByStream>, tonic::Status> {
+        Err(tonic::Status::unimplemented(
+            "find_list_by is not yet implemented (Sprint 4)",
+        ))
+    }
+
+    #[tracing::instrument(level = "info", skip(self, _request), fields(method = "count_by"))]
+    async fn count_by(
+        &self,
+        _request: tonic::Request<crate::proto::jobworkerp::service::CountJobResultRequest>,
+    ) -> Result<tonic::Response<CountResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented(
+            "count_by is not yet implemented (Sprint 4)",
+        ))
+    }
+
+    #[tracing::instrument(level = "info", skip(self, _request), fields(method = "delete_bulk"))]
+    async fn delete_bulk(
+        &self,
+        _request: tonic::Request<crate::proto::jobworkerp::service::DeleteJobResultBulkRequest>,
+    ) -> Result<
+        tonic::Response<crate::proto::jobworkerp::service::DeleteJobResultBulkResponse>,
+        tonic::Status,
+    > {
+        Err(tonic::Status::unimplemented(
+            "delete_bulk is not yet implemented (Sprint 4)",
+        ))
+    }
 }
 
 #[derive(DebugStub)]

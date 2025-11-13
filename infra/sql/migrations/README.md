@@ -108,6 +108,30 @@ sqlite3 data/jobworkerp.db < infra/sql/migrations/sqlite/rollback_003_add_create
 - `runner.created_at`: BIGINT NOT NULL DEFAULT 0 (レコード作成時刻、ミリ秒)
 - `worker.created_at`: BIGINT NOT NULL DEFAULT 0 (レコード作成時刻、ミリ秒)
 
+### ⚠️ created_atカラムの注意事項
+
+#### 既存レコードのcreated_at値
+- **新規レコード**: アプリケーション層で`chrono::Utc::now().timestamp_millis()`を設定
+- **マイグレーション時の既存レコード**: マイグレーション実行時の現在時刻で一括設定
+- **マイグレーション実行後に作成されるレコード**: 正確な作成時刻が設定される
+
+#### 管理画面での影響
+- created_atソート時、マイグレーション実行時刻が基準となる
+- マイグレーション前の古いレコードの正確な作成時刻は不明
+- UI表示推奨: `created_at`をそのまま表示（マイグレーション実行時刻として表示される）
+
+#### マイグレーションSQL実行内容
+マイグレーションSQLで以下が実行されます:
+```sql
+-- MySQL
+UPDATE runner SET created_at = UNIX_TIMESTAMP() * 1000 WHERE created_at = 0;
+UPDATE worker SET created_at = UNIX_TIMESTAMP() * 1000 WHERE created_at = 0;
+
+-- SQLite
+UPDATE runner SET created_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000 WHERE created_at = 0;
+UPDATE worker SET created_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000 WHERE created_at = 0;
+```
+
 ### 追加されるインデックス
 
 **Runnerテーブル**:
