@@ -24,12 +24,16 @@ infra/sql/
     │   ├── 003_add_created_at_columns.sql
     │   ├── rollback_003_add_created_at_columns.sql
     │   ├── 004_job_processing_status.sql
-    │   └── rollback_004_job_processing_status.sql
+    │   ├── rollback_004_job_processing_status.sql
+    │   ├── 005_add_job_result_indexes.sql
+    │   └── rollback_005_add_job_result_indexes.sql
     └── mysql/
         ├── 003_add_created_at_columns.sql
         ├── rollback_003_add_created_at_columns.sql
         ├── 004_job_processing_status.sql
-        └── rollback_004_job_processing_status.sql
+        ├── rollback_004_job_processing_status.sql
+        ├── 005_add_job_result_indexes.sql
+        └── rollback_005_add_job_result_indexes.sql
 ```
 
 ## マイグレーション戦略
@@ -93,6 +97,8 @@ sqlite3 data/jobworkerp.db < infra/sql/migrations/sqlite/rollback_003_add_create
 - `sqlite/rollback_003_add_created_at_columns.sql`: ロールバックスクリプト
 - `sqlite/004_job_processing_status.sql`: JobProcessingStatusテーブル作成（Sprint 3）
 - `sqlite/rollback_004_job_processing_status.sql`: ロールバックスクリプト
+- `sqlite/005_add_job_result_indexes.sql`: JobResult検索インデックス追加（Sprint 4）
+- `sqlite/rollback_005_add_job_result_indexes.sql`: ロールバックスクリプト
 
 ### MySQL
 
@@ -177,6 +183,63 @@ UPDATE worker SET created_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000 WHE
 - デフォルト: **無効** (`JOB_STATUS_RDB_INDEXING=false`)
 - 大規模環境のみ有効化推奨（100万件以上のJob滞留）
 
+## マイグレーション内容（005）
+
+### 追加されるインデックス（5個）
+
+**job_result**: JobResult検索インデックス（Sprint 4 - JobResultService拡張）
+
+- `idx_job_result_status`: ステータスフィルタ用
+  - 用途: FindListBy/CountByのstatus条件
+- `idx_job_result_start_time`: 開始時刻範囲検索用
+  - 用途: FindListBy/CountByのstart_time_from/to条件
+- `idx_job_result_end_time`: 終了時刻範囲検索用
+  - 用途: FindListBy/CountByのend_time_from/to条件、DeleteBulkのend_time_before条件
+- `idx_job_result_end_status`: 終了時刻+ステータス複合インデックス
+  - 用途: DeleteBulk with end_time_before AND status（例: 古い成功結果のみ削除）
+  - 理由: 一括削除の効率化（時刻とステータスの両方で絞り込み）
+- `idx_job_result_worker_end`: Worker ID+終了時刻降順複合インデックス
+  - 用途: FindListByでworker_id条件 + end_time DESCソート（最新順）
+  - 理由: Worker別クエリでの時刻ソート効率化
+
+### インデックスの効果
+
+- **FindListBy/CountBy**: フィルタリング性能向上（100万件データでも1秒以内）
+- **DeleteBulk**: 一括削除性能向上（古いデータのみ効率的に削除）
+- **Worker別検索**: Worker別のJobResult検索が高速化
+
+### マイグレーション実行例
+
+#### MySQL
+```bash
+# バックアップ取得
+mysqldump -u root -p jobworkerp > backup_$(date +%Y%m%d_%H%M%S).sql
+
+# マイグレーション実行
+mysql -u root -p jobworkerp < infra/sql/migrations/mysql/005_add_job_result_indexes.sql
+
+# 確認
+mysql -u root -p jobworkerp -e "SHOW INDEX FROM job_result;"
+
+# ロールバック（問題発生時）
+mysql -u root -p jobworkerp < infra/sql/migrations/mysql/rollback_005_add_job_result_indexes.sql
+```
+
+#### SQLite
+```bash
+# バックアップ取得
+cp data/jobworkerp.db data/jobworkerp_backup_$(date +%Y%m%d_%H%M%S).db
+
+# マイグレーション実行
+sqlite3 data/jobworkerp.db < infra/sql/migrations/sqlite/005_add_job_result_indexes.sql
+
+# 確認
+sqlite3 data/jobworkerp.db "PRAGMA index_list(job_result);"
+
+# ロールバック（問題発生時）
+sqlite3 data/jobworkerp.db < infra/sql/migrations/sqlite/rollback_005_add_job_result_indexes.sql
+```
+
 ## 注意事項
 
 1. **本番環境では必ずバックアップを取得してから実行**
@@ -185,3 +248,4 @@ UPDATE worker SET created_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000 WHE
 4. **新規環境ではこれらのファイルは不要**（002スキーマに含まれている）
 5. **このディレクトリのファイルはsqlxの自動マイグレーション対象外**
 6. **004_job_processing_status.sqlはデフォルト無効機能のため、実行は任意**
+7. **005_add_job_result_indexes.sqlはJobResultService拡張機能のため、管理画面実装後に実行**

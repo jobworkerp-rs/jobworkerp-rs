@@ -1,15 +1,20 @@
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use crate::proto::jobworkerp::data::ResultOutputItem;
+use crate::proto::jobworkerp::data::{JobResultSortField, ResultOutputItem};
 use crate::proto::jobworkerp::service::job_result_service_server::JobResultService;
 use crate::proto::jobworkerp::service::listen_request::Worker;
 use crate::proto::jobworkerp::service::{
-    listen_by_worker_request, CountCondition, CountResponse, FindListByJobIdRequest,
-    FindListRequest, ListenByWorkerRequest, ListenRequest, OptionalJobResultResponse,
-    SuccessResponse,
+    listen_by_worker_request, CountCondition, CountJobResultRequest, CountResponse,
+    DeleteJobResultBulkRequest, DeleteJobResultBulkResponse, FindJobResultListRequest,
+    FindListByJobIdRequest, FindListRequest, ListenByWorkerRequest, ListenRequest,
+    OptionalJobResultResponse, SuccessResponse,
 };
 use crate::service::error_handle::handle_error;
+use crate::service::validation::{
+    validate_bulk_delete_safety, validate_filter_enums, validate_filter_ids, validate_limit,
+    validate_offset, validate_time_range,
+};
 use app::app::job_result::JobResultApp;
 use app::module::AppModule;
 use async_stream::stream;
@@ -278,40 +283,164 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
         }
     }
 
-    // New methods (Sprint 4) - Stub implementation
+    // New methods (Sprint 4)
     type FindListByStream = BoxStream<'static, Result<JobResult, tonic::Status>>;
 
-    #[tracing::instrument(level = "info", skip(self, _request), fields(method = "find_list_by"))]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "find_list_by"))]
     async fn find_list_by(
         &self,
-        _request: tonic::Request<crate::proto::jobworkerp::service::FindJobResultListRequest>,
+        request: tonic::Request<FindJobResultListRequest>,
     ) -> Result<tonic::Response<Self::FindListByStream>, tonic::Status> {
-        Err(tonic::Status::unimplemented(
-            "find_list_by is not yet implemented (Sprint 4)",
-        ))
+        let _s = Self::trace_request("job_result", "find_list_by", &request);
+        let req = request.into_inner();
+
+        // Validation
+        validate_limit(req.limit)?;
+        validate_offset(req.offset)?;
+        validate_time_range(req.start_time_from, req.start_time_to, "start_time")?;
+        validate_time_range(req.end_time_from, req.end_time_to, "end_time")?;
+        validate_filter_ids(&req.worker_ids, "worker_ids")?;
+        validate_filter_enums(&req.statuses, "statuses")?;
+        validate_filter_enums(&req.priorities, "priorities")?;
+
+        // Convert WorkerIds to i64
+        let worker_ids: Vec<i64> = req.worker_ids.iter().map(|w| w.value).collect();
+
+        // Convert ResultStatus to i32
+        let statuses: Vec<i32> = req.statuses.to_vec();
+
+        // Convert Priority to i32
+        let priorities: Vec<i32> = req.priorities.to_vec();
+
+        // Convert sort_by to JobResultSortField enum
+        let sort_by = req
+            .sort_by
+            .and_then(|s| JobResultSortField::try_from(s).ok());
+
+        // Call App layer
+        match self
+            .app()
+            .find_list_by(
+                worker_ids,
+                statuses,
+                req.start_time_from,
+                req.start_time_to,
+                req.end_time_from,
+                req.end_time_to,
+                priorities,
+                req.uniq_key,
+                req.limit,
+                req.offset,
+                sort_by,
+                req.ascending,
+            )
+            .await
+        {
+            Ok(list) => Ok(Response::new(Box::pin(stream! {
+                for s in list {
+                    yield Ok(s)
+                }
+            }))),
+            Err(e) => Err(handle_error(&e)),
+        }
     }
 
-    #[tracing::instrument(level = "info", skip(self, _request), fields(method = "count_by"))]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "count_by"))]
     async fn count_by(
         &self,
-        _request: tonic::Request<crate::proto::jobworkerp::service::CountJobResultRequest>,
+        request: tonic::Request<CountJobResultRequest>,
     ) -> Result<tonic::Response<CountResponse>, tonic::Status> {
-        Err(tonic::Status::unimplemented(
-            "count_by is not yet implemented (Sprint 4)",
-        ))
+        let _s = Self::trace_request("job_result", "count_by", &request);
+        let req = request.into_inner();
+
+        // Validation (same as FindListBy)
+        validate_time_range(req.start_time_from, req.start_time_to, "start_time")?;
+        validate_time_range(req.end_time_from, req.end_time_to, "end_time")?;
+        validate_filter_ids(&req.worker_ids, "worker_ids")?;
+        validate_filter_enums(&req.statuses, "statuses")?;
+        validate_filter_enums(&req.priorities, "priorities")?;
+
+        // Convert WorkerIds to i64
+        let worker_ids: Vec<i64> = req.worker_ids.iter().map(|w| w.value).collect();
+
+        // Convert ResultStatus to i32
+        let statuses: Vec<i32> = req.statuses.to_vec();
+
+        // Convert Priority to i32
+        let priorities: Vec<i32> = req.priorities.to_vec();
+
+        // Call App layer
+        match self
+            .app()
+            .count_by(
+                worker_ids,
+                statuses,
+                req.start_time_from,
+                req.start_time_to,
+                req.end_time_from,
+                req.end_time_to,
+                priorities,
+                req.uniq_key,
+            )
+            .await
+        {
+            Ok(count) => Ok(Response::new(CountResponse { total: count })),
+            Err(e) => Err(handle_error(&e)),
+        }
     }
 
-    #[tracing::instrument(level = "info", skip(self, _request), fields(method = "delete_bulk"))]
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "delete_bulk"))]
     async fn delete_bulk(
         &self,
-        _request: tonic::Request<crate::proto::jobworkerp::service::DeleteJobResultBulkRequest>,
-    ) -> Result<
-        tonic::Response<crate::proto::jobworkerp::service::DeleteJobResultBulkResponse>,
-        tonic::Status,
-    > {
-        Err(tonic::Status::unimplemented(
-            "delete_bulk is not yet implemented (Sprint 4)",
-        ))
+        request: tonic::Request<DeleteJobResultBulkRequest>,
+    ) -> Result<tonic::Response<DeleteJobResultBulkResponse>, tonic::Status> {
+        let _s = Self::trace_request("job_result", "delete_bulk", &request);
+        let req = request.into_inner();
+
+        // Safety feature 1: Required filter condition check (gRPC layer)
+        if req.end_time_before.is_none() && req.statuses.is_empty() && req.worker_ids.is_empty() {
+            return Err(tonic::Status::invalid_argument(
+                "At least one filter condition is required (end_time_before, statuses, or worker_ids). \
+                 Unconditional deletion of all records is not permitted for safety reasons."
+            ));
+        }
+
+        // Safety feature 2: Recent data protection (gRPC layer double-check)
+        validate_bulk_delete_safety(req.end_time_before)?;
+
+        // Convert ResultStatus to i32
+        let statuses: Vec<i32> = req.statuses.to_vec();
+
+        // Convert WorkerIds to i64
+        let worker_ids: Vec<i64> = req.worker_ids.iter().map(|w| w.value).collect();
+
+        // Call App layer
+        match self
+            .app()
+            .delete_bulk(req.end_time_before, statuses, worker_ids)
+            .await
+        {
+            Ok(deleted_count) => {
+                tracing::info!(
+                    deleted_count = deleted_count,
+                    end_time_before = ?req.end_time_before,
+                    statuses_count = req.statuses.len(),
+                    worker_ids_count = req.worker_ids.len(),
+                    "Bulk delete completed successfully"
+                );
+                Ok(Response::new(DeleteJobResultBulkResponse { deleted_count }))
+            }
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    end_time_before = ?req.end_time_before,
+                    statuses_count = req.statuses.len(),
+                    worker_ids_count = req.worker_ids.len(),
+                    "Bulk delete failed"
+                );
+                Err(handle_error(&e))
+            }
+        }
     }
 }
 
