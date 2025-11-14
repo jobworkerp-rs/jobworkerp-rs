@@ -303,6 +303,12 @@ impl AppModule {
                 let job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository> =
                     Arc::new(repositories.redis_job_queue_repository().clone());
 
+                // JobProcessingStatus RDB indexing (controlled by JOB_STATUS_RDB_INDEXING env var)
+                let job_status_index_repository = repositories
+                    .rdb_chan_module
+                    .rdb_job_processing_status_index_repository
+                    .clone();
+
                 let job_app = Arc::new(HybridJobAppImpl::new(
                     config_module.clone(),
                     id_generator.clone(),
@@ -313,6 +319,7 @@ impl AppModule {
                         ttl: Some(Duration::from_secs(60)),
                     }),
                     job_queue_cancellation_repository,
+                    job_status_index_repository,
                 ));
                 let job_result_app = Arc::new(HybridJobResultAppImpl::new(
                     config_module.storage_config.clone(),
@@ -500,6 +507,12 @@ pub mod test {
         let job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository> =
             Arc::new(repositories.redis_job_queue_repository().clone());
 
+        // JobProcessingStatus RDB indexing (controlled by JOB_STATUS_RDB_INDEXING env var)
+        let job_status_index_repository = repositories
+            .rdb_chan_module
+            .rdb_job_processing_status_index_repository
+            .clone();
+
         let job_app = Arc::new(HybridJobAppImpl::new(
             app_config.clone(),
             id_generator.clone(),
@@ -507,6 +520,7 @@ pub mod test {
             worker_app.clone(),
             job_memory_cache,
             job_queue_cancellation_repository,
+            job_status_index_repository,
         ));
 
         let job_result_app = Arc::new(HybridJobResultAppImpl::new(

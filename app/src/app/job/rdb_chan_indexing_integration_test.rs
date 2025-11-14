@@ -45,7 +45,7 @@ mod rdb_chan_indexing_integration_tests {
 
         // Note: mysql feature is defined in infra crate, not app crate
         // Always use sqlite for app tests
-        let dir = "../../infra/sql/sqlite";
+        let dir = "../infra/sql/sqlite";
         let pool = setup_test_rdb_from(dir).await;
 
         let rdb_module = setup_test_rdb_module().await;

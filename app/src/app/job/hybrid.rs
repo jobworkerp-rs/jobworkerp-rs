@@ -40,6 +40,9 @@ pub struct HybridJobAppImpl {
     worker_app: Arc<dyn WorkerApp + 'static>,
     memory_cache: MokaCacheImpl<Arc<String>, Vec<Job>>,
     job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository>,
+    // RDB index repository for JobProcessingStatus (controlled by JOB_STATUS_RDB_INDEXING env var)
+    job_status_index_repository:
+        Option<Arc<infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository>>,
 }
 
 impl HybridJobAppImpl {
@@ -50,6 +53,9 @@ impl HybridJobAppImpl {
         worker_app: Arc<dyn WorkerApp + 'static>,
         memory_cache: MokaCacheImpl<Arc<String>, Vec<Job>>,
         job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository>,
+        job_status_index_repository: Option<
+            Arc<infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository>,
+        >,
     ) -> Self {
         Self {
             app_config_module,
@@ -58,6 +64,7 @@ impl HybridJobAppImpl {
             worker_app,
             memory_cache,
             job_queue_cancellation_repository,
+            job_status_index_repository,
         }
     }
     // find not queueing  jobs from argument 'jobs' in channels
@@ -941,22 +948,35 @@ impl JobApp for HybridJobAppImpl {
     #[allow(clippy::too_many_arguments)]
     async fn find_by_condition(
         &self,
-        _status: Option<JobProcessingStatus>,
-        _worker_id: Option<i64>,
-        _channel: Option<String>,
-        _min_elapsed_time_ms: Option<i64>,
-        _limit: i32,
-        _offset: i32,
-        _descending: bool,
+        status: Option<JobProcessingStatus>,
+        worker_id: Option<i64>,
+        channel: Option<String>,
+        min_elapsed_time_ms: Option<i64>,
+        limit: i32,
+        offset: i32,
+        descending: bool,
     ) -> Result<Vec<infra::infra::job::status::rdb::JobProcessingStatusDetail>>
     where
         Self: Send + 'static,
     {
-        // Hybrid (Standalone) does not support RDB indexing
-        Err(anyhow::anyhow!(
-            "Advanced job status search is not supported in Standalone mode. \
-             Use Scalable mode and enable JOB_STATUS_RDB_INDEXING=true to use this feature."
-        ))
+        if let Some(index_repo) = &self.job_status_index_repository {
+            index_repo
+                .find_by_condition(
+                    status,
+                    worker_id,
+                    channel,
+                    min_elapsed_time_ms,
+                    limit,
+                    offset,
+                    descending,
+                )
+                .await
+        } else {
+            Err(anyhow::anyhow!(
+                "Advanced job status search is disabled. \
+                 Enable JOB_STATUS_RDB_INDEXING=true to use this feature."
+            ))
+        }
     }
 
     async fn count(&self) -> Result<i64>
@@ -1180,6 +1200,12 @@ pub mod tests {
         let job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository> =
             Arc::new(repositories.redis_job_queue_repository().clone());
 
+        // JobProcessingStatus RDB indexing for test fixtures (controlled by JOB_STATUS_RDB_INDEXING env var)
+        let job_status_index_repository = repositories
+            .rdb_chan_module
+            .rdb_job_processing_status_index_repository
+            .clone();
+
         Ok((
             HybridJobAppImpl::new(
                 config_module,
@@ -1188,6 +1214,7 @@ pub mod tests {
                 Arc::new(worker_app),
                 job_memory_cache,
                 job_queue_cancellation_repository,
+                job_status_index_repository,
             ),
             subscrber,
         ))
