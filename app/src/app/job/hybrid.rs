@@ -287,118 +287,144 @@ impl HybridJobAppImpl {
         }
     }
 
-    /// Internal implementation: Proper cancellation processing + cleanup
+    /// Internal: Job cancellation logic (respects job state)
     ///
-    /// # TODO: Refactoring Required (see docs/tasks/delete-job-cleanup-separation-investigation.md)
+    /// # Purpose
+    /// This method handles user-initiated job cancellation requests.
+    /// It transitions jobs to CANCELLING state when appropriate and triggers cleanup.
     ///
-    /// This method has dual purposes causing inconsistent behavior:
-    /// 1. **User-initiated cancellation**: Should preserve status when cancellation fails (WAIT_RESULT)
-    /// 2. **Job completion cleanup**: Called from complete_job(), should always delete status
+    /// # State-based Behavior
+    /// - **PENDING**: Transition to CANCELLING → broadcast → cleanup → return true
+    /// - **RUNNING**: Transition to CANCELLING → broadcast cancellation → cleanup → return true
+    /// - **CANCELLING**: Already cancelling → cleanup → return true
+    /// - **WAIT_RESULT**: Cannot cancel (preserve status) → return false
+    /// - **Unknown/None**: Job not found or invalid state → return false
     ///
-    /// **Current Issue**:
-    /// - Returns `false` for WAIT_RESULT (cancellation failed)
-    /// - BUT still deletes status unconditionally (line 366-368)
-    /// - Contradicts spec "変更なし" (no change) for WAIT_RESULT state
-    ///
-    /// **Recommended Fix**: Split into two methods:
-    /// - `cancel_job()`: Cancellation logic with conditional cleanup
-    /// - `cleanup_job()`: Unconditional cleanup for complete_job()
-    async fn cancel_job_with_cleanup(&self, id: &JobId) -> Result<bool> {
-        // Check current job status
+    /// # Returns
+    /// - `Ok(true)`: Cancellation succeeded
+    /// - `Ok(false)`: Cancellation failed (job in non-cancellable state)
+    pub(crate) async fn cancel_job(&self, id: &JobId) -> Result<bool> {
         let current_status = self
             .job_processing_status_repository()
             .find_status(id)
             .await?;
 
-        let cancellation_result = match current_status {
+        match current_status {
             Some(JobProcessingStatus::Running) => {
                 // Running → Cancelling state change
                 self.job_processing_status_repository()
                     .upsert_status(id, &JobProcessingStatus::Cancelling)
                     .await?;
 
-                // 2. Active cancellation of running jobs (broadcast)
+                // Active cancellation of running jobs (broadcast)
                 self.broadcast_job_cancellation(id).await?;
 
                 tracing::info!(
                     "Job {} marked as cancelling, broadcasting to workers",
                     id.value
                 );
-                true
+
+                // Cleanup job resources
+                self.cleanup_job(id).await?;
+                Ok(true)
             }
             Some(JobProcessingStatus::Pending) => {
-                // Pending → Cancelling state change (will be cancelled when Worker picks it up)
-                // Note: Due to timing issues, a job might appear as Pending but already be executing.
-                // We broadcast cancellation to ensure running processes are also cancelled.
+                // Pending → Cancelling state change
                 self.job_processing_status_repository()
                     .upsert_status(id, &JobProcessingStatus::Cancelling)
                     .await?;
 
-                // Broadcast cancellation to handle cases where job is actually running but status hasn't been updated yet
+                // Broadcast cancellation (handles race conditions)
                 self.broadcast_job_cancellation(id).await?;
 
                 tracing::info!(
                     "Pending job {} marked as cancelling with broadcast",
                     id.value
                 );
-                true // Will be properly processed through ResultProcessor on Worker side
+
+                // Cleanup job resources
+                self.cleanup_job(id).await?;
+                Ok(true)
             }
             Some(JobProcessingStatus::Cancelling) => {
                 tracing::info!("Job {} is already being cancelled", id.value);
-                true // Already being cancelled but treat as success
+                // Already being cancelled, cleanup anyway
+                self.cleanup_job(id).await?;
+                Ok(true)
             }
             Some(JobProcessingStatus::WaitResult) => {
-                // TODO: Should preserve status here when called from user cancellation
-                // Currently deletes status even when returning false (inconsistent)
-                // See: docs/tasks/delete-job-cleanup-separation-investigation.md
+                // Cannot cancel: preserve status, no changes
                 tracing::info!(
                     "Job {} is waiting for result processing, cancellation not possible",
                     id.value
                 );
-                false // Cancellation failed
+                Ok(false)
             }
             Some(JobProcessingStatus::Unknown) => {
-                // Corrupted or invalid status
                 tracing::warn!(
-                    "Job {} has unknown status, attempting cancellation",
+                    "Job {} has unknown status, cancellation not possible",
                     id.value
                 );
-                false // Cancellation failed due to invalid state
+                Ok(false)
             }
             None => {
-                // Status doesn't exist - job likely doesn't exist
+                // Status doesn't exist (already completed or doesn't exist)
                 tracing::info!(
-                    "Job {} status not found, job likely doesn't exist",
+                    "Job {} status not found, may be already completed",
                     id.value
                 );
-                false // Cannot cancel non-existent job
+                Ok(false)
             }
-        };
+        }
+    }
 
-        // TODO: These cleanup operations should be conditional based on caller intent
-        // - complete_job(): Always cleanup (current behavior is correct)
-        // - User cancellation with WAIT_RESULT: Should NOT cleanup status
-        let db_deletion_result = match self.rdb_job_repository().delete(id).await {
-            Ok(r) => {
-                let _ = self
-                    .memory_cache
-                    .delete_cache(&Arc::new(Self::find_cache_key(id)))
-                    .await;
-                Ok(r)
-            }
-            Err(e) => Err(e),
-        };
+    /// Internal: Unconditional job cleanup (always deletes resources)
+    ///
+    /// # Purpose
+    /// This method performs unconditional cleanup of job resources.
+    /// It should be called when the job is definitely finished (completed or cancelled).
+    ///
+    /// # Cleanup Operations
+    /// 1. Delete job record from RDB
+    /// 2. Delete job record from Redis
+    /// 3. Delete job cache from memory
+    /// 4. Delete job processing status
+    ///
+    /// # Error Handling
+    /// - RDB deletion failure: Logged as warning, processing continues
+    /// - Redis deletion failure: Logged as warning, processing continues
+    /// - Cache deletion failure: Logged as warning, processing continues
+    /// - Status deletion failure: Returns error (critical failure)
+    ///
+    /// # Returns
+    /// - `Ok(())`: Cleanup succeeded (or non-critical failures)
+    /// - `Err(e)`: Critical failure (status deletion failed)
+    pub(crate) async fn cleanup_job(&self, id: &JobId) -> Result<()> {
+        // 1. Delete job record from RDB
+        let db_deletion_result = self.rdb_job_repository().delete(id).await;
+        if let Err(e) = &db_deletion_result {
+            tracing::warn!("Failed to delete job {} from RDB: {:?}", id.value, e);
+        } else {
+            // Delete cache only if RDB deletion succeeded
+            let _ = self
+                .memory_cache
+                .delete_cache(&Arc::new(Self::find_cache_key(id)))
+                .await;
+        }
+
+        // 2. Delete job record from Redis
         let redis_deletion_result = self.redis_job_repository().delete(id).await;
-        // ISSUE: Unconditional status deletion causes WAIT_RESULT state loss
-        // This breaks the contract: "false = no changes" expectation
+        if let Err(e) = &redis_deletion_result {
+            tracing::warn!("Failed to delete job {} from Redis: {:?}", id.value, e);
+        }
+
+        // 3. Delete job processing status (critical operation)
         self.job_processing_status_repository()
             .delete_status(id)
             .await?;
 
-        // Cancellation success or DB deletion success
-        Ok(cancellation_result
-            || db_deletion_result.unwrap_or_default()
-            || redis_deletion_result.unwrap_or_default())
+        tracing::debug!("Job {} cleanup completed", id.value);
+        Ok(())
     }
 
     /// Active cancellation of running jobs (distributed Worker notification)
@@ -694,18 +720,12 @@ impl JobApp for HybridJobAppImpl {
     ///
     /// # Purpose
     /// This method is called after job execution completes (success/failure/cancelled).
-    /// It publishes the result and performs cleanup by calling delete_job().
+    /// It publishes the result and performs cleanup by calling cleanup_job() directly.
     ///
-    /// # TODO: Refactoring Required (see docs/tasks/delete-job-cleanup-separation-investigation.md)
-    ///
-    /// **Current Implementation**:
-    /// - Calls `delete_job()` → `cancel_job_with_cleanup()` for cleanup
-    /// - This reuses cancellation logic, which is semantically incorrect
-    /// - Cleanup should be unconditional (no cancellation state checks needed)
-    ///
-    /// **Recommended Fix**:
-    /// - Call `cleanup_job()` directly instead of `delete_job()`
-    /// - Separates cleanup purpose from cancellation purpose
+    /// # Implementation
+    /// - Publishes JobResult to Pub/Sub for listeners
+    /// - Publishes streaming data if available
+    /// - Calls `cleanup_job()` for unconditional resource cleanup
     async fn complete_job(
         &self,
         id: &JobResultId,
@@ -769,9 +789,8 @@ impl JobApp for HybridJobAppImpl {
                     Ok(false)
                 }
             };
-            // TODO: Should call cleanup_job() directly instead of delete_job()
-            // Currently reuses cancellation logic for cleanup purpose (semantically incorrect)
-            self.delete_job(jid).await?;
+            // Unconditional cleanup (no state checks needed)
+            self.cleanup_job(jid).await?;
 
             res
         } else {
@@ -783,17 +802,15 @@ impl JobApp for HybridJobAppImpl {
 
     /// Delete job (Public API for job cancellation)
     ///
-    /// # Dual Purpose Issue
-    /// This method is used for TWO different purposes:
-    /// 1. **User cancellation** (from gRPC Delete API): Should respect job state
-    /// 2. **Job cleanup** (from complete_job()): Should always delete regardless of state
+    /// # Purpose
+    /// This is the public API for user-initiated job cancellation.
+    /// It delegates to `cancel_job()` which handles state-aware cancellation logic.
     ///
-    /// Due to this dual purpose, the behavior is inconsistent:
-    /// - WAIT_RESULT returns false (cancellation failed) but still deletes status
-    /// - See: docs/tasks/delete-job-cleanup-separation-investigation.md
+    /// # Returns
+    /// - `Ok(true)`: Cancellation succeeded
+    /// - `Ok(false)`: Cancellation failed (job in non-cancellable state like WAIT_RESULT)
     async fn delete_job(&self, id: &JobId) -> Result<bool> {
-        // Perform proper job cancellation instead of direct deletion
-        self.cancel_job_with_cleanup(id).await
+        self.cancel_job(id).await
     }
 
     // cannot get job of queue type REDIS (redis is used for queue and job cache)
