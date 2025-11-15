@@ -285,7 +285,7 @@ impl RunnerApp for HybridRunnerAppImpl {
         let runner_data = test_runner_with_descriptor(name);
         let _ = self
             .runner_repository()
-            ._create(&RunnerRow {
+            .create(&RunnerRow {
                 id: runner_id.value,
                 name: name.to_string(),
                 description: runner_data.runner_data.description.clone(),

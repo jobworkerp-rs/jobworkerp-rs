@@ -17,6 +17,8 @@ use proto::jobworkerp::data::RunnerType;
 use sqlx::{Executor, Pool};
 use std::sync::Arc;
 
+const RUNNER_CONVERSION_TIMEOUT_SECS: u64 = 10;
+
 #[async_trait]
 pub trait RunnerRepository:
     UseRdbPool + UseRunnerSpecFactory + UseIdGenerator + Sync + Send
@@ -62,7 +64,7 @@ pub trait RunnerRepository:
                 r#type: RunnerType::McpServer as i32,
                 created_at: datetime::now_millis(),
             };
-            self._create(&data).await.inspect_err(|e| {
+            self.create(&data).await.inspect_err(|e| {
                 tracing::error!(
                     "Failed to create runner for plugins {}: {:?}",
                     &data.name,
@@ -86,7 +88,7 @@ pub trait RunnerRepository:
                 r#type: RunnerType::Plugin as i32, // PLUGIN
                 created_at: datetime::now_millis(),
             };
-            self._create(&data).await.inspect_err(|e| {
+            self.create(&data).await.inspect_err(|e| {
                 tracing::error!(
                     "Failed to create runner for plugins {}: {:?}",
                     &data.name,
@@ -121,7 +123,7 @@ pub trait RunnerRepository:
             r#type: RunnerType::Plugin as i32, // PLUGIN
             created_at: datetime::now_millis(),
         };
-        if self._create(&data).await.inspect_err(|e| {
+        if self.create(&data).await.inspect_err(|e| {
             tracing::error!(
                 "Failed to create runner for plugins {}: {:?}",
                 &data.name,
@@ -164,7 +166,7 @@ pub trait RunnerRepository:
             r#type: RunnerType::McpServer as i32,
             created_at: datetime::now_millis(),
         };
-        if self._create(&data).await.inspect_err(|e| {
+        if self.create(&data).await.inspect_err(|e| {
             tracing::error!(
                 "Failed to create runner for mcp server {}: {:?}",
                 &data.name,
@@ -207,22 +209,14 @@ pub trait RunnerRepository:
     // rdb operations
     ////////
 
-    async fn _create(&self, runner_row: &RunnerRow) -> Result<bool> {
-        self._create_tx(self.db_pool(), runner_row).await
+    async fn create(&self, runner_row: &RunnerRow) -> Result<bool> {
+        self.create_tx(self.db_pool(), runner_row).await
     }
-    async fn _create_tx<'c, E: Executor<'c, Database = Rdb>>(
+    async fn create_tx<'c, E: Executor<'c, Database = Rdb>>(
         &self,
         tx: E,
         runner_row: &RunnerRow,
     ) -> Result<bool> {
-        // Validate created_at is not 0 (prevention of DEFAULT 0 issue)
-        if runner_row.created_at == 0 {
-            return Err(JobWorkerError::InvalidParameter(
-                "created_at must not be 0 (invalid timestamp)".to_string(),
-            )
-            .into());
-        }
-
         let res = sqlx::query::<Rdb>(if cfg!(feature = "mysql") {
             "INSERT IGNORE INTO `runner` (
                 `id`,
@@ -410,13 +404,40 @@ pub trait RunnerRepository:
             .find_row_list_tx(self.db_pool(), include_full, limit, offset)
             .await?;
         let mut results = Vec::new();
-        for row in rows {
-            if let Some(r) = self
-                .runner_spec_factory()
-                .create_runner_spec_by_name(&row.name, false)
-                .await
-            {
-                results.push(row.to_runner_with_schema(r).await);
+        for row in rows.iter() {
+            // Timeout for each runner conversion to prevent hanging on problematic plugins
+            let conversion_result = tokio::time::timeout(
+                std::time::Duration::from_secs(RUNNER_CONVERSION_TIMEOUT_SECS),
+                async {
+                    if let Some(r) = self
+                        .runner_spec_factory()
+                        .create_runner_spec_by_name(&row.name, false)
+                        .await
+                    {
+                        Ok::<_, anyhow::Error>(Some(row.to_runner_with_schema(r).await))
+                    } else {
+                        tracing::warn!("Failed to create runner spec for '{}'", row.name);
+                        Ok(None)
+                    }
+                },
+            )
+            .await;
+
+            match conversion_result {
+                Ok(Ok(Some(schema))) => {
+                    results.push(schema);
+                }
+                Ok(Ok(None)) => {}
+                Ok(Err(e)) => {
+                    tracing::error!("Error converting runner '{}': {:?}", row.name, e);
+                }
+                Err(_) => {
+                    tracing::error!(
+                        "Timeout converting runner '{}' after {}s, skipping",
+                        row.name,
+                        RUNNER_CONVERSION_TIMEOUT_SECS
+                    );
+                }
             }
         }
         Ok(results)
@@ -483,13 +504,41 @@ pub trait RunnerRepository:
             )
             .await?;
         let mut results = Vec::new();
-        for row in rows {
-            if let Some(r) = self
-                .runner_spec_factory()
-                .create_runner_spec_by_name(&row.name, false)
-                .await
-            {
-                results.push(row.to_runner_with_schema(r).await);
+
+        // Timeout for each runner conversion to prevent hanging on problematic plugins
+        for row in rows.iter() {
+            let conversion_result = tokio::time::timeout(
+                std::time::Duration::from_secs(RUNNER_CONVERSION_TIMEOUT_SECS),
+                async {
+                    if let Some(r) = self
+                        .runner_spec_factory()
+                        .create_runner_spec_by_name(&row.name, false)
+                        .await
+                    {
+                        Ok::<_, anyhow::Error>(Some(row.to_runner_with_schema(r).await))
+                    } else {
+                        tracing::warn!("Failed to create runner spec for '{}'", row.name);
+                        Ok(None)
+                    }
+                },
+            )
+            .await;
+
+            match conversion_result {
+                Ok(Ok(Some(schema))) => {
+                    results.push(schema);
+                }
+                Ok(Ok(None)) => {}
+                Ok(Err(e)) => {
+                    tracing::error!("Error converting runner '{}': {:?}", row.name, e);
+                }
+                Err(_) => {
+                    tracing::error!(
+                        "Timeout converting runner '{}' after {}s, skipping",
+                        row.name,
+                        RUNNER_CONVERSION_TIMEOUT_SECS
+                    );
+                }
             }
         }
         Ok(results)
@@ -738,7 +787,7 @@ mod test {
 
         let mut tx = db.begin().await.context("error in test")?;
         let inserted = repository
-            ._create_tx(&mut *tx, &row.clone().unwrap())
+            .create_tx(&mut *tx, &row.clone().unwrap())
             .await?;
         assert!(inserted);
         let found = repository

@@ -34,7 +34,7 @@ pub trait RequestValidator {
     fn validate_find_queue_list(&self, req: &FindQueueListRequest) -> Result<(), tonic::Status> {
         // Limit validation
         if let Some(limit) = req.limit {
-            if limit > 1000 {
+            if limit > jobworkerp_base::limits::MAX_LIMIT {
                 return Err(tonic::Status::invalid_argument(
                     "limit too large (max: 1000)",
                 ));
@@ -46,7 +46,7 @@ pub trait RequestValidator {
 
         // Channel name length validation
         if let Some(ref channel) = req.channel {
-            if channel.len() > 255 {
+            if channel.len() > jobworkerp_base::limits::MAX_CHANNEL_NAME_LENGTH {
                 return Err(tonic::Status::invalid_argument(
                     "channel name too long (max: 255)",
                 ));
@@ -64,7 +64,7 @@ pub trait RequestValidator {
     ) -> Result<(), tonic::Status> {
         // Limit validation
         if let Some(limit) = req.limit {
-            if limit > 1000 {
+            if limit > jobworkerp_base::limits::MAX_LIMIT {
                 return Err(tonic::Status::invalid_argument(
                     "limit too large (max: 1000)",
                 ));
