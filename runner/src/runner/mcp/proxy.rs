@@ -1,4 +1,5 @@
 use super::config::{McpConfig, McpServerConfig, McpServerTransportConfig};
+use crate::runner::timeout_config::RunnerTimeoutConfig;
 use anyhow::Result;
 use debug_stub_derive::DebugStub;
 use jobworkerp_base::error::JobWorkerError;
@@ -34,62 +35,100 @@ impl McpServerProxy {
 
     pub async fn new(config: &McpServerConfig) -> Result<Self> {
         let transport_config = config.transport.clone();
+        let timeout_config = RunnerTimeoutConfig::global();
+
+        let transport = tokio::time::timeout(
+            timeout_config.mcp_connection,
+            Self::start(&transport_config),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "MCP connection timeout after {:?} for '{}'",
+                timeout_config.mcp_connection,
+                config.name
+            )
+        })??;
+
         Ok(Self {
             name: config.name.clone(),
             description: config.description.clone(),
-            transport: Self::start(&transport_config).await?,
+            transport,
             async_cache: MokaCacheImpl::new(&Self::MEMORY_CACHE_CONFIG),
         })
     }
     // start connection to mcp server
     async fn start(config: &McpServerTransportConfig) -> Result<RunningService<RoleClient, ()>> {
-        let client = match config {
-            McpServerTransportConfig::Sse { url, headers } => {
-                // Create reqwest client with custom headers
-                let mut header_map = reqwest::header::HeaderMap::new();
-                for (key, value) in headers {
-                    let header_name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
-                        .map_err(|e| anyhow::anyhow!("Invalid header name '{}': {}", key, e))?;
-                    let header_value =
-                        reqwest::header::HeaderValue::from_str(value).map_err(|e| {
-                            anyhow::anyhow!("Invalid header value for '{}': {}", key, e)
+        let timeout_config = RunnerTimeoutConfig::global();
+
+        let client = tokio::time::timeout(timeout_config.mcp_transport_start, async {
+            let result: Result<RunningService<RoleClient, ()>> = match config {
+                McpServerTransportConfig::Sse { url, headers } => {
+                    // Create reqwest client with custom headers
+                    let mut header_map = reqwest::header::HeaderMap::new();
+                    for (key, value) in headers {
+                        let header_name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
+                            .map_err(|e| {
+                            anyhow::anyhow!("Invalid header name '{}': {}", key, e)
                         })?;
-                    header_map.insert(header_name, header_value);
+                        let header_value =
+                            reqwest::header::HeaderValue::from_str(value).map_err(|e| {
+                                anyhow::anyhow!("Invalid header value for '{}': {}", key, e)
+                            })?;
+                        header_map.insert(header_name, header_value);
+                    }
+
+                    let reqwest_client = reqwest::Client::builder()
+                        .default_headers(header_map)
+                        .build()
+                        .map_err(|e| anyhow::anyhow!("Failed to create reqwest client: {}", e))?;
+
+                    let transport =
+                        rmcp::transport::sse_client::SseClientTransport::start_with_client(
+                            reqwest_client,
+                            rmcp::transport::sse_client::SseClientConfig {
+                                sse_endpoint: url.as_str().into(),
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                        .map_err(|e| anyhow::anyhow!("SSE transport error: {}", e))?;
+                    // TODO use handler
+                    ().serve(transport)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Serve error: {}", e))
                 }
+                McpServerTransportConfig::Stdio {
+                    command,
+                    args,
+                    envs,
+                } => {
+                    let transport = rmcp::transport::child_process::TokioChildProcess::new(
+                        tokio::process::Command::new(command).configure(|cmd| {
+                            cmd.args(args).envs(envs).stderr(Stdio::inherit());
+                        }),
+                    )
+                    .map_err(|e| anyhow::anyhow!("Child process error: {}", e))?;
+                    // TODO use handler
+                    ().serve(transport)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Serve error: {}", e))
+                }
+            };
+            result
+        })
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Transport start timeout after {:?}",
+                timeout_config.mcp_transport_start
+            )
+        })??;
 
-                let reqwest_client = reqwest::Client::builder()
-                    .default_headers(header_map)
-                    .build()
-                    .map_err(|e| anyhow::anyhow!("Failed to create reqwest client: {}", e))?;
-
-                let transport = rmcp::transport::sse_client::SseClientTransport::start_with_client(
-                    reqwest_client,
-                    rmcp::transport::sse_client::SseClientConfig {
-                        sse_endpoint: url.as_str().into(),
-                        ..Default::default()
-                    },
-                )
-                .await?;
-                // TODO use handler
-                ().serve(transport).await?
-            }
-            McpServerTransportConfig::Stdio {
-                command,
-                args,
-                envs,
-            } => {
-                let transport = rmcp::transport::child_process::TokioChildProcess::new(
-                    tokio::process::Command::new(command).configure(|cmd| {
-                        cmd.args(args).envs(envs).stderr(Stdio::inherit());
-                    }),
-                )?;
-                // TODO use handler
-                ().serve(transport).await?
-            }
-        };
         Ok(client)
     }
 
+    // NOTE: No timeout applied here - Application Layer (infra/runner/rows.rs:29-45) already has timeout
     pub async fn load_tools(&self) -> Result<Vec<Tool>> {
         tracing::debug!("loading mcp tools from: {}", &self.name);
         let k = Arc::new(Self::find_all_list_cache_key());

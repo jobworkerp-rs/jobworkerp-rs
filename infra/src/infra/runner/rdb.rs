@@ -17,7 +17,9 @@ use proto::jobworkerp::data::RunnerType;
 use sqlx::{Executor, Pool};
 use std::sync::Arc;
 
-const RUNNER_CONVERSION_TIMEOUT_SECS: u64 = 10;
+// RUNNER_CONVERSION_TIMEOUT_SECS removed: Individual operations already protected by
+// Primitive Layer (up to 30s for MCP, 15s for Plugin) and Application Layer (up to 10s for schema).
+// Total may take up to 40s per runner, so a 10s timeout was too short.
 
 #[async_trait]
 pub trait RunnerRepository:
@@ -404,40 +406,18 @@ pub trait RunnerRepository:
             .find_row_list_tx(self.db_pool(), include_full, limit, offset)
             .await?;
         let mut results = Vec::new();
-        for row in rows.iter() {
-            // Timeout for each runner conversion to prevent hanging on problematic plugins
-            let conversion_result = tokio::time::timeout(
-                std::time::Duration::from_secs(RUNNER_CONVERSION_TIMEOUT_SECS),
-                async {
-                    if let Some(r) = self
-                        .runner_spec_factory()
-                        .create_runner_spec_by_name(&row.name, false)
-                        .await
-                    {
-                        Ok::<_, anyhow::Error>(Some(row.to_runner_with_schema(r).await))
-                    } else {
-                        tracing::warn!("Failed to create runner spec for '{}'", row.name);
-                        Ok(None)
-                    }
-                },
-            )
-            .await;
 
-            match conversion_result {
-                Ok(Ok(Some(schema))) => {
-                    results.push(schema);
-                }
-                Ok(Ok(None)) => {}
-                Ok(Err(e)) => {
-                    tracing::error!("Error converting runner '{}': {:?}", row.name, e);
-                }
-                Err(_) => {
-                    tracing::error!(
-                        "Timeout converting runner '{}' after {}s, skipping",
-                        row.name,
-                        RUNNER_CONVERSION_TIMEOUT_SECS
-                    );
-                }
+        // Timeout removed: Individual operations already protected by Primitive Layer (up to 30s)
+        // and Application Layer (up to 10s). Total may take up to 40s per runner.
+        for row in rows.iter() {
+            if let Some(r) = self
+                .runner_spec_factory()
+                .create_runner_spec_by_name(&row.name, false)
+                .await
+            {
+                results.push(row.to_runner_with_schema(r).await);
+            } else {
+                tracing::warn!("Failed to create runner spec for '{}'", row.name);
             }
         }
         Ok(results)
@@ -505,40 +485,17 @@ pub trait RunnerRepository:
             .await?;
         let mut results = Vec::new();
 
-        // Timeout for each runner conversion to prevent hanging on problematic plugins
+        // Timeout removed: Individual operations already protected by Primitive Layer (up to 30s)
+        // and Application Layer (up to 10s). Total may take up to 40s per runner.
         for row in rows.iter() {
-            let conversion_result = tokio::time::timeout(
-                std::time::Duration::from_secs(RUNNER_CONVERSION_TIMEOUT_SECS),
-                async {
-                    if let Some(r) = self
-                        .runner_spec_factory()
-                        .create_runner_spec_by_name(&row.name, false)
-                        .await
-                    {
-                        Ok::<_, anyhow::Error>(Some(row.to_runner_with_schema(r).await))
-                    } else {
-                        tracing::warn!("Failed to create runner spec for '{}'", row.name);
-                        Ok(None)
-                    }
-                },
-            )
-            .await;
-
-            match conversion_result {
-                Ok(Ok(Some(schema))) => {
-                    results.push(schema);
-                }
-                Ok(Ok(None)) => {}
-                Ok(Err(e)) => {
-                    tracing::error!("Error converting runner '{}': {:?}", row.name, e);
-                }
-                Err(_) => {
-                    tracing::error!(
-                        "Timeout converting runner '{}' after {}s, skipping",
-                        row.name,
-                        RUNNER_CONVERSION_TIMEOUT_SECS
-                    );
-                }
+            if let Some(r) = self
+                .runner_spec_factory()
+                .create_runner_spec_by_name(&row.name, false)
+                .await
+            {
+                results.push(row.to_runner_with_schema(r).await);
+            } else {
+                tracing::warn!("Failed to create runner spec for '{}'", row.name);
             }
         }
         Ok(results)
