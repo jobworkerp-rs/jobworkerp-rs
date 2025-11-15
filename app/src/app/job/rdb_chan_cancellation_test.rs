@@ -172,7 +172,7 @@ mod rdb_chan_cancellation_tests {
                 Some(JobProcessingStatus::Pending)
             );
 
-            // Cancel the job using delete_job (which now calls cancel_job_with_cleanup)
+            // Cancel the job using delete_job (which calls cancel_job)
             let cancelled = app.delete_job(&job_id).await?;
             assert!(cancelled);
 
@@ -270,25 +270,23 @@ mod rdb_chan_cancellation_tests {
     /// According to spec-job-service-simplified.md:186-195, WAIT_RESULT state jobs cannot be cancelled
     /// to prevent data inconsistency during result processing
     ///
-    /// # Current Implementation Issue (Documented)
+    /// # Implementation (Fixed)
     ///
-    /// **Root Cause**: `delete_job()` is used for both cancellation and cleanup purposes
+    /// **Root Cause (Fixed)**: `delete_job()` now delegates to `cancel_job()` which preserves status
     /// - See: docs/tasks/delete-job-cleanup-separation-investigation.md
     ///
     /// **Expected Behavior** (per spec):
     /// - WAIT_RESULT cancellation returns `false`
     /// - Status should be preserved (spec says "変更なし" = no change)
     ///
-    /// **Actual Behavior** (current implementation):
+    /// **Current Behavior** (after fix):
     /// - WAIT_RESULT cancellation returns `false` ✓
-    /// - Status is DELETED (unconditional cleanup in cancel_job_with_cleanup) ✗
+    /// - Status is PRESERVED (WaitResult) ✓
     ///
-    /// **Why This Happens**:
-    /// - `complete_job()` calls `delete_job()` for cleanup (needs unconditional deletion)
-    /// - `delete_job()` also used for user cancellation (needs conditional deletion)
-    /// - Cleanup logic wins, deleting status even when `false` is returned
-    ///
-    /// **TODO**: Split into `cancel_job()` and `cleanup_job()` methods
+    /// **Fix Applied**:
+    /// - `delete_job()` calls `cancel_job()` which respects job state
+    /// - `complete_job()` calls `cleanup_job()` for unconditional cleanup
+    /// - Status preservation works correctly for WAIT_RESULT state
     #[test]
     fn test_cancel_wait_result_job_should_fail() -> Result<()> {
         TEST_RUNTIME.block_on(async {
@@ -308,21 +306,17 @@ mod rdb_chan_cancellation_tests {
                 "WAIT_RESULT state job should not be cancellable"
             );
 
-            // IMPLEMENTATION NOTE: Current implementation has a bug where status is deleted
-            // even when cancellation fails. This should be fixed in future implementation.
-            // Expected behavior: Status should remain WAIT_RESULT after failed cancellation
-            // Actual behavior: Status is deleted (None)
+            // Verify status is preserved (implementation fixed)
             let status = app
                 .job_processing_status_repository()
                 .find_status(&job_id)
                 .await
                 .unwrap();
 
-            // TODO: Fix implementation to preserve status on cancellation failure
-            // assert_eq!(status, Some(JobProcessingStatus::WaitResult));
             assert_eq!(
-                status, None,
-                "Current implementation deletes status even on failed cancellation (bug)"
+                status,
+                Some(JobProcessingStatus::WaitResult),
+                "Status should be preserved when cancellation fails"
             );
 
             tracing::info!("test_cancel_wait_result_job_should_fail completed successfully");
@@ -524,21 +518,208 @@ mod rdb_chan_cancellation_tests {
                 !result,
                 "WAIT_RESULT job cancellation should fail (to prevent data inconsistency)"
             );
-            // Note: Current implementation has a bug - status is deleted even on failure
-            // See test_cancel_wait_result_job_should_fail for details
-            // Expected: Status should remain WAIT_RESULT
-            // Actual: Status is deleted (None)
+            // Verify status is preserved (implementation fixed)
+            assert_eq!(
+                app.job_processing_status_repository()
+                    .find_status(&wait_result_job_id)
+                    .await
+                    .unwrap(),
+                Some(JobProcessingStatus::WaitResult),
+                "WAIT_RESULT status should be preserved on failed cancellation"
+            );
 
             // Test 4: CANCELLING → Already cancelling, should handle gracefully
             let cancelling_job_id = JobId { value: 94444 };
             app.job_processing_status_repository()
                 .upsert_status(&cancelling_job_id, &JobProcessingStatus::Cancelling)
                 .await?;
-            let _result = app.delete_job(&cancelling_job_id).await?;
-            // Implementation may vary: some return true (cleanup), some return false (already cancelling)
-            // Either behavior is acceptable for CANCELLING state
+            let result = app.delete_job(&cancelling_job_id).await?;
+            assert!(result, "CANCELLING job should return true (cleanup)");
+            assert_eq!(
+                app.job_processing_status_repository()
+                    .find_status(&cancelling_job_id)
+                    .await
+                    .unwrap(),
+                None,
+                "CANCELLING job status should be removed after cleanup"
+            );
 
             tracing::info!("test_delete_job_comprehensive_state_coverage completed successfully");
+            Ok(())
+        })
+    }
+
+    /// Test: cleanup_job() method directly (unconditional cleanup)
+    /// This verifies that cleanup_job() always deletes resources regardless of job state
+    #[test]
+    fn test_cleanup_job_unconditional_deletion() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let app = create_test_rdb_chan_app(true).await?;
+
+            // Test cleanup for various states
+            let test_cases = vec![
+                (95001, JobProcessingStatus::Pending, "PENDING"),
+                (95002, JobProcessingStatus::Running, "RUNNING"),
+                (95003, JobProcessingStatus::Cancelling, "CANCELLING"),
+                (95004, JobProcessingStatus::WaitResult, "WAIT_RESULT"),
+                (95005, JobProcessingStatus::Unknown, "UNKNOWN"),
+            ];
+
+            for (job_id_value, status, status_name) in test_cases {
+                let job_id = JobId {
+                    value: job_id_value,
+                };
+
+                // Set status
+                app.job_processing_status_repository()
+                    .upsert_status(&job_id, &status)
+                    .await?;
+
+                // Call cleanup_job() directly (this is internal method)
+                app.cleanup_job(&job_id).await?;
+
+                // Verify status is deleted (unconditional)
+                let remaining_status = app
+                    .job_processing_status_repository()
+                    .find_status(&job_id)
+                    .await
+                    .unwrap();
+
+                assert_eq!(
+                    remaining_status, None,
+                    "{} job status should be deleted unconditionally by cleanup_job()",
+                    status_name
+                );
+            }
+
+            tracing::info!("test_cleanup_job_unconditional_deletion completed successfully");
+            Ok(())
+        })
+    }
+
+    /// Test: cancel_job() method directly (state-aware cancellation)
+    /// This verifies that cancel_job() respects job state and only cancels when appropriate
+    #[test]
+    fn test_cancel_job_state_aware_behavior() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let app = create_test_rdb_chan_app(true).await?;
+
+            // Test 1: PENDING should be cancellable
+            let pending_id = JobId { value: 96001 };
+            app.job_processing_status_repository()
+                .upsert_status(&pending_id, &JobProcessingStatus::Pending)
+                .await?;
+            let result = app.cancel_job(&pending_id).await?;
+            assert!(result, "PENDING job should be cancellable");
+            assert_eq!(
+                app.job_processing_status_repository()
+                    .find_status(&pending_id)
+                    .await?,
+                None,
+                "PENDING job should be cleaned up"
+            );
+
+            // Test 2: RUNNING should be cancellable
+            let running_id = JobId { value: 96002 };
+            app.job_processing_status_repository()
+                .upsert_status(&running_id, &JobProcessingStatus::Running)
+                .await?;
+            let result = app.cancel_job(&running_id).await?;
+            assert!(result, "RUNNING job should be cancellable");
+            assert_eq!(
+                app.job_processing_status_repository()
+                    .find_status(&running_id)
+                    .await?,
+                None,
+                "RUNNING job should be cleaned up"
+            );
+
+            // Test 3: WAIT_RESULT should NOT be cancellable (status preserved)
+            let wait_result_id = JobId { value: 96003 };
+            app.job_processing_status_repository()
+                .upsert_status(&wait_result_id, &JobProcessingStatus::WaitResult)
+                .await?;
+            let result = app.cancel_job(&wait_result_id).await?;
+            assert!(!result, "WAIT_RESULT job should NOT be cancellable");
+            assert_eq!(
+                app.job_processing_status_repository()
+                    .find_status(&wait_result_id)
+                    .await?,
+                Some(JobProcessingStatus::WaitResult),
+                "WAIT_RESULT status should be preserved"
+            );
+
+            // Test 4: Non-existent job (None status)
+            let nonexistent_id = JobId { value: 96004 };
+            let result = app.cancel_job(&nonexistent_id).await?;
+            assert!(
+                !result,
+                "Non-existent job should return false (cannot cancel)"
+            );
+
+            tracing::info!("test_cancel_job_state_aware_behavior completed successfully");
+            Ok(())
+        })
+    }
+
+    /// Test: complete_job() calls cleanup_job() directly (not cancel_job)
+    /// This verifies that job completion cleanup is unconditional
+    #[test]
+    fn test_complete_job_unconditional_cleanup() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let app = create_test_rdb_chan_app(true).await?;
+
+            let job_id = JobId { value: 97001 };
+
+            // Set status to WAIT_RESULT (simulating result processing)
+            app.job_processing_status_repository()
+                .upsert_status(&job_id, &JobProcessingStatus::WaitResult)
+                .await?;
+
+            // Create a fake JobResult
+            let job_result_id = proto::jobworkerp::data::JobResultId { value: 97001 };
+            let job_result_data = proto::jobworkerp::data::JobResultData {
+                job_id: Some(job_id),
+                status: proto::jobworkerp::data::ResultStatus::Success as i32,
+                output: Some(proto::jobworkerp::data::ResultOutput {
+                    items: b"test output".to_vec(),
+                }),
+                start_time: 0,
+                end_time: 100,
+                worker_id: Some(proto::jobworkerp::data::WorkerId { value: 1 }),
+                args: vec![],
+                uniq_key: None,
+                retried: 0,
+                max_retry: 0,
+                priority: 0,
+                timeout: 1000,
+                request_streaming: false,
+                enqueue_time: 0,
+                run_after_time: 0,
+                response_type: proto::jobworkerp::data::ResponseType::NoResult as i32,
+                store_success: false,
+                store_failure: false,
+                worker_name: "test_worker".to_string(),
+            };
+
+            // Call complete_job() (which should call cleanup_job internally)
+            let _ = app
+                .complete_job(&job_result_id, &job_result_data, None)
+                .await;
+
+            // Verify status is deleted (unconditional cleanup)
+            let remaining_status = app
+                .job_processing_status_repository()
+                .find_status(&job_id)
+                .await
+                .unwrap();
+
+            assert_eq!(
+                remaining_status, None,
+                "Job status should be deleted after complete_job (even if it was WAIT_RESULT)"
+            );
+
+            tracing::info!("test_complete_job_unconditional_cleanup completed successfully");
             Ok(())
         })
     }
