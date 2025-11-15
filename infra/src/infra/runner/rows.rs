@@ -1,10 +1,9 @@
-use jobworkerp_runner::runner::{mcp::McpServerRunnerImpl, RunnerSpec};
+use jobworkerp_runner::runner::{
+    mcp::McpServerRunnerImpl, timeout_config::RunnerTimeoutConfig, RunnerSpec,
+};
 use proto::jobworkerp::data::{Runner, RunnerData, RunnerId};
 use proto::jobworkerp::function::data::McpTool;
 use std::any::Any;
-
-/// Timeout duration for loading MCP tools to prevent hanging on unresponsive servers
-const MCP_TOOLS_LOAD_TIMEOUT_SECS: u64 = 10;
 
 // db row definitions
 #[derive(sqlx::FromRow, Debug, Clone, PartialEq)]
@@ -26,23 +25,21 @@ impl RunnerRow {
             (runner.as_ref() as &dyn Any).downcast_ref::<McpServerRunnerImpl>()
         {
             // Load tools with timeout to prevent hanging on unresponsive MCP servers
-            let tools = tokio::time::timeout(
-                std::time::Duration::from_secs(MCP_TOOLS_LOAD_TIMEOUT_SECS),
-                mcp_runner.tools(),
-            )
-            .await
-            .unwrap_or_else(|_| {
-                tracing::warn!(
-                    "MCP runner '{}' tools loading timed out after {}s",
-                    self.name,
-                    MCP_TOOLS_LOAD_TIMEOUT_SECS
-                );
-                Ok(Vec::default())
-            })
-            .unwrap_or_else(|e| {
-                tracing::error!("MCP runner '{}' tools loading failed: {:?}", self.name, e);
-                Vec::default()
-            });
+            let timeout_config = RunnerTimeoutConfig::global();
+            let tools = tokio::time::timeout(timeout_config.mcp_tools_load, mcp_runner.tools())
+                .await
+                .unwrap_or_else(|_| {
+                    tracing::warn!(
+                        "MCP runner '{}' tools loading timed out after {:?}",
+                        self.name,
+                        timeout_config.mcp_tools_load
+                    );
+                    Ok(Vec::default())
+                })
+                .unwrap_or_else(|e| {
+                    tracing::error!("MCP runner '{}' tools loading failed: {:?}", self.name, e);
+                    Vec::default()
+                });
 
             RunnerWithSchema {
                 id: Some(RunnerId { value: self.id }),
@@ -64,14 +61,14 @@ impl RunnerRow {
         } else {
             // Plugin schema methods are synchronous and may block, so we need to run them in spawn_blocking
             // to allow timeout to work properly
-            const SCHEMA_LOAD_TIMEOUT_SECS: u64 = 5;
+            let timeout_config = RunnerTimeoutConfig::global();
             let id = self.id;
             let description = self.description.clone();
             let r#type = self.r#type;
             let definition = self.definition.clone();
 
             let schema_result = tokio::time::timeout(
-                std::time::Duration::from_secs(SCHEMA_LOAD_TIMEOUT_SECS),
+                timeout_config.plugin_schema_load,
                 tokio::task::spawn_blocking(move || {
                     let runner_settings_proto = runner.runner_settings_proto();
                     let job_args_proto = runner.job_args_proto();
@@ -149,11 +146,11 @@ impl RunnerRow {
                 }
                 Err(_) => {
                     tracing::error!(
-                        "Plugin runner '{}' (id={}, definition='{}') schema loading timed out after {}s",
+                        "Plugin runner '{}' (id={}, definition='{}') schema loading timed out after {:?}",
                         self.name,
                         id,
                         self.definition,
-                        SCHEMA_LOAD_TIMEOUT_SECS
+                        timeout_config.plugin_schema_load
                     );
                     // Return minimal schema on timeout
                     RunnerWithSchema {

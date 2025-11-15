@@ -21,8 +21,9 @@ pub struct PluginMetadata {
     pub filename: String,
 }
 
+#[async_trait::async_trait]
 pub trait PluginLoader: Send + Sync {
-    fn load_path(
+    async fn load_path(
         &mut self,
         name: Option<&str>,
         path: &Path,
@@ -155,6 +156,7 @@ impl Plugins {
                     .write()
                     .await
                     .load_path(name, path, overwrite)
+                    .await
                     .map(|(name, description)| PluginMetadata {
                         name,
                         description,
