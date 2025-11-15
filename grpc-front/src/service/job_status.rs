@@ -53,6 +53,27 @@ impl<T: JobProcessingStatusGrpc + Tracing + Send + Debug + Sync + 'static>
             Err(e) => Err(handle_error(&e)),
         }
     }
+
+    // New method (Sprint 3) - Stub implementation
+    type FindByConditionStream = BoxStream<
+        'static,
+        Result<crate::proto::jobworkerp::service::JobProcessingStatusDetailResponse, tonic::Status>,
+    >;
+
+    #[tracing::instrument(
+        level = "info",
+        skip(self, _request),
+        fields(method = "find_by_condition")
+    )]
+    async fn find_by_condition(
+        &self,
+        _request: tonic::Request<crate::proto::jobworkerp::service::FindJobProcessingStatusRequest>,
+    ) -> Result<tonic::Response<Self::FindByConditionStream>, tonic::Status> {
+        Err(tonic::Status::unimplemented(
+            "find_by_condition is not yet implemented (Sprint 3). \
+             Enable JOB_STATUS_RDB_INDEXING=true and implement RdbJobProcessingStatusIndexRepository first."
+        ))
+    }
 }
 
 #[derive(DebugStub)]
