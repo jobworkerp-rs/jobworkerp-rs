@@ -55,7 +55,9 @@ service WorkerService {
   rpc FindByName(WorkerNameRequest) returns (OptionalWorkerResponse);
   rpc FindList(FindWorkerListRequest) returns (stream jobworkerp.data.Worker);
   // Deprecated: Use CountBy instead. This method will be removed in version 2.0.0
-  rpc Count(CountCondition) returns (CountResponse);
+  rpc Count(CountCondition) returns (CountResponse) {
+    option deprecated = true;
+  }
   rpc CountBy(CountWorkerRequest) returns (CountResponse);
   rpc FindChannelList(jobworkerp.data.Empty) returns (FindChannelListResponse);
 }

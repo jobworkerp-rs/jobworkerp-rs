@@ -83,9 +83,50 @@ message OptionalJobProcessingStatusResponse {
   optional jobworkerp.data.JobProcessingStatus status = 1;
 }
 
+message FindJobProcessingStatusRequest {
+  // Status filter
+  optional jobworkerp.data.JobProcessingStatus status = 1;
+
+  // Worker ID filter
+  optional int64 worker_id = 2;
+
+  // Channel filter
+  optional string channel = 3;
+
+  // Long-running job filter (milliseconds)
+  // Example: 600000 (10 minutes) to filter jobs running for more than 10 minutes
+  optional int64 min_elapsed_time_ms = 4;
+
+  // Pagination
+  optional int32 limit = 5;   // Default: 100, Max: 1000
+  optional int32 offset = 6;  // Default: 0
+
+  // Sort order
+  optional bool descending = 7;  // Default: true (newest first)
+}
+
+message JobProcessingStatusDetailResponse {
+  jobworkerp.data.JobId id = 1;
+  jobworkerp.data.JobProcessingStatus status = 2;
+  int64 worker_id = 3;
+  string channel = 4;
+  int32 priority = 5;
+  int64 enqueue_time = 6;
+  optional int64 start_time = 7;
+  optional int64 pending_time = 8;
+  optional bool is_streamable = 9;
+  optional bool broadcast_results = 10;
+  int64 updated_at = 11;  // Last RDB update time (for detecting sync delay)
+}
+
 service JobProcessingStatusService {
   rpc Find(jobworkerp.data.JobId) returns (OptionalJobProcessingStatusResponse);
   rpc FindAll(jobworkerp.data.Empty) returns (stream JobProcessingStatusResponse);
+
+  // Advanced search using RDB index
+  // Returns UNIMPLEMENTED error if JOB_STATUS_RDB_INDEXING=false
+  rpc FindByCondition(FindJobProcessingStatusRequest)
+      returns (stream JobProcessingStatusDetailResponse);
 }
 
 message JobRestoreRequest {

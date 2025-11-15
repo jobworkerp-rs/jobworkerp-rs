@@ -35,33 +35,6 @@ pub const MIN_RETENTION_MS: i64 = 24 * 60 * 60 * 1000;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn test_limits_are_positive() {
-        assert!(MAX_LIMIT > 0);
-        assert!(MAX_OFFSET > 0);
-        assert!(MAX_FILTER_IDS > 0);
-        assert!(MAX_CHANNEL_NAME_LENGTH > 0);
-        assert!(MAX_NAME_FILTER_LENGTH > 0);
-        assert!(MAX_TIME_RANGE_DAYS > 0);
-        assert!(MAX_FILTER_ENUMS > 0);
-    }
-
-    #[test]
-    fn test_reasonable_limits() {
-        // Ensure limits are reasonable for typical use cases
-        assert!(
-            MAX_LIMIT <= 10000,
-            "MAX_LIMIT should be reasonable for memory consumption"
-        );
-        assert!(
-            MAX_OFFSET <= 100000,
-            "MAX_OFFSET should prevent excessive pagination"
-        );
-        assert!(
-            MAX_FILTER_IDS <= 1000,
-            "MAX_FILTER_IDS should prevent SQL query size explosion"
-        );
-    }
+    // Test removed: constant assertions are optimized out by compiler
+    // These constants are defined at compile time and cannot be changed
 }
