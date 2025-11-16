@@ -19,11 +19,11 @@ use std::sync::Arc;
 #[derive(Clone, Debug)]
 pub struct RdbJobProcessingStatusIndexRepository {
     rdb_pool: Arc<RdbPool>,
-    config: JobStatusConfig,
+    config: Arc<JobStatusConfig>,
 }
 
 impl RdbJobProcessingStatusIndexRepository {
-    pub fn new(rdb_pool: Arc<RdbPool>, config: JobStatusConfig) -> Self {
+    pub fn new(rdb_pool: Arc<RdbPool>, config: Arc<JobStatusConfig>) -> Self {
         Self { rdb_pool, config }
     }
 
@@ -472,7 +472,10 @@ mod tests {
                 retention_hours: 24,
             };
 
-            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), config);
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
 
             // When disabled, should succeed without doing anything
             let result = repo
@@ -503,7 +506,10 @@ mod tests {
                 retention_hours: 24,
             };
 
-            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), config);
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
 
             // Insert PENDING status
             let result = repo
@@ -542,7 +548,10 @@ mod tests {
                 retention_hours: 24,
             };
 
-            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), config);
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
 
             let result = repo
                 .find_by_condition(None, None, None, None, 100, 0, true)
@@ -564,7 +573,7 @@ mod tests {
                 retention_hours: 24,
             };
 
-            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), config);
+            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), Arc::new(config));
 
             // Insert a deleted record with old timestamp (25 hours ago)
             let old_timestamp = datetime::now_millis() - (25 * 3600 * 1000);
@@ -603,7 +612,10 @@ mod tests {
                 retention_hours: 24,
             };
 
-            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), config);
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
 
             // Try to update to RUNNING without PENDING record (optimistic lock failure)
             let result = repo
@@ -643,7 +655,7 @@ mod tests {
                 retention_hours: 24,
             };
 
-            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), config);
+            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), Arc::new(config));
 
             // Insert a deleted record
             let now = datetime::now_millis();
@@ -702,7 +714,10 @@ mod tests {
                 retention_hours: 24,
             };
 
-            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), config);
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
 
             // Insert PENDING job
             repo.index_status(
@@ -772,7 +787,10 @@ mod tests {
                 retention_hours: 24,
             };
 
-            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), config);
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
 
             // Insert jobs with different worker_ids
             repo.index_status(
@@ -821,7 +839,10 @@ mod tests {
                 cleanup_interval_hours: 1,
                 retention_hours: 24,
             };
-            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), config);
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
 
             let job_id = JobId { value: 100 };
             let worker_id = WorkerId { value: 1 };
@@ -871,7 +892,10 @@ mod tests {
                 cleanup_interval_hours: 1,
                 retention_hours: 24,
             };
-            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), config);
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
 
             let job_id = JobId { value: 200 };
             let worker_id = WorkerId { value: 1 };
@@ -918,7 +942,10 @@ mod tests {
                 cleanup_interval_hours: 1,
                 retention_hours: 24,
             };
-            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), config);
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
 
             let job_id = JobId { value: 300 };
             let worker_id = WorkerId { value: 1 };
@@ -969,7 +996,10 @@ mod tests {
                 cleanup_interval_hours: 1,
                 retention_hours: 24,
             };
-            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), config);
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
 
             let job_id = JobId { value: 400 };
             let worker_id = WorkerId { value: 1 };

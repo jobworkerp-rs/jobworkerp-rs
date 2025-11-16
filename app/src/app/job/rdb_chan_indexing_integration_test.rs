@@ -21,7 +21,7 @@ mod rdb_chan_indexing_integration_tests {
 
     #[test]
     fn test_async_indexing_order_guarantee() -> Result<()> {
-        command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
         // Test that async RDB indexing preserves order: PENDING -> RUNNING -> deleted
         //
         // NOTE: This test manually calls index_status() for demonstration purposes.
@@ -298,7 +298,7 @@ mod rdb_chan_indexing_integration_tests {
 
     #[test]
     fn test_cancel_pending_job_with_rdb_indexing() -> Result<()> {
-        command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
         // Test that cancelling a PENDING job updates RDB index with CANCELLING status
         TEST_RUNTIME.block_on(async {
             let app_module = create_rdb_chan_test_app(true, true).await?;
@@ -422,7 +422,7 @@ mod rdb_chan_indexing_integration_tests {
 
     #[test]
     fn test_rdb_index_start_time_set_correctly() -> Result<()> {
-        command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+        // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
         // Test that start_time is correctly set when job transitions to RUNNING
         // This verifies the P1 fix: using index_status() instead of update_status_by_job_id()
         TEST_RUNTIME.block_on(async {

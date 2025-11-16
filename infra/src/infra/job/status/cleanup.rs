@@ -112,7 +112,7 @@ mod tests {
 
             let repo = Arc::new(RdbJobProcessingStatusIndexRepository::new(
                 Arc::new(pool.clone()),
-                config,
+                Arc::new(config),
             ));
 
             let task = JobStatusCleanupTask::new(repo, 2);
@@ -138,7 +138,7 @@ mod tests {
 
             let repo = Arc::new(RdbJobProcessingStatusIndexRepository::new(
                 Arc::new(pool.clone()),
-                config,
+                Arc::new(config),
             ));
 
             let task = JobStatusCleanupTask::new(repo, 24);
