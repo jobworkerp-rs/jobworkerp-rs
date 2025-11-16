@@ -405,8 +405,14 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
             ));
         }
 
-        // Safety feature 2: Recent data protection (gRPC layer double-check)
+        // Safety feature 2: Recent data protection (gRPC layer - Defense in Depth)
+        // Note: 24-hour protection is ALWAYS enforced at RDB layer, even if end_time_before is not specified.
+        // This validation provides early error feedback if user explicitly requests deletion within 24 hours.
         validate_bulk_delete_safety(req.end_time_before)?;
+
+        // Safety feature 3: Filter array size validation (prevent unbounded SQL IN clauses)
+        validate_filter_enums(&req.statuses, "statuses")?;
+        validate_filter_ids(&req.worker_ids, "worker_ids")?;
 
         // Convert ResultStatus to i32
         let statuses: Vec<i32> = req.statuses.to_vec();
