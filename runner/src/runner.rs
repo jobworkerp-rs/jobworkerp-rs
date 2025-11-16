@@ -58,6 +58,7 @@ pub mod plugins;
 pub mod python;
 pub mod request;
 pub mod slack;
+pub mod timeout_config;
 pub mod workflow;
 
 #[cfg(any(test, feature = "test-utils"))]

@@ -1,47 +1,133 @@
 use super::PluginLoader;
 use crate::runner::plugins::{impls::PluginRunnerWrapperImpl, PluginRunner};
+use crate::runner::timeout_config::RunnerTimeoutConfig;
 use anyhow::Result;
 use jobworkerp_base::error::JobWorkerError;
 use libloading::{Library, Symbol};
-use std::path::Path;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
+use tokio::sync::RwLock as TokioRwLock;
 
 #[allow(improper_ctypes_definitions)]
 type LoaderFunc<'a> = Symbol<'a, extern "C" fn() -> Box<dyn PluginRunner + Send + Sync>>;
 
+// Global library cache for plugin libraries (physical memory management)
+static PLUGIN_LIBRARY_CACHE: OnceLock<TokioRwLock<HashMap<PathBuf, &'static Library>>> =
+    OnceLock::new();
+
 #[derive(Debug)]
 pub struct RunnerPluginLoader {
-    // TODO to map?
-    plugin_loaders: Vec<(String, String, Library)>,
+    // Logically "available" plugins list (name, description, path)
+    active_plugins: Vec<(String, String, PathBuf)>,
 }
 
 impl RunnerPluginLoader {
     pub fn new() -> Self {
         RunnerPluginLoader {
-            plugin_loaders: Vec::new(),
+            active_plugins: Vec::new(),
         }
     }
-    pub fn plugin_loaders(&self) -> &Vec<(String, String, Library)> {
-        &self.plugin_loaders
+
+    /// Get list of active plugin names
+    pub fn active_plugin_names(&self) -> Vec<String> {
+        self.active_plugins
+            .iter()
+            .map(|(name, _, _)| name.clone())
+            .collect()
     }
+
+    /// Get list of active plugin info (name, description, path)
+    pub fn active_plugin_info(&self) -> &Vec<(String, String, PathBuf)> {
+        &self.active_plugins
+    }
+
     pub fn exists(&self, name: &str) -> bool {
-        self.plugin_loaders.iter().any(|p| p.0.as_str() == name)
+        self.active_plugins.iter().any(|p| p.0.as_str() == name)
+    }
+
+    // Helper: Get or load library from global cache
+    async fn get_or_load_library(path: &Path) -> Result<&'static Library> {
+        let cache = PLUGIN_LIBRARY_CACHE.get_or_init(|| TokioRwLock::new(HashMap::new()));
+
+        // Read lock to check cache
+        {
+            let cache_guard = cache.read().await;
+            if let Some(lib) = cache_guard.get(path) {
+                tracing::debug!("Plugin library cache hit: {:?}", path);
+                return Ok(*lib);
+            }
+        }
+
+        // Write lock to load new library
+        let mut cache_guard = cache.write().await;
+
+        // Double-check (another thread might have loaded it)
+        if let Some(lib) = cache_guard.get(path) {
+            return Ok(*lib);
+        }
+
+        tracing::info!("Loading plugin library (will remain in memory): {:?}", path);
+
+        let path_clone = path.to_path_buf();
+        let timeout_config = RunnerTimeoutConfig::global();
+        let lib = tokio::time::timeout(
+            timeout_config.plugin_load,
+            tokio::task::spawn_blocking(move || unsafe {
+                let lib = Library::new(&path_clone)?;
+                // Box::leak() to promote to 'static lifetime
+                Ok::<_, anyhow::Error>(Box::leak(Box::new(lib)) as &'static Library)
+            }),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Library load timeout after {:?}: {:?}",
+                timeout_config.plugin_load,
+                path
+            )
+        })???;
+
+        cache_guard.insert(path.to_path_buf(), lib);
+        Ok(lib)
     }
 
     // find plugin (not loaded. reference only. cannot run)
-    pub fn find_plugin_runner_by_name(&self, name: &str) -> Option<PluginRunnerWrapperImpl> {
-        if let Some((_name, _, lib)) = self.plugin_loaders.iter().find(|p| p.0.as_str() == name) {
-            // XXX unsafe
-            unsafe { lib.get(b"load_plugin") }
-                .inspect_err(|e| {
-                    tracing::warn!("error in loading runner plugin:{name}, error: {e:?}")
-                })
-                .ok()
-                .map(|lp: LoaderFunc<'_>| PluginRunnerWrapperImpl::new(Arc::new(RwLock::new(lp()))))
-        } else {
-            None
-        }
+    pub async fn find_plugin_runner_by_name(&self, name: &str) -> Option<PluginRunnerWrapperImpl> {
+        // Search only in logically "available" plugins
+        let path = self
+            .active_plugins
+            .iter()
+            .find(|p| p.0.as_str() == name)
+            .map(|(_, _, path)| path.clone())?;
+
+        // Get from cache (should be already loaded)
+        let lib = Self::get_or_load_library(&path).await.ok()?;
+
+        // Instantiate with timeout
+        let timeout_config = RunnerTimeoutConfig::global();
+        let name_clone = name.to_string();
+        tokio::time::timeout(
+            timeout_config.plugin_instantiate,
+            tokio::task::spawn_blocking(move || unsafe {
+                let load_plugin: Symbol<LoaderFunc> = lib.get(b"load_plugin\0").ok()?;
+                let plugin = load_plugin();
+                // Use tokio::sync::RwLock for PluginRunnerWrapperImpl
+                Some(PluginRunnerWrapperImpl::new(Arc::new(TokioRwLock::new(
+                    plugin,
+                ))))
+            }),
+        )
+        .await
+        .map_err(|_| {
+            tracing::error!(
+                "Plugin '{}' instantiation timeout after {:?}",
+                name_clone,
+                timeout_config.plugin_instantiate
+            );
+        })
+        .ok()?
+        .ok()?
     }
 }
 
@@ -51,75 +137,104 @@ impl Default for RunnerPluginLoader {
     }
 }
 
+#[async_trait::async_trait]
 impl PluginLoader for RunnerPluginLoader {
-    fn load_path(
+    async fn load_path(
         &mut self,
         name: Option<&str>,
         path: &Path,
         overwrite: bool,
     ) -> Result<(String, String)> {
-        // XXX load plugin only for getting name
-        let lib = unsafe { Library::new(path) }?;
-        let load_plugin: LoaderFunc = unsafe { lib.get(b"load_plugin") }?;
-        let plugin = load_plugin();
-        let name = name
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| plugin.name().clone());
-        let description = plugin.description().clone();
+        // 1. Load library physically (or get from cache)
+        let lib = Self::get_or_load_library(path).await?;
 
-        let lib = unsafe { Library::new(path) }?;
+        // 2. Get plugin info with timeout
+        let timeout_config = RunnerTimeoutConfig::global();
+        let (plugin_name, description) = tokio::time::timeout(
+            timeout_config.plugin_instantiate,
+            tokio::task::spawn_blocking(move || unsafe {
+                let load_plugin: Symbol<LoaderFunc> = lib.get(b"load_plugin\0")?;
+                let plugin = load_plugin();
+                Ok::<_, anyhow::Error>((plugin.name(), plugin.description()))
+            }),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Plugin info fetch timeout after {:?}: {:?}",
+                timeout_config.plugin_instantiate,
+                path
+            )
+        })???;
+
+        let name = name.map(|s| s.to_string()).unwrap_or(plugin_name);
+
+        // 3. Logical duplicate check
         if self
-            .plugin_loaders
+            .active_plugins
             .iter()
             .any(|p| p.0.as_str() == name.as_str())
             && !overwrite
         {
-            Err(JobWorkerError::AlreadyExists(format!(
+            return Err(JobWorkerError::AlreadyExists(format!(
                 "plugin already loaded: {} ({})",
                 &name,
                 path.display()
             ))
-            .into())
-        } else {
-            if overwrite {
-                self.unload(name.as_str())?;
-            }
-            self.plugin_loaders.push((
-                name.clone(),
-                path.file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string(),
-                lib,
-            ));
-            Ok((name, description))
+            .into());
         }
+
+        // 4. Overwrite: logical unload
+        if overwrite {
+            self.unload(&name)?;
+        }
+
+        // 5. Add to logical plugin list
+        self.active_plugins
+            .push((name.clone(), description.clone(), path.to_path_buf()));
+
+        tracing::info!(
+            "Plugin '{}' registered (library may be cached in memory)",
+            name
+        );
+
+        Ok((name, description))
     }
+
     fn unload(&mut self, name: &str) -> Result<bool> {
-        // XXX unload plugin only for getting name
-        let idx = self
-            .plugin_loaders
+        // Logical unload only (memory not freed)
+        // Search from the latest loaded plugin
+        if let Some((idx, _)) = self
+            .active_plugins
             .iter()
-            .rev() // unload latest loaded plugin
-            .position(|p| p.0.as_str() == name);
-        if let Some(i) = idx {
-            self.plugin_loaders.remove(i).2.close().inspect_err(|e| {
-                tracing::warn!("error in unloading runner plugin:{name}, error: {e:?}")
-            })?;
+            .enumerate()
+            .rev()
+            .find(|(_, p)| p.0.as_str() == name)
+        {
+            let (removed_name, _, removed_path) = self.active_plugins.remove(idx);
+
+            tracing::info!(
+                "Plugin '{}' unregistered (library remains in memory at {:?})",
+                removed_name,
+                removed_path
+            );
+
             Ok(true)
         } else {
             Ok(false)
         }
     }
+
     fn clear(&mut self) -> Result<()> {
-        self.plugin_loaders.clear();
+        self.active_plugins.clear();
         Ok(())
     }
 }
 
 impl Drop for RunnerPluginLoader {
     fn drop(&mut self) {
-        // Plugin drop must be called before Library drop.
-        self.plugin_loaders.clear();
+        // Clear logical plugin list.
+        // Physical libraries remain in PLUGIN_LIBRARY_CACHE until program termination.
+        self.active_plugins.clear();
     }
 }

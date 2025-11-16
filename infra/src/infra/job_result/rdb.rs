@@ -413,14 +413,22 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
             ));
         }
 
-        // Safety feature 2: Recent data protection (cannot delete data within last 24 hours)
+        // Safety feature 2: Recent data protection (ALWAYS enforced, cannot delete data within last 24 hours)
+        let now = datetime::now_millis();
+        let cutoff_24h = now - 24 * 60 * 60 * 1000;
+
+        // Calculate effective cutoff time:
+        // - If end_time_before is specified, use the earlier of (specified time, 24h cutoff)
+        // - If end_time_before is not specified, use 24h cutoff
+        let effective_cutoff = end_time_before.unwrap_or(cutoff_24h).min(cutoff_24h);
+
+        // Explicit error if user tries to delete data within last 24 hours
         if let Some(time) = end_time_before {
-            let now = datetime::now_millis();
-            let one_day_ago = now - 24 * 60 * 60 * 1000;
-            if time > one_day_ago {
+            if time > cutoff_24h {
                 return Err(anyhow::anyhow!(
-                    "Cannot delete results within last 24 hours (end_time_before: {}, one_day_ago: {})",
-                    time, one_day_ago
+                    "Cannot delete results within last 24 hours (requested: {}, cutoff: {})",
+                    time,
+                    cutoff_24h
                 ));
             }
         }
@@ -440,12 +448,10 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
             .map_err(JobWorkerError::DBError)?;
 
         // Build DELETE query using QueryBuilder
+        // IMPORTANT: Always apply 24-hour protection via end_time filter
         let mut query_builder =
-            sqlx::QueryBuilder::<Rdb>::new("DELETE FROM job_result WHERE id > 0");
-
-        if let Some(time) = end_time_before {
-            query_builder.push(" AND end_time < ").push_bind(time);
-        }
+            sqlx::QueryBuilder::<Rdb>::new("DELETE FROM job_result WHERE end_time < ");
+        query_builder.push_bind(effective_cutoff);
 
         if !statuses.is_empty() {
             query_builder.push(" AND status IN (");
@@ -479,10 +485,11 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
 
         tracing::info!(
             deleted_count = deleted_count,
+            effective_cutoff = effective_cutoff,
             end_time_before = ?end_time_before,
             statuses_count = statuses.len(),
             worker_ids_count = worker_ids.len(),
-            "Bulk delete completed"
+            "Bulk delete completed with 24-hour protection enforced"
         );
 
         Ok(deleted_count)
@@ -1585,6 +1592,171 @@ mod test {
         Ok(())
     }
 
+    /// Test delete_bulk enforces 24-hour protection without time filter (CRITICAL-002 regression test)
+    async fn _test_delete_bulk_enforces_24h_protection_without_time_filter(
+        pool: &'static RdbPool,
+    ) -> Result<()> {
+        let repository = RdbJobResultRepositoryImpl::new(pool);
+
+        // Setup: Create recent JobResult (1 hour ago)
+        let base_id = 14000;
+        let now = command_utils::util::datetime::now_millis();
+        let one_hour_ago = now - (60 * 60 * 1000);
+
+        let data = create_test_job_result_data(
+            1,
+            1,
+            ResultStatus::Success,
+            one_hour_ago,
+            one_hour_ago + 1000,
+            0,
+            None,
+        );
+        repository
+            .create(&JobResultId { value: base_id + 1 }, &data)
+            .await?;
+
+        // Test: Attempt deletion with statuses only (no time filter)
+        let deleted = repository
+            .delete_bulk(None, vec![ResultStatus::Success as i32], vec![])
+            .await?;
+
+        // Expected: 24-hour protection enforced, no deletion
+        assert_eq!(deleted, 0, "Recent data (1 hour ago) should not be deleted");
+
+        // Verify data still exists
+        let found = repository.find(&JobResultId { value: base_id + 1 }).await?;
+        assert!(found.is_some(), "Recent data should still exist");
+
+        Ok(())
+    }
+
+    /// Test delete_bulk enforces 24-hour protection with explicit time within 24h (CRITICAL-002 regression test)
+    async fn _test_delete_bulk_explicit_time_within_24h_rejected(
+        pool: &'static RdbPool,
+    ) -> Result<()> {
+        let repository = RdbJobResultRepositoryImpl::new(pool);
+
+        let now = command_utils::util::datetime::now_millis();
+        let cutoff_12h = now - (12 * 60 * 60 * 1000); // 12 hours ago
+
+        // Test: Attempt deletion with end_time_before within 24 hours
+        let result = repository
+            .delete_bulk(Some(cutoff_12h), vec![], vec![])
+            .await;
+
+        // Expected: Error due to 24-hour protection
+        assert!(
+            result.is_err(),
+            "Deletion with cutoff within 24 hours should fail"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("within last 24 hours"),
+            "Error message should mention 24-hour protection"
+        );
+
+        Ok(())
+    }
+
+    /// Test delete_bulk with old data and status filter succeeds (CRITICAL-002 regression test)
+    async fn _test_delete_bulk_old_data_with_status_filter_succeeds(
+        pool: &'static RdbPool,
+    ) -> Result<()> {
+        let repository = RdbJobResultRepositoryImpl::new(pool);
+
+        // Setup: Create old JobResult (48 hours ago)
+        let base_id = 15000;
+        let now = command_utils::util::datetime::now_millis();
+        let two_days_ago = now - (48 * 60 * 60 * 1000);
+
+        let data = create_test_job_result_data(
+            1,
+            1,
+            ResultStatus::Success,
+            two_days_ago,
+            two_days_ago + 1000,
+            0,
+            None,
+        );
+        repository
+            .create(&JobResultId { value: base_id + 1 }, &data)
+            .await?;
+
+        // Test: Deletion with statuses only (no explicit time filter)
+        let deleted = repository
+            .delete_bulk(None, vec![ResultStatus::Success as i32], vec![])
+            .await?;
+
+        // Expected: Old data (48 hours ago) should be deleted
+        assert_eq!(deleted, 1, "Old data (48 hours ago) should be deleted");
+
+        // Verify deletion
+        let found = repository.find(&JobResultId { value: base_id + 1 }).await?;
+        assert!(found.is_none(), "Old data should be deleted");
+
+        Ok(())
+    }
+
+    /// Test delete_bulk with mixed recent and old data (CRITICAL-002 regression test)
+    async fn _test_delete_bulk_mixed_recent_and_old_data(pool: &'static RdbPool) -> Result<()> {
+        let repository = RdbJobResultRepositoryImpl::new(pool);
+
+        // Setup: Create mixed data
+        let base_id = 16000;
+        let now = command_utils::util::datetime::now_millis();
+        let one_hour_ago = now - (60 * 60 * 1000);
+        let two_days_ago = now - (48 * 60 * 60 * 1000);
+
+        // Recent data (1 hour ago)
+        let recent_data = create_test_job_result_data(
+            1,
+            1,
+            ResultStatus::Success,
+            one_hour_ago,
+            one_hour_ago + 1000,
+            0,
+            None,
+        );
+        repository
+            .create(&JobResultId { value: base_id + 1 }, &recent_data)
+            .await?;
+
+        // Old data (48 hours ago)
+        let old_data = create_test_job_result_data(
+            1,
+            2,
+            ResultStatus::Success,
+            two_days_ago,
+            two_days_ago + 1000,
+            0,
+            None,
+        );
+        repository
+            .create(&JobResultId { value: base_id + 2 }, &old_data)
+            .await?;
+
+        // Test: Deletion with statuses only
+        let deleted = repository
+            .delete_bulk(None, vec![ResultStatus::Success as i32], vec![])
+            .await?;
+
+        // Expected: Only old data deleted
+        assert_eq!(deleted, 1, "Only old data should be deleted");
+
+        // Verify recent data still exists
+        let recent_found = repository.find(&JobResultId { value: base_id + 1 }).await?;
+        assert!(recent_found.is_some(), "Recent data should still exist");
+
+        // Verify old data deleted
+        let old_found = repository.find(&JobResultId { value: base_id + 2 }).await?;
+        assert!(old_found.is_none(), "Old data should be deleted");
+
+        Ok(())
+    }
+
     // Test runner functions for Sprint 4
 
     #[cfg(not(feature = "mysql"))]
@@ -1752,6 +1924,56 @@ mod test {
             let pool = setup_test_rdb_from("sql/sqlite").await;
             sqlx::query("DELETE FROM job_result;").execute(pool).await?;
             _test_delete_bulk_transaction_rollback(pool).await
+        })
+    }
+
+    // CRITICAL-002 regression tests
+
+    #[cfg(not(feature = "mysql"))]
+    #[test]
+    fn test_critical002_delete_bulk_enforces_24h_protection_without_time_filter() -> Result<()> {
+        use infra_utils::infra::test::setup_test_rdb_from;
+        use infra_utils::infra::test::TEST_RUNTIME;
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_rdb_from("sql/sqlite").await;
+            sqlx::query("DELETE FROM job_result;").execute(pool).await?;
+            _test_delete_bulk_enforces_24h_protection_without_time_filter(pool).await
+        })
+    }
+
+    #[cfg(not(feature = "mysql"))]
+    #[test]
+    fn test_critical002_delete_bulk_explicit_time_within_24h_rejected() -> Result<()> {
+        use infra_utils::infra::test::setup_test_rdb_from;
+        use infra_utils::infra::test::TEST_RUNTIME;
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_rdb_from("sql/sqlite").await;
+            sqlx::query("DELETE FROM job_result;").execute(pool).await?;
+            _test_delete_bulk_explicit_time_within_24h_rejected(pool).await
+        })
+    }
+
+    #[cfg(not(feature = "mysql"))]
+    #[test]
+    fn test_critical002_delete_bulk_old_data_with_status_filter_succeeds() -> Result<()> {
+        use infra_utils::infra::test::setup_test_rdb_from;
+        use infra_utils::infra::test::TEST_RUNTIME;
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_rdb_from("sql/sqlite").await;
+            sqlx::query("DELETE FROM job_result;").execute(pool).await?;
+            _test_delete_bulk_old_data_with_status_filter_succeeds(pool).await
+        })
+    }
+
+    #[cfg(not(feature = "mysql"))]
+    #[test]
+    fn test_critical002_delete_bulk_mixed_recent_and_old_data() -> Result<()> {
+        use infra_utils::infra::test::setup_test_rdb_from;
+        use infra_utils::infra::test::TEST_RUNTIME;
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_rdb_from("sql/sqlite").await;
+            sqlx::query("DELETE FROM job_result;").execute(pool).await?;
+            _test_delete_bulk_mixed_recent_and_old_data(pool).await
         })
     }
 }

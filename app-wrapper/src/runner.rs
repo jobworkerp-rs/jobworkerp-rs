@@ -165,6 +165,7 @@ impl RunnerFactory {
                         .write()
                         .await
                         .find_plugin_runner_by_name(name)
+                        .await
                         .map(|r| Box::new(r) as Box<dyn CancellableRunner + Send + Sync>)
                 }
             }
