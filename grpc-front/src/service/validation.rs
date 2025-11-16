@@ -277,6 +277,16 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_filter_ids_error_message_includes_param_name() {
+        let ids: Vec<i64> = (0..MAX_FILTER_IDS + 1).map(|i| i as i64).collect();
+        let err = validate_filter_ids(&ids, "worker_ids").unwrap_err();
+        assert!(
+            err.message().contains("worker_ids"),
+            "error message should include parameter name"
+        );
+    }
+
+    #[test]
     fn test_validate_filter_enums_valid() {
         let enums: Vec<i32> = vec![];
         assert!(validate_filter_enums(&enums, "test_enums").is_ok());
@@ -294,6 +304,15 @@ mod tests {
         assert!(validate_filter_enums(&enums, "test_enums").is_err());
     }
 
+    #[test]
+    fn test_validate_filter_enums_error_message_includes_param_name() {
+        let enums: Vec<i32> = (0..MAX_FILTER_ENUMS + 1).map(|i| i as i32).collect();
+        let err = validate_filter_enums(&enums, "statuses").unwrap_err();
+        assert!(
+            err.message().contains("statuses"),
+            "error message should include parameter name"
+        );
+    }
     #[test]
     fn test_validate_time_range_valid() {
         assert!(validate_time_range(None, None, "test_time").is_ok());

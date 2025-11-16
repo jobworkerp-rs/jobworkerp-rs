@@ -14,7 +14,7 @@ use command_utils::util::{
 };
 use debug_stub_derive::DebugStub;
 use infra_utils::infra::{rdb::RdbConfig, redis::RedisConfig};
-use jobworkerp_base::error::JobWorkerError;
+use jobworkerp_base::{error::JobWorkerError, job_status_config::JobStatusConfig};
 use proto::jobworkerp::data::{Job, JobData};
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
@@ -106,6 +106,7 @@ pub struct InfraConfigModule {
     pub redis_config: Option<RedisConfig>,
     pub rdb_config: Option<RdbConfig>,
     pub job_queue_config: Arc<JobQueueConfig>,
+    pub job_status_config: Arc<JobStatusConfig>,
 }
 
 impl InfraConfigModule {
@@ -114,6 +115,7 @@ impl InfraConfigModule {
             redis_config: load_redis_config_from_env().ok(),
             rdb_config: load_db_config_from_env().ok(),
             job_queue_config: Arc::new(load_job_queue_config_from_env().unwrap()),
+            job_status_config: Arc::new(JobStatusConfig::from_env()),
         }
     }
 }
@@ -137,16 +139,19 @@ pub mod test {
             rdb_config: Some(MYSQL_CONFIG.clone()),
             redis_config: Some(REDIS_CONFIG.clone()),
             job_queue_config: Arc::new(JOB_QUEUE_CONFIG.clone()),
+            job_status_config: Arc::new(JOB_STATUS_CONFIG.clone()),
         }
     }
     #[cfg(not(feature = "mysql"))]
     pub fn new_for_test_config_rdb() -> InfraConfigModule {
         use infra_utils::infra::test::{REDIS_CONFIG, SQLITE_CONFIG};
+        use jobworkerp_base::JOB_STATUS_CONFIG;
 
         InfraConfigModule {
             rdb_config: Some(SQLITE_CONFIG.clone()),
             redis_config: Some(REDIS_CONFIG.clone()),
             job_queue_config: Arc::new(JOB_QUEUE_CONFIG.clone()),
+            job_status_config: Arc::new(JOB_STATUS_CONFIG.clone()),
         }
     }
 }
