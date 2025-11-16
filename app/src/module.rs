@@ -430,9 +430,7 @@ pub mod test {
     };
     use anyhow::Result;
     use infra::infra::{
-        module::{rdb::test::setup_test_rdb_module, RedisRdbOptionalRepositoryModule},
-        test::new_for_test_config_rdb,
-        IdGeneratorWrapper,
+        module::RedisRdbOptionalRepositoryModule, test::new_for_test_config_rdb, IdGeneratorWrapper,
     };
     use jobworkerp_runner::runner::{
         factory::RunnerSpecFactory, mcp::proxy::McpServerFactory, plugins::Plugins,
@@ -443,14 +441,20 @@ pub mod test {
     use tokio::time::Duration;
     pub const TEST_PLUGIN_DIR: &str = infra::infra::module::test::TEST_PLUGIN_DIR;
 
-    pub async fn create_hybrid_test_app() -> Result<AppModule> {
+    /// Create hybrid test app (Scalable mode) with optional RDB indexing
+    ///
+    /// # Arguments
+    /// * `enable_rdb_indexing` - If true, enables JobProcessingStatus RDB indexing
+    pub async fn create_hybrid_test_app_with_indexing(
+        enable_rdb_indexing: bool,
+    ) -> Result<AppModule> {
+        use infra::infra::module::rdb::test::setup_test_rdb_module_with_indexing;
+        use infra::infra::module::HybridRepositoryModule;
         // let redis_client = setup_test_redis_client()?;
         let storage_config = Arc::new(StorageConfig {
             r#type: StorageType::Scalable,
             restore_at_startup: Some(false),
         });
-        // for rdb migration
-        let _rdb_module = setup_test_rdb_module().await;
         let id_generator = Arc::new(IdGeneratorWrapper::new());
         let module = new_for_test_config_rdb();
         let plugins = Arc::new(Plugins::new());
@@ -458,14 +462,17 @@ pub mod test {
             plugins,
             Arc::new(McpServerFactory::default()),
         ));
-        let repositories = Arc::new(
-            infra::infra::module::HybridRepositoryModule::new(
-                &module,
-                id_generator.clone(),
-                runner_factory.clone(),
-            )
-            .await,
-        );
+
+        // First create the Hybrid module normally (this creates both Redis and RDB modules)
+        let mut repositories =
+            HybridRepositoryModule::new(&module, id_generator.clone(), runner_factory.clone())
+                .await;
+
+        // Replace the RDB module with one that has RDB indexing enabled/disabled as requested
+        repositories.rdb_chan_module =
+            setup_test_rdb_module_with_indexing(enable_rdb_indexing).await;
+
+        let repositories = Arc::new(repositories);
         let mc_config = memory_utils::cache::stretto::MemoryCacheConfig {
             num_counters: 10,
             max_cost: 1000000,
@@ -562,5 +569,159 @@ pub mod test {
             descriptor_cache,
             workflow_loader,
         ))
+    }
+
+    /// Create standalone test app (RdbChan mode) with optional RDB indexing
+    ///
+    /// # Arguments
+    /// * `use_mock_id` - If true, uses mock ID generator
+    /// * `enable_rdb_indexing` - If true, enables JobProcessingStatus RDB indexing
+    pub async fn create_rdb_chan_test_app(
+        use_mock_id: bool,
+        enable_rdb_indexing: bool,
+    ) -> Result<AppModule> {
+        use crate::app::job::rdb_chan::RdbChanJobAppImpl;
+        use crate::app::job_result::rdb::RdbJobResultAppImpl;
+        use crate::app::runner::rdb::RdbRunnerAppImpl;
+        use crate::app::worker::rdb::RdbWorkerAppImpl;
+        use infra::infra::job::queue::JobQueueCancellationRepository;
+        use infra::infra::module::rdb::test::setup_test_rdb_module_with_indexing;
+
+        let rdb_module = setup_test_rdb_module_with_indexing(enable_rdb_indexing).await;
+        let repositories = Arc::new(rdb_module);
+
+        let id_generator = if use_mock_id {
+            Arc::new(IdGeneratorWrapper::new_mock())
+        } else {
+            Arc::new(IdGeneratorWrapper::new())
+        };
+
+        let moka_config = MokaCacheConfig {
+            num_counters: 10000,
+            ttl: Some(Duration::from_millis(100)),
+        };
+
+        let storage_config = Arc::new(StorageConfig {
+            r#type: StorageType::Standalone,
+            restore_at_startup: Some(false),
+        });
+
+        let job_queue_config = Arc::new(JobQueueConfig {
+            expire_job_result_seconds: 10,
+            fetch_interval: 1000,
+        });
+
+        let worker_config = Arc::new(WorkerConfig {
+            default_concurrency: 4,
+            channels: vec!["test".to_string()],
+            channel_concurrencies: vec![2],
+        });
+
+        let descriptor_cache =
+            Arc::new(memory_utils::cache::moka::MokaCacheImpl::new(&moka_config));
+
+        let runner_app = Arc::new(RdbRunnerAppImpl::new(
+            TEST_PLUGIN_DIR.to_string(),
+            storage_config.clone(),
+            &moka_config,
+            repositories.clone(),
+            descriptor_cache.clone(),
+        ));
+
+        let worker_app = Arc::new(RdbWorkerAppImpl::new(
+            storage_config.clone(),
+            id_generator.clone(),
+            &moka_config,
+            repositories.clone(),
+            descriptor_cache.clone(),
+            runner_app.clone(),
+        ));
+
+        let job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository> =
+            Arc::new(repositories.chan_job_queue_repository.clone());
+
+        let job_status_index_repository = repositories
+            .rdb_job_processing_status_index_repository
+            .clone();
+
+        let config_module = Arc::new(AppConfigModule {
+            storage_config: storage_config.clone(),
+            worker_config,
+            job_queue_config: job_queue_config.clone(),
+            runner_factory: Arc::new(RunnerSpecFactory::new(
+                Arc::new(Plugins::new()),
+                Arc::new(McpServerFactory::default()),
+            )),
+        });
+
+        let job_app = Arc::new(RdbChanJobAppImpl::new(
+            config_module.clone(),
+            id_generator.clone(),
+            repositories.clone(),
+            worker_app.clone(),
+            job_queue_cancellation_repository,
+            job_status_index_repository,
+        ));
+
+        let job_result_app = Arc::new(RdbJobResultAppImpl::new(
+            storage_config.clone(),
+            id_generator.clone(),
+            repositories.clone(),
+            worker_app.clone(),
+        ));
+
+        let workflow_loader = Arc::new(create_workflow_loader()?);
+
+        let mc_config = memory_utils::cache::stretto::MemoryCacheConfig {
+            num_counters: 10,
+            max_cost: 1000000,
+            use_metrics: false,
+        };
+
+        let moka_function_config = memory_utils::cache::moka::MokaCacheConfig {
+            num_counters: 10000,
+            ttl: Some(Duration::from_secs(AppModule::DEFAULT_CACHE_TTL_SEC)),
+        };
+
+        let function_app = Arc::new(FunctionAppImpl::new(
+            runner_app.clone(),
+            worker_app.clone(),
+            job_app.clone(),
+            job_result_app.clone(),
+            descriptor_cache.clone(),
+            &mc_config,
+            (*job_queue_config).clone(),
+            (*config_module.worker_config).clone(),
+            workflow_loader.clone(),
+        ));
+
+        let function_set_app = Arc::new(FunctionSetAppImpl::new(
+            repositories.function_set_repository.clone(),
+            &moka_function_config,
+            function_app.clone(),
+        ));
+
+        let repositories_module = Arc::new(RedisRdbOptionalRepositoryModule {
+            redis_module: None,
+            rdb_module: Some(repositories),
+        });
+
+        Ok(AppModule::new(
+            config_module,
+            repositories_module,
+            worker_app,
+            job_app,
+            job_result_app,
+            runner_app,
+            function_set_app,
+            function_app,
+            descriptor_cache,
+            workflow_loader,
+        ))
+    }
+
+    /// Create hybrid test app (default: RDB indexing disabled)
+    pub async fn create_hybrid_test_app() -> Result<AppModule> {
+        create_hybrid_test_app_with_indexing(false).await
     }
 }

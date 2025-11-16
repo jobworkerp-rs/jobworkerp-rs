@@ -178,8 +178,15 @@ pub mod test {
     use sqlx::Executor;
     use std::sync::Arc;
 
-    pub async fn setup_test_rdb_module() -> RdbChanRepositoryModule {
+    /// Create test RDB repository module with optional RDB indexing
+    ///
+    /// # Arguments
+    /// * `enable_rdb_indexing` - If true, enables JobProcessingStatus RDB indexing for tests
+    pub async fn setup_test_rdb_module_with_indexing(
+        enable_rdb_indexing: bool,
+    ) -> RdbChanRepositoryModule {
         use infra_utils::infra::test::truncate_tables;
+        use jobworkerp_base::job_status_config::JobStatusConfig;
         use memory_utils::chan::ChanBuffer;
 
         let dir = if cfg!(feature = "mysql") {
@@ -190,7 +197,11 @@ pub mod test {
         let pool = setup_test_rdb_from(dir).await;
         pool.execute("SELECT 1;").await.expect("test connection");
         // not runner
-        truncate_tables(pool, vec!["job", "worker", "job_result"]).await;
+        truncate_tables(
+            pool,
+            vec!["job", "worker", "job_result", "job_processing_status"],
+        )
+        .await;
         // for test
         pool.execute("DELETE FROM runner WHERE id > 1000000;")
             .await
@@ -201,6 +212,23 @@ pub mod test {
         );
         runner_factory.load_plugins_from(TEST_PLUGIN_DIR).await;
         let id_generator = Arc::new(IdGeneratorWrapper::new());
+
+        // Create RDB indexing repository if enabled
+        let rdb_job_processing_status_index_repository = if enable_rdb_indexing {
+            Some(Arc::new(
+                crate::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository::new(
+                    Arc::new(pool.clone()),
+                    JobStatusConfig {
+                        rdb_indexing_enabled: true,
+                        cleanup_interval_hours: 1,
+                        retention_hours: 24,
+                    },
+                ),
+            ))
+        } else {
+            None
+        };
+
         RdbChanRepositoryModule {
             runner_repository: RdbRunnerRepositoryImpl::new(
                 pool,
@@ -216,7 +244,7 @@ pub mod test {
             memory_job_processing_status_repository: Arc::new(
                 MemoryJobProcessingStatusRepository::new(),
             ),
-            rdb_job_processing_status_index_repository: None, // Disabled for test
+            rdb_job_processing_status_index_repository,
             chan_job_result_pubsub_repository: ChanJobResultPubSubRepositoryImpl::new(
                 ChanBuffer::new(None, 10000),
                 Arc::new(JobQueueConfig::default()),
@@ -228,5 +256,10 @@ pub mod test {
             ),
             function_set_repository: Arc::new(FunctionSetRepositoryImpl::new(id_generator, pool)),
         }
+    }
+
+    /// Create test RDB repository module (default: RDB indexing disabled)
+    pub async fn setup_test_rdb_module() -> RdbChanRepositoryModule {
+        setup_test_rdb_module_with_indexing(false).await
     }
 }
