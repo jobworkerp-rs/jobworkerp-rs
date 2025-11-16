@@ -1,4 +1,6 @@
+pub mod cleanup;
 pub mod memory;
+pub mod rdb;
 pub mod redis;
 
 use std::sync::Arc;
