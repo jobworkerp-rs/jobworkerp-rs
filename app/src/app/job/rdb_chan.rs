@@ -1245,7 +1245,7 @@ mod tests {
     async fn create_test_app(
         use_mock_id: bool,
     ) -> Result<(RdbChanJobAppImpl, ChanJobResultPubSubRepositoryImpl)> {
-        let rdb_module = setup_test_rdb_module().await;
+        let rdb_module = setup_test_rdb_module(false).await;
         let repositories = Arc::new(rdb_module);
         // mock id generator (generate 1 until called set method)
         let id_generator = if use_mock_id {

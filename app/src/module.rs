@@ -20,6 +20,7 @@ use infra::infra::job::status::{JobProcessingStatusRepository, UseJobProcessingS
 use infra::infra::module::rdb::RdbChanRepositoryModule;
 use infra::infra::module::{HybridRepositoryModule, RedisRdbOptionalRepositoryModule};
 use infra::infra::{IdGeneratorWrapper, JobQueueConfig};
+use jobworkerp_base::job_status_config::JobStatusConfig;
 use jobworkerp_runner::runner::factory::RunnerSpecFactory;
 use memory_utils::cache::moka::{MokaCacheConfig, MokaCacheImpl};
 use proto::jobworkerp::data::StorageType;
@@ -143,6 +144,7 @@ impl AppModule {
             ttl: None, // no ttl for descriptor cache
         };
         let plugin_dir = env::var("PLUGINS_RUNNER_DIR").unwrap_or("./".to_string());
+        let job_status_config = Arc::new(JobStatusConfig::from_env());
         let job_queue_config = config_module.job_queue_config.clone();
         let id_generator = Arc::new(IdGeneratorWrapper::new());
         let descriptor_cache = Arc::new(MokaCacheImpl::new(&descriptor_moka_config));
@@ -151,6 +153,7 @@ impl AppModule {
                 let repositories = Arc::new(
                     RdbChanRepositoryModule::new_by_env(
                         job_queue_config.clone(),
+                        job_status_config,
                         config_module.runner_factory.clone(),
                         id_generator.clone(),
                     )
@@ -402,6 +405,39 @@ impl AppModule {
     pub fn job_processing_status_repository(&self) -> Arc<dyn JobProcessingStatusRepository> {
         self.repositories.job_processing_status_repository()
     }
+
+    /// Start JobStatusCleanupTask if RDB indexing is enabled
+    ///
+    /// This should be called from main binary (worker or all-in-one) after AppModule creation.
+    /// Returns JoinHandle if cleanup task was spawned, None if RDB indexing is disabled.
+    pub fn start_job_status_cleanup_task(
+        &self,
+        shutdown_recv: tokio::sync::watch::Receiver<bool>,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        use infra::infra::job::status::cleanup::JobStatusCleanupTask;
+        use jobworkerp_base::job_status_config::JobStatusConfig;
+
+        // Only start cleanup task if RDB indexing is enabled
+        if let Some(rdb_module) = self.repositories.rdb_module.as_ref() {
+            if let Some(index_repo) = &rdb_module.rdb_job_processing_status_index_repository {
+                let config = JobStatusConfig::from_env();
+                let task = JobStatusCleanupTask::new(
+                    Arc::clone(index_repo),
+                    config.cleanup_interval_hours,
+                );
+                let handle = task.spawn(shutdown_recv);
+                tracing::info!(
+                    cleanup_interval_hours = config.cleanup_interval_hours,
+                    retention_hours = config.retention_hours,
+                    "JobStatusCleanupTask started"
+                );
+                return Some(handle);
+            }
+        }
+
+        tracing::debug!("JobStatusCleanupTask not started (RDB indexing disabled)");
+        None
+    }
 }
 
 impl UseJobQueueCancellationRepository for AppModule {
@@ -448,7 +484,7 @@ pub mod test {
     pub async fn create_hybrid_test_app_with_indexing(
         enable_rdb_indexing: bool,
     ) -> Result<AppModule> {
-        use infra::infra::module::rdb::test::setup_test_rdb_module_with_indexing;
+        use infra::infra::module::rdb::test::setup_test_rdb_module;
         use infra::infra::module::HybridRepositoryModule;
         // let redis_client = setup_test_redis_client()?;
         let storage_config = Arc::new(StorageConfig {
@@ -469,8 +505,7 @@ pub mod test {
                 .await;
 
         // Replace the RDB module with one that has RDB indexing enabled/disabled as requested
-        repositories.rdb_chan_module =
-            setup_test_rdb_module_with_indexing(enable_rdb_indexing).await;
+        repositories.rdb_chan_module = setup_test_rdb_module(enable_rdb_indexing).await;
 
         let repositories = Arc::new(repositories);
         let mc_config = memory_utils::cache::stretto::MemoryCacheConfig {
@@ -585,9 +620,9 @@ pub mod test {
         use crate::app::runner::rdb::RdbRunnerAppImpl;
         use crate::app::worker::rdb::RdbWorkerAppImpl;
         use infra::infra::job::queue::JobQueueCancellationRepository;
-        use infra::infra::module::rdb::test::setup_test_rdb_module_with_indexing;
+        use infra::infra::module::rdb::test::setup_test_rdb_module;
 
-        let rdb_module = setup_test_rdb_module_with_indexing(enable_rdb_indexing).await;
+        let rdb_module = setup_test_rdb_module(enable_rdb_indexing).await;
         let repositories = Arc::new(rdb_module);
 
         let id_generator = if use_mock_id {
