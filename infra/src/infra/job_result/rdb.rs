@@ -712,7 +712,9 @@ mod test {
                 0,
                 None,
             );
-            repository.create(&JobResultId { value: base_id + i }, &data).await?;
+            repository
+                .create(&JobResultId { value: base_id + i }, &data)
+                .await?;
         }
 
         // Test 1: Filter by worker_id = 1
@@ -879,7 +881,12 @@ mod test {
                 None,
             );
             repository
-                .create(&JobResultId { value: base_id + i + 1 }, &data)
+                .create(
+                    &JobResultId {
+                        value: base_id + i + 1,
+                    },
+                    &data,
+                )
                 .await?;
         }
 
@@ -1055,9 +1062,15 @@ mod test {
             None,
         );
 
-        repository.create(&JobResultId { value: base_id + 1 }, &data1).await?;
-        repository.create(&JobResultId { value: base_id + 2 }, &data2).await?;
-        repository.create(&JobResultId { value: base_id + 3 }, &data3).await?;
+        repository
+            .create(&JobResultId { value: base_id + 1 }, &data1)
+            .await?;
+        repository
+            .create(&JobResultId { value: base_id + 2 }, &data2)
+            .await?;
+        repository
+            .create(&JobResultId { value: base_id + 3 }, &data3)
+            .await?;
 
         // Test 1: Find by exact uniq_key match
         let results = repository
@@ -1121,7 +1134,9 @@ mod test {
                 0,
                 None,
             );
-            repository.create(&JobResultId { value: base_id + i }, &data).await?;
+            repository
+                .create(&JobResultId { value: base_id + i }, &data)
+                .await?;
         }
 
         // Test 1: Limit only
@@ -1207,7 +1222,9 @@ mod test {
                 0,
                 None,
             );
-            repository.create(&JobResultId { value: base_id + i }, &data).await?;
+            repository
+                .create(&JobResultId { value: base_id + i }, &data)
+                .await?;
         }
 
         // Test 1: Sort by end_time DESC (default)
@@ -1298,7 +1315,9 @@ mod test {
                 0,
                 None,
             );
-            repository.create(&JobResultId { value: base_id + i }, &data).await?;
+            repository
+                .create(&JobResultId { value: base_id + i }, &data)
+                .await?;
         }
 
         // Test 1: Count by worker_id = 1
@@ -1387,7 +1406,12 @@ mod test {
                 None,
             );
             repository
-                .create(&JobResultId { value: base_id + i + 1 }, &data)
+                .create(
+                    &JobResultId {
+                        value: base_id + i + 1,
+                    },
+                    &data,
+                )
                 .await?;
         }
 
@@ -1428,7 +1452,9 @@ mod test {
                 0,
                 None,
             );
-            repository.create(&JobResultId { value: base_id + i }, &data).await?;
+            repository
+                .create(&JobResultId { value: base_id + i }, &data)
+                .await?;
         }
 
         // Test: Delete old results (older than 25 hours)
@@ -1474,8 +1500,12 @@ mod test {
             None,
         );
 
-        repository.create(&JobResultId { value: base_id + 1 }, &data1).await?;
-        repository.create(&JobResultId { value: base_id + 2 }, &data2).await?;
+        repository
+            .create(&JobResultId { value: base_id + 1 }, &data1)
+            .await?;
+        repository
+            .create(&JobResultId { value: base_id + 2 }, &data2)
+            .await?;
 
         // Test: Delete only FATAL_ERROR results
         let deleted_count = repository
@@ -1533,7 +1563,9 @@ mod test {
             0,
             None,
         );
-        repository.create(&JobResultId { value: base_id + 1 }, &data).await?;
+        repository
+            .create(&JobResultId { value: base_id + 1 }, &data)
+            .await?;
 
         // Count before deletion
         let count_before = repository.count_list_tx(pool).await?;
