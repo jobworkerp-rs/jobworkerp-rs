@@ -46,6 +46,7 @@ pub trait ChanJobDispatcher:
     + UseRunnerApp
     + UseJobQueueConfig
     + UseIdGenerator
+    + infra::infra::job::status::rdb::UseRdbJobProcessingStatusIndexRepository
     + JobDispatcher
 {
     fn dispatch_jobs(&'static self, lock: ShutdownLock) -> Result<()>
@@ -243,6 +244,20 @@ pub trait ChanJobDispatcher:
                 self.job_processing_status_repository()
                     .upsert_status(&jid, &JobProcessingStatus::Running)
                     .await?;
+
+                // Update RDB index status to RUNNING (if enabled)
+                if let Some(index_repo) = self.rdb_job_processing_status_index_repository() {
+                    if let Err(e) = index_repo
+                        .update_status_by_job_id(&jid, &JobProcessingStatus::Running)
+                        .await
+                    {
+                        tracing::warn!(
+                            "Failed to update status to RUNNING in RDB index for job {}: {:?}",
+                            jid.value,
+                            e
+                        );
+                    }
+                }
             } else {
                 // already grabbed (strange! (not reset previous process in retry?), but continue processing job)
                 tracing::warn!("failed to grab job from db: {:?}, {:?}", &jid, &jdat);
@@ -257,6 +272,20 @@ pub trait ChanJobDispatcher:
             self.job_processing_status_repository()
                 .upsert_status(&jid, &JobProcessingStatus::Running)
                 .await?;
+
+            // Update RDB index status to RUNNING (if enabled)
+            if let Some(index_repo) = self.rdb_job_processing_status_index_repository() {
+                if let Err(e) = index_repo
+                    .update_status_by_job_id(&jid, &JobProcessingStatus::Running)
+                    .await
+                {
+                    tracing::warn!(
+                        "Failed to update status to RUNNING in RDB index for job {}: {:?}",
+                        jid.value,
+                        e
+                    );
+                }
+            }
         }
         // run job
         let r = self
@@ -277,6 +306,21 @@ pub trait ChanJobDispatcher:
             self.job_processing_status_repository()
                 .upsert_status(&jid, &JobProcessingStatus::WaitResult)
                 .await?;
+
+            // Update RDB index status to WAIT_RESULT (if enabled)
+            if let Some(index_repo) = self.rdb_job_processing_status_index_repository() {
+                if let Err(e) = index_repo
+                    .update_status_by_job_id(&jid, &JobProcessingStatus::WaitResult)
+                    .await
+                {
+                    tracing::warn!(
+                        "Failed to update status to WAIT_RESULT in RDB index for job {}: {:?}",
+                        jid.value,
+                        e
+                    );
+                }
+            }
+
             self.result_processor().process_result(r.0, r.1, wdat).await
     }
 }
@@ -287,6 +331,8 @@ pub struct ChanJobDispatcherImpl {
     job_queue_repository: Arc<ChanJobQueueRepositoryImpl>,
     rdb_job_repository: Arc<RdbChanJobRepositoryImpl>,
     job_processing_status_repository: Arc<MemoryJobProcessingStatusRepository>,
+    rdb_job_processing_status_index_repository:
+        Option<Arc<infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository>>,
     app_module: Arc<AppModule>,
     runner_factory: Arc<RunnerFactory>,
     runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
@@ -300,6 +346,9 @@ impl ChanJobDispatcherImpl {
         chan_job_queue_repository: Arc<ChanJobQueueRepositoryImpl>,
         rdb_job_repository: Arc<RdbChanJobRepositoryImpl>,
         job_processing_status_repository: Arc<MemoryJobProcessingStatusRepository>,
+        rdb_job_processing_status_index_repository: Option<
+            Arc<infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository>,
+        >,
         app_module: Arc<AppModule>,
         runner_factory: Arc<RunnerFactory>,
         runner_pool_map: Arc<RunnerFactoryWithPoolMap>,
@@ -310,6 +359,7 @@ impl ChanJobDispatcherImpl {
             job_queue_repository: chan_job_queue_repository,
             rdb_job_repository,
             job_processing_status_repository,
+            rdb_job_processing_status_index_repository,
             app_module,
             runner_factory,
             runner_pool_map,
@@ -384,6 +434,17 @@ impl UseJobQueueConfig for ChanJobDispatcherImpl {
 impl UseResultProcessor for ChanJobDispatcherImpl {
     fn result_processor(&self) -> &ResultProcessorImpl {
         &self.result_processor
+    }
+}
+
+impl infra::infra::job::status::rdb::UseRdbJobProcessingStatusIndexRepository
+    for ChanJobDispatcherImpl
+{
+    fn rdb_job_processing_status_index_repository(
+        &self,
+    ) -> Option<std::sync::Arc<infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository>>
+    {
+        self.rdb_job_processing_status_index_repository.clone()
     }
 }
 
