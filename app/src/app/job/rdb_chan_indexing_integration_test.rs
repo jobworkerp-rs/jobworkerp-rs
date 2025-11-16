@@ -419,4 +419,183 @@ mod rdb_chan_indexing_integration_tests {
             Ok(())
         })
     }
+
+    #[test]
+    fn test_rdb_index_start_time_set_correctly() -> Result<()> {
+        command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+        // Test that start_time is correctly set when job transitions to RUNNING
+        // This verifies the P1 fix: using index_status() instead of update_status_by_job_id()
+        TEST_RUNTIME.block_on(async {
+            let app_module = create_rdb_chan_test_app(true, true).await?;
+            let app = &app_module.job_app;
+            let repositories = app_module
+                .repositories
+                .rdb_module
+                .as_ref()
+                .expect("RDB module should exist");
+            let index_repo = repositories
+                .rdb_job_processing_status_index_repository
+                .as_ref()
+                .expect("RDB indexing should be enabled");
+            let status_repo = repositories
+                .memory_job_processing_status_repository
+                .as_ref();
+
+            // Create test worker
+            let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
+                &proto::TestRunnerSettings {
+                    name: "ls".to_string(),
+                },
+            );
+            let wd = WorkerData {
+                name: "testworker_starttime".to_string(),
+                description: "Worker for start_time test".to_string(),
+                runner_id: Some(RunnerId { value: 1 }),
+                runner_settings,
+                channel: Some("test_starttime".to_string()),
+                response_type: ResponseType::NoResult as i32,
+                periodic_interval: 0,
+                retry_policy: None,
+                queue_type: QueueType::Normal as i32,
+                store_failure: false,
+                store_success: false,
+                use_static: false,
+                broadcast_results: false,
+            };
+
+            let worker_id = app_module.worker_app.create(&wd).await?;
+            let jargs =
+                infra::infra::job::rows::JobqueueAndCodec::serialize_message(&proto::TestArgs {
+                    args: vec!["/".to_string()],
+                });
+
+            // Enqueue job (PENDING status)
+            tracing::info!("Enqueueing job for start_time test");
+            let metadata = Arc::new(HashMap::new());
+            let (job_id, _, _) = app
+                .enqueue_job(
+                    metadata.clone(),
+                    Some(&worker_id),
+                    None,
+                    jargs.clone(),
+                    None,
+                    0,
+                    5, // priority
+                    0,
+                    None,
+                    false,
+                )
+                .await?;
+
+            // Wait for async PENDING indexing
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            // Verify PENDING state has pending_time but no start_time
+            let rdb_pool = index_repo.db_pool();
+            let query = "SELECT status, start_time, pending_time, priority, channel FROM job_processing_status WHERE job_id = ?";
+            let row: Option<(i32, Option<i64>, Option<i64>, i32, String)> =
+                sqlx::query_as(query)
+                    .bind(job_id.value)
+                    .fetch_optional(rdb_pool)
+                    .await?;
+
+            match row {
+                Some((status, start_time, pending_time, priority, channel)) => {
+                    tracing::info!(
+                        status,
+                        ?start_time,
+                        ?pending_time,
+                        priority,
+                        channel,
+                        "PENDING state RDB index"
+                    );
+                    assert_eq!(
+                        status,
+                        JobProcessingStatus::Pending as i32,
+                        "Status should be PENDING"
+                    );
+                    assert_eq!(priority, 5, "Priority should be preserved");
+                    assert_eq!(channel, "test_starttime", "Channel should be preserved");
+                    assert!(start_time.is_none(), "start_time should be None for PENDING");
+                    assert!(
+                        pending_time.is_some(),
+                        "pending_time should be set for PENDING"
+                    );
+                }
+                None => {
+                    panic!("Job should exist in RDB index after enqueueing");
+                }
+            }
+
+            // Manually transition to RUNNING (simulating dispatcher behavior)
+            status_repo
+                .upsert_status(&job_id, &JobProcessingStatus::Running)
+                .await?;
+
+            // Trigger async indexing for RUNNING status using index_status()
+            let repo = Arc::clone(index_repo);
+            tokio::spawn(async move {
+                if let Err(e) = repo
+                    .index_status(
+                        &job_id,
+                        &JobProcessingStatus::Running,
+                        &worker_id,
+                        "test_starttime",
+                        5,
+                        0,
+                        false,
+                        false,
+                    )
+                    .await
+                {
+                    tracing::warn!(error = ?e, "Failed to index RUNNING status");
+                }
+            });
+
+            // Wait for async indexing
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            // Verify RUNNING state has start_time set
+            let row: Option<(i32, Option<i64>, Option<i64>)> = sqlx::query_as(
+                "SELECT status, start_time, pending_time FROM job_processing_status WHERE job_id = ?",
+            )
+            .bind(job_id.value)
+            .fetch_optional(rdb_pool)
+            .await?;
+
+            match row {
+                Some((status, start_time, pending_time)) => {
+                    tracing::info!(
+                        status,
+                        ?start_time,
+                        ?pending_time,
+                        "RUNNING state RDB index"
+                    );
+                    assert_eq!(
+                        status,
+                        JobProcessingStatus::Running as i32,
+                        "Status should be RUNNING"
+                    );
+                    assert!(
+                        start_time.is_some(),
+                        "start_time MUST be set for RUNNING state (P1 fix verification)"
+                    );
+                    assert!(
+                        start_time.unwrap() > 0,
+                        "start_time should be a valid timestamp"
+                    );
+                    assert!(
+                        pending_time.is_some(),
+                        "pending_time should remain set from PENDING"
+                    );
+                }
+                None => {
+                    panic!("Job should still exist in RDB index after RUNNING transition");
+                }
+            }
+
+            tracing::info!("test_rdb_index_start_time_set_correctly completed successfully");
+            Ok(())
+        })
+    }
 }

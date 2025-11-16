@@ -245,14 +245,29 @@ pub trait ChanJobDispatcher:
                     .upsert_status(&jid, &JobProcessingStatus::Running)
                     .await?;
 
-                // Update RDB index status to RUNNING (if enabled)
+                // Index RUNNING status in RDB (if enabled) with full metadata including start_time
                 if let Some(index_repo) = self.rdb_job_processing_status_index_repository() {
+                    let channel = wdat.channel.clone().unwrap_or_default();
+                    let priority = jdat.priority;
+                    let enqueue_time = jdat.enqueue_time;
+                    let is_streamable = jdat.request_streaming;
+                    let broadcast_results = wdat.broadcast_results;
+
                     if let Err(e) = index_repo
-                        .update_status_by_job_id(&jid, &JobProcessingStatus::Running)
+                        .index_status(
+                            &jid,
+                            &JobProcessingStatus::Running,
+                            &wid,
+                            &channel,
+                            priority,
+                            enqueue_time,
+                            is_streamable,
+                            broadcast_results,
+                        )
                         .await
                     {
                         tracing::warn!(
-                            "Failed to update status to RUNNING in RDB index for job {}: {:?}",
+                            "Failed to index RUNNING status in RDB for job {}: {:?}",
                             jid.value,
                             e
                         );
@@ -273,20 +288,43 @@ pub trait ChanJobDispatcher:
                 .upsert_status(&jid, &JobProcessingStatus::Running)
                 .await?;
 
-            // Update RDB index status to RUNNING (if enabled)
+            // Index RUNNING status in RDB (if enabled) with full metadata including start_time
             if let Some(index_repo) = self.rdb_job_processing_status_index_repository() {
+                let channel = wdat.channel.clone().unwrap_or_default();
+                let priority = jdat.priority;
+                let enqueue_time = jdat.enqueue_time;
+                let is_streamable = jdat.request_streaming;
+                let broadcast_results = wdat.broadcast_results;
+
                 if let Err(e) = index_repo
-                    .update_status_by_job_id(&jid, &JobProcessingStatus::Running)
+                    .index_status(
+                        &jid,
+                        &JobProcessingStatus::Running,
+                        &wid,
+                        &channel,
+                        priority,
+                        enqueue_time,
+                        is_streamable,
+                        broadcast_results,
+                    )
                     .await
                 {
                     tracing::warn!(
-                        "Failed to update status to RUNNING in RDB index for job {}: {:?}",
+                        "Failed to index RUNNING status in RDB for job {}: {:?}",
                         jid.value,
                         e
                     );
                 }
             }
         }
+
+        // Save job metadata before run_job() consumes jdat
+        let channel_for_indexing = wdat.channel.clone().unwrap_or_default();
+        let priority_for_indexing = jdat.priority;
+        let enqueue_time_for_indexing = jdat.enqueue_time;
+        let is_streamable_for_indexing = jdat.request_streaming;
+        let broadcast_results_for_indexing = wdat.broadcast_results;
+
         // run job
         let r = self
                 .run_job(
@@ -307,14 +345,23 @@ pub trait ChanJobDispatcher:
                 .upsert_status(&jid, &JobProcessingStatus::WaitResult)
                 .await?;
 
-            // Update RDB index status to WAIT_RESULT (if enabled)
+            // Index WAIT_RESULT status in RDB (if enabled) with full metadata
             if let Some(index_repo) = self.rdb_job_processing_status_index_repository() {
                 if let Err(e) = index_repo
-                    .update_status_by_job_id(&jid, &JobProcessingStatus::WaitResult)
+                    .index_status(
+                        &jid,
+                        &JobProcessingStatus::WaitResult,
+                        &wid,
+                        &channel_for_indexing,
+                        priority_for_indexing,
+                        enqueue_time_for_indexing,
+                        is_streamable_for_indexing,
+                        broadcast_results_for_indexing,
+                    )
                     .await
                 {
                     tracing::warn!(
-                        "Failed to update status to WAIT_RESULT in RDB index for job {}: {:?}",
+                        "Failed to index WAIT_RESULT status in RDB for job {}: {:?}",
                         jid.value,
                         e
                     );
