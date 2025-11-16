@@ -13,6 +13,7 @@ use infra::infra::job::queue::chan::{
 use infra::infra::job::queue::JobQueueCancellationRepository;
 use infra::infra::job::rdb::{RdbJobRepository, UseRdbChanJobRepository};
 use infra::infra::job::rows::UseJobqueueAndCodec;
+use infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository;
 use infra::infra::job::status::{JobProcessingStatusRepository, UseJobProcessingStatusRepository};
 use infra::infra::job_result::pubsub::chan::{
     ChanJobResultPubSubRepositoryImpl, UseChanJobResultPubSubRepository,
@@ -45,6 +46,8 @@ pub struct RdbChanJobAppImpl {
     key_lock: Arc<RwLockWithKey<Arc<String>>>,
     job_cache_ttl: Duration,
     job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository>,
+    // RDBインデックス専用Repository（独立、Option型でデフォルト無効）
+    job_status_index_repository: Option<Arc<RdbJobProcessingStatusIndexRepository>>,
 }
 
 impl std::fmt::Debug for RdbChanJobAppImpl {
@@ -60,6 +63,14 @@ impl std::fmt::Debug for RdbChanJobAppImpl {
             .field(
                 "job_queue_cancellation_repository",
                 &"Arc<dyn JobQueueCancellationRepository>",
+            )
+            .field(
+                "job_status_index_repository",
+                &self
+                    .job_status_index_repository
+                    .as_ref()
+                    .map(|_| "Some(Arc<RdbJobProcessingStatusIndexRepository>)")
+                    .unwrap_or("None"),
             )
             .finish()
     }
@@ -80,6 +91,7 @@ impl RdbChanJobAppImpl {
         repositories: Arc<RdbChanRepositoryModule>,
         worker_app: Arc<dyn WorkerApp + 'static>,
         job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository>,
+        job_status_index_repository: Option<Arc<RdbJobProcessingStatusIndexRepository>>,
     ) -> Self {
         Self {
             app_config_module,
@@ -94,6 +106,52 @@ impl RdbChanJobAppImpl {
             )),
             job_cache_ttl: Self::JOB_DEFAULT_TTL,
             job_queue_cancellation_repository,
+            job_status_index_repository,
+        }
+    }
+
+    /// Asynchronously index job status to RDB (non-blocking, fire-and-forget)
+    ///
+    /// # Design Principles
+    /// - **Enqueue throughput first**: RDB indexing runs asynchronously without blocking
+    /// - **Inconsistency tolerance**: Data may be delayed by seconds to tens of seconds
+    /// - **Non-critical errors**: Logs warning on failure, but processing continues
+    #[allow(clippy::too_many_arguments)]
+    fn index_job_status_async(
+        &self,
+        job_id: JobId,
+        status: JobProcessingStatus,
+        worker_id: WorkerId,
+        channel: String,
+        priority: i32,
+        enqueue_time: i64,
+        is_streamable: bool,
+        broadcast_results: bool,
+    ) {
+        if let Some(index_repo) = &self.job_status_index_repository {
+            let repo = Arc::clone(index_repo);
+            tokio::spawn(async move {
+                if let Err(e) = repo
+                    .index_status(
+                        &job_id,
+                        &status,
+                        &worker_id,
+                        &channel,
+                        priority,
+                        enqueue_time,
+                        is_streamable,
+                        broadcast_results,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        error = ?e,
+                        job_id = job_id.value,
+                        status = ?status,
+                        "Failed to index job status to RDB (non-critical)"
+                    );
+                }
+            });
         }
     }
 
@@ -310,11 +368,23 @@ impl RdbChanJobAppImpl {
 
                 let result = self.enqueue_job_sync(&job, w).await?;
 
+                // Async RDB indexing for Direct response jobs
+                self.index_job_status_async(
+                    jid,
+                    JobProcessingStatus::Pending,
+                    *wid,
+                    w.channel.clone().unwrap_or_default(),
+                    priority,
+                    data.enqueue_time,
+                    request_streaming,
+                    w.broadcast_results,
+                );
+
                 Ok(result)
             } else if w.periodic_interval > 0 || self.is_run_after_job_data(&data) {
                 let job = Job {
                     id: Some(jid),
-                    data: Some(data),
+                    data: Some(data.clone()),
                     metadata: (*metadata).clone(),
                 };
                 // enqueue rdb only
@@ -322,6 +392,19 @@ impl RdbChanJobAppImpl {
                     self.job_processing_status_repository()
                         .upsert_status(&jid, &JobProcessingStatus::Pending)
                         .await?;
+
+                    // Async RDB indexing for periodic/scheduled jobs
+                    self.index_job_status_async(
+                        jid,
+                        JobProcessingStatus::Pending,
+                        *wid,
+                        w.channel.clone().unwrap_or_default(),
+                        priority,
+                        data.enqueue_time,
+                        request_streaming,
+                        w.broadcast_results,
+                    );
+
                     Ok((jid, None, None))
                 } else {
                     Err(
@@ -333,7 +416,7 @@ impl RdbChanJobAppImpl {
                 // normal job
                 let job = Job {
                     id: Some(jid),
-                    data: Some(data),
+                    data: Some(data.clone()),
                     metadata: (*metadata).clone(),
                 };
                 if w.queue_type == QueueType::WithBackup as i32 {
@@ -341,6 +424,18 @@ impl RdbChanJobAppImpl {
                     match self.rdb_job_repository().create(&job).await {
                         Ok(_id) => {
                             let result = self.enqueue_job_sync(&job, w).await?;
+
+                            // Async RDB indexing for WithBackup jobs
+                            self.index_job_status_async(
+                                jid,
+                                JobProcessingStatus::Pending,
+                                *wid,
+                                w.channel.clone().unwrap_or_default(),
+                                priority,
+                                data.enqueue_time,
+                                request_streaming,
+                                w.broadcast_results,
+                            );
 
                             Ok(result)
                         }
@@ -350,6 +445,18 @@ impl RdbChanJobAppImpl {
                     // use only rdb queue
                     let created = self.rdb_job_repository().create(&job).await?;
                     if created {
+                        // Async RDB indexing for DbOnly jobs
+                        self.index_job_status_async(
+                            jid,
+                            JobProcessingStatus::Pending,
+                            *wid,
+                            w.channel.clone().unwrap_or_default(),
+                            priority,
+                            data.enqueue_time,
+                            request_streaming,
+                            w.broadcast_results,
+                        );
+
                         Ok((job.id.unwrap(), None, None))
                     } else {
                         // storage error?
@@ -362,6 +469,19 @@ impl RdbChanJobAppImpl {
                 } else {
                     // instant job (enqueue to chan only)
                     let result = self.enqueue_job_sync(&job, w).await?;
+
+                    // Async RDB indexing for Normal (chan-only) jobs
+                    self.index_job_status_async(
+                        jid,
+                        JobProcessingStatus::Pending,
+                        *wid,
+                        w.channel.clone().unwrap_or_default(),
+                        priority,
+                        data.enqueue_time,
+                        request_streaming,
+                        w.broadcast_results,
+                    );
+
                     Ok(result)
                 }
             }
@@ -752,6 +872,40 @@ impl JobApp for RdbChanJobAppImpl {
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn find_by_condition(
+        &self,
+        status: Option<JobProcessingStatus>,
+        worker_id: Option<i64>,
+        channel: Option<String>,
+        min_elapsed_time_ms: Option<i64>,
+        limit: i32,
+        offset: i32,
+        descending: bool,
+    ) -> Result<Vec<infra::infra::job::status::rdb::JobProcessingStatusDetail>>
+    where
+        Self: Send + 'static,
+    {
+        if let Some(index_repo) = &self.job_status_index_repository {
+            index_repo
+                .find_by_condition(
+                    status,
+                    worker_id,
+                    channel,
+                    min_elapsed_time_ms,
+                    limit,
+                    offset,
+                    descending,
+                )
+                .await
+        } else {
+            Err(anyhow::anyhow!(
+                "Advanced job status search is disabled. \
+                 Enable JOB_STATUS_RDB_INDEXING=true to use this feature."
+            ))
+        }
+    }
+
     async fn count(&self) -> Result<i64>
     where
         Self: Send + 'static,
@@ -1102,6 +1256,7 @@ mod tests {
                 repositories,
                 Arc::new(worker_app),
                 job_queue_cancellation_repository,
+                None, // RDB indexing disabled for test
             ),
             subscrber,
         ))

@@ -5,11 +5,13 @@ use crate::infra::job::queue::chan::ChanJobQueueRepositoryImpl;
 use crate::infra::job::queue::{JobQueueCancellationRepository, UseJobQueueCancellationRepository};
 use crate::infra::job::rdb::{RdbChanJobRepositoryImpl, UseRdbChanJobRepository};
 use crate::infra::job::status::memory::MemoryJobProcessingStatusRepository;
+use crate::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository;
 use crate::infra::job_result::pubsub::chan::ChanJobResultPubSubRepositoryImpl;
 use crate::infra::job_result::rdb::{RdbJobResultRepositoryImpl, UseRdbJobResultRepository};
 use crate::infra::runner::rdb::RdbRunnerRepositoryImpl;
 use crate::infra::worker::rdb::{RdbWorkerRepositoryImpl, UseRdbWorkerRepository};
 use crate::infra::{IdGeneratorWrapper, InfraConfigModule, JobQueueConfig};
+use jobworkerp_base::job_status_config::JobStatusConfig;
 use jobworkerp_runner::runner::factory::RunnerSpecFactory;
 use memory_utils::chan::broadcast::BroadcastChan;
 use memory_utils::chan::ChanBuffer;
@@ -45,6 +47,8 @@ pub struct RdbChanRepositoryModule {
     pub job_repository: RdbChanJobRepositoryImpl,
     pub job_result_repository: RdbJobResultRepositoryImpl,
     pub memory_job_processing_status_repository: Arc<MemoryJobProcessingStatusRepository>,
+    pub rdb_job_processing_status_index_repository:
+        Option<Arc<RdbJobProcessingStatusIndexRepository>>,
     pub chan_job_result_pubsub_repository: ChanJobResultPubSubRepositoryImpl,
     pub chan_job_queue_repository: ChanJobQueueRepositoryImpl,
     pub function_set_repository: Arc<FunctionSetRepositoryImpl>,
@@ -57,6 +61,18 @@ impl RdbChanRepositoryModule {
         id_generator: Arc<IdGeneratorWrapper>,
     ) -> Self {
         let pool = super::super::resource::setup_rdb_by_env().await;
+        let job_status_config = JobStatusConfig::from_env();
+
+        // Initialize RDB index repository only if enabled
+        let rdb_job_processing_status_index_repository = if job_status_config.rdb_indexing_enabled {
+            Some(Arc::new(RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                job_status_config.clone(),
+            )))
+        } else {
+            None
+        };
+
         RdbChanRepositoryModule {
             runner_repository: RdbRunnerRepositoryImpl::new(
                 pool,
@@ -69,6 +85,7 @@ impl RdbChanRepositoryModule {
             memory_job_processing_status_repository: Arc::new(
                 MemoryJobProcessingStatusRepository::new(),
             ),
+            rdb_job_processing_status_index_repository,
             chan_job_result_pubsub_repository: ChanJobResultPubSubRepositoryImpl::new(
                 ChanBuffer::new(None, 100_000), // broadcast chan. TODO from config
                 job_queue_config.clone(),
@@ -88,6 +105,18 @@ impl RdbChanRepositoryModule {
     ) -> Self {
         let pool =
             super::super::resource::setup_rdb(config_module.rdb_config.as_ref().unwrap()).await;
+        let job_status_config = JobStatusConfig::from_env();
+
+        // Initialize RDB index repository only if enabled
+        let rdb_job_processing_status_index_repository = if job_status_config.rdb_indexing_enabled {
+            Some(Arc::new(RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                job_status_config.clone(),
+            )))
+        } else {
+            None
+        };
+
         RdbChanRepositoryModule {
             runner_repository: RdbRunnerRepositoryImpl::new(
                 pool,
@@ -103,6 +132,7 @@ impl RdbChanRepositoryModule {
             memory_job_processing_status_repository: Arc::new(
                 MemoryJobProcessingStatusRepository::new(),
             ),
+            rdb_job_processing_status_index_repository,
             chan_job_result_pubsub_repository: ChanJobResultPubSubRepositoryImpl::new(
                 ChanBuffer::new(None, 100_000), // TODO from config
                 config_module.job_queue_config.clone(),
@@ -186,6 +216,7 @@ pub mod test {
             memory_job_processing_status_repository: Arc::new(
                 MemoryJobProcessingStatusRepository::new(),
             ),
+            rdb_job_processing_status_index_repository: None, // Disabled for test
             chan_job_result_pubsub_repository: ChanJobResultPubSubRepositoryImpl::new(
                 ChanBuffer::new(None, 10000),
                 Arc::new(JobQueueConfig::default()),

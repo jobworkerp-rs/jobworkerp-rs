@@ -938,6 +938,27 @@ impl JobApp for HybridJobAppImpl {
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn find_by_condition(
+        &self,
+        _status: Option<JobProcessingStatus>,
+        _worker_id: Option<i64>,
+        _channel: Option<String>,
+        _min_elapsed_time_ms: Option<i64>,
+        _limit: i32,
+        _offset: i32,
+        _descending: bool,
+    ) -> Result<Vec<infra::infra::job::status::rdb::JobProcessingStatusDetail>>
+    where
+        Self: Send + 'static,
+    {
+        // Hybrid (Standalone) does not support RDB indexing
+        Err(anyhow::anyhow!(
+            "Advanced job status search is not supported in Standalone mode. \
+             Use Scalable mode and enable JOB_STATUS_RDB_INDEXING=true to use this feature."
+        ))
+    }
+
     async fn count(&self) -> Result<i64>
     where
         Self: Send + 'static,
