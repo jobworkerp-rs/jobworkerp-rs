@@ -493,6 +493,7 @@ mod rdb_chan_indexing_integration_tests {
             // Verify PENDING state has pending_time but no start_time
             let rdb_pool = index_repo.db_pool();
             let query = "SELECT status, start_time, pending_time, priority, channel FROM job_processing_status WHERE job_id = ?";
+            #[allow(clippy::type_complexity)]
             let row: Option<(i32, Option<i64>, Option<i64>, i32, String)> =
                 sqlx::query_as(query)
                     .bind(job_id.value)

@@ -134,6 +134,7 @@ pub mod test {
     #[cfg(feature = "mysql")]
     pub fn new_for_test_config_rdb() -> InfraConfigModule {
         use infra_utils::infra::test::{MYSQL_CONFIG, REDIS_CONFIG};
+        use jobworkerp_base::JOB_STATUS_CONFIG;
 
         InfraConfigModule {
             rdb_config: Some(MYSQL_CONFIG.clone()),

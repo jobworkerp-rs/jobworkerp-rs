@@ -43,7 +43,7 @@ pub async fn boot_all_in_one() -> Result<()> {
     let (lock, mut wait) = shutdown::create_lock_and_wait();
 
     // Create shutdown signal for cleanup task
-    let (shutdown_send, shutdown_recv) = tokio::sync::watch::channel(false);
+    let (shutdown_send, _shutdown_recv) = tokio::sync::watch::channel(false);
 
     let plugins = Arc::new(Plugins::new());
     // load mcp config
