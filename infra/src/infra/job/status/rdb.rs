@@ -181,18 +181,37 @@ impl RdbJobProcessingStatusIndexRepository {
         let mut conn = self.rdb_pool.acquire().await?;
         let status_code = *status as i32;
 
-        // Update status without changing other fields
-        sqlx::query(
-            "UPDATE job_processing_status
-             SET status = ?, updated_at = ?
-             WHERE job_id = ? AND deleted_at IS NULL",
-        )
-        .bind(status_code)
-        .bind(now)
-        .bind(job_id.value)
-        .execute(&mut *conn)
-        .await?;
-
+        match status {
+            JobProcessingStatus::Running => {
+                // Preserve monitoring fields when the dispatcher only knows job_id.
+                // start_time should be populated for elapsed-time queries, and
+                // version should be bumped to keep in sync with the Redis path.
+                sqlx::query(
+                    "UPDATE job_processing_status
+                     SET status = ?, start_time = COALESCE(start_time, ?), version = version + 1, updated_at = ?
+                     WHERE job_id = ? AND deleted_at IS NULL",
+                )
+                .bind(status_code)
+                .bind(now)
+                .bind(now)
+                .bind(job_id.value)
+                .execute(&mut *conn)
+                .await?;
+            }
+            _ => {
+                // Generic status update (used by cancellation path etc.)
+                sqlx::query(
+                    "UPDATE job_processing_status
+                     SET status = ?, version = version + 1, updated_at = ?
+                     WHERE job_id = ? AND deleted_at IS NULL",
+                )
+                .bind(status_code)
+                .bind(now)
+                .bind(job_id.value)
+                .execute(&mut *conn)
+                .await?;
+            }
+        }
         Ok(())
     }
 
@@ -824,14 +843,20 @@ mod tests {
             repo.update_status_by_job_id(&job_id, &JobProcessingStatus::Running)
                 .await?;
 
-            // Verify the status was updated
-            let query = "SELECT status FROM job_processing_status WHERE job_id = ?";
-            let status: i32 = sqlx::query_scalar(query)
+            // Verify the status was updated and monitoring columns populated
+            let query =
+                "SELECT status, start_time, version FROM job_processing_status WHERE job_id = ?";
+            let (status, start_time, version): (i32, Option<i64>, i64) = sqlx::query_as(query)
                 .bind(job_id.value)
                 .fetch_one(pool)
                 .await?;
 
             assert_eq!(status, JobProcessingStatus::Running as i32);
+            assert!(start_time.is_some(), "start_time should be set for RUNNING");
+            assert_eq!(
+                version, 2,
+                "version should bump when transitioning to RUNNING"
+            );
             Ok(())
         })
     }
@@ -875,7 +900,10 @@ mod tests {
                 .await?;
 
             assert!(deleted_at.is_some(), "deleted_at should be set");
-            assert!(deleted_at.unwrap() > 0, "deleted_at should be a valid timestamp");
+            assert!(
+                deleted_at.unwrap() > 0,
+                "deleted_at should be a valid timestamp"
+            );
             Ok(())
         })
     }
