@@ -67,6 +67,52 @@ impl HybridJobAppImpl {
             job_status_index_repository,
         }
     }
+
+    /// Asynchronously indexes JobProcessingStatus to RDB for monitoring and analytics
+    ///
+    /// # Design Principles
+    /// - **Enqueue throughput first**: RDB indexing runs asynchronously without blocking
+    /// - **Inconsistency tolerance**: Data may be delayed by seconds to tens of seconds
+    /// - **Non-critical errors**: Logs warning on failure, but processing continues
+    #[allow(clippy::too_many_arguments)]
+    fn index_job_status_async(
+        &self,
+        job_id: JobId,
+        status: JobProcessingStatus,
+        worker_id: WorkerId,
+        channel: String,
+        priority: i32,
+        enqueue_time: i64,
+        is_streamable: bool,
+        broadcast_results: bool,
+    ) {
+        if let Some(index_repo) = &self.job_status_index_repository {
+            let repo = Arc::clone(index_repo);
+            tokio::spawn(async move {
+                if let Err(e) = repo
+                    .index_status(
+                        &job_id,
+                        &status,
+                        &worker_id,
+                        &channel,
+                        priority,
+                        enqueue_time,
+                        is_streamable,
+                        broadcast_results,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        error = ?e,
+                        job_id = job_id.value,
+                        status = ?status,
+                        "Failed to index job status to RDB (non-critical)"
+                    );
+                }
+            });
+        }
+    }
+
     // find not queueing  jobs from argument 'jobs' in channels
     async fn find_restore_jobs_by(
         &self,
@@ -224,7 +270,7 @@ impl HybridJobAppImpl {
             } else if w.periodic_interval > 0 || self.is_run_after_job_data(&data) {
                 let job = Job {
                     id: Some(jid),
-                    data: Some(data),
+                    data: Some(data.clone()),
                     metadata: (*metadata).clone(),
                 };
                 // enqueue rdb only
@@ -232,6 +278,17 @@ impl HybridJobAppImpl {
                     self.job_processing_status_repository()
                         .upsert_status(&jid, &JobProcessingStatus::Pending)
                         .await?;
+                    // Index PENDING status to RDB asynchronously
+                    self.index_job_status_async(
+                        jid,
+                        JobProcessingStatus::Pending,
+                        *wid,
+                        w.channel.clone().unwrap_or_default(),
+                        priority,
+                        data.enqueue_time,
+                        request_streaming,
+                        w.broadcast_results,
+                    );
                     Ok((jid, None, None))
                 } else {
                     Err(
@@ -243,7 +300,7 @@ impl HybridJobAppImpl {
                 // normal instant job
                 let job = Job {
                     id: Some(jid),
-                    data: Some(data),
+                    data: Some(data.clone()),
                     metadata: (*metadata).clone(),
                 };
                 if w.queue_type == QueueType::WithBackup as i32 {
@@ -264,6 +321,20 @@ impl HybridJobAppImpl {
                     // use only rdb queue (not recommended for hybrid storage)
                     let created = self.rdb_job_repository().create(&job).await?;
                     if created {
+                        self.job_processing_status_repository()
+                            .upsert_status(&jid, &JobProcessingStatus::Pending)
+                            .await?;
+                        // Index PENDING status to RDB asynchronously
+                        self.index_job_status_async(
+                            jid,
+                            JobProcessingStatus::Pending,
+                            *wid,
+                            w.channel.clone().unwrap_or_default(),
+                            priority,
+                            data.enqueue_time,
+                            request_streaming,
+                            w.broadcast_results,
+                        );
                         Ok((job.id.unwrap(), None, None))
                     } else {
                         // storage error?
@@ -316,6 +387,21 @@ impl HybridJobAppImpl {
                     .upsert_status(id, &JobProcessingStatus::Cancelling)
                     .await?;
 
+                // Update RDB index status to CANCELLING (if enabled)
+                if let Some(index_repo) = self.job_status_index_repository.as_ref() {
+                    if let Err(e) = index_repo
+                        .update_status_by_job_id(id, &JobProcessingStatus::Cancelling)
+                        .await
+                    {
+                        tracing::warn!(
+                            "Failed to update status to CANCELLING in RDB index for job {}: {:?}",
+                            id.value,
+                            e
+                        );
+                    }
+                }
+                // Note: RDB index deleted_at will be set by cleanup_job()
+
                 // Active cancellation of running jobs (broadcast)
                 self.broadcast_job_cancellation(id).await?;
 
@@ -333,6 +419,21 @@ impl HybridJobAppImpl {
                 self.job_processing_status_repository()
                     .upsert_status(id, &JobProcessingStatus::Cancelling)
                     .await?;
+
+                // Update RDB index status to CANCELLING (if enabled)
+                if let Some(index_repo) = self.job_status_index_repository.as_ref() {
+                    if let Err(e) = index_repo
+                        .update_status_by_job_id(id, &JobProcessingStatus::Cancelling)
+                        .await
+                    {
+                        tracing::warn!(
+                            "Failed to update status to CANCELLING in RDB index for job {}: {:?}",
+                            id.value,
+                            e
+                        );
+                    }
+                }
+                // Note: RDB index deleted_at will be set by cleanup_job()
 
                 // Broadcast cancellation (handles race conditions)
                 self.broadcast_job_cancellation(id).await?;
@@ -400,7 +501,19 @@ impl HybridJobAppImpl {
     /// - `Ok(())`: Cleanup succeeded (or non-critical failures)
     /// - `Err(e)`: Critical failure (status deletion failed)
     pub(crate) async fn cleanup_job(&self, id: &JobId) -> Result<()> {
-        // 1. Delete job record from RDB
+        // 1. Mark as logically deleted in RDB index BEFORE deleting Redis status
+        //    (deleted_at must be set while we still know this job is being cleaned up)
+        if let Some(index_repo) = self.job_status_index_repository.as_ref() {
+            if let Err(e) = index_repo.mark_deleted_by_job_id(id).await {
+                tracing::warn!(
+                    "Failed to mark job {} as deleted in RDB index: {:?}",
+                    id.value,
+                    e
+                );
+            }
+        }
+
+        // 2. Delete job record from RDB
         let db_deletion_result = self.rdb_job_repository().delete(id).await;
         if let Err(e) = &db_deletion_result {
             tracing::warn!("Failed to delete job {} from RDB: {:?}", id.value, e);
@@ -412,13 +525,13 @@ impl HybridJobAppImpl {
                 .await;
         }
 
-        // 2. Delete job record from Redis
+        // 3. Delete job record from Redis
         let redis_deletion_result = self.redis_job_repository().delete(id).await;
         if let Err(e) = &redis_deletion_result {
             tracing::warn!("Failed to delete job {} from Redis: {:?}", id.value, e);
         }
 
-        // 3. Delete job processing status (critical operation)
+        // 4. Delete job processing status from Redis (critical operation)
         self.job_processing_status_repository()
             .delete_status(id)
             .await?;
@@ -1063,6 +1176,10 @@ impl JobApp for HybridJobAppImpl {
                 .await
         }
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 impl UseRdbChanRepositoryModule for HybridJobAppImpl {
     fn rdb_repository_module(&self) -> &RdbChanRepositoryModule {
@@ -1112,7 +1229,31 @@ impl UseWorkerConfig for HybridJobAppImpl {
         &self.app_config_module.worker_config
     }
 }
-impl RedisJobAppHelper for HybridJobAppImpl {}
+impl RedisJobAppHelper for HybridJobAppImpl {
+    fn after_enqueue_to_redis_hook(
+        &self,
+        job_id: JobId,
+        job: &Job,
+        worker: &WorkerData,
+        request_streaming: bool,
+    ) {
+        // Index PENDING status to RDB asynchronously
+        if let Some(worker_id) = job.data.as_ref().and_then(|d| d.worker_id) {
+            if let Some(job_data) = &job.data {
+                self.index_job_status_async(
+                    job_id,
+                    JobProcessingStatus::Pending,
+                    worker_id,
+                    worker.channel.clone().unwrap_or_default(),
+                    job_data.priority,
+                    job_data.enqueue_time,
+                    request_streaming,
+                    worker.broadcast_results,
+                );
+            }
+        }
+    }
+}
 
 //TODO
 // create test
@@ -1143,7 +1284,7 @@ pub mod tests {
     pub async fn create_test_app(
         use_mock_id: bool,
     ) -> Result<(HybridJobAppImpl, RedisJobResultPubSubRepositoryImpl)> {
-        let rdb_module = setup_test_rdb_module().await;
+        let rdb_module = setup_test_rdb_module(false).await;
         let redis_module = setup_test_redis_module().await;
         let repositories = Arc::new(HybridRepositoryModule {
             redis_module: redis_module.clone(),

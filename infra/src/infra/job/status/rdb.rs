@@ -19,11 +19,11 @@ use std::sync::Arc;
 #[derive(Clone, Debug)]
 pub struct RdbJobProcessingStatusIndexRepository {
     rdb_pool: Arc<RdbPool>,
-    config: JobStatusConfig,
+    config: Arc<JobStatusConfig>,
 }
 
 impl RdbJobProcessingStatusIndexRepository {
-    pub fn new(rdb_pool: Arc<RdbPool>, config: JobStatusConfig) -> Self {
+    pub fn new(rdb_pool: Arc<RdbPool>, config: Arc<JobStatusConfig>) -> Self {
         Self { rdb_pool, config }
     }
 
@@ -155,6 +155,94 @@ impl RdbJobProcessingStatusIndexRepository {
                 // Unknown etc: do nothing
             }
         }
+
+        Ok(())
+    }
+
+    /// Update job status in RDB index by job_id
+    ///
+    /// This is a simplified status update operation that only requires job_id.
+    /// Use this when updating status where status metadata is no longer available.
+    ///
+    /// # Returns
+    /// - `Ok(())`: Success (including when feature is disabled)
+    /// - `Err(e)`: RDB error
+    pub async fn update_status_by_job_id(
+        &self,
+        job_id: &JobId,
+        status: &JobProcessingStatus,
+    ) -> Result<()> {
+        // Do nothing if feature is disabled
+        if !self.config.rdb_indexing_enabled {
+            return Ok(());
+        }
+
+        let now = datetime::now_millis();
+        let mut conn = self.rdb_pool.acquire().await?;
+        let status_code = *status as i32;
+
+        match status {
+            JobProcessingStatus::Running => {
+                // Preserve monitoring fields when the dispatcher only knows job_id.
+                // start_time should be populated for elapsed-time queries, and
+                // version should be bumped to keep in sync with the Redis path.
+                sqlx::query(
+                    "UPDATE job_processing_status
+                     SET status = ?, start_time = COALESCE(start_time, ?), version = version + 1, updated_at = ?
+                     WHERE job_id = ? AND deleted_at IS NULL",
+                )
+                .bind(status_code)
+                .bind(now)
+                .bind(now)
+                .bind(job_id.value)
+                .execute(&mut *conn)
+                .await?;
+            }
+            _ => {
+                // Generic status update (used by cancellation path etc.)
+                sqlx::query(
+                    "UPDATE job_processing_status
+                     SET status = ?, version = version + 1, updated_at = ?
+                     WHERE job_id = ? AND deleted_at IS NULL",
+                )
+                .bind(status_code)
+                .bind(now)
+                .bind(job_id.value)
+                .execute(&mut *conn)
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Mark job as logically deleted in RDB index (set deleted_at timestamp)
+    ///
+    /// This is a simplified deletion operation that only requires job_id.
+    /// Use this when cleaning up jobs where status metadata is no longer available.
+    ///
+    /// # Returns
+    /// - `Ok(())`: Success (including when feature is disabled)
+    /// - `Err(e)`: RDB error
+    pub async fn mark_deleted_by_job_id(&self, job_id: &JobId) -> Result<()> {
+        // Do nothing if feature is disabled
+        if !self.config.rdb_indexing_enabled {
+            return Ok(());
+        }
+
+        let now = datetime::now_millis();
+        let mut conn = self.rdb_pool.acquire().await?;
+
+        // Set deleted_at if not already deleted
+        sqlx::query(
+            "UPDATE job_processing_status
+             SET deleted_at = ?, updated_at = ?
+             WHERE job_id = ? AND deleted_at IS NULL",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(job_id.value)
+        .execute(&mut *conn)
+        .await?;
 
         Ok(())
     }
@@ -308,6 +396,13 @@ struct JobProcessingStatusDetailRow {
     updated_at: i64,
 }
 
+/// Trait for DI of RdbJobProcessingStatusIndexRepository (optional)
+pub trait UseRdbJobProcessingStatusIndexRepository {
+    fn rdb_job_processing_status_index_repository(
+        &self,
+    ) -> Option<Arc<RdbJobProcessingStatusIndexRepository>>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,7 +472,10 @@ mod tests {
                 retention_hours: 24,
             };
 
-            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), config);
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
 
             // When disabled, should succeed without doing anything
             let result = repo
@@ -408,7 +506,10 @@ mod tests {
                 retention_hours: 24,
             };
 
-            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), config);
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
 
             // Insert PENDING status
             let result = repo
@@ -447,7 +548,10 @@ mod tests {
                 retention_hours: 24,
             };
 
-            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), config);
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
 
             let result = repo
                 .find_by_condition(None, None, None, None, 100, 0, true)
@@ -469,7 +573,7 @@ mod tests {
                 retention_hours: 24,
             };
 
-            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), config);
+            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), Arc::new(config));
 
             // Insert a deleted record with old timestamp (25 hours ago)
             let old_timestamp = datetime::now_millis() - (25 * 3600 * 1000);
@@ -508,7 +612,10 @@ mod tests {
                 retention_hours: 24,
             };
 
-            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), config);
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
 
             // Try to update to RUNNING without PENDING record (optimistic lock failure)
             let result = repo
@@ -548,7 +655,7 @@ mod tests {
                 retention_hours: 24,
             };
 
-            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), config);
+            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), Arc::new(config));
 
             // Insert a deleted record
             let now = datetime::now_millis();
@@ -607,7 +714,10 @@ mod tests {
                 retention_hours: 24,
             };
 
-            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), config);
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
 
             // Insert PENDING job
             repo.index_status(
@@ -677,7 +787,10 @@ mod tests {
                 retention_hours: 24,
             };
 
-            let repo = RdbJobProcessingStatusIndexRepository::new(Arc::new(pool.clone()), config);
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
 
             // Insert jobs with different worker_ids
             repo.index_status(
@@ -712,6 +825,280 @@ mod tests {
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].job_id.value, 600);
             assert_eq!(results[0].worker_id, 1);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_update_status_by_job_id() -> Result<()> {
+        // Test updating status by job_id without fetching job data
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_db().await;
+            let config = JobStatusConfig {
+                rdb_indexing_enabled: true,
+                cleanup_interval_hours: 1,
+                retention_hours: 24,
+            };
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
+
+            let job_id = JobId { value: 100 };
+            let worker_id = WorkerId { value: 1 };
+
+            // First, create a PENDING status
+            repo.index_status(
+                &job_id,
+                &JobProcessingStatus::Pending,
+                &worker_id,
+                "test_channel",
+                1,
+                100,
+                false,
+                false,
+            )
+            .await?;
+
+            // Update to RUNNING using update_status_by_job_id
+            repo.update_status_by_job_id(&job_id, &JobProcessingStatus::Running)
+                .await?;
+
+            // Verify the status was updated and monitoring columns populated
+            let query =
+                "SELECT status, start_time, version FROM job_processing_status WHERE job_id = ?";
+            let (status, start_time, version): (i32, Option<i64>, i64) = sqlx::query_as(query)
+                .bind(job_id.value)
+                .fetch_one(pool)
+                .await?;
+
+            assert_eq!(status, JobProcessingStatus::Running as i32);
+            assert!(start_time.is_some(), "start_time should be set for RUNNING");
+            assert_eq!(
+                version, 2,
+                "version should bump when transitioning to RUNNING"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_update_status_by_job_id_preserves_existing_start_time() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_db().await;
+            let config = JobStatusConfig {
+                rdb_indexing_enabled: true,
+                cleanup_interval_hours: 1,
+                retention_hours: 24,
+            };
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
+
+            let job_id = JobId { value: 101 };
+            let worker_id = WorkerId { value: 1 };
+
+            repo.index_status(
+                &job_id,
+                &JobProcessingStatus::Pending,
+                &worker_id,
+                "test_channel",
+                1,
+                101,
+                false,
+                false,
+            )
+            .await?;
+
+            let existing_start_time = 123_456i64;
+            let existing_version = 5i64;
+
+            sqlx::query(
+                "UPDATE job_processing_status SET start_time = ?, version = ? WHERE job_id = ?",
+            )
+            .bind(existing_start_time)
+            .bind(existing_version)
+            .bind(job_id.value)
+            .execute(pool)
+            .await?;
+
+            repo.update_status_by_job_id(&job_id, &JobProcessingStatus::Running)
+                .await?;
+
+            let (start_time, version): (Option<i64>, i64) = sqlx::query_as(
+                "SELECT start_time, version FROM job_processing_status WHERE job_id = ?",
+            )
+            .bind(job_id.value)
+            .fetch_one(pool)
+            .await?;
+
+            assert_eq!(start_time, Some(existing_start_time));
+            assert_eq!(version, existing_version + 1);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_mark_deleted_by_job_id() -> Result<()> {
+        // Test marking job as deleted by job_id
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_db().await;
+            let config = JobStatusConfig {
+                rdb_indexing_enabled: true,
+                cleanup_interval_hours: 1,
+                retention_hours: 24,
+            };
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
+
+            let job_id = JobId { value: 200 };
+            let worker_id = WorkerId { value: 1 };
+
+            // First, create a PENDING status
+            repo.index_status(
+                &job_id,
+                &JobProcessingStatus::Pending,
+                &worker_id,
+                "test_channel",
+                1,
+                200,
+                false,
+                false,
+            )
+            .await?;
+
+            // Mark as deleted using mark_deleted_by_job_id
+            repo.mark_deleted_by_job_id(&job_id).await?;
+
+            // Verify deleted_at was set
+            let query = "SELECT deleted_at FROM job_processing_status WHERE job_id = ?";
+            let deleted_at: Option<i64> = sqlx::query_scalar(query)
+                .bind(job_id.value)
+                .fetch_one(pool)
+                .await?;
+
+            assert!(deleted_at.is_some(), "deleted_at should be set");
+            assert!(
+                deleted_at.unwrap() > 0,
+                "deleted_at should be a valid timestamp"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_update_status_by_job_id_only_updates_non_deleted() -> Result<()> {
+        // Test that update_status_by_job_id only updates non-deleted records
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_db().await;
+            let config = JobStatusConfig {
+                rdb_indexing_enabled: true,
+                cleanup_interval_hours: 1,
+                retention_hours: 24,
+            };
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
+
+            let job_id = JobId { value: 300 };
+            let worker_id = WorkerId { value: 1 };
+
+            // Create a PENDING status
+            repo.index_status(
+                &job_id,
+                &JobProcessingStatus::Pending,
+                &worker_id,
+                "test_channel",
+                1,
+                300,
+                false,
+                false,
+            )
+            .await?;
+
+            // Mark as deleted
+            repo.mark_deleted_by_job_id(&job_id).await?;
+
+            // Try to update status (should not affect deleted records)
+            repo.update_status_by_job_id(&job_id, &JobProcessingStatus::Running)
+                .await?;
+
+            // Verify status was NOT updated (should still be PENDING)
+            let query = "SELECT status FROM job_processing_status WHERE job_id = ?";
+            let status: i32 = sqlx::query_scalar(query)
+                .bind(job_id.value)
+                .fetch_one(pool)
+                .await?;
+
+            assert_eq!(
+                status,
+                JobProcessingStatus::Pending as i32,
+                "Status should not change for deleted records"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_mark_deleted_by_job_id_idempotent() -> Result<()> {
+        // Test that mark_deleted_by_job_id is idempotent
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_db().await;
+            let config = JobStatusConfig {
+                rdb_indexing_enabled: true,
+                cleanup_interval_hours: 1,
+                retention_hours: 24,
+            };
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
+
+            let job_id = JobId { value: 400 };
+            let worker_id = WorkerId { value: 1 };
+
+            // Create a PENDING status
+            repo.index_status(
+                &job_id,
+                &JobProcessingStatus::Pending,
+                &worker_id,
+                "test_channel",
+                1,
+                400,
+                false,
+                false,
+            )
+            .await?;
+
+            // Mark as deleted first time
+            repo.mark_deleted_by_job_id(&job_id).await?;
+
+            let query = "SELECT deleted_at FROM job_processing_status WHERE job_id = ?";
+            let first_deleted_at: Option<i64> = sqlx::query_scalar(query)
+                .bind(job_id.value)
+                .fetch_one(pool)
+                .await?;
+
+            // Small delay to ensure timestamp would differ if updated
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+            // Mark as deleted second time (should be idempotent)
+            repo.mark_deleted_by_job_id(&job_id).await?;
+
+            let second_deleted_at: Option<i64> = sqlx::query_scalar(query)
+                .bind(job_id.value)
+                .fetch_one(pool)
+                .await?;
+
+            // Both calls should result in same timestamp (only updates if deleted_at IS NULL)
+            assert_eq!(
+                first_deleted_at, second_deleted_at,
+                "Multiple mark_deleted calls should be idempotent"
+            );
             Ok(())
         })
     }

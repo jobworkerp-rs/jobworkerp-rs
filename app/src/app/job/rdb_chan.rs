@@ -203,6 +203,21 @@ impl RdbChanJobAppImpl {
                     .upsert_status(id, &JobProcessingStatus::Cancelling)
                     .await?;
 
+                // Update RDB index status to CANCELLING (if enabled)
+                if let Some(index_repo) = self.job_status_index_repository.as_ref() {
+                    if let Err(e) = index_repo
+                        .update_status_by_job_id(id, &JobProcessingStatus::Cancelling)
+                        .await
+                    {
+                        tracing::warn!(
+                            "Failed to update status to CANCELLING in RDB index for job {}: {:?}",
+                            id.value,
+                            e
+                        );
+                    }
+                }
+                // Note: RDB index deleted_at will be set by cleanup_job()
+
                 // Active cancellation of running jobs (broadcast)
                 self.broadcast_job_cancellation(id).await?;
 
@@ -220,6 +235,21 @@ impl RdbChanJobAppImpl {
                 self.job_processing_status_repository()
                     .upsert_status(id, &JobProcessingStatus::Cancelling)
                     .await?;
+
+                // Update RDB index status to CANCELLING (if enabled)
+                if let Some(index_repo) = self.job_status_index_repository.as_ref() {
+                    if let Err(e) = index_repo
+                        .update_status_by_job_id(id, &JobProcessingStatus::Cancelling)
+                        .await
+                    {
+                        tracing::warn!(
+                            "Failed to update status to CANCELLING in RDB index for job {}: {:?}",
+                            id.value,
+                            e
+                        );
+                    }
+                }
+                // Note: RDB index deleted_at will be set by cleanup_job()
 
                 tracing::info!("Pending job {} marked as cancelling", id.value);
 
@@ -279,19 +309,31 @@ impl RdbChanJobAppImpl {
     /// - `Ok(())`: Cleanup succeeded (or non-critical failures)
     /// - `Err(e)`: Critical failure (status deletion failed)
     pub(crate) async fn cleanup_job(&self, id: &JobId) -> Result<()> {
-        // 1. Delete job record from RDB
+        // 1. Mark as logically deleted in RDB index BEFORE deleting memory status
+        //    (deleted_at must be set while we still know this job is being cleaned up)
+        if let Some(index_repo) = self.job_status_index_repository.as_ref() {
+            if let Err(e) = index_repo.mark_deleted_by_job_id(id).await {
+                tracing::warn!(
+                    "Failed to mark job {} as deleted in RDB index: {:?}",
+                    id.value,
+                    e
+                );
+            }
+        }
+
+        // 2. Delete job record from RDB
         let db_deletion_result = self.rdb_job_repository().delete(id).await;
         if let Err(e) = &db_deletion_result {
             tracing::warn!("Failed to delete job {} from RDB: {:?}", id.value, e);
         }
 
-        // 2. Delete job cache from memory
+        // 3. Delete job cache from memory
         let cache_key = Arc::new(Self::find_cache_key(id));
         let _ = self.delete_cache(&cache_key).await.inspect_err(|e| {
             tracing::warn!("Failed to delete job cache for {}: {:?}", id.value, e)
         });
 
-        // 3. Delete job processing status (critical operation)
+        // 4. Delete job processing status from memory/Redis (critical operation)
         self.job_processing_status_repository()
             .delete_status(id)
             .await?;
@@ -988,6 +1030,10 @@ impl JobApp for RdbChanJobAppImpl {
                 .await
         }
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 impl UseRdbChanRepositoryModule for RdbChanJobAppImpl {
     fn rdb_repository_module(&self) -> &RdbChanRepositoryModule {
@@ -1199,7 +1245,7 @@ mod tests {
     async fn create_test_app(
         use_mock_id: bool,
     ) -> Result<(RdbChanJobAppImpl, ChanJobResultPubSubRepositoryImpl)> {
-        let rdb_module = setup_test_rdb_module().await;
+        let rdb_module = setup_test_rdb_module(false).await;
         let repositories = Arc::new(rdb_module);
         // mock id generator (generate 1 until called set method)
         let id_generator = if use_mock_id {

@@ -329,7 +329,7 @@ mod tests {
     use std::time::Duration;
 
     async fn create_test_app(use_mock_id: bool) -> Result<RdbWorkerAppImpl> {
-        let rdb_module = Arc::new(setup_test_rdb_module().await);
+        let rdb_module = Arc::new(setup_test_rdb_module(false).await);
 
         // Mock id generator or use real one
         let id_generator = if use_mock_id {
