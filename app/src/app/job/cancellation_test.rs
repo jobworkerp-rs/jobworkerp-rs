@@ -480,17 +480,18 @@ mod tests {
                 "WAIT_RESULT job cancellation should fail (return false)"
             );
 
-            // Verify status remains WAIT_RESULT (implementation deletes status even on failure)
-            // Note: This behavior may differ from spec - documenting actual behavior
+            // Verify status remains WAIT_RESULT (implementation preserves status on cancellation failure)
+            // This is the expected behavior after fix: status should be preserved
             let status = app
                 .job_processing_status_repository()
                 .find_status(&job_id)
                 .await
                 .unwrap();
-            // Actual implementation deletes the status record
+            // Fixed implementation preserves the status record
             assert_eq!(
-                status, None,
-                "WAIT_RESULT job status is deleted even when cancellation fails"
+                status,
+                Some(JobProcessingStatus::WaitResult),
+                "WAIT_RESULT job status should be preserved when cancellation fails"
             );
 
             tracing::info!("test_delete_wait_result_job_rejection completed successfully");
