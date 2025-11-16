@@ -8,7 +8,8 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
-    JobId, JobResult, JobResultData, JobResultId, ResultOutputItem, ResultStatus, WorkerId,
+    JobId, JobResult, JobResultData, JobResultId, JobResultSortField, ResultOutputItem,
+    ResultStatus, WorkerId,
 };
 use std::{fmt, pin::Pin, sync::Arc};
 use tokio_stream::Stream;
@@ -158,6 +159,84 @@ pub trait JobResultApp: fmt::Debug + Send + Sync + 'static {
             .map(|d| d.status != ResultStatus::ErrorAndRetry as i32)
             .unwrap_or(false)
     }
+
+    // Sprint 4: Advanced filtering and bulk operations
+
+    /// Find job results by multiple filter conditions with pagination and sorting
+    ///
+    /// # Arguments
+    /// - `worker_ids`: Filter by worker IDs
+    /// - `statuses`: Filter by result statuses
+    /// - `start_time_from`: Filter by start time (from timestamp in milliseconds)
+    /// - `start_time_to`: Filter by start time (to timestamp in milliseconds)
+    /// - `end_time_from`: Filter by end time (from timestamp in milliseconds)
+    /// - `end_time_to`: Filter by end time (to timestamp in milliseconds)
+    /// - `priorities`: Filter by priorities
+    /// - `uniq_key`: Filter by unique key (exact match)
+    /// - `limit`: Maximum number of results (default: 100, max: 1000)
+    /// - `offset`: Number of results to skip (max: 10000)
+    /// - `sort_by`: Sort field (default: END_TIME)
+    /// - `ascending`: Sort order (default: false for DESC)
+    #[allow(clippy::too_many_arguments)]
+    async fn find_list_by(
+        &self,
+        worker_ids: Vec<i64>,
+        statuses: Vec<i32>,
+        start_time_from: Option<i64>,
+        start_time_to: Option<i64>,
+        end_time_from: Option<i64>,
+        end_time_to: Option<i64>,
+        priorities: Vec<i32>,
+        uniq_key: Option<String>,
+        limit: Option<i32>,
+        offset: Option<i64>,
+        sort_by: Option<JobResultSortField>,
+        ascending: Option<bool>,
+    ) -> Result<Vec<JobResult>>
+    where
+        Self: Send + 'static;
+
+    /// Count job results by filter conditions
+    ///
+    /// # Arguments
+    /// Same filters as `find_list_by` (without pagination and sorting)
+    #[allow(clippy::too_many_arguments)]
+    async fn count_by(
+        &self,
+        worker_ids: Vec<i64>,
+        statuses: Vec<i32>,
+        start_time_from: Option<i64>,
+        start_time_to: Option<i64>,
+        end_time_from: Option<i64>,
+        end_time_to: Option<i64>,
+        priorities: Vec<i32>,
+        uniq_key: Option<String>,
+    ) -> Result<i64>
+    where
+        Self: Send + 'static;
+
+    /// Bulk delete job results with safety features
+    ///
+    /// # Safety Features (Defense in Depth)
+    /// 1. **Required filter condition**: At least one of end_time_before, statuses, or worker_ids must be specified
+    /// 2. **Recent data protection**: Cannot delete results within last 24 hours
+    /// 3. **Transaction timeout**: 30-second limit to prevent long-running locks
+    ///
+    /// # Arguments
+    /// - `end_time_before`: Delete results older than this timestamp (Unix time in milliseconds)
+    /// - `statuses`: Delete results with these statuses
+    /// - `worker_ids`: Delete results from these workers
+    ///
+    /// # Returns
+    /// Number of deleted records
+    async fn delete_bulk(
+        &self,
+        end_time_before: Option<i64>,
+        statuses: Vec<i32>,
+        worker_ids: Vec<i64>,
+    ) -> Result<i64>
+    where
+        Self: Send + 'static;
 }
 
 pub trait UseJobResultApp {
