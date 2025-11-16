@@ -6,7 +6,43 @@ use infra_utils::infra::rdb::{query_result, Rdb, RdbPool, UseRdbPool};
 use itertools::Itertools;
 use jobworkerp_base::{codec::UseProstCodec, error::JobWorkerError};
 use proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
-use sqlx::Executor;
+use sqlx::{Database, Executor};
+
+/// Represents a filter parameter binding for worker queries.
+/// This enum provides type-safe binding for different parameter types
+/// and ensures consistent handling across list and count queries.
+#[derive(Debug)]
+enum WorkerFilterBinding {
+    I32(i32),
+    I64(i64),
+    String(String),
+}
+
+impl WorkerFilterBinding {
+    /// Bind this parameter to a query that returns typed results (QueryAs)
+    fn bind_query_as<'q, O>(
+        &'q self,
+        query: sqlx::query::QueryAs<'q, Rdb, O, <Rdb as Database>::Arguments<'q>>,
+    ) -> sqlx::query::QueryAs<'q, Rdb, O, <Rdb as Database>::Arguments<'q>> {
+        match self {
+            WorkerFilterBinding::I32(value) => query.bind(*value),
+            WorkerFilterBinding::I64(value) => query.bind(*value),
+            WorkerFilterBinding::String(value) => query.bind(value.as_str()),
+        }
+    }
+
+    /// Bind this parameter to a query that returns scalar values (QueryScalar)
+    fn bind_query_scalar<'q, O>(
+        &'q self,
+        query: sqlx::query::QueryScalar<'q, Rdb, O, <Rdb as Database>::Arguments<'q>>,
+    ) -> sqlx::query::QueryScalar<'q, Rdb, O, <Rdb as Database>::Arguments<'q>> {
+        match self {
+            WorkerFilterBinding::I32(value) => query.bind(*value),
+            WorkerFilterBinding::I64(value) => query.bind(*value),
+            WorkerFilterBinding::String(value) => query.bind(value.as_str()),
+        }
+    }
+}
 
 #[async_trait]
 pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
@@ -244,54 +280,13 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         sort_by: Option<proto::jobworkerp::data::WorkerSortField>,
         ascending: Option<bool>,
     ) -> Result<Vec<WorkerRow>> {
-        let mut conditions = Vec::new();
-
-        // Add runner_types condition if not empty (for backward compatibility)
-        // Use EXISTS subquery for better performance with large datasets:
-        // - Utilizes primary key index (runner.id) for fast lookups
-        // - Short-circuits on first match (SELECT 1)
-        // - NULL-safe comparison
-        if !runner_types.is_empty() {
-            let placeholders = runner_types
-                .iter()
-                .map(|_| "?")
-                .collect::<Vec<_>>()
-                .join(",");
-            conditions.push(format!(
-                "EXISTS (SELECT 1 FROM runner r WHERE r.id = worker.runner_id AND r.type IN ({placeholders}))"
-            ));
-        }
-
-        // Add runner_ids condition if not empty (new filter)
-        if !runner_ids.is_empty() {
-            let placeholders = runner_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            conditions.push(format!("runner_id IN ({placeholders})"));
-        }
-
-        // Add channel condition if specified
-        if channel.is_some() {
-            conditions.push("channel = ?".to_string());
-        }
-
-        // Add name_filter condition if specified (prefix match)
-        if name_filter.is_some() {
-            conditions.push("name LIKE ?".to_string());
-        }
-
-        // Add is_periodic condition if specified
-        if let Some(periodic) = is_periodic {
-            if periodic {
-                conditions.push("periodic_interval > 0".to_string());
-            } else {
-                conditions.push("periodic_interval = 0".to_string());
-            }
-        }
-
-        let where_clause = if conditions.is_empty() {
-            String::new()
-        } else {
-            format!(" WHERE {}", conditions.join(" AND "))
-        };
+        let (where_clause, bindings) = Self::build_worker_filters(
+            &runner_types,
+            &channel,
+            &name_filter,
+            is_periodic,
+            &runner_ids,
+        );
 
         // Build ORDER BY clause based on sort_by and ascending - convert enum to SQL field name
         use proto::jobworkerp::data::WorkerSortField;
@@ -319,31 +314,8 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         };
 
         let full_sql = format!("{base_sql}{limit_clause}");
-        let mut query = sqlx::query_as::<_, WorkerRow>(&full_sql);
-
-        // Bind parameters in the order they appear in WHERE clause
-        if !runner_types.is_empty() {
-            for rt in runner_types.iter() {
-                query = query.bind(*rt);
-            }
-        }
-
-        if !runner_ids.is_empty() {
-            for rid in runner_ids.iter() {
-                query = query.bind(*rid);
-            }
-        }
-
-        if let Some(ref ch) = channel {
-            query = query.bind(ch);
-        }
-
-        if let Some(ref name) = name_filter {
-            // Escape special characters for LIKE and add prefix match pattern
-            use infra_utils::infra::rdb::escape::escape_like_pattern;
-            let escaped = escape_like_pattern(name);
-            query = query.bind(format!("{escaped}%"));
-        }
+        let query = sqlx::query_as::<_, WorkerRow>(&full_sql);
+        let query = Self::bind_worker_filters_query_as(query, &bindings);
 
         query
             .fetch_all(tx)
@@ -392,9 +364,39 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         is_periodic: Option<bool>,
         runner_ids: Vec<i64>,
     ) -> Result<i64> {
-        let mut conditions = Vec::new();
+        let (where_clause, bindings) = Self::build_worker_filters(
+            &runner_types,
+            &channel,
+            &name_filter,
+            is_periodic,
+            &runner_ids,
+        );
 
-        // Add runner_types condition if not empty
+        let sql = format!("SELECT count(*) as count FROM worker{where_clause};");
+        let query = sqlx::query_scalar(&sql);
+        let query = Self::bind_worker_filters_query_scalar(query, &bindings);
+
+        query
+            .fetch_one(tx)
+            .await
+            .map_err(JobWorkerError::DBError)
+            .context("error in count_by".to_string())
+    }
+
+    /// Build WHERE clause and bindings for worker filters.
+    /// This centralizes filter construction to ensure consistency between list and count queries.
+    #[allow(private_interfaces)]
+    fn build_worker_filters(
+        runner_types: &[i32],
+        channel: &Option<String>,
+        name_filter: &Option<String>,
+        is_periodic: Option<bool>,
+        runner_ids: &[i64],
+    ) -> (String, Vec<WorkerFilterBinding>) {
+        let mut conditions = Vec::new();
+        let mut bindings = Vec::new();
+
+        // Add runner_types condition if not empty (for backward compatibility)
         // Use EXISTS subquery for better performance with large datasets:
         // - Utilizes primary key index (runner.id) for fast lookups
         // - Short-circuits on first match (SELECT 1)
@@ -409,22 +411,28 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
             conditions.push(format!(
                 "EXISTS (SELECT 1 FROM runner r WHERE r.id = worker.runner_id AND r.type IN ({placeholders}))"
             ));
+            bindings.extend(runner_types.iter().copied().map(WorkerFilterBinding::I32));
         }
 
-        // Add runner_ids condition if not empty
+        // Add runner_ids condition if not empty (new filter)
         if !runner_ids.is_empty() {
             let placeholders = runner_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             conditions.push(format!("runner_id IN ({placeholders})"));
+            bindings.extend(runner_ids.iter().copied().map(WorkerFilterBinding::I64));
         }
 
         // Add channel condition if specified
-        if channel.is_some() {
+        if let Some(ch) = channel {
             conditions.push("channel = ?".to_string());
+            bindings.push(WorkerFilterBinding::String(ch.clone()));
         }
 
         // Add name_filter condition if specified (prefix match)
-        if name_filter.is_some() {
+        if let Some(name) = name_filter {
             conditions.push("name LIKE ?".to_string());
+            use infra_utils::infra::rdb::escape::escape_like_pattern;
+            let escaped = escape_like_pattern(name);
+            bindings.push(WorkerFilterBinding::String(format!("{escaped}%")));
         }
 
         // Add is_periodic condition if specified
@@ -442,38 +450,31 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
             format!(" WHERE {}", conditions.join(" AND "))
         };
 
-        let sql = format!("SELECT count(*) as count FROM worker{where_clause};");
-        let mut query = sqlx::query_scalar(&sql);
+        (where_clause, bindings)
+    }
 
-        // Bind parameters in the order they appear in WHERE clause
-        if !runner_types.is_empty() {
-            for rt in runner_types.iter() {
-                query = query.bind(*rt);
-            }
+    /// Bind filter parameters to a QueryAs query.
+    #[allow(private_interfaces)]
+    fn bind_worker_filters_query_as<'q, O>(
+        mut query: sqlx::query::QueryAs<'q, Rdb, O, <Rdb as Database>::Arguments<'q>>,
+        bindings: &'q [WorkerFilterBinding],
+    ) -> sqlx::query::QueryAs<'q, Rdb, O, <Rdb as Database>::Arguments<'q>> {
+        for binding in bindings {
+            query = binding.bind_query_as(query);
         }
-
-        if !runner_ids.is_empty() {
-            for rid in runner_ids.iter() {
-                query = query.bind(*rid);
-            }
-        }
-
-        if let Some(ref ch) = channel {
-            query = query.bind(ch);
-        }
-
-        if let Some(ref name) = name_filter {
-            // Escape special characters for LIKE and add prefix match pattern
-            use infra_utils::infra::rdb::escape::escape_like_pattern;
-            let escaped = escape_like_pattern(name);
-            query = query.bind(format!("{escaped}%"));
-        }
-
         query
-            .fetch_one(tx)
-            .await
-            .map_err(JobWorkerError::DBError)
-            .context("error in count_by".to_string())
+    }
+
+    /// Bind filter parameters to a QueryScalar query.
+    #[allow(private_interfaces)]
+    fn bind_worker_filters_query_scalar<'q, O>(
+        mut query: sqlx::query::QueryScalar<'q, Rdb, O, <Rdb as Database>::Arguments<'q>>,
+        bindings: &'q [WorkerFilterBinding],
+    ) -> sqlx::query::QueryScalar<'q, Rdb, O, <Rdb as Database>::Arguments<'q>> {
+        for binding in bindings {
+            query = binding.bind_query_scalar(query);
+        }
+        query
     }
 
     // Count workers grouped by channel
