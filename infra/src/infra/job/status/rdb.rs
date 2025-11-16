@@ -883,6 +883,63 @@ mod tests {
     }
 
     #[test]
+    fn test_update_status_by_job_id_preserves_existing_start_time() -> Result<()> {
+        TEST_RUNTIME.block_on(async {
+            let pool = setup_test_db().await;
+            let config = JobStatusConfig {
+                rdb_indexing_enabled: true,
+                cleanup_interval_hours: 1,
+                retention_hours: 24,
+            };
+            let repo = RdbJobProcessingStatusIndexRepository::new(
+                Arc::new(pool.clone()),
+                Arc::new(config),
+            );
+
+            let job_id = JobId { value: 101 };
+            let worker_id = WorkerId { value: 1 };
+
+            repo.index_status(
+                &job_id,
+                &JobProcessingStatus::Pending,
+                &worker_id,
+                "test_channel",
+                1,
+                101,
+                false,
+                false,
+            )
+            .await?;
+
+            let existing_start_time = 123_456i64;
+            let existing_version = 5i64;
+
+            sqlx::query(
+                "UPDATE job_processing_status SET start_time = ?, version = ? WHERE job_id = ?",
+            )
+            .bind(existing_start_time)
+            .bind(existing_version)
+            .bind(job_id.value)
+            .execute(pool)
+            .await?;
+
+            repo.update_status_by_job_id(&job_id, &JobProcessingStatus::Running)
+                .await?;
+
+            let (start_time, version): (Option<i64>, i64) = sqlx::query_as(
+                "SELECT start_time, version FROM job_processing_status WHERE job_id = ?",
+            )
+            .bind(job_id.value)
+            .fetch_one(pool)
+            .await?;
+
+            assert_eq!(start_time, Some(existing_start_time));
+            assert_eq!(version, existing_version + 1);
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_mark_deleted_by_job_id() -> Result<()> {
         // Test marking job as deleted by job_id
         TEST_RUNTIME.block_on(async {
