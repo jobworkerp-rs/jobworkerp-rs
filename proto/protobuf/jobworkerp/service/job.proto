@@ -119,6 +119,25 @@ message JobProcessingStatusDetailResponse {
   int64 updated_at = 11;  // Last RDB update time (for detecting sync delay)
 }
 
+// Cleanup request message
+message CleanupRequest {
+  // Optional: Override default retention hours (for testing purposes)
+  // If not set, uses JOB_STATUS_RETENTION_HOURS from environment
+  optional uint64 retention_hours_override = 1;
+}
+
+// Cleanup response message
+message CleanupResponse {
+  // Number of records deleted
+  uint64 deleted_count = 1;
+
+  // Cutoff timestamp used for deletion (milliseconds since epoch)
+  int64 cutoff_time = 2;
+
+  // Human-readable message
+  string message = 3;
+}
+
 service JobProcessingStatusService {
   rpc Find(jobworkerp.data.JobId) returns (OptionalJobProcessingStatusResponse);
   rpc FindAll(jobworkerp.data.Empty) returns (stream JobProcessingStatusResponse);
@@ -127,6 +146,25 @@ service JobProcessingStatusService {
   // Returns UNIMPLEMENTED error if JOB_STATUS_RDB_INDEXING=false
   rpc FindByCondition(FindJobProcessingStatusRequest)
       returns (stream JobProcessingStatusDetailResponse);
+
+  // Cleanup logically deleted records from job_processing_status table
+  //
+  // This operation physically deletes records marked as deleted (deleted_at IS NOT NULL)
+  // that are older than JOB_STATUS_RETENTION_HOURS (default: 24 hours).
+  //
+  // Requirements:
+  // - JOB_STATUS_RDB_INDEXING=true (returns FAILED_PRECONDITION if disabled)
+  // - AUTH_TOKEN environment variable must match jobworkerp-auth header (if set)
+  //
+  // Returns:
+  // - deleted_count: Number of deleted records
+  // - cutoff_time: Timestamp used for deletion cutoff (milliseconds since epoch)
+  //
+  // Errors:
+  // - UNAUTHENTICATED: Missing or invalid AUTH_TOKEN (if AUTH_TOKEN env is set)
+  // - FAILED_PRECONDITION: JOB_STATUS_RDB_INDEXING is disabled
+  // - INTERNAL: Database error during cleanup
+  rpc Cleanup(CleanupRequest) returns (CleanupResponse);
 }
 
 message JobRestoreRequest {

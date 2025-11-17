@@ -165,6 +165,21 @@ pub trait JobApp: fmt::Debug + Send + Sync {
     where
         Self: Send + 'static;
 
+    /// Cleanup logically deleted job_processing_status records
+    ///
+    /// This method delegates to RdbJobProcessingStatusIndexRepository.cleanup_deleted_records()
+    ///
+    /// # Arguments
+    /// * `retention_hours_override` - Override default retention hours (for testing)
+    ///
+    /// # Returns
+    /// * `Ok((deleted_count, cutoff_time))` - Number of deleted records and cutoff timestamp
+    /// * `Err` - If RDB indexing is disabled or database error occurs
+    async fn cleanup_job_processing_status(
+        &self,
+        retention_hours_override: Option<u64>,
+    ) -> Result<(u64, i64)>;
+
     async fn pop_run_after_jobs_to_run(&self) -> Result<Vec<Job>>;
 
     async fn restore_jobs_from_rdb(&self, include_grabbed: bool, limit: Option<&i32>)
