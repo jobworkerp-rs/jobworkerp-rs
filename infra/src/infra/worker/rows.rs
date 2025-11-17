@@ -25,6 +25,7 @@ pub struct WorkerRow {
     pub store_failure: bool,
     pub use_static: bool,
     pub broadcast_results: bool,
+    pub created_at: i64,
 }
 
 impl WorkerRow {

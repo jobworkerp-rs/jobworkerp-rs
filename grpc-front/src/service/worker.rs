@@ -2,8 +2,9 @@ use crate::proto::jobworkerp::data::{Empty, QueueType, ResponseType};
 use crate::proto::jobworkerp::data::{Worker, WorkerData, WorkerId};
 use crate::proto::jobworkerp::service::worker_service_server::WorkerService;
 use crate::proto::jobworkerp::service::{
-    ChannelInfo, CountCondition, CountResponse, CreateWorkerResponse, FindChannelListResponse,
-    FindWorkerListRequest, OptionalWorkerResponse, SuccessResponse, WorkerNameRequest,
+    ChannelInfo, CountCondition, CountResponse, CountWorkerRequest, CreateWorkerResponse,
+    FindChannelListResponse, FindWorkerListRequest, OptionalWorkerResponse, SuccessResponse,
+    WorkerNameRequest,
 };
 use crate::service::error_handle::handle_error;
 use app::app::worker::WorkerApp;
@@ -269,10 +270,33 @@ impl<
     ) -> Result<tonic::Response<Self::FindListStream>, tonic::Status> {
         let _s = Self::trace_request("worker", "find_list", &request);
         let req = request.into_inner();
-        // TODO streaming?
+
+        // Validate request parameters
+        super::validation::validate_limit(req.limit)?;
+        super::validation::validate_offset(req.offset)?;
+        super::validation::validate_name_filter(req.name_filter.as_ref())?;
+        super::validation::validate_filter_enums(&req.runner_types, "runner_types")?;
+
+        // Convert RunnerId to i64
+        let runner_ids: Vec<i64> = req.runner_ids.into_iter().map(|rid| rid.value).collect();
+        super::validation::validate_filter_ids(&runner_ids, "runner_ids")?;
+        // Convert i32 to WorkerSortField enum
+        let sort_by = req
+            .sort_by
+            .and_then(|val| proto::jobworkerp::data::WorkerSortField::try_from(val).ok());
         match self
             .app()
-            .find_list(req.runner_types, req.channel, req.limit, req.offset)
+            .find_list(
+                req.runner_types,
+                req.channel,
+                req.limit,
+                req.offset,
+                req.name_filter,
+                req.is_periodic,
+                runner_ids,
+                sort_by,
+                req.ascending,
+            )
             .await
         {
             Ok(list) => {
@@ -301,6 +325,37 @@ impl<
             Err(e) => Err(handle_error(&e)),
         }
     }
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "count_by"))]
+    async fn count_by(
+        &self,
+        request: tonic::Request<CountWorkerRequest>,
+    ) -> Result<tonic::Response<CountResponse>, tonic::Status> {
+        let _s = Self::trace_request("worker", "count_by", &request);
+        let req = request.into_inner();
+
+        // Validate request parameters
+        super::validation::validate_name_filter(req.name_filter.as_ref())?;
+        super::validation::validate_channel(req.channel.as_ref())?;
+        super::validation::validate_filter_enums(&req.runner_types, "runner_types")?;
+
+        // Convert RunnerId to i64
+        let runner_ids: Vec<i64> = req.runner_ids.into_iter().map(|rid| rid.value).collect();
+        super::validation::validate_filter_ids(&runner_ids, "runner_ids")?;
+        match self
+            .app()
+            .count_by(
+                req.runner_types,
+                req.channel,
+                req.name_filter,
+                req.is_periodic,
+                runner_ids,
+            )
+            .await
+        {
+            Ok(res) => Ok(Response::new(CountResponse { total: res })),
+            Err(e) => Err(handle_error(&e)),
+        }
+    }
 
     #[tracing::instrument(
         level = "info",
@@ -312,6 +367,18 @@ impl<
         request: tonic::Request<Empty>,
     ) -> Result<tonic::Response<FindChannelListResponse>, tonic::Status> {
         let _s = Self::trace_request("worker", "find_channel_list", &request);
+
+        // Get worker count by channel from database
+        let worker_counts = match self.app().count_by_channel().await {
+            Ok(counts) => counts
+                .into_iter()
+                .collect::<std::collections::HashMap<_, _>>(),
+            Err(e) => {
+                tracing::warn!("Failed to get worker counts by channel: {}", e);
+                std::collections::HashMap::new()
+            }
+        };
+
         let channels = self
             .worker_config()
             .channel_concurrency_pair()
@@ -320,11 +387,13 @@ impl<
                 let display_name = if name == T::DEFAULT_CHANNEL_NAME {
                     DEFAULT_CHANNEL_DISPLAY_NAME.to_string()
                 } else {
-                    name
+                    name.clone()
                 };
+                let worker_count = *worker_counts.get(&name).unwrap_or(&0);
                 ChannelInfo {
                     name: display_name,
                     concurrency,
+                    worker_count,
                 }
             })
             .collect();

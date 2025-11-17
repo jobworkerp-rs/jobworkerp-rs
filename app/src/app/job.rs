@@ -9,7 +9,11 @@ pub mod cancellation_test;
 #[cfg(test)]
 pub mod find_list_with_processing_status_test;
 #[cfg(test)]
+pub mod hybrid_indexing_integration_test;
+#[cfg(test)]
 pub mod rdb_chan_cancellation_test;
+#[cfg(test)]
+pub mod rdb_chan_indexing_integration_test;
 
 use super::JobBuilder;
 use anyhow::Result;
@@ -144,6 +148,38 @@ pub trait JobApp: fmt::Debug + Send + Sync {
     where
         Self: Send + 'static;
 
+    /// Advanced search using RDB index (Sprint 3)
+    ///
+    /// Returns UNIMPLEMENTED error if JOB_STATUS_RDB_INDEXING=false
+    #[allow(clippy::too_many_arguments)]
+    async fn find_by_condition(
+        &self,
+        status: Option<JobProcessingStatus>,
+        worker_id: Option<i64>,
+        channel: Option<String>,
+        min_elapsed_time_ms: Option<i64>,
+        limit: i32,
+        offset: i32,
+        descending: bool,
+    ) -> Result<Vec<infra::infra::job::status::rdb::JobProcessingStatusDetail>>
+    where
+        Self: Send + 'static;
+
+    /// Cleanup logically deleted job_processing_status records
+    ///
+    /// This method delegates to RdbJobProcessingStatusIndexRepository.cleanup_deleted_records()
+    ///
+    /// # Arguments
+    /// * `retention_hours_override` - Override default retention hours (for testing)
+    ///
+    /// # Returns
+    /// * `Ok((deleted_count, cutoff_time))` - Number of deleted records and cutoff timestamp
+    /// * `Err` - If RDB indexing is disabled or database error occurs
+    async fn cleanup_job_processing_status(
+        &self,
+        retention_hours_override: Option<u64>,
+    ) -> Result<(u64, i64)>;
+
     async fn pop_run_after_jobs_to_run(&self) -> Result<Vec<Job>>;
 
     async fn restore_jobs_from_rdb(&self, include_grabbed: bool, limit: Option<&i32>)
@@ -154,6 +190,9 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         include_grabbed: bool,
         limit: Option<&i32>,
     ) -> Result<Vec<Job>>;
+
+    /// Downcast to concrete type for testing internal methods
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 pub trait UseJobApp {
@@ -166,6 +205,26 @@ pub trait RedisJobAppHelper:
 where
     Self: Sized + 'static,
 {
+    /// Hook called after successfully enqueueing a job to Redis with PENDING status set
+    ///
+    /// Default implementation does nothing. Override to add custom behavior like RDB indexing.
+    ///
+    /// # Arguments
+    /// * `job_id` - The enqueued job ID
+    /// * `job` - The job data
+    /// * `worker` - The worker configuration
+    /// * `request_streaming` - Whether streaming was requested
+    #[allow(unused_variables)]
+    fn after_enqueue_to_redis_hook(
+        &self,
+        job_id: JobId,
+        job: &Job,
+        worker: &WorkerData,
+        request_streaming: bool,
+    ) {
+        // Default: no-op
+    }
+
     async fn enqueue_job_to_redis_with_wait_if_needed(
         &self,
         job: &Job,
@@ -196,6 +255,10 @@ where
                 self.job_processing_status_repository()
                     .upsert_status(&job_id, &JobProcessingStatus::Pending)
                     .await?;
+
+                // Call hook after PENDING status is set
+                self.after_enqueue_to_redis_hook(job_id, job, worker, request_streaming);
+
                 // TTL prevents job orphaning when worker fails unexpectedly
                 if worker.queue_type == QueueType::Normal as i32 {
                     if let Some(job_data) = &job.data {

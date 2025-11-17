@@ -6,6 +6,7 @@ pub mod job_restore;
 pub mod job_result;
 pub mod job_status;
 pub mod runner;
+pub mod validation;
 pub mod worker;
 
 use std::collections::HashMap;

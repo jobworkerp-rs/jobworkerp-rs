@@ -4,6 +4,7 @@ package jobworkerp.service;
 
 import "jobworkerp/data/common.proto";
 import "jobworkerp/data/worker.proto";
+import "jobworkerp/data/runner.proto";
 import "jobworkerp/service/common.proto";
 
 message CreateWorkerResponse {
@@ -15,16 +16,30 @@ message OptionalWorkerResponse { optional jobworkerp.data.Worker data = 1; }
 message WorkerNameRequest { string name = 1; }
 
 message FindWorkerListRequest {
-  repeated jobworkerp.data.RunnerType runner_types = 1; 
+  repeated jobworkerp.data.RunnerType runner_types = 1;
   optional string channel = 2;
   optional int32 limit = 3;
   optional int64 offset = 4;
+  // New fields for admin UI (backward compatible)
+  optional string name_filter = 5;                        // Prefix match search (LIKE 'keyword%')
+  optional bool is_periodic = 6;                          // true: periodic workers (periodic_interval > 0), false: non-periodic (= 0), null: all
+  repeated jobworkerp.data.RunnerId runner_ids = 7;       // Filter by runner IDs
+  optional jobworkerp.data.WorkerSortField sort_by = 8;   // Sort field
+  optional bool ascending = 9;                            // Sort order (true: ASC, false: DESC)
 }
 
+message CountWorkerRequest {
+  repeated jobworkerp.data.RunnerType runner_types = 1;
+  optional string channel = 2;
+  optional string name_filter = 3;
+  optional bool is_periodic = 4;
+  repeated jobworkerp.data.RunnerId runner_ids = 5;
+}
 
 message ChannelInfo {
   string name = 1;
   uint32 concurrency = 2;
+  int64 worker_count = 3;  // Number of workers in this channel
 }
 
 message FindChannelListResponse {
@@ -39,6 +54,10 @@ service WorkerService {
   rpc Find(jobworkerp.data.WorkerId) returns (OptionalWorkerResponse);
   rpc FindByName(WorkerNameRequest) returns (OptionalWorkerResponse);
   rpc FindList(FindWorkerListRequest) returns (stream jobworkerp.data.Worker);
-  rpc Count(CountCondition) returns (CountResponse);
+  // Deprecated: Use CountBy instead. This method will be removed in version 2.0.0
+  rpc Count(CountCondition) returns (CountResponse) {
+    option deprecated = true;
+  }
+  rpc CountBy(CountWorkerRequest) returns (CountResponse);
   rpc FindChannelList(jobworkerp.data.Empty) returns (FindChannelListResponse);
 }

@@ -100,3 +100,13 @@ message JobResult {
   JobResultData data = 2;
   map<string, string> metadata = 3;
 }
+
+// # Job Result Sort Field
+// Defines the fields available for sorting job results in queries
+enum JobResultSortField {
+  JOB_RESULT_SORT_FIELD_UNSPECIFIED = 0;
+  JOB_RESULT_SORT_FIELD_ID = 1;
+  JOB_RESULT_SORT_FIELD_START_TIME = 2;
+  JOB_RESULT_SORT_FIELD_END_TIME = 3;
+  JOB_RESULT_SORT_FIELD_STATUS = 4;
+}

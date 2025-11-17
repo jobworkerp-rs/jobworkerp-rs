@@ -194,6 +194,7 @@ impl RunnerSpecFactory {
                         .write()
                         .await
                         .find_plugin_runner_by_name(name)
+                        .await
                         .map(|r| Box::new(r) as Box<dyn RunnerSpec + Send + Sync>)
                 }
             }
@@ -224,7 +225,7 @@ mod test {
                 .runner_plugins()
                 .read()
                 .await
-                .plugin_loaders()
+                .active_plugin_info()
                 .len(),
             2 // Test, Hello
         );

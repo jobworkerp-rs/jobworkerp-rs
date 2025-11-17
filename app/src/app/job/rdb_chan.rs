@@ -13,6 +13,7 @@ use infra::infra::job::queue::chan::{
 use infra::infra::job::queue::JobQueueCancellationRepository;
 use infra::infra::job::rdb::{RdbJobRepository, UseRdbChanJobRepository};
 use infra::infra::job::rows::UseJobqueueAndCodec;
+use infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository;
 use infra::infra::job::status::{JobProcessingStatusRepository, UseJobProcessingStatusRepository};
 use infra::infra::job_result::pubsub::chan::{
     ChanJobResultPubSubRepositoryImpl, UseChanJobResultPubSubRepository,
@@ -45,6 +46,8 @@ pub struct RdbChanJobAppImpl {
     key_lock: Arc<RwLockWithKey<Arc<String>>>,
     job_cache_ttl: Duration,
     job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository>,
+    // RDBインデックス専用Repository（独立、Option型でデフォルト無効）
+    job_status_index_repository: Option<Arc<RdbJobProcessingStatusIndexRepository>>,
 }
 
 impl std::fmt::Debug for RdbChanJobAppImpl {
@@ -60,6 +63,14 @@ impl std::fmt::Debug for RdbChanJobAppImpl {
             .field(
                 "job_queue_cancellation_repository",
                 &"Arc<dyn JobQueueCancellationRepository>",
+            )
+            .field(
+                "job_status_index_repository",
+                &self
+                    .job_status_index_repository
+                    .as_ref()
+                    .map(|_| "Some(Arc<RdbJobProcessingStatusIndexRepository>)")
+                    .unwrap_or("None"),
             )
             .finish()
     }
@@ -80,6 +91,7 @@ impl RdbChanJobAppImpl {
         repositories: Arc<RdbChanRepositoryModule>,
         worker_app: Arc<dyn WorkerApp + 'static>,
         job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository>,
+        job_status_index_repository: Option<Arc<RdbJobProcessingStatusIndexRepository>>,
     ) -> Self {
         Self {
             app_config_module,
@@ -94,88 +106,53 @@ impl RdbChanJobAppImpl {
             )),
             job_cache_ttl: Self::JOB_DEFAULT_TTL,
             job_queue_cancellation_repository,
+            job_status_index_repository,
         }
     }
 
-    /// Internal implementation: Proper cancellation processing + cleanup
-    /// Similar to HybridJobAppImpl implementation for Standalone mode
-    async fn cancel_job_with_cleanup(&self, id: &JobId) -> Result<bool> {
-        // 1. Check current job status
-        let current_status = self
-            .job_processing_status_repository()
-            .find_status(id)
-            .await?;
-
-        let cancellation_result = match current_status {
-            Some(JobProcessingStatus::Running) => {
-                // Running → Cancelling state change
-                self.job_processing_status_repository()
-                    .upsert_status(id, &JobProcessingStatus::Cancelling)
-                    .await?;
-
-                // 2. Active cancellation of running jobs (broadcast)
-                self.broadcast_job_cancellation(id).await?;
-
-                tracing::info!(
-                    "Job {} marked as cancelling, broadcasting to workers",
-                    id.value
-                );
-                true
-            }
-            Some(JobProcessingStatus::Pending) => {
-                // Pending → Cancelling state change (Worker will detect when fetching)
-                self.job_processing_status_repository()
-                    .upsert_status(id, &JobProcessingStatus::Cancelling)
-                    .await?;
-
-                tracing::info!("Pending job {} marked as cancelling", id.value);
-                true // Will be processed by Worker's ResultProcessor
-            }
-            Some(JobProcessingStatus::Cancelling) => {
-                tracing::info!("Job {} is already being cancelled", id.value);
-                true // Already being cancelled but considered success
-            }
-            Some(JobProcessingStatus::WaitResult) => {
-                // Processing completed, waiting for result - cannot cancel
-                tracing::info!(
-                    "Job {} is waiting for result processing, cancellation not possible",
-                    id.value
-                );
-                false // Cancellation failed
-            }
-            Some(JobProcessingStatus::Unknown) => {
-                tracing::warn!(
-                    "Job {} has unknown status, attempting cancellation",
-                    id.value
-                );
-                false // Cancellation failed
-            }
-            None => {
-                // Status doesn't exist (already completed or doesn't exist)
-                tracing::info!(
-                    "Job {} status not found, may be already completed",
-                    id.value
-                );
-                false // Cancellation failed
-            }
-        };
-
-        let db_deletion_result = self.rdb_job_repository().delete(id).await;
-
-        let cache_key = Arc::new(Self::find_cache_key(id));
-        let _ = self.delete_cache(&cache_key).await.inspect_err(|e| {
-            tracing::warn!("Failed to delete job cache for {}: {:?}", id.value, e)
-        });
-
-        let _ = self
-            .job_processing_status_repository()
-            .delete_status(id)
-            .await?;
-
-        // Cancellation success or DB deletion success
-        let db_result = db_deletion_result.unwrap_or(false);
-        let final_result = cancellation_result || db_result;
-        Ok(final_result)
+    /// Asynchronously index job status to RDB (non-blocking, fire-and-forget)
+    ///
+    /// # Design Principles
+    /// - **Enqueue throughput first**: RDB indexing runs asynchronously without blocking
+    /// - **Inconsistency tolerance**: Data may be delayed by seconds to tens of seconds
+    /// - **Non-critical errors**: Logs warning on failure, but processing continues
+    #[allow(clippy::too_many_arguments)]
+    fn index_job_status_async(
+        &self,
+        job_id: JobId,
+        status: JobProcessingStatus,
+        worker_id: WorkerId,
+        channel: String,
+        priority: i32,
+        enqueue_time: i64,
+        is_streamable: bool,
+        broadcast_results: bool,
+    ) {
+        if let Some(index_repo) = &self.job_status_index_repository {
+            let repo = Arc::clone(index_repo);
+            tokio::spawn(async move {
+                if let Err(e) = repo
+                    .index_status(
+                        &job_id,
+                        &status,
+                        &worker_id,
+                        &channel,
+                        priority,
+                        enqueue_time,
+                        is_streamable,
+                        broadcast_results,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        error = ?e,
+                        job_id = job_id.value,
+                        status = ?status,
+                        "Failed to index job status to RDB (non-critical)"
+                    );
+                }
+            });
+        }
     }
 
     /// Active cancellation of running jobs (Memory environment notification)
@@ -194,6 +171,174 @@ impl RdbChanJobAppImpl {
             "Job cancellation broadcast completed for job {}",
             job_id.value
         );
+        Ok(())
+    }
+
+    /// Internal: Job cancellation logic (respects job state)
+    ///
+    /// # Purpose
+    /// This method handles user-initiated job cancellation requests.
+    /// It transitions jobs to CANCELLING state when appropriate and triggers cleanup.
+    ///
+    /// # State-based Behavior
+    /// - **PENDING**: Transition to CANCELLING → cleanup → return true
+    /// - **RUNNING**: Transition to CANCELLING → broadcast cancellation → cleanup → return true
+    /// - **CANCELLING**: Already cancelling → cleanup → return true
+    /// - **WAIT_RESULT**: Cannot cancel (preserve status) → return false
+    /// - **Unknown/None**: Job not found or invalid state → return false
+    ///
+    /// # Returns
+    /// - `Ok(true)`: Cancellation succeeded
+    /// - `Ok(false)`: Cancellation failed (job in non-cancellable state)
+    pub(crate) async fn cancel_job(&self, id: &JobId) -> Result<bool> {
+        let current_status = self
+            .job_processing_status_repository()
+            .find_status(id)
+            .await?;
+
+        match current_status {
+            Some(JobProcessingStatus::Running) => {
+                // Running → Cancelling state change
+                self.job_processing_status_repository()
+                    .upsert_status(id, &JobProcessingStatus::Cancelling)
+                    .await?;
+
+                // Update RDB index status to CANCELLING (if enabled)
+                if let Some(index_repo) = self.job_status_index_repository.as_ref() {
+                    if let Err(e) = index_repo
+                        .update_status_by_job_id(id, &JobProcessingStatus::Cancelling)
+                        .await
+                    {
+                        tracing::warn!(
+                            "Failed to update status to CANCELLING in RDB index for job {}: {:?}",
+                            id.value,
+                            e
+                        );
+                    }
+                }
+                // Note: RDB index deleted_at will be set by cleanup_job()
+
+                // Active cancellation of running jobs (broadcast)
+                self.broadcast_job_cancellation(id).await?;
+
+                tracing::info!(
+                    "Job {} marked as cancelling, broadcasting to workers",
+                    id.value
+                );
+
+                // Cleanup job resources
+                self.cleanup_job(id).await?;
+                Ok(true)
+            }
+            Some(JobProcessingStatus::Pending) => {
+                // Pending → Cancelling state change (Worker will detect when fetching)
+                self.job_processing_status_repository()
+                    .upsert_status(id, &JobProcessingStatus::Cancelling)
+                    .await?;
+
+                // Update RDB index status to CANCELLING (if enabled)
+                if let Some(index_repo) = self.job_status_index_repository.as_ref() {
+                    if let Err(e) = index_repo
+                        .update_status_by_job_id(id, &JobProcessingStatus::Cancelling)
+                        .await
+                    {
+                        tracing::warn!(
+                            "Failed to update status to CANCELLING in RDB index for job {}: {:?}",
+                            id.value,
+                            e
+                        );
+                    }
+                }
+                // Note: RDB index deleted_at will be set by cleanup_job()
+
+                tracing::info!("Pending job {} marked as cancelling", id.value);
+
+                // Cleanup job resources
+                self.cleanup_job(id).await?;
+                Ok(true)
+            }
+            Some(JobProcessingStatus::Cancelling) => {
+                tracing::info!("Job {} is already being cancelled", id.value);
+                // Already being cancelled, cleanup anyway
+                self.cleanup_job(id).await?;
+                Ok(true)
+            }
+            Some(JobProcessingStatus::WaitResult) => {
+                // Cannot cancel: preserve status, no changes
+                tracing::info!(
+                    "Job {} is waiting for result processing, cancellation not possible",
+                    id.value
+                );
+                Ok(false)
+            }
+            Some(JobProcessingStatus::Unknown) => {
+                tracing::warn!(
+                    "Job {} has unknown status, cancellation not possible",
+                    id.value
+                );
+                Ok(false)
+            }
+            None => {
+                // Status doesn't exist (already completed or doesn't exist)
+                tracing::info!(
+                    "Job {} status not found, may be already completed",
+                    id.value
+                );
+                Ok(false)
+            }
+        }
+    }
+
+    /// Internal: Unconditional job cleanup (always deletes resources)
+    ///
+    /// # Purpose
+    /// This method performs unconditional cleanup of job resources.
+    /// It should be called when the job is definitely finished (completed or cancelled).
+    ///
+    /// # Cleanup Operations
+    /// 1. Delete job record from RDB
+    /// 2. Delete job cache from memory
+    /// 3. Delete job processing status
+    ///
+    /// # Error Handling
+    /// - RDB deletion failure: Logged as warning, processing continues
+    /// - Cache deletion failure: Logged as warning, processing continues
+    /// - Status deletion failure: Returns error (critical failure)
+    ///
+    /// # Returns
+    /// - `Ok(())`: Cleanup succeeded (or non-critical failures)
+    /// - `Err(e)`: Critical failure (status deletion failed)
+    pub(crate) async fn cleanup_job(&self, id: &JobId) -> Result<()> {
+        // 1. Mark as logically deleted in RDB index BEFORE deleting memory status
+        //    (deleted_at must be set while we still know this job is being cleaned up)
+        if let Some(index_repo) = self.job_status_index_repository.as_ref() {
+            if let Err(e) = index_repo.mark_deleted_by_job_id(id).await {
+                tracing::warn!(
+                    "Failed to mark job {} as deleted in RDB index: {:?}",
+                    id.value,
+                    e
+                );
+            }
+        }
+
+        // 2. Delete job record from RDB
+        let db_deletion_result = self.rdb_job_repository().delete(id).await;
+        if let Err(e) = &db_deletion_result {
+            tracing::warn!("Failed to delete job {} from RDB: {:?}", id.value, e);
+        }
+
+        // 3. Delete job cache from memory
+        let cache_key = Arc::new(Self::find_cache_key(id));
+        let _ = self.delete_cache(&cache_key).await.inspect_err(|e| {
+            tracing::warn!("Failed to delete job cache for {}: {:?}", id.value, e)
+        });
+
+        // 4. Delete job processing status from memory/Redis (critical operation)
+        self.job_processing_status_repository()
+            .delete_status(id)
+            .await?;
+
+        tracing::debug!("Job {} cleanup completed", id.value);
         Ok(())
     }
 
@@ -288,11 +433,23 @@ impl RdbChanJobAppImpl {
 
                 let result = self.enqueue_job_sync(&job, w).await?;
 
+                // Async RDB indexing for Direct response jobs
+                self.index_job_status_async(
+                    jid,
+                    JobProcessingStatus::Pending,
+                    *wid,
+                    w.channel.clone().unwrap_or_default(),
+                    priority,
+                    data.enqueue_time,
+                    request_streaming,
+                    w.broadcast_results,
+                );
+
                 Ok(result)
             } else if w.periodic_interval > 0 || self.is_run_after_job_data(&data) {
                 let job = Job {
                     id: Some(jid),
-                    data: Some(data),
+                    data: Some(data.clone()),
                     metadata: (*metadata).clone(),
                 };
                 // enqueue rdb only
@@ -300,6 +457,19 @@ impl RdbChanJobAppImpl {
                     self.job_processing_status_repository()
                         .upsert_status(&jid, &JobProcessingStatus::Pending)
                         .await?;
+
+                    // Async RDB indexing for periodic/scheduled jobs
+                    self.index_job_status_async(
+                        jid,
+                        JobProcessingStatus::Pending,
+                        *wid,
+                        w.channel.clone().unwrap_or_default(),
+                        priority,
+                        data.enqueue_time,
+                        request_streaming,
+                        w.broadcast_results,
+                    );
+
                     Ok((jid, None, None))
                 } else {
                     Err(
@@ -311,7 +481,7 @@ impl RdbChanJobAppImpl {
                 // normal job
                 let job = Job {
                     id: Some(jid),
-                    data: Some(data),
+                    data: Some(data.clone()),
                     metadata: (*metadata).clone(),
                 };
                 if w.queue_type == QueueType::WithBackup as i32 {
@@ -319,6 +489,18 @@ impl RdbChanJobAppImpl {
                     match self.rdb_job_repository().create(&job).await {
                         Ok(_id) => {
                             let result = self.enqueue_job_sync(&job, w).await?;
+
+                            // Async RDB indexing for WithBackup jobs
+                            self.index_job_status_async(
+                                jid,
+                                JobProcessingStatus::Pending,
+                                *wid,
+                                w.channel.clone().unwrap_or_default(),
+                                priority,
+                                data.enqueue_time,
+                                request_streaming,
+                                w.broadcast_results,
+                            );
 
                             Ok(result)
                         }
@@ -328,6 +510,18 @@ impl RdbChanJobAppImpl {
                     // use only rdb queue
                     let created = self.rdb_job_repository().create(&job).await?;
                     if created {
+                        // Async RDB indexing for DbOnly jobs
+                        self.index_job_status_async(
+                            jid,
+                            JobProcessingStatus::Pending,
+                            *wid,
+                            w.channel.clone().unwrap_or_default(),
+                            priority,
+                            data.enqueue_time,
+                            request_streaming,
+                            w.broadcast_results,
+                        );
+
                         Ok((job.id.unwrap(), None, None))
                     } else {
                         // storage error?
@@ -340,6 +534,19 @@ impl RdbChanJobAppImpl {
                 } else {
                     // instant job (enqueue to chan only)
                     let result = self.enqueue_job_sync(&job, w).await?;
+
+                    // Async RDB indexing for Normal (chan-only) jobs
+                    self.index_job_status_async(
+                        jid,
+                        JobProcessingStatus::Pending,
+                        *wid,
+                        w.channel.clone().unwrap_or_default(),
+                        priority,
+                        data.enqueue_time,
+                        request_streaming,
+                        w.broadcast_results,
+                    );
+
                     Ok(result)
                 }
             }
@@ -501,6 +708,16 @@ impl JobApp for RdbChanJobAppImpl {
         }
     }
 
+    /// Complete job and perform cleanup
+    ///
+    /// # Purpose
+    /// This method is called after job execution completes (success/failure/cancelled).
+    /// It publishes the result and performs cleanup by calling cleanup_job() directly.
+    ///
+    /// # Implementation
+    /// - Publishes JobResult to Pub/Sub for listeners
+    /// - Publishes streaming data if available
+    /// - Calls `cleanup_job()` for unconditional resource cleanup
     async fn complete_job(
         &self,
         id: &JobResultId,
@@ -555,7 +772,8 @@ impl JobApp for RdbChanJobAppImpl {
                     Ok(false)
                 }
             };
-            self.delete_job(jid).await?;
+            // Unconditional cleanup (no state checks needed)
+            self.cleanup_job(jid).await?;
             res
         } else {
             // something wrong
@@ -564,8 +782,17 @@ impl JobApp for RdbChanJobAppImpl {
         }
     }
 
+    /// Delete job (Public API for job cancellation)
+    ///
+    /// # Purpose
+    /// This is the public API for user-initiated job cancellation.
+    /// It delegates to `cancel_job()` which handles state-aware cancellation logic.
+    ///
+    /// # Returns
+    /// - `Ok(true)`: Cancellation succeeded
+    /// - `Ok(false)`: Cancellation failed (job in non-cancellable state like WAIT_RESULT)
     async fn delete_job(&self, id: &JobId) -> Result<bool> {
-        self.cancel_job_with_cleanup(id).await
+        self.cancel_job(id).await
     }
 
     // cannot get job of queue type REDIS (redis is used for queue and job cache)
@@ -702,6 +929,64 @@ impl JobApp for RdbChanJobAppImpl {
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn find_by_condition(
+        &self,
+        status: Option<JobProcessingStatus>,
+        worker_id: Option<i64>,
+        channel: Option<String>,
+        min_elapsed_time_ms: Option<i64>,
+        limit: i32,
+        offset: i32,
+        descending: bool,
+    ) -> Result<Vec<infra::infra::job::status::rdb::JobProcessingStatusDetail>>
+    where
+        Self: Send + 'static,
+    {
+        if let Some(index_repo) = &self.job_status_index_repository {
+            index_repo
+                .find_by_condition(
+                    status,
+                    worker_id,
+                    channel,
+                    min_elapsed_time_ms,
+                    limit,
+                    offset,
+                    descending,
+                )
+                .await
+        } else {
+            Err(anyhow::anyhow!(
+                "Advanced job status search is disabled. \
+                 Enable JOB_STATUS_RDB_INDEXING=true to use this feature."
+            ))
+        }
+    }
+
+    async fn cleanup_job_processing_status(
+        &self,
+        retention_hours_override: Option<u64>,
+    ) -> Result<(u64, i64)> {
+        use jobworkerp_base::JOB_STATUS_CONFIG;
+
+        // Get index repository
+        let index_repo = self.job_status_index_repository.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "RDB JobProcessingStatus index repository not available. \
+                     Ensure JOB_STATUS_RDB_INDEXING=true"
+            )
+        })?;
+
+        // Calculate retention hours
+        let retention_hours = retention_hours_override.unwrap_or(JOB_STATUS_CONFIG.retention_hours);
+        let cutoff_time = datetime::now_millis() - (retention_hours * 3600 * 1000) as i64;
+
+        // Execute cleanup
+        let deleted_count = index_repo.cleanup_deleted_records().await?;
+
+        Ok((deleted_count, cutoff_time))
+    }
+
     async fn count(&self) -> Result<i64>
     where
         Self: Send + 'static,
@@ -768,6 +1053,10 @@ impl JobApp for RdbChanJobAppImpl {
             self.find_restore_jobs_by(&job_id_set, channels.as_slice())
                 .await
         }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 impl UseRdbChanRepositoryModule for RdbChanJobAppImpl {
@@ -980,7 +1269,7 @@ mod tests {
     async fn create_test_app(
         use_mock_id: bool,
     ) -> Result<(RdbChanJobAppImpl, ChanJobResultPubSubRepositoryImpl)> {
-        let rdb_module = setup_test_rdb_module().await;
+        let rdb_module = setup_test_rdb_module(false).await;
         let repositories = Arc::new(rdb_module);
         // mock id generator (generate 1 until called set method)
         let id_generator = if use_mock_id {
@@ -1052,6 +1341,7 @@ mod tests {
                 repositories,
                 Arc::new(worker_app),
                 job_queue_cancellation_repository,
+                None, // RDB indexing disabled for test
             ),
             subscrber,
         ))
@@ -1615,6 +1905,55 @@ mod tests {
             //     2
             // );
             Ok(())
+        })
+    }
+
+    #[test]
+    fn test_cleanup_job_processing_status_disabled() {
+        TEST_RUNTIME.block_on(async {
+            // Setup: RDB indexing disabled
+            std::env::set_var("JOB_STATUS_RDB_INDEXING", "false");
+
+            let (app, _) = create_test_app(false).await.unwrap();
+
+            // Execute cleanup - should fail with repository not available
+            let result = app.cleanup_job_processing_status(None).await;
+
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().to_string();
+            assert!(
+                err_msg.contains("index repository not available")
+                    || err_msg.contains("JOB_STATUS_RDB_INDEXING")
+            );
+
+            // Cleanup
+            std::env::remove_var("JOB_STATUS_RDB_INDEXING");
+        })
+    }
+
+    #[test]
+    #[ignore] // Requires real RDB with job_processing_status table
+    fn test_cleanup_job_processing_status_success() {
+        TEST_RUNTIME.block_on(async {
+            // Setup: RDB indexing enabled
+            std::env::set_var("JOB_STATUS_RDB_INDEXING", "true");
+            std::env::set_var("JOB_STATUS_RETENTION_HOURS", "24");
+
+            // Create app with index repository
+            let (app, _) = create_test_app(false).await.unwrap();
+
+            // Execute cleanup with 1 hour retention override
+            let result = app.cleanup_job_processing_status(Some(1)).await;
+
+            // Should succeed (even if no records deleted)
+            assert!(result.is_ok());
+            let (_deleted_count, cutoff_time) = result.unwrap();
+            assert!(cutoff_time > 0);
+            // Note: deleted_count can be 0 if no old records exist
+
+            // Cleanup
+            std::env::remove_var("JOB_STATUS_RDB_INDEXING");
+            std::env::remove_var("JOB_STATUS_RETENTION_HOURS");
         })
     }
 }
