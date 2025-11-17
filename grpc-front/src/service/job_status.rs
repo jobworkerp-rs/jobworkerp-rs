@@ -119,6 +119,70 @@ impl<T: JobProcessingStatusGrpc + Tracing + Send + Debug + Sync + 'static>
             Err(e) => Err(handle_error(&e)),
         }
     }
+
+    /// Cleanup logically deleted job_processing_status records
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "cleanup"))]
+    async fn cleanup(
+        &self,
+        request: tonic::Request<crate::proto::jobworkerp::service::CleanupRequest>,
+    ) -> Result<tonic::Response<crate::proto::jobworkerp::service::CleanupResponse>, tonic::Status>
+    {
+        let _s = Self::trace_request("job_status", "cleanup", &request);
+
+        // Authentication check (explicit call to process_metadata)
+        crate::service::process_metadata(request.metadata().clone())?;
+
+        // Check if RDB indexing is enabled
+        if !JOB_STATUS_CONFIG.rdb_indexing_enabled {
+            return Err(tonic::Status::failed_precondition(
+                "Job processing status RDB indexing is disabled. \
+                 Set JOB_STATUS_RDB_INDEXING=true to enable cleanup.",
+            ));
+        }
+
+        // Get retention hours override
+        let retention_hours_override = request.get_ref().retention_hours_override;
+
+        // Execute cleanup via JobApp
+        match self
+            .app()
+            .cleanup_job_processing_status(retention_hours_override)
+            .await
+        {
+            Ok((deleted_count, cutoff_time)) => {
+                let retention_hours =
+                    retention_hours_override.unwrap_or(JOB_STATUS_CONFIG.retention_hours);
+
+                let message = if deleted_count > 0 {
+                    format!(
+                        "Successfully deleted {} job_processing_status records older than {} hours",
+                        deleted_count, retention_hours
+                    )
+                } else {
+                    "No records to delete".to_string()
+                };
+
+                tracing::info!(
+                    deleted_count,
+                    retention_hours,
+                    cutoff_time,
+                    "JobProcessingStatusService: cleanup completed"
+                );
+
+                Ok(tonic::Response::new(
+                    crate::proto::jobworkerp::service::CleanupResponse {
+                        deleted_count,
+                        cutoff_time,
+                        message,
+                    },
+                ))
+            }
+            Err(e) => {
+                tracing::error!(error = ?e, "JobProcessingStatusService: cleanup failed");
+                Err(handle_error(&e))
+            }
+        }
+    }
 }
 
 #[derive(DebugStub)]
