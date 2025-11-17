@@ -46,6 +46,7 @@ pub trait RedisJobDispatcher:
     UseRedisJobRepository
     + UseRedisRunAfterJobDispatcher
     + UseRdbChanJobRepositoryOptional
+    + infra::infra::job::status::rdb::UseRdbJobProcessingStatusIndexRepository
     + UseSubscribeWorker
     + UseRedisPool
     + JobRunner
@@ -283,6 +284,38 @@ pub trait RedisJobDispatcher:
                         .job_processing_status_repository()
                         .upsert_status(&jid, &JobProcessingStatus::Running)
                         .await?;
+
+                    // Index JobProcessingStatus in RDB (if enabled)
+                    if let Some(index_repo) = self.rdb_job_processing_status_index_repository() {
+                        let job_id = jid;
+                        let worker_id = wid;
+                        let channel = wdat.channel.clone().unwrap_or_default();
+                        let priority = jdat.priority;
+                        let enqueue_time = jdat.enqueue_time;
+                        let is_streamable = jdat.request_streaming;
+                        let broadcast_results = wdat.broadcast_results;
+                        tokio::spawn(async move {
+                            if let Err(e) = index_repo
+                                .index_status(
+                                    &job_id,
+                                    &JobProcessingStatus::Running,
+                                    &worker_id,
+                                    &channel,
+                                    priority,
+                                    enqueue_time,
+                                    is_streamable,
+                                    broadcast_results,
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    "Failed to index RUNNING status for job {}: {}",
+                                    job_id.value,
+                                    e
+                                );
+                            }
+                        });
+                    }
                 } else {
                     // already grabbed (strange! (not reset previous process in retry?), but continue processing job)
                     tracing::warn!("failed to grab job from db: {:?}, {:?}", &jid, &jdat);
@@ -303,7 +336,45 @@ pub trait RedisJobDispatcher:
                 .job_processing_status_repository()
                 .upsert_status(&jid, &JobProcessingStatus::Running)
                 .await?;
+
+            // Index JobProcessingStatus in RDB (if enabled)
+            if let Some(index_repo) = self.rdb_job_processing_status_index_repository() {
+                let job_id = jid;
+                let worker_id = wid;
+                let channel = wdat.channel.clone().unwrap_or_default();
+                let priority = jdat.priority;
+                let enqueue_time = jdat.enqueue_time;
+                let is_streamable = jdat.request_streaming;
+                let broadcast_results = wdat.broadcast_results;
+                tokio::spawn(async move {
+                    if let Err(e) = index_repo
+                        .index_status(
+                            &job_id,
+                            &JobProcessingStatus::Running,
+                            &worker_id,
+                            &channel,
+                            priority,
+                            enqueue_time,
+                            is_streamable,
+                            broadcast_results,
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            "Failed to index RUNNING status for job {}: {}",
+                            job_id.value,
+                            e
+                        );
+                    }
+                });
+            }
         }
+
+        // Copy metadata needed for RDB indexing before moving jdat
+        let jdat_priority = jdat.priority;
+        let jdat_enqueue_time = jdat.enqueue_time;
+        let jdat_request_streaming = jdat.request_streaming;
+
         // run job
         let mut r = self
             .run_job(
@@ -339,6 +410,38 @@ pub trait RedisJobDispatcher:
                 .job_processing_status_repository()
                 .upsert_status(&jid, &JobProcessingStatus::WaitResult)
                 .await?;
+
+            // Index JobProcessingStatus in RDB (if enabled)
+            if let Some(index_repo) = self.rdb_job_processing_status_index_repository() {
+                let job_id = jid;
+                let worker_id = wid;
+                let channel = wdat.channel.clone().unwrap_or_default();
+                let priority = jdat_priority;
+                let enqueue_time = jdat_enqueue_time;
+                let is_streamable = jdat_request_streaming;
+                let broadcast_results = wdat.broadcast_results;
+                tokio::spawn(async move {
+                    if let Err(e) = index_repo
+                        .index_status(
+                            &job_id,
+                            &JobProcessingStatus::WaitResult,
+                            &worker_id,
+                            &channel,
+                            priority,
+                            enqueue_time,
+                            is_streamable,
+                            broadcast_results,
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            "Failed to index WAIT_RESULT status for job {}: {}",
+                            job_id.value,
+                            e
+                        );
+                    }
+                });
+            }
         }
         self.result_processor().process_result(r.0, r.1, wdat).await
     }
@@ -462,6 +565,20 @@ impl UseRedisRunAfterJobDispatcher for RedisJobDispatcherImpl {
 impl UseRdbChanJobRepositoryOptional for RedisJobDispatcherImpl {
     fn rdb_job_repository_opt(&self) -> Option<&RdbChanJobRepositoryImpl> {
         self.rdb_job_repository_opt.as_deref()
+    }
+}
+
+impl infra::infra::job::status::rdb::UseRdbJobProcessingStatusIndexRepository
+    for RedisJobDispatcherImpl
+{
+    fn rdb_job_processing_status_index_repository(
+        &self,
+    ) -> Option<Arc<infra::infra::job::status::rdb::RdbJobProcessingStatusIndexRepository>> {
+        self.app_module
+            .repositories
+            .rdb_module
+            .as_ref()
+            .and_then(|m| m.rdb_job_processing_status_index_repository.clone())
     }
 }
 impl RedisJobDispatcher for RedisJobDispatcherImpl {}

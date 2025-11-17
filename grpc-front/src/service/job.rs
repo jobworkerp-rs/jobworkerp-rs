@@ -28,6 +28,60 @@ pub trait JobGrpc {
 pub trait RequestValidator {
     // almost no timeout (1 year after)
     const DEFAULT_TIMEOUT: u64 = 1000 * 60 * 60 * 24 * 365;
+
+    /// Validate FindQueueListRequest for DoS protection
+    #[allow(clippy::result_large_err)]
+    fn validate_find_queue_list(&self, req: &FindQueueListRequest) -> Result<(), tonic::Status> {
+        // Limit validation
+        if let Some(limit) = req.limit {
+            if limit > jobworkerp_base::limits::MAX_LIMIT {
+                return Err(tonic::Status::invalid_argument(
+                    "limit too large (max: 1000)",
+                ));
+            }
+            if limit < 1 {
+                return Err(tonic::Status::invalid_argument("limit must be positive"));
+            }
+        }
+
+        // Channel name length validation
+        if let Some(ref channel) = req.channel {
+            if channel.len() > jobworkerp_base::limits::MAX_CHANNEL_NAME_LENGTH {
+                return Err(tonic::Status::invalid_argument(
+                    "channel name too long (max: 255)",
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validate FindListWithProcessingStatusRequest for DoS protection
+    #[allow(clippy::result_large_err)]
+    fn validate_find_list_with_processing_status(
+        &self,
+        req: &FindListWithProcessingStatusRequest,
+    ) -> Result<(), tonic::Status> {
+        // Limit validation
+        if let Some(limit) = req.limit {
+            if limit > jobworkerp_base::limits::MAX_LIMIT {
+                return Err(tonic::Status::invalid_argument(
+                    "limit too large (max: 1000)",
+                ));
+            }
+            if limit < 1 {
+                return Err(tonic::Status::invalid_argument("limit must be positive"));
+            }
+        }
+
+        // Status validation
+        if req.status == JobProcessingStatus::Unknown as i32 {
+            return Err(tonic::Status::invalid_argument("invalid status: UNKNOWN"));
+        }
+
+        Ok(())
+    }
+
     #[allow(clippy::result_large_err)]
     fn validate_create(&self, req: &JobRequest) -> Result<(), tonic::Status> {
         if req.worker.is_none() {
@@ -371,6 +425,10 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
     ) -> Result<tonic::Response<Self::FindQueueListStream>, tonic::Status> {
         let _s = Self::trace_request("job", "find_queue_list", &request);
         let req = request.get_ref();
+
+        // Validation for DoS protection
+        self.validate_find_queue_list(req)?;
+
         // TODO streaming?
         match self
             .app()
@@ -400,6 +458,9 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
     ) -> Result<tonic::Response<Self::FindListWithProcessingStatusStream>, tonic::Status> {
         let _s = Self::trace_request("job", "find_list_with_processing_status", &request);
         let req = request.get_ref();
+
+        // Validation for DoS protection
+        self.validate_find_list_with_processing_status(req)?;
 
         // Validate and convert status
         let status = JobProcessingStatus::try_from(req.status)

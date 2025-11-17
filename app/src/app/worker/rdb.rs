@@ -176,12 +176,18 @@ impl WorkerApp for RdbWorkerAppImpl {
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn find_list(
         &self,
         runner_types: Vec<i32>,
         channel: Option<String>,
         limit: Option<i32>,
         offset: Option<i64>,
+        name_filter: Option<String>,
+        is_periodic: Option<bool>,
+        runner_ids: Vec<i64>,
+        sort_by: Option<proto::jobworkerp::data::WorkerSortField>,
+        ascending: Option<bool>,
     ) -> Result<Vec<Worker>>
     where
         Self: Send + 'static,
@@ -192,7 +198,17 @@ impl WorkerApp for RdbWorkerAppImpl {
         //     .with_cache(&k, None, || async {
         // not use rdb in normal case
         self.rdb_worker_repository()
-            .find_list(runner_types, channel, limit, offset)
+            .find_list(
+                runner_types,
+                channel,
+                limit,
+                offset,
+                name_filter,
+                is_periodic,
+                runner_ids,
+                sort_by,
+                ascending,
+            )
             .await
         // })
         // .await
@@ -206,7 +222,7 @@ impl WorkerApp for RdbWorkerAppImpl {
         self.list_memory_cache
             .with_cache(&k, || async {
                 self.rdb_worker_repository()
-                    .find_list(vec![], None, None, None)
+                    .find_list(vec![], None, None, None, None, None, vec![], None, None)
                     .await
             })
             .await
@@ -216,6 +232,29 @@ impl WorkerApp for RdbWorkerAppImpl {
         Self: Send + 'static,
     {
         self.rdb_worker_repository().count().await
+    }
+
+    async fn count_by(
+        &self,
+        runner_types: Vec<i32>,
+        channel: Option<String>,
+        name_filter: Option<String>,
+        is_periodic: Option<bool>,
+        runner_ids: Vec<i64>,
+    ) -> Result<i64>
+    where
+        Self: Send + 'static,
+    {
+        self.rdb_worker_repository()
+            .count_by(runner_types, channel, name_filter, is_periodic, runner_ids)
+            .await
+    }
+
+    async fn count_by_channel(&self) -> Result<Vec<(String, i64)>>
+    where
+        Self: Send + 'static,
+    {
+        self.rdb_worker_repository().count_by_channel().await
     }
     // for pubsub (XXX common logic...)
     async fn clear_cache_by(&self, id: Option<&WorkerId>, name: Option<&String>) -> Result<()> {
@@ -290,7 +329,7 @@ mod tests {
     use std::time::Duration;
 
     async fn create_test_app(use_mock_id: bool) -> Result<RdbWorkerAppImpl> {
-        let rdb_module = Arc::new(setup_test_rdb_module().await);
+        let rdb_module = Arc::new(setup_test_rdb_module(false).await);
 
         // Mock id generator or use real one
         let id_generator = if use_mock_id {
@@ -373,7 +412,9 @@ mod tests {
             assert_eq!(id3.value, id2.value + 1);
 
             // Find worker list and verify count
-            let list = app.find_list(vec![], None, None, None).await?;
+            let list = app
+                .find_list(vec![], None, None, None, None, None, vec![], None, None)
+                .await?;
             assert_eq!(list.len(), 3);
             assert_eq!(app.count().await?, 3);
 
@@ -403,7 +444,9 @@ mod tests {
             assert!(deleted);
 
             // Verify it's gone
-            let list = app.find_list(vec![], None, None, None).await?;
+            let list = app
+                .find_list(vec![], None, None, None, None, None, vec![], None, None)
+                .await?;
             assert_eq!(list.len(), 2);
             assert_eq!(app.count().await?, 2);
 

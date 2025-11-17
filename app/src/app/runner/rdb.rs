@@ -240,6 +240,37 @@ impl RunnerApp for RdbRunnerAppImpl {
             .await
     }
 
+    /// Find runners with filtering and sorting (Admin UI)
+    #[allow(clippy::too_many_arguments)]
+    async fn find_runner_list_by(
+        &self,
+        runner_types: Vec<i32>,
+        name_filter: Option<String>,
+        limit: Option<i32>,
+        offset: Option<i64>,
+        sort_by: Option<proto::jobworkerp::data::RunnerSortField>,
+        ascending: Option<bool>,
+    ) -> Result<Vec<RunnerWithSchema>>
+    where
+        Self: Send + 'static,
+    {
+        // No cache for filtered results (too many combinations)
+        self.runner_repository()
+            .find_list_by(runner_types, name_filter, limit, offset, sort_by, ascending)
+            .await
+    }
+
+    /// Count runners with filtering (Admin UI)
+    async fn count_by(&self, runner_types: Vec<i32>, name_filter: Option<String>) -> Result<i64>
+    where
+        Self: Send + 'static,
+    {
+        // No cache for filtered results
+        self.runner_repository()
+            .count_by(runner_types, name_filter)
+            .await
+    }
+
     // for test
     #[cfg(any(test, feature = "test-utils"))]
     async fn create_test_runner(
@@ -254,12 +285,13 @@ impl RunnerApp for RdbRunnerAppImpl {
         let runner_data = test_runner_with_descriptor(name);
         let _res = self
             .runner_repository()
-            ._create(&RunnerRow {
+            .create(&RunnerRow {
                 id: runner_id.value,
                 name: name.to_string(),
                 description: runner_data.runner_data.description.clone(),
                 definition: format!("./target/debug/lib{name}.so"),
                 r#type: RunnerType::Plugin as i32,
+                created_at: command_utils::util::datetime::now_millis(),
             })
             .await?;
         self.store_proto_cache(runner_id, &runner_data).await;

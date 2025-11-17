@@ -59,11 +59,17 @@ impl HybridWorkerAppImpl {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn find_list_cache_key(
         runner_types: &[i32],
         channel: Option<&String>,
         limit: Option<i32>,
         offset: Option<i64>,
+        name_filter: Option<&String>,
+        is_periodic: Option<bool>,
+        runner_ids: &[i64],
+        sort_by: Option<proto::jobworkerp::data::WorkerSortField>,
+        ascending: Option<bool>,
     ) -> String {
         let mut key = "worker_list:".to_string();
         if !runner_types.is_empty() {
@@ -94,6 +100,35 @@ impl HybridWorkerAppImpl {
             key.push_str(&o.to_string());
         } else {
             key.push('0');
+        }
+        key.push(':');
+        // Add new filter parameters to cache key
+        if let Some(nf) = name_filter {
+            key.push_str(nf);
+        }
+        key.push(':');
+        if let Some(is_per) = is_periodic {
+            key.push_str(&is_per.to_string());
+        }
+        key.push(':');
+        if !runner_ids.is_empty() {
+            // sort and distinct runner ids
+            let runner_ids = runner_ids.iter().collect::<std::collections::BTreeSet<_>>();
+            key.push_str(
+                &runner_ids
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+        }
+        key.push(':');
+        if let Some(sb) = sort_by {
+            key.push_str(&(sb as i32).to_string());
+        }
+        key.push(':');
+        if let Some(asc) = ascending {
+            key.push_str(&asc.to_string());
         }
         key
     }
@@ -314,6 +349,11 @@ impl WorkerApp for HybridWorkerAppImpl {
         channel: Option<String>,
         limit: Option<i32>,
         offset: Option<i64>,
+        name_filter: Option<String>,
+        is_periodic: Option<bool>,
+        runner_ids: Vec<i64>,
+        sort_by: Option<proto::jobworkerp::data::WorkerSortField>,
+        ascending: Option<bool>,
     ) -> Result<Vec<Worker>>
     where
         Self: Send + 'static,
@@ -323,6 +363,11 @@ impl WorkerApp for HybridWorkerAppImpl {
             channel.as_ref(),
             limit,
             offset,
+            name_filter.as_ref(),
+            is_periodic,
+            runner_ids.as_slice(),
+            sort_by,
+            ascending,
         ));
         self.list_memory_cache()
             .with_cache(&k, || async move {
@@ -330,7 +375,17 @@ impl WorkerApp for HybridWorkerAppImpl {
                 // fallback to rdb if rdb is enabled
                 let list = self
                     .rdb_worker_repository()
-                    .find_list(runner_types, channel, limit, offset)
+                    .find_list(
+                        runner_types,
+                        channel,
+                        limit,
+                        offset,
+                        name_filter,
+                        is_periodic,
+                        runner_ids,
+                        sort_by,
+                        ascending,
+                    )
                     .await?;
                 if !list.is_empty() {
                     for w in list.iter() {
@@ -357,7 +412,7 @@ impl WorkerApp for HybridWorkerAppImpl {
                         // fallback to rdb if rdb is enabled
                         let list = self
                             .rdb_worker_repository()
-                            .find_list(vec![], None, None, None)
+                            .find_list(vec![], None, None, None, None, None, vec![], None, None)
                             .await;
                         if let Ok(l) = list.as_ref() {
                             for w in l {
@@ -370,7 +425,7 @@ impl WorkerApp for HybridWorkerAppImpl {
                         // fallback to rdb if rdb is enabled
                         tracing::warn!("workers find error from redis: {:?}", err);
                         self.rdb_worker_repository()
-                            .find_list(vec![], None, None, None)
+                            .find_list(vec![], None, None, None, None, None, vec![], None, None)
                             .await
                     }
                 }
@@ -389,6 +444,31 @@ impl WorkerApp for HybridWorkerAppImpl {
         }
         // fallback to rdb if rdb is enabled
         self.rdb_worker_repository().count().await
+    }
+
+    async fn count_by(
+        &self,
+        runner_types: Vec<i32>,
+        channel: Option<String>,
+        name_filter: Option<String>,
+        is_periodic: Option<bool>,
+        runner_ids: Vec<i64>,
+    ) -> Result<i64>
+    where
+        Self: Send + 'static,
+    {
+        // Delegate to RDB repository for filtering queries
+        self.rdb_worker_repository()
+            .count_by(runner_types, channel, name_filter, is_periodic, runner_ids)
+            .await
+    }
+
+    async fn count_by_channel(&self) -> Result<Vec<(String, i64)>>
+    where
+        Self: Send + 'static,
+    {
+        // Delegate to RDB repository for channel statistics
+        self.rdb_worker_repository().count_by_channel().await
     }
 
     // for pubsub (XXX common logic...)
@@ -473,7 +553,7 @@ mod tests {
     use std::time::Duration;
 
     async fn create_test_app(use_mock_id: bool) -> Result<HybridWorkerAppImpl> {
-        let rdb_module = setup_test_rdb_module().await;
+        let rdb_module = setup_test_rdb_module(false).await;
         let redis_module = setup_test_redis_module().await;
         let repositories = Arc::new(HybridRepositoryModule {
             redis_module,
@@ -547,7 +627,9 @@ mod tests {
             assert_eq!(id2.value, id1.value + 1);
             assert_eq!(id3.value, id2.value + 1);
             // find list
-            let list = app.find_list(vec![], None, None, None).await?;
+            let list = app
+                .find_list(vec![], None, None, None, None, None, vec![], None, None)
+                .await?;
             assert_eq!(list.len(), 3);
             assert_eq!(app.count().await?, 3);
             // update
@@ -566,14 +648,18 @@ mod tests {
             assert!(fd.is_some());
             assert_eq!(fd.unwrap().name, w4.name);
             // find list
-            let list = app.find_list(vec![], None, None, None).await?;
+            let list = app
+                .find_list(vec![], None, None, None, None, None, vec![], None, None)
+                .await?;
             assert_eq!(list.len(), 3);
             assert_eq!(app.count().await?, 3);
             // delete
             let res = app.delete(&id1).await?;
             assert!(res);
             // find list
-            let list = app.find_list(vec![], None, None, None).await?;
+            let list = app
+                .find_list(vec![], None, None, None, None, None, vec![], None, None)
+                .await?;
             assert_eq!(app.count().await?, 2);
             assert_eq!(list.len(), 2);
             Ok(())

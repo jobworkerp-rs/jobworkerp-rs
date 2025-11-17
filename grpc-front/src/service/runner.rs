@@ -4,8 +4,9 @@ use std::sync::Arc;
 use crate::proto::jobworkerp::data::{Runner, RunnerId};
 use crate::proto::jobworkerp::service::runner_service_server::RunnerService;
 use crate::proto::jobworkerp::service::{
-    CountCondition, CountResponse, CreateRunnerRequest, CreateRunnerResponse, FindListRequest,
-    OptionalRunnerResponse, RunnerNameRequest, SuccessResponse,
+    CountCondition, CountResponse, CountRunnerRequest, CreateRunnerRequest, CreateRunnerResponse,
+    FindListRequest, FindRunnerListRequest, OptionalRunnerResponse, RunnerNameRequest,
+    SuccessResponse,
 };
 use crate::service::error_handle::handle_error;
 use app::app::runner::RunnerApp;
@@ -105,6 +106,10 @@ impl<T: RunnerGrpc + Tracing + Send + Debug + Sync + 'static> RunnerService for 
     ) -> Result<tonic::Response<Self::FindListStream>, tonic::Status> {
         let _s = Self::trace_request("runner", "find_list", &request);
         let req = request.get_ref();
+        tracing::warn!(
+            "FindList method is deprecated, use FindListBy instead. \
+             This method will be removed in version 2.0.0"
+        );
         match self
             .app()
             .find_runner_list(false, req.limit.as_ref(), req.offset.as_ref())
@@ -127,7 +132,75 @@ impl<T: RunnerGrpc + Tracing + Send + Debug + Sync + 'static> RunnerService for 
         request: tonic::Request<CountCondition>,
     ) -> Result<tonic::Response<CountResponse>, tonic::Status> {
         let _s = Self::trace_request("runner", "count", &request);
+        tracing::warn!(
+            "Count method is deprecated, use CountBy instead. \
+             This method will be removed in version 2.0.0"
+        );
         match self.app().count().await {
+            Ok(res) => Ok(Response::new(CountResponse { total: res })),
+            Err(e) => Err(handle_error(&e)),
+        }
+    }
+
+    type FindListByStream = BoxStream<'static, Result<Runner, tonic::Status>>;
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "find_list_by"))]
+    async fn find_list_by(
+        &self,
+        request: tonic::Request<FindRunnerListRequest>,
+    ) -> Result<tonic::Response<Self::FindListByStream>, tonic::Status> {
+        let _s = Self::trace_request("runner", "find_list_by", &request);
+        let req = request.into_inner();
+
+        // Validate request parameters
+        super::validation::validate_limit(req.limit)?;
+        super::validation::validate_offset(req.offset)?;
+        super::validation::validate_name_filter(req.name_filter.as_ref())?;
+        super::validation::validate_filter_enums(&req.runner_types, "runner_types")?;
+
+        // Extract runner types from repeated field
+        let runner_types: Vec<i32> = req.runner_types.clone();
+
+        // Extract parameters
+        let name_filter = req.name_filter.clone();
+        let limit = req.limit;
+        let offset = req.offset;
+        // Convert i32 to RunnerSortField enum
+        let sort_by = req
+            .sort_by
+            .and_then(|val| proto::jobworkerp::data::RunnerSortField::try_from(val).ok());
+        let ascending = req.ascending;
+
+        match self
+            .app()
+            .find_runner_list_by(runner_types, name_filter, limit, offset, sort_by, ascending)
+            .await
+        {
+            Ok(list) => Ok(Response::new(Box::pin(stream! {
+                for s in list {
+                    yield Ok(s.into_proto());
+                }
+            }))),
+            Err(e) => Err(handle_error(&e)),
+        }
+    }
+
+    #[tracing::instrument(level = "info", skip(self, request), fields(method = "count_by"))]
+    async fn count_by(
+        &self,
+        request: tonic::Request<CountRunnerRequest>,
+    ) -> Result<tonic::Response<CountResponse>, tonic::Status> {
+        let _s = Self::trace_request("runner", "count_by", &request);
+        let req = request.into_inner();
+
+        // Validate request parameters
+        super::validation::validate_name_filter(req.name_filter.as_ref())?;
+        super::validation::validate_filter_enums(&req.runner_types, "runner_types")?;
+
+        // Extract runner types
+        let runner_types: Vec<i32> = req.runner_types.clone();
+        let name_filter = req.name_filter.clone();
+
+        match self.app().count_by(runner_types, name_filter).await {
             Ok(res) => Ok(Response::new(CountResponse { total: res })),
             Err(e) => Err(handle_error(&e)),
         }

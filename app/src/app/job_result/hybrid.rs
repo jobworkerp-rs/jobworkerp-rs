@@ -17,7 +17,8 @@ use infra::infra::{IdGeneratorWrapper, UseIdGenerator};
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
-    JobId, JobResult, JobResultData, JobResultId, ResultOutputItem, ResultStatus, Worker, WorkerId,
+    JobId, JobResult, JobResultData, JobResultId, JobResultSortField, ResultOutputItem,
+    ResultStatus, Worker, WorkerId,
 };
 use std::pin::Pin;
 use std::sync::Arc;
@@ -289,6 +290,104 @@ impl JobResultApp for HybridJobResultAppImpl {
             .count_list_tx(self.rdb_job_result_repository().db_pool())
             .await
     }
+
+    // Sprint 4: Advanced filtering and bulk operations
+
+    async fn find_list_by(
+        &self,
+        worker_ids: Vec<i64>,
+        statuses: Vec<i32>,
+        start_time_from: Option<i64>,
+        start_time_to: Option<i64>,
+        end_time_from: Option<i64>,
+        end_time_to: Option<i64>,
+        priorities: Vec<i32>,
+        uniq_key: Option<String>,
+        limit: Option<i32>,
+        offset: Option<i64>,
+        sort_by: Option<JobResultSortField>,
+        ascending: Option<bool>,
+    ) -> Result<Vec<JobResult>>
+    where
+        Self: Send + 'static,
+    {
+        // Always use RDB repository for both Standalone and Scalable modes
+        let results = self
+            .rdb_job_result_repository()
+            .find_list_by(
+                worker_ids,
+                statuses,
+                start_time_from,
+                start_time_to,
+                end_time_from,
+                end_time_to,
+                priorities,
+                uniq_key,
+                limit,
+                offset,
+                sort_by,
+                ascending,
+            )
+            .await?;
+
+        // Fill worker data
+        self._fill_worker_data_to_vec(results).await
+    }
+
+    async fn count_by(
+        &self,
+        worker_ids: Vec<i64>,
+        statuses: Vec<i32>,
+        start_time_from: Option<i64>,
+        start_time_to: Option<i64>,
+        end_time_from: Option<i64>,
+        end_time_to: Option<i64>,
+        priorities: Vec<i32>,
+        uniq_key: Option<String>,
+    ) -> Result<i64>
+    where
+        Self: Send + 'static,
+    {
+        // Always use RDB repository
+        self.rdb_job_result_repository()
+            .count_by(
+                worker_ids,
+                statuses,
+                start_time_from,
+                start_time_to,
+                end_time_from,
+                end_time_to,
+                priorities,
+                uniq_key,
+            )
+            .await
+    }
+
+    async fn delete_bulk(
+        &self,
+        end_time_before: Option<i64>,
+        statuses: Vec<i32>,
+        worker_ids: Vec<i64>,
+    ) -> Result<i64>
+    where
+        Self: Send + 'static,
+    {
+        // Call RDB repository with safety features
+        let deleted_count = self
+            .rdb_job_result_repository()
+            .delete_bulk(end_time_before, statuses, worker_ids)
+            .await?;
+
+        // Note: FindListBy results are not cached, so no cache clearing needed
+        // See docs/admin/spec-job-result-service.md Section 6.1
+
+        tracing::info!(
+            deleted_count = deleted_count,
+            "DeleteBulk completed in HybridJobResultApp"
+        );
+
+        Ok(deleted_count)
+    }
 }
 
 impl UseRedisRepositoryModule for HybridJobResultAppImpl {
@@ -400,7 +499,7 @@ pub mod tests {
 
     pub async fn create_test_app() -> Result<HybridJobResultAppImpl> {
         // dotenv::dotenv().ok();
-        let rdb_module = setup_test_rdb_module().await;
+        let rdb_module = setup_test_rdb_module(false).await;
         let redis_module = setup_test_redis_module().await;
         let repositories = Arc::new(HybridRepositoryModule {
             redis_module,

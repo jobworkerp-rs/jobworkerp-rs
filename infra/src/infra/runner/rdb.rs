@@ -17,6 +17,10 @@ use proto::jobworkerp::data::RunnerType;
 use sqlx::{Executor, Pool};
 use std::sync::Arc;
 
+// RUNNER_CONVERSION_TIMEOUT_SECS removed: Individual operations already protected by
+// Primitive Layer (up to 30s for MCP, 15s for Plugin) and Application Layer (up to 10s for schema).
+// Total may take up to 40s per runner, so a 10s timeout was too short.
+
 #[async_trait]
 pub trait RunnerRepository:
     UseRdbPool + UseRunnerSpecFactory + UseIdGenerator + Sync + Send
@@ -45,6 +49,8 @@ pub trait RunnerRepository:
 
     // load mcp servers from config file
     async fn add_from_mcp_config_file(&self) -> Result<()> {
+        use command_utils::util::datetime;
+
         for server in self
             .runner_spec_factory()
             .mcp_clients
@@ -58,8 +64,9 @@ pub trait RunnerRepository:
                 description: server.description.clone().unwrap_or_default(),
                 definition: serde_json::to_string(&server.transport).unwrap(),
                 r#type: RunnerType::McpServer as i32,
+                created_at: datetime::now_millis(),
             };
-            self._create(&data).await.inspect_err(|e| {
+            self.create(&data).await.inspect_err(|e| {
                 tracing::error!(
                     "Failed to create runner for plugins {}: {:?}",
                     &data.name,
@@ -71,6 +78,8 @@ pub trait RunnerRepository:
     }
     // auto-load plugins from plugin directory
     async fn add_from_plugins_from(&self, dir: &str) -> Result<()> {
+        use command_utils::util::datetime;
+
         let metas = self.runner_spec_factory().load_plugins_from(dir).await;
         for meta in metas.iter() {
             let data = RunnerRow {
@@ -79,8 +88,9 @@ pub trait RunnerRepository:
                 description: meta.description.clone(),
                 definition: meta.filename.clone(),
                 r#type: RunnerType::Plugin as i32, // PLUGIN
+                created_at: datetime::now_millis(),
             };
-            self._create(&data).await.inspect_err(|e| {
+            self.create(&data).await.inspect_err(|e| {
                 tracing::error!(
                     "Failed to create runner for plugins {}: {:?}",
                     &data.name,
@@ -98,6 +108,8 @@ pub trait RunnerRepository:
         description: &str,
         file_path: &str,
     ) -> Result<RunnerId> {
+        use command_utils::util::datetime;
+
         let meta = self
             .runner_spec_factory()
             .load_plugin(Some(name), file_path, false)
@@ -111,8 +123,9 @@ pub trait RunnerRepository:
             description: description.to_string(),
             definition: meta.filename.clone(),
             r#type: RunnerType::Plugin as i32, // PLUGIN
+            created_at: datetime::now_millis(),
         };
-        if self._create(&data).await.inspect_err(|e| {
+        if self.create(&data).await.inspect_err(|e| {
             tracing::error!(
                 "Failed to create runner for plugins {}: {:?}",
                 &data.name,
@@ -136,6 +149,8 @@ pub trait RunnerRepository:
         description: &str,
         definition: &str, // transport
     ) -> Result<RunnerId> {
+        use command_utils::util::datetime;
+
         // for test
         let _proxy = self
             .runner_spec_factory()
@@ -151,8 +166,9 @@ pub trait RunnerRepository:
             description: description.to_string(),
             definition: definition.to_string(),
             r#type: RunnerType::McpServer as i32,
+            created_at: datetime::now_millis(),
         };
-        if self._create(&data).await.inspect_err(|e| {
+        if self.create(&data).await.inspect_err(|e| {
             tracing::error!(
                 "Failed to create runner for mcp server {}: {:?}",
                 &data.name,
@@ -195,10 +211,10 @@ pub trait RunnerRepository:
     // rdb operations
     ////////
 
-    async fn _create(&self, runner_row: &RunnerRow) -> Result<bool> {
-        self._create_tx(self.db_pool(), runner_row).await
+    async fn create(&self, runner_row: &RunnerRow) -> Result<bool> {
+        self.create_tx(self.db_pool(), runner_row).await
     }
-    async fn _create_tx<'c, E: Executor<'c, Database = Rdb>>(
+    async fn create_tx<'c, E: Executor<'c, Database = Rdb>>(
         &self,
         tx: E,
         runner_row: &RunnerRow,
@@ -209,8 +225,9 @@ pub trait RunnerRepository:
                 `name`,
                 `description`,
                 `definition`,
-                `type`
-                ) VALUES (?,?,?,?,?)"
+                `type`,
+                `created_at`
+                ) VALUES (?,?,?,?,?,?)"
         } else {
             // sqlite
             "INSERT OR IGNORE INTO `runner` (
@@ -218,14 +235,16 @@ pub trait RunnerRepository:
                 `name`,
                 `description`,
                 `definition`,
-                `type`
-                ) VALUES (?,?,?,?,?)"
+                `type`,
+                `created_at`
+                ) VALUES (?,?,?,?,?,?)"
         })
         .bind(runner_row.id)
         .bind(&runner_row.name)
         .bind(&runner_row.description)
         .bind(&runner_row.definition)
         .bind(runner_row.r#type)
+        .bind(runner_row.created_at)
         .execute(tx)
         .await
         .map_err(JobWorkerError::DBError)?;
@@ -247,8 +266,9 @@ pub trait RunnerRepository:
                 `name`,
                 `description`,
                 `definition`,
-                `type`
-                ) VALUES (?,?,?,?,?)
+                `type`,
+                `created_at`
+                ) VALUES (?,?,?,?,?,?)
                  ON DUPLICATE KEY UPDATE
                  `name` = VALUES(`name`),
                  `description` = VALUES(`description`),
@@ -261,14 +281,16 @@ pub trait RunnerRepository:
                 `name`,
                 `description`,
                 `definition`,
-                `type`
-                ) VALUES (?,?,?,?,?)"
+                `type`,
+                `created_at`
+                ) VALUES (?,?,?,?,?,?)"
         })
         .bind(runner_row.id)
         .bind(&runner_row.name)
         .bind(&runner_row.description)
         .bind(&runner_row.definition)
         .bind(runner_row.r#type)
+        .bind(runner_row.created_at)
         .execute(tx)
         .await
         .map_err(JobWorkerError::DBError)?;
@@ -384,13 +406,18 @@ pub trait RunnerRepository:
             .find_row_list_tx(self.db_pool(), include_full, limit, offset)
             .await?;
         let mut results = Vec::new();
-        for row in rows {
+
+        // Timeout removed: Individual operations already protected by Primitive Layer (up to 30s)
+        // and Application Layer (up to 10s). Total may take up to 40s per runner.
+        for row in rows.iter() {
             if let Some(r) = self
                 .runner_spec_factory()
                 .create_runner_spec_by_name(&row.name, false)
                 .await
             {
                 results.push(row.to_runner_with_schema(r).await);
+            } else {
+                tracing::warn!("Failed to create runner spec for '{}'", row.name);
             }
         }
         Ok(results)
@@ -432,6 +459,179 @@ pub trait RunnerRepository:
             .await
             .map_err(JobWorkerError::DBError)
             .context("error in count_list".to_string())
+    }
+
+    /// Find runners with filtering and sorting (Admin UI)
+    #[allow(clippy::too_many_arguments)]
+    async fn find_list_by(
+        &self,
+        runner_types: Vec<i32>,
+        name_filter: Option<String>,
+        limit: Option<i32>,
+        offset: Option<i64>,
+        sort_by: Option<proto::jobworkerp::data::RunnerSortField>,
+        ascending: Option<bool>,
+    ) -> Result<Vec<RunnerWithSchema>> {
+        let rows = self
+            .find_row_list_by_tx(
+                self.db_pool(),
+                runner_types,
+                name_filter,
+                limit,
+                offset,
+                sort_by,
+                ascending,
+            )
+            .await?;
+        let mut results = Vec::new();
+
+        // Timeout removed: Individual operations already protected by Primitive Layer (up to 30s)
+        // and Application Layer (up to 10s). Total may take up to 40s per runner.
+        for row in rows.iter() {
+            if let Some(r) = self
+                .runner_spec_factory()
+                .create_runner_spec_by_name(&row.name, false)
+                .await
+            {
+                results.push(row.to_runner_with_schema(r).await);
+            } else {
+                tracing::warn!("Failed to create runner spec for '{}'", row.name);
+            }
+        }
+        Ok(results)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn find_row_list_by_tx<'c, E: Executor<'c, Database = Rdb>>(
+        &self,
+        tx: E,
+        runner_types: Vec<i32>,
+        name_filter: Option<String>,
+        limit: Option<i32>,
+        offset: Option<i64>,
+        sort_by: Option<proto::jobworkerp::data::RunnerSortField>,
+        ascending: Option<bool>,
+    ) -> Result<Vec<RunnerRow>> {
+        use infra_utils::infra::rdb::escape::escape_like_pattern;
+
+        // Build query string first
+        let mut query_str = String::from("SELECT * FROM `runner` WHERE id > 0");
+
+        // Runner type filter
+        if !runner_types.is_empty() {
+            let placeholders = runner_types
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
+            query_str.push_str(&format!(" AND type IN ({})", placeholders));
+        }
+
+        // Name prefix filter (LIKE 'keyword%')
+        let escaped_name = name_filter.as_ref().map(|name| escape_like_pattern(name));
+        if escaped_name.is_some() {
+            query_str.push_str(" AND name LIKE ?");
+        }
+
+        // Sort by - convert enum to SQL field name
+        use proto::jobworkerp::data::RunnerSortField;
+        let sort_field = match sort_by {
+            Some(RunnerSortField::Id) => "id",
+            Some(RunnerSortField::Name) => "name",
+            Some(RunnerSortField::RunnerType) => "type",
+            Some(RunnerSortField::CreatedAt) => "created_at",
+            _ => "id", // UNSPECIFIED or None -> default to id
+        };
+        let sort_order = if ascending.unwrap_or(false) {
+            "ASC"
+        } else {
+            "DESC"
+        };
+        query_str.push_str(&format!(" ORDER BY {} {}", sort_field, sort_order));
+
+        // Pagination
+        query_str.push_str(" LIMIT ? OFFSET ?");
+
+        // Build query and bind parameters
+        let mut query = sqlx::query_as::<Rdb, RunnerRow>(&query_str);
+
+        // Bind runner types
+        for rt in &runner_types {
+            query = query.bind(rt);
+        }
+
+        // Bind name filter
+        if let Some(escaped) = escaped_name {
+            query = query.bind(format!("{}%", escaped));
+        }
+
+        // Bind pagination
+        query = query.bind(limit.unwrap_or(100)).bind(offset.unwrap_or(0));
+
+        query
+            .fetch_all(tx)
+            .await
+            .map_err(JobWorkerError::DBError)
+            .context(format!(
+            "error in find_list_by: (runner_types={:?}, name_filter={:?}, limit={:?}, offset={:?})",
+            runner_types, name_filter, limit, offset
+        ))
+    }
+
+    /// Count runners with filtering (Admin UI)
+    async fn count_by(&self, runner_types: Vec<i32>, name_filter: Option<String>) -> Result<i64> {
+        self.count_by_tx(self.db_pool(), runner_types, name_filter)
+            .await
+    }
+
+    async fn count_by_tx<'c, E: Executor<'c, Database = Rdb>>(
+        &self,
+        tx: E,
+        runner_types: Vec<i32>,
+        name_filter: Option<String>,
+    ) -> Result<i64> {
+        use infra_utils::infra::rdb::escape::escape_like_pattern;
+
+        // Build query string first
+        let mut query_str = String::from("SELECT COUNT(*) as count FROM `runner` WHERE id > 0");
+
+        // Runner type filter
+        if !runner_types.is_empty() {
+            let placeholders = runner_types
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
+            query_str.push_str(&format!(" AND type IN ({})", placeholders));
+        }
+
+        // Name prefix filter
+        let escaped_name = name_filter.as_ref().map(|name| escape_like_pattern(name));
+        if escaped_name.is_some() {
+            query_str.push_str(" AND name LIKE ?");
+        }
+
+        // Build query and bind parameters
+        let mut query = sqlx::query_scalar::<Rdb, i64>(&query_str);
+
+        // Bind runner types
+        for rt in &runner_types {
+            query = query.bind(rt);
+        }
+
+        // Bind name filter
+        if let Some(escaped) = escaped_name {
+            query = query.bind(format!("{}%", escaped));
+        }
+
+        query
+            .fetch_one(tx)
+            .await
+            .map_err(JobWorkerError::DBError)
+            .context(format!(
+                "error in count_by: (runner_types={:?}, name_filter={:?})",
+                runner_types, name_filter
+            ))
     }
 }
 
@@ -514,6 +714,7 @@ mod test {
             description: "Hello! Plugin".to_string(),
             definition: "./target/debug/libplugin_runner_hello.dylib".to_string(),
             r#type: RunnerType::Plugin as i32,
+            created_at: command_utils::util::datetime::now_millis(),
         });
         let data = RunnerData {
             name: row.clone().unwrap().name.clone(),
@@ -543,7 +744,7 @@ mod test {
 
         let mut tx = db.begin().await.context("error in test")?;
         let inserted = repository
-            ._create_tx(&mut *tx, &row.clone().unwrap())
+            .create_tx(&mut *tx, &row.clone().unwrap())
             .await?;
         assert!(inserted);
         let found = repository
@@ -555,18 +756,21 @@ mod test {
             )
             .await?;
         assert_eq!(row, found);
+        let original_created_at = row.clone().unwrap().created_at;
         let row = RunnerRow {
             id: row.clone().unwrap().id,
             name: row.clone().unwrap().name,
             description: "Hello! Plugin2".to_string(),
             definition: row.clone().unwrap().definition,
             r#type: RunnerType::Plugin as i32,
+            created_at: original_created_at, // Keep original created_at for upsert (should not change)
         };
         let upserted = repository._upsert_tx(&mut *tx, &row).await?;
         assert!(upserted);
         let found = repository
             .find_row_tx(&mut *tx, &RunnerId { value: row.id })
             .await?;
+        // Compare all fields - created_at should remain unchanged after upsert
         assert_eq!(row, found.unwrap());
         tx.commit().await.context("error in test delete commit")?;
 
@@ -871,6 +1075,443 @@ mod test {
                 repository.find(&runner_id).await?.is_none(),
                 "record not deleted"
             );
+
+            Ok(())
+        })
+    }
+
+    // Sprint 2 new parameter tests
+
+    /// Test find_list_by with name_filter parameter
+    /// Uses built-in runners (COMMAND, HTTP_REQUEST, PYTHON_COMMAND, etc.) for testing
+    async fn _test_find_list_by_name_filter(pool: &'static RdbPool) -> Result<()> {
+        let plugins = Arc::new(Plugins::new());
+        let mcp_clients = McpServerFactory::new(McpConfig { server: vec![] });
+        let p = Arc::new(RunnerSpecFactory::new(plugins, Arc::new(mcp_clients)));
+
+        let id_generator = Arc::new(crate::infra::IdGeneratorWrapper::new());
+        let repository = RdbRunnerRepositoryImpl::new(pool, p.clone(), id_generator);
+
+        // Test 1: name_filter with "COMMAND" - should match COMMAND runner
+        let results = repository
+            .find_list_by(vec![], Some("COMMAND".to_string()), None, None, None, None)
+            .await?;
+
+        assert_eq!(
+            results.len(),
+            1,
+            "Should find exactly 1 runner with name COMMAND"
+        );
+        assert_eq!(results[0].data.as_ref().unwrap().name, "COMMAND");
+
+        // Test 2: name_filter with "HTTP" prefix - should match HTTP_REQUEST
+        let results = repository
+            .find_list_by(vec![], Some("HTTP".to_string()), None, None, None, None)
+            .await?;
+
+        let http_runners: Vec<_> = results
+            .iter()
+            .filter(|r| {
+                r.data
+                    .as_ref()
+                    .map(|d| d.name.starts_with("HTTP"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert_eq!(
+            http_runners.len(),
+            1,
+            "Should find 1 runner with HTTP prefix"
+        );
+
+        // Test 3: name_filter with "PYTHON" - should match PYTHON_COMMAND
+        let results = repository
+            .find_list_by(vec![], Some("PYTHON".to_string()), None, None, None, None)
+            .await?;
+
+        let python_runners: Vec<_> = results
+            .iter()
+            .filter(|r| {
+                r.data
+                    .as_ref()
+                    .map(|d| d.name.starts_with("PYTHON"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert_eq!(
+            python_runners.len(),
+            1,
+            "Should find 1 runner with PYTHON prefix"
+        );
+
+        // Test 4: name_filter with non-matching prefix
+        let results = repository
+            .find_list_by(
+                vec![],
+                Some("NONEXISTENT".to_string()),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await?;
+
+        assert_eq!(
+            results.len(),
+            0,
+            "Should find no runners with NONEXISTENT name"
+        );
+
+        // Test 5: name_filter = None (no filter) - should return all built-in runners
+        let results = repository
+            .find_list_by(vec![], None, None, None, None, None)
+            .await?;
+
+        assert!(
+            results.len() >= 5,
+            "Should find at least 5 built-in runners when no filter applied"
+        );
+
+        Ok(())
+    }
+
+    /// Test find_list_by with runner_types filter parameter
+    async fn _test_find_list_by_runner_types(pool: &'static RdbPool) -> Result<()> {
+        let plugins = Arc::new(Plugins::new());
+        let mcp_clients = McpServerFactory::new(McpConfig { server: vec![] });
+        let p = Arc::new(RunnerSpecFactory::new(plugins, Arc::new(mcp_clients)));
+
+        let id_generator = Arc::new(crate::infra::IdGeneratorWrapper::new());
+        let repository = RdbRunnerRepositoryImpl::new(pool, p.clone(), id_generator);
+
+        // Test 1: Filter by COMMAND type
+        let results = repository
+            .find_list_by(
+                vec![RunnerType::Command as i32],
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await?;
+
+        assert_eq!(
+            results.len(),
+            1,
+            "Should find exactly 1 COMMAND type runner"
+        );
+        assert_eq!(
+            results[0].data.as_ref().unwrap().runner_type,
+            RunnerType::Command as i32
+        );
+
+        // Test 2: Filter by HTTP_REQUEST type
+        let results = repository
+            .find_list_by(
+                vec![RunnerType::HttpRequest as i32],
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await?;
+
+        assert_eq!(
+            results.len(),
+            1,
+            "Should find exactly 1 HTTP_REQUEST type runner"
+        );
+        assert_eq!(
+            results[0].data.as_ref().unwrap().runner_type,
+            RunnerType::HttpRequest as i32
+        );
+
+        // Test 3: Filter by multiple types (COMMAND, HTTP_REQUEST, GRPC_UNARY)
+        let results = repository
+            .find_list_by(
+                vec![
+                    RunnerType::Command as i32,
+                    RunnerType::HttpRequest as i32,
+                    RunnerType::GrpcUnary as i32,
+                ],
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await?;
+
+        assert_eq!(
+            results.len(),
+            3,
+            "Should find 3 runners with specified types"
+        );
+
+        // Verify all results have the expected types
+        for runner in &results {
+            let runner_type = runner.data.as_ref().unwrap().runner_type;
+            assert!(
+                runner_type == RunnerType::Command as i32
+                    || runner_type == RunnerType::HttpRequest as i32
+                    || runner_type == RunnerType::GrpcUnary as i32,
+                "Runner type should be one of the specified types"
+            );
+        }
+
+        // Test 4: Combine runner_types with name_filter
+        let results = repository
+            .find_list_by(
+                vec![RunnerType::Command as i32, RunnerType::HttpRequest as i32],
+                Some("HTTP".to_string()),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await?;
+
+        assert_eq!(
+            results.len(),
+            1,
+            "Should find 1 runner with HTTP prefix and HTTP_REQUEST type"
+        );
+        assert_eq!(
+            results[0].data.as_ref().unwrap().runner_type,
+            RunnerType::HttpRequest as i32
+        );
+
+        Ok(())
+    }
+
+    /// Test find_list_by with sort_by and ascending parameters
+    async fn _test_find_list_by_sort(pool: &'static RdbPool) -> Result<()> {
+        let plugins = Arc::new(Plugins::new());
+        let mcp_clients = McpServerFactory::new(McpConfig { server: vec![] });
+        let p = Arc::new(RunnerSpecFactory::new(plugins, Arc::new(mcp_clients)));
+
+        let id_generator = Arc::new(crate::infra::IdGeneratorWrapper::new());
+        let repository = RdbRunnerRepositoryImpl::new(pool, p.clone(), id_generator);
+
+        // Test 1: Sort by NAME ascending
+        let results = repository
+            .find_list_by(
+                vec![],
+                None,
+                None,
+                None,
+                Some(proto::jobworkerp::data::RunnerSortField::Name),
+                Some(true), // ascending
+            )
+            .await?;
+
+        // Verify ascending order
+        for i in 1..results.len() {
+            let prev_name = &results[i - 1].data.as_ref().unwrap().name;
+            let curr_name = &results[i].data.as_ref().unwrap().name;
+            assert!(
+                prev_name <= curr_name,
+                "Names should be in ascending order: {} <= {}",
+                prev_name,
+                curr_name
+            );
+        }
+
+        // Test 2: Sort by NAME descending
+        let results = repository
+            .find_list_by(
+                vec![],
+                None,
+                None,
+                None,
+                Some(proto::jobworkerp::data::RunnerSortField::Name),
+                Some(false), // descending
+            )
+            .await?;
+
+        // Verify descending order
+        for i in 1..results.len() {
+            let prev_name = &results[i - 1].data.as_ref().unwrap().name;
+            let curr_name = &results[i].data.as_ref().unwrap().name;
+            assert!(
+                prev_name >= curr_name,
+                "Names should be in descending order: {} >= {}",
+                prev_name,
+                curr_name
+            );
+        }
+
+        // Test 3: Sort by RUNNER_TYPE ascending
+        let results = repository
+            .find_list_by(
+                vec![],
+                None,
+                None,
+                None,
+                Some(proto::jobworkerp::data::RunnerSortField::RunnerType),
+                Some(true), // ascending
+            )
+            .await?;
+
+        // Verify ascending order by type
+        for i in 1..results.len() {
+            let prev_type = results[i - 1].data.as_ref().unwrap().runner_type;
+            let curr_type = results[i].data.as_ref().unwrap().runner_type;
+            assert!(
+                prev_type <= curr_type,
+                "Types should be in ascending order: {} <= {}",
+                prev_type,
+                curr_type
+            );
+        }
+
+        // Test 4: Sort by ID (default) descending (default)
+        let results = repository
+            .find_list_by(vec![], None, None, None, None, None)
+            .await?;
+
+        // Verify descending order by id (default behavior)
+        for i in 1..results.len() {
+            let prev_id = results[i - 1].id.as_ref().unwrap().value;
+            let curr_id = results[i].id.as_ref().unwrap().value;
+            assert!(
+                prev_id >= curr_id,
+                "IDs should be in descending order by default: {} >= {}",
+                prev_id,
+                curr_id
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Test count_by with various filter combinations
+    async fn _test_count_by_filters(pool: &'static RdbPool) -> Result<()> {
+        let plugins = Arc::new(Plugins::new());
+        let mcp_clients = McpServerFactory::new(McpConfig { server: vec![] });
+        let p = Arc::new(RunnerSpecFactory::new(plugins, Arc::new(mcp_clients)));
+
+        let id_generator = Arc::new(crate::infra::IdGeneratorWrapper::new());
+        let repository = RdbRunnerRepositoryImpl::new(pool, p.clone(), id_generator);
+
+        // Test 1: count_by with no filters - should return all built-in runners
+        let count = repository.count_by(vec![], None).await?;
+        assert!(count >= 5, "Should have at least 5 built-in runners");
+
+        // Test 2: count_by with runner_types filter
+        let count = repository
+            .count_by(vec![RunnerType::Command as i32], None)
+            .await?;
+        assert_eq!(count, 1, "Should have 1 COMMAND type runner");
+
+        // Test 3: count_by with name_filter
+        let count = repository
+            .count_by(vec![], Some("HTTP".to_string()))
+            .await?;
+        assert_eq!(count, 1, "Should have 1 runner with HTTP prefix");
+
+        // Test 4: count_by with both runner_types and name_filter
+        let count = repository
+            .count_by(
+                vec![RunnerType::Command as i32, RunnerType::HttpRequest as i32],
+                Some("HTTP".to_string()),
+            )
+            .await?;
+        assert_eq!(
+            count, 1,
+            "Should have 1 runner with HTTP prefix and specified types"
+        );
+
+        // Test 5: count_by with non-matching filters
+        let count = repository
+            .count_by(vec![], Some("NONEXISTENT".to_string()))
+            .await?;
+        assert_eq!(count, 0, "Should have 0 runners with NONEXISTENT prefix");
+
+        Ok(())
+    }
+
+    /// Test pagination with limit and offset
+    async fn _test_find_list_by_pagination(pool: &'static RdbPool) -> Result<()> {
+        let plugins = Arc::new(Plugins::new());
+        let mcp_clients = McpServerFactory::new(McpConfig { server: vec![] });
+        let p = Arc::new(RunnerSpecFactory::new(plugins, Arc::new(mcp_clients)));
+
+        let id_generator = Arc::new(crate::infra::IdGeneratorWrapper::new());
+        let repository = RdbRunnerRepositoryImpl::new(pool, p.clone(), id_generator);
+
+        // Get total count
+        let total_count = repository.count_by(vec![], None).await?;
+
+        // Test 1: limit = 2, offset = 0
+        let results = repository
+            .find_list_by(vec![], None, Some(2), Some(0), None, None)
+            .await?;
+        assert_eq!(results.len(), 2, "Should return 2 runners");
+
+        // Test 2: limit = 2, offset = 2
+        let results_page2 = repository
+            .find_list_by(vec![], None, Some(2), Some(2), None, None)
+            .await?;
+        assert_eq!(results_page2.len(), 2, "Should return 2 runners");
+
+        // Verify different results
+        let first_id = results[0].id.as_ref().unwrap().value;
+        let second_page_first_id = results_page2[0].id.as_ref().unwrap().value;
+        assert_ne!(
+            first_id, second_page_first_id,
+            "Different pages should return different runners"
+        );
+
+        // Test 3: limit larger than total
+        let results = repository
+            .find_list_by(vec![], None, Some(1000), Some(0), None, None)
+            .await?;
+        assert_eq!(
+            results.len() as i64,
+            total_count,
+            "Should return all runners when limit > total"
+        );
+
+        // Test 4: offset larger than total
+        let results = repository
+            .find_list_by(vec![], None, Some(10), Some(1000), None, None)
+            .await?;
+        assert_eq!(results.len(), 0, "Should return empty when offset > total");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_sprint2_parameters() -> Result<()> {
+        use infra_utils::infra::test::setup_test_rdb_from;
+        use infra_utils::infra::test::TEST_RUNTIME;
+
+        TEST_RUNTIME.block_on(async {
+            let rdb_pool = if cfg!(feature = "mysql") {
+                let pool = setup_test_rdb_from("sql/mysql").await;
+                // delete only not built-in records
+                sqlx::query("DELETE FROM runner WHERE id > 100;")
+                    .execute(pool)
+                    .await?;
+                pool
+            } else {
+                let pool = setup_test_rdb_from("sql/sqlite").await;
+                // delete only not built-in records
+                sqlx::query("DELETE FROM runner WHERE id > 100;")
+                    .execute(pool)
+                    .await?;
+                pool
+            };
+
+            // Run Sprint 2 new parameter tests
+            _test_find_list_by_name_filter(rdb_pool).await?;
+            _test_find_list_by_runner_types(rdb_pool).await?;
+            _test_find_list_by_sort(rdb_pool).await?;
+            _test_count_by_filters(rdb_pool).await?;
+            _test_find_list_by_pagination(rdb_pool).await?;
 
             Ok(())
         })

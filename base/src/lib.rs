@@ -1,8 +1,11 @@
+use job_status_config::JobStatusConfig;
 use once_cell::sync::Lazy;
 use std::{env, net::SocketAddr};
 
 pub mod codec;
 pub mod error;
+pub mod job_status_config;
+pub mod limits;
 
 pub static APP_NAME: &str = "jobworkerp";
 pub static APP_WORKER_NAME: &str = "jobworkerp-worker";
@@ -30,3 +33,5 @@ pub static USE_WEB: Lazy<bool> = Lazy::new(|| {
 
 pub static MAX_FRAME_SIZE: Lazy<Option<u32>> =
     Lazy::new(|| env::var("MAX_FRAME_SIZE").ok().map(|s| s.parse().unwrap()));
+
+pub static JOB_STATUS_CONFIG: Lazy<JobStatusConfig> = Lazy::new(JobStatusConfig::from_env);

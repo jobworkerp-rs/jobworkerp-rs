@@ -42,6 +42,9 @@ pub async fn start_worker(
 pub async fn boot_all_in_one() -> Result<()> {
     let (lock, mut wait) = shutdown::create_lock_and_wait();
 
+    // Create shutdown signal for cleanup task
+    let (shutdown_send, _shutdown_recv) = tokio::sync::watch::channel(false);
+
     let plugins = Arc::new(Plugins::new());
     // load mcp config
     let mcp_clients = match McpConfig::load(&jobworkerp_base::MCP_CONFIG_PATH.clone()).await {
@@ -71,6 +74,10 @@ pub async fn boot_all_in_one() -> Result<()> {
 
     app_module.on_start_all_in_one().await?;
 
+    // TODO use internal clean-up job
+    // Start JobStatusCleanupTask if RDB indexing is enabled
+    // let cleanup_handle = app_module.start_job_status_cleanup_task(shutdown_recv);
+
     let runner_factory = Arc::new(RunnerFactory::new(
         app_module.clone(),
         app_wrapper_module.clone(),
@@ -94,6 +101,17 @@ pub async fn boot_all_in_one() -> Result<()> {
     // shutdown
     tracing::info!("waiting shutdown signal");
     wait.wait().await;
+
+    // Send shutdown signal to cleanup task
+    let _ = shutdown_send.send(true);
+
+    // TODO use internal clean-up job
+    // // Wait for cleanup task to finish if it was started
+    // if let Some(handle) = cleanup_handle {
+    //     tracing::debug!("waiting for JobStatusCleanupTask to finish");
+    //     let _ = handle.await;
+    //     tracing::debug!("JobStatusCleanupTask finished");
+    // }
 
     tracing::debug!("shutdown telemetry");
 

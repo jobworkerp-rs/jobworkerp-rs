@@ -48,13 +48,13 @@ jobs:
     timeout-minutes: 50
     services:
       db:
-        image: mariadb:10.9
+        image: mysql:8.4
         ports:
           - 3306:3306
         env:
           MYSQL_HOST: db
-          MYSQL_USER: maria
-          MYSQL_PASSWORD: maria
+          MYSQL_USER: mysql
+          MYSQL_PASSWORD: mysqlpw
           MYSQL_DATABASE: test
           MYSQL_ROOT_PASSWORD: ""
           MYSQL_ALLOW_EMPTY_PASSWORD: yes
@@ -128,7 +128,7 @@ jobs:
         env:
           PLUGINS_RUNNER_DIR: "./target/debug/"
           TEST_REDIS_URL: "redis://redis:6379"
-          TEST_MYSQL_URL: "mysql://maria:maria@db:3306/test"
+          TEST_MYSQL_URL: "mysql://mysql:mysqlpw@db:3306/test"
           UV_VENV_CLEAR: 1
           RUST_BACKTRACE: 1
       - name: Run test with mysql
@@ -143,6 +143,6 @@ jobs:
         env:
           PLUGINS_RUNNER_DIR: "./target/debug/"
           TEST_REDIS_URL: "redis://redis:6379"
-          TEST_MYSQL_URL: "mysql://maria:maria@db:3306/test"
+          TEST_MYSQL_URL: "mysql://mysql:mysqlpw@db:3306/test"
           UV_VENV_CLEAR: 1
           RUST_BACKTRACE: 1

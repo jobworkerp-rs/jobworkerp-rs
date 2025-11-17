@@ -7,6 +7,7 @@ use super::job::status::memory::MemoryJobProcessingStatusRepository;
 use super::job::status::redis::RedisJobProcessingStatusRepository;
 use super::job::status::{JobProcessingStatusRepository, UseJobProcessingStatusRepository};
 use super::{IdGeneratorWrapper, InfraConfigModule, JobQueueConfig};
+use jobworkerp_base::job_status_config::JobStatusConfig;
 use jobworkerp_runner::runner::factory::RunnerSpecFactory;
 use rdb::{RdbChanRepositoryModule, UseRdbChanRepositoryModule};
 use std::sync::Arc;
@@ -51,9 +52,15 @@ impl HybridRepositoryModule {
             runner_factory.clone(),
         )
         .await;
-        let rdb_module =
-            RdbChanRepositoryModule::new_by_env(job_queue_config, runner_factory, id_generator)
-                .await;
+        let job_status_config = Arc::new(JobStatusConfig::from_env());
+
+        let rdb_module = RdbChanRepositoryModule::new_by_env(
+            job_queue_config,
+            job_status_config,
+            runner_factory,
+            id_generator,
+        )
+        .await;
         HybridRepositoryModule {
             redis_module,
             rdb_chan_module: rdb_module,

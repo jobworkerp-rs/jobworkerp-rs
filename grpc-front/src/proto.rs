@@ -31,9 +31,11 @@ pub mod jobworkerp {
         pub type RunnerData = data::RunnerData;
         pub type RunnerType = data::RunnerType;
         pub type Runner = data::Runner;
+        pub type RunnerSortField = data::RunnerSortField;
         pub type WorkerId = data::WorkerId;
         pub type WorkerData = data::WorkerData;
         pub type Worker = data::Worker;
+        pub type WorkerSortField = data::WorkerSortField;
         pub type QueueType = data::QueueType;
         pub type ResponseType = data::ResponseType;
         pub type RetryPolicy = data::RetryPolicy;
@@ -43,6 +45,7 @@ pub mod jobworkerp {
         pub type JobResultId = data::JobResultId;
         pub type JobResultData = data::JobResultData;
         pub type JobResult = data::JobResult;
+        pub type JobResultSortField = data::JobResultSortField;
         pub type ResultOutput = data::ResultOutput;
         pub type ResultOutputItem = data::ResultOutputItem;
         pub type ResultStatus = data::ResultStatus;
