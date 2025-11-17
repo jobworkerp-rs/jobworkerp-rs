@@ -963,6 +963,30 @@ impl JobApp for RdbChanJobAppImpl {
         }
     }
 
+    async fn cleanup_job_processing_status(
+        &self,
+        retention_hours_override: Option<u64>,
+    ) -> Result<(u64, i64)> {
+        use jobworkerp_base::JOB_STATUS_CONFIG;
+
+        // Get index repository
+        let index_repo = self.job_status_index_repository.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "RDB JobProcessingStatus index repository not available. \
+                     Ensure JOB_STATUS_RDB_INDEXING=true"
+            )
+        })?;
+
+        // Calculate retention hours
+        let retention_hours = retention_hours_override.unwrap_or(JOB_STATUS_CONFIG.retention_hours);
+        let cutoff_time = datetime::now_millis() - (retention_hours * 3600 * 1000) as i64;
+
+        // Execute cleanup
+        let deleted_count = index_repo.cleanup_deleted_records().await?;
+
+        Ok((deleted_count, cutoff_time))
+    }
+
     async fn count(&self) -> Result<i64>
     where
         Self: Send + 'static,
@@ -1881,6 +1905,55 @@ mod tests {
             //     2
             // );
             Ok(())
+        })
+    }
+
+    #[test]
+    fn test_cleanup_job_processing_status_disabled() {
+        TEST_RUNTIME.block_on(async {
+            // Setup: RDB indexing disabled
+            std::env::set_var("JOB_STATUS_RDB_INDEXING", "false");
+
+            let (app, _) = create_test_app(false).await.unwrap();
+
+            // Execute cleanup - should fail with repository not available
+            let result = app.cleanup_job_processing_status(None).await;
+
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().to_string();
+            assert!(
+                err_msg.contains("index repository not available")
+                    || err_msg.contains("JOB_STATUS_RDB_INDEXING")
+            );
+
+            // Cleanup
+            std::env::remove_var("JOB_STATUS_RDB_INDEXING");
+        })
+    }
+
+    #[test]
+    #[ignore] // Requires real RDB with job_processing_status table
+    fn test_cleanup_job_processing_status_success() {
+        TEST_RUNTIME.block_on(async {
+            // Setup: RDB indexing enabled
+            std::env::set_var("JOB_STATUS_RDB_INDEXING", "true");
+            std::env::set_var("JOB_STATUS_RETENTION_HOURS", "24");
+
+            // Create app with index repository
+            let (app, _) = create_test_app(false).await.unwrap();
+
+            // Execute cleanup with 1 hour retention override
+            let result = app.cleanup_job_processing_status(Some(1)).await;
+
+            // Should succeed (even if no records deleted)
+            assert!(result.is_ok());
+            let (_deleted_count, cutoff_time) = result.unwrap();
+            assert!(cutoff_time > 0);
+            // Note: deleted_count can be 0 if no old records exist
+
+            // Cleanup
+            std::env::remove_var("JOB_STATUS_RDB_INDEXING");
+            std::env::remove_var("JOB_STATUS_RETENTION_HOURS");
         })
     }
 }

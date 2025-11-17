@@ -1109,6 +1109,31 @@ impl JobApp for HybridJobAppImpl {
         }
     }
 
+    async fn cleanup_job_processing_status(
+        &self,
+        retention_hours_override: Option<u64>,
+    ) -> Result<(u64, i64)> {
+        use command_utils::util::datetime;
+        use jobworkerp_base::JOB_STATUS_CONFIG;
+
+        // Get index repository
+        let index_repo = self.job_status_index_repository.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "RDB JobProcessingStatus index repository not available. \
+                     Ensure JOB_STATUS_RDB_INDEXING=true"
+            )
+        })?;
+
+        // Calculate retention hours
+        let retention_hours = retention_hours_override.unwrap_or(JOB_STATUS_CONFIG.retention_hours);
+        let cutoff_time = datetime::now_millis() - (retention_hours * 3600 * 1000) as i64;
+
+        // Execute cleanup
+        let deleted_count = index_repo.cleanup_deleted_records().await?;
+
+        Ok((deleted_count, cutoff_time))
+    }
+
     async fn count(&self) -> Result<i64>
     where
         Self: Send + 'static,
