@@ -21,15 +21,50 @@ pub struct PluginMetadata {
     pub filename: String,
 }
 
+/// Plugin loader trait for managing dynamic library loading
+///
+/// # Important Notes on Memory Management
+///
+/// Due to the unsafe nature of dynamic library unloading (see libloading discussion:
+/// https://users.rust-lang.org/t/how-to-avoid-library-and-symbol-drops-in-crate-libloading/85701),
+/// implementations of this trait typically keep loaded libraries in memory indefinitely.
+///
+/// This means:
+/// - `unload()`: Only removes logical registration, physical library remains in memory
+/// - `overwrite=true` in `load_path()`: Creates duplicate physical libraries in memory
+/// - Memory accumulation is intentional to prevent crashes from dangling references
 #[async_trait::async_trait]
 pub trait PluginLoader: Send + Sync {
+    /// Load a plugin from the specified path
+    ///
+    /// # Parameters
+    /// - `name`: Optional custom name for the plugin (uses plugin's internal name if None)
+    /// - `path`: Path to the dynamic library file
+    /// - `overwrite`: If true, allows re-registering a plugin with the same name
+    ///
+    /// # Overwrite Behavior Warning
+    /// When `overwrite=true`, only the logical plugin registration is updated.
+    /// The physical library file from the old path remains loaded in memory.
+    /// This is a safety tradeoff to prevent crashes but leads to memory accumulation.
+    ///
+    /// # Returns
+    /// Tuple of (plugin_name, plugin_description) on success
     async fn load_path(
         &mut self,
         name: Option<&str>,
         path: &Path,
         overwrite: bool,
     ) -> Result<(String, String)>;
+
+    /// Unload a plugin by name (logical removal only)
+    ///
+    /// NOTE: This only removes the logical registration. The physical library
+    /// remains in memory to prevent crashes from dangling references.
     fn unload(&mut self, name: &str) -> Result<bool>;
+
+    /// Clear all logical plugin registrations
+    ///
+    /// NOTE: Physical libraries remain in memory
     #[allow(dead_code)]
     fn clear(&mut self) -> Result<()>;
 }

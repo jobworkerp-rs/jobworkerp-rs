@@ -139,6 +139,30 @@ impl Default for RunnerPluginLoader {
 
 #[async_trait::async_trait]
 impl PluginLoader for RunnerPluginLoader {
+    /// Load a plugin from the specified path
+    ///
+    /// # Memory Management and Overwrite Behavior
+    ///
+    /// **IMPORTANT**: This implementation uses `Box::leak()` to intentionally keep loaded
+    /// libraries in memory for the lifetime of the process. This is based on the discussion
+    /// in the Rust Users Forum:
+    /// https://users.rust-lang.org/t/how-to-avoid-library-and-symbol-drops-in-crate-libloading/85701
+    ///
+    /// Key points from the discussion:
+    /// - `libloading::Library` automatically unloads when dropped, which can cause crashes
+    ///   if any references to the library's code or data still exist
+    /// - Platform-specific issues: On macOS, libraries using thread-local storage cannot
+    ///   be safely unloaded
+    /// - Alternative approaches (Arc<Library>) provide flexibility but don't guarantee
+    ///   safety across all platforms
+    /// - The consensus is to accept memory leaks for plugin systems to ensure safety
+    ///
+    /// **Overwrite Parameter Limitation**:
+    /// - `overwrite=true`: Only updates the logical plugin registration (name, path mapping)
+    /// - The physical library from the old path **remains in memory** indefinitely
+    /// - Both old and new library files will be loaded in `PLUGIN_LIBRARY_CACHE`
+    /// - This is a safety tradeoff - memory usage increases, but avoids potential crashes
+    /// - In practice, `overwrite` should be used sparingly, as it leads to memory accumulation
     async fn load_path(
         &mut self,
         name: Option<&str>,
