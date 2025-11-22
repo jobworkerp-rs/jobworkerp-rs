@@ -1,5 +1,3 @@
-#![cfg(feature = "local_llm")]
-
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::{
     message_content::{Content as ChatContent, ToolCall, ToolCalls},
     MessageContent as ChatMessageContent, Usage as ChatUsage,
