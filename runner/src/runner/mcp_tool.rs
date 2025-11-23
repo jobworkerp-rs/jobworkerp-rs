@@ -3,6 +3,9 @@
 // This module implements the McpToolRunnerImpl, which represents a single tool
 // from an MCP server as an individual runner (1 runner = 1 tool design).
 
+#[cfg(test)]
+mod integration_tests;
+
 use crate::jobworkerp::runner::McpServerResult;
 use crate::runner::cancellation::CancelMonitoring;
 use crate::runner::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
@@ -139,17 +142,68 @@ impl McpToolRunnerImpl {
                         )),
                     });
                 }
+                rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
+                    resource: rmcp::model::ResourceContents::TextResourceContents {
+                        uri,
+                        mime_type,
+                        text,
+                        ..
+                    },
+                    ..
+                }) => {
+                    use crate::jobworkerp::runner::mcp_server_result::TextResourceContents;
+                    mcp_contents.push(mcp_server_result::Content {
+                        raw_content: Some(mcp_server_result::content::RawContent::Resource(
+                            mcp_server_result::EmbeddedResource {
+                                resource: Some(
+                                    mcp_server_result::embedded_resource::Resource::Text(
+                                        TextResourceContents {
+                                            uri,
+                                            mime_type,
+                                            text,
+                                        },
+                                    ),
+                                ),
+                            },
+                        )),
+                    });
+                }
+                rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
+                    resource: rmcp::model::ResourceContents::BlobResourceContents {
+                        uri,
+                        mime_type,
+                        blob,
+                        ..
+                    },
+                    ..
+                }) => {
+                    use crate::jobworkerp::runner::mcp_server_result::BlobResourceContents;
+                    mcp_contents.push(mcp_server_result::Content {
+                        raw_content: Some(mcp_server_result::content::RawContent::Resource(
+                            mcp_server_result::EmbeddedResource {
+                                resource: Some(
+                                    mcp_server_result::embedded_resource::Resource::Blob(
+                                        BlobResourceContents {
+                                            uri,
+                                            mime_type,
+                                            blob,
+                                        },
+                                    ),
+                                ),
+                            },
+                        )),
+                    });
+                }
                 rmcp::model::RawContent::Audio(_audio) => {
                     tracing::warn!(
                         "Audio content not supported yet for tool '{}'",
                         self.tool_name
                     );
                 }
-                _ => {
+                rmcp::model::RawContent::ResourceLink(_) => {
                     tracing::warn!(
-                        "Unsupported content type in MCP response for tool '{}': {:?}",
-                        self.tool_name,
-                        content
+                        "ResourceLink content not supported yet for tool '{}'",
+                        self.tool_name
                     );
                 }
             }
@@ -384,134 +438,3 @@ impl CancelMonitoring for McpToolRunnerImpl {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::runner::mcp::schema_converter::JsonSchemaToProtobufConverter;
-    use serde_json::json;
-
-    #[test]
-    fn test_name_formatting() {
-        // Test that name() method formats correctly as {server_name}___{tool_name}
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"}
-            }
-        });
-
-        let converter = JsonSchemaToProtobufConverter::new(&schema).unwrap();
-
-        // We can't easily create McpToolRunnerImpl without McpServerProxy,
-        // but we can test the name format logic
-        let server_name = "filesystem";
-        let tool_name = "read_file";
-        let expected_name = format!("{}___{}", server_name, tool_name);
-
-        assert_eq!(expected_name, "filesystem___read_file");
-        assert!(!tool_name.contains("___"), "Tool name should not contain delimiter");
-    }
-
-    #[test]
-    fn test_convert_mcp_response_text_content() {
-        // Test convert_mcp_response with Text content
-        use rmcp::model::{CallToolResult, Content, RawContent, RawTextContent};
-
-        let schema = json!({
-            "type": "object",
-            "properties": {"test": {"type": "string"}}
-        });
-
-        let _converter = JsonSchemaToProtobufConverter::new(&schema).unwrap();
-
-        // Create a mock McpToolRunnerImpl (without actual MCP connection)
-        // Note: This is a simplified test. Full integration tests require McpServerProxy mock.
-
-        let result = CallToolResult {
-            content: vec![Content {
-                raw: RawContent::Text(RawTextContent {
-                    text: "test output".to_string(),
-                    meta: None,
-                }),
-                annotations: None,
-            }],
-            structured_content: None,
-            is_error: Some(false),
-            meta: None,
-        };
-
-        // Validate result structure
-        assert_eq!(result.content.len(), 1);
-        assert_eq!(result.is_error, Some(false));
-
-        match &result.content[0].raw {
-            RawContent::Text(text_content) => {
-                assert_eq!(text_content.text, "test output");
-            }
-            _ => panic!("Expected Text content"),
-        }
-    }
-
-    #[test]
-    fn test_convert_mcp_response_image_content() {
-        use rmcp::model::{CallToolResult, Content, RawContent, RawImageContent};
-
-        let result = CallToolResult {
-            content: vec![Content {
-                raw: RawContent::Image(RawImageContent {
-                    data: "base64data".to_string(),
-                    mime_type: "image/png".to_string(),
-                    meta: None,
-                }),
-                annotations: None,
-            }],
-            structured_content: None,
-            is_error: Some(false),
-            meta: None,
-        };
-
-        assert_eq!(result.content.len(), 1);
-        match &result.content[0].raw {
-            RawContent::Image(image_content) => {
-                assert_eq!(image_content.mime_type, "image/png");
-                assert_eq!(image_content.data, "base64data");
-            }
-            _ => panic!("Expected Image content"),
-        }
-    }
-
-    #[test]
-    fn test_convert_mcp_response_multiple_contents() {
-        use rmcp::model::{CallToolResult, Content, RawContent, RawTextContent};
-
-        let result = CallToolResult {
-            content: vec![
-                Content {
-                    raw: RawContent::Text(RawTextContent {
-                        text: "first".to_string(),
-                        meta: None,
-                    }),
-                    annotations: None,
-                },
-                Content {
-                    raw: RawContent::Text(RawTextContent {
-                        text: "second".to_string(),
-                        meta: None,
-                    }),
-                    annotations: None,
-                },
-            ],
-            structured_content: None,
-            is_error: Some(false),
-            meta: None,
-        };
-
-        assert_eq!(result.content.len(), 2);
-    }
-
-    #[test]
-    fn test_max_mcp_response_size_constant() {
-        // Verify security constant is set correctly
-        assert_eq!(MAX_MCP_RESPONSE_SIZE, 50 * 1024 * 1024);
-    }
-}

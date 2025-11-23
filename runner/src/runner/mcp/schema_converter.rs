@@ -349,8 +349,14 @@ message {}Args {{
 
                     for (prop_name, prop_schema) in properties {
                         let is_required = required_fields.contains(&prop_name.as_str());
-                        let optional = if is_required { "" } else { "optional " };
                         let field_type = Self::json_type_to_proto_type(prop_schema);
+
+                        // Proto3: repeated fields are implicitly optional, so don't add "optional" keyword
+                        let optional = if is_required || field_type.starts_with("repeated ") {
+                            ""
+                        } else {
+                            "optional "
+                        };
 
                         let comment = if let Some(desc) =
                             prop_schema.get("description").and_then(|v| v.as_str())
@@ -665,5 +671,211 @@ mod tests {
         let proto_def = converter.to_proto_definition("test", "list_files");
 
         assert!(proto_def.contains("repeated string  files = 1;"));
+    }
+
+    #[test]
+    fn test_optional_array_no_optional_keyword() {
+        // Regression test for review comment: optional arrays should not generate "optional repeated"
+        use command_utils::protobuf::ProtobufDescriptor;
+        use prost_reflect::Kind;
+
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of tags"
+                },
+                "counts": {
+                    "type": "array",
+                    "items": {"type": "integer"}
+                }
+            },
+            "required": []  // Neither field is required, so both are optional
+        });
+
+        let converter = JsonSchemaToProtobufConverter::new(&schema).unwrap();
+        let proto_def = converter.to_proto_definition("test", "array_test");
+
+        // Parse proto definition using ProtobufDescriptor
+        let descriptor = ProtobufDescriptor::new(&proto_def)
+            .expect("Failed to parse generated proto definition");
+
+        let message_desc = descriptor
+            .get_message_by_name("jobworkerp.runner.mcp.test.TestArrayTestArgs")
+            .expect("Message TestArrayTestArgs not found");
+
+        // Verify exactly 2 fields
+        assert_eq!(message_desc.fields().len(), 2, "Should have exactly 2 fields");
+
+        // Find fields by name
+        let tags_field = message_desc.get_field_by_name("tags").expect("tags field not found");
+        let counts_field = message_desc.get_field_by_name("counts").expect("counts field not found");
+
+        // Critical: Both fields must be repeated (arrays)
+        assert!(
+            tags_field.is_list(),
+            "tags field must be repeated (is_list): {:?}",
+            tags_field
+        );
+        assert!(
+            counts_field.is_list(),
+            "counts field must be repeated (is_list): {:?}",
+            counts_field
+        );
+
+        // Verify field types
+        assert!(
+            matches!(tags_field.kind(), Kind::String),
+            "tags field type should be string, got: {:?}",
+            tags_field.kind()
+        );
+        assert!(
+            matches!(counts_field.kind(), Kind::Int64),
+            "counts field type should be int64, got: {:?}",
+            counts_field.kind()
+        );
+
+        // Proto3 repeated fields cannot have supports_presence (which indicates "optional")
+        // Repeated fields are implicitly optional in proto3
+        assert!(
+            !tags_field.supports_presence() || tags_field.is_list(),
+            "repeated field should not have presence tracking (optional keyword)"
+        );
+        assert!(
+            !counts_field.supports_presence() || counts_field.is_list(),
+            "repeated field should not have presence tracking (optional keyword)"
+        );
+
+        // Sanity check: proto definition should not contain invalid "optional repeated" syntax
+        assert!(
+            !proto_def.contains("optional repeated"),
+            "Proto definition must not contain 'optional repeated': {}",
+            proto_def
+        );
+    }
+
+    #[test]
+    fn test_mixed_required_and_optional_with_arrays() {
+        // Test that required fields don't get "optional" and repeated fields never get "optional"
+        use command_utils::protobuf::ProtobufDescriptor;
+        use prost_reflect::Kind;
+
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Required string field"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Optional string field"
+                },
+                "items": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Required array field"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional array field"
+                }
+            },
+            "required": ["name", "items"]
+        });
+
+        let converter = JsonSchemaToProtobufConverter::new(&schema).unwrap();
+        let proto_def = converter.to_proto_definition("test", "mixed_test");
+
+        // Parse proto definition using ProtobufDescriptor
+        let descriptor = ProtobufDescriptor::new(&proto_def)
+            .expect("Failed to parse generated proto definition");
+
+        let message_desc = descriptor
+            .get_message_by_name("jobworkerp.runner.mcp.test.TestMixedTestArgs")
+            .expect("Message TestMixedTestArgs not found");
+
+        // Verify exactly 4 fields
+        assert_eq!(message_desc.fields().len(), 4, "Should have exactly 4 fields");
+
+        // Find fields by name
+        let name_field = message_desc.get_field_by_name("name").expect("name field not found");
+        let description_field = message_desc
+            .get_field_by_name("description")
+            .expect("description field not found");
+        let items_field = message_desc.get_field_by_name("items").expect("items field not found");
+        let tags_field = message_desc.get_field_by_name("tags").expect("tags field not found");
+
+        // Verify field types
+        assert!(
+            matches!(name_field.kind(), Kind::String),
+            "name field type should be string, got: {:?}",
+            name_field.kind()
+        );
+        assert!(
+            matches!(description_field.kind(), Kind::String),
+            "description field type should be string, got: {:?}",
+            description_field.kind()
+        );
+        assert!(
+            matches!(items_field.kind(), Kind::String),
+            "items field type should be string, got: {:?}",
+            items_field.kind()
+        );
+        assert!(
+            matches!(tags_field.kind(), Kind::String),
+            "tags field type should be string, got: {:?}",
+            tags_field.kind()
+        );
+
+        // Verify required string field (name): NOT optional, NOT repeated
+        assert!(
+            !name_field.is_list(),
+            "name field should not be repeated: {:?}",
+            name_field
+        );
+        assert!(
+            !name_field.supports_presence(),
+            "required string field should not have presence tracking (no optional): {:?}",
+            name_field
+        );
+
+        // Verify optional string field (description): IS optional, NOT repeated
+        assert!(
+            !description_field.is_list(),
+            "description field should not be repeated: {:?}",
+            description_field
+        );
+        assert!(
+            description_field.supports_presence(),
+            "optional string field should have presence tracking (optional keyword): {:?}",
+            description_field
+        );
+
+        // Verify required array field (items): IS repeated, NOT optional
+        assert!(
+            items_field.is_list(),
+            "items field must be repeated: {:?}",
+            items_field
+        );
+        // Repeated fields in proto3 don't use supports_presence (they're implicitly optional)
+
+        // Verify optional array field (tags): IS repeated, NOT optional
+        assert!(
+            tags_field.is_list(),
+            "tags field must be repeated: {:?}",
+            tags_field
+        );
+        // Repeated fields in proto3 don't use supports_presence (they're implicitly optional)
+
+        // Critical: Should NOT contain "optional repeated" (invalid proto3 syntax)
+        assert!(
+            !proto_def.contains("optional repeated"),
+            "Proto definition must not contain 'optional repeated': {}",
+            proto_def
+        );
     }
 }
