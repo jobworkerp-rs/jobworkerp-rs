@@ -4,7 +4,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use command_utils::util::option::ToVec;
 use debug_stub_derive::DebugStub;
+use infra::infra::function_set::rdb::FunctionSetRepository;
 use infra::infra::module::HybridRepositoryModule;
+use infra::infra::runner::rdb::McpServerRegistrationResult;
 use infra::infra::runner::rdb::RunnerRepository;
 use infra::infra::runner::rdb::{RdbRunnerRepositoryImpl, UseRdbRunnerRepository};
 use infra::infra::runner::rows::RunnerWithSchema;
@@ -14,6 +16,7 @@ use jobworkerp_base::error::JobWorkerError;
 use memory_utils::cache::moka::{MokaCacheConfig, MokaCacheImpl, UseMokaCache};
 use moka::future::Cache;
 use proto::jobworkerp::data::{RunnerId, RunnerType};
+use proto::jobworkerp::function::data::{FunctionId, FunctionSetData};
 use std::sync::Arc;
 
 // TODO use redis as cache ? (same implementation as rdb now)
@@ -86,6 +89,72 @@ impl HybridRunnerAppImpl {
             tracing::warn!("load runner from db error");
         }
     }
+
+    /// Create FunctionSet for a registered MCP server
+    ///
+    /// Implementation is identical to RdbRunnerAppImpl, but accesses repository
+    /// via self.repositories.rdb_chan_module.function_set_repository
+    async fn create_mcp_function_set(&self, result: &McpServerRegistrationResult) -> Result<()> {
+        let function_set_data = FunctionSetData {
+            name: result.name.clone(),
+            description: result.description.clone().unwrap_or_else(|| {
+                format!(
+                    "MCP server '{}' providing {} tools",
+                    result.name, result.tool_count
+                )
+            }),
+            category: 2, // FunctionSetCategory::FUNCTION_SET_CATEGORY_MCP_SERVER
+            targets: result
+                .runner_ids
+                .iter()
+                .map(|id| FunctionId {
+                    id: Some(
+                        proto::jobworkerp::function::data::function_id::Id::RunnerId(RunnerId {
+                            value: *id,
+                        }),
+                    ),
+                })
+                .collect(),
+        };
+
+        // HybridRunnerAppImplのRepository取得パス
+        let repo = &self.repositories.rdb_chan_module.function_set_repository;
+
+        let db = repo.db_pool();
+        let mut tx = db.begin().await?;
+
+        let existing = repo.find_by_name(&result.name).await?;
+
+        match existing {
+            Some(existing_set) => {
+                repo.update(
+                    &mut tx,
+                    &existing_set
+                        .id
+                        .ok_or_else(|| anyhow::anyhow!("FunctionSet has no ID"))?,
+                    &function_set_data,
+                )
+                .await?;
+                tx.commit().await?;
+                tracing::info!(
+                    "Updated FunctionSet for MCP server '{}' with {} tools",
+                    result.name,
+                    result.tool_count
+                );
+            }
+            None => {
+                repo.create(&mut tx, &function_set_data).await?;
+                tx.commit().await?;
+                tracing::info!(
+                    "Created FunctionSet for MCP server '{}' with {} tools",
+                    result.name,
+                    result.tool_count
+                );
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl UseRunnerParserWithCache for HybridRunnerAppImpl {
@@ -100,11 +169,25 @@ impl RunnerApp for HybridRunnerAppImpl {
         self.runner_repository()
             .add_from_plugins_from(self.plugin_dir.as_str())
             .await?;
-        self.runner_repository().add_from_mcp_config_file().await?;
+
+        let registration_results = self.runner_repository().add_from_mcp_config_file().await?;
+
         self.load_runners_from_db().await;
         let _ = self
             .delete_cache(&Self::find_all_list_cache_key(true))
             .await;
+
+        // FunctionSet作成
+        for result in registration_results {
+            if let Err(e) = self.create_mcp_function_set(&result).await {
+                tracing::warn!(
+                    "Failed to create FunctionSet for '{}': {}. Tools are usable.",
+                    result.name,
+                    e
+                );
+            }
+        }
+
         Ok(true)
     }
 

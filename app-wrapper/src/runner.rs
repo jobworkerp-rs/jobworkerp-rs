@@ -11,6 +11,7 @@ use anyhow::Result;
 use app::module::AppModule;
 use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
 use jobworkerp_runner::runner::mcp::McpServerRunnerImpl;
+use jobworkerp_runner::runner::mcp_tool::McpToolRunnerImpl;
 use jobworkerp_runner::runner::{
     cancellation::CancellableRunner,
     command::CommandRunnerImpl,
@@ -53,6 +54,106 @@ impl RunnerFactory {
     }
     pub async fn unload_plugins(&self, name: &str) -> Result<bool> {
         self.plugins.runner_plugins().write().await.unload(name)
+    }
+
+    /// Create MCP Tool runner from runner name (format: "server___tool")
+    ///
+    /// # Arguments
+    /// * `runner_name` - Runner name in format "server___tool"
+    /// * `cancel_helper` - Cancellation monitoring helper
+    ///
+    /// # Returns
+    /// * `Some(runner)` if successfully created
+    /// * `None` if failed (invalid format, server connection failed, tool not found)
+    async fn create_mcp_tool_runner(
+        &self,
+        runner_name: &str,
+        cancel_helper: jobworkerp_runner::runner::cancellation_helper::CancelMonitoringHelper,
+    ) -> Option<Box<dyn CancellableRunner + Send + Sync>> {
+        const DELIMITER: &str = "___";
+
+        // Parse runner name to extract server_name and tool_name
+        let parts: Vec<&str> = runner_name.splitn(2, DELIMITER).collect();
+        if parts.len() != 2 {
+            tracing::error!(
+                "Invalid MCP tool runner name format: '{}'. Expected format: 'server___tool'",
+                runner_name
+            );
+            return None;
+        }
+
+        let server_name = parts[0];
+        let tool_name = parts[1];
+
+        // Connect to MCP server
+        let server = match self.mcp_clients.connect_server(server_name).await {
+            Ok(s) => Arc::new(s),
+            Err(e) => {
+                tracing::error!(
+                    "Failed to connect to MCP server '{}' for tool '{}': {:?}",
+                    server_name,
+                    tool_name,
+                    e
+                );
+                return None;
+            }
+        };
+
+        // Load tools from MCP server
+        let tools = match server.load_tools().await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!(
+                    "Failed to load tools from MCP server '{}': {:?}",
+                    server_name,
+                    e
+                );
+                return None;
+            }
+        };
+
+        // Find the target tool
+        let tool = match tools.iter().find(|t| t.name == tool_name) {
+            Some(t) => t,
+            None => {
+                tracing::error!(
+                    "Tool '{}' not found in MCP server '{}'. Available tools: {:?}",
+                    tool_name,
+                    server_name,
+                    tools.iter().map(|t| t.name.as_ref()).collect::<Vec<_>>()
+                );
+                return None;
+            }
+        };
+
+        // Create McpToolRunnerImpl
+        // Convert Arc<Map<String, Value>> to Value::Object
+        let tool_schema = serde_json::Value::Object((*tool.input_schema).clone());
+        match McpToolRunnerImpl::new_with_cancel_monitoring(
+            server,
+            server_name.to_string(),
+            tool_name.to_string(),
+            tool_schema,
+            cancel_helper,
+        ) {
+            Ok(runner) => {
+                tracing::debug!(
+                    "Successfully created MCP tool runner: {}::{}",
+                    server_name,
+                    tool_name
+                );
+                Some(Box::new(runner) as Box<dyn CancellableRunner + Send + Sync>)
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to create MCP tool runner '{}::{}': {:?}",
+                    server_name,
+                    tool_name,
+                    e
+                );
+                None
+            }
+        }
     }
     // use_static: need to specify correctly to create for running
     pub async fn create_by_name(
@@ -152,13 +253,31 @@ impl RunnerFactory {
                     as Box<dyn CancellableRunner + Send + Sync>)
             }
             _ => {
+                // Try MCP Tool runner (type=8, format: "server___tool")
+                const DELIMITER: &str = "___";
+                if name.contains(DELIMITER) {
+                    if let Some(runner) = self
+                        .create_mcp_tool_runner(name, create_cancel_helper())
+                        .await
+                    {
+                        return Some(runner);
+                    }
+                }
+
+                // Try MCP Server runner (type=7, deprecated)
                 if let Ok(server) = self.mcp_clients.connect_server(name).await {
+                    tracing::warn!(
+                        "Using deprecated MCP_SERVER runner for '{}'. \
+                         Consider migrating to tool-specific runners (format: 'server___tool')",
+                        name
+                    );
                     Some(Box::new(McpServerRunnerImpl::new_with_cancel_monitoring(
                         server,
                         create_cancel_helper(),
                     ))
                         as Box<dyn CancellableRunner + Send + Sync>)
                 } else {
+                    // Try Plugin runner
                     // TODO: Add cancellation monitoring support to Plugin Runners
                     self.plugins
                         .runner_plugins()

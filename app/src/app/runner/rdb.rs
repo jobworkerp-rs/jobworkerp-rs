@@ -3,7 +3,9 @@ use crate::app::StorageConfig;
 use anyhow::Result;
 use async_trait::async_trait;
 use debug_stub_derive::DebugStub;
+use infra::infra::function_set::rdb::FunctionSetRepository;
 use infra::infra::module::rdb::RdbChanRepositoryModule;
+use infra::infra::runner::rdb::McpServerRegistrationResult;
 use infra::infra::runner::rdb::RunnerRepository;
 use infra::infra::runner::rdb::{RdbRunnerRepositoryImpl, UseRdbRunnerRepository};
 use infra::infra::runner::rows::RunnerWithSchema;
@@ -12,6 +14,7 @@ use jobworkerp_base::error::JobWorkerError;
 use memory_utils::cache::moka::{MokaCacheConfig, MokaCacheImpl, UseMokaCache};
 use moka::future::Cache;
 use proto::jobworkerp::data::{RunnerId, RunnerType};
+use proto::jobworkerp::function::data::{FunctionId, FunctionSetData};
 use std::{sync::Arc, time::Duration};
 
 // TODO merge with hybrid implementation
@@ -79,15 +82,98 @@ impl RdbRunnerAppImpl {
         }
     }
 
-    async fn add_runner(&self) -> Result<()> {
+    async fn add_runner(&self) -> Result<Vec<McpServerRegistrationResult>> {
         self.runner_repository()
             .add_from_plugins_from(self.plugin_dir.as_str())
             .await?;
-        self.runner_repository().add_from_mcp_config_file().await?;
+
+        let registration_results = self.runner_repository().add_from_mcp_config_file().await?;
+
         self.load_runners_from_db().await;
         let _ = self
             .delete_cache_locked(&Self::find_all_list_cache_key(true))
             .await;
+
+        Ok(registration_results)
+    }
+
+    /// Create FunctionSet for a registered MCP server
+    ///
+    /// Directly uses FunctionSetRepository instead of FunctionSetApp to avoid
+    /// unnecessary layer indirection. Transaction management follows the same
+    /// pattern as FunctionSetApp::create_function_set().
+    ///
+    /// # Arguments
+    /// - `result`: Registration result from RunnerRepository
+    ///
+    /// # Returns
+    /// - Ok(()): FunctionSet created or updated successfully
+    /// - Err: FunctionSet creation failed (does NOT affect tool registration)
+    async fn create_mcp_function_set(&self, result: &McpServerRegistrationResult) -> Result<()> {
+        let function_set_data = FunctionSetData {
+            name: result.name.clone(),
+            description: result.description.clone().unwrap_or_else(|| {
+                format!(
+                    "MCP server '{}' providing {} tools",
+                    result.name, result.tool_count
+                )
+            }),
+            category: 2, // FunctionSetCategory::FUNCTION_SET_CATEGORY_MCP_SERVER
+            targets: result
+                .runner_ids
+                .iter()
+                .map(|id| FunctionId {
+                    id: Some(
+                        proto::jobworkerp::function::data::function_id::Id::RunnerId(RunnerId {
+                            value: *id,
+                        }),
+                    ),
+                })
+                .collect(),
+        };
+
+        // FunctionSetRepositoryに直接アクセス
+        let repo = &self.repositories.function_set_repository;
+
+        // トランザクション管理（FunctionSetApp::create_function_set()と同じパターン）
+        let db = repo.db_pool();
+        let mut tx = db.begin().await?;
+
+        // find_by_name で既存確認（トランザクション外で実行）
+        let existing = repo.find_by_name(&result.name).await?;
+
+        match existing {
+            Some(existing_set) => {
+                // 既存あり → update
+                repo.update(
+                    &mut tx,
+                    &existing_set
+                        .id
+                        .ok_or_else(|| anyhow::anyhow!("FunctionSet has no ID"))?,
+                    &function_set_data,
+                )
+                .await?;
+                tx.commit().await?;
+
+                tracing::info!(
+                    "Updated FunctionSet for MCP server '{}' with {} tools",
+                    result.name,
+                    result.tool_count
+                );
+            }
+            None => {
+                // 新規 → create
+                repo.create(&mut tx, &function_set_data).await?;
+                tx.commit().await?;
+
+                tracing::info!(
+                    "Created FunctionSet for MCP server '{}' with {} tools",
+                    result.name,
+                    result.tool_count
+                );
+            }
+        }
+
         Ok(())
     }
 }
@@ -101,7 +187,19 @@ impl UseRunnerParserWithCache for RdbRunnerAppImpl {
 #[async_trait]
 impl RunnerApp for RdbRunnerAppImpl {
     async fn load_runner(&self) -> Result<bool> {
-        self.add_runner().await?;
+        let registration_results = self.add_runner().await?;
+
+        // FunctionSet作成
+        for result in registration_results {
+            if let Err(e) = self.create_mcp_function_set(&result).await {
+                tracing::warn!(
+                    "Failed to create FunctionSet for '{}': {}. Tools are usable.",
+                    result.name,
+                    e
+                );
+            }
+        }
+
         Ok(true)
     }
 

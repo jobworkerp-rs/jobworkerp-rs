@@ -32,6 +32,7 @@ pub mod config;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod integration_tests;
 pub mod proxy;
+pub mod schema_converter;
 
 /**
  * PluginRunner wrapper

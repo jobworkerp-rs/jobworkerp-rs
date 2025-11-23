@@ -54,6 +54,7 @@ pub mod k8s_job;
 pub mod llm;
 pub mod llm_chat;
 pub mod mcp;
+pub mod mcp_tool;
 pub mod plugins;
 pub mod python;
 pub mod request;

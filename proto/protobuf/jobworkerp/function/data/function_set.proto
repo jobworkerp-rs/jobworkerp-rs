@@ -4,10 +4,16 @@ package jobworkerp.function.data;
 
 import "jobworkerp/function/data/function.proto";
 
+enum FunctionSetCategory {
+  FUNCTION_SET_CATEGORY_UNSPECIFIED = 0;
+  FUNCTION_SET_CATEGORY_CUSTOM = 1;
+  FUNCTION_SET_CATEGORY_MCP_SERVER = 2;
+}
+
 message FunctionSetData {
   string name = 1;
   string description = 2;
-  int32 category = 3;
+  FunctionSetCategory category = 3;
   repeated FunctionId targets = 4;
 }
 
@@ -22,7 +28,7 @@ message FunctionSet {
 message FunctionSetDetailData {
   string name = 1;
   string description = 2;
-  int32 category = 3;
+  FunctionSetCategory category = 3;
   repeated FunctionSpecs targets = 4;
 }
 

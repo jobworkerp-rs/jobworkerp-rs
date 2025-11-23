@@ -21,6 +21,26 @@ use std::sync::Arc;
 // Primitive Layer (up to 30s for MCP, 15s for Plugin) and Application Layer (up to 10s for schema).
 // Total may take up to 40s per runner, so a 10s timeout was too short.
 
+/// MCP server registration result
+///
+/// Contains information about registered MCP server and its tools.
+/// This structure is returned by RunnerRepository to inform App layer
+/// about what was registered, allowing App layer to create FunctionSets.
+#[derive(Debug, Clone)]
+pub struct McpServerRegistrationResult {
+    /// MCP server name (e.g., "filesystem")
+    pub name: String,
+
+    /// Server description from config (optional)
+    pub description: Option<String>,
+
+    /// List of registered runner IDs for this server's tools
+    pub runner_ids: Vec<i64>,
+
+    /// Number of tools registered for this server
+    pub tool_count: usize,
+}
+
 #[async_trait]
 pub trait RunnerRepository:
     UseRdbPool + UseRunnerSpecFactory + UseIdGenerator + Sync + Send
@@ -48,33 +68,336 @@ pub trait RunnerRepository:
     }
 
     // load mcp servers from config file
-    async fn add_from_mcp_config_file(&self) -> Result<()> {
+    // NOTE: This is the new implementation that registers each MCP tool as an individual runner (type=8)
+    // Following the specification in docs/mcp-runner-detailed-design.md v1.14
+    // Returns registration results for each MCP server to enable FunctionSet creation in App layer
+    async fn add_from_mcp_config_file(&self) -> Result<Vec<McpServerRegistrationResult>> {
         use command_utils::util::datetime;
+        use std::collections::HashSet;
 
-        for server in self
-            .runner_spec_factory()
-            .mcp_clients
-            .find_all()
-            .await
-            .iter()
-        {
-            let data = RunnerRow {
-                id: self.id_generator().generate_id()?,
-                name: server.name.clone(),
-                description: server.description.clone().unwrap_or_default(),
-                definition: serde_json::to_string(&server.transport).unwrap(),
-                r#type: RunnerType::McpServer as i32,
-                created_at: datetime::now_millis(),
-            };
-            self.create(&data).await.inspect_err(|e| {
-                tracing::error!(
-                    "Failed to create runner for plugins {}: {:?}",
-                    &data.name,
-                    e
-                );
-            })?;
+        let mut results = Vec::new();
+
+        // STEP 1: Cleanup obsolete MCP_SERVER records (type=7)
+        self.cleanup_obsolete_mcp_servers().await?;
+
+        // STEP 2: Server name validation - check for delimiter in server names
+        let servers = self.runner_spec_factory().mcp_clients.find_all().await;
+        const DELIMITER: &str = "___";
+        for server in servers.iter() {
+            if server.name.contains(DELIMITER) {
+                return Err(anyhow::anyhow!(
+                    "MCP server name '{}' contains reserved delimiter '{}'. \
+                     Server names cannot contain this delimiter.",
+                    server.name,
+                    DELIMITER
+                ));
+            }
         }
+
+        // STEP 3: Process each MCP server and register tools individually
+        for server in servers.iter() {
+            let mut registered_runner_ids = Vec::new();
+
+            // Server-level transaction for atomic tool registration
+            let mut tx = self.db_pool().begin().await?;
+
+            // Get proxy for existing MCP server (don't try to load, just get proxy)
+            let proxy = match self
+                .runner_spec_factory()
+                .mcp_clients
+                .get_server_proxy(&server.name)
+                .await
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to connect to MCP server '{}': {:?}. Skipping this server.",
+                        server.name,
+                        e
+                    );
+                    continue; // Skip this server, continue with next
+                }
+            };
+
+            // Get tool list from MCP server
+            let tools = match proxy.load_tools().await {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to load tools from MCP server '{}': {:?}. Skipping this server.",
+                        server.name,
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            if tools.is_empty() {
+                tracing::warn!("MCP server '{}' has no tools. Skipping.", server.name);
+                continue;
+            }
+
+            // Get existing tools from DB for diff detection
+            let existing_tools = self
+                .find_mcp_tools_by_server_name_tx(&mut *tx, &server.name)
+                .await?;
+
+            tracing::debug!(
+                "MCP server '{}': found {} existing tools: {:?}",
+                server.name,
+                existing_tools.len(),
+                existing_tools.iter().map(|r| &r.name).collect::<Vec<_>>()
+            );
+
+            let existing_tool_names: HashSet<String> = existing_tools
+                .iter()
+                .map(|row| {
+                    // Extract tool name from runner name (format: "server___tool")
+                    row.name.split(DELIMITER).nth(1).unwrap_or("").to_string()
+                })
+                .collect();
+
+            let mcp_tool_names: HashSet<String> =
+                tools.iter().map(|tool| tool.name.to_string()).collect();
+
+            // Diff detection
+            let to_insert: Vec<_> = tools
+                .iter()
+                .filter(|tool| !existing_tool_names.contains(tool.name.as_ref()))
+                .collect();
+            let to_delete: Vec<_> = existing_tools
+                .iter()
+                .filter(|row| {
+                    let tool_name = row.name.split(DELIMITER).nth(1).unwrap_or("");
+                    !mcp_tool_names.contains(tool_name)
+                })
+                .collect();
+
+            tracing::debug!(
+                "MCP server '{}': diff detection - to_insert={}, to_delete={}, existing={}",
+                server.name,
+                to_insert.len(),
+                to_delete.len(),
+                existing_tools.len()
+            );
+
+            // Validate and register each tool
+            let mut successful_tools = 0;
+            let mut failed_tools = Vec::new();
+
+            // DELETE obsolete tools
+            for row in to_delete.iter() {
+                self._delete_tx(&mut *tx, &RunnerId { value: row.id })
+                    .await
+                    .inspect_err(|e| {
+                        tracing::error!("Failed to delete obsolete tool '{}': {:?}", row.name, e);
+                    })?;
+                tracing::info!("Deleted obsolete MCP tool: {}", row.name);
+            }
+
+            // INSERT new tools
+            for tool in to_insert.iter() {
+                // Tool name validation
+                if tool.name.is_empty() {
+                    let error_msg =
+                        format!("Tool name cannot be empty in MCP server '{}'", server.name);
+                    tracing::error!("{}", error_msg);
+                    failed_tools.push(error_msg);
+                    continue;
+                }
+                if tool.name.as_ref().contains(DELIMITER) {
+                    let error_msg = format!(
+                        "Tool name '{}' contains reserved delimiter '{}' in MCP server '{}'. \
+                         This tool cannot be registered.",
+                        tool.name, DELIMITER, server.name
+                    );
+                    tracing::error!("{}", error_msg);
+                    failed_tools.push(error_msg);
+                    continue;
+                }
+
+                // JSON Schema validation is done during McpToolRunnerImpl construction
+                // so we just create the DB record here
+                let runner_name = format!("{}{}{}", server.name, DELIMITER, tool.name);
+                let data = RunnerRow {
+                    id: self.id_generator().generate_id()?,
+                    name: runner_name.clone(),
+                    description: tool
+                        .description
+                        .as_ref()
+                        .map(|d| d.to_string())
+                        .unwrap_or_default(),
+                    definition: serde_json::to_string(&tool.input_schema)?,
+                    r#type: RunnerType::McpTool as i32, // MCP_TOOL = 8
+                    created_at: datetime::now_millis(),
+                };
+
+                match self.create_tx(&mut *tx, &data).await {
+                    Ok(true) => {
+                        successful_tools += 1;
+                        registered_runner_ids.push(data.id);
+                        tracing::debug!("Registered MCP tool: {}", runner_name);
+                    }
+                    Ok(false) => {
+                        // Already exists (INSERT OR IGNORE returned false)
+                        let error_msg = format!("Tool '{}' already exists", runner_name);
+                        tracing::warn!("{}", error_msg);
+                        failed_tools.push(error_msg);
+                    }
+                    Err(e) => {
+                        let error_msg =
+                            format!("Failed to register tool '{}': {:?}", runner_name, e);
+                        tracing::error!("{}", error_msg);
+                        failed_tools.push(error_msg);
+                    }
+                }
+            }
+
+            // UPDATE existing tools (check for definition changes)
+            for tool in tools.iter() {
+                if existing_tool_names.contains(tool.name.as_ref()) {
+                    let runner_name = format!("{}{}{}", server.name, DELIMITER, tool.name);
+                    // Find existing row
+                    if let Some(existing_row) =
+                        existing_tools.iter().find(|row| row.name == runner_name)
+                    {
+                        // Collect existing tool ID
+                        registered_runner_ids.push(existing_row.id);
+                        let new_definition = serde_json::to_string(&tool.input_schema)?;
+                        let new_description = tool
+                            .description
+                            .as_ref()
+                            .map(|d| d.to_string())
+                            .unwrap_or_default();
+
+                        // Check if update is needed
+                        if existing_row.definition != new_definition
+                            || existing_row.description != new_description
+                        {
+                            let updated_data = RunnerRow {
+                                id: existing_row.id,
+                                name: existing_row.name.clone(),
+                                description: new_description,
+                                definition: new_definition,
+                                r#type: existing_row.r#type,
+                                created_at: existing_row.created_at,
+                            };
+                            self._upsert_tx(&mut *tx, &updated_data)
+                                .await
+                                .inspect_err(|e| {
+                                    tracing::error!(
+                                        "Failed to update tool '{}': {:?}",
+                                        runner_name,
+                                        e
+                                    );
+                                })?;
+                            tracing::info!("Updated MCP tool definition: {}", runner_name);
+                        }
+                    }
+                }
+            }
+
+            // Strict All-or-Nothing check: Final tool count must match MCP server's tool count
+            let final_tool_count = self
+                .count_mcp_tools_by_server_name_tx(&mut *tx, &server.name)
+                .await?;
+            if final_tool_count != tools.len() as i64 {
+                let error_msg = format!(
+                    "MCP server '{}': Final tool count mismatch. Expected {}, got {}. \
+                     Failed tools: {:?}. Rolling back transaction.",
+                    server.name,
+                    tools.len(),
+                    final_tool_count,
+                    failed_tools
+                );
+                tracing::error!("{}", error_msg);
+                tx.rollback().await?;
+                // Continue with next server (availability priority)
+                continue;
+            }
+
+            // Commit transaction
+            tx.commit().await?;
+
+            // Collect registration result
+            results.push(McpServerRegistrationResult {
+                name: server.name.clone(),
+                description: server.description.clone(),
+                runner_ids: registered_runner_ids,
+                tool_count: tools.len(),
+            });
+
+            tracing::info!(
+                "Successfully registered {} MCP tools from server '{}' ({} inserted, {} deleted, {} updated, {} failed)",
+                tools.len(),
+                server.name,
+                successful_tools,
+                to_delete.len(),
+                tools.len() - successful_tools - to_delete.len(),
+                failed_tools.len()
+            );
+
+            if !failed_tools.is_empty() {
+                tracing::warn!(
+                    "Some tools from server '{}' failed to register: {:?}",
+                    server.name,
+                    failed_tools
+                );
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Cleanup obsolete MCP_SERVER records (type=7)
+    /// This is called before registering MCP_TOOL records (type=8)
+    async fn cleanup_obsolete_mcp_servers(&self) -> Result<()> {
+        let mut tx = self.db_pool().begin().await?;
+        let deleted_count = sqlx::query("DELETE FROM runner WHERE type = ?")
+            .bind(RunnerType::McpServer as i32) // type = 7
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        tx.commit().await?;
+        tracing::info!(
+            "Deleted {} obsolete MCP_SERVER records (type=7)",
+            deleted_count
+        );
         Ok(())
+    }
+
+    /// Find MCP tools by server name (helper for diff detection)
+    async fn find_mcp_tools_by_server_name_tx<'c, E: Executor<'c, Database = Rdb>>(
+        &self,
+        tx: E,
+        server_name: &str,
+    ) -> Result<Vec<RunnerRow>> {
+        let pattern = format!("{}___%", server_name);
+        let rows = sqlx::query_as::<_, RunnerRow>(
+            "SELECT id, name, description, definition, type, created_at FROM runner WHERE type = ? AND name LIKE ?",
+        )
+        .bind(RunnerType::McpTool as i32) // type = 8
+        .bind(pattern)
+        .fetch_all(tx)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Count MCP tools by server name (helper for final validation)
+    async fn count_mcp_tools_by_server_name_tx<'c, E: Executor<'c, Database = Rdb>>(
+        &self,
+        tx: E,
+        server_name: &str,
+    ) -> Result<i64> {
+        let pattern = format!("{}___%", server_name);
+        let count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM runner WHERE type = ? AND name LIKE ?",
+        )
+        .bind(RunnerType::McpTool as i32) // type = 8
+        .bind(pattern)
+        .fetch_one(tx)
+        .await?;
+        Ok(count)
     }
     // auto-load plugins from plugin directory
     async fn add_from_plugins_from(&self, dir: &str) -> Result<()> {
@@ -837,20 +1160,26 @@ mod test {
         use infra_utils::infra::test::TEST_RUNTIME;
         use jobworkerp_runner::runner::mcp::integration_tests;
 
+        command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
+
         TEST_RUNTIME.block_on(async {
             let rdb_pool = if cfg!(feature = "mysql") {
                 let pool = setup_test_rdb_from("sql/mysql").await;
-                // delete only not built-in records
-                sqlx::query("DELETE FROM runner WHERE id > 10000 AND type = ?;")
+                // delete test MCP tools (both old type=7 and new type=8)
+                // Clean up by name pattern to ensure test isolation
+                sqlx::query("DELETE FROM runner WHERE (name LIKE 'time___%' OR name LIKE 'time2___%') AND (type = ? OR type = ?);")
                     .bind(RunnerType::McpServer as i32)
+                    .bind(RunnerType::McpTool as i32)
                     .execute(pool)
                     .await?;
                 pool
             } else {
                 let pool = setup_test_rdb_from("sql/sqlite").await;
-                // delete only not built-in records
-                sqlx::query("DELETE FROM runner WHERE id > 10000 AND type = ?;")
+                // delete test MCP tools (both old type=7 and new type=8)
+                // Clean up by name pattern to ensure test isolation
+                sqlx::query("DELETE FROM runner WHERE (name LIKE 'time___%' OR name LIKE 'time2___%') AND (type = ? OR type = ?);")
                     .bind(RunnerType::McpServer as i32)
+                    .bind(RunnerType::McpTool as i32)
                     .execute(pool)
                     .await?;
                 pool
@@ -882,32 +1211,38 @@ mod test {
             repository.add_from_mcp_config_file().await?;
 
             let after_count = repository.count_list_tx(repository.db_pool()).await?;
-            assert_eq!(after_count - before_count, 2,);
+
+            // New implementation: Each MCP server registers individual tools (type=8)
+            // The time server has 1 tool (get_current_time), so we expect at least 2 tools from 2 servers
+            let added_count = after_count - before_count;
+            println!("Added MCP tool count: {added_count} (before: {before_count}, after: {after_count})");
+            assert!(added_count >= 2, "Expected at least 2 MCP tools, got {}", added_count);
 
             let rows = repository
                 .find_row_list_tx(repository.db_pool(), false, None, None)
                 .await?;
-            let mcp_servers: Vec<&RunnerRow> = rows
+
+            // Check for MCP_TOOL (type=8) entries instead of MCP_SERVER (type=7)
+            let mcp_tools: Vec<&RunnerRow> = rows
                 .iter()
-                .filter(|row| row.r#type == RunnerType::McpServer as i32)
+                .filter(|row| row.r#type == RunnerType::McpTool as i32)
                 .collect();
-            println!("McpServer rows: {mcp_servers:?}");
+            println!("McpTool rows: {mcp_tools:?}");
 
-            assert_eq!(mcp_servers.len(), 2);
+            assert!(mcp_tools.len() >= 2, "Expected at least 2 MCP tools, got {}", mcp_tools.len());
 
-            let server_names: Vec<&str> = mcp_servers.iter().map(|row| row.name.as_str()).collect();
-            assert!(server_names.contains(&"time"),);
-            assert!(server_names.contains(&"time2"),);
+            // Check that tool names follow the pattern: {server_name}___{tool_name}
+            let tool_names: Vec<&str> = mcp_tools.iter().map(|row| row.name.as_str()).collect();
 
-            for row in mcp_servers.iter() {
-                match row.name.as_str() {
-                    "time" => assert_eq!(row.description, "Test MCP Server1"),
-                    "time2" => assert_eq!(row.description, ""),
-                    _ => panic!("Unexpected server name: {}", row.name),
-                }
-            }
+            // Verify that tools from both servers are registered
+            let has_time_tools = tool_names.iter().any(|name| name.starts_with("time___"));
+            let has_time2_tools = tool_names.iter().any(|name| name.starts_with("time2___"));
 
-            for row in mcp_servers.iter() {
+            assert!(has_time_tools, "Expected tools from 'time' server");
+            assert!(has_time2_tools, "Expected tools from 'time2' server");
+
+            // Cleanup: remove all MCP tools
+            for row in mcp_tools.iter() {
                 let id = RunnerId { value: row.id };
                 repository.remove(&id).await?;
                 assert!(repository.find(&id).await?.is_none());

@@ -107,6 +107,89 @@ impl RunnerSpecFactory {
         self.mcp_clients.remove_server(name).await
     }
 
+    /// Create a dynamic McpToolRunnerImpl from runner name
+    ///
+    /// # Arguments
+    /// * `runner_name` - Format: "{server_name}___{tool_name}"
+    ///
+    /// # Returns
+    /// * `Some(Box<McpToolRunnerImpl>)` if successful
+    /// * `None` if server or tool not found
+    async fn create_dynamic_mcp_tool_runner(
+        &self,
+        runner_name: &str,
+    ) -> Option<Box<dyn RunnerSpec + Send + Sync>> {
+        const DELIMITER: &str = "___";
+
+        // Parse runner name to extract server_name and tool_name
+        let parts: Vec<&str> = runner_name.splitn(2, DELIMITER).collect();
+        if parts.len() != 2 {
+            tracing::error!(
+                "Invalid MCP tool runner name format: '{}'. Expected format: 'server___tool'",
+                runner_name
+            );
+            return None;
+        }
+
+        let server_name = parts[0];
+        let tool_name = parts[1];
+
+        // Connect to MCP server
+        let server = match self.mcp_clients.connect_server(server_name).await {
+            Ok(s) => Arc::new(s),
+            Err(e) => {
+                tracing::error!(
+                    "Failed to connect to MCP server '{}' for tool '{}': {:?}",
+                    server_name,
+                    tool_name,
+                    e
+                );
+                return None;
+            }
+        };
+
+        // Load tools from server
+        let tools = match server.load_tools().await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!(
+                    "Failed to load tools from MCP server '{}': {:?}",
+                    server_name,
+                    e
+                );
+                return None;
+            }
+        };
+
+        // Find the specific tool
+        let tool = tools.iter().find(|t| t.name == tool_name)?;
+
+        // tool.input_schema is Arc<Map<String, Value>>, convert to serde_json::Value
+        let tool_schema = serde_json::Value::Object((*tool.input_schema).clone());
+
+        // Create McpToolRunnerImpl
+        match crate::runner::mcp_tool::McpToolRunnerImpl::new(
+            server,
+            server_name.to_string(),
+            tool_name.to_string(),
+            tool_schema,
+        ) {
+            Ok(runner) => {
+                tracing::debug!("Created MCP tool runner: {}:::{}", server_name, tool_name);
+                Some(Box::new(runner) as Box<dyn RunnerSpec + Send + Sync>)
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to create McpToolRunnerImpl for '{}::{}': {:?}",
+                    server_name,
+                    tool_name,
+                    e
+                );
+                None
+            }
+        }
+    }
+
     // use_static: need to specify correctly to create for running (now unused here)
     pub async fn create_runner_spec_by_name(
         &self,
@@ -182,6 +265,11 @@ impl RunnerSpecFactory {
             Some(RunnerType::LlmCompletion) => {
                 Some(Box::new(LLMCompletionRunnerSpecImpl::new())
                     as Box<dyn RunnerSpec + Send + Sync>)
+            }
+            Some(RunnerType::McpTool) => {
+                // MCP_TOOL (type=8): Dynamic creation based on runner name
+                // Format: {server_name}___{tool_name}
+                self.create_dynamic_mcp_tool_runner(name).await
             }
             _ => {
                 if let Ok(server) = self.mcp_clients.as_ref().connect_server(name).await {
