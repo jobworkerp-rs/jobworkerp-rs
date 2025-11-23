@@ -1,9 +1,6 @@
-use jobworkerp_runner::runner::{
-    mcp::McpServerRunnerImpl, timeout_config::RunnerTimeoutConfig, RunnerSpec,
-};
+use jobworkerp_runner::runner::RunnerSpec;
 use proto::jobworkerp::data::{Runner, RunnerData, RunnerId};
 use proto::jobworkerp::function::data::McpTool;
-use std::any::Any;
 
 // db row definitions
 #[derive(sqlx::FromRow, Debug, Clone, PartialEq)]
@@ -21,77 +18,43 @@ impl RunnerRow {
         &self,
         runner: Box<dyn RunnerSpec + Send + Sync>,
     ) -> RunnerWithSchema {
-        if let Some(mcp_runner) =
-            (runner.as_ref() as &dyn Any).downcast_ref::<McpServerRunnerImpl>()
-        {
-            // Load tools with timeout to prevent hanging on unresponsive MCP servers
-            let timeout_config = RunnerTimeoutConfig::global();
-            let tools = tokio::time::timeout(timeout_config.mcp_tools_load, mcp_runner.tools())
-                .await
-                .unwrap_or_else(|_| {
-                    tracing::warn!(
-                        "MCP runner '{}' tools loading timed out after {:?}",
-                        self.name,
-                        timeout_config.mcp_tools_load
-                    );
-                    Ok(Vec::default())
-                })
-                .unwrap_or_else(|e| {
-                    tracing::error!("MCP runner '{}' tools loading failed: {:?}", self.name, e);
-                    Vec::default()
-                });
+        // McpServerRunnerImpl has been removed. Use McpToolRunnerImpl instead.
+        // Tools are now managed separately via MCP Tool runner registration.
 
-            RunnerWithSchema {
-                id: Some(RunnerId { value: self.id }),
-                data: Some(RunnerData {
-                    name: self.name.clone(),
-                    description: self.description.clone(),
-                    runner_type: self.r#type,
-                    runner_settings_proto: runner.runner_settings_proto(),
-                    job_args_proto: runner.job_args_proto(),
-                    result_output_proto: runner.result_output_proto(),
-                    output_type: runner.output_type() as i32,
-                    definition: self.definition.clone(),
-                }),
-                settings_schema: runner.settings_schema(),
-                arguments_schema: runner.arguments_schema(),
-                output_schema: runner.output_schema(),
-                tools,
-            }
-        } else {
-            // Plugin schema methods are synchronous and may block, so we need to run them in spawn_blocking
-            // to allow timeout to work properly
-            let timeout_config = RunnerTimeoutConfig::global();
-            let id = self.id;
-            let description = self.description.clone();
-            let r#type = self.r#type;
-            let definition = self.definition.clone();
+        // Plugin schema methods are synchronous and may block, so we need to run them in spawn_blocking
+        // to allow timeout to work properly
+        use jobworkerp_runner::runner::timeout_config::RunnerTimeoutConfig;
+        let timeout_config = RunnerTimeoutConfig::global();
+        let id = self.id;
+        let description = self.description.clone();
+        let r#type = self.r#type;
+        let definition = self.definition.clone();
 
-            let schema_result = tokio::time::timeout(
-                timeout_config.plugin_schema_load,
-                tokio::task::spawn_blocking(move || {
-                    let runner_settings_proto = runner.runner_settings_proto();
-                    let job_args_proto = runner.job_args_proto();
-                    let result_output_proto = runner.result_output_proto();
-                    let settings_schema = runner.settings_schema();
-                    let arguments_schema = runner.arguments_schema();
-                    let output_schema = runner.output_schema();
-                    let output_type = runner.output_type() as i32;
+        let schema_result = tokio::time::timeout(
+            timeout_config.plugin_schema_load,
+            tokio::task::spawn_blocking(move || {
+                let runner_settings_proto = runner.runner_settings_proto();
+                let job_args_proto = runner.job_args_proto();
+                let result_output_proto = runner.result_output_proto();
+                let settings_schema = runner.settings_schema();
+                let arguments_schema = runner.arguments_schema();
+                let output_schema = runner.output_schema();
+                let output_type = runner.output_type() as i32;
 
-                    (
-                        runner_settings_proto,
-                        job_args_proto,
-                        result_output_proto,
-                        settings_schema,
-                        arguments_schema,
-                        output_schema,
+                (
+                    runner_settings_proto,
+                    job_args_proto,
+                    result_output_proto,
+                    settings_schema,
+                    arguments_schema,
+                    output_schema,
                         output_type,
                     )
                 }),
-            )
-            .await;
+        )
+        .await;
 
-            match schema_result {
+        match schema_result {
                 Ok(Ok((
                     runner_settings_proto,
                     job_args_proto,
@@ -172,7 +135,6 @@ impl RunnerRow {
                     }
                 }
             }
-        }
     }
 }
 

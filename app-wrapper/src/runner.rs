@@ -10,7 +10,6 @@ use crate::{
 use anyhow::Result;
 use app::module::AppModule;
 use jobworkerp_runner::runner::mcp::proxy::McpServerFactory;
-use jobworkerp_runner::runner::mcp::McpServerRunnerImpl;
 use jobworkerp_runner::runner::mcp_tool::McpToolRunnerImpl;
 use jobworkerp_runner::runner::{
     cancellation::CancellableRunner,
@@ -264,29 +263,15 @@ impl RunnerFactory {
                     }
                 }
 
-                // Try MCP Server runner (type=7, deprecated)
-                if let Ok(server) = self.mcp_clients.connect_server(name).await {
-                    tracing::warn!(
-                        "Using deprecated MCP_SERVER runner for '{}'. \
-                         Consider migrating to tool-specific runners (format: 'server___tool')",
-                        name
-                    );
-                    Some(Box::new(McpServerRunnerImpl::new_with_cancel_monitoring(
-                        server,
-                        create_cancel_helper(),
-                    ))
-                        as Box<dyn CancellableRunner + Send + Sync>)
-                } else {
-                    // Try Plugin runner
-                    // TODO: Add cancellation monitoring support to Plugin Runners
-                    self.plugins
-                        .runner_plugins()
-                        .write()
-                        .await
-                        .find_plugin_runner_by_name(name)
-                        .await
-                        .map(|r| Box::new(r) as Box<dyn CancellableRunner + Send + Sync>)
-                }
+                // Try Plugin runner
+                // TODO: Add cancellation monitoring support to Plugin Runners
+                self.plugins
+                    .runner_plugins()
+                    .write()
+                    .await
+                    .find_plugin_runner_by_name(name)
+                    .await
+                    .map(|r| Box::new(r) as Box<dyn CancellableRunner + Send + Sync>)
             }
         }
     }

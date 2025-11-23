@@ -7,7 +7,6 @@ use super::{
     mcp::{
         config::McpServerConfig,
         proxy::{McpServerFactory, McpServerProxy},
-        McpServerRunnerImpl,
     },
     plugins::{PluginLoader, PluginMetadata, Plugins},
     python::PythonCommandRunner,
@@ -272,19 +271,14 @@ impl RunnerSpecFactory {
                 self.create_dynamic_mcp_tool_runner(name).await
             }
             _ => {
-                if let Ok(server) = self.mcp_clients.as_ref().connect_server(name).await {
-                    tracing::debug!("MCP server found: {}", &name);
-                    Some(Box::new(McpServerRunnerImpl::new(server))
-                        as Box<dyn RunnerSpec + Send + Sync>)
-                } else {
-                    self.plugins
-                        .runner_plugins()
-                        .write()
-                        .await
-                        .find_plugin_runner_by_name(name)
-                        .await
-                        .map(|r| Box::new(r) as Box<dyn RunnerSpec + Send + Sync>)
-                }
+                // Try Plugin runner
+                self.plugins
+                    .runner_plugins()
+                    .write()
+                    .await
+                    .find_plugin_runner_by_name(name)
+                    .await
+                    .map(|r| Box::new(r) as Box<dyn RunnerSpec + Send + Sync>)
             }
         }
     }
