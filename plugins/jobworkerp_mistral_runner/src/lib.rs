@@ -99,7 +99,7 @@ impl PluginRunner for MistralPlugin {
             if let Some(service) = service_guard.as_ref() {
                 match service.request_chat(&arg).await {
                     Ok(result) => (Ok(result.encode_to_vec()), metadata),
-                    Err(e) => (Err(e.into()), metadata),
+                    Err(e) => (Err(e), metadata),
                 }
             } else {
                 (

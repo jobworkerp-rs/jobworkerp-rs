@@ -1,9 +1,7 @@
-use jobworkerp_base::error::JobWorkerError;
 use mistralrs::{Function, Tool, ToolType};
 use proto::jobworkerp::data::RunnerType;
 use proto::jobworkerp::function::data::{function_specs, FunctionSpecs};
 use serde_json::Value;
-use std::collections::HashMap;
 use tracing;
 
 pub const CREATION_TOOL_DESCRIPTION: &str =
@@ -31,10 +29,8 @@ impl ToolConverter {
                 }
             } else if tool.runner_type == RunnerType::McpServer as i32 {
                 tools.extend(Self::convert_mcp_server(&tool));
-            } else {
-                if let Some(converted) = Self::convert_normal_function(&tool) {
-                    tools.push(converted);
-                }
+            } else if let Some(converted) = Self::convert_normal_function(&tool) {
+                tools.push(converted);
             }
         }
 

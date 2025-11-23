@@ -3,18 +3,14 @@ pub mod model;
 pub mod result;
 
 use self::model::MistralModelLoader;
+use crate::mistral_runner::MistralChatResult;
 use crate::mistral_runner::{MistralChatArgs, MistralRunnerSettings};
 use anyhow::Result;
 use futures::stream::StreamExt;
-use jobworkerp_base::error::JobWorkerError;
+use jobworkerp_runner::jobworkerp::runner::llm::LlmChatResult;
 use mistralrs::Model;
 pub use result::{DefaultLLMResultConverter, LLMResultConverter};
 use std::sync::Arc;
-
-use crate::mistral_runner::mistral_chat_args::ChatRole as TextMessageRole;
-use crate::mistral_runner::MistralChatResult;
-use jobworkerp_runner::jobworkerp::runner::llm::LlmChatResult;
-use mistralrs::ChatCompletionResponse;
 
 // ... (structs MistralRSMessage, MistralRSToolCall, etc. remain unchanged) ...
 
@@ -174,11 +170,11 @@ impl MistralRSService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mistral::result::DefaultLLMResultConverter;
-    use crate::mistral_runner::{MistralChatArgs, MistralChatResult, MistralRunnerSettings};
+    
+    use crate::mistral_runner::{MistralChatArgs, MistralRunnerSettings};
     use anyhow::Result;
     use futures::stream::StreamExt;
-    use jobworkerp_runner::jobworkerp::runner::llm::LlmChatResult;
+    
 
     // Helper to create settings (mock)
     fn create_mistral_settings() -> Result<MistralRunnerSettings> {
