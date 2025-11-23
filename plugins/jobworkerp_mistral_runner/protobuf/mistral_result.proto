@@ -1,0 +1,45 @@
+syntax = "proto3";
+package jobworkerp.runner.mistral;
+
+// Completion result (text completion)
+message MistralChatResult {
+  message Usage {
+    // The number of tokens in the prompt.
+    int32 prompt_tokens = 1;
+    // The number of tokens in the completion.
+    int32 completion_tokens = 2;
+    // The total number of tokens.
+    int32 total_tokens = 3;
+  }
+
+  message MessageContent {
+    message ToolCall {
+      string call_id = 1;
+      string fn_name = 2;
+      string fn_arguments = 3;
+    }
+
+    // Tool calls
+    message ToolCalls { repeated ToolCall calls = 1; }
+
+    oneof content {
+      // The role of the message.
+      string text = 1;
+
+      // The content of the message.
+      ToolCalls tool_calls = 2;
+    }
+  }
+
+  // The content of the message.
+  optional MessageContent content = 1;
+
+  // The reasoning content of the message.
+  optional string reasoning_content = 2;
+
+  // The usage of the model.
+  optional Usage usage = 3;
+
+  // The reason why the model stopped generating.
+  bool done = 4;
+}

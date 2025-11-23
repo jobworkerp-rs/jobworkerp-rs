@@ -25,16 +25,13 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 pub mod genai;
-#[cfg(feature = "local_llm")]
-pub mod mistral;
+
 pub mod ollama;
 
 pub struct LLMCompletionRunnerImpl {
     pub app: Arc<AppModule>,
     pub ollama: Option<OllamaService>,
     pub genai: Option<GenaiCompletionService>,
-    #[cfg(feature = "local_llm")]
-    pub mistral: Option<mistral::MistralCompletionService>,
     cancel_helper: Option<CancelMonitoringHelper>,
 }
 
@@ -44,8 +41,6 @@ impl LLMCompletionRunnerImpl {
             app,
             ollama: None,
             genai: None,
-            #[cfg(feature = "local_llm")]
-            mistral: None,
             cancel_helper: None,
         }
     }
@@ -58,8 +53,6 @@ impl LLMCompletionRunnerImpl {
             app,
             ollama: None,
             genai: None,
-            #[cfg(feature = "local_llm")]
-            mistral: None,
             cancel_helper: Some(cancel_helper),
         }
     }
@@ -142,31 +135,6 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                 self.genai = Some(genai);
                 Ok(())
             }
-            Some(
-                jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::Settings::Local(
-                    _settings,
-                ),
-            ) => {
-                #[cfg(feature = "local_llm")]
-                {
-                    let mistral = mistral::MistralCompletionService::new(
-                        _settings,
-                        self.app.function_app.clone(),
-                        self.app.function_set_app.clone(),
-                    )
-                    .await?;
-                    tracing::info!(
-                        "{} loaded(mistral)",
-                        RunnerType::LlmCompletion.as_str_name()
-                    );
-                    self.mistral = Some(mistral);
-                    Ok(())
-                }
-                #[cfg(not(feature = "local_llm"))]
-                {
-                    Err(anyhow!("Local LLM feature is not enabled. Please rebuild with --features local_llm"))
-                }
-            }
             _ => Err(anyhow!("model_settings is not set")),
         }
     }
@@ -242,27 +210,7 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                     .map_err(|e| anyhow!("encode error: {}", e))?;
                 Ok(buf)
             } else {
-                #[cfg(feature = "local_llm")]
-                if let Some(mistral) = self.mistral.as_mut() {
-                    // Race between LLM completion and cancellation signal
-                    let res = tokio::select! {
-                        result = mistral.request_chat(args, cx, metadata_clone.clone()) => result?,
-                        _ = cancellation_token.cancelled() => {
-                            return Err(anyhow!("LLM completion (Mistral) request was cancelled"));
-                        }
-                    };
-                    let mut buf = Vec::with_capacity(res.encoded_len());
-                    res.encode(&mut buf)
-                        .map_err(|e| anyhow!("encode error: {}", e))?;
-                    Ok(buf)
-                } else {
-                    Err(anyhow!("llm is not initialized"))
-                }
-
-                #[cfg(not(feature = "local_llm"))]
-                {
-                    Err(anyhow!("llm is not initialized"))
-                }
+                Err(anyhow!("llm is not initialized"))
             }
         }
         .await;
@@ -397,72 +345,7 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
             // Note: cancellation_token is NOT reset here because stream is still active
             Ok(cancellable_stream)
         } else {
-            #[cfg(feature = "local_llm")]
-            if let Some(mistral) = self.mistral.as_mut() {
-                let stream = mistral.request_stream_chat(args).await?;
-
-                let req_meta = Arc::new(metadata.clone());
-                let cancel_token = cancellation_token.clone();
-
-                // Stream processing with mid-stream cancellation capability
-                let output_stream = stream! {
-                    tokio::pin!(stream);
-                    loop {
-                        tokio::select! {
-                            item = stream.next() => {
-                                match item {
-                                    Some(completion_result) => {
-                                        if completion_result
-                                            .content
-                                            .as_ref()
-                                            .is_some_and(|c| c.content.is_some())
-                                        {
-                                            let buf = ProstMessageCodec::serialize_message(&completion_result);
-                                            if let Ok(buf) = buf {
-                                                yield ResultOutputItem {
-                                                    item: Some(result_output_item::Item::Data(buf)),
-                                                };
-                                            } else {
-                                                tracing::error!("Failed to serialize Mistral LLM completion result");
-                                            }
-                                        }
-
-                                        // If this is the final result (done=true), add an end marker
-                                        if completion_result.done {
-                                            yield ResultOutputItem {
-                                                item: Some(proto::jobworkerp::data::result_output_item::Item::End(
-                                                    proto::jobworkerp::data::Trailer {
-                                                        metadata: (*req_meta).clone(),
-                                                    },
-                                                )),
-                                            };
-                                            break;
-                                        }
-                                    }
-                                    None => break,
-                                }
-                            }
-                            _ = cancel_token.cancelled() => {
-                                tracing::info!("Mistral LLM completion stream was cancelled");
-                                break;
-                            }
-                        }
-                    }
-                }.boxed();
-
-                Ok(output_stream)
-            } else {
-                // Clear cancellation token even on error
-                // Note: token cleanup is handled by Manager
-                Err(anyhow!("llm is not initialized"))
-            }
-
-            #[cfg(not(feature = "local_llm"))]
-            {
-                // Clear cancellation token even on error
-                // Note: token cleanup is handled by Manager
-                Err(anyhow!("llm is not initialized"))
-            }
+            Err(anyhow!("llm is not initialized"))
         }
     }
 }
