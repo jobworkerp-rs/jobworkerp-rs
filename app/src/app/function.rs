@@ -506,10 +506,11 @@ pub trait FunctionApp:
     {
         use proto::jobworkerp::function::data::function_id;
 
-        let function_id = function_using
-            .function_id
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("FunctionUsing has no function_id set"))?;
+        // Return None if function_id is not set (will be skipped by caller)
+        let function_id = match function_using.function_id.as_ref() {
+            Some(id) => id,
+            None => return Ok(None),
+        };
 
         match &function_id.id {
             Some(function_id::Id::RunnerId(runner_id)) => {

@@ -186,26 +186,20 @@ impl RunnerSpecFactory {
             _ => {
                 if let Ok(server) = self.mcp_clients.as_ref().connect_server(name).await {
                     tracing::debug!("MCP server found: {}", &name);
-                    // Create MCP runner and initialize using mode
-                    let mut mcp_runner = McpServerRunnerImpl::new(server);
-                    match mcp_runner.initialize_using_mode().await {
-                        Ok(()) => {
-                            tracing::info!(
-                                "MCP runner '{}' initialized in using mode with {} tools",
-                                name,
-                                mcp_runner.available_tool_names().len()
-                            );
+                    // Create and initialize MCP runner
+                    match McpServerRunnerImpl::new(server, None).await {
+                        Ok(mcp_runner) => {
+                            Some(Box::new(mcp_runner) as Box<dyn RunnerSpec + Send + Sync>)
                         }
                         Err(e) => {
-                            // Log warning but continue - runner will work in legacy mode
-                            tracing::warn!(
-                                "Failed to initialize using mode for MCP runner '{}': {}. Falling back to legacy mode.",
+                            tracing::error!(
+                                "Failed to initialize MCP runner '{}': {}",
                                 name,
                                 e
                             );
+                            None
                         }
                     }
-                    Some(Box::new(mcp_runner) as Box<dyn RunnerSpec + Send + Sync>)
                 } else {
                     self.plugins
                         .runner_plugins()
