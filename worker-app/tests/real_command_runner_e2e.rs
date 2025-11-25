@@ -108,7 +108,7 @@ fn create_command_job(command: &str, args: Vec<String>, timeout_ms: u64) -> Job 
             run_after_time: command_utils::util::datetime::now_millis(),
             grabbed_until_time: None,
             request_streaming: false,
-            sub_method: None,
+            using: None,
         }),
         ..Default::default()
     }

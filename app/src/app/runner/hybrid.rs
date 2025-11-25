@@ -271,7 +271,7 @@ impl RunnerApp for HybridRunnerAppImpl {
             .await
     }
 
-    /// Refresh MCP runner's sub_method_protos by re-fetching tools from MCP server
+    /// Refresh MCP runner's using_protos by re-fetching tools from MCP server
     async fn refresh_mcp_runner(
         &self,
         runner_id: Option<&RunnerId>,

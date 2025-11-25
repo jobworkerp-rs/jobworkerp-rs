@@ -152,7 +152,7 @@ pub trait JobBuilder {
                     priority: dat.priority,
                     timeout: dat.timeout,
                     request_streaming: dat.request_streaming,
-                    sub_method: dat.sub_method.clone(), // preserve sub_method for retry
+                    using: dat.using.clone(), // preserve using for retry
                 }),
                 metadata: metadata.clone(),
             })
@@ -182,7 +182,7 @@ pub trait JobBuilder {
                 priority: dat.priority,
                 timeout: dat.timeout,
                 request_streaming: dat.request_streaming,
-                sub_method: dat.sub_method.clone(), // preserve sub_method for periodic re-execution
+                using: dat.using.clone(), // preserve using for periodic re-execution
             })
         }
     }

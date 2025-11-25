@@ -123,7 +123,7 @@ pub trait RunnerSpec: Send + Sync + Any {
     fn job_args_proto(&self) -> String;
 
     /// Returns the job arguments protobuf schema map for sub-method runners
-    /// Key: sub_method name, Value: protobuf schema string
+    /// Key: using name, Value: protobuf schema string
     /// For normal runners, returns None
     fn job_args_proto_map(&self) -> Option<std::collections::HashMap<String, String>> {
         None
@@ -139,8 +139,8 @@ pub trait RunnerSpec: Send + Sync + Any {
 
     /// Returns the JSON schema for a specific sub-method (for Function layer)
     /// Default implementation returns an error for runners that don't support sub-methods
-    fn get_sub_method_json_schema(&self, _sub_method: &str) -> Result<String> {
-        Err(anyhow::anyhow!("This runner does not support sub_method"))
+    fn get_using_json_schema(&self, _using: &str) -> Result<String> {
+        Err(anyhow::anyhow!("This runner does not support using"))
     }
 
     /// Provides access to Any trait for downcasting
@@ -169,7 +169,7 @@ pub trait RunnerTrait: RunnerSpec + Send + Sync {
     /// # Arguments
     /// * `arg` - Protobuf binary arguments
     /// * `metadata` - Job metadata
-    /// * `sub_method` - Optional sub-method name for MCP/Plugin runners
+    /// * `using` - Optional sub-method name for MCP/Plugin runners
     ///   - For normal runners: None or ignored if Some
     ///   - For MCP/Plugin: Required for multi-tool runners, auto-selected for single-tool
     ///
@@ -179,7 +179,7 @@ pub trait RunnerTrait: RunnerSpec + Send + Sync {
         &mut self,
         arg: &[u8],
         metadata: HashMap<String, String>,
-        sub_method: Option<&str>,
+        using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>);
 
     /// Execute job with streaming output
@@ -187,16 +187,16 @@ pub trait RunnerTrait: RunnerSpec + Send + Sync {
     /// # Arguments
     /// * `arg` - Protobuf binary arguments
     /// * `metadata` - Job metadata
-    /// * `sub_method` - Optional sub-method name (same semantics as run())
+    /// * `using` - Optional sub-method name (same semantics as run())
     async fn run_stream(
         &mut self,
         arg: &[u8],
         metadata: HashMap<String, String>,
-        sub_method: Option<&str>,
+        using: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>>;
 }
 
-// NOTE: SubMethodRunner trait has been removed.
-// sub_method is now passed directly to RunnerTrait::run() and run_stream() as Option<&str>.
-// Normal runners should ignore the sub_method parameter (use _sub_method).
-// MCP/Plugin runners should use sub_method to select the appropriate tool/method.
+// NOTE: UsingRunner trait has been removed.
+// using is now passed directly to RunnerTrait::run() and run_stream() as Option<&str>.
+// Normal runners should ignore the using parameter (use _using).
+// MCP/Plugin runners should use using to select the appropriate tool/method.

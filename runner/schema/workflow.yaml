@@ -321,18 +321,18 @@ $defs:
             type: string
             title: RunnerName
             description: The name of the runner (runtime environment) that executes the job (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND, LLM_CHAT, MCP server names, plugin names, etc.)
-          subMethod:
+          using:
             type: string
-            title: SubMethod
+            title: Using
             description: |
-              Sub-method (tool) name for MCP/Plugin runners with multiple tools.
+              Selects which implementation to use for MCP/Plugin runners with multiple tools.
 
               - **Required**: For MCP/Plugin runners with multiple tools (e.g., fetch server with "fetch" and "fetch_html")
               - **Optional**: For single-tool MCP runners (auto-selected)
               - **Ignored**: For normal runners (COMMAND, HTTP_REQUEST, etc.)
 
               Examples:
-              - MCP fetch server: subMethod: "fetch_html"
+              - MCP fetch server: using: "fetch_html"
               - MCP time server (single tool): can be omitted
               - COMMAND runner: not needed
           settings:
@@ -435,10 +435,10 @@ $defs:
               runnerName:
                 type: string
                 description: The name of the runner that executes job
-              subMethod:
+              using:
                 type: string
                 description: |
-                  Sub-method (tool) name for MCP/Plugin runners with multiple tools.
+                  Selects which implementation to use for MCP/Plugin runners with multiple tools.
 
                   - **Required**: For MCP/Plugin runners with multiple tools
                   - **Optional**: For single-tool MCP runners (auto-selected)

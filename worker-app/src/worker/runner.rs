@@ -284,7 +284,7 @@ pub trait JobRunner:
             response_type: worker_data.response_type,
             store_success: false,
             store_failure: true,
-            sub_method: data.sub_method,
+            using: data.using,
         };
 
         JobResult {
@@ -404,11 +404,11 @@ pub trait JobRunner:
         let data = job.data.as_ref().unwrap(); // XXX unwrap
         let args = &data.args; // XXX unwrap, clone
         let name = runner_impl.name();
-        let sub_method = data.sub_method.as_deref();
+        let using = data.using.as_deref();
         if data.timeout > 0 {
             tokio::select! {
                 r = AssertUnwindSafe(
-                    runner_impl.run_stream(args, metadata, sub_method),
+                    runner_impl.run_stream(args, metadata, using),
                 ).catch_unwind() => {
                     r.map_err(|e| {
                         let msg = format!("Caught panic from runner {name}: {e:?}");
@@ -423,7 +423,7 @@ pub trait JobRunner:
                 }
             }
         } else {
-            AssertUnwindSafe(runner_impl.run_stream(args, metadata, sub_method))
+            AssertUnwindSafe(runner_impl.run_stream(args, metadata, using))
                 .catch_unwind()
                 .await
                 .map_err(|e| {
@@ -443,17 +443,17 @@ pub trait JobRunner:
         let metadata = job.metadata.clone();
         let args = &data.args; // XXX unwrap, clone
         let name = runner_impl.name();
-        let sub_method = data.sub_method.as_deref();
+        let using = data.using.as_deref();
 
-        if sub_method.is_some() {
+        if using.is_some() {
             tracing::debug!(
-                "Executing job with sub_method '{}' for runner '{}'",
-                sub_method.unwrap_or(""),
+                "Executing job with using '{}' for runner '{}'",
+                using.unwrap_or(""),
                 name
             );
         }
 
-        let run_future = runner_impl.run(args, metadata.clone(), sub_method);
+        let run_future = runner_impl.run(args, metadata.clone(), using);
 
         if data.timeout > 0 {
             tokio::select! {
@@ -520,7 +520,7 @@ pub trait JobRunner:
             response_type: worker.response_type,
             store_success: worker.store_success,
             store_failure: worker.store_failure,
-            sub_method: dat.sub_method,
+            using: dat.using,
         };
         JobResult {
             id: Some(JobResultId {
@@ -633,7 +633,7 @@ pub(crate) mod tests {
                     run_after_time: run_after,
                     grabbed_until_time: None,
                     request_streaming: false,
-                    sub_method: None,
+                    using: None,
                 }),
                 ..Default::default()
             };

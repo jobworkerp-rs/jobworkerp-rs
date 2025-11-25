@@ -494,9 +494,9 @@ pub trait FunctionApp:
 
     /// Find a single function by FunctionId
     ///
-    /// When FunctionId contains RunnerSubMethod with sub_method specified,
-    /// returns FunctionSpecs for that specific sub_method only.
-    /// When sub_method is None, returns the full Runner's FunctionSpecs.
+    /// When FunctionId contains RunnerUsing with using specified,
+    /// returns FunctionSpecs for that specific using only.
+    /// When using is None, returns the full Runner's FunctionSpecs.
     async fn find_function_by_id(
         &self,
         function_id: &proto::jobworkerp::function::data::FunctionId,
@@ -507,18 +507,17 @@ pub trait FunctionApp:
         use proto::jobworkerp::function::data::function_id;
 
         match &function_id.id {
-            Some(function_id::Id::RunnerSubMethod(rsm)) => {
+            Some(function_id::Id::RunnerUsing(rsm)) => {
                 if let Some(runner_id) = &rsm.runner_id {
-                    if let Some(sub_method) = &rsm.sub_method {
-                        // Specific sub_method requested - return single tool FunctionSpecs
-                        self.find_function_by_runner_sub_method(runner_id, sub_method)
-                            .await
+                    if let Some(using) = &rsm.using {
+                        // Specific using requested - return single tool FunctionSpecs
+                        self.find_function_by_runner_using(runner_id, using).await
                     } else {
-                        // No sub_method - return full Runner FunctionSpecs
+                        // No using - return full Runner FunctionSpecs
                         self.find_function_by_runner_id(runner_id).await
                     }
                 } else {
-                    tracing::warn!("RunnerSubMethod has no runner_id set. Returning None.");
+                    tracing::warn!("RunnerUsing has no runner_id set. Returning None.");
                     Ok(None)
                 }
             }
@@ -532,21 +531,21 @@ pub trait FunctionApp:
         }
     }
 
-    /// Find a single function for a specific Runner sub_method
+    /// Find a single function for a specific Runner using
     ///
     /// Returns FunctionSpecs with single tool schema for MCP/Plugin runners,
-    /// or error if the runner doesn't support sub_methods.
-    async fn find_function_by_runner_sub_method(
+    /// or error if the runner doesn't support usings.
+    async fn find_function_by_runner_using(
         &self,
         runner_id: &proto::jobworkerp::data::RunnerId,
-        sub_method: &str,
+        using: &str,
     ) -> Result<Option<FunctionSpecs>>
     where
         Self: Send + 'static,
     {
         match self.runner_app().find_runner(runner_id).await? {
             Some(runner) => {
-                let specs = Self::convert_runner_sub_method_to_function_specs(runner, sub_method)?;
+                let specs = Self::convert_runner_using_to_function_specs(runner, using)?;
                 Ok(Some(specs))
             }
             None => Ok(None),
@@ -573,7 +572,7 @@ pub trait FunctionApp:
                     if let Some(id) = &function_id.id {
                         use proto::jobworkerp::function::data::function_id;
                         match id {
-                            function_id::Id::RunnerSubMethod(rsm) => {
+                            function_id::Id::RunnerUsing(rsm) => {
                                 if let Some(runner_id) = &rsm.runner_id {
                                     tracing::warn!(
                                         "Runner not found for id: {} in context: {}. Skipping.",
@@ -582,7 +581,7 @@ pub trait FunctionApp:
                                     );
                                 } else {
                                     tracing::warn!(
-                                        "RunnerSubMethod has no runner_id in context: {}. Skipping.",
+                                        "RunnerUsing has no runner_id in context: {}. Skipping.",
                                         context_name
                                     );
                                 }
@@ -1071,14 +1070,14 @@ pub trait FunctionSpecConverter {
         }
     }
 
-    /// Convert Runner + specific sub_method to FunctionSpecs
+    /// Convert Runner + specific using to FunctionSpecs
     ///
-    /// Returns a FunctionSpecs with a single tool (the specified sub_method).
+    /// Returns a FunctionSpecs with a single tool (the specified using).
     /// For MCP runners, extracts the specific tool from the McpToolList.
-    /// Returns error if the runner doesn't support sub_methods or the sub_method doesn't exist.
-    fn convert_runner_sub_method_to_function_specs(
+    /// Returns error if the runner doesn't support usings or the using doesn't exist.
+    fn convert_runner_using_to_function_specs(
         runner: RunnerWithSchema,
-        sub_method: &str,
+        using: &str,
     ) -> Result<FunctionSpecs> {
         let runner_data = runner
             .data
@@ -1091,11 +1090,11 @@ pub trait FunctionSpecConverter {
             let tool = runner
                 .tools
                 .iter()
-                .find(|t| t.name == sub_method)
+                .find(|t| t.name == using)
                 .ok_or_else(|| {
                     JobWorkerError::NotFound(format!(
-                        "sub_method '{}' not found in MCP server '{}'. Available: {:?}",
-                        sub_method,
+                        "using '{}' not found in MCP server '{}'. Available: {:?}",
+                        using,
                         runner_data.name,
                         runner.tools.iter().map(|t| &t.name).collect::<Vec<_>>()
                     ))
@@ -1107,11 +1106,11 @@ pub trait FunctionSpecConverter {
                 runner_id: runner.id,
                 worker_id: None,
                 // Use combined name for LLM tool calling: "server_name___tool_name"
-                name: format!("{}___{}", runner_data.name, sub_method),
+                name: format!("{}___{}", runner_data.name, using),
                 description: tool
                     .description
                     .clone()
-                    .unwrap_or_else(|| format!("{} - {}", runner_data.description, sub_method)),
+                    .unwrap_or_else(|| format!("{} - {}", runner_data.description, using)),
                 schema: Some(function_specs::Schema::SingleSchema(FunctionSchema {
                     settings: None,
                     arguments: tool.input_schema.clone(),
@@ -1119,13 +1118,13 @@ pub trait FunctionSpecConverter {
                 })),
                 output_type: runner_data.output_type,
             })
-        } else if runner_data.sub_method_protos.is_some() {
-            // Plugin or other runner with sub_method_protos
-            let proto_map = runner_data.sub_method_protos.as_ref().unwrap();
-            let proto_schema = proto_map.methods.get(sub_method).ok_or_else(|| {
+        } else if runner_data.using_protos.is_some() {
+            // Plugin or other runner with using_protos
+            let proto_map = runner_data.using_protos.as_ref().unwrap();
+            let proto_schema = proto_map.methods.get(using).ok_or_else(|| {
                 JobWorkerError::NotFound(format!(
-                    "sub_method '{}' not found in runner '{}'. Available: {:?}",
-                    sub_method,
+                    "using '{}' not found in runner '{}'. Available: {:?}",
+                    using,
                     runner_data.name,
                     proto_map.methods.keys().collect::<Vec<_>>()
                 ))
@@ -1135,8 +1134,8 @@ pub trait FunctionSpecConverter {
                 runner_type: runner_data.runner_type,
                 runner_id: runner.id,
                 worker_id: None,
-                name: format!("{}___{}", runner_data.name, sub_method),
-                description: format!("{} - {}", runner_data.description, sub_method),
+                name: format!("{}___{}", runner_data.name, using),
+                description: format!("{} - {}", runner_data.description, using),
                 schema: Some(function_specs::Schema::SingleSchema(FunctionSchema {
                     settings: None,
                     arguments: proto_schema.clone(),
@@ -1145,9 +1144,9 @@ pub trait FunctionSpecConverter {
                 output_type: runner_data.output_type,
             })
         } else {
-            // Runner doesn't support sub_methods
+            // Runner doesn't support usings
             Err(JobWorkerError::InvalidParameter(format!(
-                "Runner '{}' does not support sub_methods",
+                "Runner '{}' does not support usings",
                 runner_data.name
             ))
             .into())

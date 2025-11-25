@@ -67,7 +67,7 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         timeout: u64,
         reserved_job_id: Option<JobId>,
         request_streaming: bool,
-        sub_method: Option<String>,
+        using: Option<String>,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -87,7 +87,7 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         reserved_job_id: Option<JobId>,
         request_streaming: bool,
         with_random_name: bool,
-        sub_method: Option<String>,
+        using: Option<String>,
     ) -> Result<(
         JobId,
         Option<JobResult>,

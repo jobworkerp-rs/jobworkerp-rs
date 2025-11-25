@@ -476,7 +476,7 @@ pub mod tests {
             end_time: datetime::now_millis(),
             store_success: false,
             store_failure: false,
-            sub_method: None,
+            using: None,
         };
         assert!(!HybridJobResultAppImpl::_should_store(&job_result_data));
 
@@ -607,7 +607,7 @@ pub mod tests {
                 end_time: datetime::now_millis(),
                 store_success: worker_data.store_success,
                 store_failure: worker_data.store_failure,
-                sub_method: None,
+                using: None,
             };
             let result = JobResult {
                 id: Some(id),

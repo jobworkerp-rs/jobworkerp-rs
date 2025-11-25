@@ -1,6 +1,6 @@
 use proto::jobworkerp::data::{RunnerId, WorkerId};
 use proto::jobworkerp::function::data::{
-    function_id, FunctionId, FunctionSet, FunctionSetData, FunctionSetId, RunnerSubMethod,
+    function_id, FunctionId, FunctionSet, FunctionSetData, FunctionSetId, RunnerUsing,
 };
 
 // Constants for target_type values
@@ -47,11 +47,11 @@ impl FunctionSetTargetRow {
     // Convert DB row to FunctionId
     pub fn to_function_id(&self) -> FunctionId {
         let id = match self.target_type {
-            RUNNER_TYPE => Some(function_id::Id::RunnerSubMethod(RunnerSubMethod {
+            RUNNER_TYPE => Some(function_id::Id::RunnerUsing(RunnerUsing {
                 runner_id: Some(RunnerId {
                     value: self.target_id,
                 }),
-                sub_method: None,
+                using: None,
             })),
             WORKER_TYPE => Some(function_id::Id::WorkerId(WorkerId {
                 value: self.target_id,
@@ -71,7 +71,7 @@ impl FunctionSetTargetRow {
     // Convert FunctionId to DB columns (target_id, target_type)
     pub fn from_function_id(set_id: i64, function_id: &FunctionId) -> Option<(i64, i32)> {
         match &function_id.id {
-            Some(function_id::Id::RunnerSubMethod(rsm)) => {
+            Some(function_id::Id::RunnerUsing(rsm)) => {
                 rsm.runner_id.as_ref().map(|rid| (rid.value, RUNNER_TYPE))
             }
             Some(function_id::Id::WorkerId(worker_id)) => Some((worker_id.value, WORKER_TYPE)),

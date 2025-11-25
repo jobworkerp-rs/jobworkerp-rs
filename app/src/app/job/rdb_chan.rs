@@ -370,7 +370,7 @@ impl RdbChanJobAppImpl {
         timeout: u64,
         reserved_job_id: Option<JobId>,
         request_streaming: bool,
-        sub_method: Option<String>,
+        using: Option<String>,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -397,7 +397,7 @@ impl RdbChanJobAppImpl {
                 priority,
                 timeout,
                 request_streaming,
-                sub_method,
+                using,
             };
             // TODO validate argument types
             // self.validate_worker_and_job_args(w, job_data.args.as_ref())?;
@@ -576,7 +576,7 @@ impl JobApp for RdbChanJobAppImpl {
         reserved_job_id: Option<JobId>,
         request_streaming: bool,
         with_random_name: bool,
-        sub_method: Option<String>,
+        using: Option<String>,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -600,7 +600,7 @@ impl JobApp for RdbChanJobAppImpl {
             timeout,
             reserved_job_id,
             request_streaming,
-            sub_method,
+            using,
         )
         .await
     }
@@ -616,7 +616,7 @@ impl JobApp for RdbChanJobAppImpl {
         timeout: u64,
         reserved_job_id: Option<JobId>,
         request_streaming: bool,
-        sub_method: Option<String>,
+        using: Option<String>,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -643,7 +643,7 @@ impl JobApp for RdbChanJobAppImpl {
                 timeout,
                 reserved_job_id,
                 request_streaming,
-                sub_method,
+                using,
             )
             .await
         } else {
@@ -1400,7 +1400,7 @@ mod tests {
                         0,
                         None,
                         false,
-                        None, // sub_method
+                        None, // using
                     )
                     .await;
                 let (jid, job_res, _) = res.unwrap();
@@ -1484,7 +1484,7 @@ mod tests {
                     response_type: ResponseType::Direct as i32,
                     store_success: false,
                     store_failure: false,
-                    sub_method: None,
+                    using: None,
                 }),
                 ..Default::default()
             };
@@ -1552,7 +1552,7 @@ mod tests {
                     0,
                     None,
                     false,
-                    None, // sub_method
+                    None, // using
                 )
                 .await?
                 .0;
@@ -1569,7 +1569,7 @@ mod tests {
                     priority: 0,
                     timeout: 0,
                     request_streaming: false,
-                    sub_method: None,
+                    using: None,
                 }),
                 metadata: (*metadata).clone(),
             };
@@ -1605,7 +1605,7 @@ mod tests {
                     response_type: ResponseType::NoResult as i32,
                     store_success: true,
                     store_failure: true,
-                    sub_method: None,
+                    using: None,
                 }),
                 metadata: (*metadata).clone(),
             };
@@ -1684,7 +1684,7 @@ mod tests {
                     0,
                     None,
                     false,
-                    None, // sub_method
+                    None, // using
                 )
                 .await?;
             assert!(job_id.value > 0);
@@ -1730,7 +1730,7 @@ mod tests {
                     response_type: ResponseType::NoResult as i32,
                     store_success: true,
                     store_failure: false,
-                    sub_method: None,
+                    using: None,
                 }),
                 metadata: (*metadata).clone(),
             };
@@ -1808,7 +1808,7 @@ mod tests {
                     0,
                     None,
                     false,
-                    None, // sub_method
+                    None, // using
                 )
                 .await?;
             assert!(job_id.value > 0);
@@ -1826,7 +1826,7 @@ mod tests {
                     0,
                     None,
                     false,
-                    None, // sub_method
+                    None, // using
                 )
                 .await?;
             assert!(job_id2.value > 0);

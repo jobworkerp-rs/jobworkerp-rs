@@ -211,7 +211,7 @@ pub trait UseJobExecutor:
         uniq_key: Option<String>,
         job_timeout_sec: u32,
         streaming: bool,
-        sub_method: Option<String>, // sub_method for MCP/Plugin runners
+        using: Option<String>, // using for MCP/Plugin runners
     ) -> impl std::future::Future<
         Output = Result<(
             JobId,
@@ -234,7 +234,7 @@ pub trait UseJobExecutor:
                         job_timeout_sec as u64 * 1000,
                         None,
                         streaming,
-                        sub_method,
+                        using,
                     )
                     .await
             } else {
@@ -251,7 +251,7 @@ pub trait UseJobExecutor:
                         None,
                         streaming,
                         true,
-                        sub_method,
+                        using,
                     )
                     .await
             }
@@ -331,7 +331,7 @@ pub trait UseJobExecutor:
                     uniq_key,
                     job_timeout_sec,
                     streaming,
-                    None, // sub_method not supported via this path
+                    None, // using not supported via this path
                 )
                 .await
             } else {
@@ -347,9 +347,9 @@ pub trait UseJobExecutor:
         worker_data: WorkerData, // worker parameters (if not exists, use default values)
         job_args: serde_json::Value, // enqueue job args
         uniq_key: Option<String>,
-        job_timeout_sec: u32,       // job timeout in seconds
-        _streaming: bool,           // TODO request streaming
-        sub_method: Option<String>, // sub_method for MCP/Plugin runners
+        job_timeout_sec: u32,  // job timeout in seconds
+        _streaming: bool,      // TODO request streaming
+        using: Option<String>, // using for MCP/Plugin runners
     ) -> impl std::future::Future<Output = Result<serde_json::Value>> + Send {
         async move {
             if let Some(RunnerWithSchema {
@@ -376,7 +376,7 @@ pub trait UseJobExecutor:
                         uniq_key,
                         job_timeout_sec,
                         false, // no streaming
-                        sub_method,
+                        using,
                     )
                     .await?;
                 let output = res
@@ -444,7 +444,7 @@ pub trait UseJobExecutor:
                         uniq_key,
                         job_timeout_sec,
                         streaming,
-                        None, // sub_method not supported via this path
+                        None, // using not supported via this path
                     )
                     .await
                 } else {
@@ -506,7 +506,7 @@ pub trait UseJobExecutor:
                             uniq_key,
                             job_timeout_sec,
                             streaming,
-                            None, // sub_method not supported via this path
+                            None, // using not supported via this path
                         )
                         .await?;
                     if let Some(res) = res.1 {

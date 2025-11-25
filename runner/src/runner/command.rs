@@ -205,7 +205,7 @@ impl RunnerTrait for CommandRunnerImpl {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
-        _sub_method: Option<&str>,
+        _using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         // let (span, cx) =
         //     Self::tracing_span_from_metadata(&metadata, APP_WORKER_NAME, "COMMAND::run");
@@ -475,7 +475,7 @@ impl RunnerTrait for CommandRunnerImpl {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
-        _sub_method: Option<&str>,
+        _using: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // Set up cancellation token using manager
         let cancellation_token = self.get_cancellation_token().await;

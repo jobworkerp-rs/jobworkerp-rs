@@ -86,10 +86,10 @@ message JobResultData {
   // from worker.data.store_failure
   bool store_failure = 19;
 
-  // # Sub-Method
-  // Optional sub-method name for MCP/Plugin runners
-  // Used to preserve sub_method for retry and periodic job re-execution
-  optional string sub_method = 20;
+  // # Using
+  // Runner implementation used for MCP/Plugin runners
+  // Preserved for retry and periodic job re-execution
+  optional string using = 20;
 }
 
 // # Job Result ID

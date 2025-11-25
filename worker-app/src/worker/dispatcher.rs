@@ -97,7 +97,7 @@ pub trait JobDispatcher:
                     store_success: false,
                     store_failure: true,
                     worker_name: worker_data.name.clone(),
-                    sub_method: job_data.sub_method.clone(),
+                    using: job_data.using.clone(),
                 };
 
                 let cancelled_result = JobResult {

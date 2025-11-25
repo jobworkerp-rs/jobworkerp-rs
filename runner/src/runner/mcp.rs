@@ -34,10 +34,10 @@ pub mod integration_tests;
 pub mod proxy;
 pub mod schema_converter;
 
-/// Tool information for sub_method support
+/// Tool information for using support
 #[derive(Debug, Clone)]
 pub struct ToolInfo {
-    /// Tool name (sub_method name)
+    /// Tool name (using name)
     pub name: String,
     /// Tool description
     pub description: Option<String>,
@@ -51,20 +51,20 @@ pub struct ToolInfo {
 ///
 /// Supports two modes:
 /// 1. **Legacy mode** (McpServerArgs): Uses tool_name and arg_json fields
-/// 2. **Sub-method mode**: Uses sub_method parameter with tool-specific Protobuf args
+/// 2. **Sub-method mode**: Uses using parameter with tool-specific Protobuf args
 ///
-/// The mode is determined by whether `available_tools` is populated (sub_method mode)
+/// The mode is determined by whether `available_tools` is populated (using mode)
 /// or empty (legacy mode).
 #[derive(Debug)]
 pub struct McpServerRunnerImpl {
     mcp_server: McpServerProxy,
     // Helper for dependency injection integration (optional for backward compatibility)
     cancel_helper: Option<CancelMonitoringHelper>,
-    /// Available tools with their schemas (populated in sub_method mode)
-    /// Key: tool name (sub_method), Value: ToolInfo
+    /// Available tools with their schemas (populated in using mode)
+    /// Key: tool name (using), Value: ToolInfo
     available_tools: HashMap<String, ToolInfo>,
     /// Whether this runner uses legacy McpServerArgs mode
-    /// true = legacy mode (available_tools empty), false = sub_method mode
+    /// true = legacy mode (available_tools empty), false = using mode
     is_legacy_mode: bool,
 }
 
@@ -92,9 +92,9 @@ impl McpServerRunnerImpl {
         }
     }
 
-    /// Constructor for sub_method mode with pre-loaded tools
+    /// Constructor for using mode with pre-loaded tools
     ///
-    /// This constructor creates a runner in sub_method mode where each tool
+    /// This constructor creates a runner in using mode where each tool
     /// has its own Protobuf schema.
     pub fn new_with_tools(
         server: McpServerProxy,
@@ -109,11 +109,11 @@ impl McpServerRunnerImpl {
         }
     }
 
-    /// Initialize tools from MCP server and switch to sub_method mode
+    /// Initialize tools from MCP server and switch to using mode
     ///
     /// This method fetches tools from the MCP server, generates Protobuf schemas,
-    /// and switches the runner to sub_method mode.
-    pub async fn initialize_sub_method_mode(&mut self) -> Result<()> {
+    /// and switches the runner to using mode.
+    pub async fn initialize_using_mode(&mut self) -> Result<()> {
         let tools = self.mcp_server.load_tools().await?;
         let server_name = &self.mcp_server.name;
 
@@ -122,7 +122,7 @@ impl McpServerRunnerImpl {
             let tool_name = tool.name.into_owned();
 
             // Validate tool name
-            if let Err(e) = schema_converter::validate_sub_method_name(&tool_name) {
+            if let Err(e) = schema_converter::validate_using_name(&tool_name) {
                 tracing::warn!(
                     "Skipping tool '{}' in MCP server '{}': {}",
                     tool_name,
@@ -174,7 +174,7 @@ impl McpServerRunnerImpl {
         self.is_legacy_mode = false;
 
         tracing::info!(
-            "MCP runner '{}' initialized with {} tools in sub_method mode",
+            "MCP runner '{}' initialized with {} tools in using mode",
             server_name,
             self.available_tools.len()
         );
@@ -187,7 +187,7 @@ impl McpServerRunnerImpl {
         self.is_legacy_mode
     }
 
-    /// Get available tool names (sub_methods)
+    /// Get available tool names (usings)
     pub fn available_tool_names(&self) -> Vec<String> {
         self.available_tools.keys().cloned().collect()
     }
@@ -197,13 +197,13 @@ impl McpServerRunnerImpl {
         self.available_tools.get(tool_name)
     }
 
-    /// Resolve sub_method to actual tool name
+    /// Resolve using to actual tool name
     ///
-    /// - If sub_method is specified: validate and return it
-    /// - If sub_method is None and only 1 tool: auto-select
-    /// - If sub_method is None and multiple tools: error
-    fn resolve_sub_method(&self, sub_method: Option<&str>) -> Result<String> {
-        match sub_method {
+    /// - If using is specified: validate and return it
+    /// - If using is None and only 1 tool: auto-select
+    /// - If using is None and multiple tools: error
+    fn resolve_using(&self, using: Option<&str>) -> Result<String> {
+        match using {
             Some(name) => {
                 if self.available_tools.contains_key(name) {
                     Ok(name.to_string())
@@ -222,7 +222,7 @@ impl McpServerRunnerImpl {
                     Ok(self.available_tools.keys().next().unwrap().clone())
                 } else {
                     Err(anyhow!(
-                        "sub_method is required for MCP server '{}'. Available tools: {:?}",
+                        "using is required for MCP server '{}'. Available tools: {:?}",
                         self.mcp_server.name,
                         self.available_tool_names()
                     ))
@@ -242,7 +242,7 @@ impl McpServerRunnerImpl {
 
     /// Get tools as McpTool proto messages
     pub async fn tools(&self) -> Result<Vec<McpTool>> {
-        // If in sub_method mode, use cached tools
+        // If in using mode, use cached tools
         if !self.is_legacy_mode && !self.available_tools.is_empty() {
             return Ok(self
                 .available_tools
@@ -340,8 +340,8 @@ impl McpServerRunnerImpl {
         (result, metadata)
     }
 
-    /// Execute tool call in sub_method mode
-    async fn run_sub_method(
+    /// Execute tool call in using mode
+    async fn run_using(
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
@@ -357,7 +357,7 @@ impl McpServerRunnerImpl {
             let span = Self::otel_span_from_metadata(
                 &metadata,
                 APP_WORKER_NAME,
-                "McpServerRunnerImpl::run_sub_method",
+                "McpServerRunnerImpl::run_using",
             );
             let cx = Context::current_with_span(span);
             let mut metadata = metadata.clone();
@@ -369,7 +369,7 @@ impl McpServerRunnerImpl {
                 tool_name.to_string(),
             ));
 
-            // In sub_method mode, args is a JSON-serialized object
+            // In using mode, args is a JSON-serialized object
             // (because Protobuf schemas are generated dynamically)
             // For now, we treat args as JSON bytes
             let args_json: serde_json::Value = serde_json::from_slice(args).map_err(|e| {
@@ -381,7 +381,7 @@ impl McpServerRunnerImpl {
             })?;
 
             tracing::debug!(
-                "Calling MCP tool '{}' with args (sub_method mode): {:?}",
+                "Calling MCP tool '{}' with args (using mode): {:?}",
                 tool_name,
                 args_json
             );
@@ -486,8 +486,8 @@ impl McpServerRunnerImpl {
         Ok(Box::pin(stream))
     }
 
-    /// Execute stream tool call in sub_method mode
-    async fn run_stream_sub_method(
+    /// Execute stream tool call in using mode
+    async fn run_stream_using(
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
@@ -693,7 +693,7 @@ impl RunnerSpec for McpServerRunnerImpl {
         "".to_string()
     }
     fn job_args_proto(&self) -> String {
-        // In sub_method mode, return empty string (use job_args_proto_map instead)
+        // In using mode, return empty string (use job_args_proto_map instead)
         if !self.is_legacy_mode {
             return "".to_string();
         }
@@ -701,7 +701,7 @@ impl RunnerSpec for McpServerRunnerImpl {
     }
 
     /// Returns the job arguments protobuf schema map for sub-method mode
-    /// Key: tool name (sub_method), Value: protobuf schema string
+    /// Key: tool name (using), Value: protobuf schema string
     fn job_args_proto_map(&self) -> Option<std::collections::HashMap<String, String>> {
         if self.is_legacy_mode || self.available_tools.is_empty() {
             return None;
@@ -725,7 +725,7 @@ impl RunnerSpec for McpServerRunnerImpl {
         schema_to_json_string!(crate::jobworkerp::runner::Empty, "settings_schema")
     }
     fn arguments_schema(&self) -> String {
-        // In sub_method mode, return empty (each tool has its own schema)
+        // In using mode, return empty (each tool has its own schema)
         if !self.is_legacy_mode {
             return "{}".to_string();
         }
@@ -736,18 +736,18 @@ impl RunnerSpec for McpServerRunnerImpl {
     }
 
     /// Returns the JSON schema for a specific sub-method (tool)
-    fn get_sub_method_json_schema(&self, sub_method: &str) -> Result<String> {
+    fn get_using_json_schema(&self, using: &str) -> Result<String> {
         if self.is_legacy_mode {
             return Err(anyhow!(
-                "Runner '{}' is in legacy mode and does not support sub_method",
+                "Runner '{}' is in legacy mode and does not support using",
                 self.mcp_server.name
             ));
         }
 
-        let tool_info = self.available_tools.get(sub_method).ok_or_else(|| {
+        let tool_info = self.available_tools.get(using).ok_or_else(|| {
             anyhow!(
-                "Unknown sub_method '{}' for MCP runner '{}'. Available: {:?}",
-                sub_method,
+                "Unknown using '{}' for MCP runner '{}'. Available: {:?}",
+                using,
                 self.mcp_server.name,
                 self.available_tool_names()
             )
@@ -755,8 +755,8 @@ impl RunnerSpec for McpServerRunnerImpl {
 
         serde_json::to_string(&tool_info.input_schema).map_err(|e| {
             anyhow!(
-                "Failed to serialize JSON schema for sub_method '{}': {}",
-                sub_method,
+                "Failed to serialize JSON schema for using '{}': {}",
+                using,
                 e
             )
         })
@@ -774,7 +774,7 @@ impl RunnerTrait for McpServerRunnerImpl {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
-        sub_method: Option<&str>,
+        using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         // Dispatch based on mode
         if self.is_legacy_mode {
@@ -782,11 +782,11 @@ impl RunnerTrait for McpServerRunnerImpl {
             self.run_legacy(args, metadata).await
         } else {
             // Sub-method mode: resolve tool name and execute
-            let tool_name = match self.resolve_sub_method(sub_method) {
+            let tool_name = match self.resolve_using(using) {
                 Ok(name) => name,
                 Err(e) => return (Err(e), metadata),
             };
-            self.run_sub_method(args, metadata, &tool_name).await
+            self.run_using(args, metadata, &tool_name).await
         }
     }
 
@@ -794,7 +794,7 @@ impl RunnerTrait for McpServerRunnerImpl {
         &mut self,
         arg: &[u8],
         metadata: HashMap<String, String>,
-        sub_method: Option<&str>,
+        using: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // Dispatch based on mode
         if self.is_legacy_mode {
@@ -802,8 +802,8 @@ impl RunnerTrait for McpServerRunnerImpl {
             self.run_stream_legacy(arg, metadata).await
         } else {
             // Sub-method mode: resolve tool name and execute
-            let tool_name = self.resolve_sub_method(sub_method)?;
-            self.run_stream_sub_method(arg, metadata, &tool_name).await
+            let tool_name = self.resolve_using(using)?;
+            self.run_stream_using(arg, metadata, &tool_name).await
         }
     }
 }

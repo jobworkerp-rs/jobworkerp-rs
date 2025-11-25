@@ -423,7 +423,7 @@ impl RunnerTrait for GrpcUnaryRunner {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
-        _sub_method: Option<&str>,
+        _using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         // Set up cancellation token using helper
         let cancellation_token = self.get_cancellation_token().await;
@@ -579,7 +579,7 @@ impl RunnerTrait for GrpcUnaryRunner {
         &mut self,
         _arg: &[u8],
         _metadata: HashMap<String, String>,
-        _sub_method: Option<&str>,
+        _using: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         unimplemented!("gRPC unary does not support streaming")
     }

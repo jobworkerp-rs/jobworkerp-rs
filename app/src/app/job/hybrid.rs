@@ -204,7 +204,7 @@ impl HybridJobAppImpl {
         timeout: u64,
         reserved_job_id: Option<JobId>,
         request_streaming: bool,
-        sub_method: Option<String>,
+        using: Option<String>,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -231,7 +231,7 @@ impl HybridJobAppImpl {
                 priority,
                 timeout,
                 request_streaming,
-                sub_method,
+                using,
             };
 
             // TODO validate argument types (using Runner)
@@ -577,7 +577,7 @@ impl JobApp for HybridJobAppImpl {
         reserved_job_id: Option<JobId>,
         request_streaming: bool,
         with_random_name: bool,
-        sub_method: Option<String>,
+        using: Option<String>,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -601,7 +601,7 @@ impl JobApp for HybridJobAppImpl {
             timeout,
             reserved_job_id,
             request_streaming,
-            sub_method,
+            using,
         )
         .await
     }
@@ -617,7 +617,7 @@ impl JobApp for HybridJobAppImpl {
         timeout: u64,
         reserved_job_id: Option<JobId>,
         request_streaming: bool,
-        sub_method: Option<String>,
+        using: Option<String>,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -655,7 +655,7 @@ impl JobApp for HybridJobAppImpl {
                 priority,
                 timeout,
                 request_streaming,
-                sub_method,
+                using,
             };
 
             // TODO validate argument types (using Runner)
@@ -1462,7 +1462,7 @@ pub mod tests {
                         0,
                         None,
                         false,
-                        None, // sub_method
+                        None, // using
                     )
                     .await;
                 let (jid, job_res, _) = res.unwrap();
@@ -1528,7 +1528,7 @@ pub mod tests {
                     response_type: ResponseType::Direct as i32,
                     store_success: false,
                     store_failure: false,
-                    sub_method: None,
+                    using: None,
                 }),
                 ..Default::default()
             };
@@ -1597,7 +1597,7 @@ pub mod tests {
                     0,
                     None,
                     true, // STREAMING NOT SUPPORTED by runner -> error
-                    None, // sub_method
+                    None, // using
                 )
                 .await;
             assert!(res.is_err());
@@ -1649,7 +1649,7 @@ pub mod tests {
                     0,
                     None,
                     false,
-                    None, // sub_method
+                    None, // using
                 )
                 .await?
                 .0;
@@ -1666,7 +1666,7 @@ pub mod tests {
                     priority: 0,
                     timeout: 0,
                     request_streaming: true,
-                    sub_method: None,
+                    using: None,
                 }),
                 ..Default::default()
             };
@@ -1702,7 +1702,7 @@ pub mod tests {
                     response_type: ResponseType::NoResult as i32,
                     store_success: false,
                     store_failure: false,
-                    sub_method: None,
+                    using: None,
                 }),
                 metadata: (*metadata).clone(),
             };
@@ -1781,7 +1781,7 @@ pub mod tests {
                     0,
                     None,
                     false,
-                    None, // sub_method
+                    None, // using
                 )
                 .await?;
             assert!(job_id.value > 0);
@@ -1827,7 +1827,7 @@ pub mod tests {
                     response_type: ResponseType::NoResult as i32,
                     store_success: true,
                     store_failure: false,
-                    sub_method: None,
+                    using: None,
                 }),
                 metadata: (*metadata).clone(),
             };
@@ -1906,7 +1906,7 @@ pub mod tests {
                     0,
                     None,
                     false,
-                    None, // sub_method
+                    None, // using
                 )
                 .await?;
             assert!(job_id.value > 0);
@@ -1924,7 +1924,7 @@ pub mod tests {
                     0,
                     None,
                     false,
-                    None, // sub_method
+                    None, // using
                 )
                 .await?;
             assert!(job_id2.value > 0);

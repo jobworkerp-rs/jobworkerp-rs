@@ -328,7 +328,7 @@ mod test {
     use infra_utils::infra::rdb::UseRdbPool;
     use proto::jobworkerp::data::{RunnerId, WorkerId};
     use proto::jobworkerp::function::data::{
-        function_id, FunctionId, FunctionSet, FunctionSetData, RunnerSubMethod,
+        function_id, FunctionId, FunctionSet, FunctionSetData, RunnerUsing,
     };
     use std::sync::Arc;
 
@@ -341,9 +341,9 @@ mod test {
             category: 4,
             targets: vec![
                 FunctionId {
-                    id: Some(function_id::Id::RunnerSubMethod(RunnerSubMethod {
+                    id: Some(function_id::Id::RunnerUsing(RunnerUsing {
                         runner_id: Some(RunnerId { value: 10 }),
-                        sub_method: None,
+                        using: None,
                     })),
                 },
                 FunctionId {
@@ -375,9 +375,9 @@ mod test {
             category: 5,
             targets: vec![
                 FunctionId {
-                    id: Some(function_id::Id::RunnerSubMethod(RunnerSubMethod {
+                    id: Some(function_id::Id::RunnerUsing(RunnerUsing {
                         runner_id: Some(RunnerId { value: 30 }),
-                        sub_method: None,
+                        using: None,
                     })),
                 },
                 FunctionId {
@@ -434,9 +434,9 @@ mod test {
 
         // Test Runner ID conversion
         let runner_function_id = FunctionId {
-            id: Some(function_id::Id::RunnerSubMethod(RunnerSubMethod {
+            id: Some(function_id::Id::RunnerUsing(RunnerUsing {
                 runner_id: Some(RunnerId { value: 123 }),
-                sub_method: None,
+                using: None,
             })),
         };
 

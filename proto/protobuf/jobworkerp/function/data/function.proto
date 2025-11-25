@@ -9,31 +9,31 @@ import "jobworkerp/data/worker.proto";
 // # Function ID
 // Unified identifier for either a Runner or Worker
 // BREAKING CHANGE: runner_id (field 1) has been removed
-// Use runner_sub_method instead for all runner references
+// Use runner_using instead for all runner references
 message FunctionId {
   oneof id {
     jobworkerp.data.WorkerId worker_id = 1;
-    RunnerSubMethod runner_sub_method = 2;
+    RunnerUsing runner_using = 2;
   }
 }
 
-// # Runner Sub-Method
-// Identifies a runner with optional sub-method specification
+// # Runner Using
+// Identifies a runner with optional implementation specification
 // Used to select either:
-// - An entire runner (sub_method = None): all tools/methods available
-// - A specific tool (sub_method = Some): single tool/method only
-message RunnerSubMethod {
+// - An entire runner (using = None): all tools/methods available
+// - A specific tool (using = Some): single tool/method only
+message RunnerUsing {
   // # Runner ID
   // Reference to the runner
   jobworkerp.data.RunnerId runner_id = 1;
 
-  // # Sub-Method Name
+  // # Using
   // Optional: specifies a particular tool/method within the runner
-  // - If specified: Only this specific sub-method is selected
-  //   Example: sub_method = "fetch_html" selects only the fetch_html tool
+  // - If specified: Only this specific implementation is selected
+  //   Example: using = "fetch_html" selects only the fetch_html tool
   // - If omitted: The entire runner is selected
-  //   Example: sub_method = None selects all tools of the fetch server
-  optional string sub_method = 2;
+  //   Example: using = None selects all tools of the fetch server
+  optional string using = 2;
 }
 
 // # Function Specs

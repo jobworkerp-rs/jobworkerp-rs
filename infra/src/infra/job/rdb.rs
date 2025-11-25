@@ -45,7 +45,7 @@ pub trait RdbJobRepository:
                   priority,
                   timeout,
                   request_streaming,
-                  sub_method
+                  `using`
                 ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             )
             .bind(id.value)
@@ -59,7 +59,7 @@ pub trait RdbJobRepository:
             .bind(data.priority)
             .bind(data.timeout as i32)
             .bind(data.request_streaming)
-            .bind(&data.sub_method)
+            .bind(&data.using)
             .execute(tx)
             .await
             .map_err(JobWorkerError::DBError)?;
@@ -96,7 +96,7 @@ pub trait RdbJobRepository:
                   priority,
                   timeout,
                   request_streaming,
-                  sub_method
+                  `using`
                 ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                   ON DUPLICATE KEY UPDATE
                     worker_id = VALUES(worker_id),
@@ -109,7 +109,7 @@ pub trait RdbJobRepository:
                     priority = VALUES(priority),
                     timeout = VALUES(timeout),
                     request_streaming = VALUES(request_streaming),
-                    sub_method = VALUES(sub_method);",
+                    `using` = VALUES(`using`);",
             )
             .bind(id.value)
             .bind(job.worker_id.as_ref().unwrap().value) // XXX unwrap
@@ -122,7 +122,7 @@ pub trait RdbJobRepository:
             .bind(job.priority)
             .bind(job.timeout as i64)
             .bind(job.request_streaming)
-            .bind(&job.sub_method)
+            .bind(&job.using)
             .execute(tx)
             .await
             .map(|r| r.rows_affected() > 0)
@@ -146,7 +146,7 @@ pub trait RdbJobRepository:
               priority,
               timeout,
               request_streaming,
-              sub_method
+              `using`
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?);",
             )
             .bind(id.value)
@@ -160,7 +160,7 @@ pub trait RdbJobRepository:
             .bind(job.priority)
             .bind(job.timeout as i64)
             .bind(job.request_streaming)
-            .bind(&job.sub_method)
+            .bind(&job.using)
             .execute(tx)
             .await
             .map(|r| r.rows_affected() > 0)
@@ -190,7 +190,7 @@ pub trait RdbJobRepository:
             priority = ?,
             timeout = ?,
             request_streaming = ?,
-            sub_method = ?
+            `using` = ?
             WHERE id = ?;",
         )
         .bind(job.worker_id.as_ref().unwrap().value) // XXX unwrap
@@ -203,7 +203,7 @@ pub trait RdbJobRepository:
         .bind(job.priority)
         .bind(job.timeout as i64)
         .bind(job.request_streaming)
-        .bind(&job.sub_method)
+        .bind(&job.using)
         .bind(id.value)
         .execute(tx)
         .await
@@ -467,7 +467,7 @@ mod test {
             priority: 2,
             timeout: 10000,
             request_streaming: false,
-            sub_method: None,
+            using: None,
         });
         let job = Job {
             id: Some(id),
@@ -500,7 +500,7 @@ mod test {
             priority: 1,
             timeout: 10000,
             request_streaming: true,
-            sub_method: None,
+            using: None,
         };
         let updated = repository.upsert(&expect.id.unwrap(), &update).await?;
         assert!(updated);
@@ -532,7 +532,7 @@ mod test {
             priority: 2,
             timeout: 10000,
             request_streaming: false,
-            sub_method: None,
+            using: None,
         });
         let job = Job {
             id: Some(JobId { value: 1 }),
@@ -556,7 +556,7 @@ mod test {
             priority: 2,
             timeout: 10000,
             request_streaming: false,
-            sub_method: None,
+            using: None,
         });
         let job = Job {
             id: Some(JobId { value: 2 }),
@@ -579,7 +579,7 @@ mod test {
             priority: 2,
             timeout: 10000,
             request_streaming: false,
-            sub_method: None,
+            using: None,
         });
         let job = Job {
             id: Some(JobId { value: 3 }),

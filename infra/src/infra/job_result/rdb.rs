@@ -29,7 +29,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
                 run_after_time,
                 start_time,
                 end_time,
-                sub_method
+                `using`
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(id.value)
@@ -53,7 +53,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
         .bind(job_result.run_after_time)
         .bind(job_result.start_time)
         .bind(job_result.end_time)
-        .bind(&job_result.sub_method)
+        .bind(&job_result.using)
         .execute(self.db_pool())
         .await
         .map_err(JobWorkerError::DBError)?;
@@ -83,7 +83,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
             run_after_time = ?,
             start_time = ?,
             end_time = ?,
-            sub_method = ?
+            `using` = ?
             WHERE id = ?;",
         )
         .bind(job_result.job_id.as_ref().unwrap().value) //XXX unwrap
@@ -106,7 +106,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
         .bind(job_result.run_after_time)
         .bind(job_result.start_time)
         .bind(job_result.end_time)
-        .bind(&job_result.sub_method)
+        .bind(&job_result.using)
         .bind(id.value)
         .execute(&mut **tx)
         .await
@@ -573,7 +573,7 @@ mod test {
             response_type: 0,     // fixed
             store_success: false, // fixed
             store_failure: false, // fixed
-            sub_method: None,
+            using: None,
         });
 
         let id = JobResultId { value: 111 };
@@ -617,7 +617,7 @@ mod test {
             response_type: 0, // fixed
             store_success: false,
             store_failure: false,
-            sub_method: None,
+            using: None,
         };
         let updated = repository.update(&mut tx, &id, &update).await?;
         assert!(updated);
@@ -703,7 +703,7 @@ mod test {
             response_type: 0,
             store_success: false,
             store_failure: false,
-            sub_method: None,
+            using: None,
         }
     }
 
