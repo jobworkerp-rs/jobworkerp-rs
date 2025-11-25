@@ -283,7 +283,7 @@ impl RunnerTrait for PythonCommandRunner {
         &mut self,
         arg: &[u8],
         metadata: HashMap<String, String>,
-        _sub_method: Option<&str>,
+        _using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let cancellation_token = self.get_cancellation_token().await;
 
@@ -430,7 +430,7 @@ impl RunnerTrait for PythonCommandRunner {
         &mut self,
         _arg: &[u8],
         _metadata: HashMap<String, String>,
-        _sub_method: Option<&str>,
+        _using: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let _cancellation_token = self.get_cancellation_token().await;
 

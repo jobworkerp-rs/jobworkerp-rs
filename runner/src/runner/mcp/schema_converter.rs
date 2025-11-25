@@ -23,7 +23,7 @@ use std::collections::HashSet;
 /// Maximum nesting depth for object types (defensive programming)
 const MAX_NEST_DEPTH: usize = 10;
 
-/// Reserved sub_method names that cannot be used
+/// Reserved using names that cannot be used
 const RESERVED_NAMES: &[&str] = &["all", "default", "none", "system"];
 
 /// Convert a string to PascalCase
@@ -58,7 +58,7 @@ fn sanitize_name(s: &str) -> String {
         .collect()
 }
 
-/// Validate a sub_method name according to security rules
+/// Validate a using name according to security rules
 ///
 /// # Rules
 /// - Length: 1-64 characters
@@ -68,22 +68,22 @@ fn sanitize_name(s: &str) -> String {
 ///
 /// # Note
 /// MCP tool names often contain hyphens (e.g., "fetch-html") or dots.
-/// These are allowed in sub_method names for MCP compatibility.
+/// These are allowed in using names for MCP compatibility.
 /// When generating Protobuf schemas, use `sanitize_name()` to convert them.
-pub fn validate_sub_method_name(name: &str) -> Result<()> {
+pub fn validate_using_name(name: &str) -> Result<()> {
     // Length check
     if name.is_empty() {
-        return Err(anyhow!("sub_method cannot be empty"));
+        return Err(anyhow!("using cannot be empty"));
     }
     if name.len() > 64 {
-        return Err(anyhow!("sub_method '{}' too long (max 64 chars)", name));
+        return Err(anyhow!("using '{}' too long (max 64 chars)", name));
     }
 
     // Must start with alphanumeric character
     if let Some(first_char) = name.chars().next() {
         if !first_char.is_ascii_alphanumeric() {
             return Err(anyhow!(
-                "sub_method '{}' must start with alphanumeric character",
+                "using '{}' must start with alphanumeric character",
                 name
             ));
         }
@@ -96,7 +96,7 @@ pub fn validate_sub_method_name(name: &str) -> Result<()> {
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
     {
         return Err(anyhow!(
-            "sub_method '{}' contains invalid characters (allowed: [a-zA-Z0-9_\\-\\.])",
+            "using '{}' contains invalid characters (allowed: [a-zA-Z0-9_\\-\\.])",
             name
         ));
     }
@@ -106,7 +106,7 @@ pub fn validate_sub_method_name(name: &str) -> Result<()> {
     if RESERVED_NAMES.contains(&name.to_lowercase().as_str())
         || RESERVED_NAMES.contains(&sanitized.to_lowercase().as_str())
     {
-        return Err(anyhow!("sub_method '{}' is reserved", name));
+        return Err(anyhow!("using '{}' is reserved", name));
     }
 
     Ok(())
@@ -142,7 +142,7 @@ pub fn json_schema_to_protobuf(
     tool_name: &str,
 ) -> Result<String> {
     // Validate tool name
-    validate_sub_method_name(tool_name)?;
+    validate_using_name(tool_name)?;
 
     // Generate message name: {ServerName}{ToolName}Args
     let sanitized_server_name = sanitize_name(server_name);
@@ -275,7 +275,7 @@ fn json_type_to_proto_type(schema: &Value) -> Result<String> {
 /// Information about a tool including its schemas
 #[derive(Debug, Clone)]
 pub struct ToolSchemaInfo {
-    /// Tool name (sub_method name)
+    /// Tool name (using name)
     pub name: String,
     /// Tool description
     pub description: Option<String>,
@@ -337,42 +337,42 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_sub_method_name() {
+    fn test_validate_using_name() {
         // Valid names (underscore)
-        assert!(validate_sub_method_name("fetch_html").is_ok());
-        assert!(validate_sub_method_name("get_current_time").is_ok());
-        assert!(validate_sub_method_name("tool123").is_ok());
+        assert!(validate_using_name("fetch_html").is_ok());
+        assert!(validate_using_name("get_current_time").is_ok());
+        assert!(validate_using_name("tool123").is_ok());
 
         // Valid names (hyphen - common in MCP tools)
-        assert!(validate_sub_method_name("hello-world").is_ok());
-        assert!(validate_sub_method_name("fetch-html").is_ok());
+        assert!(validate_using_name("hello-world").is_ok());
+        assert!(validate_using_name("fetch-html").is_ok());
 
         // Valid names (dot - common in MCP tools)
-        assert!(validate_sub_method_name("get.time").is_ok());
-        assert!(validate_sub_method_name("user.profile.get").is_ok());
+        assert!(validate_using_name("get.time").is_ok());
+        assert!(validate_using_name("user.profile.get").is_ok());
 
         // Invalid: empty
-        assert!(validate_sub_method_name("").is_err());
+        assert!(validate_using_name("").is_err());
 
         // Invalid: too long
         let long_name = "a".repeat(65);
-        assert!(validate_sub_method_name(&long_name).is_err());
+        assert!(validate_using_name(&long_name).is_err());
 
         // Invalid: starts with non-alphanumeric
-        assert!(validate_sub_method_name("-hello").is_err());
-        assert!(validate_sub_method_name(".hello").is_err());
-        assert!(validate_sub_method_name("_hello").is_err());
+        assert!(validate_using_name("-hello").is_err());
+        assert!(validate_using_name(".hello").is_err());
+        assert!(validate_using_name("_hello").is_err());
 
         // Invalid: special characters (other than hyphen, underscore, dot)
-        assert!(validate_sub_method_name("hello@world").is_err());
-        assert!(validate_sub_method_name("hello world").is_err());
-        assert!(validate_sub_method_name("hello/world").is_err());
+        assert!(validate_using_name("hello@world").is_err());
+        assert!(validate_using_name("hello world").is_err());
+        assert!(validate_using_name("hello/world").is_err());
 
         // Invalid: reserved words
-        assert!(validate_sub_method_name("all").is_err());
-        assert!(validate_sub_method_name("default").is_err());
-        assert!(validate_sub_method_name("none").is_err());
-        assert!(validate_sub_method_name("system").is_err());
+        assert!(validate_using_name("all").is_err());
+        assert!(validate_using_name("default").is_err());
+        assert!(validate_using_name("none").is_err());
+        assert!(validate_using_name("system").is_err());
     }
 
     #[test]

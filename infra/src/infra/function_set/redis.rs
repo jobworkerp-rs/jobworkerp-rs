@@ -152,7 +152,7 @@ pub trait UseRedisFunctionSetRepository {
 async fn redis_test() -> Result<()> {
     use proto::jobworkerp::data::{RunnerId, WorkerId};
     use proto::jobworkerp::function::data::{
-        function_id, FunctionId, FunctionSetData, FunctionSetId, RunnerSubMethod,
+        function_id, FunctionId, FunctionSetData, FunctionSetId, RunnerUsing,
     };
 
     let pool = infra_utils::infra::test::setup_test_redis_pool().await;
@@ -165,9 +165,9 @@ async fn redis_test() -> Result<()> {
         category: 4,
         targets: vec![
             FunctionId {
-                id: Some(function_id::Id::RunnerSubMethod(RunnerSubMethod {
+                id: Some(function_id::Id::RunnerUsing(RunnerUsing {
                     runner_id: Some(RunnerId { value: 10 }),
-                    sub_method: None,
+                    using: None,
                 })),
             },
             FunctionId {
@@ -189,9 +189,9 @@ async fn redis_test() -> Result<()> {
     function_set2.description = "fuga2".to_string();
     function_set2.category = 5;
     function_set2.targets[0] = FunctionId {
-        id: Some(function_id::Id::RunnerSubMethod(RunnerSubMethod {
+        id: Some(function_id::Id::RunnerUsing(RunnerUsing {
             runner_id: Some(RunnerId { value: 30 }),
-            sub_method: None,
+            using: None,
         })),
     };
     function_set2.targets[1] = FunctionId {

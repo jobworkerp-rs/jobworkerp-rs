@@ -1,3 +1,3 @@
--- Rollback sub_method column addition from job table
+-- Rollback using column addition from job table
 
-ALTER TABLE `job` DROP COLUMN `sub_method`;
+ALTER TABLE `job` DROP COLUMN `using`;

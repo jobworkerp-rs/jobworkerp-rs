@@ -740,10 +740,10 @@ async fn test_mcp_stream_execution_with_cancellation() -> Result<()> {
 
 // ==================== Sub-Method Mode Integration Tests ====================
 
-/// Test T3.7: Initialize sub_method mode and verify tool list generation
+/// Test T3.7: Initialize using mode and verify tool list generation
 #[tokio::test]
 #[ignore] // Requires MCP server - run with --ignored for full testing
-async fn test_sub_method_mode_initialization() -> Result<()> {
+async fn test_using_mode_initialization() -> Result<()> {
     use crate::runner::mcp::config::McpConfig;
     use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerSpec;
@@ -760,9 +760,9 @@ async fn test_sub_method_mode_initialization() -> Result<()> {
     let mut runner = McpServerRunnerImpl::new(client);
     assert!(runner.is_legacy_mode(), "Should start in legacy mode");
 
-    // Initialize sub_method mode
-    runner.initialize_sub_method_mode().await?;
-    assert!(!runner.is_legacy_mode(), "Should switch to sub_method mode");
+    // Initialize using mode
+    runner.initialize_using_mode().await?;
+    assert!(!runner.is_legacy_mode(), "Should switch to using mode");
 
     // Verify available tools
     let tool_names = runner.available_tool_names();
@@ -777,10 +777,7 @@ async fn test_sub_method_mode_initialization() -> Result<()> {
 
     // Verify job_args_proto_map returns tool schemas
     let proto_map = runner.job_args_proto_map();
-    assert!(
-        proto_map.is_some(),
-        "Should return proto map in sub_method mode"
-    );
+    assert!(proto_map.is_some(), "Should return proto map in using mode");
     let proto_map = proto_map.unwrap();
     assert!(
         proto_map.contains_key("get_current_time"),
@@ -799,10 +796,10 @@ async fn test_sub_method_mode_initialization() -> Result<()> {
     Ok(())
 }
 
-/// Test T3.7: Execute tool call in sub_method mode with explicit sub_method
+/// Test T3.7: Execute tool call in using mode with explicit using
 #[tokio::test]
 #[ignore] // Requires MCP server - run with --ignored for full testing
-async fn test_sub_method_mode_execution_with_explicit_method() -> Result<()> {
+async fn test_using_mode_execution_with_explicit_method() -> Result<()> {
     use crate::runner::mcp::config::McpConfig;
     use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerTrait;
@@ -812,17 +809,17 @@ async fn test_sub_method_mode_execution_with_explicit_method() -> Result<()> {
         server: vec![create_time_mcp_server().await?],
     };
 
-    // Create MCP runner and initialize sub_method mode
+    // Create MCP runner and initialize using mode
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let client = factory.connect_server("time").await?;
     let mut runner = McpServerRunnerImpl::new(client);
-    runner.initialize_sub_method_mode().await?;
+    runner.initialize_using_mode().await?;
 
-    // Prepare JSON arguments (sub_method mode uses JSON bytes)
+    // Prepare JSON arguments (using mode uses JSON bytes)
     let args = serde_json::json!({"timezone": "UTC"});
     let args_bytes = serde_json::to_vec(&args)?;
 
-    // Execute with explicit sub_method
+    // Execute with explicit using
     let metadata = HashMap::new();
     let (result, _) = runner
         .run(&args_bytes, metadata, Some("get_current_time"))
@@ -830,7 +827,7 @@ async fn test_sub_method_mode_execution_with_explicit_method() -> Result<()> {
 
     assert!(
         result.is_ok(),
-        "Should execute successfully with explicit sub_method"
+        "Should execute successfully with explicit using"
     );
     let output = result.unwrap();
     let output_str = String::from_utf8_lossy(&output);
@@ -841,10 +838,10 @@ async fn test_sub_method_mode_execution_with_explicit_method() -> Result<()> {
     Ok(())
 }
 
-/// Test T3.7: Auto-select single tool when sub_method is None
+/// Test T3.7: Auto-select single tool when using is None
 #[tokio::test]
 #[ignore] // Requires MCP server - run with --ignored for full testing
-async fn test_sub_method_mode_auto_select_single_tool() -> Result<()> {
+async fn test_using_mode_auto_select_single_tool() -> Result<()> {
     use crate::runner::mcp::config::McpConfig;
     use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerTrait;
@@ -854,13 +851,13 @@ async fn test_sub_method_mode_auto_select_single_tool() -> Result<()> {
         server: vec![create_time_mcp_server().await?],
     };
 
-    // Create MCP runner and initialize sub_method mode
+    // Create MCP runner and initialize using mode
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let client = factory.connect_server("time").await?;
     let mut runner = McpServerRunnerImpl::new(client);
-    runner.initialize_sub_method_mode().await?;
+    runner.initialize_using_mode().await?;
 
-    // Time server has only one tool (get_current_time), so sub_method can be omitted
+    // Time server has only one tool (get_current_time), so using can be omitted
     let tool_count = runner.available_tool_names().len();
 
     if tool_count == 1 {
@@ -868,13 +865,13 @@ async fn test_sub_method_mode_auto_select_single_tool() -> Result<()> {
         let args = serde_json::json!({"timezone": "Asia/Tokyo"});
         let args_bytes = serde_json::to_vec(&args)?;
 
-        // Execute WITHOUT sub_method - should auto-select
+        // Execute WITHOUT using - should auto-select
         let metadata = HashMap::new();
         let (result, _) = runner.run(&args_bytes, metadata, None).await;
 
         assert!(
             result.is_ok(),
-            "Should auto-select single tool when sub_method is None"
+            "Should auto-select single tool when using is None"
         );
         eprintln!("✅ Single-tool auto-select test passed");
     } else {
@@ -887,10 +884,10 @@ async fn test_sub_method_mode_auto_select_single_tool() -> Result<()> {
     Ok(())
 }
 
-/// Test T3.7: Error when sub_method is required but not provided (multi-tool runner)
+/// Test T3.7: Error when using is required but not provided (multi-tool runner)
 #[tokio::test]
 #[ignore] // Requires fetch MCP server - run with --ignored for full testing
-async fn test_sub_method_mode_error_when_method_required() -> Result<()> {
+async fn test_using_mode_error_when_method_required() -> Result<()> {
     use crate::runner::mcp::config::McpConfig;
     use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerTrait;
@@ -900,11 +897,11 @@ async fn test_sub_method_mode_error_when_method_required() -> Result<()> {
         server: vec![create_fetch_mcp_server().await?],
     };
 
-    // Create MCP runner and initialize sub_method mode
+    // Create MCP runner and initialize using mode
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let client = factory.connect_server("fetch").await?;
     let mut runner = McpServerRunnerImpl::new(client);
-    runner.initialize_sub_method_mode().await?;
+    runner.initialize_using_mode().await?;
 
     let tool_count = runner.available_tool_names().len();
 
@@ -913,22 +910,22 @@ async fn test_sub_method_mode_error_when_method_required() -> Result<()> {
         let args = serde_json::json!({"url": "https://example.com"});
         let args_bytes = serde_json::to_vec(&args)?;
 
-        // Execute WITHOUT sub_method - should fail for multi-tool runner
+        // Execute WITHOUT using - should fail for multi-tool runner
         let metadata = HashMap::new();
         let (result, _) = runner.run(&args_bytes, metadata, None).await;
 
         assert!(
             result.is_err(),
-            "Should fail when sub_method is required but not provided"
+            "Should fail when using is required but not provided"
         );
 
         let error_msg = result.unwrap_err().to_string();
         assert!(
-            error_msg.contains("sub_method is required") || error_msg.contains("Available"),
-            "Error message should indicate sub_method is required. Got: {error_msg}"
+            error_msg.contains("using is required") || error_msg.contains("Available"),
+            "Error message should indicate using is required. Got: {error_msg}"
         );
 
-        eprintln!("✅ Multi-tool sub_method required test passed");
+        eprintln!("✅ Multi-tool using required test passed");
         eprintln!("   Error message: {error_msg}");
     } else {
         eprintln!(
@@ -940,10 +937,10 @@ async fn test_sub_method_mode_error_when_method_required() -> Result<()> {
     Ok(())
 }
 
-/// Test T3.7: Error when unknown sub_method is provided
+/// Test T3.7: Error when unknown using is provided
 #[tokio::test]
 #[ignore] // Requires MCP server - run with --ignored for full testing
-async fn test_sub_method_mode_error_unknown_method() -> Result<()> {
+async fn test_using_mode_error_unknown_method() -> Result<()> {
     use crate::runner::mcp::config::McpConfig;
     use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerTrait;
@@ -953,23 +950,23 @@ async fn test_sub_method_mode_error_unknown_method() -> Result<()> {
         server: vec![create_time_mcp_server().await?],
     };
 
-    // Create MCP runner and initialize sub_method mode
+    // Create MCP runner and initialize using mode
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let client = factory.connect_server("time").await?;
     let mut runner = McpServerRunnerImpl::new(client);
-    runner.initialize_sub_method_mode().await?;
+    runner.initialize_using_mode().await?;
 
     // Prepare arguments
     let args = serde_json::json!({"timezone": "UTC"});
     let args_bytes = serde_json::to_vec(&args)?;
 
-    // Execute with unknown sub_method
+    // Execute with unknown using
     let metadata = HashMap::new();
     let (result, _) = runner
         .run(&args_bytes, metadata, Some("nonexistent_tool"))
         .await;
 
-    assert!(result.is_err(), "Should fail with unknown sub_method");
+    assert!(result.is_err(), "Should fail with unknown using");
 
     let error_msg = result.unwrap_err().to_string();
     assert!(
@@ -977,15 +974,15 @@ async fn test_sub_method_mode_error_unknown_method() -> Result<()> {
         "Error message should mention unknown tool. Got: {error_msg}"
     );
 
-    eprintln!("✅ Unknown sub_method error test passed");
+    eprintln!("✅ Unknown using error test passed");
     eprintln!("   Error message: {error_msg}");
     Ok(())
 }
 
-/// Test T3.7: Verify get_sub_method_json_schema returns correct schema
+/// Test T3.7: Verify get_using_json_schema returns correct schema
 #[tokio::test]
 #[ignore] // Requires MCP server - run with --ignored for full testing
-async fn test_sub_method_json_schema() -> Result<()> {
+async fn test_using_json_schema() -> Result<()> {
     use crate::runner::mcp::config::McpConfig;
     use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerSpec;
@@ -994,14 +991,14 @@ async fn test_sub_method_json_schema() -> Result<()> {
         server: vec![create_time_mcp_server().await?],
     };
 
-    // Create MCP runner and initialize sub_method mode
+    // Create MCP runner and initialize using mode
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let client = factory.connect_server("time").await?;
     let mut runner = McpServerRunnerImpl::new(client);
-    runner.initialize_sub_method_mode().await?;
+    runner.initialize_using_mode().await?;
 
     // Get JSON schema for get_current_time
-    let schema = runner.get_sub_method_json_schema("get_current_time")?;
+    let schema = runner.get_using_json_schema("get_current_time")?;
     assert!(!schema.is_empty(), "JSON schema should not be empty");
 
     // Validate it's valid JSON
@@ -1019,7 +1016,7 @@ async fn test_sub_method_json_schema() -> Result<()> {
     Ok(())
 }
 
-/// Test T3.7: Legacy mode still works after sub_method implementation
+/// Test T3.7: Legacy mode still works after using implementation
 #[tokio::test]
 #[ignore] // Requires MCP server - run with --ignored for full testing
 async fn test_legacy_mode_still_works() -> Result<()> {
@@ -1034,7 +1031,7 @@ async fn test_legacy_mode_still_works() -> Result<()> {
         server: vec![create_time_mcp_server().await?],
     };
 
-    // Create MCP runner WITHOUT initializing sub_method mode (legacy mode)
+    // Create MCP runner WITHOUT initializing using mode (legacy mode)
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let client = factory.connect_server("time").await?;
     let mut runner = McpServerRunnerImpl::new(client);
@@ -1048,7 +1045,7 @@ async fn test_legacy_mode_still_works() -> Result<()> {
     };
     let args_bytes = ProstMessageCodec::serialize_message(&mcp_args)?;
 
-    // Execute in legacy mode (sub_method is None, uses McpServerArgs internally)
+    // Execute in legacy mode (using is None, uses McpServerArgs internally)
     let metadata = HashMap::new();
     let (result, _) = runner.run(&args_bytes, metadata, None).await;
 

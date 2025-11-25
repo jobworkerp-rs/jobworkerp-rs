@@ -55,12 +55,12 @@ message JobData {
   // (if not supported by runner, it will be ignored)
   bool request_streaming = 10;
 
-  // # Sub-Method
-  // Sub-method name for MCP/Plugin runners
-  // Optional for normal runners (will be ignored)
-  // Required for multi-tool MCP runners
-  // When omitted for single-tool MCP runners, auto-selected
-  optional string sub_method = 11;
+  // # Using
+  // Runner implementation to use for MCP/Plugin runners
+  // - Optional: For normal runners (will be ignored)
+  // - Required: For multi-tool MCP runners
+  // - Auto-selected: When omitted for single-tool MCP runners
+  optional string using = 11;
 }
 
 // # Job ID

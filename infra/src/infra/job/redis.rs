@@ -226,7 +226,7 @@ async fn redis_test() -> Result<()> {
         priority: 9,
         timeout: 1000,
         request_streaming: true,
-        sub_method: None,
+        using: None,
     };
     // clear first
     repo.delete(&id).await?;
@@ -303,7 +303,7 @@ async fn redis_individual_ttl_test() -> Result<()> {
         priority: 9,
         timeout: 5000, // 5 seconds
         request_streaming: false,
-        sub_method: None,
+        using: None,
     };
 
     // Test create_with_expire and find

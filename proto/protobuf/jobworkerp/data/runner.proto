@@ -30,8 +30,8 @@ message RunnerData {
   // # Job Arguments Definition
   // Proto file definition for job arguments
   // For normal runners: single proto schema
-  // For sub-method runners: must be empty (use sub_method_protos instead)
-  // Runtime validation ensures job_args_proto and sub_method_protos are mutually exclusive
+  // For multi-tool runners (MCP/Plugin): must be empty (use using_protos instead)
+  // Runtime validation ensures job_args_proto and using_protos are mutually exclusive
   optional string job_args_proto = 5;
   // # Result Output Definition
   // Proto file definition for job execution results
@@ -46,28 +46,28 @@ message RunnerData {
   // mcp: mcp_server toml
   // plugin: plugin filepath
   string definition = 8;
-  // # Sub-Method Proto Map
+  // # Runner Using Proto Map
   // For MCP/Plugin runners that support multiple sub-methods
-  // Maps sub_method name to its specific protobuf schema string
+  // Maps using name to its specific protobuf schema string
   // Example: {"fetch_html": "syntax = \"proto3\";\nmessage FetchFetchHtmlArgs {...}", ...}
   // Runtime validation ensures this is mutually exclusive with job_args_proto
-  optional SubMethodProtoMap sub_method_protos = 10;
+  optional UsingProtoMap using_protos = 10;
 }
 
-// # Sub-Method Proto Map
+// # Runner Using Proto Map
 // Mapping of sub-method names to their Protobuf schema definitions
 // Used by MCP servers and Plugins that expose multiple tools/methods
-message SubMethodProtoMap {
+message UsingProtoMap {
   // # Methods Map
-  // Key: sub_method name (e.g., "fetch_html", "fetch")
-  // Value: Protobuf schema string for that specific sub_method's arguments
+  // Key: using name (e.g., "fetch_html", "fetch")
+  // Value: Protobuf schema string for that specific using's arguments
   //
   // Each value is a complete Protobuf schema definition:
   // - Message name follows convention: {ServerName}{ToolName}Args
   // - Example for fetch server's fetch_html tool:
   //   "syntax = \"proto3\";\nmessage FetchFetchHtmlArgs { string url = 1; optional int32 timeout_ms = 2; }"
   //
-  // When methods has only one entry, sub_method can be omitted in job execution
+  // When methods has only one entry, using can be omitted in job execution
   // (auto-selected to the single available method)
   map<string, string> methods = 1;
 }

@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS `job` (
     `priority` INT NOT NULL,
     `timeout` BIGINT NOT NULL,
     `request_streaming` BOOLEAN NOT NULL,
-    `sub_method` TEXT
+    `using` TEXT
 );
 
 CREATE TABLE IF NOT EXISTS `job_result` (
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS `job_result` (
     `end_time` BIGINT NOT NULL,
     `timeout` BIGINT NOT NULL DEFAULT 0,
     `request_streaming` BOOLEAN NOT NULL,
-    `sub_method` TEXT
+    `using` TEXT
 );
 
 CREATE TABLE IF NOT EXISTS `runner` (

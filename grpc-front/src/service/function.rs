@@ -49,14 +49,14 @@ pub trait FunctionRequestValidator {
         use crate::proto::jobworkerp::function::data::function_id;
 
         match &function_id.id {
-            Some(function_id::Id::RunnerSubMethod(rsm)) => {
+            Some(function_id::Id::RunnerUsing(rsm)) => {
                 if let Some(runner_id) = &rsm.runner_id {
                     if runner_id.value <= 0 {
                         return Err(tonic::Status::invalid_argument("id must be greater than 0"));
                     }
                 } else {
                     return Err(tonic::Status::invalid_argument(
-                        "runner_id must be specified in RunnerSubMethod",
+                        "runner_id must be specified in RunnerUsing",
                     ));
                 }
                 Ok(())
@@ -395,7 +395,7 @@ impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync 
         self.validate_function_id(&function_id)?;
 
         match function_id.id {
-            Some(function_id::Id::RunnerSubMethod(rsm)) => {
+            Some(function_id::Id::RunnerUsing(rsm)) => {
                 if let Some(runner_id) = rsm.runner_id {
                     match self
                         .function_app()

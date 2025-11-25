@@ -313,7 +313,7 @@ mod tests {
                     priority: 0,
                     timeout: 30,
                     request_streaming: false,
-                    sub_method: None,
+                    using: None,
                 },
             )
         }
@@ -373,7 +373,7 @@ mod tests {
                         priority: 0,
                         timeout: 30,
                         request_streaming: false,
-                        sub_method: None,
+                        using: None,
                     },
                 );
 
@@ -462,7 +462,7 @@ mod tests {
                             priority: 0,
                             timeout: 30,
                             request_streaming: false,
-                            sub_method: None,
+                            using: None,
                         },
                     );
 
