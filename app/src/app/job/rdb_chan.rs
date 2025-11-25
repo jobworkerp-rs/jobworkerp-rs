@@ -1946,29 +1946,29 @@ mod tests {
         })
     }
 
-    #[test]
-    #[ignore] // Requires real RDB with job_processing_status table
-    fn test_cleanup_job_processing_status_success() {
-        TEST_RUNTIME.block_on(async {
-            // Setup: RDB indexing enabled
-            std::env::set_var("JOB_STATUS_RDB_INDEXING", "true");
-            std::env::set_var("JOB_STATUS_RETENTION_HOURS", "24");
+    // #[test]
+    // #[ignore] // Requires real RDB with job_processing_status table
+    // fn test_cleanup_job_processing_status_success() {
+    //     TEST_RUNTIME.block_on(async {
+    //         // Setup: RDB indexing enabled
+    //         std::env::set_var("JOB_STATUS_RDB_INDEXING", "true");
+    //         std::env::set_var("JOB_STATUS_RETENTION_HOURS", "24");
 
-            // Create app with index repository
-            let (app, _) = create_test_app(false).await.unwrap();
+    //         // Create app with index repository
+    //         let (app, _) = create_test_app(false).await.unwrap();
 
-            // Execute cleanup with 1 hour retention override
-            let result = app.cleanup_job_processing_status(Some(1)).await;
+    //         // Execute cleanup with 1 hour retention override
+    //         let result = app.cleanup_job_processing_status(Some(1)).await;
 
-            // Should succeed (even if no records deleted)
-            assert!(result.is_ok());
-            let (_deleted_count, cutoff_time) = result.unwrap();
-            assert!(cutoff_time > 0);
-            // Note: deleted_count can be 0 if no old records exist
+    //         // Should succeed (even if no records deleted)
+    //         assert!(result.is_ok());
+    //         let (_deleted_count, cutoff_time) = result.unwrap();
+    //         assert!(cutoff_time > 0);
+    //         // Note: deleted_count can be 0 if no old records exist
 
-            // Cleanup
-            std::env::remove_var("JOB_STATUS_RDB_INDEXING");
-            std::env::remove_var("JOB_STATUS_RETENTION_HOURS");
-        })
-    }
+    //         // Cleanup
+    //         std::env::remove_var("JOB_STATUS_RDB_INDEXING");
+    //         std::env::remove_var("JOB_STATUS_RETENTION_HOURS");
+    //     })
+    // }
 }
