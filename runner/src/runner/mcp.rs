@@ -1,7 +1,6 @@
 use crate::jobworkerp::runner::mcp_server_result;
 use crate::jobworkerp::runner::mcp_server_result::BlobResourceContents;
 use crate::jobworkerp::runner::mcp_server_result::TextResourceContents;
-use crate::jobworkerp::runner::McpServerArgs;
 use crate::jobworkerp::runner::McpServerResult;
 use crate::runner::cancellation::CancelMonitoring;
 use crate::runner::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
@@ -49,73 +48,29 @@ pub struct ToolInfo {
 
 /// MCP Server Runner implementation
 ///
-/// Supports two modes:
-/// 1. **Legacy mode** (McpServerArgs): Uses tool_name and arg_json fields
-/// 2. **Sub-method mode**: Uses using parameter with tool-specific Protobuf args
-///
-/// The mode is determined by whether `available_tools` is populated (using mode)
-/// or empty (legacy mode).
+/// Uses `using` parameter with tool-specific JSON arguments.
+/// Each tool has its own Protobuf schema generated from MCP tool's JSON schema.
 #[derive(Debug)]
 pub struct McpServerRunnerImpl {
     mcp_server: McpServerProxy,
-    // Helper for dependency injection integration (optional for backward compatibility)
+    /// Helper for cancellation monitoring integration
     cancel_helper: Option<CancelMonitoringHelper>,
-    /// Available tools with their schemas (populated in using mode)
+    /// Available tools with their schemas
     /// Key: tool name (using), Value: ToolInfo
     available_tools: HashMap<String, ToolInfo>,
-    /// Whether this runner uses legacy McpServerArgs mode
-    /// true = legacy mode (available_tools empty), false = using mode
-    is_legacy_mode: bool,
 }
 
 impl McpServerRunnerImpl {
-    /// Constructor without cancellation monitoring (legacy mode for backward compatibility)
-    pub fn new(server: McpServerProxy) -> Self {
-        Self {
-            mcp_server: server,
-            cancel_helper: None,
-            available_tools: HashMap::new(),
-            is_legacy_mode: true, // Legacy mode by default
-        }
-    }
-
-    /// Constructor with cancellation monitoring (legacy mode, DI integration version)
-    pub fn new_with_cancel_monitoring(
-        server: McpServerProxy,
-        cancel_helper: CancelMonitoringHelper,
-    ) -> Self {
-        Self {
-            mcp_server: server,
-            cancel_helper: Some(cancel_helper),
-            available_tools: HashMap::new(),
-            is_legacy_mode: true, // Legacy mode by default
-        }
-    }
-
-    /// Constructor for using mode with pre-loaded tools
+    /// Constructor for MCP server runner
     ///
-    /// This constructor creates a runner in using mode where each tool
-    /// has its own Protobuf schema.
-    pub fn new_with_tools(
+    /// This async constructor creates a runner and initializes it with tools from the MCP server.
+    /// Each tool has its own Protobuf schema generated from its JSON Schema.
+    pub async fn new(
         server: McpServerProxy,
         cancel_helper: Option<CancelMonitoringHelper>,
-        tools: HashMap<String, ToolInfo>,
-    ) -> Self {
-        Self {
-            mcp_server: server,
-            cancel_helper,
-            available_tools: tools,
-            is_legacy_mode: false, // Sub-method mode
-        }
-    }
-
-    /// Initialize tools from MCP server and switch to using mode
-    ///
-    /// This method fetches tools from the MCP server, generates Protobuf schemas,
-    /// and switches the runner to using mode.
-    pub async fn initialize_using_mode(&mut self) -> Result<()> {
-        let tools = self.mcp_server.load_tools().await?;
-        let server_name = &self.mcp_server.name;
+    ) -> Result<Self> {
+        let tools = server.load_tools().await?;
+        let server_name = &server.name;
 
         let mut available_tools = HashMap::new();
         for tool in tools {
@@ -170,21 +125,17 @@ impl McpServerRunnerImpl {
             ));
         }
 
-        self.available_tools = available_tools;
-        self.is_legacy_mode = false;
-
         tracing::info!(
-            "MCP runner '{}' initialized with {} tools in using mode",
+            "MCP runner '{}' initialized with {} tools",
             server_name,
-            self.available_tools.len()
+            available_tools.len()
         );
 
-        Ok(())
-    }
-
-    /// Check if this runner is in legacy mode
-    pub fn is_legacy_mode(&self) -> bool {
-        self.is_legacy_mode
+        Ok(Self {
+            mcp_server: server,
+            cancel_helper,
+            available_tools,
+        })
     }
 
     /// Get available tool names (usings)
@@ -242,8 +193,8 @@ impl McpServerRunnerImpl {
 
     /// Get tools as McpTool proto messages
     pub async fn tools(&self) -> Result<Vec<McpTool>> {
-        // If in using mode, use cached tools
-        if !self.is_legacy_mode && !self.available_tools.is_empty() {
+        // Return cached tools from using mode
+        if !self.available_tools.is_empty() {
             return Ok(self
                 .available_tools
                 .values()
@@ -256,7 +207,7 @@ impl McpServerRunnerImpl {
                 .collect());
         }
 
-        // Legacy mode: fetch from MCP server
+        // Fallback: fetch from MCP server
         self.mcp_server.load_tools().await.map(|list| {
             list.into_iter()
                 .map(|tool| McpTool {
@@ -280,65 +231,6 @@ impl McpServerRunnerImpl {
     }
 
     /// Execute tool call in legacy mode (using McpServerArgs)
-    async fn run_legacy(
-        &mut self,
-        args: &[u8],
-        metadata: HashMap<String, String>,
-    ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        let cancellation_token = self.get_cancellation_token().await;
-
-        let result = async {
-            if cancellation_token.is_cancelled() {
-                return Err(anyhow!("MCP tool call was cancelled before execution"));
-            }
-
-            let span = Self::otel_span_from_metadata(
-                &metadata,
-                APP_WORKER_NAME,
-                "McpServerRunnerImpl::run_legacy",
-            );
-            let cx = Context::current_with_span(span);
-            let mut metadata = metadata.clone();
-            Self::inject_metadata_from_context(&mut metadata, &cx);
-            let span = cx.span();
-
-            let arg = ProstMessageCodec::deserialize_message::<McpServerArgs>(args)?;
-            span.set_attribute(opentelemetry::KeyValue::new(
-                "input.tool_name",
-                arg.tool_name.clone(),
-            ));
-
-            tracing::debug!(
-                "Calling MCP tool '{}' with args (legacy mode): {}",
-                arg.tool_name,
-                arg.arg_json
-            );
-
-            let res = tokio::select! {
-                call_result = self.mcp_server.transport.call_tool(CallToolRequestParam {
-                    name: std::borrow::Cow::Owned(arg.tool_name.clone()),
-                    arguments: serde_json::from_str(arg.arg_json.as_str())
-                        .inspect_err(|e| {
-                            tracing::error!("Failed to parse arguments: {}", e);
-                        })
-                        .ok(),
-                }) => {
-                    call_result.map_err(|e| {
-                        tracing::error!("MCP call_tool failed for tool '{}': {}", arg.tool_name, e);
-                        anyhow!("MCP tool '{}' failed: {}", arg.tool_name, e)
-                    })?
-                },
-                _ = cancellation_token.cancelled() => {
-                    return Err(anyhow!("MCP tool call was cancelled"));
-                }
-            };
-
-            self.encode_mcp_result_with_span(res, &span)
-        }
-        .await;
-
-        (result, metadata)
-    }
 
     /// Execute tool call in using mode
     async fn run_using(
@@ -409,82 +301,6 @@ impl McpServerRunnerImpl {
     }
 
     /// Execute stream tool call in legacy mode (using McpServerArgs)
-    async fn run_stream_legacy(
-        &mut self,
-        arg: &[u8],
-        metadata: HashMap<String, String>,
-    ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        let cancellation_token = self.get_cancellation_token().await;
-
-        if cancellation_token.is_cancelled() {
-            return Err(anyhow!("MCP stream request was cancelled before execution"));
-        }
-
-        let parsed_arg = ProstMessageCodec::deserialize_message::<McpServerArgs>(arg)?;
-        let mcp_transport = self.mcp_server.transport.clone();
-        let tool_name = parsed_arg.tool_name.clone();
-        let arg_json = parsed_arg.arg_json.clone();
-
-        use async_stream::stream;
-        use proto::jobworkerp::data::{result_output_item::Item, Trailer};
-
-        let trailer = Arc::new(Trailer {
-            metadata: metadata.clone(),
-        });
-
-        let stream = stream! {
-            let call_result = tokio::select! {
-                result = mcp_transport.call_tool(CallToolRequestParam {
-                    name: std::borrow::Cow::Owned(tool_name.clone()),
-                    arguments: serde_json::from_str(arg_json.as_str())
-                        .inspect_err(|e| {
-                            tracing::error!("Failed to parse arguments: {}", e);
-                        })
-                        .ok(),
-                }) => {
-                    match result {
-                        Ok(res) => Ok(res),
-                        Err(e) => {
-                            tracing::error!("MCP call_tool failed for tool '{}': {}", tool_name, e);
-                            Err(anyhow!("MCP tool '{}' failed: {}", tool_name, e))
-                        }
-                    }
-                },
-                _ = cancellation_token.cancelled() => {
-                    tracing::info!("MCP stream request was cancelled");
-                    yield ResultOutputItem {
-                        item: Some(Item::End((*trailer).clone())),
-                    };
-                    return;
-                }
-            };
-
-            match call_result {
-                Ok(res) => {
-                    let mcp_result = Self::convert_call_result_to_proto(res);
-                    match ProstMessageCodec::serialize_message(&mcp_result) {
-                        Ok(serialized) => {
-                            yield ResultOutputItem {
-                                item: Some(Item::Data(serialized)),
-                            };
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to serialize MCP result: {}", e);
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("MCP tool call failed: {}", e);
-                }
-            }
-
-            yield ResultOutputItem {
-                item: Some(Item::End((*trailer).clone())),
-            };
-        };
-
-        Ok(Box::pin(stream))
-    }
 
     /// Execute stream tool call in using mode
     async fn run_stream_using(
@@ -693,17 +509,14 @@ impl RunnerSpec for McpServerRunnerImpl {
         "".to_string()
     }
     fn job_args_proto(&self) -> String {
-        // In using mode, return empty string (use job_args_proto_map instead)
-        if !self.is_legacy_mode {
-            return "".to_string();
-        }
-        include_str!("../../protobuf/jobworkerp/runner/mcp_server_args.proto").to_string()
+        // Using mode: return empty string (use job_args_proto_map instead)
+        "".to_string()
     }
 
-    /// Returns the job arguments protobuf schema map for sub-method mode
+    /// Returns the job arguments protobuf schema map for using mode
     /// Key: tool name (using), Value: protobuf schema string
     fn job_args_proto_map(&self) -> Option<std::collections::HashMap<String, String>> {
-        if self.is_legacy_mode || self.available_tools.is_empty() {
+        if self.available_tools.is_empty() {
             return None;
         }
 
@@ -725,25 +538,15 @@ impl RunnerSpec for McpServerRunnerImpl {
         schema_to_json_string!(crate::jobworkerp::runner::Empty, "settings_schema")
     }
     fn arguments_schema(&self) -> String {
-        // In using mode, return empty (each tool has its own schema)
-        if !self.is_legacy_mode {
-            return "{}".to_string();
-        }
-        schema_to_json_string!(McpServerArgs, "arguments_schema")
+        // Using mode: return empty (each tool has its own schema)
+        "{}".to_string()
     }
     fn output_schema(&self) -> Option<String> {
         schema_to_json_string_option!(McpServerResult, "output_schema")
     }
 
-    /// Returns the JSON schema for a specific sub-method (tool)
+    /// Returns the JSON schema for a specific tool (using)
     fn get_using_json_schema(&self, using: &str) -> Result<String> {
-        if self.is_legacy_mode {
-            return Err(anyhow!(
-                "Runner '{}' is in legacy mode and does not support using",
-                self.mcp_server.name
-            ));
-        }
-
         let tool_info = self.available_tools.get(using).ok_or_else(|| {
             anyhow!(
                 "Unknown using '{}' for MCP runner '{}'. Available: {:?}",
@@ -776,18 +579,12 @@ impl RunnerTrait for McpServerRunnerImpl {
         metadata: HashMap<String, String>,
         using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        // Dispatch based on mode
-        if self.is_legacy_mode {
-            // Legacy mode: use McpServerArgs
-            self.run_legacy(args, metadata).await
-        } else {
-            // Sub-method mode: resolve tool name and execute
-            let tool_name = match self.resolve_using(using) {
-                Ok(name) => name,
-                Err(e) => return (Err(e), metadata),
-            };
-            self.run_using(args, metadata, &tool_name).await
-        }
+        // Resolve tool name and execute
+        let tool_name = match self.resolve_using(using) {
+            Ok(name) => name,
+            Err(e) => return (Err(e), metadata),
+        };
+        self.run_using(args, metadata, &tool_name).await
     }
 
     async fn run_stream(
@@ -796,15 +593,9 @@ impl RunnerTrait for McpServerRunnerImpl {
         metadata: HashMap<String, String>,
         using: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        // Dispatch based on mode
-        if self.is_legacy_mode {
-            // Legacy mode: use McpServerArgs
-            self.run_stream_legacy(arg, metadata).await
-        } else {
-            // Sub-method mode: resolve tool name and execute
-            let tool_name = self.resolve_using(using)?;
-            self.run_stream_using(arg, metadata, &tool_name).await
-        }
+        // Resolve tool name and execute
+        let tool_name = self.resolve_using(using)?;
+        self.run_stream_using(arg, metadata, &tool_name).await
     }
 }
 
