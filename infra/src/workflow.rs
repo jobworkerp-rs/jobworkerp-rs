@@ -374,6 +374,7 @@ mod test {
                     name: runner_name,
                     options,
                     settings,
+                    ..
                 },
             ..
         }) = run_task.run.clone()

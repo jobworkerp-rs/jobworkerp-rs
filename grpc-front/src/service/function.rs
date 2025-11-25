@@ -49,9 +49,15 @@ pub trait FunctionRequestValidator {
         use crate::proto::jobworkerp::function::data::function_id;
 
         match &function_id.id {
-            Some(function_id::Id::RunnerId(runner_id)) => {
-                if runner_id.value <= 0 {
-                    return Err(tonic::Status::invalid_argument("id must be greater than 0"));
+            Some(function_id::Id::RunnerSubMethod(rsm)) => {
+                if let Some(runner_id) = &rsm.runner_id {
+                    if runner_id.value <= 0 {
+                        return Err(tonic::Status::invalid_argument("id must be greater than 0"));
+                    }
+                } else {
+                    return Err(tonic::Status::invalid_argument(
+                        "runner_id must be specified in RunnerSubMethod",
+                    ));
                 }
                 Ok(())
             }
@@ -389,17 +395,23 @@ impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync 
         self.validate_function_id(&function_id)?;
 
         match function_id.id {
-            Some(function_id::Id::RunnerId(runner_id)) => {
-                match self
-                    .function_app()
-                    .find_function_by_runner_id(&runner_id)
-                    .await
-                {
-                    Ok(Some(function_specs)) => Ok(Response::new(OptionalFunctionSpecsResponse {
-                        data: Some(function_specs),
-                    })),
-                    Ok(None) => Ok(Response::new(OptionalFunctionSpecsResponse { data: None })),
-                    Err(e) => Err(handle_error(&e)),
+            Some(function_id::Id::RunnerSubMethod(rsm)) => {
+                if let Some(runner_id) = rsm.runner_id {
+                    match self
+                        .function_app()
+                        .find_function_by_runner_id(&runner_id)
+                        .await
+                    {
+                        Ok(Some(function_specs)) => {
+                            Ok(Response::new(OptionalFunctionSpecsResponse {
+                                data: Some(function_specs),
+                            }))
+                        }
+                        Ok(None) => Ok(Response::new(OptionalFunctionSpecsResponse { data: None })),
+                        Err(e) => Err(handle_error(&e)),
+                    }
+                } else {
+                    Ok(Response::new(OptionalFunctionSpecsResponse { data: None }))
                 }
             }
             Some(function_id::Id::WorkerId(worker_id)) => {

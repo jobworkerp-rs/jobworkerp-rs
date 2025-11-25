@@ -423,6 +423,7 @@ impl RunnerTrait for GrpcUnaryRunner {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        _sub_method: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         // Set up cancellation token using helper
         let cancellation_token = self.get_cancellation_token().await;
@@ -578,6 +579,7 @@ impl RunnerTrait for GrpcUnaryRunner {
         &mut self,
         _arg: &[u8],
         _metadata: HashMap<String, String>,
+        _sub_method: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         unimplemented!("gRPC unary does not support streaming")
     }
@@ -686,6 +688,7 @@ mod tests {
             .run(
                 &ProstMessageCodec::serialize_message(&grpc_args).unwrap(),
                 HashMap::new(),
+                None,
             )
             .await;
         let elapsed = start_time.elapsed();
@@ -740,7 +743,7 @@ mod tests {
         };
 
         let arg = ProstMessageCodec::serialize_message(&arg)?;
-        let res = runner.run(&arg, HashMap::new()).await;
+        let res = runner.run(&arg, HashMap::new(), None).await;
 
         match res.0 {
             Ok(data) => {
@@ -858,6 +861,7 @@ mod tests {
                 .run(
                     &ProstMessageCodec::serialize_message(&create_request)?,
                     HashMap::new(),
+                    None,
                 )
                 .await;
             let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result.0?)?;
@@ -907,6 +911,7 @@ mod tests {
                 .run(
                     &ProstMessageCodec::serialize_message(&find_request)?,
                     HashMap::new(),
+                    None,
                 )
                 .await;
             let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result.0?)?;
@@ -957,6 +962,7 @@ mod tests {
                 .run(
                     &ProstMessageCodec::serialize_message(&find_by_name_request)?,
                     HashMap::new(),
+                    None,
                 )
                 .await;
             let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result.0?)?;
@@ -1027,6 +1033,7 @@ mod tests {
                 .run(
                     &ProstMessageCodec::serialize_message(&update_request)?,
                     HashMap::new(),
+                    None,
                 )
                 .await;
             let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result.0?)?;
@@ -1046,6 +1053,7 @@ mod tests {
                 .run(
                     &ProstMessageCodec::serialize_message(&find_request)?,
                     HashMap::new(),
+                    None,
                 )
                 .await;
             let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result.0?)?;
@@ -1083,6 +1091,7 @@ mod tests {
                 .run(
                     &ProstMessageCodec::serialize_message(&delete_request)?,
                     HashMap::new(),
+                    None,
                 )
                 .await;
             let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result.0?)?;
@@ -1102,6 +1111,7 @@ mod tests {
                 .run(
                     &ProstMessageCodec::serialize_message(&find_request)?,
                     HashMap::new(),
+                    None,
                 )
                 .await;
             let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result.0?)?;
@@ -1168,6 +1178,7 @@ mod tests {
             .run(
                 &ProstMessageCodec::serialize_message(&create_request)?,
                 HashMap::new(),
+                None,
             )
             .await;
 
@@ -1215,6 +1226,7 @@ mod tests {
             .run(
                 &ProstMessageCodec::serialize_message(&create_request_binary)?,
                 HashMap::new(),
+                None,
             )
             .await;
 
@@ -1251,6 +1263,7 @@ mod tests {
             .run(
                 &ProstMessageCodec::serialize_message(&find_request)?,
                 HashMap::new(),
+                None,
             )
             .await;
 
@@ -1291,6 +1304,7 @@ mod tests {
                 .run(
                     &ProstMessageCodec::serialize_message(&delete_request)?,
                     HashMap::new(),
+                    None,
                 )
                 .await;
         }

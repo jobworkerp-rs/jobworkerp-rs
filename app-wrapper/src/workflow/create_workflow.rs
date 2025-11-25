@@ -249,6 +249,7 @@ impl RunnerTrait for CreateWorkflowRunnerImpl {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        _sub_method: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         tracing::info!("Starting CREATE_WORKFLOW execution");
 
@@ -320,6 +321,7 @@ impl RunnerTrait for CreateWorkflowRunnerImpl {
         &mut self,
         _args: &[u8],
         _metadata: HashMap<String, String>,
+        _sub_method: Option<&str>,
     ) -> Result<
         std::pin::Pin<
             Box<

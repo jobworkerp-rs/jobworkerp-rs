@@ -32,6 +32,11 @@ message JobRequest {
   optional jobworkerp.data.Priority priority = 6;
   // valid only for run_after or periodic worker jobs
   optional uint64 timeout = 7;
+  // Sub-method name for MCP/Plugin runners
+  // Optional for normal runners (will be ignored)
+  // Required for multi-tool MCP runners
+  // When omitted for single-tool MCP runners, auto-selected
+  optional string sub_method = 8;
 }
 
 service JobService {

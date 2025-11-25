@@ -98,6 +98,7 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         &mut self,
         arg: &[u8],
         metadata: HashMap<String, String>,
+        _sub_method: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         // XXX clone
         // let plugin_runner = Arc::clone(&self.plugin_runner);
@@ -132,6 +133,7 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         &mut self,
         arg: &[u8],
         metadata: HashMap<String, String>,
+        _sub_method: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // XXX clone
         let plugin_runner = self.plugin_runner.clone();

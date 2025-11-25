@@ -187,6 +187,7 @@ impl RunnerTrait for LLMChatRunnerImpl {
         &mut self,
         arg: &[u8],
         metadata: HashMap<String, String>,
+        _sub_method: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let cancellation_token = self.get_cancellation_token().await;
 
@@ -279,6 +280,7 @@ impl RunnerTrait for LLMChatRunnerImpl {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        _sub_method: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let cancellation_token = self.get_cancellation_token().await;
 

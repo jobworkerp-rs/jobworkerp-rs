@@ -28,8 +28,9 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
                 enqueue_time,
                 run_after_time,
                 start_time,
-                end_time
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                end_time,
+                sub_method
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(id.value)
         .bind(job_result.job_id.as_ref().unwrap().value) //XXX unwrap
@@ -52,6 +53,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
         .bind(job_result.run_after_time)
         .bind(job_result.start_time)
         .bind(job_result.end_time)
+        .bind(&job_result.sub_method)
         .execute(self.db_pool())
         .await
         .map_err(JobWorkerError::DBError)?;
@@ -80,7 +82,8 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
             enqueue_time = ?,
             run_after_time = ?,
             start_time = ?,
-            end_time = ?
+            end_time = ?,
+            sub_method = ?
             WHERE id = ?;",
         )
         .bind(job_result.job_id.as_ref().unwrap().value) //XXX unwrap
@@ -103,6 +106,7 @@ pub trait RdbJobResultRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send
         .bind(job_result.run_after_time)
         .bind(job_result.start_time)
         .bind(job_result.end_time)
+        .bind(&job_result.sub_method)
         .bind(id.value)
         .execute(&mut **tx)
         .await
@@ -569,6 +573,7 @@ mod test {
             response_type: 0,     // fixed
             store_success: false, // fixed
             store_failure: false, // fixed
+            sub_method: None,
         });
 
         let id = JobResultId { value: 111 };
@@ -612,6 +617,7 @@ mod test {
             response_type: 0, // fixed
             store_success: false,
             store_failure: false,
+            sub_method: None,
         };
         let updated = repository.update(&mut tx, &id, &update).await?;
         assert!(updated);
@@ -697,6 +703,7 @@ mod test {
             response_type: 0,
             store_success: false,
             store_failure: false,
+            sub_method: None,
         }
     }
 

@@ -457,6 +457,11 @@
               "title": "RunnerName",
               "description": "The name of the runner (runtime environment) that executes the job (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND, LLM_CHAT, MCP server names, plugin names, etc.)"
             },
+            "subMethod": {
+              "type": "string",
+              "title": "SubMethod",
+              "description": "Sub-method (tool) name for MCP/Plugin runners with multiple tools. Optional for single-tool runners."
+            },
             "settings": {
               "type": "object",
               "title": "InitializeSettings",
@@ -592,6 +597,10 @@
                 "runnerName": {
                   "type": "string",
                   "description": "The name of the runner that executes job"
+                },
+                "subMethod": {
+                  "type": "string",
+                  "description": "Sub-method (tool) name for MCP/Plugin runners with multiple tools. Optional for single-tool runners."
                 },
                 "settings": {
                   "type": "object",

@@ -211,10 +211,11 @@ async fn redis_test() -> Result<()> {
         description: "hoge2".to_string(),
         runner_type: 1,
         runner_settings_proto: "hoge3".to_string(),
-        job_args_proto: "hoge5".to_string(),
+        job_args_proto: Some("hoge5".to_string()),
         result_output_proto: Some("hoge7".to_string()),
         output_type: StreamingOutputType::NonStreaming as i32,
         definition: "test".to_string(),
+        sub_method_protos: None,
     };
     // clear first
     repo.delete(&id).await?;
@@ -235,7 +236,7 @@ async fn redis_test() -> Result<()> {
 
     let mut runner_data2 = runner_data.clone();
     runner_data2.name = "fuga1".to_string();
-    runner_data2.job_args_proto = "fuga5".to_string();
+    runner_data2.job_args_proto = Some("fuga5".to_string());
     let runner_with_schema2 = RunnerWithSchema {
         id: Some(id),
         data: Some(runner_data2.clone()),

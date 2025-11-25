@@ -108,6 +108,7 @@ impl RunnerTrait for SlackPostMessageRunner {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        _sub_method: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let cancellation_token = self.get_cancellation_token().await;
 
@@ -164,6 +165,7 @@ impl RunnerTrait for SlackPostMessageRunner {
         &mut self,
         arg: &[u8],
         metadata: HashMap<String, String>,
+        _sub_method: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let cancellation_token = self.get_cancellation_token().await;
 
@@ -342,7 +344,7 @@ mod tests {
 
         // Execute with pre-cancelled token
         let start_time = std::time::Instant::now();
-        let (result, _) = runner.run(&arg_bytes, metadata).await;
+        let (result, _) = runner.run(&arg_bytes, metadata, None).await;
         let elapsed = start_time.elapsed();
 
         // Should fail immediately due to pre-execution cancellation
@@ -400,7 +402,7 @@ mod tests {
         let execution_task = tokio::spawn(async move {
             let mut runner_guard = runner_clone.lock().await;
             let stream_result = runner_guard
-                .run_stream(&serialized_args, HashMap::new())
+                .run_stream(&serialized_args, HashMap::new(), None)
                 .await;
 
             match stream_result {

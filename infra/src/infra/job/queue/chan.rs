@@ -613,6 +613,7 @@ mod test {
     //             priority: Priority::High as i32,
     //             timeout: 1000,
     //             request_streaming: false,
+    //             sub_method: None,
     //         }),
     //         metadata: HashMap::new(),
     //     };
@@ -733,6 +734,7 @@ mod test {
                 priority: Priority::Low as i32,
                 timeout: 1000,
                 request_streaming: false,
+                sub_method: None,
             }),
             metadata: HashMap::new(),
         };
@@ -749,6 +751,7 @@ mod test {
                 priority: Priority::High as i32,
                 timeout: 1000,
                 request_streaming: false,
+                sub_method: None,
             }),
             metadata: HashMap::new(),
         };

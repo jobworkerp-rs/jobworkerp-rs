@@ -94,11 +94,41 @@ macro_rules! schema_to_json_string_option {
     }};
 }
 
+/// Macro to implement as_any() and as_any_mut() for RunnerSpec
+/// Usage: impl_runner_as_any!(RunnerImplType);
+#[macro_export]
+macro_rules! impl_runner_as_any {
+    ($runner_type:ty) => {
+        impl $runner_type {
+            #[inline]
+            pub fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+
+            #[inline]
+            pub fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+                self
+            }
+        }
+    };
+}
+
 pub trait RunnerSpec: Send + Sync + Any {
     fn name(&self) -> String;
     // only implement for stream runner (output_as_stream() == true)
     fn runner_settings_proto(&self) -> String;
+
+    /// Returns the job arguments protobuf schema for normal runners
+    /// For sub-method runners (MCP/Plugin), returns empty string
     fn job_args_proto(&self) -> String;
+
+    /// Returns the job arguments protobuf schema map for sub-method runners
+    /// Key: sub_method name, Value: protobuf schema string
+    /// For normal runners, returns None
+    fn job_args_proto_map(&self) -> Option<std::collections::HashMap<String, String>> {
+        None
+    }
+
     fn result_output_proto(&self) -> Option<String>;
     // run(), run_stream() availability
     fn output_type(&self) -> StreamingOutputType;
@@ -106,20 +136,67 @@ pub trait RunnerSpec: Send + Sync + Any {
     fn settings_schema(&self) -> String;
     fn arguments_schema(&self) -> String;
     fn output_schema(&self) -> Option<String>;
+
+    /// Returns the JSON schema for a specific sub-method (for Function layer)
+    /// Default implementation returns an error for runners that don't support sub-methods
+    fn get_sub_method_json_schema(&self, _sub_method: &str) -> Result<String> {
+        Err(anyhow::anyhow!("This runner does not support sub_method"))
+    }
+
+    /// Provides access to Any trait for downcasting
+    /// Default implementation uses self reference
+    fn as_any(&self) -> &dyn Any
+    where
+        Self: 'static + Sized,
+    {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any
+    where
+        Self: 'static + Sized,
+    {
+        self
+    }
 }
 
 #[async_trait]
 pub trait RunnerTrait: RunnerSpec + Send + Sync {
     async fn load(&mut self, settings: Vec<u8>) -> Result<()>;
+
+    /// Execute job with optional sub-method specification
+    ///
+    /// # Arguments
+    /// * `arg` - Protobuf binary arguments
+    /// * `metadata` - Job metadata
+    /// * `sub_method` - Optional sub-method name for MCP/Plugin runners
+    ///   - For normal runners: None or ignored if Some
+    ///   - For MCP/Plugin: Required for multi-tool runners, auto-selected for single-tool
+    ///
+    /// # Returns
+    /// Tuple of (Result<output_bytes>, updated_metadata)
     async fn run(
         &mut self,
         arg: &[u8],
         metadata: HashMap<String, String>,
+        sub_method: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>);
-    // only implement for stream runner (output_as_stream() == true)
+
+    /// Execute job with streaming output
+    ///
+    /// # Arguments
+    /// * `arg` - Protobuf binary arguments
+    /// * `metadata` - Job metadata
+    /// * `sub_method` - Optional sub-method name (same semantics as run())
     async fn run_stream(
         &mut self,
         arg: &[u8],
         metadata: HashMap<String, String>,
+        sub_method: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>>;
 }
+
+// NOTE: SubMethodRunner trait has been removed.
+// sub_method is now passed directly to RunnerTrait::run() and run_stream() as Option<&str>.
+// Normal runners should ignore the sub_method parameter (use _sub_method).
+// MCP/Plugin runners should use sub_method to select the appropriate tool/method.

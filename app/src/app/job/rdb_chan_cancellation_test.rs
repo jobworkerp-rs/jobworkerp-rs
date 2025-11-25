@@ -72,6 +72,7 @@ mod rdb_chan_cancellation_tests {
                     0,
                     None,
                     false,
+                    None, // sub_method
                 )
                 .await?;
 
@@ -308,6 +309,7 @@ mod rdb_chan_cancellation_tests {
                     0,
                     None,
                     false,
+                    None, // sub_method
                 )
                 .await?;
 
@@ -654,6 +656,7 @@ mod rdb_chan_cancellation_tests {
                 store_success: false,
                 store_failure: false,
                 worker_name: "test_worker".to_string(),
+                sub_method: None,
             };
 
             // Call complete_job() (which should call cleanup_job internally)

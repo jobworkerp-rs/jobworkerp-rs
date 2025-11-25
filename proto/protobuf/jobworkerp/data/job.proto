@@ -54,6 +54,13 @@ message JobData {
   // Job that requests to return a response with streaming.
   // (if not supported by runner, it will be ignored)
   bool request_streaming = 10;
+
+  // # Sub-Method
+  // Sub-method name for MCP/Plugin runners
+  // Optional for normal runners (will be ignored)
+  // Required for multi-tool MCP runners
+  // When omitted for single-tool MCP runners, auto-selected
+  optional string sub_method = 11;
 }
 
 // # Job ID

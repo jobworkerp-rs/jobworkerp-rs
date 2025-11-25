@@ -271,6 +271,98 @@ impl RunnerApp for RdbRunnerAppImpl {
             .await
     }
 
+    /// Refresh MCP runner's sub_method_protos by re-fetching tools from MCP server
+    async fn refresh_mcp_runner(
+        &self,
+        runner_id: Option<&RunnerId>,
+    ) -> Result<(Vec<String>, Vec<(String, String)>)>
+    where
+        Self: Send + 'static,
+    {
+        let mut updated = Vec::new();
+        let mut failures = Vec::new();
+
+        // Get the runners to refresh
+        let runners = if let Some(id) = runner_id {
+            // Single runner
+            match self.runner_repository().find(id).await? {
+                Some(runner) => vec![runner],
+                None => {
+                    return Err(JobWorkerError::NotFound(format!(
+                        "Runner with id {} not found",
+                        id.value
+                    ))
+                    .into());
+                }
+            }
+        } else {
+            // All MCP runners
+            self.runner_repository()
+                .find_list_by(
+                    vec![RunnerType::McpServer as i32],
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await?
+        };
+
+        for runner in runners {
+            let Some(data) = &runner.data else {
+                continue;
+            };
+
+            // Only refresh MCP runners
+            if data.runner_type != RunnerType::McpServer as i32 {
+                failures.push((data.name.clone(), "Not an MCP runner".to_string()));
+                continue;
+            }
+
+            let runner_name = data.name.clone();
+
+            // Re-load the MCP server to refresh tools
+            match self
+                .runner_repository()
+                .load_mcp_server(&data.name, &data.description, &data.definition)
+                .await
+            {
+                Ok(_) => {
+                    updated.push(runner_name.clone());
+                    // Clear cache for this runner
+                    if let Some(id) = &runner.id {
+                        let _ = self
+                            .delete_cache_locked(&Self::find_cache_key(&id.value))
+                            .await;
+                    }
+                    tracing::info!("Refreshed MCP runner: {}", runner_name);
+                }
+                Err(e) => {
+                    let error_msg = format!("{}", e);
+                    tracing::warn!(
+                        "Failed to refresh MCP runner {}: {}",
+                        runner_name,
+                        error_msg
+                    );
+                    failures.push((runner_name, error_msg));
+                }
+            }
+        }
+
+        // Clear list caches if any runners were updated
+        if !updated.is_empty() {
+            let _ = self
+                .delete_cache_locked(&Self::find_all_list_cache_key(true))
+                .await;
+            let _ = self
+                .delete_cache_locked(&Self::find_all_list_cache_key(false))
+                .await;
+        }
+
+        Ok((updated, failures))
+    }
+
     // for test
     #[cfg(any(test, feature = "test-utils"))]
     async fn create_test_runner(

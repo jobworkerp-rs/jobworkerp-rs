@@ -4,7 +4,9 @@ use app::app::function::FunctionApp;
 use app::module::AppModule;
 use infra_utils::infra::test::TEST_RUNTIME;
 use proto::jobworkerp::data::{RunnerId, WorkerData};
-use proto::jobworkerp::function::data::{function_id, FunctionId, FunctionSetData};
+use proto::jobworkerp::function::data::{
+    function_id, FunctionId, FunctionSetData, RunnerSubMethod,
+};
 
 #[test]
 fn test_find_detail_with_runners_and_workers() -> Result<()> {
@@ -32,7 +34,10 @@ fn test_find_detail_with_runners_and_workers() -> Result<()> {
             category: 1,
             targets: vec![
                 FunctionId {
-                    id: Some(function_id::Id::RunnerId(runner_id)),
+                    id: Some(function_id::Id::RunnerSubMethod(RunnerSubMethod {
+                        runner_id: Some(runner_id),
+                        sub_method: None,
+                    })),
                 },
                 FunctionId {
                     id: Some(function_id::Id::WorkerId(worker_id)),
@@ -160,7 +165,10 @@ fn test_convert_function_ids_with_none_id() -> Result<()> {
         let function_ids = vec![
             FunctionId { id: None }, // Invalid
             FunctionId {
-                id: Some(function_id::Id::RunnerId(runner_id)), // Valid
+                id: Some(function_id::Id::RunnerSubMethod(RunnerSubMethod {
+                    runner_id: Some(runner_id),
+                    sub_method: None,
+                })), // Valid
             },
         ];
 

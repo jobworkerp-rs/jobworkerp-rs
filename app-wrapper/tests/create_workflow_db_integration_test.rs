@@ -85,7 +85,7 @@ fn test_create_workflow_runner_db_integration() -> Result<()> {
 
         // Execute CREATE_WORKFLOW
         let metadata = HashMap::new();
-        let (result, _returned_metadata) = runner.run(&serialized_args, metadata).await;
+        let (result, _returned_metadata) = runner.run(&serialized_args, metadata, None).await;
 
         match result {
             Ok(output_bytes) => {
@@ -210,7 +210,7 @@ fn test_create_workflow_url_db_integration() -> Result<()> {
 
         // Execute CREATE_WORKFLOW
         let metadata = HashMap::new();
-        let (result, _returned_metadata) = runner.run(&serialized_args, metadata).await;
+        let (result, _returned_metadata) = runner.run(&serialized_args, metadata, None).await;
 
         match result {
             Ok(output_bytes) => {
@@ -296,7 +296,7 @@ fn test_create_workflow_error_cases_db_integration() -> Result<()> {
         };
 
         let serialized = ProstMessageCodec::serialize_message(&empty_name_args)?;
-        let (result, _) = runner.run(&serialized, HashMap::new()).await;
+        let (result, _) = runner.run(&serialized, HashMap::new(), None).await;
         assert!(result.is_err(), "Empty name should cause validation error");
         println!("✅ Empty name rejection: OK");
 
@@ -310,7 +310,7 @@ fn test_create_workflow_error_cases_db_integration() -> Result<()> {
         };
 
         let serialized = ProstMessageCodec::serialize_message(&invalid_json_args)?;
-        let (result, _) = runner.run(&serialized, HashMap::new()).await;
+        let (result, _) = runner.run(&serialized, HashMap::new(), None).await;
         assert!(result.is_err(), "Invalid JSON should cause parsing error");
         println!("✅ Invalid JSON rejection: OK");
 
@@ -322,7 +322,7 @@ fn test_create_workflow_error_cases_db_integration() -> Result<()> {
         };
 
         let serialized = ProstMessageCodec::serialize_message(&no_source_args)?;
-        let (result, _) = runner.run(&serialized, HashMap::new()).await;
+        let (result, _) = runner.run(&serialized, HashMap::new(), None).await;
         assert!(
             result.is_err(),
             "Missing workflow_source should cause validation error"
