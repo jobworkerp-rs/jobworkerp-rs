@@ -70,6 +70,22 @@ pub trait RunnerApp: fmt::Debug + Send + Sync {
     where
         Self: Send + 'static;
 
+    /// Refresh MCP runner's sub_method_protos by re-fetching tools from MCP server
+    ///
+    /// # Arguments
+    /// * `runner_id` - If Some, refresh only this runner. If None, refresh all MCP runners.
+    ///
+    /// # Returns
+    /// A tuple of (updated_runner_names, failures)
+    /// - updated_runner_names: List of runner names that were successfully updated
+    /// - failures: List of (runner_name, error_message) pairs for failed refreshes
+    async fn refresh_mcp_runner(
+        &self,
+        runner_id: Option<&RunnerId>,
+    ) -> Result<(Vec<String>, Vec<(String, String)>)>
+    where
+        Self: Send + 'static;
+
     // for test
     #[cfg(any(test, feature = "test-utils"))]
     async fn create_test_runner(
@@ -103,8 +119,31 @@ pub trait UseRunnerParserWithCache: Send + Sync {
     fn clear_cache_th_descriptor(&self) -> impl std::future::Future<Output = ()> + Send {
         async { self.descriptor_cache().clear().await }
     }
+
+    /// Validate mutual exclusivity of job_args_proto and sub_method_protos
+    /// per the detailed design specification (section 2.1)
+    fn validate_runner_data_exclusivity(runner_data: &RunnerData) -> Result<()> {
+        let has_job_args = runner_data
+            .job_args_proto
+            .as_ref()
+            .is_some_and(|s| !s.is_empty());
+        let has_sub_methods = runner_data.sub_method_protos.is_some();
+
+        if has_sub_methods && has_job_args {
+            return Err(JobWorkerError::InvalidParameter(
+                "job_args_proto and sub_method_protos cannot both be set".to_string(),
+            )
+            .into());
+        }
+
+        Ok(())
+    }
+
     // TODO remove if not used
     fn parse_proto_schemas(&self, runner_data: RunnerData) -> Result<RunnerDataWithDescriptor> {
+        // Validate mutual exclusivity of job_args_proto and sub_method_protos
+        Self::validate_runner_data_exclusivity(&runner_data)?;
+
         // runner_settings_proto
         let ope_d = if runner_data.runner_settings_proto.is_empty() {
             None
@@ -123,21 +162,22 @@ pub trait UseRunnerParserWithCache: Send + Sync {
             Some(ope_d)
         };
         // job_args_proto
-        let arg_d = if runner_data.job_args_proto.is_empty() {
-            // use JobResult as job_args_proto
-            None
-        } else {
-            let arg_d = ProtobufDescriptor::new(&runner_data.job_args_proto).map_err(|e| {
-                JobWorkerError::ParseError(format!("schema job_args_proto error:{e:?}"))
-            })?;
-            let _arg_m = arg_d
-                .get_messages()
-                .first()
-                .ok_or(JobWorkerError::InvalidParameter(format!(
-                    "illegal RunnerData: message name is not found from {}",
-                    runner_data.job_args_proto
-                )))?;
-            Some(arg_d)
+        let arg_d = match &runner_data.job_args_proto {
+            Some(job_args_proto) if !job_args_proto.is_empty() => {
+                let arg_d = ProtobufDescriptor::new(job_args_proto).map_err(|e| {
+                    JobWorkerError::ParseError(format!("schema job_args_proto error:{e:?}"))
+                })?;
+                let _arg_m =
+                    arg_d
+                        .get_messages()
+                        .first()
+                        .ok_or(JobWorkerError::InvalidParameter(format!(
+                            "illegal RunnerData: message name is not found from {}",
+                            job_args_proto
+                        )))?;
+                Some(arg_d)
+            }
+            _ => None, // use JobResult as job_args_proto
         };
         // result_output_proto
         let result_d = if let Some(result_output_proto) = &runner_data.result_output_proto {
@@ -301,7 +341,7 @@ impl RunnerDataWithDescriptor {
                 .cloned()
                 .ok_or(
                     JobWorkerError::InvalidParameter(format!(
-                        "illegal RunnerData: job args message name is not found from:\n {}",
+                        "illegal RunnerData: job args message name is not found from:\n {:?}",
                         &self.runner_data.job_args_proto
                     ))
                     .into(),
@@ -361,11 +401,14 @@ pub mod test {
             description: "test runner desc".to_string(),
             runner_settings_proto: include_str!("../../../proto/protobuf/test_runner.proto")
                 .to_string(),
-            job_args_proto: include_str!("../../../proto/protobuf/test_args.proto").to_string(),
+            job_args_proto: Some(
+                include_str!("../../../proto/protobuf/test_args.proto").to_string(),
+            ),
             runner_type: RunnerType::Plugin as i32,
             result_output_proto: None,
             output_type: StreamingOutputType::NonStreaming as i32,
             definition: "./target/debug/libplugin_runner_test.so".to_string(),
+            sub_method_protos: None,
         }
     }
     pub fn test_runner_with_schema(id: &RunnerId, name: &str) -> RunnerWithSchema {
@@ -389,10 +432,10 @@ pub mod test {
                 )
                 .unwrap(),
             ),
-            args_descriptor: Some(
-                command_utils::protobuf::ProtobufDescriptor::new(&runner_data.job_args_proto)
-                    .unwrap(),
-            ),
+            args_descriptor: runner_data
+                .job_args_proto
+                .as_ref()
+                .map(|proto| command_utils::protobuf::ProtobufDescriptor::new(proto).unwrap()),
             result_descriptor: None,
         }
     }

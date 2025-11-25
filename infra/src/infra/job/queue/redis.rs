@@ -530,6 +530,7 @@ mod test {
                 priority: 1,
                 timeout: 1000,
                 request_streaming: false,
+                sub_method: None,
             }),
             metadata: HashMap::new(),
         };

@@ -51,6 +51,35 @@ message CountRunnerRequest {
   optional string name_filter = 2;
 }
 
+// # Refresh MCP Runner Request
+// Request to refresh MCP runner's sub_method_protos by re-fetching tools from MCP server
+message RefreshMcpRunnerRequest {
+  // # Runner ID
+  // Optional: If specified, refresh only this runner
+  // If not specified, refresh all MCP runners
+  optional jobworkerp.data.RunnerId runner_id = 1;
+}
+
+// # Refresh MCP Runner Response
+// Response containing the list of updated runner names
+message RefreshMcpRunnerResponse {
+  // # Updated Runners
+  // List of runner names that were successfully updated
+  repeated string updated_runners = 1;
+  // # Failed Runners
+  // List of runner names that failed to update with error messages
+  repeated RefreshFailure failures = 2;
+}
+
+// # Refresh Failure
+// Details about a failed refresh operation
+message RefreshFailure {
+  // Runner name that failed to refresh
+  string runner_name = 1;
+  // Error message describing the failure
+  string error_message = 2;
+}
+
 service RunnerService {
   rpc Create(CreateRunnerRequest) returns (CreateRunnerResponse);
   rpc Delete(jobworkerp.data.RunnerId) returns (SuccessResponse);
@@ -67,4 +96,8 @@ service RunnerService {
   // New methods with filtering and sorting capabilities
   rpc FindListBy(FindRunnerListRequest) returns (stream jobworkerp.data.Runner);
   rpc CountBy(CountRunnerRequest) returns (CountResponse);
+  // # Refresh MCP Runner
+  // Re-fetches tool definitions from MCP server and updates sub_method_protos
+  // Use this when MCP server's tools have been updated
+  rpc RefreshMcpRunner(RefreshMcpRunnerRequest) returns (RefreshMcpRunnerResponse);
 }

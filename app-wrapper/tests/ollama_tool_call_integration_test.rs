@@ -19,7 +19,9 @@ pub mod test {
     use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::OllamaRunnerSettings;
     use jobworkerp_runner::jobworkerp::runner::llm::{llm_chat_args::LlmOptions, LlmChatArgs};
     use proto::jobworkerp::data::RunnerId;
-    use proto::jobworkerp::function::data::{function_id, FunctionId, FunctionSetData};
+    use proto::jobworkerp::function::data::{
+        function_id, FunctionId, FunctionSetData, RunnerSubMethod,
+    };
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::time::{timeout, Duration};
@@ -39,7 +41,10 @@ pub mod test {
                 description: "Test set for Ollama tool calls - COMMAND runner only".to_string(),
                 category: 0,
                 targets: vec![FunctionId {
-                    id: Some(function_id::Id::RunnerId(RunnerId { value: 1 })),
+                    id: Some(function_id::Id::RunnerSubMethod(RunnerSubMethod {
+                        runner_id: Some(RunnerId { value: 1 }),
+                        sub_method: None,
+                    })),
                 }],
             })
             .await;

@@ -138,6 +138,7 @@ impl RunnerTrait for InlineWorkflowRunner {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        _sub_method: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let result = async {
             // let span = Self::tracing_span_from_metadata(&metadata, APP_NAME, "inline_workflow.run");
@@ -269,6 +270,7 @@ impl RunnerTrait for InlineWorkflowRunner {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        _sub_method: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let cx = Self::create_context(&metadata);
 

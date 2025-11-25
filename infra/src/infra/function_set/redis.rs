@@ -152,7 +152,7 @@ pub trait UseRedisFunctionSetRepository {
 async fn redis_test() -> Result<()> {
     use proto::jobworkerp::data::{RunnerId, WorkerId};
     use proto::jobworkerp::function::data::{
-        function_id, FunctionId, FunctionSetData, FunctionSetId,
+        function_id, FunctionId, FunctionSetData, FunctionSetId, RunnerSubMethod,
     };
 
     let pool = infra_utils::infra::test::setup_test_redis_pool().await;
@@ -165,7 +165,10 @@ async fn redis_test() -> Result<()> {
         category: 4,
         targets: vec![
             FunctionId {
-                id: Some(function_id::Id::RunnerId(RunnerId { value: 10 })),
+                id: Some(function_id::Id::RunnerSubMethod(RunnerSubMethod {
+                    runner_id: Some(RunnerId { value: 10 }),
+                    sub_method: None,
+                })),
             },
             FunctionId {
                 id: Some(function_id::Id::WorkerId(WorkerId { value: 20 })),
@@ -186,7 +189,10 @@ async fn redis_test() -> Result<()> {
     function_set2.description = "fuga2".to_string();
     function_set2.category = 5;
     function_set2.targets[0] = FunctionId {
-        id: Some(function_id::Id::RunnerId(RunnerId { value: 30 })),
+        id: Some(function_id::Id::RunnerSubMethod(RunnerSubMethod {
+            runner_id: Some(RunnerId { value: 30 }),
+            sub_method: None,
+        })),
     };
     function_set2.targets[1] = FunctionId {
         id: Some(function_id::Id::WorkerId(WorkerId { value: 40 })),

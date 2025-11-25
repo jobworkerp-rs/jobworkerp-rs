@@ -243,7 +243,7 @@ async fn test_mcp_with_cancel_helper() -> Result<()> {
     let metadata = HashMap::new();
 
     let start_time = std::time::Instant::now();
-    let (result, _) = runner.run(&arg_bytes, metadata).await;
+    let (result, _) = runner.run(&arg_bytes, metadata, None).await;
     let elapsed = start_time.elapsed();
 
     // Should fail immediately due to pre-execution cancellation
@@ -298,7 +298,7 @@ async fn test_mcp_cancellation_during_execution() -> Result<()> {
     // Start MCP tool call in a task
     let execution_task = tokio::spawn(async move {
         let mut runner_guard = runner_clone.lock().await;
-        runner_guard.run(&arg_bytes, metadata).await
+        runner_guard.run(&arg_bytes, metadata, None).await
     });
 
     // Wait for HTTP request to start (longer delay for fetch to actually begin)
@@ -388,7 +388,7 @@ async fn test_mcp_stream_execution_normal() -> Result<()> {
     let metadata = HashMap::new();
 
     let start_time = std::time::Instant::now();
-    let mut stream = runner.run_stream(&arg_bytes, metadata).await?;
+    let mut stream = runner.run_stream(&arg_bytes, metadata, None).await?;
 
     let mut item_count = 0;
     let mut received_data = false;
@@ -485,7 +485,7 @@ async fn test_mcp_stream_execution_with_cancellation() -> Result<()> {
     // Start stream execution in a task
     let execution_task = tokio::spawn(async move {
         let mut runner_guard = runner_clone.lock().await;
-        let stream_result = runner_guard.run_stream(&arg_bytes, metadata).await;
+        let stream_result = runner_guard.run_stream(&arg_bytes, metadata, None).await;
 
         match stream_result {
             Ok(mut stream) => {
@@ -737,3 +737,313 @@ async fn test_mcp_stream_execution_with_cancellation() -> Result<()> {
 
 //     Ok(())
 // }
+
+// ==================== Sub-Method Mode Integration Tests ====================
+
+/// Test T3.7: Initialize sub_method mode and verify tool list generation
+#[tokio::test]
+#[ignore] // Requires MCP server - run with --ignored for full testing
+async fn test_sub_method_mode_initialization() -> Result<()> {
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerSpec;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    // Create McpClients
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+
+    // Create MCP runner instance in legacy mode initially
+    let mut runner = McpServerRunnerImpl::new(client);
+    assert!(runner.is_legacy_mode(), "Should start in legacy mode");
+
+    // Initialize sub_method mode
+    runner.initialize_sub_method_mode().await?;
+    assert!(!runner.is_legacy_mode(), "Should switch to sub_method mode");
+
+    // Verify available tools
+    let tool_names = runner.available_tool_names();
+    assert!(
+        !tool_names.is_empty(),
+        "Should have at least one tool available"
+    );
+    assert!(
+        tool_names.contains(&"get_current_time".to_string()),
+        "Should have get_current_time tool"
+    );
+
+    // Verify job_args_proto_map returns tool schemas
+    let proto_map = runner.job_args_proto_map();
+    assert!(proto_map.is_some(), "Should return proto map in sub_method mode");
+    let proto_map = proto_map.unwrap();
+    assert!(
+        proto_map.contains_key("get_current_time"),
+        "Proto map should contain get_current_time"
+    );
+
+    // Verify schema content
+    let schema = proto_map.get("get_current_time").unwrap();
+    assert!(
+        schema.contains("TimeGetCurrentTimeArgs") || schema.contains("syntax = \"proto3\""),
+        "Schema should be valid Protobuf definition"
+    );
+
+    eprintln!("✅ Sub-method mode initialization test passed");
+    eprintln!("   Available tools: {:?}", tool_names);
+    Ok(())
+}
+
+/// Test T3.7: Execute tool call in sub_method mode with explicit sub_method
+#[tokio::test]
+#[ignore] // Requires MCP server - run with --ignored for full testing
+async fn test_sub_method_mode_execution_with_explicit_method() -> Result<()> {
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use std::collections::HashMap;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    // Create MCP runner and initialize sub_method mode
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+    let mut runner = McpServerRunnerImpl::new(client);
+    runner.initialize_sub_method_mode().await?;
+
+    // Prepare JSON arguments (sub_method mode uses JSON bytes)
+    let args = serde_json::json!({"timezone": "UTC"});
+    let args_bytes = serde_json::to_vec(&args)?;
+
+    // Execute with explicit sub_method
+    let metadata = HashMap::new();
+    let (result, _) = runner
+        .run(&args_bytes, metadata, Some("get_current_time"))
+        .await;
+
+    assert!(result.is_ok(), "Should execute successfully with explicit sub_method");
+    let output = result.unwrap();
+    let output_str = String::from_utf8_lossy(&output);
+    assert!(!output_str.is_empty(), "Should return non-empty output");
+
+    eprintln!("✅ Sub-method mode execution test passed");
+    eprintln!("   Output: {}", output_str);
+    Ok(())
+}
+
+/// Test T3.7: Auto-select single tool when sub_method is None
+#[tokio::test]
+#[ignore] // Requires MCP server - run with --ignored for full testing
+async fn test_sub_method_mode_auto_select_single_tool() -> Result<()> {
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use std::collections::HashMap;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    // Create MCP runner and initialize sub_method mode
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+    let mut runner = McpServerRunnerImpl::new(client);
+    runner.initialize_sub_method_mode().await?;
+
+    // Time server has only one tool (get_current_time), so sub_method can be omitted
+    let tool_count = runner.available_tool_names().len();
+
+    if tool_count == 1 {
+        // Prepare JSON arguments
+        let args = serde_json::json!({"timezone": "Asia/Tokyo"});
+        let args_bytes = serde_json::to_vec(&args)?;
+
+        // Execute WITHOUT sub_method - should auto-select
+        let metadata = HashMap::new();
+        let (result, _) = runner.run(&args_bytes, metadata, None).await;
+
+        assert!(
+            result.is_ok(),
+            "Should auto-select single tool when sub_method is None"
+        );
+        eprintln!("✅ Single-tool auto-select test passed");
+    } else {
+        eprintln!("⚠️ Time server has {} tools, skipping auto-select test", tool_count);
+    }
+
+    Ok(())
+}
+
+/// Test T3.7: Error when sub_method is required but not provided (multi-tool runner)
+#[tokio::test]
+#[ignore] // Requires fetch MCP server - run with --ignored for full testing
+async fn test_sub_method_mode_error_when_method_required() -> Result<()> {
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use std::collections::HashMap;
+
+    let config = McpConfig {
+        server: vec![create_fetch_mcp_server().await?],
+    };
+
+    // Create MCP runner and initialize sub_method mode
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("fetch").await?;
+    let mut runner = McpServerRunnerImpl::new(client);
+    runner.initialize_sub_method_mode().await?;
+
+    let tool_count = runner.available_tool_names().len();
+
+    if tool_count > 1 {
+        // Fetch server may have multiple tools (fetch, fetch_html, etc.)
+        let args = serde_json::json!({"url": "https://example.com"});
+        let args_bytes = serde_json::to_vec(&args)?;
+
+        // Execute WITHOUT sub_method - should fail for multi-tool runner
+        let metadata = HashMap::new();
+        let (result, _) = runner.run(&args_bytes, metadata, None).await;
+
+        assert!(
+            result.is_err(),
+            "Should fail when sub_method is required but not provided"
+        );
+
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("sub_method is required") || error_msg.contains("Available"),
+            "Error message should indicate sub_method is required. Got: {error_msg}"
+        );
+
+        eprintln!("✅ Multi-tool sub_method required test passed");
+        eprintln!("   Error message: {error_msg}");
+    } else {
+        eprintln!("⚠️ Fetch server has only {} tool, skipping multi-tool test", tool_count);
+    }
+
+    Ok(())
+}
+
+/// Test T3.7: Error when unknown sub_method is provided
+#[tokio::test]
+#[ignore] // Requires MCP server - run with --ignored for full testing
+async fn test_sub_method_mode_error_unknown_method() -> Result<()> {
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use std::collections::HashMap;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    // Create MCP runner and initialize sub_method mode
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+    let mut runner = McpServerRunnerImpl::new(client);
+    runner.initialize_sub_method_mode().await?;
+
+    // Prepare arguments
+    let args = serde_json::json!({"timezone": "UTC"});
+    let args_bytes = serde_json::to_vec(&args)?;
+
+    // Execute with unknown sub_method
+    let metadata = HashMap::new();
+    let (result, _) = runner
+        .run(&args_bytes, metadata, Some("nonexistent_tool"))
+        .await;
+
+    assert!(result.is_err(), "Should fail with unknown sub_method");
+
+    let error_msg = result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("Unknown") || error_msg.contains("nonexistent_tool"),
+        "Error message should mention unknown tool. Got: {error_msg}"
+    );
+
+    eprintln!("✅ Unknown sub_method error test passed");
+    eprintln!("   Error message: {error_msg}");
+    Ok(())
+}
+
+/// Test T3.7: Verify get_sub_method_json_schema returns correct schema
+#[tokio::test]
+#[ignore] // Requires MCP server - run with --ignored for full testing
+async fn test_sub_method_json_schema() -> Result<()> {
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerSpec;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    // Create MCP runner and initialize sub_method mode
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+    let mut runner = McpServerRunnerImpl::new(client);
+    runner.initialize_sub_method_mode().await?;
+
+    // Get JSON schema for get_current_time
+    let schema = runner.get_sub_method_json_schema("get_current_time")?;
+    assert!(!schema.is_empty(), "JSON schema should not be empty");
+
+    // Validate it's valid JSON
+    let parsed: serde_json::Value = serde_json::from_str(&schema)?;
+    assert!(parsed.is_object(), "JSON schema should be an object");
+
+    // Schema should have "type" or "properties" field
+    assert!(
+        parsed.get("type").is_some() || parsed.get("properties").is_some(),
+        "JSON schema should have type or properties field"
+    );
+
+    eprintln!("✅ JSON schema retrieval test passed");
+    eprintln!("   Schema: {}", serde_json::to_string_pretty(&parsed)?);
+    Ok(())
+}
+
+/// Test T3.7: Legacy mode still works after sub_method implementation
+#[tokio::test]
+#[ignore] // Requires MCP server - run with --ignored for full testing
+async fn test_legacy_mode_still_works() -> Result<()> {
+    use crate::jobworkerp::runner::McpServerArgs;
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
+    use std::collections::HashMap;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    // Create MCP runner WITHOUT initializing sub_method mode (legacy mode)
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+    let mut runner = McpServerRunnerImpl::new(client);
+
+    assert!(runner.is_legacy_mode(), "Should be in legacy mode");
+
+    // Prepare legacy McpServerArgs
+    let mcp_args = McpServerArgs {
+        tool_name: "get_current_time".to_string(),
+        arg_json: r#"{"timezone": "UTC"}"#.to_string(),
+    };
+    let args_bytes = ProstMessageCodec::serialize_message(&mcp_args)?;
+
+    // Execute in legacy mode (sub_method is None, uses McpServerArgs internally)
+    let metadata = HashMap::new();
+    let (result, _) = runner.run(&args_bytes, metadata, None).await;
+
+    assert!(result.is_ok(), "Legacy mode should still work");
+    let output = result.unwrap();
+    assert!(!output.is_empty(), "Should return non-empty output");
+
+    eprintln!("✅ Legacy mode backward compatibility test passed");
+    Ok(())
+}

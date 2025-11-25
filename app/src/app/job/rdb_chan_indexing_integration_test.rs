@@ -88,6 +88,7 @@ mod rdb_chan_indexing_integration_tests {
                     0,
                     None,
                     false,
+                    None, // sub_method
                 )
                 .await?;
 
@@ -229,6 +230,7 @@ mod rdb_chan_indexing_integration_tests {
                         0,
                         None,
                         false,
+                        None, // sub_method
                     )
                     .await?;
                 job_ids.push(job_id);
@@ -359,6 +361,7 @@ mod rdb_chan_indexing_integration_tests {
                     0,
                     None,
                     false,
+                    None, // sub_method
                 )
                 .await?;
 
@@ -484,6 +487,7 @@ mod rdb_chan_indexing_integration_tests {
                     0,
                     None,
                     false,
+                    None, // sub_method
                 )
                 .await?;
 

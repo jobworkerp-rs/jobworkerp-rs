@@ -283,6 +283,7 @@ impl RunnerTrait for PythonCommandRunner {
         &mut self,
         arg: &[u8],
         metadata: HashMap<String, String>,
+        _sub_method: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let cancellation_token = self.get_cancellation_token().await;
 
@@ -429,6 +430,7 @@ impl RunnerTrait for PythonCommandRunner {
         &mut self,
         _arg: &[u8],
         _metadata: HashMap<String, String>,
+        _sub_method: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let _cancellation_token = self.get_cancellation_token().await;
 
@@ -585,7 +587,7 @@ print(f"Requests version: {requests.__version__}")
             let mut args_bytes = Vec::new();
             job_args.encode(&mut args_bytes).unwrap();
 
-            let run_result = runner.run(&args_bytes, HashMap::new()).await;
+            let run_result = runner.run(&args_bytes, HashMap::new(), None).await;
             assert!(
                 run_result.0.is_ok(),
                 "Failed to run: {:?}",
@@ -671,7 +673,7 @@ except KeyboardInterrupt:
             // Start Python execution and cancel it after 1 second
             let start_time = std::time::Instant::now();
             let execution_task =
-                tokio::spawn(async move { runner.run(&arg_bytes, metadata).await });
+                tokio::spawn(async move { runner.run(&arg_bytes, metadata, None).await });
 
             // Wait for script to start, then cancel the runner
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;

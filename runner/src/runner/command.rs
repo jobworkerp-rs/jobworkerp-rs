@@ -205,6 +205,7 @@ impl RunnerTrait for CommandRunnerImpl {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        _sub_method: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         // let (span, cx) =
         //     Self::tracing_span_from_metadata(&metadata, APP_WORKER_NAME, "COMMAND::run");
@@ -474,6 +475,7 @@ impl RunnerTrait for CommandRunnerImpl {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        _sub_method: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // Set up cancellation token using manager
         let cancellation_token = self.get_cancellation_token().await;
@@ -1106,6 +1108,7 @@ mod tests {
             .run(
                 &ProstMessageCodec::serialize_message(&arg).unwrap(),
                 HashMap::new(),
+                None,
             )
             .await;
 
@@ -1145,6 +1148,7 @@ mod tests {
             .run(
                 &ProstMessageCodec::serialize_message(&arg).unwrap(),
                 HashMap::new(),
+                None,
             )
             .await;
 
@@ -1170,6 +1174,7 @@ mod tests {
             .run(
                 &ProstMessageCodec::serialize_message(&arg).unwrap(),
                 HashMap::new(),
+                None,
             )
             .await;
 
@@ -1190,6 +1195,7 @@ mod tests {
             .run_stream(
                 &ProstMessageCodec::serialize_message(&arg).unwrap(),
                 HashMap::new(),
+                None,
             )
             .await;
 
@@ -1273,6 +1279,7 @@ mod tests {
             .run_stream(
                 &ProstMessageCodec::serialize_message(&arg).unwrap(),
                 HashMap::new(),
+                None,
             )
             .await;
 
@@ -1407,7 +1414,8 @@ mod tests {
         let start_time = std::time::Instant::now();
 
         // First, start a command that we will cancel
-        let execution_task = tokio::spawn(async move { runner1.run(&arg_bytes, metadata).await });
+        let execution_task =
+            tokio::spawn(async move { runner1.run(&arg_bytes, metadata, None).await });
 
         // Wait a moment, then test cancel on the second runner (which has no active process)
         sleep(Duration::from_millis(100)).await;

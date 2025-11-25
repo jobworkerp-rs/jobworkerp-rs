@@ -170,7 +170,8 @@ async fn test_llm_chat_with_cancellation_helper() -> Result<()> {
     let start_time = Instant::now();
 
     // Start execution in background
-    let execution_task = tokio::spawn(async move { runner.run(&serialized_args, metadata).await });
+    let execution_task =
+        tokio::spawn(async move { runner.run(&serialized_args, metadata, None).await });
 
     // Wait a bit, then trigger external cancellation
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -257,7 +258,8 @@ async fn test_llm_completion_with_cancellation_helper() -> Result<()> {
     let start_time = Instant::now();
 
     // Start execution in background
-    let execution_task = tokio::spawn(async move { runner.run(&serialized_args, metadata).await });
+    let execution_task =
+        tokio::spawn(async move { runner.run(&serialized_args, metadata, None).await });
 
     // Wait a bit, then trigger external cancellation
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -341,7 +343,7 @@ async fn test_llm_chat_pre_cancellation() -> Result<()> {
     let metadata = HashMap::new();
 
     let start_time = Instant::now();
-    let (result, _) = runner.run(&serialized_args, metadata).await;
+    let (result, _) = runner.run(&serialized_args, metadata, None).await;
     let elapsed = start_time.elapsed();
 
     println!(
@@ -412,7 +414,7 @@ async fn test_llm_completion_pre_cancellation() -> Result<()> {
     let metadata = HashMap::new();
 
     let start_time = Instant::now();
-    let (result, _) = runner.run(&serialized_args, metadata).await;
+    let (result, _) = runner.run(&serialized_args, metadata, None).await;
     let elapsed = start_time.elapsed();
 
     println!("Pre-cancelled LLM completion execution completed in {elapsed:?}",);
@@ -468,7 +470,7 @@ async fn test_llm_chat_without_cancellation_helper() -> Result<()> {
 
     println!("Starting LLM chat WITHOUT cancellation helper...");
     let start_time = Instant::now();
-    let (result, _) = runner.run(&serialized_args, metadata).await;
+    let (result, _) = runner.run(&serialized_args, metadata, None).await;
     let elapsed = start_time.elapsed();
 
     println!("LLM chat (no helper) execution completed in {:?}", elapsed);

@@ -723,10 +723,10 @@ mod test {
                 "../../../../plugins/hello_runner/protobuf/hello_runner.proto"
             )
             .to_string(),
-            job_args_proto: include_str!(
-                "../../../../plugins/hello_runner/protobuf/hello_job_args.proto"
-            )
-            .to_string(),
+            job_args_proto: Some(
+                include_str!("../../../../plugins/hello_runner/protobuf/hello_job_args.proto")
+                    .to_string(),
+            ),
             result_output_proto: Some(
                 include_str!("../../../../plugins/hello_runner/protobuf/hello_result.proto")
                     .to_string(),
@@ -734,6 +734,7 @@ mod test {
             runner_type: 0,
             output_type: StreamingOutputType::Both as i32, // hello
             definition: "./target/debug/libplugin_runner_hello.dylib".to_string(),
+            sub_method_protos: None,
         };
         let plugin = p
             .create_runner_spec_by_name(&data.name, false)

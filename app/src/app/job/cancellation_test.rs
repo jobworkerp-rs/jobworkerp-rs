@@ -86,6 +86,7 @@ mod tests {
                     0,
                     None,
                     false,
+                    None, // sub_method
                 )
                 .await?;
 
@@ -156,6 +157,7 @@ mod tests {
                     0,
                     None,
                     false,
+                    None, // sub_method
                 )
                 .await?;
 
@@ -307,6 +309,7 @@ mod tests {
                     0,
                     None,
                     false,
+                    None, // sub_method
                 )
                 .await?;
 
@@ -400,6 +403,7 @@ mod tests {
                     0,
                     None,
                     false,
+                    None, // sub_method
                 )
                 .await?;
 

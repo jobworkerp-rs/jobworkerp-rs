@@ -153,6 +153,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                     unique_key,
                     timeout_sec,
                     streaming,
+                    None, // sub_method not supported in this path
                 )
                 .await
             } else {
@@ -268,6 +269,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                             None,
                             false,
                             !temp_worker_data.use_static,
+                            None, // sub_method: function calls don't use sub_method
                         )
                         .await
                         .map(|res| {

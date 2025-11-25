@@ -42,6 +42,7 @@ CREATE TABLE `job` (
   `priority` INT(10) NOT NULL DEFAULT '0',
   `timeout` BIGINT(20) NOT NULL DEfAULT 0,
   `request_streaming` TINYINT(1) NOT NULL DEFAULT 0, -- request streaming (available if supported by runner)
+  `sub_method` VARCHAR(255) DEFAULT NULL, -- sub-method name for MCP/Plugin runners with multiple tools
   KEY `worker_id_key` (`worker_id`),
   KEY `find_job_key` (`run_after_time`, `grabbed_until_time`, `worker_id`, `priority`),
   KEY `find_job_key2` (`run_after_time`, `grabbed_until_time`, `priority`),
@@ -65,6 +66,7 @@ CREATE TABLE `job_result` (
   `end_time` BIGINT(20) NOT NULL,
   `timeout` BIGINT(20) NOT NULL DEfAULT 0,
   `request_streaming` TINYINT(1) NOT NULL DEFAULT 0,
+  `sub_method` VARCHAR(255) DEFAULT NULL, -- sub-method name for MCP/Plugin runners (for retry/periodic re-execution)
   KEY `job_id_key` (`job_id`, `end_time`),
   KEY `worker_id_key` (`worker_id`, `job_id`),
   KEY `uniq_key_idx` (`uniq_key`)
