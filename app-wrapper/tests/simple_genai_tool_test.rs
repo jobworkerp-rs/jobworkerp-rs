@@ -15,7 +15,7 @@ use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::GenaiRunnerSettings;
 use jobworkerp_runner::jobworkerp::runner::llm::LlmChatArgs;
 use proto::jobworkerp::data::RunnerId;
-use proto::jobworkerp::function::data::{function_id, FunctionId, FunctionSetData, RunnerUsing};
+use proto::jobworkerp::function::data::{function_id, FunctionId, FunctionSetData, FunctionUsing};
 use std::collections::HashMap;
 use tokio::time::{timeout, Duration};
 

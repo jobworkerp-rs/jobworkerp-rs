@@ -90,7 +90,7 @@ fn create_test_model_settings() -> LocalRunnerSettings {
             with_logging,
             chat_template: None, //std::env::var("MISTRAL_TEST_CHAT_TEMPLATE").ok(),
             with_paged_attn: true,
-        )),
+        })),
         auto_device_map: None,
     }
 }
@@ -109,7 +109,7 @@ fn create_custom_model_settings(
             with_logging,
             with_paged_attn,
             chat_template,
-        )),
+        })),
         auto_device_map: None,
     }
 }
