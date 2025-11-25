@@ -7,7 +7,9 @@ use infra_utils::infra::rdb::Rdb;
 use infra_utils::infra::rdb::RdbPool;
 use infra_utils::infra::rdb::UseRdbPool;
 use jobworkerp_base::error::JobWorkerError;
-use proto::jobworkerp::function::data::{FunctionId, FunctionSet, FunctionSetData, FunctionSetId};
+use proto::jobworkerp::function::data::{
+    FunctionSet, FunctionSetData, FunctionSetId, FunctionUsing,
+};
 use sqlx::{Executor, Transaction};
 use std::sync::Arc;
 
@@ -58,32 +60,33 @@ pub trait FunctionSetRepository: UseRdbPool + UseIdGenerator + Sync + Send {
         &self,
         tx: &mut Transaction<'_, Rdb>,
         set_id: &FunctionSetId,
-        targets: Vec<FunctionId>,
+        targets: Vec<FunctionUsing>,
     ) -> Result<usize> {
         if targets.is_empty() {
             return Ok(0);
         }
 
-        // Convert FunctionId to (target_id, target_type) pairs
-        let target_pairs: Vec<(i64, i32)> = targets
+        // Convert FunctionUsing to (target_id, target_type, using) tuples
+        let target_tuples: Vec<(i64, i32, Option<String>)> = targets
             .iter()
-            .filter_map(|fid| FunctionSetTargetRow::from_function_id(set_id.value, fid))
+            .filter_map(|fusing| FunctionSetTargetRow::from_function_using(set_id.value, fusing))
             .collect();
 
-        if target_pairs.is_empty() {
+        if target_tuples.is_empty() {
             return Ok(0);
         }
 
-        // Create query with the appropriate number of VALUE triplets
-        let values_placeholder = "(?, ?, ?)".to_string();
+        // Create query with the appropriate number of VALUE quadruplets (set_id, target_id, target_type, using)
+        let values_placeholder = "(?, ?, ?, ?)".to_string();
         let values: Vec<String> =
-            std::iter::repeat_n(values_placeholder, target_pairs.len()).collect();
+            std::iter::repeat_n(values_placeholder, target_tuples.len()).collect();
 
         let query = format!(
             "INSERT INTO `function_set_target` (
             `set_id`,
             `target_id`,
-            `target_type`
+            `target_type`,
+            `using`
             ) VALUES {}",
             values.join(",")
         );
@@ -92,8 +95,12 @@ pub trait FunctionSetRepository: UseRdbPool + UseIdGenerator + Sync + Send {
         let mut q = sqlx::query::<Rdb>(&query);
 
         // Bind all parameters for each target
-        for (target_id, target_type) in &target_pairs {
-            q = q.bind(set_id.value).bind(target_id).bind(target_type);
+        for (target_id, target_type, using) in &target_tuples {
+            q = q
+                .bind(set_id.value)
+                .bind(target_id)
+                .bind(target_type)
+                .bind(using);
         }
 
         // Execute the query
@@ -328,7 +335,7 @@ mod test {
     use infra_utils::infra::rdb::UseRdbPool;
     use proto::jobworkerp::data::{RunnerId, WorkerId};
     use proto::jobworkerp::function::data::{
-        function_id, FunctionId, FunctionSet, FunctionSetData, RunnerUsing,
+        function_id, FunctionId, FunctionSet, FunctionSetData, FunctionUsing,
     };
     use std::sync::Arc;
 
@@ -340,14 +347,17 @@ mod test {
             description: "hoge2".to_string(),
             category: 4,
             targets: vec![
-                FunctionId {
-                    id: Some(function_id::Id::RunnerUsing(RunnerUsing {
-                        runner_id: Some(RunnerId { value: 10 }),
-                        using: None,
-                    })),
+                FunctionUsing {
+                    function_id: Some(FunctionId {
+                        id: Some(function_id::Id::RunnerId(RunnerId { value: 10 })),
+                    }),
+                    using: None,
                 },
-                FunctionId {
-                    id: Some(function_id::Id::WorkerId(WorkerId { value: 20 })),
+                FunctionUsing {
+                    function_id: Some(FunctionId {
+                        id: Some(function_id::Id::WorkerId(WorkerId { value: 20 })),
+                    }),
+                    using: None,
                 },
             ],
         });
@@ -374,14 +384,17 @@ mod test {
             description: "fuga2".to_string(),
             category: 5,
             targets: vec![
-                FunctionId {
-                    id: Some(function_id::Id::RunnerUsing(RunnerUsing {
-                        runner_id: Some(RunnerId { value: 30 }),
-                        using: None,
-                    })),
+                FunctionUsing {
+                    function_id: Some(FunctionId {
+                        id: Some(function_id::Id::RunnerId(RunnerId { value: 30 })),
+                    }),
+                    using: None,
                 },
-                FunctionId {
-                    id: Some(function_id::Id::WorkerId(WorkerId { value: 40 })),
+                FunctionUsing {
+                    function_id: Some(FunctionId {
+                        id: Some(function_id::Id::WorkerId(WorkerId { value: 40 })),
+                    }),
+                    using: None,
                 },
             ],
         };
@@ -432,64 +445,75 @@ mod test {
     fn test_function_id_roundtrip_conversion() -> Result<()> {
         use crate::infra::function_set::rows::FunctionSetTargetRow;
 
-        // Test Runner ID conversion
-        let runner_function_id = FunctionId {
-            id: Some(function_id::Id::RunnerUsing(RunnerUsing {
-                runner_id: Some(RunnerId { value: 123 }),
-                using: None,
-            })),
+        // Test Runner ID conversion with using
+        let runner_function_using = FunctionUsing {
+            function_id: Some(FunctionId {
+                id: Some(function_id::Id::RunnerId(RunnerId { value: 123 })),
+            }),
+            using: Some("test_using".to_string()),
         };
 
-        let (target_id, target_type) =
-            FunctionSetTargetRow::from_function_id(1, &runner_function_id)
-                .expect("Should convert Runner FunctionId");
+        let (target_id, target_type, using) =
+            FunctionSetTargetRow::from_function_using(1, &runner_function_using)
+                .expect("Should convert Runner FunctionUsing");
 
         assert_eq!(target_id, 123);
         assert_eq!(target_type, 0); // RUNNER_TYPE
+        assert_eq!(using, Some("test_using".to_string()));
 
         let target_row = FunctionSetTargetRow {
             id: 1,
             set_id: 1,
             target_id,
             target_type,
+            using,
         };
 
-        let converted_back = target_row.to_function_id();
-        assert_eq!(converted_back, runner_function_id);
+        let converted_back = target_row.to_function_using();
+        assert_eq!(converted_back, runner_function_using);
 
         // Test Worker ID conversion
-        let worker_function_id = FunctionId {
-            id: Some(function_id::Id::WorkerId(WorkerId { value: 456 })),
+        let worker_function_using = FunctionUsing {
+            function_id: Some(FunctionId {
+                id: Some(function_id::Id::WorkerId(WorkerId { value: 456 })),
+            }),
+            using: None,
         };
 
-        let (target_id, target_type) =
-            FunctionSetTargetRow::from_function_id(2, &worker_function_id)
-                .expect("Should convert Worker FunctionId");
+        let (target_id, target_type, using) =
+            FunctionSetTargetRow::from_function_using(2, &worker_function_using)
+                .expect("Should convert Worker FunctionUsing");
 
         assert_eq!(target_id, 456);
         assert_eq!(target_type, 1); // WORKER_TYPE
+        assert_eq!(using, None);
 
         let target_row = FunctionSetTargetRow {
             id: 2,
             set_id: 2,
             target_id,
             target_type,
+            using,
         };
 
-        let converted_back = target_row.to_function_id();
-        assert_eq!(converted_back, worker_function_id);
+        let converted_back = target_row.to_function_using();
+        assert_eq!(converted_back, worker_function_using);
 
         Ok(())
     }
+
 
     #[test]
     fn test_function_id_none_handling() {
         use crate::infra::function_set::rows::FunctionSetTargetRow;
 
-        // Test FunctionId with None id
-        let none_function_id = FunctionId { id: None };
+        // Test FunctionUsing with None function_id
+        let none_function_using = FunctionUsing {
+            function_id: Some(FunctionId { id: None }),
+            using: None,
+        };
 
-        let result = FunctionSetTargetRow::from_function_id(1, &none_function_id);
+        let result = FunctionSetTargetRow::from_function_using(1, &none_function_using);
         assert!(
             result.is_none(),
             "Should return None for FunctionId with no id set"
@@ -506,12 +530,14 @@ mod test {
             set_id: 1,
             target_id: 999,
             target_type: 99, // Unknown type
+            using: None,
         };
 
-        let function_id = target_row.to_function_id();
+        let function_using = target_row.to_function_using();
         assert!(
-            function_id.id.is_none(),
-            "Should return FunctionId with None for unknown target_type"
+            function_using.function_id.is_none() ||
+            function_using.function_id.as_ref().map(|fid| fid.id.is_none()).unwrap_or(false),
+            "Should return FunctionUsing with None function_id for unknown target_type"
         );
     }
 }

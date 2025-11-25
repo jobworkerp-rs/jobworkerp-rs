@@ -492,33 +492,33 @@ pub trait FunctionApp:
         }
     }
 
-    /// Find a single function by FunctionId
+    /// Find a single function by FunctionUsing
     ///
-    /// When FunctionId contains RunnerUsing with using specified,
+    /// When FunctionUsing contains using specified,
     /// returns FunctionSpecs for that specific using only.
     /// When using is None, returns the full Runner's FunctionSpecs.
-    async fn find_function_by_id(
+    async fn find_function_by_using(
         &self,
-        function_id: &proto::jobworkerp::function::data::FunctionId,
+        function_using: &proto::jobworkerp::function::data::FunctionUsing,
     ) -> Result<Option<FunctionSpecs>>
     where
         Self: Send + 'static,
     {
         use proto::jobworkerp::function::data::function_id;
 
+        let function_id = function_using
+            .function_id
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("FunctionUsing has no function_id set"))?;
+
         match &function_id.id {
-            Some(function_id::Id::RunnerUsing(rsm)) => {
-                if let Some(runner_id) = &rsm.runner_id {
-                    if let Some(using) = &rsm.using {
-                        // Specific using requested - return single tool FunctionSpecs
-                        self.find_function_by_runner_using(runner_id, using).await
-                    } else {
-                        // No using - return full Runner FunctionSpecs
-                        self.find_function_by_runner_id(runner_id).await
-                    }
+            Some(function_id::Id::RunnerId(runner_id)) => {
+                if let Some(using) = &function_using.using {
+                    // Specific using requested - return single tool FunctionSpecs
+                    self.find_function_by_runner_using(runner_id, using).await
                 } else {
-                    tracing::warn!("RunnerUsing has no runner_id set. Returning None.");
-                    Ok(None)
+                    // No using - return full Runner FunctionSpecs
+                    self.find_function_by_runner_id(runner_id).await
                 }
             }
             Some(function_id::Id::WorkerId(worker_id)) => {
@@ -552,10 +552,10 @@ pub trait FunctionApp:
         }
     }
 
-    /// Convert multiple FunctionIds to FunctionSpecs
-    async fn convert_function_ids_to_specs(
+    /// Convert multiple FunctionUsings to FunctionSpecs
+    async fn convert_function_usings_to_specs(
         &self,
-        function_ids: &[proto::jobworkerp::function::data::FunctionId],
+        function_usings: &[proto::jobworkerp::function::data::FunctionUsing],
         context_name: &str,
     ) -> Result<Vec<FunctionSpecs>>
     where
@@ -564,39 +564,39 @@ pub trait FunctionApp:
         let mut functions = Vec::new();
         let mut skipped_count = 0u64;
 
-        for function_id in function_ids {
-            match self.find_function_by_id(function_id).await? {
+        for function_using in function_usings {
+            match self.find_function_by_using(function_using).await? {
                 Some(specs) => functions.push(specs),
                 None => {
                     skipped_count += 1;
-                    if let Some(id) = &function_id.id {
-                        use proto::jobworkerp::function::data::function_id;
-                        match id {
-                            function_id::Id::RunnerUsing(rsm) => {
-                                if let Some(runner_id) = &rsm.runner_id {
+                    if let Some(function_id) = &function_using.function_id {
+                        if let Some(id) = &function_id.id {
+                            use proto::jobworkerp::function::data::function_id;
+                            match id {
+                                function_id::Id::RunnerId(runner_id) => {
                                     tracing::warn!(
                                         "Runner not found for id: {} in context: {}. Skipping.",
                                         runner_id.value,
                                         context_name
                                     );
-                                } else {
+                                }
+                                function_id::Id::WorkerId(worker_id) => {
                                     tracing::warn!(
-                                        "RunnerUsing has no runner_id in context: {}. Skipping.",
+                                        "Worker not found for id: {} in context: {}. Skipping.",
+                                        worker_id.value,
                                         context_name
                                     );
                                 }
                             }
-                            function_id::Id::WorkerId(worker_id) => {
-                                tracing::warn!(
-                                    "Worker not found for id: {} in context: {}. Skipping.",
-                                    worker_id.value,
-                                    context_name
-                                );
-                            }
+                        } else {
+                            tracing::warn!(
+                                "FunctionId has no id set in context: {}. Skipping this target.",
+                                context_name
+                            );
                         }
                     } else {
                         tracing::warn!(
-                            "FunctionId has no id set in context: {}. Skipping this target.",
+                            "FunctionUsing has no function_id in context: {}. Skipping this target.",
                             context_name
                         );
                     }
@@ -610,8 +610,8 @@ pub trait FunctionApp:
                 target: "metrics",
                 skipped_targets = skipped_count,
                 context = context_name,
-                total_targets = function_ids.len(),
-                "Skipped targets during FunctionId to FunctionSpecs conversion"
+                total_targets = function_usings.len(),
+                "Skipped targets during FunctionUsing to FunctionSpecs conversion"
             );
         }
 

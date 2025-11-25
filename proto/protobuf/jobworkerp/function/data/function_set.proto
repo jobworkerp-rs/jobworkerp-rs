@@ -8,7 +8,7 @@ message FunctionSetData {
   string name = 1;
   string description = 2;
   int32 category = 3;
-  repeated FunctionId targets = 4;
+  repeated FunctionUsing targets = 4;
 }
 
 message FunctionSetId { int64 value = 1; }
