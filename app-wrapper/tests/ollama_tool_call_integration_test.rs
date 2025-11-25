@@ -20,7 +20,7 @@ pub mod test {
     use jobworkerp_runner::jobworkerp::runner::llm::{llm_chat_args::LlmOptions, LlmChatArgs};
     use proto::jobworkerp::data::RunnerId;
     use proto::jobworkerp::function::data::{
-        function_id, FunctionId, FunctionSetData, RunnerUsing,
+        function_id, FunctionId, FunctionSetData, FunctionUsing,
     };
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -40,11 +40,11 @@ pub mod test {
                 name: "ollama_tool_test".to_string(),
                 description: "Test set for Ollama tool calls - COMMAND runner only".to_string(),
                 category: 0,
-                targets: vec![FunctionId {
-                    id: Some(function_id::Id::RunnerUsing(RunnerUsing {
-                        runner_id: Some(RunnerId { value: 1 }),
-                        using: None,
-                    })),
+                targets: vec![FunctionUsing {
+                    function_id: Some(FunctionId {
+                        id: Some(function_id::Id::RunnerId(RunnerId { value: 1 })),
+                    }),
+                    using: None,
                 }],
             })
             .await;

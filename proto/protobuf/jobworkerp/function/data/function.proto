@@ -8,31 +8,38 @@ import "jobworkerp/data/worker.proto";
 
 // # Function ID
 // Unified identifier for either a Runner or Worker
-// BREAKING CHANGE: runner_id (field 1) has been removed
-// Use runner_using instead for all runner references
+// Symmetric design: both runner and worker are at the same level
 message FunctionId {
   oneof id {
-    jobworkerp.data.WorkerId worker_id = 1;
-    RunnerUsing runner_using = 2;
+    jobworkerp.data.RunnerId runner_id = 1;
+    jobworkerp.data.WorkerId worker_id = 2;
   }
 }
 
-// # Runner Using
-// Identifies a runner with optional implementation specification
-// Used to select either:
-// - An entire runner (using = None): all tools/methods available
-// - A specific tool (using = Some): single tool/method only
-message RunnerUsing {
-  // # Runner ID
-  // Reference to the runner
-  jobworkerp.data.RunnerId runner_id = 1;
+// # Function Using
+// Function identifier with optional using specification
+// Used in Function layer to specify:
+// - Which function to execute (function_id)
+// - Which implementation to use (using, for MCP/Plugin runners)
+//
+// Examples:
+// 1. Normal runner: FunctionUsing { function_id: RunnerId(1), using: None }
+// 2. MCP runner (all tools): FunctionUsing { function_id: RunnerId(100), using: None }
+// 3. MCP runner (specific tool): FunctionUsing { function_id: RunnerId(100), using: Some("fetch_html") }
+// 4. Worker: FunctionUsing { function_id: WorkerId(200), using: None }
+message FunctionUsing {
+  // # Function ID
+  // Reference to the runner or worker
+  FunctionId function_id = 1;
 
   // # Using
   // Optional: specifies a particular tool/method within the runner
-  // - If specified: Only this specific implementation is selected
-  //   Example: using = "fetch_html" selects only the fetch_html tool
-  // - If omitted: The entire runner is selected
-  //   Example: using = None selects all tools of the fetch server
+  // - For normal runners: ignored (no sub-methods)
+  // - For MCP/Plugin runners:
+  //   - If specified: Only this specific tool is selected
+  //   - If omitted and only 1 tool: auto-selected
+  //   - If omitted and multiple tools: entire runner is selected
+  // - For workers: ignored (workers don't have sub-methods)
   optional string using = 2;
 }
 

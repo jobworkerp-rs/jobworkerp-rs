@@ -159,10 +159,10 @@ impl<T: FunctionSetGrpc + Tracing + Send + Debug + Sync + 'static> FunctionSetSe
         match self.app().find_function_set(&req).await {
             Ok(Some(function_set)) => {
                 if let Some(data) = function_set.data {
-                    // Use FunctionApp to convert FunctionIds to FunctionSpecs
+                    // Use FunctionApp to convert FunctionUsings to FunctionSpecs
                     match self
                         .function_app()
-                        .convert_function_ids_to_specs(&data.targets, &data.name)
+                        .convert_function_usings_to_specs(&data.targets, &data.name)
                         .await
                     {
                         Ok(targets) => {
@@ -212,10 +212,10 @@ impl<T: FunctionSetGrpc + Tracing + Send + Debug + Sync + 'static> FunctionSetSe
         match self.app().find_function_set_by_name(&req.name).await {
             Ok(Some(function_set)) => {
                 if let Some(data) = function_set.data {
-                    // Use FunctionApp to convert FunctionIds to FunctionSpecs
+                    // Use FunctionApp to convert FunctionUsings to FunctionSpecs
                     match self
                         .function_app()
-                        .convert_function_ids_to_specs(&data.targets, &data.name)
+                        .convert_function_usings_to_specs(&data.targets, &data.name)
                         .await
                     {
                         Ok(targets) => {

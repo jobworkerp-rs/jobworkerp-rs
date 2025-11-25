@@ -50,11 +50,11 @@ async fn create_test_service() -> Result<GenaiChatService> {
             name: "genai_tool_test".to_string(),
             description: "Test set for GenAI tool calls - COMMAND runner only".to_string(),
             category: 0,
-            targets: vec![FunctionId {
-                id: Some(function_id::Id::RunnerUsing(RunnerUsing {
-                    runner_id: Some(RunnerId { value: 1 }),
-                    using: None,
-                })),
+            targets: vec![FunctionUsing {
+                function_id: Some(FunctionId {
+                    id: Some(function_id::Id::RunnerId(RunnerId { value: 1 })),
+                }),
+                using: None,
             }],
         })
         .await;

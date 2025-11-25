@@ -129,10 +129,11 @@ CREATE TABLE IF NOT EXISTS `function_set_target` (
   `id` INTEGER PRIMARY KEY AUTOINCREMENT,
   `set_id` BIGINT NOT NULL, -- function set id
   `target_id` BIGINT NOT NULL, -- function set target id(worker or runner)
-  `target_type` INTEGER NOT NULL DEFAULT 0 -- function set target type (runner: 0 or worker: 1)
+  `target_type` INTEGER NOT NULL DEFAULT 0, -- function set target type (runner: 0 or worker: 1)
+  `using` TEXT -- optional using parameter for runner sub-methods
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS `set_target` ON function_set_target(`set_id`, `target_id`, `target_type`);
+CREATE UNIQUE INDEX IF NOT EXISTS `set_target` ON function_set_target(`set_id`, `target_id`, `target_type`, `using`);
 
 -- Indexes for admin UI filtering and sorting
 CREATE INDEX IF NOT EXISTS idx_runner_type ON runner(type);

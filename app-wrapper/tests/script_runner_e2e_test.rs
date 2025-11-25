@@ -179,7 +179,7 @@ print(json.dumps({
             arguments,
             Some(json!({
                 "python.version": "3.12"
-            })),
+            )),
         );
 
         let result = execute_script_workflow(app, workflow, json!({"testInput": {}})).await?;
