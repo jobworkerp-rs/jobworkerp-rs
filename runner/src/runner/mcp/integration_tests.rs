@@ -777,7 +777,10 @@ async fn test_sub_method_mode_initialization() -> Result<()> {
 
     // Verify job_args_proto_map returns tool schemas
     let proto_map = runner.job_args_proto_map();
-    assert!(proto_map.is_some(), "Should return proto map in sub_method mode");
+    assert!(
+        proto_map.is_some(),
+        "Should return proto map in sub_method mode"
+    );
     let proto_map = proto_map.unwrap();
     assert!(
         proto_map.contains_key("get_current_time"),
@@ -825,7 +828,10 @@ async fn test_sub_method_mode_execution_with_explicit_method() -> Result<()> {
         .run(&args_bytes, metadata, Some("get_current_time"))
         .await;
 
-    assert!(result.is_ok(), "Should execute successfully with explicit sub_method");
+    assert!(
+        result.is_ok(),
+        "Should execute successfully with explicit sub_method"
+    );
     let output = result.unwrap();
     let output_str = String::from_utf8_lossy(&output);
     assert!(!output_str.is_empty(), "Should return non-empty output");
@@ -872,7 +878,10 @@ async fn test_sub_method_mode_auto_select_single_tool() -> Result<()> {
         );
         eprintln!("✅ Single-tool auto-select test passed");
     } else {
-        eprintln!("⚠️ Time server has {} tools, skipping auto-select test", tool_count);
+        eprintln!(
+            "⚠️ Time server has {} tools, skipping auto-select test",
+            tool_count
+        );
     }
 
     Ok(())
@@ -922,7 +931,10 @@ async fn test_sub_method_mode_error_when_method_required() -> Result<()> {
         eprintln!("✅ Multi-tool sub_method required test passed");
         eprintln!("   Error message: {error_msg}");
     } else {
-        eprintln!("⚠️ Fetch server has only {} tool, skipping multi-tool test", tool_count);
+        eprintln!(
+            "⚠️ Fetch server has only {} tool, skipping multi-tool test",
+            tool_count
+        );
     }
 
     Ok(())
