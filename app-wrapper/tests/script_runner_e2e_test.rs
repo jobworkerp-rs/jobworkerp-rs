@@ -176,12 +176,8 @@ print(json.dumps({
         let metadata = json!({
             "python.version": "3.12"
         });
-        let workflow = create_script_workflow(
-            "base64-args-test",
-            script_code,
-            arguments,
-            Some(metadata),
-        );
+        let workflow =
+            create_script_workflow("base64-args-test", script_code, arguments, Some(metadata));
 
         let result = execute_script_workflow(app, workflow, json!({"testInput": {}})).await?;
 

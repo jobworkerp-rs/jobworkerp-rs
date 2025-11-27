@@ -467,7 +467,7 @@ mod test {
             priority: 2,
             timeout: 10000,
             request_streaming: false,
-            using: None,
+            using: Some("hoge".to_string()),
         });
         let job = Job {
             id: Some(id),
@@ -500,7 +500,7 @@ mod test {
             priority: 1,
             timeout: 10000,
             request_streaming: true,
-            using: None,
+            using: Some("fuga".to_string()),
         };
         let updated = repository.upsert(&expect.id.unwrap(), &update).await?;
         assert!(updated);

@@ -502,7 +502,6 @@ mod test {
         Ok(())
     }
 
-
     #[test]
     fn test_function_id_none_handling() {
         use crate::infra::function_set::rows::FunctionSetTargetRow;
@@ -535,8 +534,12 @@ mod test {
 
         let function_using = target_row.to_function_using();
         assert!(
-            function_using.function_id.is_none() ||
-            function_using.function_id.as_ref().map(|fid| fid.id.is_none()).unwrap_or(false),
+            function_using.function_id.is_none()
+                || function_using
+                    .function_id
+                    .as_ref()
+                    .map(|fid| fid.id.is_none())
+                    .unwrap_or(false),
             "Should return FunctionUsing with None function_id for unknown target_type"
         );
     }
