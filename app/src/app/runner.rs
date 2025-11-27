@@ -70,22 +70,6 @@ pub trait RunnerApp: fmt::Debug + Send + Sync {
     where
         Self: Send + 'static;
 
-    /// Refresh MCP runner's using_protos by re-fetching tools from MCP server
-    ///
-    /// # Arguments
-    /// * `runner_id` - If Some, refresh only this runner. If None, refresh all MCP runners.
-    ///
-    /// # Returns
-    /// A tuple of (updated_runner_names, failures)
-    /// - updated_runner_names: List of runner names that were successfully updated
-    /// - failures: List of (runner_name, error_message) pairs for failed refreshes
-    async fn refresh_mcp_runner(
-        &self,
-        runner_id: Option<&RunnerId>,
-    ) -> Result<(Vec<String>, Vec<(String, String)>)>
-    where
-        Self: Send + 'static;
-
     // for test
     #[cfg(any(test, feature = "test-utils"))]
     async fn create_test_runner(
@@ -121,7 +105,6 @@ pub trait UseRunnerParserWithCache: Send + Sync {
     }
 
     /// Validate mutual exclusivity of job_args_proto and using_protos
-    /// per the detailed design specification (section 2.1)
     fn validate_runner_data_exclusivity(runner_data: &RunnerData) -> Result<()> {
         let has_job_args = runner_data
             .job_args_proto
