@@ -26,8 +26,8 @@ pub trait InlineWorkflowRunnerSpec: RunnerSpec {
         "".to_string()
     }
 
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/workflow_args.proto").to_string()
+    fn job_args_proto(&self) -> Option<String> {
+        Some(include_str!("../../protobuf/jobworkerp/runner/workflow_args.proto").to_string())
     }
 
     fn result_output_proto(&self) -> Option<String> {
@@ -48,7 +48,7 @@ impl RunnerSpec for InlineWorkflowRunnerSpecImpl {
         InlineWorkflowRunnerSpec::runner_settings_proto(self)
     }
 
-    fn job_args_proto(&self) -> String {
+    fn job_args_proto(&self) -> Option<String> {
         InlineWorkflowRunnerSpec::job_args_proto(self)
     }
 
@@ -99,8 +99,11 @@ pub trait ReusableWorkflowRunnerSpec: RunnerSpec {
         include_str!("../../protobuf/jobworkerp/runner/reusable_workflow_runner.proto").to_string()
     }
 
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/reusable_workflow_args.proto").to_string()
+    fn job_args_proto(&self) -> Option<String> {
+        Some(
+            include_str!("../../protobuf/jobworkerp/runner/reusable_workflow_args.proto")
+                .to_string(),
+        )
     }
 
     fn result_output_proto(&self) -> Option<String> {
@@ -121,7 +124,7 @@ impl RunnerSpec for ReusableWorkflowRunnerSpecImpl {
         ReusableWorkflowRunnerSpec::runner_settings_proto(self)
     }
 
-    fn job_args_proto(&self) -> String {
+    fn job_args_proto(&self) -> Option<String> {
         ReusableWorkflowRunnerSpec::job_args_proto(self)
     }
 

@@ -150,7 +150,7 @@ CREATE TABLE `function_set_target` (
   `set_id` BIGINT(10) NOT NULL, -- function set id
   `target_id` BIGINT(10) NOT NULL, -- function set target id(worker or runner)
   `target_type` INT(10) NOT NULL DEFAULT 0, -- function set target type (runner: 0 or worker: 1)
-  `using` TEXT, -- optional using parameter for runner sub-methods
+  `using` VARCHAR(255), -- optional using parameter for runner sub-methods
   UNIQUE KEY `set_target` (`set_id`, `target_id`, `target_type`, `using`(191))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

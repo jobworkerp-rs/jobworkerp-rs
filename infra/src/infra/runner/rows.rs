@@ -24,22 +24,20 @@ impl RunnerRow {
         if let Some(mcp_runner) =
             (runner.as_ref() as &dyn Any).downcast_ref::<McpServerRunnerImpl>()
         {
-            // Load tools with timeout to prevent hanging on unresponsive MCP servers
-            let timeout_config = RunnerTimeoutConfig::global();
-            let tools = tokio::time::timeout(timeout_config.mcp_tools_load, mcp_runner.tools())
-                .await
-                .unwrap_or_else(|_| {
-                    tracing::warn!(
-                        "MCP runner '{}' tools loading timed out after {:?}",
-                        self.name,
-                        timeout_config.mcp_tools_load
-                    );
-                    Ok(Vec::default())
-                })
-                .unwrap_or_else(|e| {
-                    tracing::error!("MCP runner '{}' tools loading failed: {:?}", self.name, e);
-                    Vec::default()
-                });
+            // Get tools from MCP runner (already loaded during construction)
+            let tools = mcp_runner.tools().unwrap_or_else(|e| {
+                tracing::error!("MCP runner '{}' tools retrieval failed: {:?}", self.name, e);
+                Vec::default()
+            });
+
+            // Get method_proto_map from MCP runner
+            let method_proto_map = runner
+                .method_proto_map()
+                .map(|map| proto::jobworkerp::data::MethodProtoMap { schemas: map });
+
+            // job_args_proto is now Option<String>
+            // For using-based runners (MCP/Plugin with multiple methods), it returns None
+            let job_args_proto = runner.job_args_proto();
 
             RunnerWithSchema {
                 id: Some(RunnerId { value: self.id }),
@@ -48,11 +46,11 @@ impl RunnerRow {
                     description: self.description.clone(),
                     runner_type: self.r#type,
                     runner_settings_proto: runner.runner_settings_proto(),
-                    job_args_proto: Some(runner.job_args_proto()),
+                    job_args_proto,
                     result_output_proto: runner.result_output_proto(),
                     output_type: runner.output_type() as i32,
                     definition: self.definition.clone(),
-                    using_protos: None,
+                    method_proto_map,
                 }),
                 settings_schema: runner.settings_schema(),
                 arguments_schema: runner.arguments_schema(),
@@ -73,6 +71,9 @@ impl RunnerRow {
                 tokio::task::spawn_blocking(move || {
                     let runner_settings_proto = runner.runner_settings_proto();
                     let job_args_proto = runner.job_args_proto();
+                    let method_proto_map = runner
+                        .method_proto_map()
+                        .map(|map| proto::jobworkerp::data::MethodProtoMap { schemas: map });
                     let result_output_proto = runner.result_output_proto();
                     let settings_schema = runner.settings_schema();
                     let arguments_schema = runner.arguments_schema();
@@ -82,6 +83,7 @@ impl RunnerRow {
                     (
                         runner_settings_proto,
                         job_args_proto,
+                        method_proto_map,
                         result_output_proto,
                         settings_schema,
                         arguments_schema,
@@ -96,6 +98,7 @@ impl RunnerRow {
                 Ok(Ok((
                     runner_settings_proto,
                     job_args_proto,
+                    method_proto_map,
                     result_output_proto,
                     settings_schema,
                     arguments_schema,
@@ -108,11 +111,11 @@ impl RunnerRow {
                         description,
                         runner_type: r#type,
                         runner_settings_proto,
-                        job_args_proto: Some(job_args_proto),
+                        job_args_proto,
                         result_output_proto,
                         output_type,
                         definition,
-                        using_protos: None,
+                        method_proto_map,
                     }),
                     settings_schema,
                     arguments_schema,
@@ -139,7 +142,7 @@ impl RunnerRow {
                             result_output_proto: None,
                             output_type: 0,
                             definition,
-                            using_protos: None,
+                            method_proto_map: None,
                         }),
                         settings_schema: String::new(),
                         arguments_schema: String::new(),
@@ -167,7 +170,7 @@ impl RunnerRow {
                             result_output_proto: None,
                             output_type: 0,
                             definition,
-                            using_protos: None,
+                            method_proto_map: None,
                         }),
                         settings_schema: String::new(),
                         arguments_schema: String::new(),

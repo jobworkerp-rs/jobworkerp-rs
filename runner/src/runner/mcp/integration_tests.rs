@@ -370,8 +370,7 @@ async fn test_using_mode_initialization() -> Result<()> {
     let client = factory.connect_server("time").await?;
 
     // Create MCP runner instance
-    let mut runner = McpServerRunnerImpl::new(client, None).await?;
-
+    let runner = McpServerRunnerImpl::new(client, None).await?;
 
     // Verify available tools
     let tool_names = runner.available_tool_names();
@@ -384,8 +383,8 @@ async fn test_using_mode_initialization() -> Result<()> {
         "Should have get_current_time tool"
     );
 
-    // Verify job_args_proto_map returns tool schemas
-    let proto_map = runner.job_args_proto_map();
+    // Verify method_proto_map returns tool schemas
+    let proto_map = runner.method_proto_map();
     assert!(proto_map.is_some(), "Should return proto map in using mode");
     let proto_map = proto_map.unwrap();
     assert!(
@@ -394,9 +393,10 @@ async fn test_using_mode_initialization() -> Result<()> {
     );
 
     // Verify schema content
-    let schema = proto_map.get("get_current_time").unwrap();
+    let method_schema = proto_map.get("get_current_time").unwrap();
     assert!(
-        schema.contains("TimeGetCurrentTimeArgs") || schema.contains("syntax = \"proto3\""),
+        method_schema.args_proto.contains("TimeGetCurrentTimeArgs")
+            || method_schema.args_proto.contains("syntax = \"proto3\""),
         "Schema should be valid Protobuf definition"
     );
 
@@ -585,41 +585,6 @@ async fn test_using_mode_error_unknown_method() -> Result<()> {
 }
 
 /// Test T3.7: Verify get_using_json_schema returns correct schema
-#[tokio::test]
-#[ignore] // Requires MCP server - run with --ignored for full testing
-async fn test_using_json_schema() -> Result<()> {
-    use crate::runner::mcp::config::McpConfig;
-    use crate::runner::mcp::McpServerRunnerImpl;
-    use crate::runner::RunnerSpec;
-
-    let config = McpConfig {
-        server: vec![create_time_mcp_server().await?],
-    };
-
-    // Create MCP runner
-    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
-    let client = factory.connect_server("time").await?;
-    let mut runner = McpServerRunnerImpl::new(client, None).await?;
-
-    // Get JSON schema for get_current_time
-    let schema = runner.get_using_json_schema("get_current_time")?;
-    assert!(!schema.is_empty(), "JSON schema should not be empty");
-
-    // Validate it's valid JSON
-    let parsed: serde_json::Value = serde_json::from_str(&schema)?;
-    assert!(parsed.is_object(), "JSON schema should be an object");
-
-    // Schema should have "type" or "properties" field
-    assert!(
-        parsed.get("type").is_some() || parsed.get("properties").is_some(),
-        "JSON schema should have type or properties field"
-    );
-
-    eprintln!("✅ JSON schema retrieval test passed");
-    eprintln!("   Schema: {}", serde_json::to_string_pretty(&parsed)?);
-    Ok(())
-}
-
 /// Test T3.7: Legacy mode still works after using implementation
 // Legacy mode backward compatibility test removed - using mode is now the only supported mode
 #[tokio::test]
@@ -772,7 +737,7 @@ async fn test_using_mode_stream_with_cancellation() -> Result<()> {
     let client = factory.connect_server("time").await?;
 
     // Create MCP runner
-    let mut temp_runner = McpServerRunnerImpl::new(client, None).await?;
+    let temp_runner = McpServerRunnerImpl::new(client, None).await?;
     let runner = Arc::new(Mutex::new(temp_runner));
 
     let cancellation_token = CancellationToken::new();
@@ -838,20 +803,18 @@ async fn test_using_mode_stream_with_cancellation() -> Result<()> {
     eprintln!("Using mode stream execution completed in {elapsed:?}");
 
     match execution_result {
-        Ok(stream_processing_result) => {
-            match stream_processing_result {
-                Ok(item_count) => {
-                    eprintln!("✓ Stream processing completed with {item_count} items");
-                    assert!(elapsed < Duration::from_secs(2));
-                }
-                Err(e) => {
-                    eprintln!("✓ Stream processing was cancelled as expected: {e}");
-                    if e.to_string().contains("cancelled") {
-                        eprintln!("✓ Cancellation was properly detected");
-                    }
+        Ok(stream_processing_result) => match stream_processing_result {
+            Ok(item_count) => {
+                eprintln!("✓ Stream processing completed with {item_count} items");
+                assert!(elapsed < Duration::from_secs(2));
+            }
+            Err(e) => {
+                eprintln!("✓ Stream processing was cancelled as expected: {e}");
+                if e.to_string().contains("cancelled") {
+                    eprintln!("✓ Cancellation was properly detected");
                 }
             }
-        }
+        },
         Err(e) => {
             eprintln!("Stream execution task failed: {e}");
             panic!("Task failed: {e}");
@@ -864,5 +827,255 @@ async fn test_using_mode_stream_with_cancellation() -> Result<()> {
     }
 
     eprintln!("✅ Using mode stream with cancellation test passed");
+    Ok(())
+}
+
+// ==================== Using Parameter Propagation Tests ====================
+
+/// Test: Verify MCP tool name validation in handle_runner_call_from_llm
+#[tokio::test]
+#[ignore] // Requires MCP server - run with --ignored for full testing
+async fn test_mcp_tool_name_validation() -> Result<()> {
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    // use crate::runner::RunnerSpec;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    // Create MCP runner
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+    let runner = McpServerRunnerImpl::new(client, None).await?;
+
+    // Verify tools list contains expected tool
+    let tools = runner.tools()?;
+    assert!(!tools.is_empty(), "MCP server should have tools");
+
+    let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    assert!(
+        tool_names.contains(&"get_current_time"),
+        "Time server should have get_current_time tool"
+    );
+
+    eprintln!("✅ MCP tool name validation test passed");
+    eprintln!("   Available tools: {:?}", tool_names);
+    Ok(())
+}
+
+/// Test: Execute MCP tool with valid tool name via using parameter
+#[tokio::test]
+#[ignore] // Requires MCP server - run with --ignored for full testing
+async fn test_mcp_execution_with_valid_using() -> Result<()> {
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use std::collections::HashMap;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    // Create MCP runner
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+    let mut runner = McpServerRunnerImpl::new(client, None).await?;
+
+    // Prepare JSON arguments
+    let args = serde_json::json!({"timezone": "UTC"});
+    let args_bytes = serde_json::to_vec(&args)?;
+
+    // Execute with valid using parameter
+    let metadata = HashMap::new();
+    let (result, _) = runner
+        .run(&args_bytes, metadata, Some("get_current_time"))
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "Should execute successfully with valid using parameter"
+    );
+
+    let output = result.unwrap();
+    assert!(!output.is_empty(), "Should return non-empty output");
+
+    eprintln!("✅ MCP execution with valid using test passed");
+    Ok(())
+}
+
+/// Test: Error when invalid tool name is provided via using parameter
+#[tokio::test]
+#[ignore] // Requires MCP server - run with --ignored for full testing
+async fn test_mcp_error_with_invalid_using() -> Result<()> {
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use std::collections::HashMap;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    // Create MCP runner
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+    let mut runner = McpServerRunnerImpl::new(client, None).await?;
+
+    // Prepare JSON arguments
+    let args = serde_json::json!({"timezone": "UTC"});
+    let args_bytes = serde_json::to_vec(&args)?;
+
+    // Execute with invalid using parameter
+    let metadata = HashMap::new();
+    let (result, _) = runner
+        .run(&args_bytes, metadata, Some("invalid_tool_name"))
+        .await;
+
+    assert!(result.is_err(), "Should fail with invalid using parameter");
+
+    let error_msg = result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("Unknown") || error_msg.contains("invalid_tool_name"),
+        "Error message should indicate invalid tool name. Got: {error_msg}"
+    );
+
+    eprintln!("✅ MCP error with invalid using test passed");
+    eprintln!("   Error message: {error_msg}");
+    Ok(())
+}
+
+/// Phase 6.5 Test: Verify method_proto_map() returns MethodSchema
+#[tokio::test]
+#[ignore] // Requires MCP server - run with --ignored for full testing
+async fn test_phase65_method_proto_map() -> Result<()> {
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerSpec;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    // Create MCP runner
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+    let runner = McpServerRunnerImpl::new(client, None).await?;
+
+    // Verify method_proto_map returns MethodSchema
+    let method_proto_map = runner
+        .method_proto_map()
+        .expect("method_proto_map should return Some for MCP runner");
+
+    eprintln!(
+        "✅ method_proto_map returned {} methods",
+        method_proto_map.len()
+    );
+
+    // Verify time server has get_current_time method
+    assert!(
+        method_proto_map.contains_key("get_current_time"),
+        "Should contain get_current_time method"
+    );
+
+    let method_schema = method_proto_map.get("get_current_time").unwrap();
+
+    // Verify args_proto is not empty
+    assert!(
+        !method_schema.args_proto.is_empty(),
+        "args_proto should not be empty"
+    );
+    eprintln!("✅ args_proto length: {}", method_schema.args_proto.len());
+
+    // Verify args_proto contains expected Protobuf syntax
+    assert!(
+        method_schema.args_proto.contains("syntax = \"proto3\""),
+        "args_proto should contain proto3 syntax"
+    );
+    assert!(
+        method_schema.args_proto.contains("message"),
+        "args_proto should contain message definition"
+    );
+    eprintln!("✅ args_proto contains valid Protobuf schema");
+
+    // Verify result_proto for MCP server
+    assert!(
+        !method_schema.result_proto.is_empty(),
+        "MCP server must have result_proto"
+    );
+    assert!(
+        method_schema.result_proto.contains("McpServerResult"),
+        "MCP server should use McpServerResult schema"
+    );
+    eprintln!("✅ result_proto contains common output schema (McpServerResult)");
+
+    Ok(())
+}
+
+/// Phase 6.5 Test: Verify MethodSchema with multiple tools (fetch server)
+#[tokio::test]
+#[ignore] // Requires MCP server - run with --ignored for full testing
+async fn test_phase65_method_proto_map_multiple_tools() -> Result<()> {
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerSpec;
+
+    let config = McpConfig {
+        server: vec![create_fetch_mcp_server().await?],
+    };
+
+    // Create MCP runner
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("fetch").await?;
+    let runner = McpServerRunnerImpl::new(client, None).await?;
+
+    // Verify method_proto_map returns MethodSchema for all tools
+    let method_proto_map = runner
+        .method_proto_map()
+        .expect("method_proto_map should return Some for MCP runner");
+
+    let tool_count = method_proto_map.len();
+    eprintln!("✅ method_proto_map returned {} tools", tool_count);
+
+    // Verify fetch server has at least one tool
+    assert!(
+        tool_count >= 1,
+        "Fetch server should have at least one tool"
+    );
+
+    // Verify each tool has valid MethodSchema
+    for (tool_name, method_schema) in &method_proto_map {
+        eprintln!("  Tool: {}", tool_name);
+
+        // Verify args_proto
+        assert!(
+            !method_schema.args_proto.is_empty(),
+            "Tool {} should have args_proto",
+            tool_name
+        );
+        assert!(
+            method_schema.args_proto.contains("syntax = \"proto3\""),
+            "Tool {} args_proto should contain proto3 syntax",
+            tool_name
+        );
+        eprintln!(
+            "    ✅ args_proto length: {}",
+            method_schema.args_proto.len()
+        );
+
+        // Verify result_proto is present
+        assert!(
+            !method_schema.result_proto.is_empty(),
+            "Tool {} must have result_proto (required)",
+            tool_name
+        );
+        assert!(
+            method_schema.result_proto.contains("McpServerResult"),
+            "Tool {} should use McpServerResult schema",
+            tool_name
+        );
+        eprintln!("    ✅ result_proto contains common output schema");
+    }
+
     Ok(())
 }

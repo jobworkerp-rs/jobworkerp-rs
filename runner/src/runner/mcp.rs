@@ -6,7 +6,7 @@ use crate::runner::cancellation::CancelMonitoring;
 use crate::runner::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
 use crate::runner::RunnerSpec;
 use crate::runner::RunnerTrait;
-use crate::{schema_to_json_string, schema_to_json_string_option};
+use crate::schema_to_json_string_option;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use command_utils::trace::Tracing;
@@ -19,8 +19,6 @@ use opentelemetry::Context;
 use proto::jobworkerp::data::ResultOutputItem;
 use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::data::{JobData, JobId, JobResult};
-use proto::jobworkerp::function::data::McpTool;
-use proto::jobworkerp::function::data::ToolAnnotations;
 use proxy::McpServerProxy;
 use rmcp::model::CallToolRequestParam;
 use std::collections::HashMap;
@@ -42,18 +40,24 @@ pub struct ToolInfo {
     pub description: Option<String>,
     /// JSON Schema for the tool's input
     pub input_schema: serde_json::Value,
-    /// Generated Protobuf schema string
-    pub proto_schema: String,
+    /// Generated Protobuf schema string for arguments
+    pub args_proto_schema: String,
+    /// Generated Protobuf schema string for result
+    /// For MCP servers, this contains the common output schema (duplicated across tools)
+    /// For Plugins, this can contain method-specific output schema
+    pub result_proto_schema: String,
 }
 
-/// MCP Server Runner implementation
-///
-/// Uses `using` parameter with tool-specific JSON arguments.
-/// Each tool has its own Protobuf schema generated from MCP tool's JSON schema.
+/**
+ * MCP Server Runner implementation with using support
+ *
+ * Each MCP tool is exposed as a separate "using" value.
+ * Tool-specific Protobuf schemas are generated from MCP tool JSON schemas.
+ */
 #[derive(Debug)]
 pub struct McpServerRunnerImpl {
     mcp_server: McpServerProxy,
-    /// Helper for cancellation monitoring integration
+    // Helper for dependency injection integration (optional for backward compatibility)
     cancel_helper: Option<CancelMonitoringHelper>,
     /// Available tools with their schemas
     /// Key: tool name (using), Value: ToolInfo
@@ -61,7 +65,7 @@ pub struct McpServerRunnerImpl {
 }
 
 impl McpServerRunnerImpl {
-    /// Constructor for MCP server runner
+    /// Constructor for MCP server runner (async required for tool loading)
     ///
     /// This async constructor creates a runner and initializes it with tools from the MCP server.
     /// Each tool has its own Protobuf schema generated from its JSON Schema.
@@ -113,7 +117,12 @@ impl McpServerRunnerImpl {
                     name: tool_name,
                     description: tool.description.map(|d| d.into_owned()),
                     input_schema: input_schema_value,
-                    proto_schema,
+                    args_proto_schema: proto_schema,
+                    // MCP servers use common output schema (duplicated for each tool for type safety)
+                    result_proto_schema: include_str!(
+                        "../../protobuf/jobworkerp/runner/mcp_server_result.proto"
+                    )
+                    .to_string(),
                 },
             );
         }
@@ -138,6 +147,15 @@ impl McpServerRunnerImpl {
         })
     }
 
+    /// Unified cancellation token retrieval
+    async fn get_cancellation_token(&self) -> CancellationToken {
+        if let Some(helper) = &self.cancel_helper {
+            helper.get_cancellation_token().await
+        } else {
+            CancellationToken::new()
+        }
+    }
+
     /// Get available tool names (usings)
     pub fn available_tool_names(&self) -> Vec<String> {
         self.available_tools.keys().cloned().collect()
@@ -146,6 +164,24 @@ impl McpServerRunnerImpl {
     /// Get tool info by name
     pub fn get_tool_info(&self, tool_name: &str) -> Option<&ToolInfo> {
         self.available_tools.get(tool_name)
+    }
+
+    /// Get tools as McpTool list (for compatibility with Function layer)
+    pub fn tools(&self) -> Result<Vec<proto::jobworkerp::function::data::McpTool>> {
+        Ok(self
+            .available_tools
+            .values()
+            .map(|tool_info| proto::jobworkerp::function::data::McpTool {
+                name: tool_info.name.clone(),
+                description: tool_info.description.clone(),
+                input_schema: serde_json::to_string(&tool_info.input_schema)
+                    .inspect_err(|e| {
+                        tracing::error!("Failed to serialize tool input schema: {}", e)
+                    })
+                    .unwrap_or_default(),
+                annotations: None, // MCP tool annotations not preserved in ToolInfo
+            })
+            .collect())
     }
 
     /// Resolve using to actual tool name
@@ -163,341 +199,22 @@ impl McpServerRunnerImpl {
                         "Unknown tool '{}' in MCP server '{}'. Available: {:?}",
                         name,
                         self.mcp_server.name,
-                        self.available_tool_names()
+                        self.available_tools.keys().collect::<Vec<_>>()
                     ))
                 }
             }
             None => {
                 if self.available_tools.len() == 1 {
-                    // Auto-select the only available tool
                     Ok(self.available_tools.keys().next().unwrap().clone())
                 } else {
                     Err(anyhow!(
                         "using is required for MCP server '{}'. Available tools: {:?}",
                         self.mcp_server.name,
-                        self.available_tool_names()
+                        self.available_tools.keys().collect::<Vec<_>>()
                     ))
                 }
             }
         }
-    }
-
-    /// Unified cancellation token retrieval
-    async fn get_cancellation_token(&self) -> CancellationToken {
-        if let Some(helper) = &self.cancel_helper {
-            helper.get_cancellation_token().await
-        } else {
-            CancellationToken::new()
-        }
-    }
-
-    /// Get tools as McpTool proto messages
-    pub async fn tools(&self) -> Result<Vec<McpTool>> {
-        // Return cached tools from using mode
-        if !self.available_tools.is_empty() {
-            return Ok(self
-                .available_tools
-                .values()
-                .map(|tool| McpTool {
-                    name: tool.name.clone(),
-                    description: tool.description.clone(),
-                    input_schema: serde_json::to_string(&tool.input_schema).unwrap_or_default(),
-                    annotations: None, // TODO: preserve annotations
-                })
-                .collect());
-        }
-
-        // Fallback: fetch from MCP server
-        self.mcp_server.load_tools().await.map(|list| {
-            list.into_iter()
-                .map(|tool| McpTool {
-                    name: tool.name.into_owned(),
-                    description: tool.description.map(|r| r.into_owned()),
-                    input_schema: serde_json::to_string(&tool.input_schema)
-                        .inspect_err(|e| {
-                            tracing::error!("Failed to serialize tool input schema: {}", e)
-                        })
-                        .unwrap_or_default(),
-                    annotations: tool.annotations.map(|an| ToolAnnotations {
-                        title: an.title,
-                        read_only_hint: an.read_only_hint,
-                        destructive_hint: an.destructive_hint,
-                        idempotent_hint: an.idempotent_hint,
-                        open_world_hint: an.open_world_hint,
-                    }),
-                })
-                .collect()
-        })
-    }
-
-    /// Execute tool call in legacy mode (using McpServerArgs)
-
-    /// Execute tool call in using mode
-    async fn run_using(
-        &mut self,
-        args: &[u8],
-        metadata: HashMap<String, String>,
-        tool_name: &str,
-    ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        let cancellation_token = self.get_cancellation_token().await;
-
-        let result = async {
-            if cancellation_token.is_cancelled() {
-                return Err(anyhow!("MCP tool call was cancelled before execution"));
-            }
-
-            let span = Self::otel_span_from_metadata(
-                &metadata,
-                APP_WORKER_NAME,
-                "McpServerRunnerImpl::run_using",
-            );
-            let cx = Context::current_with_span(span);
-            let mut metadata = metadata.clone();
-            Self::inject_metadata_from_context(&mut metadata, &cx);
-            let span = cx.span();
-
-            span.set_attribute(opentelemetry::KeyValue::new(
-                "input.tool_name",
-                tool_name.to_string(),
-            ));
-
-            // In using mode, args is a JSON-serialized object
-            // (because Protobuf schemas are generated dynamically)
-            // For now, we treat args as JSON bytes
-            let args_json: serde_json::Value = serde_json::from_slice(args).map_err(|e| {
-                anyhow!(
-                    "Failed to parse arguments as JSON for tool '{}': {}",
-                    tool_name,
-                    e
-                )
-            })?;
-
-            tracing::debug!(
-                "Calling MCP tool '{}' with args (using mode): {:?}",
-                tool_name,
-                args_json
-            );
-
-            let res = tokio::select! {
-                call_result = self.mcp_server.transport.call_tool(CallToolRequestParam {
-                    name: std::borrow::Cow::Owned(tool_name.to_string()),
-                    arguments: args_json.as_object().cloned(),
-                }) => {
-                    call_result.map_err(|e| {
-                        tracing::error!("MCP call_tool failed for tool '{}': {}", tool_name, e);
-                        anyhow!("MCP tool '{}' failed: {}", tool_name, e)
-                    })?
-                },
-                _ = cancellation_token.cancelled() => {
-                    return Err(anyhow!("MCP tool call was cancelled"));
-                }
-            };
-
-            self.encode_mcp_result_with_span(res, &span)
-        }
-        .await;
-
-        (result, metadata)
-    }
-
-    /// Execute stream tool call in legacy mode (using McpServerArgs)
-
-    /// Execute stream tool call in using mode
-    async fn run_stream_using(
-        &mut self,
-        args: &[u8],
-        metadata: HashMap<String, String>,
-        tool_name: &str,
-    ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        let cancellation_token = self.get_cancellation_token().await;
-
-        if cancellation_token.is_cancelled() {
-            return Err(anyhow!("MCP stream request was cancelled before execution"));
-        }
-
-        let args_json: serde_json::Value = serde_json::from_slice(args).map_err(|e| {
-            anyhow!(
-                "Failed to parse arguments as JSON for tool '{}': {}",
-                tool_name,
-                e
-            )
-        })?;
-
-        let mcp_transport = self.mcp_server.transport.clone();
-        let tool_name_owned = tool_name.to_string();
-
-        use async_stream::stream;
-        use proto::jobworkerp::data::{result_output_item::Item, Trailer};
-
-        let trailer = Arc::new(Trailer {
-            metadata: metadata.clone(),
-        });
-
-        let stream = stream! {
-            let call_result = tokio::select! {
-                result = mcp_transport.call_tool(CallToolRequestParam {
-                    name: std::borrow::Cow::Owned(tool_name_owned.clone()),
-                    arguments: args_json.as_object().cloned(),
-                }) => {
-                    match result {
-                        Ok(res) => Ok(res),
-                        Err(e) => {
-                            tracing::error!("MCP call_tool failed for tool '{}': {}", tool_name_owned, e);
-                            Err(anyhow!("MCP tool '{}' failed: {}", tool_name_owned, e))
-                        }
-                    }
-                },
-                _ = cancellation_token.cancelled() => {
-                    tracing::info!("MCP stream request was cancelled");
-                    yield ResultOutputItem {
-                        item: Some(Item::End((*trailer).clone())),
-                    };
-                    return;
-                }
-            };
-
-            match call_result {
-                Ok(res) => {
-                    let mcp_result = Self::convert_call_result_to_proto(res);
-                    match ProstMessageCodec::serialize_message(&mcp_result) {
-                        Ok(serialized) => {
-                            yield ResultOutputItem {
-                                item: Some(Item::Data(serialized)),
-                            };
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to serialize MCP result: {}", e);
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("MCP tool call failed: {}", e);
-                }
-            }
-
-            yield ResultOutputItem {
-                item: Some(Item::End((*trailer).clone())),
-            };
-        };
-
-        Ok(Box::pin(stream))
-    }
-
-    /// Convert MCP CallToolResult to protobuf McpServerResult
-    fn convert_call_result_to_proto(res: rmcp::model::CallToolResult) -> McpServerResult {
-        let mut mcp_contents = Vec::new();
-        let contents = res.content;
-
-        for content in contents {
-            match content.raw {
-                rmcp::model::RawContent::Text(rmcp::model::RawTextContent { text, .. }) => {
-                    mcp_contents.push(mcp_server_result::Content {
-                        raw_content: Some(mcp_server_result::content::RawContent::Text(
-                            mcp_server_result::TextContent { text },
-                        )),
-                    });
-                }
-                rmcp::model::RawContent::Image(rmcp::model::RawImageContent {
-                    data,
-                    mime_type,
-                    ..
-                }) => {
-                    mcp_contents.push(mcp_server_result::Content {
-                        raw_content: Some(mcp_server_result::content::RawContent::Image(
-                            mcp_server_result::ImageContent { data, mime_type },
-                        )),
-                    });
-                }
-                rmcp::model::RawContent::Audio(_audio) => {
-                    tracing::error!("Audio content not supported yet");
-                }
-                rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
-                    resource:
-                        rmcp::model::ResourceContents::TextResourceContents {
-                            uri,
-                            mime_type,
-                            text,
-                            ..
-                        },
-                    ..
-                }) => {
-                    mcp_contents.push(mcp_server_result::Content {
-                        raw_content: Some(mcp_server_result::content::RawContent::Resource(
-                            mcp_server_result::EmbeddedResource {
-                                resource: Some(
-                                    mcp_server_result::embedded_resource::Resource::Text(
-                                        TextResourceContents {
-                                            uri,
-                                            mime_type,
-                                            text,
-                                        },
-                                    ),
-                                ),
-                            },
-                        )),
-                    });
-                }
-                rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
-                    resource:
-                        rmcp::model::ResourceContents::BlobResourceContents {
-                            uri,
-                            mime_type,
-                            blob,
-                            ..
-                        },
-                    ..
-                }) => {
-                    mcp_contents.push(mcp_server_result::Content {
-                        raw_content: Some(mcp_server_result::content::RawContent::Resource(
-                            mcp_server_result::EmbeddedResource {
-                                resource: Some(
-                                    mcp_server_result::embedded_resource::Resource::Blob(
-                                        BlobResourceContents {
-                                            uri,
-                                            mime_type,
-                                            blob,
-                                        },
-                                    ),
-                                ),
-                            },
-                        )),
-                    });
-                }
-                rmcp::model::RawContent::ResourceLink(_) => {
-                    tracing::warn!("ResourceLink content not supported yet");
-                }
-            }
-        }
-
-        McpServerResult {
-            content: mcp_contents,
-            is_error: res.is_error.unwrap_or(false),
-        }
-    }
-
-    /// Encode MCP call result to protobuf bytes with span tracing
-    fn encode_mcp_result_with_span(
-        &self,
-        res: rmcp::model::CallToolResult,
-        span: &opentelemetry::trace::SpanRef<'_>,
-    ) -> Result<Vec<u8>> {
-        if res.is_error.unwrap_or_default() {
-            let error = anyhow!("Tool call failed: {}", serde_json::json!(res.content));
-            span.record_error(error.as_ref());
-        } else {
-            span.set_attribute(opentelemetry::KeyValue::new(
-                "output",
-                serde_json::json!(res.content).to_string(),
-            ));
-        }
-        span.set_attribute(opentelemetry::KeyValue::new(
-            "output.content_length",
-            res.content.len() as i64,
-        ));
-
-        // Delegate to proto conversion
-        let mcp_result = Self::convert_call_result_to_proto(res);
-        ProstMessageCodec::serialize_message(&mcp_result)
     }
 }
 
@@ -505,25 +222,34 @@ impl RunnerSpec for McpServerRunnerImpl {
     fn name(&self) -> String {
         self.mcp_server.name.clone()
     }
+
     fn runner_settings_proto(&self) -> String {
         "".to_string()
     }
-    fn job_args_proto(&self) -> String {
-        // Using mode: return empty string (use job_args_proto_map instead)
-        "".to_string()
+
+    // MCP Runner uses using-based approach, returns None (uses method_proto_map)
+    fn job_args_proto(&self) -> Option<String> {
+        None
     }
 
-    /// Returns the job arguments protobuf schema map for using mode
-    /// Key: tool name (using), Value: protobuf schema string
-    fn job_args_proto_map(&self) -> Option<std::collections::HashMap<String, String>> {
+    // Return tool-specific Protobuf definitions
+    fn method_proto_map(&self) -> Option<HashMap<String, proto::jobworkerp::data::MethodSchema>> {
         if self.available_tools.is_empty() {
             return None;
         }
-
         Some(
             self.available_tools
                 .iter()
-                .map(|(name, info)| (name.clone(), info.proto_schema.clone()))
+                .map(|(name, info)| {
+                    (
+                        name.clone(),
+                        proto::jobworkerp::data::MethodSchema {
+                            args_proto: info.args_proto_schema.clone(),
+                            result_proto: info.result_proto_schema.clone(),
+                            description: info.description.clone(),
+                        },
+                    )
+                })
                 .collect(),
         )
     }
@@ -531,38 +257,22 @@ impl RunnerSpec for McpServerRunnerImpl {
     fn result_output_proto(&self) -> Option<String> {
         Some(include_str!("../../protobuf/jobworkerp/runner/mcp_server_result.proto").to_string())
     }
+
     fn output_type(&self) -> StreamingOutputType {
         StreamingOutputType::Both
     }
+
     fn settings_schema(&self) -> String {
-        schema_to_json_string!(crate::jobworkerp::runner::Empty, "settings_schema")
+        "{}".to_string() // Empty JSON object (no settings required)
     }
+
+    // Empty JSON - actual tool schemas are provided via RunnerWithSchema.tools field
     fn arguments_schema(&self) -> String {
-        // Using mode: return empty (each tool has its own schema)
         "{}".to_string()
     }
+
     fn output_schema(&self) -> Option<String> {
         schema_to_json_string_option!(McpServerResult, "output_schema")
-    }
-
-    /// Returns the JSON schema for a specific tool (using)
-    fn get_using_json_schema(&self, using: &str) -> Result<String> {
-        let tool_info = self.available_tools.get(using).ok_or_else(|| {
-            anyhow!(
-                "Unknown using '{}' for MCP runner '{}'. Available: {:?}",
-                using,
-                self.mcp_server.name,
-                self.available_tool_names()
-            )
-        })?;
-
-        serde_json::to_string(&tool_info.input_schema).map_err(|e| {
-            anyhow!(
-                "Failed to serialize JSON schema for using '{}': {}",
-                using,
-                e
-            )
-        })
     }
 }
 
@@ -573,6 +283,7 @@ impl RunnerTrait for McpServerRunnerImpl {
     async fn load(&mut self, _settings: Vec<u8>) -> Result<()> {
         Ok(())
     }
+
     async fn run(
         &mut self,
         args: &[u8],
@@ -596,6 +307,351 @@ impl RunnerTrait for McpServerRunnerImpl {
         // Resolve tool name and execute
         let tool_name = self.resolve_using(using)?;
         self.run_stream_using(arg, metadata, &tool_name).await
+    }
+}
+
+impl McpServerRunnerImpl {
+    /// Execute MCP tool call (internal implementation)
+    async fn run_using(
+        &mut self,
+        args: &[u8],
+        metadata: HashMap<String, String>,
+        tool_name: &str,
+    ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        let cancellation_token = self.get_cancellation_token().await;
+
+        let result = async {
+            // Check for cancellation before starting
+            if cancellation_token.is_cancelled() {
+                return Err(anyhow!("MCP tool call was cancelled before execution"));
+            }
+
+            let span = Self::otel_span_from_metadata(
+                &metadata,
+                APP_WORKER_NAME,
+                "McpServerRunnerImpl::run_using",
+            );
+            let cx = Context::current_with_span(span);
+            let mut metadata = metadata.clone();
+            Self::inject_metadata_from_context(&mut metadata, &cx);
+            // ref
+            let span = cx.span();
+
+            // Parse args as JSON string (tool-specific arguments)
+            let arg_json = String::from_utf8(args.to_vec())?;
+
+            span.set_attribute(opentelemetry::KeyValue::new(
+                "input.tool_name",
+                tool_name.to_string(),
+            ));
+            span.set_attribute(opentelemetry::KeyValue::new(
+                "input.arg_json",
+                arg_json.clone(),
+            ));
+
+            tracing::debug!("Calling MCP tool '{}' with args: {}", tool_name, arg_json);
+
+            // Call MCP tool with cancellation support
+            // Timeout is managed at the job level
+            let res = tokio::select! {
+                call_result = self.mcp_server.transport.call_tool(CallToolRequestParam {
+                    name: std::borrow::Cow::Owned(tool_name.to_string()),
+                    arguments: serde_json::from_str(arg_json.as_str())
+                        .inspect_err(|e| {
+                            tracing::error!("Failed to parse arguments: {}", e);
+                        })
+                        .ok(),
+                }) => {
+                    call_result.map_err(|e| {
+                        tracing::error!("MCP call_tool failed for tool '{}': {}", tool_name, e);
+                        anyhow!("MCP tool '{}' failed: {}", tool_name, e)
+                    })?
+                },
+                _ = cancellation_token.cancelled() => {
+                    tracing::info!("MCP tool call was cancelled for tool '{}'", tool_name);
+                    return Err(anyhow!("MCP tool call was cancelled"));
+                }
+            };
+
+            tracing::debug!("MCP tool '{}' call completed", tool_name);
+
+            if res.is_error.unwrap_or_default() {
+                let error = anyhow!("Tool call failed: {}", serde_json::json!(res.content));
+                span.record_error(error.as_ref());
+            } else {
+                span.set_attribute(opentelemetry::KeyValue::new(
+                    "output",
+                    serde_json::json!(res.content).to_string(),
+                ));
+            }
+            // map res to McpServerResult and encode to Vec<u8>
+            let mut mcp_contents = Vec::new();
+            let contents = res.content;
+            span.set_attribute(opentelemetry::KeyValue::new(
+                "output.content_length",
+                contents.len() as i64,
+            ));
+            for content in contents {
+                match content.raw {
+                    rmcp::model::RawContent::Text(rmcp::model::RawTextContent { text, .. }) => {
+                        mcp_contents.push(mcp_server_result::Content {
+                            raw_content: Some(mcp_server_result::content::RawContent::Text(
+                                mcp_server_result::TextContent { text },
+                            )),
+                        });
+                    }
+                    rmcp::model::RawContent::Image(rmcp::model::RawImageContent {
+                        data,
+                        mime_type,
+                        ..
+                    }) => {
+                        mcp_contents.push(mcp_server_result::Content {
+                            raw_content: Some(mcp_server_result::content::RawContent::Image(
+                                mcp_server_result::ImageContent { data, mime_type },
+                            )),
+                        });
+                    }
+                    // wait for raw audio content of raw content
+                    // https://github.com/modelcontextprotocol/rust-sdk/blob/main/crates/rmcp/src/model/content.rs#L55
+                    rmcp::model::RawContent::Audio(_audio) => {
+                        // mcp_contents.push(mcp_server_result::Content {
+                        //     raw_content: Some(mcp_server_result::content::RawContent::Audio(
+                        //         mcp_server_result::AudioContent { data, mime_type },
+                        //     )),
+                        // });
+                        tracing::error!("Audio content not supported yet");
+                    }
+                    rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
+                        resource:
+                            rmcp::model::ResourceContents::TextResourceContents {
+                                uri,
+                                mime_type,
+                                text,
+                                ..
+                            },
+                        ..
+                    }) => {
+                        mcp_contents.push(mcp_server_result::Content {
+                            raw_content: Some(mcp_server_result::content::RawContent::Resource(
+                                mcp_server_result::EmbeddedResource {
+                                    resource: Some(
+                                        mcp_server_result::embedded_resource::Resource::Text(
+                                            TextResourceContents {
+                                                uri,
+                                                mime_type,
+                                                text,
+                                            },
+                                        ),
+                                    ),
+                                },
+                            )),
+                        });
+                    }
+                    rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
+                        resource:
+                            rmcp::model::ResourceContents::BlobResourceContents {
+                                uri,
+                                mime_type,
+                                blob,
+                                ..
+                            },
+                        ..
+                    }) => {
+                        mcp_contents.push(mcp_server_result::Content {
+                            raw_content: Some(mcp_server_result::content::RawContent::Resource(
+                                mcp_server_result::EmbeddedResource {
+                                    resource: Some(
+                                        mcp_server_result::embedded_resource::Resource::Blob(
+                                            BlobResourceContents {
+                                                uri,
+                                                mime_type,
+                                                blob,
+                                            },
+                                        ),
+                                    ),
+                                },
+                            )),
+                        });
+                    }
+                    rmcp::model::RawContent::ResourceLink(_) => {
+                        // ResourceLink is not supported in proto definition yet
+                        tracing::warn!("ResourceLink content not supported yet");
+                    }
+                }
+            }
+
+            let mcp_result = McpServerResult {
+                content: mcp_contents,
+                is_error: res.is_error.unwrap_or(false),
+            };
+
+            // Encode the result as protobuf
+            let encoded = ProstMessageCodec::serialize_message(&mcp_result)?;
+            Ok(encoded)
+        }
+        .await;
+
+        (result, metadata)
+    }
+
+    /// Execute MCP tool call with streaming (internal implementation)
+    async fn run_stream_using(
+        &mut self,
+        arg: &[u8],
+        metadata: HashMap<String, String>,
+        tool_name: &str,
+    ) -> Result<BoxStream<'static, ResultOutputItem>> {
+        let cancellation_token = self.get_cancellation_token().await;
+
+        // Check for cancellation before starting
+        if cancellation_token.is_cancelled() {
+            return Err(anyhow!("MCP stream request was cancelled before execution"));
+        }
+
+        // Parse args as JSON string (tool-specific arguments)
+        let arg_json = String::from_utf8(arg.to_vec())?;
+
+        // Extract needed data from self to avoid lifetime issues
+        let mcp_transport = self.mcp_server.transport.clone();
+        let tool_name_owned = tool_name.to_string();
+
+        use async_stream::stream;
+        use proto::jobworkerp::data::{result_output_item::Item, Trailer};
+
+        let trailer = Arc::new(Trailer {
+            metadata: metadata.clone(),
+        });
+
+        let stream = stream! {
+            // Call MCP tool with cancellation support
+            let call_result = tokio::select! {
+                result = mcp_transport.call_tool(CallToolRequestParam {
+                    name: std::borrow::Cow::Owned(tool_name_owned.clone()),
+                    arguments: serde_json::from_str(arg_json.as_str())
+                        .inspect_err(|e| {
+                            tracing::error!("Failed to parse arguments: {}", e);
+                        })
+                        .ok(),
+                }) => {
+                    match result {
+                        Ok(res) => Ok(res),
+                        Err(e) => {
+                            tracing::error!("MCP call_tool failed for tool '{}': {}", tool_name_owned, e);
+                            Err(anyhow!("MCP tool '{}' failed: {}", tool_name_owned, e))
+                        }
+                    }
+                },
+                _ = cancellation_token.cancelled() => {
+                    tracing::info!("MCP stream request was cancelled");
+                    yield ResultOutputItem {
+                        item: Some(Item::End((*trailer).clone())),
+                    };
+                    return;
+                }
+            };
+
+            match call_result {
+                Ok(res) => {
+                    // Map response to McpServerResult
+                    let mut mcp_contents = Vec::new();
+                    let contents = res.content;
+                    for content in contents {
+                        match content.raw {
+                            rmcp::model::RawContent::Text(rmcp::model::RawTextContent { text, .. }) => {
+                                    mcp_contents.push(mcp_server_result::Content {
+                                        raw_content: Some(mcp_server_result::content::RawContent::Text(
+                                            mcp_server_result::TextContent { text },
+                                        )),
+                                    });
+                            }
+                            rmcp::model::RawContent::Image(rmcp::model::RawImageContent {
+                                data,
+                                mime_type,
+                                ..
+                            }) => {
+                                    mcp_contents.push(mcp_server_result::Content {
+                                        raw_content: Some(mcp_server_result::content::RawContent::Image(
+                                            mcp_server_result::ImageContent { data, mime_type },
+                                        )),
+                                });
+                            }
+                            rmcp::model::RawContent::Audio(_audio) => {
+                                tracing::error!("Audio content not supported yet");
+                            }
+                            rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
+                                resource: rmcp::model::ResourceContents::TextResourceContents {
+                                    uri, mime_type, text, ..
+                                },
+                                ..
+                            }) => {
+                                    mcp_contents.push(mcp_server_result::Content {
+                                        raw_content: Some(mcp_server_result::content::RawContent::Resource(
+                                            mcp_server_result::EmbeddedResource {
+                                                resource: Some(
+                                                    mcp_server_result::embedded_resource::Resource::Text(
+                                                        TextResourceContents { uri, mime_type, text },
+                                                    ),
+                                                ),
+                                            },
+                                        )),
+                                });
+                            }
+                            rmcp::model::RawContent::Resource(rmcp::model::RawEmbeddedResource {
+                                resource: rmcp::model::ResourceContents::BlobResourceContents {
+                                    uri, mime_type, blob, ..
+                                },
+                                ..
+                            }) => {
+                                    mcp_contents.push(mcp_server_result::Content {
+                                        raw_content: Some(mcp_server_result::content::RawContent::Resource(
+                                            mcp_server_result::EmbeddedResource {
+                                                resource: Some(
+                                                    mcp_server_result::embedded_resource::Resource::Blob(
+                                                        BlobResourceContents { uri, mime_type, blob },
+                                                    ),
+                                                ),
+                                            },
+                                        )),
+                                });
+                            }
+                            rmcp::model::RawContent::ResourceLink(_) => {
+                                // ResourceLink is not supported in proto definition yet
+                                tracing::warn!("ResourceLink content not supported yet");
+                            }
+                        }
+                    }
+
+                    let mcp_result = McpServerResult {
+                        content: mcp_contents,
+                        is_error: res.is_error.unwrap_or(false),
+                    };
+
+                    // Serialize and yield the result
+                    match ProstMessageCodec::serialize_message(&mcp_result) {
+                        Ok(serialized) => {
+                            yield ResultOutputItem {
+                                item: Some(Item::Data(serialized)),
+                            };
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to serialize MCP result: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("MCP tool call failed: {}", e);
+                }
+            }
+
+            // Send end marker
+            yield ResultOutputItem {
+                item: Some(Item::End((*trailer).clone())),
+            };
+        };
+
+        // Keep cancellation token for potential mid-stream cancellation
+        // Note: The token will be cleared when cancel() is called
+        Ok(Box::pin(stream))
     }
 }
 

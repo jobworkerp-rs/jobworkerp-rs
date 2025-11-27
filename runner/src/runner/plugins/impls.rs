@@ -67,9 +67,16 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
         // .map(|p| p.runner_settings_proto())
         // .unwrap_or_else(|e| format!("Error occurred: {:}", e))
     }
-    fn job_args_proto(&self) -> String {
+    fn job_args_proto(&self) -> Option<String> {
         block_on(self.plugin_runner.read()).job_args_proto()
     }
+
+    fn method_proto_map(
+        &self,
+    ) -> Option<std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema>> {
+        block_on(self.plugin_runner.read()).method_proto_map()
+    }
+
     fn result_output_proto(&self) -> Option<String> {
         block_on(self.plugin_runner.read()).result_output_proto()
     }

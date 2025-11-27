@@ -91,7 +91,7 @@ impl RunnerSpec for LLMCompletionRunnerImpl {
         LLMCompletionRunnerSpec::runner_settings_proto(self)
     }
 
-    fn job_args_proto(&self) -> String {
+    fn job_args_proto(&self) -> Option<String> {
         LLMCompletionRunnerSpec::job_args_proto(self)
     }
 
