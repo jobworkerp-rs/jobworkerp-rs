@@ -299,8 +299,9 @@ pub trait UseJobExecutor:
         worker_data: WorkerData, // worker parameters (if not exists, use default values)
         job_args: serde_json::Value, // enqueue job args
         uniq_key: Option<String>,
-        job_timeout_sec: u32, // job timeout in seconds
-        streaming: bool,      // TODO request streaming
+        job_timeout_sec: u32,  // job timeout in seconds
+        streaming: bool,       // TODO request streaming
+        using: Option<String>, // using parameter for MCP/Plugin runners
     ) -> impl std::future::Future<
         Output = Result<(
             JobId,
@@ -331,7 +332,7 @@ pub trait UseJobExecutor:
                     uniq_key,
                     job_timeout_sec,
                     streaming,
-                    None, // using not supported via this path
+                    using, // Pass using parameter for MCP/Plugin runners
                 )
                 .await
             } else {
@@ -391,6 +392,7 @@ pub trait UseJobExecutor:
             }
         }
     }
+    #[allow(clippy::too_many_arguments)]
     fn enqueue_with_worker_name(
         &self,
         metadata: Arc<HashMap<String, String>>, // metadata for job
@@ -399,6 +401,7 @@ pub trait UseJobExecutor:
         uniq_key: Option<String>, // unique key for job (if not exists, use default values)
         job_timeout_sec: u32,     // job timeout in seconds
         streaming: bool,          // TODO request streaming
+        using: Option<String>,    // using parameter for MCP/Plugin runners
     ) -> impl std::future::Future<
         Output = Result<(
             JobId,
@@ -444,7 +447,7 @@ pub trait UseJobExecutor:
                         uniq_key,
                         job_timeout_sec,
                         streaming,
-                        None, // using not supported via this path
+                        using, // Pass using parameter for MCP/Plugin workers
                     )
                     .await
                 } else {
@@ -458,6 +461,7 @@ pub trait UseJobExecutor:
             }
         }
     }
+    #[allow(clippy::too_many_arguments)]
     fn enqueue_with_worker_name_and_output_json(
         &self,
         metadata: Arc<HashMap<String, String>>, // metadata for job
@@ -466,6 +470,7 @@ pub trait UseJobExecutor:
         uniq_key: Option<String>, // unique key for job (if not exists, use default values)
         job_timeout_sec: u32,     // job timeout in seconds
         streaming: bool,          // TODO request streaming
+        using: Option<String>,    // using parameter for MCP/Plugin runners
     ) -> impl std::future::Future<Output = Result<serde_json::Value>> + Send {
         async move {
             let worker = self
@@ -506,7 +511,7 @@ pub trait UseJobExecutor:
                             uniq_key,
                             job_timeout_sec,
                             streaming,
-                            None, // using not supported via this path
+                            using, // Pass using parameter for MCP/Plugin workers
                         )
                         .await?;
                     if let Some(res) = res.1 {

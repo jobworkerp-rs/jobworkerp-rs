@@ -155,6 +155,7 @@ pub trait FunctionApp:
                         uniq_key,
                         timeout_sec,
                         streaming,
+                        None, // using not used via front API (only for LLM tool calling)
                     )
                     .await
                 {
@@ -212,14 +213,22 @@ pub trait FunctionApp:
         Box::pin(stream! {
             tracing::info!("runner not found, run as worker: {:?}", &name);
 
+            // Extract MCP tool name from combined name if present (e.g., "server___tool")
+            let (worker_name, tool_name_opt) = if let Some((server_name, tool_name)) = Self::divide_names(name) {
+                (server_name, Some(tool_name))
+            } else {
+                (name.to_string(), None)
+            };
+
             let result = self
                 .enqueue_with_worker_name(
                     meta.clone(),
-                    name,
+                    &worker_name,
                     &arguments,
                     unique_key,
                     job_timeout_sec,
                     streaming,
+                    tool_name_opt, // Pass using parameter for MCP worker tools
                 )
                 .await;
 
@@ -229,7 +238,7 @@ pub trait FunctionApp:
                     let started_at = chrono::Utc::now().timestamp_millis();
 
                     // Find worker to get runner information for decoding
-                    let worker_opt = self.worker_app().find_by_name(name).await.ok().flatten();
+                    let worker_opt = self.worker_app().find_by_name(&worker_name).await.ok().flatten();
                     let runner_name = if let Some(worker) = &worker_opt {
                         if let Some(worker_data) = &worker.data {
                             if let Some(runner_id) = &worker_data.runner_id {
@@ -438,6 +447,7 @@ pub trait FunctionApp:
     async fn find_function_by_worker_id(
         &self,
         worker_id: &proto::jobworkerp::data::WorkerId,
+        using: Option<&str>,
     ) -> Result<Option<FunctionSpecs>>
     where
         Self: Send + 'static,
@@ -449,8 +459,16 @@ pub trait FunctionApp:
             }) if data.runner_id.is_some() => {
                 let runner_id = data.runner_id.unwrap();
                 if let Some(runner) = self.runner_app().find_runner(&runner_id).await? {
-                    let specs = Self::convert_worker_to_function_specs(wid, data, runner)?;
-                    Ok(Some(specs))
+                    // If using is specified, use convert_worker_using_to_function_specs
+                    if let Some(using_str) = using {
+                        let specs = Self::convert_worker_using_to_function_specs(
+                            wid, data, runner, using_str,
+                        )?;
+                        Ok(Some(specs))
+                    } else {
+                        let specs = Self::convert_worker_to_function_specs(wid, data, runner)?;
+                        Ok(Some(specs))
+                    }
                 } else {
                     Ok(None)
                 }
@@ -523,7 +541,13 @@ pub trait FunctionApp:
                 }
             }
             Some(function_id::Id::WorkerId(worker_id)) => {
-                self.find_function_by_worker_id(worker_id).await
+                // Pass using to find_function_by_worker_id
+                if let Some(using) = &function_using.using {
+                    self.find_function_by_worker_id(worker_id, Some(using.as_str()))
+                        .await
+                } else {
+                    self.find_function_by_worker_id(worker_id, None).await
+                }
             }
             None => {
                 tracing::warn!("FunctionId has no id set. Returning None.");
@@ -1119,15 +1143,15 @@ pub trait FunctionSpecConverter {
                 })),
                 output_type: runner_data.output_type,
             })
-        } else if runner_data.using_protos.is_some() {
-            // Plugin or other runner with using_protos
-            let proto_map = runner_data.using_protos.as_ref().unwrap();
-            let proto_schema = proto_map.methods.get(using).ok_or_else(|| {
+        } else if runner_data.method_proto_map.is_some() {
+            // Plugin or other runner with method_proto_map
+            let proto_map = runner_data.method_proto_map.as_ref().unwrap();
+            let method_schema = proto_map.schemas.get(using).ok_or_else(|| {
                 JobWorkerError::NotFound(format!(
                     "using '{}' not found in runner '{}'. Available: {:?}",
                     using,
                     runner_data.name,
-                    proto_map.methods.keys().collect::<Vec<_>>()
+                    proto_map.schemas.keys().collect::<Vec<_>>()
                 ))
             })?;
 
@@ -1136,11 +1160,15 @@ pub trait FunctionSpecConverter {
                 runner_id: runner.id,
                 worker_id: None,
                 name: format!("{}___{}", runner_data.name, using),
-                description: format!("{} - {}", runner_data.description, using),
+                description: method_schema
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| format!("{} - {}", runner_data.description, using)),
                 schema: Some(function_specs::Schema::SingleSchema(FunctionSchema {
                     settings: None,
-                    arguments: proto_schema.clone(),
-                    result_output_schema: runner.output_schema.clone(),
+                    arguments: method_schema.args_proto.clone(),
+                    // Rev.8.1: result_proto is now required (not optional)
+                    result_output_schema: Some(method_schema.result_proto.clone()),
                 })),
                 output_type: runner_data.output_type,
             })
@@ -1149,6 +1177,104 @@ pub trait FunctionSpecConverter {
             Err(JobWorkerError::InvalidParameter(format!(
                 "Runner '{}' does not support usings",
                 runner_data.name
+            ))
+            .into())
+        }
+    }
+
+    /// Convert Worker + specific using to FunctionSpecs
+    ///
+    /// Returns a FunctionSpecs with a single tool (the specified using).
+    /// For Workers backed by MCP/Plugin runners, extracts the specific tool.
+    /// For normal runners, returns error with warning that using is ignored.
+    fn convert_worker_using_to_function_specs(
+        worker_id: WorkerId,
+        worker_data: WorkerData,
+        runner: RunnerWithSchema,
+        using: &str,
+    ) -> Result<FunctionSpecs> {
+        let runner_data = runner
+            .data
+            .as_ref()
+            .ok_or_else(|| JobWorkerError::NotFound("Runner data not found".to_string()))?;
+
+        // Check if this is an MCP server runner with tools
+        if runner_data.runner_type == RunnerType::McpServer as i32 {
+            // Find the specific tool in the McpToolList
+            let tool = runner
+                .tools
+                .iter()
+                .find(|t| t.name == using)
+                .ok_or_else(|| {
+                    JobWorkerError::NotFound(format!(
+                        "using '{}' not found in Worker '{}' (MCP server '{}'). Available: {:?}",
+                        using,
+                        worker_data.name,
+                        runner_data.name,
+                        runner.tools.iter().map(|t| &t.name).collect::<Vec<_>>()
+                    ))
+                })?;
+
+            // Return FunctionSpecs with single tool
+            Ok(FunctionSpecs {
+                runner_type: RunnerType::McpServer as i32,
+                runner_id: runner.id,
+                worker_id: Some(worker_id),
+                // Use worker name + tool name for clarity
+                name: format!("{}___{}", worker_data.name, using),
+                description: tool
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| format!("{} - {}", worker_data.description, using)),
+                schema: Some(function_specs::Schema::SingleSchema(FunctionSchema {
+                    settings: None, // Workers don't have config (already set)
+                    arguments: tool.input_schema.clone(),
+                    result_output_schema: runner.output_schema.clone(),
+                })),
+                output_type: runner_data.output_type,
+            })
+        } else if runner_data.method_proto_map.is_some() {
+            // Plugin or other runner with method_proto_map
+            let proto_map = runner_data.method_proto_map.as_ref().unwrap();
+            let method_schema = proto_map.schemas.get(using).ok_or_else(|| {
+                JobWorkerError::NotFound(format!(
+                    "using '{}' not found in Worker '{}' (runner '{}'). Available: {:?}",
+                    using,
+                    worker_data.name,
+                    runner_data.name,
+                    proto_map.schemas.keys().collect::<Vec<_>>()
+                ))
+            })?;
+
+            Ok(FunctionSpecs {
+                runner_type: runner_data.runner_type,
+                runner_id: runner.id,
+                worker_id: Some(worker_id),
+                name: format!("{}___{}", worker_data.name, using),
+                description: method_schema
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| format!("{} - {}", worker_data.description, using)),
+                schema: Some(function_specs::Schema::SingleSchema(FunctionSchema {
+                    settings: None, // Workers don't have config (already set)
+                    arguments: method_schema.args_proto.clone(),
+                    // Rev.8.1: result_proto is now required (not optional)
+                    result_output_schema: Some(method_schema.result_proto.clone()),
+                })),
+                output_type: runner_data.output_type,
+            })
+        } else {
+            // Worker→Runner doesn't support usings - log warning and return error
+            tracing::warn!(
+                "Worker '{}' (ID={}) does not support using. Worker is backed by runner '{}' which has no MCP tools or method_proto_map. Ignoring using='{}'",
+                worker_data.name,
+                worker_id.value,
+                runner_data.name,
+                using
+            );
+            Err(JobWorkerError::InvalidParameter(format!(
+                "Worker '{}' does not support usings (backed by runner '{}' with no tools/methods)",
+                worker_data.name, runner_data.name
             ))
             .into())
         }

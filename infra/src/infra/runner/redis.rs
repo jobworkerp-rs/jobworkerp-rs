@@ -215,7 +215,7 @@ async fn redis_test() -> Result<()> {
         result_output_proto: Some("hoge7".to_string()),
         output_type: StreamingOutputType::NonStreaming as i32,
         definition: "test".to_string(),
-        using_protos: None,
+        method_proto_map: None,
     };
     // clear first
     repo.delete(&id).await?;

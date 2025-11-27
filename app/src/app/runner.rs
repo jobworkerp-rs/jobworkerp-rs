@@ -70,22 +70,6 @@ pub trait RunnerApp: fmt::Debug + Send + Sync {
     where
         Self: Send + 'static;
 
-    /// Refresh MCP runner's using_protos by re-fetching tools from MCP server
-    ///
-    /// # Arguments
-    /// * `runner_id` - If Some, refresh only this runner. If None, refresh all MCP runners.
-    ///
-    /// # Returns
-    /// A tuple of (updated_runner_names, failures)
-    /// - updated_runner_names: List of runner names that were successfully updated
-    /// - failures: List of (runner_name, error_message) pairs for failed refreshes
-    async fn refresh_mcp_runner(
-        &self,
-        runner_id: Option<&RunnerId>,
-    ) -> Result<(Vec<String>, Vec<(String, String)>)>
-    where
-        Self: Send + 'static;
-
     // for test
     #[cfg(any(test, feature = "test-utils"))]
     async fn create_test_runner(
@@ -120,18 +104,17 @@ pub trait UseRunnerParserWithCache: Send + Sync {
         async { self.descriptor_cache().clear().await }
     }
 
-    /// Validate mutual exclusivity of job_args_proto and using_protos
-    /// per the detailed design specification (section 2.1)
+    /// Validate mutual exclusivity of job_args_proto and method_proto_map
     fn validate_runner_data_exclusivity(runner_data: &RunnerData) -> Result<()> {
         let has_job_args = runner_data
             .job_args_proto
             .as_ref()
             .is_some_and(|s| !s.is_empty());
-        let has_usings = runner_data.using_protos.is_some();
+        let has_method_proto_map = runner_data.method_proto_map.is_some();
 
-        if has_usings && has_job_args {
+        if has_method_proto_map && has_job_args {
             return Err(JobWorkerError::InvalidParameter(
-                "job_args_proto and using_protos cannot both be set".to_string(),
+                "job_args_proto and method_proto_map cannot both be set".to_string(),
             )
             .into());
         }
@@ -141,7 +124,7 @@ pub trait UseRunnerParserWithCache: Send + Sync {
 
     // TODO remove if not used
     fn parse_proto_schemas(&self, runner_data: RunnerData) -> Result<RunnerDataWithDescriptor> {
-        // Validate mutual exclusivity of job_args_proto and using_protos
+        // Validate mutual exclusivity of job_args_proto and method_proto_map
         Self::validate_runner_data_exclusivity(&runner_data)?;
 
         // runner_settings_proto
@@ -408,7 +391,7 @@ pub mod test {
             result_output_proto: None,
             output_type: StreamingOutputType::NonStreaming as i32,
             definition: "./target/debug/libplugin_runner_test.so".to_string(),
-            using_protos: None,
+            method_proto_map: None,
         }
     }
     pub fn test_runner_with_schema(id: &RunnerId, name: &str) -> RunnerWithSchema {

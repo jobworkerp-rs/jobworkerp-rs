@@ -94,7 +94,7 @@ impl RunnerSpec for LLMChatRunnerImpl {
         LLMChatRunnerSpec::runner_settings_proto(self)
     }
 
-    fn job_args_proto(&self) -> String {
+    fn job_args_proto(&self) -> Option<String> {
         LLMChatRunnerSpec::job_args_proto(self)
     }
 
