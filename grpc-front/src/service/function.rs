@@ -9,7 +9,9 @@ static WORKER_NAME_PATTERN: LazyLock<regex::Regex> = LazyLock::new(|| {
         .expect("Failed to compile worker name validation regex")
 });
 
-use crate::proto::jobworkerp::function::data::{FunctionId, FunctionResult, FunctionSpecs};
+use crate::proto::jobworkerp::function::data::{
+    FunctionId, FunctionResult, FunctionSpecs, FunctionUsing,
+};
 use crate::proto::jobworkerp::function::service::function_service_server::FunctionService;
 use crate::proto::jobworkerp::function::service::{
     CreateWorkerRequest, CreateWorkerResponse, CreateWorkflowRequest, CreateWorkflowResponse,
@@ -67,6 +69,52 @@ pub trait FunctionRequestValidator {
             }
             None => Err(tonic::Status::invalid_argument("id must be specified")),
         }
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn validate_function_using(&self, function_using: &FunctionUsing) -> Result<(), tonic::Status> {
+        use crate::proto::jobworkerp::function::data::function_id;
+
+        // First validate that function_id is present
+        let function_id = function_using
+            .function_id
+            .as_ref()
+            .ok_or_else(|| tonic::Status::invalid_argument("function_id must be specified"))?;
+
+        // Validate function_id (reuse existing validation logic)
+        match &function_id.id {
+            Some(function_id::Id::RunnerId(runner_id)) => {
+                if runner_id.value <= 0 {
+                    return Err(tonic::Status::invalid_argument(
+                        "runner_id must be greater than 0",
+                    ));
+                }
+            }
+            Some(function_id::Id::WorkerId(worker_id)) => {
+                if worker_id.value <= 0 {
+                    return Err(tonic::Status::invalid_argument(
+                        "worker_id must be greater than 0",
+                    ));
+                }
+            }
+            None => return Err(tonic::Status::invalid_argument("id must be specified")),
+        }
+
+        // Validate using if present
+        if let Some(using) = &function_using.using {
+            if using.is_empty() {
+                return Err(tonic::Status::invalid_argument(
+                    "using cannot be empty string",
+                ));
+            }
+            if using.len() > 255 {
+                return Err(tonic::Status::invalid_argument(
+                    "using too long (max 255 characters)",
+                ));
+            }
+        }
+
+        Ok(())
     }
 
     #[allow(clippy::result_large_err)]
@@ -382,44 +430,25 @@ impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync 
     #[tracing::instrument(level = "info", skip(self, request), fields(method = "find"))]
     async fn find(
         &self,
-        request: tonic::Request<FunctionId>,
+        request: tonic::Request<FunctionUsing>,
     ) -> Result<tonic::Response<OptionalFunctionSpecsResponse>, tonic::Status> {
-        use crate::proto::jobworkerp::function::data::function_id;
-
         let _s = Self::trace_request("function", "find", &request);
-        let function_id = request.into_inner();
+        let function_using = request.into_inner();
 
         // Validate request
-        self.validate_function_id(&function_id)?;
+        self.validate_function_using(&function_using)?;
 
-        match function_id.id {
-            Some(function_id::Id::RunnerId(runner_id)) => {
-                match self
-                    .function_app()
-                    .find_function_by_runner_id(&runner_id)
-                    .await
-                {
-                    Ok(Some(function_specs)) => Ok(Response::new(OptionalFunctionSpecsResponse {
-                        data: Some(function_specs),
-                    })),
-                    Ok(None) => Ok(Response::new(OptionalFunctionSpecsResponse { data: None })),
-                    Err(e) => Err(handle_error(&e)),
-                }
-            }
-            Some(function_id::Id::WorkerId(worker_id)) => {
-                match self
-                    .function_app()
-                    .find_function_by_worker_id(&worker_id)
-                    .await
-                {
-                    Ok(Some(function_specs)) => Ok(Response::new(OptionalFunctionSpecsResponse {
-                        data: Some(function_specs),
-                    })),
-                    Ok(None) => Ok(Response::new(OptionalFunctionSpecsResponse { data: None })),
-                    Err(e) => Err(handle_error(&e)),
-                }
-            }
-            None => unreachable!("Validation should catch this case"),
+        // Use find_function_by_using for unified handling
+        match self
+            .function_app()
+            .find_function_by_using(&function_using)
+            .await
+        {
+            Ok(Some(function_specs)) => Ok(Response::new(OptionalFunctionSpecsResponse {
+                data: Some(function_specs),
+            })),
+            Ok(None) => Ok(Response::new(OptionalFunctionSpecsResponse { data: None })),
+            Err(e) => Err(handle_error(&e)),
         }
     }
 

@@ -223,6 +223,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                     RunJobWorker {
                         arguments,
                         name: worker_name,
+                        using,
                     },
             }) => {
                 task_context.add_position_name("worker".to_string()).await;
@@ -254,6 +255,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         None,
                         timeout_sec,
                         false,
+                        using.clone(),
                     )
                     .await
                 {
@@ -389,6 +391,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         None,
                         timeout_sec,
                         false,
+                        None, // using not used in workflow tasks
                     )
                     .await
                 {

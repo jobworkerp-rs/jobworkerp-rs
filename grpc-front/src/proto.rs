@@ -6,6 +6,7 @@ pub mod jobworkerp {
             pub use data::function_id;
             use proto::jobworkerp::function::data;
             pub type FunctionId = data::FunctionId;
+            pub type FunctionUsing = data::FunctionUsing;
             pub type FunctionSetData = data::FunctionSetData;
             pub type FunctionSet = data::FunctionSet;
             pub type FunctionSetId = data::FunctionSetId;

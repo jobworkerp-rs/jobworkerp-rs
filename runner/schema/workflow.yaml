@@ -325,11 +325,10 @@ $defs:
             type: string
             title: Using
             description: |
-              Selects which implementation to use for MCP/Plugin runners with multiple tools.
+              Selects which implementation to use for runners with multiple tools.
 
-              - **Required**: For MCP/Plugin runners with multiple tools (e.g., fetch server with "fetch" and "fetch_html")
-              - **Optional**: For single-tool MCP runners (auto-selected)
-              - **Ignored**: For normal runners (COMMAND, HTTP_REQUEST, etc.)
+              - **Required**: For runners with multiple tools (e.g., fetch server with "fetch" and "fetch_html")
+              - **Optional**: For single-tool runners (auto-selected)
 
               Examples:
               - MCP fetch server: using: "fetch_html"
@@ -413,6 +412,19 @@ $defs:
             title: FunctionArguments
             description: A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation.
             additionalProperties: true
+          using:
+            type: string
+            title: Using
+            description: |
+              Selects which implementation to use for runners with multiple tools.
+
+              - **Required**: For runners with multiple tools (e.g., fetch server with "fetch" and "fetch_html")
+              - **Optional**: For single-tool runners (auto-selected)
+
+              Examples:
+              - MCP fetch server: using: "fetch_html"
+              - MCP time server (single tool): can be omitted
+              - COMMAND runner: not needed
         required: [name, arguments]
     additionalProperties: false
   runFunction:

@@ -15,6 +15,7 @@ pub mod supplement;
 pub mod supplement_test;
 pub mod tasks;
 
+
 #[doc = r" Error types."]
 pub mod error {
     #[doc = r" Error from a TryFrom or FromStr implementation."]
@@ -2777,7 +2778,7 @@ impl ::std::convert::From<&Self> for RunJobFunction {
 #[doc = "    },"]
 #[doc = "    \"using\": {"]
 #[doc = "      \"title\": \"Using\","]
-#[doc = "      \"description\": \"Selects which implementation to use for MCP/Plugin runners with multiple tools.\\n\\n- **Required**: For MCP/Plugin runners with multiple tools (e.g., fetch server with \\\"fetch\\\" and \\\"fetch_html\\\")\\n- **Optional**: For single-tool MCP runners (auto-selected)\\n- **Ignored**: For normal runners (COMMAND, HTTP_REQUEST, etc.)\\n\\nExamples:\\n- MCP fetch server: using: \\\"fetch_html\\\"\\n- MCP time server (single tool): can be omitted\\n- COMMAND runner: not needed\\n\","]
+#[doc = "      \"description\": \"Selects which implementation to use for runners with multiple tools.\\n\\n- **Required**: For runners with multiple tools (e.g., fetch server with \\\"fetch\\\" and \\\"fetch_html\\\")\\n- **Optional**: For single-tool runners (auto-selected)\\n\\nExamples:\\n- MCP fetch server: using: \\\"fetch_html\\\"\\n- MCP time server (single tool): can be omitted\\n- COMMAND runner: not needed\\n\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    }"]
 #[doc = "  },"]
@@ -2796,7 +2797,7 @@ pub struct RunJobRunner {
     #[doc = "The initialization settings, if any. Runtime expressions can be used to transform each value (not keys, no mixed plain text)."]
     #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
     pub settings: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-    #[doc = "Selects which implementation to use for MCP/Plugin runners with multiple tools.\n\n- **Required**: For MCP/Plugin runners with multiple tools (e.g., fetch server with \"fetch\" and \"fetch_html\")\n- **Optional**: For single-tool MCP runners (auto-selected)\n- **Ignored**: For normal runners (COMMAND, HTTP_REQUEST, etc.)\n\nExamples:\n- MCP fetch server: using: \"fetch_html\"\n- MCP time server (single tool): can be omitted\n- COMMAND runner: not needed\n"]
+    #[doc = "Selects which implementation to use for runners with multiple tools.\n\n- **Required**: For runners with multiple tools (e.g., fetch server with \"fetch\" and \"fetch_html\")\n- **Optional**: For single-tool runners (auto-selected)\n\nExamples:\n- MCP fetch server: using: \"fetch_html\"\n- MCP time server (single tool): can be omitted\n- COMMAND runner: not needed\n"]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub using: ::std::option::Option<::std::string::String>,
 }
@@ -2834,6 +2835,11 @@ impl RunJobRunner {
 #[doc = "      \"title\": \"WorkerName\","]
 #[doc = "      \"description\": \"The name of the worker that executes this job (user-defined).\","]
 #[doc = "      \"type\": \"string\""]
+#[doc = "    },"]
+#[doc = "    \"using\": {"]
+#[doc = "      \"title\": \"Using\","]
+#[doc = "      \"description\": \"Selects which implementation to use for runners with multiple tools.\\n\\n- **Required**: For runners with multiple tools (e.g., fetch server with \\\"fetch\\\" and \\\"fetch_html\\\")\\n- **Optional**: For single-tool runners (auto-selected)\\n\\nExamples:\\n- MCP fetch server: using: \\\"fetch_html\\\"\\n- MCP time server (single tool): can be omitted\\n- COMMAND runner: not needed\\n\","]
+#[doc = "      \"type\": \"string\""]
 #[doc = "    }"]
 #[doc = "  },"]
 #[doc = "  \"unevaluatedProperties\": false"]
@@ -2846,6 +2852,9 @@ pub struct RunJobWorker {
     pub arguments: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
     #[doc = "The name of the worker that executes this job (user-defined)."]
     pub name: ::std::string::String,
+    #[doc = "Selects which implementation to use for runners with multiple tools.\n\n- **Required**: For runners with multiple tools (e.g., fetch server with \"fetch\" and \"fetch_html\")\n- **Optional**: For single-tool runners (auto-selected)\n\nExamples:\n- MCP fetch server: using: \"fetch_html\"\n- MCP time server (single tool): can be omitted\n- COMMAND runner: not needed\n"]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub using: ::std::option::Option<::std::string::String>,
 }
 impl ::std::convert::From<&RunJobWorker> for RunJobWorker {
     fn from(value: &RunJobWorker) -> Self {
@@ -2900,7 +2909,7 @@ impl RunJobWorker {
 #[doc = "        },"]
 #[doc = "        \"using\": {"]
 #[doc = "          \"title\": \"Using\","]
-#[doc = "          \"description\": \"Selects which implementation to use for MCP/Plugin runners with multiple tools.\\n\\n- **Required**: For MCP/Plugin runners with multiple tools (e.g., fetch server with \\\"fetch\\\" and \\\"fetch_html\\\")\\n- **Optional**: For single-tool MCP runners (auto-selected)\\n- **Ignored**: For normal runners (COMMAND, HTTP_REQUEST, etc.)\\n\\nExamples:\\n- MCP fetch server: using: \\\"fetch_html\\\"\\n- MCP time server (single tool): can be omitted\\n- COMMAND runner: not needed\\n\","]
+#[doc = "          \"description\": \"Selects which implementation to use for runners with multiple tools.\\n\\n- **Required**: For runners with multiple tools (e.g., fetch server with \\\"fetch\\\" and \\\"fetch_html\\\")\\n- **Optional**: For single-tool runners (auto-selected)\\n\\nExamples:\\n- MCP fetch server: using: \\\"fetch_html\\\"\\n- MCP time server (single tool): can be omitted\\n- COMMAND runner: not needed\\n\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      },"]
@@ -3272,6 +3281,11 @@ impl ::std::convert::From<RunScript> for RunTaskConfiguration {
 #[doc = "        \"name\": {"]
 #[doc = "          \"title\": \"WorkerName\","]
 #[doc = "          \"description\": \"The name of the worker that executes this job (user-defined).\","]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        },"]
+#[doc = "        \"using\": {"]
+#[doc = "          \"title\": \"Using\","]
+#[doc = "          \"description\": \"Selects which implementation to use for runners with multiple tools.\\n\\n- **Required**: For runners with multiple tools (e.g., fetch server with \\\"fetch\\\" and \\\"fetch_html\\\")\\n- **Optional**: For single-tool runners (auto-selected)\\n\\nExamples:\\n- MCP fetch server: using: \\\"fetch_html\\\"\\n- MCP time server (single tool): can be omitted\\n- COMMAND runner: not needed\\n\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      },"]
@@ -7166,12 +7180,17 @@ pub mod builder {
             ::std::string::String,
         >,
         name: ::std::result::Result<::std::string::String, ::std::string::String>,
+        using: ::std::result::Result<
+            ::std::option::Option<::std::string::String>,
+            ::std::string::String,
+        >,
     }
     impl ::std::default::Default for RunJobWorker {
         fn default() -> Self {
             Self {
                 arguments: Err("no value supplied for arguments".to_string()),
                 name: Err("no value supplied for name".to_string()),
+                using: Ok(Default::default()),
             }
         }
     }
@@ -7198,6 +7217,16 @@ pub mod builder {
                 .map_err(|e| format!("error converting supplied value for name: {}", e));
             self
         }
+        pub fn using<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.using = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for using: {}", e));
+            self
+        }
     }
     impl ::std::convert::TryFrom<RunJobWorker> for super::RunJobWorker {
         type Error = super::error::ConversionError;
@@ -7207,6 +7236,7 @@ pub mod builder {
             Ok(Self {
                 arguments: value.arguments?,
                 name: value.name?,
+                using: value.using?,
             })
         }
     }
@@ -7215,6 +7245,7 @@ pub mod builder {
             Self {
                 arguments: Ok(value.arguments),
                 name: Ok(value.name),
+                using: Ok(value.using),
             }
         }
     }

@@ -460,7 +460,7 @@
             "using": {
               "type": "string",
               "title": "Using",
-              "description": "Selects which implementation to use for MCP/Plugin runners with multiple tools.\n\n- **Required**: For MCP/Plugin runners with multiple tools (e.g., fetch server with \"fetch\" and \"fetch_html\")\n- **Optional**: For single-tool MCP runners (auto-selected)\n- **Ignored**: For normal runners (COMMAND, HTTP_REQUEST, etc.)\n\nExamples:\n- MCP fetch server: using: \"fetch_html\"\n- MCP time server (single tool): can be omitted\n- COMMAND runner: not needed\n"
+              "description": "Selects which implementation to use for runners with multiple tools.\n\n- **Required**: For runners with multiple tools (e.g., fetch server with \"fetch\" and \"fetch_html\")\n- **Optional**: For single-tool runners (auto-selected)\n\nExamples:\n- MCP fetch server: using: \"fetch_html\"\n- MCP time server (single tool): can be omitted\n- COMMAND runner: not needed\n"
             },
             "settings": {
               "type": "object",
@@ -565,6 +565,11 @@
               "title": "FunctionArguments",
               "description": "A key/value mapping of arguments to use when running the function. Runtime expressions are supported for value transformation.",
               "additionalProperties": true
+            },
+            "using": {
+              "type": "string",
+              "title": "Using",
+              "description": "Selects which implementation to use for runners with multiple tools.\n\n- **Required**: For runners with multiple tools (e.g., fetch server with \"fetch\" and \"fetch_html\")\n- **Optional**: For single-tool runners (auto-selected)\n\nExamples:\n- MCP fetch server: using: \"fetch_html\"\n- MCP time server (single tool): can be omitted\n- COMMAND runner: not needed\n"
             }
           },
           "required": [

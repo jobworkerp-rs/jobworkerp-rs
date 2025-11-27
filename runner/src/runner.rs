@@ -94,25 +94,6 @@ macro_rules! schema_to_json_string_option {
     }};
 }
 
-/// Macro to implement as_any() and as_any_mut() for RunnerSpec
-/// Usage: impl_runner_as_any!(RunnerImplType);
-#[macro_export]
-macro_rules! impl_runner_as_any {
-    ($runner_type:ty) => {
-        impl $runner_type {
-            #[inline]
-            pub fn as_any(&self) -> &dyn std::any::Any {
-                self
-            }
-
-            #[inline]
-            pub fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-                self
-            }
-        }
-    };
-}
-
 pub trait RunnerSpec: Send + Sync + Any {
     fn name(&self) -> String;
     // only implement for stream runner (output_as_stream() == true)
@@ -141,22 +122,6 @@ pub trait RunnerSpec: Send + Sync + Any {
     /// Default implementation returns an error for runners that don't support sub-methods
     fn get_using_json_schema(&self, _using: &str) -> Result<String> {
         Err(anyhow::anyhow!("This runner does not support using"))
-    }
-
-    /// Provides access to Any trait for downcasting
-    /// Default implementation uses self reference
-    fn as_any(&self) -> &dyn Any
-    where
-        Self: 'static + Sized,
-    {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any
-    where
-        Self: 'static + Sized,
-    {
-        self
     }
 }
 
