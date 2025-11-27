@@ -5,8 +5,8 @@ use crate::proto::jobworkerp::data::{Runner, RunnerId};
 use crate::proto::jobworkerp::service::runner_service_server::RunnerService;
 use crate::proto::jobworkerp::service::{
     CountCondition, CountResponse, CountRunnerRequest, CreateRunnerRequest, CreateRunnerResponse,
-    FindListRequest, FindRunnerListRequest, OptionalRunnerResponse, RefreshFailure,
-    RefreshMcpRunnerRequest, RefreshMcpRunnerResponse, RunnerNameRequest, SuccessResponse,
+    FindListRequest, FindRunnerListRequest, OptionalRunnerResponse, RunnerNameRequest,
+    SuccessResponse,
 };
 use crate::service::error_handle::handle_error;
 use app::app::runner::RunnerApp;
@@ -202,40 +202,6 @@ impl<T: RunnerGrpc + Tracing + Send + Debug + Sync + 'static> RunnerService for 
 
         match self.app().count_by(runner_types, name_filter).await {
             Ok(res) => Ok(Response::new(CountResponse { total: res })),
-            Err(e) => Err(handle_error(&e)),
-        }
-    }
-
-    #[tracing::instrument(
-        level = "info",
-        skip(self, request),
-        fields(method = "refresh_mcp_runner")
-    )]
-    async fn refresh_mcp_runner(
-        &self,
-        request: tonic::Request<RefreshMcpRunnerRequest>,
-    ) -> Result<tonic::Response<RefreshMcpRunnerResponse>, tonic::Status> {
-        let _s = Self::trace_request("runner", "refresh_mcp_runner", &request);
-        let req = request.into_inner();
-
-        // Extract optional runner_id from request
-        let runner_id = req.runner_id.as_ref();
-
-        match self.app().refresh_mcp_runner(runner_id).await {
-            Ok((updated_runners, failures)) => {
-                let failure_messages: Vec<RefreshFailure> = failures
-                    .into_iter()
-                    .map(|(runner_name, error_message)| RefreshFailure {
-                        runner_name,
-                        error_message,
-                    })
-                    .collect();
-
-                Ok(Response::new(RefreshMcpRunnerResponse {
-                    updated_runners,
-                    failures: failure_messages,
-                }))
-            }
             Err(e) => Err(handle_error(&e)),
         }
     }

@@ -192,11 +192,7 @@ impl RunnerSpecFactory {
                             Some(Box::new(mcp_runner) as Box<dyn RunnerSpec + Send + Sync>)
                         }
                         Err(e) => {
-                            tracing::error!(
-                                "Failed to initialize MCP runner '{}': {}",
-                                name,
-                                e
-                            );
+                            tracing::error!("Failed to initialize MCP runner '{}': {}", name, e);
                             None
                         }
                     }

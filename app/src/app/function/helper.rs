@@ -129,10 +129,35 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
     ) -> impl Future<Output = Result<Value>> + Send + '_ {
         async move {
             tracing::debug!("found runner: {:?}, tool: {:?}", &runner, &tool_name_opt);
+
+            // Validate MCP tool name if present
+            if let Some(ref tool_name) = tool_name_opt {
+                if runner
+                    .data
+                    .as_ref()
+                    .is_some_and(|d| d.runner_type() == RunnerType::McpServer)
+                {
+                    // Check if tool exists in the MCP server's tool list
+                    if !runner.tools.iter().any(|t| t.name == *tool_name) {
+                        return Err(JobWorkerError::InvalidParameter(format!(
+                            "Tool '{}' not found in MCP server '{}'. Available tools: {:?}",
+                            tool_name,
+                            runner
+                                .data
+                                .as_ref()
+                                .map(|d| &d.name)
+                                .unwrap_or(&"unknown".to_string()),
+                            runner.tools.iter().map(|t| &t.name).collect::<Vec<_>>()
+                        ))
+                        .into());
+                    }
+                }
+            }
+
             let (settings, arguments) = Self::prepare_runner_call_arguments(
                 arguments.unwrap_or_default(),
                 &runner,
-                tool_name_opt,
+                tool_name_opt.clone(), // Clone because we use it again below
             )
             .await?;
             if let RunnerWithSchema {
@@ -153,7 +178,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                     unique_key,
                     timeout_sec,
                     streaming,
-                    None, // using not supported in this path
+                    tool_name_opt, // Pass using parameter for MCP/Plugin runners
                 )
                 .await
             } else {
@@ -184,8 +209,8 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                 .ok_or_else(|| {
                     JobWorkerError::WorkerNotFound(format!("worker or mcp tool not found: {name}"))
                 })?;
-            let args = if let Some(tool_name) = tool_name_opt {
-                Self::correct_mcp_worker_args(tool_name, request_args.clone())?
+            let args = if let Some(ref tool_name) = tool_name_opt {
+                Self::correct_mcp_worker_args(tool_name.clone(), request_args.clone())?
             } else {
                 request_args
             };
@@ -195,6 +220,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                 Value::Object(args),
                 unique_key,
                 streaming,
+                tool_name_opt, // Pass using parameter for MCP worker tools
             )
             .await
             .map(|r| r.unwrap_or_default())
@@ -231,7 +257,8 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         temp_worker_data: &'a WorkerData,
         arguments: Value,
         uniq_key: Option<String>,
-        _streaming: bool, // TODO if true, use streaming job
+        _streaming: bool,      // TODO if true, use streaming job
+        using: Option<String>, // Pass using parameter for MCP/Plugin workers
     ) -> impl Future<Output = Result<Option<Value>>> + Send + 'a {
         async move {
             let runner = if let Some(runner_id) = temp_worker_data.runner_id.as_ref() {
@@ -269,7 +296,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                             None,
                             false,
                             !temp_worker_data.use_static,
-                            None, // using: function calls don't use using
+                            using, // Pass using parameter to job execution
                         )
                         .await
                         .map(|res| {
