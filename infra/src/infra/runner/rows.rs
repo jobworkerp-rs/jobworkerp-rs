@@ -24,22 +24,11 @@ impl RunnerRow {
         if let Some(mcp_runner) =
             (runner.as_ref() as &dyn Any).downcast_ref::<McpServerRunnerImpl>()
         {
-            // Load tools with timeout to prevent hanging on unresponsive MCP servers
-            let timeout_config = RunnerTimeoutConfig::global();
-            let tools = tokio::time::timeout(timeout_config.mcp_tools_load, mcp_runner.tools())
-                .await
-                .unwrap_or_else(|_| {
-                    tracing::warn!(
-                        "MCP runner '{}' tools loading timed out after {:?}",
-                        self.name,
-                        timeout_config.mcp_tools_load
-                    );
-                    Ok(Vec::default())
-                })
-                .unwrap_or_else(|e| {
-                    tracing::error!("MCP runner '{}' tools loading failed: {:?}", self.name, e);
-                    Vec::default()
-                });
+            // Get tools from MCP runner (already loaded during construction)
+            let tools = mcp_runner.tools().unwrap_or_else(|e| {
+                tracing::error!("MCP runner '{}' tools retrieval failed: {:?}", self.name, e);
+                Vec::default()
+            });
 
             RunnerWithSchema {
                 id: Some(RunnerId { value: self.id }),

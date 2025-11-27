@@ -254,6 +254,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         None,
                         timeout_sec,
                         false,
+                        None, // using not used in workflow tasks
                     )
                     .await
                 {
@@ -389,6 +390,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         None,
                         timeout_sec,
                         false,
+                        None, // using not used in workflow tasks
                     )
                     .await
                 {
