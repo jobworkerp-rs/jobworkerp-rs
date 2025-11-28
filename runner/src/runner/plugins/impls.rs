@@ -67,21 +67,19 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
         // .map(|p| p.runner_settings_proto())
         // .unwrap_or_else(|e| format!("Error occurred: {:}", e))
     }
-    fn job_args_proto(&self) -> Option<String> {
-        block_on(self.plugin_runner.read()).job_args_proto()
-    }
-
     fn method_proto_map(
         &self,
-    ) -> Option<std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema>> {
+    ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
         block_on(self.plugin_runner.read()).method_proto_map()
     }
 
-    fn result_output_proto(&self) -> Option<String> {
-        block_on(self.plugin_runner.read()).result_output_proto()
-    }
     fn output_type(&self) -> StreamingOutputType {
-        block_on(self.plugin_runner.read()).output_type()
+        // Phase 6.6.4: Get output_type from method_proto_map instead of deprecated method
+        self.method_proto_map()
+            .values()
+            .next()
+            .and_then(|schema| StreamingOutputType::try_from(schema.output_type).ok())
+            .unwrap_or(StreamingOutputType::NonStreaming)
     }
     fn settings_schema(&self) -> String {
         block_on(self.plugin_runner.read()).settings_schema()

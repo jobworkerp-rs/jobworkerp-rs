@@ -15,7 +15,7 @@ use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::ReusableWorkflowRunnerSettings;
 use memory_utils::cache::moka::{MokaCacheImpl, UseMokaCache};
-use proto::jobworkerp::data::{RunnerType, StreamingOutputType, WorkerData, WorkerId};
+use proto::jobworkerp::data::{RunnerData, RunnerType, StreamingOutputType, WorkerData, WorkerId};
 use proto::jobworkerp::function::data::{
     function_specs, FunctionResult, FunctionSchema, FunctionSpecs, McpToolList, WorkerOptions,
 };
@@ -953,6 +953,20 @@ pub trait UseFunctionApp {
 }
 
 pub trait FunctionSpecConverter {
+    // Helper function to get output_type from RunnerData
+    // Phase 6.6: Prefer method_proto_map over deprecated output_type field
+    #[allow(deprecated)]
+    fn get_runner_output_type(runner_data: &RunnerData) -> i32 {
+        // Phase 6.6.4: Get output_type from method_proto_map (required for all runners)
+        if let Some(ref method_proto_map) = runner_data.method_proto_map {
+            if let Some(schema) = method_proto_map.schemas.values().next() {
+                return schema.output_type;
+            }
+        }
+        // If no schemas found, default to NON_STREAMING
+        StreamingOutputType::NonStreaming as i32
+    }
+
     // Helper function to convert Runner to FunctionSpecs
     fn convert_runner_to_function_specs(runner: RunnerWithSchema) -> FunctionSpecs {
         if runner
@@ -978,7 +992,7 @@ pub trait FunctionSpecConverter {
                 output_type: runner
                     .data
                     .as_ref()
-                    .map(|data| data.output_type)
+                    .map(|data| Self::get_runner_output_type(data))
                     .unwrap_or(StreamingOutputType::NonStreaming as i32),
             }
         } else {
@@ -1006,7 +1020,7 @@ pub trait FunctionSpecConverter {
                 output_type: runner
                     .data
                     .as_ref()
-                    .map(|data| data.output_type)
+                    .map(|data| Self::get_runner_output_type(data))
                     .unwrap_or(StreamingOutputType::NonStreaming as i32),
             }
         }
@@ -1046,7 +1060,7 @@ pub trait FunctionSpecConverter {
                 output_type: runner
                     .data
                     .as_ref()
-                    .map(|data| data.output_type)
+                    .map(|data| Self::get_runner_output_type(data))
                     .unwrap_or(StreamingOutputType::NonStreaming as i32),
             })
         } else if runner
@@ -1067,7 +1081,7 @@ pub trait FunctionSpecConverter {
                 output_type: runner
                     .data
                     .as_ref()
-                    .map(|data| data.output_type)
+                    .map(|data| Self::get_runner_output_type(data))
                     .unwrap_or(StreamingOutputType::NonStreaming as i32),
             })
         } else {
@@ -1089,7 +1103,7 @@ pub trait FunctionSpecConverter {
                 output_type: runner
                     .data
                     .as_ref()
-                    .map(|data| data.output_type)
+                    .map(|data| Self::get_runner_output_type(data))
                     .unwrap_or(StreamingOutputType::NonStreaming as i32),
             })
         }
@@ -1141,7 +1155,7 @@ pub trait FunctionSpecConverter {
                     arguments: tool.input_schema.clone(),
                     result_output_schema: runner.output_schema.clone(),
                 })),
-                output_type: runner_data.output_type,
+                output_type: Self::get_runner_output_type(runner_data),
             })
         } else if runner_data.method_proto_map.is_some() {
             // Plugin or other runner with method_proto_map
@@ -1170,7 +1184,7 @@ pub trait FunctionSpecConverter {
                     // Rev.8.1: result_proto is now required (not optional)
                     result_output_schema: Some(method_schema.result_proto.clone()),
                 })),
-                output_type: runner_data.output_type,
+                output_type: Self::get_runner_output_type(runner_data),
             })
         } else {
             // Runner doesn't support usings
@@ -1231,7 +1245,7 @@ pub trait FunctionSpecConverter {
                     arguments: tool.input_schema.clone(),
                     result_output_schema: runner.output_schema.clone(),
                 })),
-                output_type: runner_data.output_type,
+                output_type: Self::get_runner_output_type(runner_data),
             })
         } else if runner_data.method_proto_map.is_some() {
             // Plugin or other runner with method_proto_map
@@ -1261,7 +1275,7 @@ pub trait FunctionSpecConverter {
                     // Rev.8.1: result_proto is now required (not optional)
                     result_output_schema: Some(method_schema.result_proto.clone()),
                 })),
-                output_type: runner_data.output_type,
+                output_type: Self::get_runner_output_type(runner_data),
             })
         } else {
             // Worker→Runner doesn't support usings - log warning and return error

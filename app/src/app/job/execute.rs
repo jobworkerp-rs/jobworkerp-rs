@@ -638,7 +638,8 @@ pub trait UseJobExecutor:
             .as_ref()
             .and_then(|r| r.output.as_ref().map(|o| &o.items));
         if let Some(output) = output {
-            let result_descriptor = Self::parse_job_result_schema_descriptor(runner_data)?;
+            // Phase 6.6.4: Use default method name "run" for single-method runners
+            let result_descriptor = Self::parse_job_result_schema_descriptor(runner_data, "run")?;
             if let Some(desc) = result_descriptor {
                 match ProtobufDescriptor::get_message_from_bytes(desc, output) {
                     Ok(m) => {

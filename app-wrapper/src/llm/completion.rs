@@ -91,12 +91,10 @@ impl RunnerSpec for LLMCompletionRunnerImpl {
         LLMCompletionRunnerSpec::runner_settings_proto(self)
     }
 
-    fn job_args_proto(&self) -> Option<String> {
-        LLMCompletionRunnerSpec::job_args_proto(self)
-    }
-
-    fn result_output_proto(&self) -> Option<String> {
-        LLMCompletionRunnerSpec::result_output_proto(self)
+    fn method_proto_map(
+        &self,
+    ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        LLMCompletionRunnerSpec::method_proto_map(self)
     }
 
     fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {

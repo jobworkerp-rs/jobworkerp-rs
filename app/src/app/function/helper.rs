@@ -268,8 +268,9 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
             };
             if let Some(runner) = runner {
                 if let Some(rdata) = runner.data.as_ref() {
-                    let args_descriptor =
-                        Self::parse_job_args_schema_descriptor(rdata).map_err(|e| {
+                    // Phase 6.6.4: Use default method name "run" for single-method runners
+                    let args_descriptor = Self::parse_job_args_schema_descriptor(rdata, "run")
+                        .map_err(|e| {
                             anyhow::anyhow!("Failed to parse job_args schema descriptor: {:#?}", e)
                         })?;
                     tracing::debug!("job args: {:#?}", &arguments);

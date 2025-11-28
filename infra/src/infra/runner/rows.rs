@@ -17,6 +17,7 @@ pub struct RunnerRow {
 }
 
 impl RunnerRow {
+    #[allow(deprecated)]
     pub async fn to_runner_with_schema(
         &self,
         runner: Box<dyn RunnerSpec + Send + Sync>,
@@ -30,14 +31,10 @@ impl RunnerRow {
                 Vec::default()
             });
 
-            // Get method_proto_map from MCP runner
-            let method_proto_map = runner
-                .method_proto_map()
-                .map(|map| proto::jobworkerp::data::MethodProtoMap { schemas: map });
-
-            // job_args_proto is now Option<String>
-            // For using-based runners (MCP/Plugin with multiple methods), it returns None
-            let job_args_proto = runner.job_args_proto();
+            // Phase 6.6.4: method_proto_map is now required for all runners
+            let method_proto_map = Some(proto::jobworkerp::data::MethodProtoMap {
+                schemas: runner.method_proto_map(),
+            });
 
             RunnerWithSchema {
                 id: Some(RunnerId { value: self.id }),
@@ -46,9 +43,6 @@ impl RunnerRow {
                     description: self.description.clone(),
                     runner_type: self.r#type,
                     runner_settings_proto: runner.runner_settings_proto(),
-                    job_args_proto,
-                    result_output_proto: runner.result_output_proto(),
-                    output_type: runner.output_type() as i32,
                     definition: self.definition.clone(),
                     method_proto_map,
                 }),
@@ -70,25 +64,20 @@ impl RunnerRow {
                 timeout_config.plugin_schema_load,
                 tokio::task::spawn_blocking(move || {
                     let runner_settings_proto = runner.runner_settings_proto();
-                    let job_args_proto = runner.job_args_proto();
-                    let method_proto_map = runner
-                        .method_proto_map()
-                        .map(|map| proto::jobworkerp::data::MethodProtoMap { schemas: map });
-                    let result_output_proto = runner.result_output_proto();
+                    // Phase 6.6.4: method_proto_map is now required for all runners
+                    let method_proto_map = Some(proto::jobworkerp::data::MethodProtoMap {
+                        schemas: runner.method_proto_map(),
+                    });
                     let settings_schema = runner.settings_schema();
                     let arguments_schema = runner.arguments_schema();
                     let output_schema = runner.output_schema();
-                    let output_type = runner.output_type() as i32;
 
                     (
                         runner_settings_proto,
-                        job_args_proto,
                         method_proto_map,
-                        result_output_proto,
                         settings_schema,
                         arguments_schema,
                         output_schema,
-                        output_type,
                     )
                 }),
             )
@@ -97,13 +86,10 @@ impl RunnerRow {
             match schema_result {
                 Ok(Ok((
                     runner_settings_proto,
-                    job_args_proto,
                     method_proto_map,
-                    result_output_proto,
                     settings_schema,
                     arguments_schema,
                     output_schema,
-                    output_type,
                 ))) => RunnerWithSchema {
                     id: Some(RunnerId { value: id }),
                     data: Some(RunnerData {
@@ -111,9 +97,6 @@ impl RunnerRow {
                         description,
                         runner_type: r#type,
                         runner_settings_proto,
-                        job_args_proto,
-                        result_output_proto,
-                        output_type,
                         definition,
                         method_proto_map,
                     }),
@@ -130,7 +113,7 @@ impl RunnerRow {
                         self.definition,
                         e
                     );
-                    // Return minimal schema on error
+                    // Return minimal schema on error (Phase 6.6.4: method_proto_map is required)
                     RunnerWithSchema {
                         id: Some(RunnerId { value: id }),
                         data: Some(RunnerData {
@@ -138,11 +121,10 @@ impl RunnerRow {
                             description,
                             runner_type: r#type,
                             runner_settings_proto: String::new(),
-                            job_args_proto: Some(String::new()),
-                            result_output_proto: None,
-                            output_type: 0,
                             definition,
-                            method_proto_map: None,
+                            method_proto_map: Some(proto::jobworkerp::data::MethodProtoMap {
+                                schemas: std::collections::HashMap::new(),
+                            }),
                         }),
                         settings_schema: String::new(),
                         arguments_schema: String::new(),
@@ -158,7 +140,7 @@ impl RunnerRow {
                         self.definition,
                         timeout_config.plugin_schema_load
                     );
-                    // Return minimal schema on timeout
+                    // Return minimal schema on timeout (Phase 6.6.4: method_proto_map is required)
                     RunnerWithSchema {
                         id: Some(RunnerId { value: id }),
                         data: Some(RunnerData {
@@ -166,11 +148,10 @@ impl RunnerRow {
                             description,
                             runner_type: r#type,
                             runner_settings_proto: String::new(),
-                            job_args_proto: Some(String::new()),
-                            result_output_proto: None,
-                            output_type: 0,
                             definition,
-                            method_proto_map: None,
+                            method_proto_map: Some(proto::jobworkerp::data::MethodProtoMap {
+                                schemas: std::collections::HashMap::new(),
+                            }),
                         }),
                         settings_schema: String::new(),
                         arguments_schema: String::new(),

@@ -165,17 +165,33 @@ impl RunnerSpec for PythonCommandRunner {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/python_command_runner.proto").to_string()
     }
-    fn job_args_proto(&self) -> Option<String> {
-        Some(include_str!("../../protobuf/jobworkerp/runner/python_command_args.proto").to_string())
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        Some(
-            include_str!("../../protobuf/jobworkerp/runner/python_command_result.proto")
+    // Phase 6.6: Unified method_proto_map for all runners
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            "run".to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!(
+                    "../../protobuf/jobworkerp/runner/python_command_args.proto"
+                )
                 .to_string(),
-        )
+                result_proto: include_str!(
+                    "../../protobuf/jobworkerp/runner/python_command_result.proto"
+                )
+                .to_string(),
+                description: Some("Execute Python script via uv".to_string()),
+                output_type: StreamingOutputType::NonStreaming as i32,
+            },
+        );
+        schemas
     }
     fn output_type(&self) -> StreamingOutputType {
-        StreamingOutputType::NonStreaming
+        // Phase 6.6.5: Use method_proto_map's output_type instead of deprecated RunnerData.output_type
+        self.method_proto_map()
+            .get("run")
+            .cloned()
+            .and_then(|s| StreamingOutputType::try_from(s.output_type).ok())
+            .unwrap_or(StreamingOutputType::NonStreaming)
     }
     fn settings_schema(&self) -> String {
         include_str!("../../schema/PythonCommandRunnerSettings.json").to_string()

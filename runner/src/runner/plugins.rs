@@ -6,7 +6,6 @@ use crate::schema_to_json_string;
 use anyhow::Result;
 use itertools::Itertools;
 use jobworkerp_base::error::JobWorkerError;
-use proto::jobworkerp::data::StreamingOutputType;
 use std::{
     collections::HashMap,
     fs::{self, ReadDir},
@@ -232,21 +231,11 @@ pub trait PluginRunner: Send + Sync {
     fn is_canceled(&self) -> bool;
     fn runner_settings_proto(&self) -> String;
 
-    /// Returns the job arguments protobuf schema for normal plugins
-    /// - Some(proto): Normal plugins with single job_args_proto
-    /// - None: Sub-method plugins that use method_proto_map instead
-    fn job_args_proto(&self) -> Option<String>;
-
-    /// Returns the method protobuf schema map for sub-method plugins
-    /// Key: using name, Value: MethodSchema (input and output schemas)
-    /// For normal plugins (single method), returns None
-    fn method_proto_map(&self) -> Option<HashMap<String, proto::jobworkerp::data::MethodSchema>> {
-        None
-    }
-
-    fn result_output_proto(&self) -> Option<String>;
-    fn output_type(&self) -> StreamingOutputType {
-        StreamingOutputType::NonStreaming
+    /// Phase 6.6.4: Returns the method protobuf schema map for all plugins
+    /// Key: method name (typically "run"), Value: MethodSchema (input and output schemas)
+    /// This is the unified approach for defining plugin method schemas
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        HashMap::new()
     }
     fn settings_schema(&self) -> String {
         schema_to_json_string!(crate::jobworkerp::runner::Empty, "settings_schema")

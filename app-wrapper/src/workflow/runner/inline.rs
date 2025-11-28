@@ -14,7 +14,6 @@ use jobworkerp_runner::jobworkerp::runner::{Empty, InlineWorkflowArgs, WorkflowR
 use jobworkerp_runner::runner::cancellation_helper::{
     CancelMonitoringHelper, UseCancelMonitoringHelper,
 };
-use jobworkerp_runner::runner::workflow::InlineWorkflowRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use opentelemetry::trace::TraceContextExt;
 use prost::Message;
@@ -68,8 +67,6 @@ impl InlineWorkflowRunner {
         self.cancel_helper = Some(helper);
     }
 }
-impl InlineWorkflowRunnerSpec for InlineWorkflowRunner {}
-
 #[derive(Debug, JsonSchema, serde::Deserialize, serde::Serialize)]
 struct WorkflowRunnerInputSchema {
     args: InlineWorkflowArgs,
@@ -77,23 +74,43 @@ struct WorkflowRunnerInputSchema {
 
 impl RunnerSpec for InlineWorkflowRunner {
     fn name(&self) -> String {
-        InlineWorkflowRunnerSpec::name(self)
+        RunnerType::InlineWorkflow.as_str_name().to_string()
     }
 
     fn runner_settings_proto(&self) -> String {
-        InlineWorkflowRunnerSpec::runner_settings_proto(self)
+        "".to_string()
     }
 
-    fn job_args_proto(&self) -> Option<String> {
-        InlineWorkflowRunnerSpec::job_args_proto(self)
-    }
-
-    fn result_output_proto(&self) -> Option<String> {
-        InlineWorkflowRunnerSpec::result_output_proto(self)
+    // Phase 6.6.4: method_proto_map is now required (non-optional)
+    fn method_proto_map(
+        &self,
+    ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        let mut schemas = std::collections::HashMap::new();
+        schemas.insert(
+            "run".to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!(
+                    "../../../../runner/protobuf/jobworkerp/runner/workflow_args.proto"
+                )
+                .to_string(),
+                result_proto: include_str!(
+                    "../../../../runner/protobuf/jobworkerp/runner/workflow_result.proto"
+                )
+                .to_string(),
+                description: Some("Execute inline workflow (multi-job orchestration)".to_string()),
+                output_type: StreamingOutputType::Both as i32,
+            },
+        );
+        schemas
     }
 
     fn output_type(&self) -> StreamingOutputType {
-        InlineWorkflowRunnerSpec::output_type(self)
+        // Phase 6.6.5: Use method_proto_map's output_type instead of deprecated RunnerData.output_type
+        self.method_proto_map()
+            .get("run")
+            .cloned()
+            .and_then(|s| StreamingOutputType::try_from(s.output_type).ok())
+            .unwrap_or(StreamingOutputType::NonStreaming)
     }
     fn settings_schema(&self) -> String {
         // plain string with title

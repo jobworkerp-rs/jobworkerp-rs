@@ -723,18 +723,29 @@ mod test {
                 "../../../../plugins/hello_runner/protobuf/hello_runner.proto"
             )
             .to_string(),
-            job_args_proto: Some(
-                include_str!("../../../../plugins/hello_runner/protobuf/hello_job_args.proto")
-                    .to_string(),
-            ),
-            result_output_proto: Some(
-                include_str!("../../../../plugins/hello_runner/protobuf/hello_result.proto")
-                    .to_string(),
-            ),
             runner_type: 0,
-            output_type: StreamingOutputType::Both as i32, // hello
             definition: "./target/debug/libplugin_runner_hello.dylib".to_string(),
-            method_proto_map: None,
+            method_proto_map: Some(proto::jobworkerp::data::MethodProtoMap {
+                schemas: {
+                    let mut map = std::collections::HashMap::new();
+                    map.insert(
+                        "run".to_string(),
+                        proto::jobworkerp::data::MethodSchema {
+                            args_proto: include_str!(
+                                "../../../../plugins/hello_runner/protobuf/hello_job_args.proto"
+                            )
+                            .to_string(),
+                            result_proto: include_str!(
+                                "../../../../plugins/hello_runner/protobuf/hello_result.proto"
+                            )
+                            .to_string(),
+                            description: Some("Hello runner test".to_string()),
+                            output_type: StreamingOutputType::Both as i32,
+                        },
+                    );
+                    map
+                },
+            }),
         };
         let plugin = p
             .create_runner_spec_by_name(&data.name, false)
@@ -781,7 +792,13 @@ mod test {
             data: Some(RunnerData {
                 name: row.name.clone(),
                 description: row.description.clone(),
-                ..data
+                runner_type: data.runner_type,
+                runner_settings_proto: data.runner_settings_proto.clone(),
+                definition: data.definition.clone(),
+                // Phase 6.6.4: method_proto_map comes from plugin.method_proto_map() in to_runner_with_schema()
+                method_proto_map: Some(proto::jobworkerp::data::MethodProtoMap {
+                    schemas: plugin.method_proto_map(),
+                }),
             }),
             settings_schema: plugin.settings_schema(),
             arguments_schema: plugin.arguments_schema(),
