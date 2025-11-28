@@ -40,7 +40,7 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use futures::stream::BoxStream;
-use proto::jobworkerp::data::{ResultOutputItem, StreamingOutputType};
+use proto::jobworkerp::data::ResultOutputItem;
 use tonic::async_trait;
 
 pub mod cancellation;
@@ -107,8 +107,6 @@ pub trait RunnerSpec: Send + Sync + Any {
     fn method_proto_map(
         &self,
     ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema>;
-    // run(), run_stream() availability
-    fn output_type(&self) -> StreamingOutputType;
 
     /// JSON schema methods for Workflow API validation
     ///

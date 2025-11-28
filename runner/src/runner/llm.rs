@@ -43,16 +43,6 @@ pub trait LLMCompletionRunnerSpec {
         );
         schemas
     }
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        // Phase 6.6.5: Use method_proto_map's output_type instead of deprecated RunnerData.output_type
-        self.method_proto_map()
-            .get("run")
-            .cloned()
-            .and_then(|s| {
-                proto::jobworkerp::data::StreamingOutputType::try_from(s.output_type).ok()
-            })
-            .unwrap_or(proto::jobworkerp::data::StreamingOutputType::NonStreaming)
-    }
     fn settings_schema(&self) -> String {
         include_str!("../../schema/llm/LLMRunnerSettings.json").to_string()
     }
@@ -81,9 +71,6 @@ impl RunnerSpec for LLMCompletionRunnerSpecImpl {
         LLMCompletionRunnerSpec::method_proto_map(self)
     }
 
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        LLMCompletionRunnerSpec::output_type(self)
-    }
     fn settings_schema(&self) -> String {
         LLMCompletionRunnerSpec::settings_schema(self)
     }

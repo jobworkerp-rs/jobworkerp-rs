@@ -52,16 +52,6 @@ pub trait CreateWorkflowRunnerSpec {
         );
         schemas
     }
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        // Phase 6.6.5: Use method_proto_map's output_type instead of deprecated RunnerData.output_type
-        self.method_proto_map()
-            .get("run")
-            .cloned()
-            .and_then(|s| {
-                proto::jobworkerp::data::StreamingOutputType::try_from(s.output_type).ok()
-            })
-            .unwrap_or(proto::jobworkerp::data::StreamingOutputType::NonStreaming)
-    }
 
     fn settings_schema(&self) -> String {
         // XXX WORKFLOW settings: WorkerOptions (not runner_settings though)
@@ -93,10 +83,6 @@ impl RunnerSpec for CreateWorkflowRunnerSpecImpl {
         &self,
     ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
         CreateWorkflowRunnerSpec::method_proto_map(self)
-    }
-
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        CreateWorkflowRunnerSpec::output_type(self)
     }
 
     fn settings_schema(&self) -> String {

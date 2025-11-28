@@ -219,10 +219,6 @@ impl RunnerSpec for CreateWorkflowRunnerImpl {
         CreateWorkflowRunnerSpec::method_proto_map(self)
     }
 
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        CreateWorkflowRunnerSpec::output_type(self)
-    }
-
     fn settings_schema(&self) -> String {
         CreateWorkflowRunnerSpec::settings_schema(self)
     }

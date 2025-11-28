@@ -245,15 +245,6 @@ impl RunnerSpec for McpServerRunnerImpl {
             })
             .collect()
     }
-    fn output_type(&self) -> StreamingOutputType {
-        // Phase 6.6.5: Use method_proto_map's output_type instead of deprecated RunnerData.output_type
-        // MCP tools all return Both, get it from method_proto_map
-        self.method_proto_map()
-            .values()
-            .next()
-            .and_then(|s| StreamingOutputType::try_from(s.output_type).ok())
-            .unwrap_or(StreamingOutputType::Both) // fallback for empty tools
-    }
 
     fn settings_schema(&self) -> String {
         "{}".to_string() // Empty JSON object (no settings required)
