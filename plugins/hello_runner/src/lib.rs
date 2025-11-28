@@ -188,15 +188,20 @@ impl PluginRunner for HelloPlugin {
     fn runner_settings_proto(&self) -> String {
         include_str!("../protobuf/hello_runner.proto").to_string()
     }
-    fn job_args_proto(&self) -> Option<String> {
-        Some(include_str!("../protobuf/hello_job_args.proto").to_string())
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        Some(include_str!("../protobuf/hello_result.proto").to_string())
-    }
-    // use run_stream() if true, else use run()
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        proto::jobworkerp::data::StreamingOutputType::Both
+
+    // Phase 6.6.4: Implement method_proto_map for new unified API
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            "run".to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!("../protobuf/hello_job_args.proto").to_string(),
+                result_proto: include_str!("../protobuf/hello_result.proto").to_string(),
+                description: Some("Hello world plugin execution".to_string()),
+                output_type: proto::jobworkerp::data::StreamingOutputType::Both as i32,
+            },
+        );
+        schemas
     }
     fn settings_schema(&self) -> String {
         let schema = schemars::schema_for!(HelloRunnerSettings);

@@ -99,21 +99,14 @@ pub trait RunnerSpec: Send + Sync + Any {
     // only implement for stream runner (output_as_stream() == true)
     fn runner_settings_proto(&self) -> String;
 
-    /// Returns the job arguments protobuf schema for normal runners
-    /// - Some(proto): Normal runners with single job_args_proto
-    /// - None: Sub-method runners (MCP/Plugin) that use method_proto_map instead
-    fn job_args_proto(&self) -> Option<String>;
-
-    /// Returns the method protobuf schema map for sub-method runners
-    /// Key: using name, Value: MethodSchema (input and optional output schemas)
-    /// For normal runners, returns None
+    /// Returns the method protobuf schema map for all runners (REQUIRED in Phase 6.6.4+)
+    /// - Key: method name (e.g., "run" for single-method runners, tool names for MCP/Plugin)
+    /// - Value: MethodSchema (input schema, output schema, description, output_type)
+    /// - Single-method runners: use default method name "run"
+    /// - MCP/Plugin runners: use tool-specific method names
     fn method_proto_map(
         &self,
-    ) -> Option<std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema>> {
-        None
-    }
-
-    fn result_output_proto(&self) -> Option<String>;
+    ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema>;
     // run(), run_stream() availability
     fn output_type(&self) -> StreamingOutputType;
 

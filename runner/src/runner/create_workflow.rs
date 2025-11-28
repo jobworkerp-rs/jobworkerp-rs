@@ -3,6 +3,7 @@ use crate::{
     schema_to_json_string_option,
 };
 use proto::jobworkerp::data::RunnerType;
+use std::collections::HashMap;
 
 use super::RunnerSpec;
 
@@ -31,22 +32,35 @@ pub trait CreateWorkflowRunnerSpec {
     fn runner_settings_proto(&self) -> String {
         "".to_string()
     }
-
-    fn job_args_proto(&self) -> Option<String> {
-        Some(
-            include_str!("../../protobuf/jobworkerp/runner/create_workflow_args.proto").to_string(),
-        )
-    }
-
-    fn result_output_proto(&self) -> Option<String> {
-        Some(
-            include_str!("../../protobuf/jobworkerp/runner/create_workflow_result.proto")
+    // Phase 6.6: Unified method_proto_map for all runners
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            "run".to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!(
+                    "../../protobuf/jobworkerp/runner/create_workflow_args.proto"
+                )
                 .to_string(),
-        )
+                result_proto: include_str!(
+                    "../../protobuf/jobworkerp/runner/create_workflow_result.proto"
+                )
+                .to_string(),
+                description: Some("Create and register new workflow definition".to_string()),
+                output_type: proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32,
+            },
+        );
+        schemas
     }
-
     fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        proto::jobworkerp::data::StreamingOutputType::NonStreaming
+        // Phase 6.6.5: Use method_proto_map's output_type instead of deprecated RunnerData.output_type
+        self.method_proto_map()
+            .get("run")
+            .cloned()
+            .and_then(|s| {
+                proto::jobworkerp::data::StreamingOutputType::try_from(s.output_type).ok()
+            })
+            .unwrap_or(proto::jobworkerp::data::StreamingOutputType::NonStreaming)
     }
 
     fn settings_schema(&self) -> String {
@@ -75,12 +89,10 @@ impl RunnerSpec for CreateWorkflowRunnerSpecImpl {
         CreateWorkflowRunnerSpec::runner_settings_proto(self)
     }
 
-    fn job_args_proto(&self) -> Option<String> {
-        CreateWorkflowRunnerSpec::job_args_proto(self)
-    }
-
-    fn result_output_proto(&self) -> Option<String> {
-        CreateWorkflowRunnerSpec::result_output_proto(self)
+    fn method_proto_map(
+        &self,
+    ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        CreateWorkflowRunnerSpec::method_proto_map(self)
     }
 
     fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {

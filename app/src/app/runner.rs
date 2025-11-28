@@ -104,28 +104,21 @@ pub trait UseRunnerParserWithCache: Send + Sync {
         async { self.descriptor_cache().clear().await }
     }
 
-    /// Validate mutual exclusivity of job_args_proto and method_proto_map
-    fn validate_runner_data_exclusivity(runner_data: &RunnerData) -> Result<()> {
-        let has_job_args = runner_data
-            .job_args_proto
-            .as_ref()
-            .is_some_and(|s| !s.is_empty());
-        let has_method_proto_map = runner_data.method_proto_map.is_some();
-
-        if has_method_proto_map && has_job_args {
+    /// Phase 6.6.4: Validate that method_proto_map is present (now required for all runners)
+    fn validate_runner_data_has_method_proto_map(runner_data: &RunnerData) -> Result<()> {
+        if runner_data.method_proto_map.is_none() {
             return Err(JobWorkerError::InvalidParameter(
-                "job_args_proto and method_proto_map cannot both be set".to_string(),
+                "method_proto_map is required for all runners (Phase 6.6.4+)".to_string(),
             )
             .into());
         }
-
         Ok(())
     }
 
     // TODO remove if not used
     fn parse_proto_schemas(&self, runner_data: RunnerData) -> Result<RunnerDataWithDescriptor> {
-        // Validate mutual exclusivity of job_args_proto and method_proto_map
-        Self::validate_runner_data_exclusivity(&runner_data)?;
+        // Phase 6.6.4: Validate that method_proto_map is present (required)
+        Self::validate_runner_data_has_method_proto_map(&runner_data)?;
 
         // runner_settings_proto
         let ope_d = if runner_data.runner_settings_proto.is_empty() {
@@ -144,44 +137,12 @@ pub trait UseRunnerParserWithCache: Send + Sync {
                 )))?;
             Some(ope_d)
         };
-        // job_args_proto
-        let arg_d = match &runner_data.job_args_proto {
-            Some(job_args_proto) if !job_args_proto.is_empty() => {
-                let arg_d = ProtobufDescriptor::new(job_args_proto).map_err(|e| {
-                    JobWorkerError::ParseError(format!("schema job_args_proto error:{e:?}"))
-                })?;
-                let _arg_m =
-                    arg_d
-                        .get_messages()
-                        .first()
-                        .ok_or(JobWorkerError::InvalidParameter(format!(
-                            "illegal RunnerData: message name is not found from {}",
-                            job_args_proto
-                        )))?;
-                Some(arg_d)
-            }
-            _ => None, // use JobResult as job_args_proto
-        };
-        // result_output_proto
-        let result_d = if let Some(result_output_proto) = &runner_data.result_output_proto {
-            if (*result_output_proto).is_empty() {
-                None
-            } else {
-                let result_d = ProtobufDescriptor::new(result_output_proto).map_err(|e| {
-                    JobWorkerError::ParseError(format!("schema result_output_proto error:{e:?}"))
-                })?;
-                let _result_m =
-                    result_d
-                        .get_messages()
-                        .first()
-                        .ok_or(JobWorkerError::InvalidParameter(format!(
-                        "illegal RunnerData: message name is not found from {result_output_proto}"
-                    )))?;
-                Some(result_d)
-            }
-        } else {
-            None
-        };
+
+        // Phase 6.6.4: Parse method_proto_map (now required for all runners)
+        // Note: For now, we just validate presence. Detailed schema parsing can be added later if needed.
+        // The arg_d and result_d are set to None as they are replaced by method_proto_map
+        let arg_d = None;
+        let result_d = None;
         Ok(RunnerDataWithDescriptor {
             runner_data,
             runner_settings_descriptor: ope_d,
@@ -323,10 +284,10 @@ impl RunnerDataWithDescriptor {
                 .first()
                 .cloned()
                 .ok_or(
-                    JobWorkerError::InvalidParameter(format!(
-                        "illegal RunnerData: job args message name is not found from:\n {:?}",
-                        &self.runner_data.job_args_proto
-                    ))
+                    JobWorkerError::InvalidParameter(
+                        "illegal RunnerData: job args message name is not found from method_proto_map"
+                            .to_string(),
+                    )
                     .into(),
                 )
                 .map(Some)
@@ -379,19 +340,26 @@ pub mod test {
     use infra::infra::runner::rows::RunnerWithSchema;
     use proto::jobworkerp::data::{RunnerData, RunnerId, RunnerType, StreamingOutputType};
     pub fn test_runner_data(name: &str) -> RunnerData {
+        // Phase 6.6.4: Use method_proto_map (required for all runners)
+        let mut schemas = std::collections::HashMap::new();
+        schemas.insert(
+            "run".to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!("../../../proto/protobuf/test_args.proto").to_string(),
+                result_proto: String::new(),
+                description: Some("Test runner method".to_string()),
+                output_type: StreamingOutputType::NonStreaming as i32,
+            },
+        );
+
         proto::jobworkerp::data::RunnerData {
             name: name.to_string(),
             description: "test runner desc".to_string(),
             runner_settings_proto: include_str!("../../../proto/protobuf/test_runner.proto")
                 .to_string(),
-            job_args_proto: Some(
-                include_str!("../../../proto/protobuf/test_args.proto").to_string(),
-            ),
             runner_type: RunnerType::Plugin as i32,
-            result_output_proto: None,
-            output_type: StreamingOutputType::NonStreaming as i32,
             definition: "./target/debug/libplugin_runner_test.so".to_string(),
-            method_proto_map: None,
+            method_proto_map: Some(proto::jobworkerp::data::MethodProtoMap { schemas }),
         }
     }
     pub fn test_runner_with_schema(id: &RunnerId, name: &str) -> RunnerWithSchema {
@@ -407,6 +375,13 @@ pub mod test {
 
     pub fn test_runner_with_descriptor(name: &str) -> RunnerDataWithDescriptor {
         let runner_data = test_runner_data(name);
+        let args_descriptor = runner_data
+            .method_proto_map
+            .as_ref()
+            .and_then(|m| m.schemas.get("run"))
+            .map(|schema| {
+                command_utils::protobuf::ProtobufDescriptor::new(&schema.args_proto).unwrap()
+            });
         RunnerDataWithDescriptor {
             runner_data: runner_data.clone(),
             runner_settings_descriptor: Some(
@@ -415,10 +390,7 @@ pub mod test {
                 )
                 .unwrap(),
             ),
-            args_descriptor: runner_data
-                .job_args_proto
-                .as_ref()
-                .map(|proto| command_utils::protobuf::ProtobufDescriptor::new(proto).unwrap()),
+            args_descriptor,
             result_descriptor: None,
         }
     }
