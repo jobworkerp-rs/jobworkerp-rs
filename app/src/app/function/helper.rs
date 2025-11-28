@@ -261,20 +261,27 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         using: Option<String>, // Pass using parameter for MCP/Plugin workers
     ) -> impl Future<Output = Result<Option<Value>>> + Send + 'a {
         async move {
-            let runner = if let Some(runner_id) = temp_worker_data.runner_id.as_ref() {
-                self.runner_app().find_runner(runner_id).await?
-            } else {
-                None
-            };
-            if let Some(runner) = runner {
-                if let Some(rdata) = runner.data.as_ref() {
-                    // Phase 6.6.4: Use default method name "run" for single-method runners
-                    let args_descriptor = Self::parse_job_args_schema_descriptor(rdata, "run")
+            if let Some(runner_id) = temp_worker_data.runner_id.as_ref() {
+                let runner = self.runner_app().find_runner(runner_id).await?;
+                if let Some(RunnerWithSchema {
+                    id: Some(_rid),
+                    data: Some(rdata),
+                    ..
+                }) = runner
+                {
+                    // Phase 6.6.7: Parse runner proto schemas and use method-specific descriptor
+                    let runner_with_descriptor = self.parse_proto_schemas(rdata.clone())?;
+                    let args_descriptor = runner_with_descriptor
+                        .get_job_args_message_for_method(using.as_deref())
                         .map_err(|e| {
-                            anyhow::anyhow!("Failed to parse job_args schema descriptor: {:#?}", e)
+                            anyhow::anyhow!(
+                                "Failed to get args descriptor for method '{}': {:#?}",
+                                using.as_deref().unwrap_or("run"),
+                                e
+                            )
                         })?;
-                    tracing::debug!("job args: {:#?}", &arguments);
-                    let job_args = if let Some(desc) = args_descriptor.clone() {
+                    tracing::debug!("job args (using: {:?}): {:#?}", using, &arguments);
+                    let job_args = if let Some(desc) = args_descriptor {
                         ProtobufDescriptor::json_value_to_message(desc, &arguments, true).map_err(
                             |e| anyhow::anyhow!("Failed to parse job_args schema: {:#?}", e),
                         )?
@@ -305,7 +312,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                             res.1
                         })?;
                     if let Some(r) = res {
-                        Self::parse_job_result(r, rdata)
+                        Self::parse_job_result(r, &rdata)
                     } else {
                         Ok(None)
                     }
@@ -313,7 +320,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                     Err(JobWorkerError::NotFound("Runner data not found".to_string()).into())
                 }
             } else {
-                Err(JobWorkerError::NotFound("Runner not found".to_string()).into())
+                Err(JobWorkerError::NotFound("Runner ID not found".to_string()).into())
             }
         }
     }
