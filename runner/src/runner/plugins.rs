@@ -231,7 +231,19 @@ pub trait PluginRunner: Send + Sync {
     fn cancel(&mut self) -> bool;
     fn is_canceled(&self) -> bool;
     fn runner_settings_proto(&self) -> String;
-    fn job_args_proto(&self) -> String;
+
+    /// Returns the job arguments protobuf schema for normal plugins
+    /// - Some(proto): Normal plugins with single job_args_proto
+    /// - None: Sub-method plugins that use method_proto_map instead
+    fn job_args_proto(&self) -> Option<String>;
+
+    /// Returns the method protobuf schema map for sub-method plugins
+    /// Key: using name, Value: MethodSchema (input and output schemas)
+    /// For normal plugins (single method), returns None
+    fn method_proto_map(&self) -> Option<HashMap<String, proto::jobworkerp::data::MethodSchema>> {
+        None
+    }
+
     fn result_output_proto(&self) -> Option<String>;
     fn output_type(&self) -> StreamingOutputType {
         StreamingOutputType::NonStreaming

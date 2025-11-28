@@ -213,7 +213,7 @@ impl RunnerSpec for CreateWorkflowRunnerImpl {
         CreateWorkflowRunnerSpec::runner_settings_proto(self)
     }
 
-    fn job_args_proto(&self) -> String {
+    fn job_args_proto(&self) -> Option<String> {
         CreateWorkflowRunnerSpec::job_args_proto(self)
     }
 

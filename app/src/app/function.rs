@@ -1143,15 +1143,15 @@ pub trait FunctionSpecConverter {
                 })),
                 output_type: runner_data.output_type,
             })
-        } else if runner_data.using_protos.is_some() {
-            // Plugin or other runner with using_protos
-            let proto_map = runner_data.using_protos.as_ref().unwrap();
-            let proto_schema = proto_map.methods.get(using).ok_or_else(|| {
+        } else if runner_data.method_proto_map.is_some() {
+            // Plugin or other runner with method_proto_map
+            let proto_map = runner_data.method_proto_map.as_ref().unwrap();
+            let method_schema = proto_map.schemas.get(using).ok_or_else(|| {
                 JobWorkerError::NotFound(format!(
                     "using '{}' not found in runner '{}'. Available: {:?}",
                     using,
                     runner_data.name,
-                    proto_map.methods.keys().collect::<Vec<_>>()
+                    proto_map.schemas.keys().collect::<Vec<_>>()
                 ))
             })?;
 
@@ -1160,11 +1160,15 @@ pub trait FunctionSpecConverter {
                 runner_id: runner.id,
                 worker_id: None,
                 name: format!("{}___{}", runner_data.name, using),
-                description: format!("{} - {}", runner_data.description, using),
+                description: method_schema
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| format!("{} - {}", runner_data.description, using)),
                 schema: Some(function_specs::Schema::SingleSchema(FunctionSchema {
                     settings: None,
-                    arguments: proto_schema.clone(),
-                    result_output_schema: runner.output_schema.clone(),
+                    arguments: method_schema.args_proto.clone(),
+                    // Rev.8.1: result_proto is now required (not optional)
+                    result_output_schema: Some(method_schema.result_proto.clone()),
                 })),
                 output_type: runner_data.output_type,
             })
@@ -1229,16 +1233,16 @@ pub trait FunctionSpecConverter {
                 })),
                 output_type: runner_data.output_type,
             })
-        } else if runner_data.using_protos.is_some() {
-            // Plugin or other runner with using_protos
-            let proto_map = runner_data.using_protos.as_ref().unwrap();
-            let proto_schema = proto_map.methods.get(using).ok_or_else(|| {
+        } else if runner_data.method_proto_map.is_some() {
+            // Plugin or other runner with method_proto_map
+            let proto_map = runner_data.method_proto_map.as_ref().unwrap();
+            let method_schema = proto_map.schemas.get(using).ok_or_else(|| {
                 JobWorkerError::NotFound(format!(
                     "using '{}' not found in Worker '{}' (runner '{}'). Available: {:?}",
                     using,
                     worker_data.name,
                     runner_data.name,
-                    proto_map.methods.keys().collect::<Vec<_>>()
+                    proto_map.schemas.keys().collect::<Vec<_>>()
                 ))
             })?;
 
@@ -1247,18 +1251,22 @@ pub trait FunctionSpecConverter {
                 runner_id: runner.id,
                 worker_id: Some(worker_id),
                 name: format!("{}___{}", worker_data.name, using),
-                description: format!("{} - {}", worker_data.description, using),
+                description: method_schema
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| format!("{} - {}", worker_data.description, using)),
                 schema: Some(function_specs::Schema::SingleSchema(FunctionSchema {
                     settings: None, // Workers don't have config (already set)
-                    arguments: proto_schema.clone(),
-                    result_output_schema: runner.output_schema.clone(),
+                    arguments: method_schema.args_proto.clone(),
+                    // Rev.8.1: result_proto is now required (not optional)
+                    result_output_schema: Some(method_schema.result_proto.clone()),
                 })),
                 output_type: runner_data.output_type,
             })
         } else {
             // Worker→Runner doesn't support usings - log warning and return error
             tracing::warn!(
-                "Worker '{}' (ID={}) does not support using. Worker is backed by runner '{}' which has no MCP tools or using_protos. Ignoring using='{}'",
+                "Worker '{}' (ID={}) does not support using. Worker is backed by runner '{}' which has no MCP tools or method_proto_map. Ignoring using='{}'",
                 worker_data.name,
                 worker_id.value,
                 runner_data.name,

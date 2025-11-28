@@ -32,8 +32,10 @@ pub trait CreateWorkflowRunnerSpec {
         "".to_string()
     }
 
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/create_workflow_args.proto").to_string()
+    fn job_args_proto(&self) -> Option<String> {
+        Some(
+            include_str!("../../protobuf/jobworkerp/runner/create_workflow_args.proto").to_string(),
+        )
     }
 
     fn result_output_proto(&self) -> Option<String> {
@@ -73,7 +75,7 @@ impl RunnerSpec for CreateWorkflowRunnerSpecImpl {
         CreateWorkflowRunnerSpec::runner_settings_proto(self)
     }
 
-    fn job_args_proto(&self) -> String {
+    fn job_args_proto(&self) -> Option<String> {
         CreateWorkflowRunnerSpec::job_args_proto(self)
     }
 

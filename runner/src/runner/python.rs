@@ -165,8 +165,8 @@ impl RunnerSpec for PythonCommandRunner {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/python_command_runner.proto").to_string()
     }
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/python_command_args.proto").to_string()
+    fn job_args_proto(&self) -> Option<String> {
+        Some(include_str!("../../protobuf/jobworkerp/runner/python_command_args.proto").to_string())
     }
     fn result_output_proto(&self) -> Option<String> {
         Some(

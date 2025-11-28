@@ -327,9 +327,8 @@ $defs:
             description: |
               Selects which implementation to use for MCP/Plugin runners with multiple tools.
 
-              - **Required**: For MCP/Plugin runners with multiple tools (e.g., fetch server with "fetch" and "fetch_html")
-              - **Optional**: For single-tool MCP runners (auto-selected)
-              - **Ignored**: For normal runners (COMMAND, HTTP_REQUEST, etc.)
+              - **Required**: For runners with multiple tools (e.g., fetch server with "fetch" and "fetch_html")
+              - **Optional**: For single-tool runners (auto-selected)
 
               Examples:
               - MCP fetch server: using: "fetch_html"
@@ -440,9 +439,8 @@ $defs:
                 description: |
                   Selects which implementation to use for MCP/Plugin runners with multiple tools.
 
-                  - **Required**: For MCP/Plugin runners with multiple tools
-                  - **Optional**: For single-tool MCP runners (auto-selected)
-                  - **Ignored**: For normal runners (COMMAND, HTTP_REQUEST, etc.)
+                  - **Required**: For runners with multiple tools
+                  - **Optional**: For single-tool runners (auto-selected)
               settings:
                 type: object
                 description: The initialization settings JSON, if any. (ref. jobworkerp.data.RunnerData.runner_settings_proto schema) Runtime expression can be used to transform each value (not keys, no mixed plain text).

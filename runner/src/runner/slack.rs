@@ -78,8 +78,8 @@ impl RunnerSpec for SlackPostMessageRunner {
         include_str!("../../protobuf/jobworkerp/runner/slack_runner.proto").to_string()
     }
     // use JobResult as job_args
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/slack_args.proto").to_string()
+    fn job_args_proto(&self) -> Option<String> {
+        Some(include_str!("../../protobuf/jobworkerp/runner/slack_args.proto").to_string())
     }
     fn result_output_proto(&self) -> Option<String> {
         Some(include_str!("../../protobuf/jobworkerp/runner/slack_result.proto").to_string())

@@ -95,8 +95,8 @@ impl PluginRunner for TestPlugin {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../../proto/protobuf/test_runner.proto").to_string()
     }
-    fn job_args_proto(&self) -> String {
-        include_str!("../../../proto/protobuf/test_args.proto").to_string()
+    fn job_args_proto(&self) -> Option<String> {
+        Some(include_str!("../../../proto/protobuf/test_args.proto").to_string())
     }
     fn result_output_proto(&self) -> Option<String> {
         None

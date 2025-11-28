@@ -27,8 +27,8 @@ pub trait LLMChatRunnerSpec {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/llm/runner.proto").to_string()
     }
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/llm/chat_args.proto").to_string()
+    fn job_args_proto(&self) -> Option<String> {
+        Some(include_str!("../../protobuf/jobworkerp/runner/llm/chat_args.proto").to_string())
     }
     fn result_output_proto(&self) -> Option<String> {
         Some(include_str!("../../protobuf/jobworkerp/runner/llm/chat_result.proto").to_string())
@@ -60,7 +60,7 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
         LLMChatRunnerSpec::runner_settings_proto(self)
     }
 
-    fn job_args_proto(&self) -> String {
+    fn job_args_proto(&self) -> Option<String> {
         LLMChatRunnerSpec::job_args_proto(self)
     }
 

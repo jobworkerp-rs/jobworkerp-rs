@@ -100,29 +100,37 @@ pub trait RunnerSpec: Send + Sync + Any {
     fn runner_settings_proto(&self) -> String;
 
     /// Returns the job arguments protobuf schema for normal runners
-    /// For sub-method runners (MCP/Plugin), returns empty string
-    fn job_args_proto(&self) -> String;
+    /// - Some(proto): Normal runners with single job_args_proto
+    /// - None: Sub-method runners (MCP/Plugin) that use method_proto_map instead
+    fn job_args_proto(&self) -> Option<String>;
 
-    /// Returns the job arguments protobuf schema map for sub-method runners
-    /// Key: using name, Value: protobuf schema string
+    /// Returns the method protobuf schema map for sub-method runners
+    /// Key: using name, Value: MethodSchema (input and optional output schemas)
     /// For normal runners, returns None
-    fn job_args_proto_map(&self) -> Option<std::collections::HashMap<String, String>> {
+    fn method_proto_map(
+        &self,
+    ) -> Option<std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema>> {
         None
     }
 
     fn result_output_proto(&self) -> Option<String>;
     // run(), run_stream() availability
     fn output_type(&self) -> StreamingOutputType;
-    // for json schema validation in the workflow API
+
+    /// JSON schema methods for Workflow API validation
+    ///
+    /// **IMPORTANT**: These methods are for **normal runners only** (non-using runners).
+    /// For using-based runners (MCP Server, Plugin with multiple methods):
+    /// - Return empty string "{}" or minimal schema
+    /// - Actual tool-specific schemas are provided via RunnerWithSchema.tools field
+    ///
+    /// Example:
+    /// - Normal runner (COMMAND): returns actual schema
+    /// - MCP Server: returns "{}" (schemas in tools field)
+    /// - Plugin with using: returns "{}" (schemas in tools field)
     fn settings_schema(&self) -> String;
     fn arguments_schema(&self) -> String;
     fn output_schema(&self) -> Option<String>;
-
-    /// Returns the JSON schema for a specific sub-method (for Function layer)
-    /// Default implementation returns an error for runners that don't support sub-methods
-    fn get_using_json_schema(&self, _using: &str) -> Result<String> {
-        Err(anyhow::anyhow!("This runner does not support using"))
-    }
 }
 
 #[async_trait]

@@ -40,8 +40,12 @@ pub struct ToolInfo {
     pub description: Option<String>,
     /// JSON Schema for the tool's input
     pub input_schema: serde_json::Value,
-    /// Generated Protobuf schema string
-    pub proto_schema: String,
+    /// Generated Protobuf schema string for arguments
+    pub args_proto_schema: String,
+    /// Generated Protobuf schema string for result
+    /// For MCP servers, this contains the common output schema (duplicated across tools)
+    /// For Plugins, this can contain method-specific output schema
+    pub result_proto_schema: String,
 }
 
 /**
@@ -113,7 +117,12 @@ impl McpServerRunnerImpl {
                     name: tool_name,
                     description: tool.description.map(|d| d.into_owned()),
                     input_schema: input_schema_value,
-                    proto_schema,
+                    args_proto_schema: proto_schema,
+                    // MCP servers use common output schema (duplicated for each tool for type safety)
+                    result_proto_schema: include_str!(
+                        "../../protobuf/jobworkerp/runner/mcp_server_result.proto"
+                    )
+                    .to_string(),
                 },
             );
         }
@@ -218,20 +227,29 @@ impl RunnerSpec for McpServerRunnerImpl {
         "".to_string()
     }
 
-    // MCP Runner uses using-based approach, returns empty string
-    fn job_args_proto(&self) -> String {
-        "".to_string()
+    // MCP Runner uses using-based approach, returns None (uses method_proto_map)
+    fn job_args_proto(&self) -> Option<String> {
+        None
     }
 
     // Return tool-specific Protobuf definitions
-    fn job_args_proto_map(&self) -> Option<HashMap<String, String>> {
+    fn method_proto_map(&self) -> Option<HashMap<String, proto::jobworkerp::data::MethodSchema>> {
         if self.available_tools.is_empty() {
             return None;
         }
         Some(
             self.available_tools
                 .iter()
-                .map(|(name, info)| (name.clone(), info.proto_schema.clone()))
+                .map(|(name, info)| {
+                    (
+                        name.clone(),
+                        proto::jobworkerp::data::MethodSchema {
+                            args_proto: info.args_proto_schema.clone(),
+                            result_proto: info.result_proto_schema.clone(),
+                            description: info.description.clone(),
+                        },
+                    )
+                })
                 .collect(),
         )
     }
@@ -248,28 +266,13 @@ impl RunnerSpec for McpServerRunnerImpl {
         "{}".to_string() // Empty JSON object (no settings required)
     }
 
-    // Empty JSON (each tool has its own schema via get_using_json_schema)
+    // Empty JSON - actual tool schemas are provided via RunnerWithSchema.tools field
     fn arguments_schema(&self) -> String {
         "{}".to_string()
     }
 
     fn output_schema(&self) -> Option<String> {
         schema_to_json_string_option!(McpServerResult, "output_schema")
-    }
-
-    // Get specific using's JSON Schema (Function layer)
-    fn get_using_json_schema(&self, using: &str) -> Result<String> {
-        let tool_info = self.available_tools.get(using).ok_or_else(|| {
-            anyhow!(
-                "Unknown using '{}' for MCP runner '{}'. Available: {:?}",
-                using,
-                self.mcp_server.name,
-                self.available_tools.keys().collect::<Vec<_>>()
-            )
-        })?;
-
-        serde_json::to_string(&tool_info.input_schema)
-            .map_err(|e| anyhow!("Failed to serialize JSON schema: {}", e))
     }
 }
 
