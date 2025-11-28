@@ -18,10 +18,10 @@ use jobworkerp_runner::jobworkerp::runner::{ReusableWorkflowRunnerSettings, Work
 use jobworkerp_runner::runner::cancellation_helper::{
     CancelMonitoringHelper, UseCancelMonitoringHelper,
 };
+use jobworkerp_runner::runner::workflow::ReusableWorkflowRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use opentelemetry::trace::TraceContextExt;
 use prost::Message;
-use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -72,62 +72,34 @@ impl ReusableWorkflowRunner {
         self.cancel_helper = Some(helper);
     }
 }
+
+impl ReusableWorkflowRunnerSpec for ReusableWorkflowRunner {}
+
 impl RunnerSpec for ReusableWorkflowRunner {
     fn name(&self) -> String {
-        RunnerType::ReusableWorkflow.as_str_name().to_string()
+        ReusableWorkflowRunnerSpec::name(self)
     }
 
     fn runner_settings_proto(&self) -> String {
-        include_str!("../../../../runner/protobuf/jobworkerp/runner/reusable_workflow_runner.proto")
-            .to_string()
+        ReusableWorkflowRunnerSpec::runner_settings_proto(self)
     }
 
-    // Phase 6.6.4: method_proto_map is now required (non-optional)
     fn method_proto_map(
         &self,
     ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
-        let mut schemas = std::collections::HashMap::new();
-        schemas.insert(
-            "run".to_string(),
-            proto::jobworkerp::data::MethodSchema {
-                args_proto: include_str!(
-                    "../../../../runner/protobuf/jobworkerp/runner/reusable_workflow_args.proto"
-                )
-                .to_string(),
-                result_proto: include_str!(
-                    "../../../../runner/protobuf/jobworkerp/runner/workflow_result.proto"
-                )
-                .to_string(),
-                description: Some("Execute reusable workflow from external source".to_string()),
-                output_type: StreamingOutputType::Both as i32,
-            },
-        );
-        schemas
+        ReusableWorkflowRunnerSpec::method_proto_map(self)
     }
 
     fn settings_schema(&self) -> String {
-        include_str!("../../../../runner/schema/workflow.json").to_string()
+        ReusableWorkflowRunnerSpec::settings_schema(self)
     }
+
     fn arguments_schema(&self) -> String {
-        let schema = schemars::schema_for!(ReusableWorkflowArgs);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+        ReusableWorkflowRunnerSpec::arguments_schema(self)
     }
+
     fn output_schema(&self) -> Option<String> {
-        // plain string with title
-        let schema = schemars::schema_for!(WorkflowResult);
-        match serde_json::to_string(&schema) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::error!("error in output_json_schema: {:?}", e);
-                None
-            }
-        }
+        ReusableWorkflowRunnerSpec::output_schema(self)
     }
 }
 
