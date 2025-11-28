@@ -47,14 +47,6 @@ impl RunnerSpec for InlineWorkflowRunnerSpecImpl {
         );
         schemas
     }
-    fn output_type(&self) -> StreamingOutputType {
-        // Phase 6.6.5: Use method_proto_map's output_type instead of deprecated RunnerData.output_type
-        self.method_proto_map()
-            .get("run")
-            .cloned()
-            .and_then(|s| StreamingOutputType::try_from(s.output_type).ok())
-            .unwrap_or(StreamingOutputType::NonStreaming)
-    }
 
     fn settings_schema(&self) -> String {
         schema_to_json_string!(Empty, "settings_schema")
@@ -114,14 +106,6 @@ impl RunnerSpec for ReusableWorkflowRunnerSpecImpl {
             },
         );
         schemas
-    }
-    fn output_type(&self) -> StreamingOutputType {
-        // Phase 6.6.5: Use method_proto_map's output_type instead of deprecated RunnerData.output_type
-        self.method_proto_map()
-            .get("run")
-            .cloned()
-            .and_then(|s| StreamingOutputType::try_from(s.output_type).ok())
-            .unwrap_or(StreamingOutputType::NonStreaming)
     }
 
     fn settings_schema(&self) -> String {

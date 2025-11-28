@@ -97,10 +97,6 @@ impl RunnerSpec for LLMCompletionRunnerImpl {
         LLMCompletionRunnerSpec::method_proto_map(self)
     }
 
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        LLMCompletionRunnerSpec::output_type(self)
-    }
-
     fn settings_schema(&self) -> String {
         LLMCompletionRunnerSpec::settings_schema(self)
     }

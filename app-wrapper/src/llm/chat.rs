@@ -100,10 +100,6 @@ impl RunnerSpec for LLMChatRunnerImpl {
         LLMChatRunnerSpec::method_proto_map(self)
     }
 
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        LLMChatRunnerSpec::output_type(self)
-    }
-
     fn settings_schema(&self) -> String {
         LLMChatRunnerSpec::settings_schema(self)
     }

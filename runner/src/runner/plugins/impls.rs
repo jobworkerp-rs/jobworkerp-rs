@@ -11,7 +11,6 @@ use futures::stream::BoxStream;
 use futures::stream::StreamExt;
 use proto::jobworkerp::data::result_output_item;
 use proto::jobworkerp::data::ResultOutputItem;
-use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::data::Trailer;
 use tokio::sync::RwLock;
 
@@ -73,14 +72,6 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
         block_on(self.plugin_runner.read()).method_proto_map()
     }
 
-    fn output_type(&self) -> StreamingOutputType {
-        // Phase 6.6.4: Get output_type from method_proto_map instead of deprecated method
-        self.method_proto_map()
-            .values()
-            .next()
-            .and_then(|schema| StreamingOutputType::try_from(schema.output_type).ok())
-            .unwrap_or(StreamingOutputType::NonStreaming)
-    }
     fn settings_schema(&self) -> String {
         block_on(self.plugin_runner.read()).settings_schema()
     }
