@@ -7,21 +7,7 @@ use super::RunnerSpec;
 use proto::jobworkerp::data::{RunnerType, StreamingOutputType};
 use std::collections::HashMap;
 
-pub struct InlineWorkflowRunnerSpecImpl {}
-
-impl InlineWorkflowRunnerSpecImpl {
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
-impl Default for InlineWorkflowRunnerSpecImpl {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl RunnerSpec for InlineWorkflowRunnerSpecImpl {
+pub trait InlineWorkflowRunnerSpec: RunnerSpec {
     fn name(&self) -> String {
         RunnerType::InlineWorkflow.as_str_name().to_string()
     }
@@ -29,7 +15,7 @@ impl RunnerSpec for InlineWorkflowRunnerSpecImpl {
     fn runner_settings_proto(&self) -> String {
         "".to_string()
     }
-    // Phase 6.6: Unified method_proto_map for all runners
+
     fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(
@@ -61,25 +47,53 @@ impl RunnerSpec for InlineWorkflowRunnerSpecImpl {
     }
 }
 
-/////////////////////////////////////////////////////////////////////
-// ReusableWorkflowRunnerSpec
-///////////////////////////////////////////////////////////////////////
+pub struct InlineWorkflowRunnerSpecImpl {}
 
-pub struct ReusableWorkflowRunnerSpecImpl {}
-
-impl ReusableWorkflowRunnerSpecImpl {
+impl InlineWorkflowRunnerSpecImpl {
     pub fn new() -> Self {
         Self {}
     }
 }
 
-impl Default for ReusableWorkflowRunnerSpecImpl {
+impl Default for InlineWorkflowRunnerSpecImpl {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl RunnerSpec for ReusableWorkflowRunnerSpecImpl {
+impl InlineWorkflowRunnerSpec for InlineWorkflowRunnerSpecImpl {}
+
+impl RunnerSpec for InlineWorkflowRunnerSpecImpl {
+    fn name(&self) -> String {
+        InlineWorkflowRunnerSpec::name(self)
+    }
+
+    fn runner_settings_proto(&self) -> String {
+        InlineWorkflowRunnerSpec::runner_settings_proto(self)
+    }
+
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        InlineWorkflowRunnerSpec::method_proto_map(self)
+    }
+
+    fn settings_schema(&self) -> String {
+        InlineWorkflowRunnerSpec::settings_schema(self)
+    }
+
+    fn arguments_schema(&self) -> String {
+        InlineWorkflowRunnerSpec::arguments_schema(self)
+    }
+
+    fn output_schema(&self) -> Option<String> {
+        InlineWorkflowRunnerSpec::output_schema(self)
+    }
+}
+
+/////////////////////////////////////////////////////////////////////
+// ReusableWorkflowRunnerSpec
+///////////////////////////////////////////////////////////////////////
+
+pub trait ReusableWorkflowRunnerSpec: RunnerSpec {
     fn name(&self) -> String {
         RunnerType::ReusableWorkflow.as_str_name().to_string()
     }
@@ -87,7 +101,7 @@ impl RunnerSpec for ReusableWorkflowRunnerSpecImpl {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/reusable_workflow_runner.proto").to_string()
     }
-    // Phase 6.6: Unified method_proto_map for all runners
+
     fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(
@@ -118,5 +132,47 @@ impl RunnerSpec for ReusableWorkflowRunnerSpecImpl {
 
     fn output_schema(&self) -> Option<String> {
         schema_to_json_string_option!(WorkflowResult, "output_schema")
+    }
+}
+
+pub struct ReusableWorkflowRunnerSpecImpl {}
+
+impl ReusableWorkflowRunnerSpecImpl {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl Default for ReusableWorkflowRunnerSpecImpl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ReusableWorkflowRunnerSpec for ReusableWorkflowRunnerSpecImpl {}
+
+impl RunnerSpec for ReusableWorkflowRunnerSpecImpl {
+    fn name(&self) -> String {
+        ReusableWorkflowRunnerSpec::name(self)
+    }
+
+    fn runner_settings_proto(&self) -> String {
+        ReusableWorkflowRunnerSpec::runner_settings_proto(self)
+    }
+
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        ReusableWorkflowRunnerSpec::method_proto_map(self)
+    }
+
+    fn settings_schema(&self) -> String {
+        ReusableWorkflowRunnerSpec::settings_schema(self)
+    }
+
+    fn arguments_schema(&self) -> String {
+        ReusableWorkflowRunnerSpec::arguments_schema(self)
+    }
+
+    fn output_schema(&self) -> Option<String> {
+        ReusableWorkflowRunnerSpec::output_schema(self)
     }
 }
