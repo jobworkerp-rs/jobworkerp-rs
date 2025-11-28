@@ -173,6 +173,7 @@ pub trait FunctionApp:
                             jres,
                             stream_opt,
                             runner_name,
+                            None, // using not used via front API
                         ))
                     }
                     Err(e) => {
@@ -228,7 +229,7 @@ pub trait FunctionApp:
                     unique_key,
                     job_timeout_sec,
                     streaming,
-                    tool_name_opt, // Pass using parameter for MCP worker tools
+                    tool_name_opt.clone(), // Pass using parameter for MCP worker tools
                 )
                 .await;
 
@@ -261,6 +262,7 @@ pub trait FunctionApp:
                         jres,
                         stream_opt,
                         runner_name,
+                        tool_name_opt,
                     );
 
                     // Yield all results from the stream
@@ -286,6 +288,7 @@ pub trait FunctionApp:
             futures::stream::BoxStream<'static, proto::jobworkerp::data::ResultOutputItem>,
         >,
         runner_name: Option<String>,
+        using: Option<String>, // Phase 6.6.7: Add using for method-specific decoding
     ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<FunctionResult>> + Send + 'a>> {
         use futures::StreamExt;
         use proto::jobworkerp::data::{result_output_item, ResultStatus};
@@ -299,7 +302,7 @@ pub trait FunctionApp:
                         Some(result_output_item::Item::Data(data)) => {
                             // Decode the data using runner information
                             let decoded_output = if let Some(ref rname) = runner_name {
-                                self.decode_job_result_output(None, Some(rname), &data).await?
+                                self.decode_job_result_output(None, Some(rname), &data, using.as_deref()).await?
                             } else {
                                 Err(JobWorkerError::NotFound(
                                     "Runner name not found for decoding".to_string(),
@@ -353,7 +356,7 @@ pub trait FunctionApp:
 
                     // Decode the output using runner information
                     let decoded_output = if let Some(ref rname) = runner_name {
-                        match self.decode_job_result_output(None, Some(rname), &raw_output).await {
+                        match self.decode_job_result_output(None, Some(rname), &raw_output, using.as_deref()).await {
                             Ok(decoded) => decoded.to_string(),
                             Err(_) => String::from_utf8_lossy(&raw_output).to_string(),
                         }
