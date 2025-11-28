@@ -30,8 +30,8 @@ message RunnerData {
   // # Job Arguments Definition
   // Proto file definition for job arguments
   // For normal runners: single proto schema
-  // For multi-tool runners (MCP/Plugin): must be empty (use using_protos instead)
-  // Runtime validation ensures job_args_proto and using_protos are mutually exclusive
+  // For multi-tool runners (MCP/Plugin): must be empty (use method_proto_map instead)
+  // Runtime validation ensures job_args_proto and method_proto_map are mutually exclusive
   optional string job_args_proto = 5;
   // # Result Output Definition
   // Proto file definition for job execution results
@@ -46,30 +46,51 @@ message RunnerData {
   // mcp: mcp_server toml
   // plugin: plugin filepath
   string definition = 8;
-  // # Runner Using Proto Map
+  // # Method Proto Map
   // For MCP/Plugin runners that support multiple sub-methods
-  // Maps using name to its specific protobuf schema string
-  // Example: {"fetch_html": "syntax = \"proto3\";\nmessage FetchFetchHtmlArgs {...}", ...}
+  // Maps using name to its input/output protobuf schema definitions
   // Runtime validation ensures this is mutually exclusive with job_args_proto
-  optional UsingProtoMap using_protos = 10;
+  optional MethodProtoMap method_proto_map = 10;
 }
 
-// # Runner Using Proto Map
-// Mapping of sub-method names to their Protobuf schema definitions
+// # Method Proto Map
+// Mapping of method names to their Protobuf schema definitions
 // Used by MCP servers and Plugins that expose multiple tools/methods
-message UsingProtoMap {
-  // # Methods Map
+message MethodProtoMap {
+  // # Schemas Map
   // Key: using name (e.g., "fetch_html", "fetch")
-  // Value: Protobuf schema string for that specific using's arguments
+  // Value: MethodSchema containing input and optional output schemas
   //
-  // Each value is a complete Protobuf schema definition:
+  // When schemas has only one entry, using can be omitted in job execution
+  // (auto-selected to the single available method)
+  map<string, MethodSchema> schemas = 1;
+}
+
+// # Method Schema
+// Input and output Protobuf schema definitions for a single method/tool
+message MethodSchema {
+  // # Input Arguments Schema
+  // Protobuf schema definition for method arguments
   // - Message name follows convention: {ServerName}{ToolName}Args
   // - Example for fetch server's fetch_html tool:
   //   "syntax = \"proto3\";\nmessage FetchFetchHtmlArgs { string url = 1; optional int32 timeout_ms = 2; }"
-  //
-  // When methods has only one entry, using can be omitted in job execution
-  // (auto-selected to the single available method)
-  map<string, string> methods = 1;
+  string args_proto = 1;
+
+  // # Output Result Schema (Required)
+  // Protobuf schema definition for method result
+  // - For MCP Servers: uses common output schema (may be duplicated across tools)
+  // - For Plugins: can specify method-specific output schema
+  // - Message name follows convention: {ServerName}{ToolName}Result
+  // - REQUIRED: jobworkerp must always explicitly define output schema for type safety
+  string result_proto = 2;
+
+  // # Method Description (Optional)
+  // Human-readable description of what this method/tool does
+  // - Used by LLM for tool selection
+  // - For MCP Servers: populated from MCP tool.description field
+  // - For Plugins: provided by plugin developer
+  // - Example: "Fetches HTML content from a URL"
+  optional string description = 3;
 }
 
 message RunnerId { int64 value = 1; }

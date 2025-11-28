@@ -84,7 +84,7 @@ impl RunnerSpec for ReusableWorkflowRunner {
         ReusableWorkflowRunnerSpec::runner_settings_proto(self)
     }
 
-    fn job_args_proto(&self) -> String {
+    fn job_args_proto(&self) -> Option<String> {
         ReusableWorkflowRunnerSpec::job_args_proto(self)
     }
 

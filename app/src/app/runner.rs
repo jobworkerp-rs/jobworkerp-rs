@@ -104,17 +104,17 @@ pub trait UseRunnerParserWithCache: Send + Sync {
         async { self.descriptor_cache().clear().await }
     }
 
-    /// Validate mutual exclusivity of job_args_proto and using_protos
+    /// Validate mutual exclusivity of job_args_proto and method_proto_map
     fn validate_runner_data_exclusivity(runner_data: &RunnerData) -> Result<()> {
         let has_job_args = runner_data
             .job_args_proto
             .as_ref()
             .is_some_and(|s| !s.is_empty());
-        let has_usings = runner_data.using_protos.is_some();
+        let has_method_proto_map = runner_data.method_proto_map.is_some();
 
-        if has_usings && has_job_args {
+        if has_method_proto_map && has_job_args {
             return Err(JobWorkerError::InvalidParameter(
-                "job_args_proto and using_protos cannot both be set".to_string(),
+                "job_args_proto and method_proto_map cannot both be set".to_string(),
             )
             .into());
         }
@@ -124,7 +124,7 @@ pub trait UseRunnerParserWithCache: Send + Sync {
 
     // TODO remove if not used
     fn parse_proto_schemas(&self, runner_data: RunnerData) -> Result<RunnerDataWithDescriptor> {
-        // Validate mutual exclusivity of job_args_proto and using_protos
+        // Validate mutual exclusivity of job_args_proto and method_proto_map
         Self::validate_runner_data_exclusivity(&runner_data)?;
 
         // runner_settings_proto
@@ -391,7 +391,7 @@ pub mod test {
             result_output_proto: None,
             output_type: StreamingOutputType::NonStreaming as i32,
             definition: "./target/debug/libplugin_runner_test.so".to_string(),
-            using_protos: None,
+            method_proto_map: None,
         }
     }
     pub fn test_runner_with_schema(id: &RunnerId, name: &str) -> RunnerWithSchema {

@@ -84,7 +84,7 @@ impl RunnerSpec for InlineWorkflowRunner {
         InlineWorkflowRunnerSpec::runner_settings_proto(self)
     }
 
-    fn job_args_proto(&self) -> String {
+    fn job_args_proto(&self) -> Option<String> {
         InlineWorkflowRunnerSpec::job_args_proto(self)
     }
 

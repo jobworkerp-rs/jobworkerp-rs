@@ -96,8 +96,8 @@ impl RunnerSpec for RequestRunner {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/http_request_runner.proto").to_string()
     }
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/http_request_args.proto").to_string()
+    fn job_args_proto(&self) -> Option<String> {
+        Some(include_str!("../../protobuf/jobworkerp/runner/http_request_args.proto").to_string())
     }
     fn result_output_proto(&self) -> Option<String> {
         Some(include_str!("../../protobuf/jobworkerp/runner/http_request_result.proto").to_string())
