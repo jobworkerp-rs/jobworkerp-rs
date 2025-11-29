@@ -558,7 +558,7 @@ pub trait UseJobExecutor:
             let descriptors = self.parse_proto_with_cache(rid, rdata).await?;
 
             // Phase 6.6.7: Get method-specific args descriptor
-            let args_descriptor =
+            let mut args_descriptor =
                 descriptors
                     .get_job_args_message_for_method(using)
                     .map_err(|e| {
@@ -568,6 +568,12 @@ pub trait UseJobExecutor:
                             e
                         )
                     })?;
+
+            // Fallback: parse the descriptor directly from method_proto_map when cache lacks it
+            if args_descriptor.is_none() {
+                let method_name = using.unwrap_or("run");
+                args_descriptor = self.parse_job_args_schema_descriptor(rdata, method_name)?;
+            }
 
             tracing::debug!("job args (using: {:?}): {:#?}", using, &job_args);
             if let Some(desc) = args_descriptor {
@@ -630,7 +636,7 @@ pub trait UseJobExecutor:
             let descriptors = self.parse_proto_with_cache(rid, rdata).await?;
 
             // Phase 6.6.7: Get method-specific result descriptor
-            let result_descriptor = descriptors
+            let mut result_descriptor = descriptors
                 .get_job_result_message_for_method(using)
                 .map_err(|e| {
                     anyhow::anyhow!(
@@ -639,6 +645,12 @@ pub trait UseJobExecutor:
                         e
                     )
                 })?;
+
+            // Fallback: parse the descriptor directly from method_proto_map when cache lacks it
+            if result_descriptor.is_none() {
+                let method_name = using.unwrap_or("run");
+                result_descriptor = self.parse_job_result_schema_descriptor(rdata, method_name)?;
+            }
 
             tracing::debug!("job output length (using: {:?}): {}", using, output.len());
             if let Some(desc) = result_descriptor {
