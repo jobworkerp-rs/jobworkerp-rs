@@ -16,6 +16,7 @@ use jobworkerp_base::{
     error::JobWorkerError,
 };
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
+use proto::DEFAULT_METHOD_NAME;
 use reqwest::{
     header::{HeaderMap, HeaderName},
     Method, Url,
@@ -100,7 +101,7 @@ impl RunnerSpec for RequestRunner {
     fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(
-            "run".to_string(),
+            DEFAULT_METHOD_NAME.to_string(),
             proto::jobworkerp::data::MethodSchema {
                 args_proto: include_str!(
                     "../../protobuf/jobworkerp/runner/http_request_args.proto"

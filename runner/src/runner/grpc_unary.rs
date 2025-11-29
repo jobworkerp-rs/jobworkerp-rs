@@ -13,6 +13,7 @@ use prost_reflect::{DescriptorPool, MessageDescriptor};
 use proto::jobworkerp::data::{
     JobData, JobId, JobResult, ResultOutputItem, RunnerType, StreamingOutputType,
 };
+use proto::DEFAULT_METHOD_NAME;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -397,7 +398,7 @@ impl RunnerSpec for GrpcUnaryRunner {
     fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(
-            "run".to_string(),
+            DEFAULT_METHOD_NAME.to_string(),
             proto::jobworkerp::data::MethodSchema {
                 args_proto: include_str!("../../protobuf/jobworkerp/runner/grpc_unary_args.proto")
                     .to_string(),

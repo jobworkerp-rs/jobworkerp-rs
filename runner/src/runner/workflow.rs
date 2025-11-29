@@ -2,6 +2,7 @@ use crate::jobworkerp::runner::{
     Empty, ReusableWorkflowArgs, ReusableWorkflowRunnerSettings, WorkflowResult,
 };
 use crate::{schema_to_json_string, schema_to_json_string_option};
+use proto::DEFAULT_METHOD_NAME;
 
 use super::RunnerSpec;
 use proto::jobworkerp::data::{RunnerType, StreamingOutputType};
@@ -19,7 +20,7 @@ pub trait InlineWorkflowRunnerSpec: RunnerSpec {
     fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(
-            "run".to_string(),
+            DEFAULT_METHOD_NAME.to_string(),
             proto::jobworkerp::data::MethodSchema {
                 args_proto: include_str!("../../protobuf/jobworkerp/runner/workflow_args.proto")
                     .to_string(),
@@ -105,7 +106,7 @@ pub trait ReusableWorkflowRunnerSpec: RunnerSpec {
     fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(
-            "run".to_string(),
+            DEFAULT_METHOD_NAME.to_string(),
             proto::jobworkerp::data::MethodSchema {
                 args_proto: include_str!(
                     "../../protobuf/jobworkerp/runner/reusable_workflow_args.proto"

@@ -18,6 +18,7 @@ use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     JobData, JobId, JobResult, ResultOutputItem, RunnerType, StreamingOutputType,
 };
+use proto::DEFAULT_METHOD_NAME;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio_stream::StreamExt;
@@ -287,7 +288,7 @@ impl RunnerSpec for DockerExecRunner {
     fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(
-            "run".to_string(),
+            DEFAULT_METHOD_NAME.to_string(),
             proto::jobworkerp::data::MethodSchema {
                 args_proto: include_str!("../../protobuf/jobworkerp/runner/docker_args.proto")
                     .to_string(),
@@ -592,7 +593,7 @@ impl RunnerSpec for DockerRunner {
     fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(
-            "run".to_string(),
+            DEFAULT_METHOD_NAME.to_string(),
             proto::jobworkerp::data::MethodSchema {
                 args_proto: include_str!("../../protobuf/jobworkerp/runner/docker_args.proto")
                     .to_string(),
