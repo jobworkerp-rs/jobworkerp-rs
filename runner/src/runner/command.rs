@@ -13,6 +13,7 @@ use jobworkerp_base::{
 };
 use proto::jobworkerp::data::{result_output_item::Item, StreamingOutputType};
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
+use proto::DEFAULT_METHOD_NAME;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::{
@@ -178,7 +179,7 @@ impl RunnerSpec for CommandRunnerImpl {
     fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(
-            "run".to_string(),
+            DEFAULT_METHOD_NAME.to_string(),
             proto::jobworkerp::data::MethodSchema {
                 args_proto: include_str!("../../protobuf/jobworkerp/runner/command_args.proto")
                     .to_string(),

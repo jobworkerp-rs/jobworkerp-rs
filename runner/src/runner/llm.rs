@@ -1,5 +1,6 @@
 use super::RunnerSpec;
 use proto::jobworkerp::data::RunnerType;
+use proto::DEFAULT_METHOD_NAME;
 use std::collections::HashMap;
 
 pub struct LLMCompletionRunnerSpecImpl {}
@@ -27,7 +28,7 @@ pub trait LLMCompletionRunnerSpec {
     fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(
-            "run".to_string(),
+            DEFAULT_METHOD_NAME.to_string(),
             proto::jobworkerp::data::MethodSchema {
                 args_proto: include_str!(
                     "../../protobuf/jobworkerp/runner/llm/completion_args.proto"

@@ -232,7 +232,7 @@ pub trait PluginRunner: Send + Sync {
     fn runner_settings_proto(&self) -> String;
 
     /// Phase 6.6.4: Returns the method protobuf schema map for all plugins
-    /// Key: method name (typically "run"), Value: MethodSchema (input and output schemas)
+    /// Key: method name (typically DEFAULT_METHOD_NAME ("run")), Value: MethodSchema (input and output schemas)
     /// This is the unified approach for defining plugin method schemas
     fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
         HashMap::new()

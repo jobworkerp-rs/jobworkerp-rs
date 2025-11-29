@@ -17,6 +17,18 @@ pub mod jobworkerp {
 // for test runner
 tonic::include_proto!("_");
 
+/// Default method name for single-method runners in Phase 6.6.4+ architecture
+///
+/// All single-method runners (COMMAND, HTTP_REQUEST, PYTHON_COMMAND, etc.) use this
+/// as the sole method name in their method_proto_map. Multi-method runners (MCP, Plugin)
+/// may include this as one of their methods for backward compatibility.
+///
+/// Used as:
+/// - Default fallback when `using` parameter is None in job execution
+/// - HashMap key for method_descriptors lookups
+/// - method_proto_map initialization for built-in runners
+pub const DEFAULT_METHOD_NAME: &str = "run";
+
 pub trait ProtobufHelper {
     // Phase 6.6.4: job_args_proto deleted, use method_proto_map instead
     fn parse_job_args_schema_descriptor(

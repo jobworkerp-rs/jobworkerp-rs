@@ -17,7 +17,7 @@ use proto::jobworkerp::data::{
     JobId, JobResult, Priority, QueueType, ResponseType, ResultOutputItem, ResultStatus,
     RetryPolicy, RetryType, RunnerData, RunnerId, Worker, WorkerData, WorkerId,
 };
-use proto::ProtobufHelper;
+use proto::{ProtobufHelper, DEFAULT_METHOD_NAME};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -564,14 +564,14 @@ pub trait UseJobExecutor:
                     .map_err(|e| {
                         anyhow::anyhow!(
                             "Failed to get args descriptor for method '{}': {:#?}",
-                            using.unwrap_or("run"),
+                            using.unwrap_or(DEFAULT_METHOD_NAME),
                             e
                         )
                     })?;
 
             // Fallback: parse the descriptor directly from method_proto_map when cache lacks it
             if args_descriptor.is_none() {
-                let method_name = using.unwrap_or("run");
+                let method_name = using.unwrap_or(DEFAULT_METHOD_NAME);
                 args_descriptor = Self::parse_job_args_schema_descriptor(rdata, method_name)?;
             }
 
@@ -641,14 +641,14 @@ pub trait UseJobExecutor:
                 .map_err(|e| {
                     anyhow::anyhow!(
                         "Failed to get result descriptor for method '{}': {:#?}",
-                        using.unwrap_or("run"),
+                        using.unwrap_or(DEFAULT_METHOD_NAME),
                         e
                     )
                 })?;
 
             // Fallback: parse the descriptor directly from method_proto_map when cache lacks it
             if result_descriptor.is_none() {
-                let method_name = using.unwrap_or("run");
+                let method_name = using.unwrap_or(DEFAULT_METHOD_NAME);
                 result_descriptor = Self::parse_job_result_schema_descriptor(rdata, method_name)?;
             }
 
@@ -685,8 +685,9 @@ pub trait UseJobExecutor:
             .as_ref()
             .and_then(|r| r.output.as_ref().map(|o| &o.items));
         if let Some(output) = output {
-            // Phase 6.6.4: Use default method name "run" for single-method runners
-            let result_descriptor = Self::parse_job_result_schema_descriptor(runner_data, "run")?;
+            // Phase 6.6.4: Use default method name DEFAULT_METHOD_NAME ("run") for single-method runners
+            let result_descriptor =
+                Self::parse_job_result_schema_descriptor(runner_data, DEFAULT_METHOD_NAME)?;
             if let Some(desc) = result_descriptor {
                 match ProtobufDescriptor::get_message_from_bytes(desc, output) {
                     Ok(m) => {

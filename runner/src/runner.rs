@@ -100,9 +100,9 @@ pub trait RunnerSpec: Send + Sync + Any {
     fn runner_settings_proto(&self) -> String;
 
     /// Returns the method protobuf schema map for all runners (REQUIRED in Phase 6.6.4+)
-    /// - Key: method name (e.g., "run" for single-method runners, tool names for MCP/Plugin)
+    /// - Key: method name (e.g., DEFAULT_METHOD_NAME ("run") for single-method runners, tool names for MCP/Plugin)
     /// - Value: MethodSchema (input schema, output schema, description, output_type)
-    /// - Single-method runners: use default method name "run"
+    /// - Single-method runners: use default method name DEFAULT_METHOD_NAME ("run")
     /// - MCP/Plugin runners: use tool-specific method names
     fn method_proto_map(
         &self,

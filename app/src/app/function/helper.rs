@@ -7,6 +7,7 @@ use proto::jobworkerp::data::{
     JobResult, Priority, QueueType, ResponseType, RetryPolicy, RetryType, RunnerId, RunnerType,
     WorkerData,
 };
+use proto::DEFAULT_METHOD_NAME;
 use serde_json::{Map, Value};
 use std::{
     collections::HashMap,
@@ -277,7 +278,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                         .map_err(|e| {
                             anyhow::anyhow!(
                                 "Failed to get args descriptor for method '{}': {:#?}",
-                                using.as_deref().unwrap_or("run"),
+                                using.as_deref().unwrap_or(DEFAULT_METHOD_NAME),
                                 e
                             )
                         })?;
@@ -707,7 +708,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
             .and_then(|r| r.output.as_ref().map(|o| &o.items));
 
         if let Some(output) = output {
-            let method_name = using.unwrap_or("run");
+            let method_name = using.unwrap_or(DEFAULT_METHOD_NAME);
 
             // Use cached result descriptor for the specified method
             let result_descriptor = runner_with_descriptor

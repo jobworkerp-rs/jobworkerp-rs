@@ -1,3 +1,4 @@
+use proto::DEFAULT_METHOD_NAME;
 pub mod client;
 pub mod repository;
 
@@ -82,7 +83,7 @@ impl RunnerSpec for SlackPostMessageRunner {
     fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(
-            "run".to_string(),
+            DEFAULT_METHOD_NAME.to_string(),
             proto::jobworkerp::data::MethodSchema {
                 args_proto: include_str!("../../protobuf/jobworkerp/runner/slack_args.proto")
                     .to_string(),

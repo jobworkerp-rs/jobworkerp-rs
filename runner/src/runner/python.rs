@@ -14,6 +14,7 @@ use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use prost::Message;
 use proto::jobworkerp::data::{JobData, JobId, JobResult};
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
+use proto::DEFAULT_METHOD_NAME;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
@@ -169,7 +170,7 @@ impl RunnerSpec for PythonCommandRunner {
     fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(
-            "run".to_string(),
+            DEFAULT_METHOD_NAME.to_string(),
             proto::jobworkerp::data::MethodSchema {
                 args_proto: include_str!(
                     "../../protobuf/jobworkerp/runner/python_command_args.proto"

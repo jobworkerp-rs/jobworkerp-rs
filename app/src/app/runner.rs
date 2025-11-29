@@ -9,6 +9,7 @@ use jobworkerp_base::error::JobWorkerError;
 use memory_utils::cache::moka::{MokaCacheImpl, UseMokaCache};
 use prost_reflect::{DynamicMessage, MessageDescriptor};
 use proto::jobworkerp::data::{RunnerData, RunnerId};
+use proto::DEFAULT_METHOD_NAME;
 use std::{collections::HashMap, fmt, future::Future, sync::Arc};
 
 #[async_trait]
@@ -190,7 +191,7 @@ pub trait UseRunnerParserWithCache: Send + Sync {
 
         // Backward compatibility: Populate legacy fields with "run" method's descriptors
         let (arg_d, result_d) = method_descriptors
-            .get("run")
+            .get(DEFAULT_METHOD_NAME)
             .map(|desc| (desc.args_descriptor.clone(), desc.result_descriptor.clone()))
             .unwrap_or((None, None));
 
@@ -381,7 +382,7 @@ impl RunnerDataWithDescriptor {
 
         // Backward compatibility: Populate legacy fields with "run" method's descriptors
         let (arg_d, result_d) = method_descriptors
-            .get("run")
+            .get(DEFAULT_METHOD_NAME)
             .map(|desc| (desc.args_descriptor.clone(), desc.result_descriptor.clone()))
             .unwrap_or((None, None));
 
@@ -471,7 +472,7 @@ impl RunnerDataWithDescriptor {
         &self,
         using: Option<&str>,
     ) -> Option<&ProtobufDescriptor> {
-        let method_name = using.unwrap_or("run");
+        let method_name = using.unwrap_or(DEFAULT_METHOD_NAME);
         self.method_descriptors
             .get(method_name)
             .and_then(|desc| desc.args_descriptor.as_ref())
@@ -488,7 +489,7 @@ impl RunnerDataWithDescriptor {
         &self,
         using: Option<&str>,
     ) -> Option<&ProtobufDescriptor> {
-        let method_name = using.unwrap_or("run");
+        let method_name = using.unwrap_or(DEFAULT_METHOD_NAME);
         self.method_descriptors
             .get(method_name)
             .and_then(|desc| desc.result_descriptor.as_ref())
@@ -505,7 +506,7 @@ impl RunnerDataWithDescriptor {
         &self,
         using: Option<&str>,
     ) -> Result<Option<MessageDescriptor>> {
-        let method_name = using.unwrap_or("run");
+        let method_name = using.unwrap_or(DEFAULT_METHOD_NAME);
         if let Some(descriptor) = self.get_args_descriptor_for_method(using) {
             descriptor
                 .get_messages()
@@ -535,7 +536,7 @@ impl RunnerDataWithDescriptor {
         &self,
         using: Option<&str>,
     ) -> Result<Option<MessageDescriptor>> {
-        let method_name = using.unwrap_or("run");
+        let method_name = using.unwrap_or(DEFAULT_METHOD_NAME);
         if let Some(descriptor) = self.get_result_descriptor_for_method(using) {
             descriptor
                 .get_messages()
@@ -597,11 +598,12 @@ pub mod test {
     use super::RunnerDataWithDescriptor;
     use infra::infra::runner::rows::RunnerWithSchema;
     use proto::jobworkerp::data::{RunnerData, RunnerId, RunnerType, StreamingOutputType};
+    use proto::DEFAULT_METHOD_NAME;
     pub fn test_runner_data(name: &str) -> RunnerData {
         // Phase 6.6.4: Use method_proto_map (required for all runners)
         let mut schemas = std::collections::HashMap::new();
         schemas.insert(
-            "run".to_string(),
+            DEFAULT_METHOD_NAME.to_string(),
             proto::jobworkerp::data::MethodSchema {
                 args_proto: include_str!("../../../proto/protobuf/test_args.proto").to_string(),
                 result_proto: String::new(),
@@ -664,10 +666,10 @@ pub mod test {
 
         // Legacy fields: populate with "run" method descriptors for backward compatibility
         let args_descriptor = method_descriptors
-            .get("run")
+            .get(DEFAULT_METHOD_NAME)
             .and_then(|desc| desc.args_descriptor.clone());
         let result_descriptor = method_descriptors
-            .get("run")
+            .get(DEFAULT_METHOD_NAME)
             .and_then(|desc| desc.result_descriptor.clone());
 
         RunnerDataWithDescriptor {
@@ -691,7 +693,7 @@ pub mod test {
 
         // Method 1: run (default method)
         schemas.insert(
-            "run".to_string(),
+            DEFAULT_METHOD_NAME.to_string(),
             proto::jobworkerp::data::MethodSchema {
                 args_proto: include_str!("../../../proto/protobuf/test_args.proto").to_string(),
                 result_proto: include_str!("../../../proto/protobuf/test_result.proto").to_string(),
@@ -823,7 +825,7 @@ mod tests {
 
         // Verify "run" method exists
         assert!(
-            parsed.method_descriptors.contains_key("run"),
+            parsed.method_descriptors.contains_key(DEFAULT_METHOD_NAME),
             "Should have 'run' method"
         );
 
@@ -870,7 +872,7 @@ mod tests {
 
         // Verify all 5 methods exist
         assert!(
-            parsed.method_descriptors.contains_key("run"),
+            parsed.method_descriptors.contains_key(DEFAULT_METHOD_NAME),
             "Should have 'run' method"
         );
         assert!(
@@ -968,7 +970,7 @@ mod tests {
         );
 
         // Test explicit "run" method
-        let run_desc = parsed.get_args_descriptor_for_method(Some("run"));
+        let run_desc = parsed.get_args_descriptor_for_method(Some(DEFAULT_METHOD_NAME));
         assert!(run_desc.is_some(), "'run' method should return descriptor");
 
         // Test other methods
@@ -1013,7 +1015,7 @@ mod tests {
         );
 
         // Test methods with result_proto
-        let run_desc = parsed.get_result_descriptor_for_method(Some("run"));
+        let run_desc = parsed.get_result_descriptor_for_method(Some(DEFAULT_METHOD_NAME));
         assert!(run_desc.is_some(), "'run' method should return descriptor");
 
         let list_files_desc = parsed.get_result_descriptor_for_method(Some("list_files"));
@@ -1058,7 +1060,7 @@ mod tests {
         );
 
         // Test explicit methods
-        let run_msg = parsed.get_job_args_message_for_method(Some("run"));
+        let run_msg = parsed.get_job_args_message_for_method(Some(DEFAULT_METHOD_NAME));
         assert!(run_msg.is_ok(), "'run' method should return Ok result");
 
         let list_files_msg = parsed.get_job_args_message_for_method(Some("list_files"));
@@ -1087,7 +1089,8 @@ mod tests {
             RunnerDataWithDescriptor::parse_proto_schemas_from_runner_data(runner_data).unwrap();
 
         // Test methods with result_proto
-        let run_msg = parsed.get_job_result_message_descriptor_for_method(Some("run"));
+        let run_msg =
+            parsed.get_job_result_message_descriptor_for_method(Some(DEFAULT_METHOD_NAME));
         assert!(run_msg.is_ok(), "'run' method should return Ok result");
 
         let list_files_msg =
