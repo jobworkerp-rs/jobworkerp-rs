@@ -132,15 +132,27 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         async move {
             tracing::debug!("found runner: {:?}, tool: {:?}", &runner, &tool_name_opt);
 
-            // Validate MCP tool name if present
+            // Phase 6.7: Validate MCP tool name if present using method_json_schema_map
             if let Some(ref tool_name) = tool_name_opt {
                 if runner
                     .data
                     .as_ref()
                     .is_some_and(|d| d.runner_type() == RunnerType::McpServer)
                 {
-                    // Check if tool exists in the MCP server's tool list
-                    if !runner.tools.iter().any(|t| t.name == *tool_name) {
+                    // Check if tool exists in the MCP server's method_json_schema_map
+                    let tool_exists = runner
+                        .method_json_schema_map
+                        .as_ref()
+                        .map(|m| m.schemas.contains_key(tool_name))
+                        .unwrap_or(false);
+
+                    if !tool_exists {
+                        let available_tools: Vec<_> = runner
+                            .method_json_schema_map
+                            .as_ref()
+                            .map(|m| m.schemas.keys().collect())
+                            .unwrap_or_default();
+
                         return Err(JobWorkerError::InvalidParameter(format!(
                             "Tool '{}' not found in MCP server '{}'. Available tools: {:?}",
                             tool_name,
@@ -149,7 +161,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                                 .as_ref()
                                 .map(|d| &d.name)
                                 .unwrap_or(&"unknown".to_string()),
-                            runner.tools.iter().map(|t| &t.name).collect::<Vec<_>>()
+                            available_tools
                         ))
                         .into());
                     }

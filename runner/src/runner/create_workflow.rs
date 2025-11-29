@@ -1,7 +1,4 @@
-use crate::{
-    jobworkerp::runner::create_workflow_args::WorkerOptions, schema_to_json_string,
-    schema_to_json_string_option,
-};
+use crate::{jobworkerp::runner::create_workflow_args::WorkerOptions, schema_to_json_string};
 use proto::jobworkerp::data::RunnerType;
 use proto::DEFAULT_METHOD_NAME;
 use std::collections::HashMap;
@@ -9,7 +6,6 @@ use std::collections::HashMap;
 use super::RunnerSpec;
 
 // Proto-generated types
-use crate::jobworkerp::runner::CreateWorkflowResult;
 
 pub struct CreateWorkflowRunnerSpecImpl {}
 
@@ -58,15 +54,6 @@ pub trait CreateWorkflowRunnerSpec {
         // XXX WORKFLOW settings: WorkerOptions (not runner_settings though)
         schema_to_json_string!(WorkerOptions, "settings_schema")
     }
-
-    fn arguments_schema(&self) -> String {
-        // XXX WORKFLOW JSON schema
-        include_str!("../../schema/workflow.json").to_string()
-    }
-
-    fn output_schema(&self) -> Option<String> {
-        schema_to_json_string_option!(CreateWorkflowResult, "output_schema")
-    }
 }
 
 impl CreateWorkflowRunnerSpec for CreateWorkflowRunnerSpecImpl {}
@@ -88,13 +75,5 @@ impl RunnerSpec for CreateWorkflowRunnerSpecImpl {
 
     fn settings_schema(&self) -> String {
         CreateWorkflowRunnerSpec::settings_schema(self)
-    }
-
-    fn arguments_schema(&self) -> String {
-        CreateWorkflowRunnerSpec::arguments_schema(self)
-    }
-
-    fn output_schema(&self) -> Option<String> {
-        CreateWorkflowRunnerSpec::output_schema(self)
     }
 }

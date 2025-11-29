@@ -3,11 +3,9 @@ pub mod client;
 pub mod repository;
 
 use self::repository::SlackRepository;
-use crate::jobworkerp::runner::{
-    SlackChatPostMessageArgs, SlackChatPostMessageResult, SlackRunnerSettings,
-};
+use crate::jobworkerp::runner::{SlackChatPostMessageArgs, SlackRunnerSettings};
 use crate::runner::RunnerTrait;
-use crate::{schema_to_json_string, schema_to_json_string_option};
+use crate::schema_to_json_string;
 use anyhow::{anyhow, Result};
 use futures::stream::BoxStream;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
@@ -97,12 +95,6 @@ impl RunnerSpec for SlackPostMessageRunner {
     }
     fn settings_schema(&self) -> String {
         schema_to_json_string!(SlackRunnerSettings, "settings_schema")
-    }
-    fn arguments_schema(&self) -> String {
-        schema_to_json_string!(SlackChatPostMessageArgs, "arguments_schema")
-    }
-    fn output_schema(&self) -> Option<String> {
-        schema_to_json_string_option!(SlackChatPostMessageResult, "output_schema")
     }
 }
 #[async_trait]

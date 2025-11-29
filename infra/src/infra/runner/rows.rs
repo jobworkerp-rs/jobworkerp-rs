@@ -1,8 +1,8 @@
+use crate::infra::runner::schema_converter::MethodJsonSchemaConverter;
 use jobworkerp_runner::runner::{
     mcp::McpServerRunnerImpl, timeout_config::RunnerTimeoutConfig, RunnerSpec,
 };
 use proto::jobworkerp::data::{Runner, RunnerData, RunnerId};
-use proto::jobworkerp::function::data::McpTool;
 use std::any::Any;
 
 // db row definitions
@@ -17,23 +17,31 @@ pub struct RunnerRow {
 }
 
 impl RunnerRow {
-    #[allow(deprecated)]
+    /// Convert RunnerRow to RunnerWithSchema with cached JSON Schema generation
+    ///
+    /// Phase 6.7: This method generates both Protobuf and JSON Schema maps from the runner,
+    /// and caches them in RunnerWithSchema for efficient reuse.
+    ///
+    /// **Performance**: JSON Schema conversion happens only once during this call.
+    /// All subsequent usage (FunctionSpecs conversion, etc.) reuses the cached data.
     pub async fn to_runner_with_schema(
         &self,
         runner: Box<dyn RunnerSpec + Send + Sync>,
     ) -> RunnerWithSchema {
-        if let Some(mcp_runner) =
+        if let Some(_mcp_runner) =
             (runner.as_ref() as &dyn Any).downcast_ref::<McpServerRunnerImpl>()
         {
-            // Get tools from MCP runner (already loaded during construction)
-            let tools = mcp_runner.tools().unwrap_or_else(|e| {
-                tracing::error!("MCP runner '{}' tools retrieval failed: {:?}", self.name, e);
-                Vec::default()
+            // Phase 6.6.4: method_proto_map is now required for all runners
+            let proto_map = runner.method_proto_map();
+            let method_proto_map = Some(proto::jobworkerp::data::MethodProtoMap {
+                schemas: proto_map.clone(),
             });
 
-            // Phase 6.6.4: method_proto_map is now required for all runners
-            let method_proto_map = Some(proto::jobworkerp::data::MethodProtoMap {
-                schemas: runner.method_proto_map(),
+            // Phase 6.7: Convert Protobuf → JSON Schema (ONE-TIME CONVERSION)
+            // This result is cached in RunnerWithSchema and reused everywhere
+            let json_schema_map = Self::convert_method_proto_map_to_json_schema_map(&proto_map);
+            let method_json_schema_map = Some(proto::jobworkerp::data::MethodJsonSchemaMap {
+                schemas: json_schema_map,
             });
 
             RunnerWithSchema {
@@ -47,9 +55,7 @@ impl RunnerRow {
                     method_proto_map,
                 }),
                 settings_schema: runner.settings_schema(),
-                arguments_schema: runner.arguments_schema(),
-                output_schema: runner.output_schema(),
-                tools,
+                method_json_schema_map, // ✅ Cached JSON Schema
             }
         } else {
             // Plugin schema methods are synchronous and may block, so we need to run them in spawn_blocking
@@ -65,19 +71,26 @@ impl RunnerRow {
                 tokio::task::spawn_blocking(move || {
                     let runner_settings_proto = runner.runner_settings_proto();
                     // Phase 6.6.4: method_proto_map is now required for all runners
+                    let proto_map = runner.method_proto_map();
                     let method_proto_map = Some(proto::jobworkerp::data::MethodProtoMap {
-                        schemas: runner.method_proto_map(),
+                        schemas: proto_map.clone(),
                     });
+
+                    // Phase 6.7: Convert Protobuf → JSON Schema
+                    let json_schema_map =
+                        RunnerRow::convert_method_proto_map_to_json_schema_map(&proto_map);
+                    let method_json_schema_map =
+                        Some(proto::jobworkerp::data::MethodJsonSchemaMap {
+                            schemas: json_schema_map,
+                        });
+
                     let settings_schema = runner.settings_schema();
-                    let arguments_schema = runner.arguments_schema();
-                    let output_schema = runner.output_schema();
 
                     (
                         runner_settings_proto,
                         method_proto_map,
+                        method_json_schema_map,
                         settings_schema,
-                        arguments_schema,
-                        output_schema,
                     )
                 }),
             )
@@ -87,9 +100,8 @@ impl RunnerRow {
                 Ok(Ok((
                     runner_settings_proto,
                     method_proto_map,
+                    method_json_schema_map,
                     settings_schema,
-                    arguments_schema,
-                    output_schema,
                 ))) => RunnerWithSchema {
                     id: Some(RunnerId { value: id }),
                     data: Some(RunnerData {
@@ -101,9 +113,7 @@ impl RunnerRow {
                         method_proto_map,
                     }),
                     settings_schema,
-                    arguments_schema,
-                    output_schema,
-                    tools: Vec::default(),
+                    method_json_schema_map, // ✅ Cached JSON Schema
                 },
                 Ok(Err(e)) => {
                     tracing::error!(
@@ -113,7 +123,7 @@ impl RunnerRow {
                         self.definition,
                         e
                     );
-                    // Return minimal schema on error (Phase 6.6.4: method_proto_map is required)
+                    // Return minimal schema on error
                     RunnerWithSchema {
                         id: Some(RunnerId { value: id }),
                         data: Some(RunnerData {
@@ -127,9 +137,11 @@ impl RunnerRow {
                             }),
                         }),
                         settings_schema: String::new(),
-                        arguments_schema: String::new(),
-                        output_schema: None,
-                        tools: Vec::default(),
+                        method_json_schema_map: Some(
+                            proto::jobworkerp::data::MethodJsonSchemaMap {
+                                schemas: std::collections::HashMap::new(),
+                            },
+                        ),
                     }
                 }
                 Err(_) => {
@@ -140,7 +152,7 @@ impl RunnerRow {
                         self.definition,
                         timeout_config.plugin_schema_load
                     );
-                    // Return minimal schema on timeout (Phase 6.6.4: method_proto_map is required)
+                    // Return minimal schema on timeout
                     RunnerWithSchema {
                         id: Some(RunnerId { value: id }),
                         data: Some(RunnerData {
@@ -154,9 +166,11 @@ impl RunnerRow {
                             }),
                         }),
                         settings_schema: String::new(),
-                        arguments_schema: String::new(),
-                        output_schema: None,
-                        tools: Vec::default(),
+                        method_json_schema_map: Some(
+                            proto::jobworkerp::data::MethodJsonSchemaMap {
+                                schemas: std::collections::HashMap::new(),
+                            },
+                        ),
                     }
                 }
             }
@@ -164,6 +178,16 @@ impl RunnerRow {
     }
 }
 
+/// Runner with cached schema information (Phase 6.7)
+///
+/// This structure caches both Protobuf and JSON Schema definitions
+/// to avoid repeated conversions. The conversion happens once during
+/// RunnerRow::to_runner_with_schema() and is reused everywhere.
+///
+/// # Phase 6.7 Changes
+/// - Removed: arguments_schema (tag 4), output_schema (tag 5), tools (tag 6)
+/// - Added: method_json_schema_map (tag 7)
+/// - All method-level schemas (including MCP tools) are unified in method_json_schema_map
 #[derive(Clone, serde::Serialize, serde::Deserialize, PartialEq, ::prost::Message)]
 pub struct RunnerWithSchema {
     #[prost(message, tag = "1")]
@@ -172,12 +196,14 @@ pub struct RunnerWithSchema {
     pub data: Option<RunnerData>,
     #[prost(string, tag = "3")]
     pub settings_schema: String,
-    #[prost(string, tag = "4")]
-    pub arguments_schema: String,
-    #[prost(string, optional, tag = "5")]
-    pub output_schema: Option<String>,
-    #[prost(message, repeated, tag = "6")]
-    pub tools: Vec<McpTool>,
+    // Phase 6.7: Reserved tags for deleted fields (prevent reuse)
+    // tag 4: arguments_schema (deprecated, use method_json_schema_map)
+    // tag 5: output_schema (deprecated, use method_json_schema_map)
+    // tag 6: tools (deprecated, use method_json_schema_map)
+    /// Phase 6.7: Unified JSON Schema map (replaces arguments_schema, output_schema, tools)
+    /// Generated once from method_proto_map during to_runner_with_schema()
+    #[prost(message, tag = "7")]
+    pub method_json_schema_map: Option<proto::jobworkerp::data::MethodJsonSchemaMap>,
 }
 
 impl RunnerWithSchema {

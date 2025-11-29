@@ -186,14 +186,23 @@ impl RunnerSpec for PythonCommandRunner {
         );
         schemas
     }
+
+    // Phase 6.7: Override method_json_schema_map() to use hand-crafted JSON Schema
+    // Reason: Protobuf oneof fields require oneOf constraints in JSON Schema for mutual exclusivity
+    fn method_json_schema_map(&self) -> HashMap<String, super::MethodJsonSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            DEFAULT_METHOD_NAME.to_string(),
+            super::MethodJsonSchema {
+                args_schema: include_str!("../../schema/PythonCommandArgs.json").to_string(),
+                result_schema: schema_to_json_string_option!(PythonCommandResult, "output_schema"),
+            },
+        );
+        schemas
+    }
+
     fn settings_schema(&self) -> String {
         include_str!("../../schema/PythonCommandRunnerSettings.json").to_string()
-    }
-    fn arguments_schema(&self) -> String {
-        include_str!("../../schema/PythonCommandArgs.json").to_string()
-    }
-    fn output_schema(&self) -> Option<String> {
-        schema_to_json_string_option!(PythonCommandResult, "output_schema")
     }
 }
 

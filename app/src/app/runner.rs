@@ -593,12 +593,11 @@ pub trait RunnerCacheHelper {
 // #[cfg(test)]
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test {
-    use std::vec;
-
     use super::RunnerDataWithDescriptor;
     use infra::infra::runner::rows::RunnerWithSchema;
     use proto::jobworkerp::data::{RunnerData, RunnerId, RunnerType, StreamingOutputType};
     use proto::DEFAULT_METHOD_NAME;
+
     pub fn test_runner_data(name: &str) -> RunnerData {
         // Phase 6.6.4: Use method_proto_map (required for all runners)
         let mut schemas = std::collections::HashMap::new();
@@ -627,9 +626,21 @@ pub mod test {
             id: Some(*id),
             data: Some(test_runner_data(name)),
             settings_schema: "settings_schema".to_string(),
-            arguments_schema: "arguments_schema".to_string(),
-            output_schema: Some("output_schema".to_string()),
-            tools: vec![],
+            // Phase 6.7: Use method_json_schema_map instead of deprecated fields
+            method_json_schema_map: Some(proto::jobworkerp::data::MethodJsonSchemaMap {
+                schemas: {
+                    let mut map = std::collections::HashMap::new();
+                    map.insert(
+                        proto::DEFAULT_METHOD_NAME.to_string(),
+                        proto::jobworkerp::data::MethodJsonSchema {
+                            args_schema: "arguments_schema".to_string(),
+                            result_schema: Some("output_schema".to_string()),
+                            description: None,
+                        },
+                    );
+                    map
+                },
+            }),
         }
     }
 
