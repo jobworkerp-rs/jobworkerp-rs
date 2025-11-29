@@ -48,7 +48,7 @@ pub trait LLMChatRunnerSpec {
         );
         schemas
     }
-    fn settings_schema(&self) -> String{
+    fn settings_schema(&self) -> String {
         // include_str!("../../schema/llm/LLMRunnerSettings.json").to_string()
         schema_to_json_string!(LlmRunnerSettings, "settings_schema")
     }
