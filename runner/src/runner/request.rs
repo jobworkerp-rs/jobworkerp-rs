@@ -6,7 +6,7 @@ use super::{RunnerSpec, RunnerTrait};
 use crate::jobworkerp::runner::{
     http_response_result, HttpRequestArgs, HttpRequestRunnerSettings, HttpResponseResult,
 };
-use crate::{schema_to_json_string, schema_to_json_string_option};
+use crate::schema_to_json_string;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -119,12 +119,6 @@ impl RunnerSpec for RequestRunner {
     }
     fn settings_schema(&self) -> String {
         schema_to_json_string!(HttpRequestRunnerSettings, "settings_schema")
-    }
-    fn arguments_schema(&self) -> String {
-        schema_to_json_string!(HttpRequestArgs, "arguments_schema")
-    }
-    fn output_schema(&self) -> Option<String> {
-        schema_to_json_string_option!(HttpResponseResult, "output_schema")
     }
 }
 // arg: {headers:{<headers map>}, queries:[<query string array>], body: <body string or struct>}

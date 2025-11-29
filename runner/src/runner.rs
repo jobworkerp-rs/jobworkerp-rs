@@ -94,6 +94,97 @@ macro_rules! schema_to_json_string_option {
     }};
 }
 
+/// JSON Schema definition for a single method/tool
+///
+/// Phase 6.7: This struct is used to provide JSON Schema for each method
+/// in a runner's method_json_schema_map().
+#[derive(Debug, Clone)]
+pub struct MethodJsonSchema {
+    /// JSON Schema for method arguments
+    pub args_schema: String,
+    /// JSON Schema for method result (None for unstructured output)
+    pub result_schema: Option<String>,
+}
+
+impl MethodJsonSchema {
+    /// Convert Protobuf MethodSchema to JSON Schema
+    ///
+    /// This is the common conversion logic used by both RunnerSpec and PluginRunnerWrapperImpl
+    #[allow(clippy::unnecessary_filter_map)] // filter_map is intentional to handle conversion errors gracefully
+    pub fn from_proto_map(
+        proto_map: HashMap<String, proto::jobworkerp::data::MethodSchema>,
+    ) -> HashMap<String, MethodJsonSchema> {
+        proto_map
+            .into_iter()
+            .filter_map(|(method_name, proto_schema)| {
+                use command_utils::protobuf::ProtobufDescriptor;
+
+                // args_proto → args JSON Schema
+                let args_schema = if proto_schema.args_proto.is_empty() {
+                    "{}".to_string()
+                } else {
+                    match ProtobufDescriptor::new(&proto_schema.args_proto) {
+                        Ok(descriptor) => {
+                            if let Some(msg_desc) = descriptor.get_messages().first() {
+                                let json_schema =
+                                    ProtobufDescriptor::message_descriptor_to_json_schema(msg_desc);
+                                serde_json::to_string(&json_schema)
+                                    .unwrap_or_else(|_| "{}".to_string())
+                            } else {
+                                "{}".to_string()
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to convert args_proto to JSON Schema for method '{}': {:?}",
+                                method_name,
+                                e
+                            );
+                            "{}".to_string()
+                        }
+                    }
+                };
+
+                // result_proto → result JSON Schema
+                let result_schema = if proto_schema.result_proto.is_empty() {
+                    None
+                } else {
+                    match ProtobufDescriptor::new(&proto_schema.result_proto) {
+                        Ok(descriptor) => {
+                            if let Some(msg_desc) = descriptor.get_messages().first() {
+                                let json_schema =
+                                    ProtobufDescriptor::message_descriptor_to_json_schema(msg_desc);
+                                Some(
+                                    serde_json::to_string(&json_schema)
+                                        .unwrap_or_else(|_| "{}".to_string()),
+                                )
+                            } else {
+                                None
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to convert result_proto to JSON Schema for method '{}': {:?}",
+                                method_name,
+                                e
+                            );
+                            None
+                        }
+                    }
+                };
+
+                Some((
+                    method_name,
+                    MethodJsonSchema {
+                        args_schema,
+                        result_schema,
+                    },
+                ))
+            })
+            .collect()
+    }
+}
+
 pub trait RunnerSpec: Send + Sync + Any {
     fn name(&self) -> String;
     // only implement for stream runner (output_as_stream() == true)
@@ -108,7 +199,26 @@ pub trait RunnerSpec: Send + Sync + Any {
         &self,
     ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema>;
 
+    /// Phase 6.7: JSON Schema definition for each method
+    ///
+    /// Returns a map of method names to their JSON Schemas.
+    /// - Key: method name (e.g., DEFAULT_METHOD_NAME ("run") for single-method runners, tool names for MCP/Plugin)
+    /// - Value: MethodJsonSchema (args_schema, result_schema)
+    ///
+    /// **Default implementation**: Automatically converts method_proto_map() to JSON Schema.
+    /// Plugin developers only need to implement method_proto_map(), and JSON Schema will be auto-generated.
+    ///
+    /// **Explicit implementation required for**:
+    /// - MCP Server: Use existing JSON Schema from tools
+    /// - Runners with custom JSON Schema optimization
+    fn method_json_schema_map(&self) -> HashMap<String, MethodJsonSchema> {
+        // Default implementation: Convert method_proto_map() to JSON Schema
+        MethodJsonSchema::from_proto_map(self.method_proto_map())
+    }
+
     /// JSON schema methods for Workflow API validation
+    ///
+    /// **DEPRECATED (Phase 6.7)**: Use method_json_schema_map() instead.
     ///
     /// **IMPORTANT**: These methods are for **normal runners only** (non-using runners).
     /// For using-based runners (MCP Server, Plugin with multiple methods):
@@ -120,8 +230,6 @@ pub trait RunnerSpec: Send + Sync + Any {
     /// - MCP Server: returns "{}" (schemas in tools field)
     /// - Plugin with using: returns "{}" (schemas in tools field)
     fn settings_schema(&self) -> String;
-    fn arguments_schema(&self) -> String;
-    fn output_schema(&self) -> Option<String>;
 }
 
 #[async_trait]

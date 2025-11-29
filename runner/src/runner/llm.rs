@@ -44,14 +44,25 @@ pub trait LLMCompletionRunnerSpec {
         );
         schemas
     }
+
+    // Phase 6.7: Override method_json_schema_map() to use hand-crafted JSON Schema
+    // Reason: Protobuf oneof fields in GenerationContext require oneOf constraints
+    fn method_json_schema_map(&self) -> HashMap<String, super::MethodJsonSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            DEFAULT_METHOD_NAME.to_string(),
+            super::MethodJsonSchema {
+                args_schema: include_str!("../../schema/llm/LLMCompletionArgs.json").to_string(),
+                result_schema: Some(
+                    include_str!("../../schema/llm/LLMCompletionResult.json").to_string(),
+                ),
+            },
+        );
+        schemas
+    }
+
     fn settings_schema(&self) -> String {
         include_str!("../../schema/llm/LLMRunnerSettings.json").to_string()
-    }
-    fn arguments_schema(&self) -> String {
-        include_str!("../../schema/llm/LLMCompletionArgs.json").to_string()
-    }
-    fn output_schema(&self) -> Option<String> {
-        Some(include_str!("../../schema/llm/LLMCompletionResult.json").to_string())
     }
 }
 
@@ -72,13 +83,11 @@ impl RunnerSpec for LLMCompletionRunnerSpecImpl {
         LLMCompletionRunnerSpec::method_proto_map(self)
     }
 
+    fn method_json_schema_map(&self) -> HashMap<String, super::MethodJsonSchema> {
+        LLMCompletionRunnerSpec::method_json_schema_map(self)
+    }
+
     fn settings_schema(&self) -> String {
         LLMCompletionRunnerSpec::settings_schema(self)
-    }
-    fn arguments_schema(&self) -> String {
-        LLMCompletionRunnerSpec::arguments_schema(self)
-    }
-    fn output_schema(&self) -> Option<String> {
-        LLMCompletionRunnerSpec::output_schema(self)
     }
 }

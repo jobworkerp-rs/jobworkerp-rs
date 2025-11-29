@@ -246,18 +246,35 @@ impl RunnerSpec for McpServerRunnerImpl {
             .collect()
     }
 
+    // Phase 6.7: Explicit implementation of method_json_schema_map for MCP Server
+    // Uses existing JSON Schema from available_tools
+    fn method_json_schema_map(&self) -> HashMap<String, crate::runner::MethodJsonSchema> {
+        self.available_tools
+            .iter()
+            .map(|(name, info)| {
+                (
+                    name.clone(),
+                    crate::runner::MethodJsonSchema {
+                        // MCP tool's JSON Schema (already available)
+                        args_schema: serde_json::to_string(&info.input_schema)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                        // Common output schema for all MCP tools
+                        result_schema: schema_to_json_string_option!(
+                            McpServerResult,
+                            "mcp_server_output_schema"
+                        ),
+                    },
+                )
+            })
+            .collect()
+    }
+
     fn settings_schema(&self) -> String {
         "{}".to_string() // Empty JSON object (no settings required)
     }
 
-    // Empty JSON - actual tool schemas are provided via RunnerWithSchema.tools field
-    fn arguments_schema(&self) -> String {
-        "{}".to_string()
-    }
-
-    fn output_schema(&self) -> Option<String> {
-        schema_to_json_string_option!(McpServerResult, "output_schema")
-    }
+    // Phase 6.7: arguments_schema() and output_schema() are deprecated
+    // Default implementation in RunnerSpec trait uses method_json_schema_map()
 }
 
 impl Tracing for McpServerRunnerImpl {}
