@@ -4,7 +4,8 @@ use command_utils::{protobuf::ProtobufDescriptor, util::datetime};
 use infra::infra::runner::rows::RunnerWithSchema;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
-    Priority, QueueType, ResponseType, RetryPolicy, RetryType, RunnerId, RunnerType, WorkerData,
+    JobResult, Priority, QueueType, ResponseType, RetryPolicy, RetryType, RunnerId, RunnerType,
+    WorkerData,
 };
 use serde_json::{Map, Value};
 use std::{
@@ -264,13 +265,13 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
             if let Some(runner_id) = temp_worker_data.runner_id.as_ref() {
                 let runner = self.runner_app().find_runner(runner_id).await?;
                 if let Some(RunnerWithSchema {
-                    id: Some(_rid),
+                    id: Some(rid),
                     data: Some(rdata),
                     ..
                 }) = runner
                 {
-                    // Phase 6.6.7: Parse runner proto schemas and use method-specific descriptor
-                    let runner_with_descriptor = self.parse_proto_schemas(rdata.clone())?;
+                    // Phase 6.6.7: Parse runner proto schemas with cache and use method-specific descriptor
+                    let runner_with_descriptor = self.parse_proto_with_cache(&rid, &rdata).await?;
                     let args_descriptor = runner_with_descriptor
                         .get_job_args_message_for_method(using.as_deref())
                         .map_err(|e| {
@@ -291,6 +292,8 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                             .as_bytes()
                             .to_vec()
                     };
+                    // Clone using to keep a copy for result parsing after move
+                    let using_for_result = using.clone();
                     let res = self
                         .job_app()
                         .enqueue_job_with_temp_worker(
@@ -304,7 +307,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                             None,
                             false,
                             !temp_worker_data.use_static,
-                            using, // Pass using parameter to job execution
+                            using, // Pass using parameter to job execution (moved here)
                         )
                         .await
                         .map(|res| {
@@ -312,7 +315,12 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                             res.1
                         })?;
                     if let Some(r) = res {
-                        Self::parse_job_result(r, &rdata)
+                        // Reuse cached runner_with_descriptor for result parsing
+                        Self::parse_job_result_with_descriptor(
+                            r,
+                            &runner_with_descriptor,
+                            using_for_result.as_deref(),
+                        )
                     } else {
                         Ok(None)
                     }
@@ -675,6 +683,77 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                 )
                 .into())
             }
+        }
+    }
+
+    /// Parse job result using pre-cached runner descriptor
+    ///
+    /// This method reuses the already-parsed RunnerDataWithDescriptor to avoid
+    /// redundant Proto schema parsing. This is more efficient than parse_job_result()
+    /// when the descriptor is already available.
+    ///
+    /// # Arguments
+    /// * `job_result` - The job result to parse
+    /// * `runner_with_descriptor` - Pre-cached runner descriptor with method schemas
+    /// * `using` - Optional method name for MCP/Plugin runners
+    fn parse_job_result_with_descriptor(
+        job_result: JobResult,
+        runner_with_descriptor: &crate::app::runner::RunnerDataWithDescriptor,
+        using: Option<&str>,
+    ) -> Result<Option<serde_json::Value>> {
+        let output = job_result
+            .data
+            .as_ref()
+            .and_then(|r| r.output.as_ref().map(|o| &o.items));
+
+        if let Some(output) = output {
+            let method_name = using.unwrap_or("run");
+
+            // Use cached result descriptor for the specified method
+            let result_descriptor = runner_with_descriptor
+                .get_job_result_message_descriptor_for_method(Some(method_name))
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to get result descriptor for method '{}': {:#?}",
+                        method_name,
+                        e
+                    )
+                })?;
+
+            if let Some(desc) = result_descriptor {
+                match ProtobufDescriptor::get_message_from_bytes(desc, output) {
+                    Ok(m) => {
+                        let j = ProtobufDescriptor::message_to_json_value(&m)?;
+                        tracing::debug!(
+                            "Result schema exists (method: {}). decode message with proto: {:#?}",
+                            method_name,
+                            j
+                        );
+                        Ok(Some(j))
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to parse result schema for method '{}': {:#?}",
+                            method_name,
+                            e
+                        );
+                        Err(JobWorkerError::RuntimeError(format!(
+                            "Failed to parse result schema for method '{}': {e:#?}",
+                            method_name
+                        )))
+                    }
+                }
+            } else {
+                let text = String::from_utf8_lossy(output);
+                tracing::debug!("No result schema for method '{}': {}", method_name, text);
+                Ok(Some(serde_json::Value::String(text.to_string())))
+            }
+            .map_err(|e| {
+                JobWorkerError::RuntimeError(format!("Failed to parse output: {e:#?}")).into()
+            })
+        } else {
+            tracing::warn!("No output found");
+            Ok(None)
         }
     }
 }

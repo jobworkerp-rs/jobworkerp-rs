@@ -572,7 +572,7 @@ pub trait UseJobExecutor:
             // Fallback: parse the descriptor directly from method_proto_map when cache lacks it
             if args_descriptor.is_none() {
                 let method_name = using.unwrap_or("run");
-                args_descriptor = self.parse_job_args_schema_descriptor(rdata, method_name)?;
+                args_descriptor = Self::parse_job_args_schema_descriptor(rdata, method_name)?;
             }
 
             tracing::debug!("job args (using: {:?}): {:#?}", using, &job_args);
@@ -637,7 +637,7 @@ pub trait UseJobExecutor:
 
             // Phase 6.6.7: Get method-specific result descriptor
             let mut result_descriptor = descriptors
-                .get_job_result_message_for_method(using)
+                .get_job_result_message_descriptor_for_method(using)
                 .map_err(|e| {
                     anyhow::anyhow!(
                         "Failed to get result descriptor for method '{}': {:#?}",
@@ -649,7 +649,7 @@ pub trait UseJobExecutor:
             // Fallback: parse the descriptor directly from method_proto_map when cache lacks it
             if result_descriptor.is_none() {
                 let method_name = using.unwrap_or("run");
-                result_descriptor = self.parse_job_result_schema_descriptor(rdata, method_name)?;
+                result_descriptor = Self::parse_job_result_schema_descriptor(rdata, method_name)?;
             }
 
             tracing::debug!("job output length (using: {:?}): {}", using, output.len());
