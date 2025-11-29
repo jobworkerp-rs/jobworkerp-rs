@@ -108,7 +108,7 @@ pub trait UseRunnerParserWithCache: Send + Sync {
     fn validate_runner_data_has_method_proto_map(runner_data: &RunnerData) -> Result<()> {
         if runner_data.method_proto_map.is_none() {
             return Err(JobWorkerError::InvalidParameter(
-                "method_proto_map is required for all runners (Phase 6.6.4+)".to_string(),
+                "method_proto_map is required for all runners".to_string(),
             )
             .into());
         }
@@ -531,7 +531,7 @@ impl RunnerDataWithDescriptor {
     ///
     /// # Returns
     /// Result<Option<MessageDescriptor>> - Some if method exists and has result schema, None if no schema
-    pub fn get_job_result_message_for_method(
+    pub fn get_job_result_message_descriptor_for_method(
         &self,
         using: Option<&str>,
     ) -> Result<Option<MessageDescriptor>> {
@@ -1087,17 +1087,19 @@ mod tests {
             RunnerDataWithDescriptor::parse_proto_schemas_from_runner_data(runner_data).unwrap();
 
         // Test methods with result_proto
-        let run_msg = parsed.get_job_result_message_for_method(Some("run"));
+        let run_msg = parsed.get_job_result_message_descriptor_for_method(Some("run"));
         assert!(run_msg.is_ok(), "'run' method should return Ok result");
 
-        let list_files_msg = parsed.get_job_result_message_for_method(Some("list_files"));
+        let list_files_msg =
+            parsed.get_job_result_message_descriptor_for_method(Some("list_files"));
         assert!(
             list_files_msg.is_ok(),
             "'list_files' method should return Ok result"
         );
 
         // Test methods with empty result_proto (should return Ok(None))
-        let write_file_msg = parsed.get_job_result_message_for_method(Some("write_file"));
+        let write_file_msg =
+            parsed.get_job_result_message_descriptor_for_method(Some("write_file"));
         assert!(
             write_file_msg.is_ok(),
             "'write_file' method should return Ok(None)"
@@ -1108,7 +1110,8 @@ mod tests {
         );
 
         // Test non-existent method (returns Ok(None), not an error)
-        let non_existent_msg = parsed.get_job_result_message_for_method(Some("non_existent"));
+        let non_existent_msg =
+            parsed.get_job_result_message_descriptor_for_method(Some("non_existent"));
         assert!(
             non_existent_msg.is_ok(),
             "Non-existent method should return Ok(None)"
