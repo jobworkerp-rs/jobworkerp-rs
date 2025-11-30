@@ -11,7 +11,6 @@ use futures::stream::BoxStream;
 use futures::stream::StreamExt;
 use proto::jobworkerp::data::result_output_item;
 use proto::jobworkerp::data::ResultOutputItem;
-use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::data::Trailer;
 use tokio::sync::RwLock;
 
@@ -67,23 +66,25 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
         // .map(|p| p.runner_settings_proto())
         // .unwrap_or_else(|e| format!("Error occurred: {:}", e))
     }
-    fn job_args_proto(&self) -> String {
-        block_on(self.plugin_runner.read()).job_args_proto()
+    fn method_proto_map(
+        &self,
+    ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        block_on(self.plugin_runner.read()).method_proto_map()
     }
-    fn result_output_proto(&self) -> Option<String> {
-        block_on(self.plugin_runner.read()).result_output_proto()
+
+    // Phase 6.7: Override method_json_schema_map() to support plugin-provided JSON schemas
+    fn method_json_schema_map(&self) -> HashMap<String, crate::runner::MethodJsonSchema> {
+        // Check if plugin provides custom JSON schemas
+        if let Some(custom_schemas) = block_on(self.plugin_runner.read()).method_json_schema_map() {
+            custom_schemas
+        } else {
+            // Fall back to automatic Protobuf→JSON Schema conversion
+            crate::runner::MethodJsonSchema::from_proto_map(self.method_proto_map())
+        }
     }
-    fn output_type(&self) -> StreamingOutputType {
-        block_on(self.plugin_runner.read()).output_type()
-    }
+
     fn settings_schema(&self) -> String {
         block_on(self.plugin_runner.read()).settings_schema()
-    }
-    fn arguments_schema(&self) -> String {
-        block_on(self.plugin_runner.read()).arguments_schema()
-    }
-    fn output_schema(&self) -> Option<String> {
-        block_on(self.plugin_runner.read()).output_json_schema()
     }
 }
 #[async_trait]
@@ -98,6 +99,7 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         &mut self,
         arg: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         // XXX clone
         // let plugin_runner = Arc::clone(&self.plugin_runner);
@@ -132,6 +134,7 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         &mut self,
         arg: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // XXX clone
         let plugin_runner = self.plugin_runner.clone();

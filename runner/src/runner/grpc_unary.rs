@@ -1,5 +1,5 @@
 use crate::jobworkerp::runner::{GrpcUnaryArgs, GrpcUnaryResult, GrpcUnaryRunnerSettings};
-use crate::{schema_to_json_string, schema_to_json_string_option};
+use crate::schema_to_json_string;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use base64::Engine;
@@ -13,6 +13,7 @@ use prost_reflect::{DescriptorPool, MessageDescriptor};
 use proto::jobworkerp::data::{
     JobData, JobId, JobResult, ResultOutputItem, RunnerType, StreamingOutputType,
 };
+use proto::DEFAULT_METHOD_NAME;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -393,23 +394,26 @@ impl RunnerSpec for GrpcUnaryRunner {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/grpc_unary_runner.proto").to_string()
     }
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/grpc_unary_args.proto").to_string()
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        Some(include_str!("../../protobuf/jobworkerp/runner/grpc_unary_result.proto").to_string())
-    }
-    fn output_type(&self) -> StreamingOutputType {
-        StreamingOutputType::NonStreaming
+    // Phase 6.6: Unified method_proto_map for all runners
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            DEFAULT_METHOD_NAME.to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!("../../protobuf/jobworkerp/runner/grpc_unary_args.proto")
+                    .to_string(),
+                result_proto: include_str!(
+                    "../../protobuf/jobworkerp/runner/grpc_unary_result.proto"
+                )
+                .to_string(),
+                description: Some("Execute gRPC unary request with reflection".to_string()),
+                output_type: StreamingOutputType::NonStreaming as i32,
+            },
+        );
+        schemas
     }
     fn settings_schema(&self) -> String {
         schema_to_json_string!(GrpcUnaryRunnerSettings, "settings_schema")
-    }
-    fn arguments_schema(&self) -> String {
-        schema_to_json_string!(GrpcUnaryArgs, "arguments_schema")
-    }
-    fn output_schema(&self) -> Option<String> {
-        schema_to_json_string_option!(GrpcUnaryResult, "output_schema")
     }
 }
 #[async_trait]
@@ -423,6 +427,7 @@ impl RunnerTrait for GrpcUnaryRunner {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         // Set up cancellation token using helper
         let cancellation_token = self.get_cancellation_token().await;
@@ -578,6 +583,7 @@ impl RunnerTrait for GrpcUnaryRunner {
         &mut self,
         _arg: &[u8],
         _metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         unimplemented!("gRPC unary does not support streaming")
     }
@@ -686,6 +692,7 @@ mod tests {
             .run(
                 &ProstMessageCodec::serialize_message(&grpc_args).unwrap(),
                 HashMap::new(),
+                None,
             )
             .await;
         let elapsed = start_time.elapsed();
@@ -740,7 +747,7 @@ mod tests {
         };
 
         let arg = ProstMessageCodec::serialize_message(&arg)?;
-        let res = runner.run(&arg, HashMap::new()).await;
+        let res = runner.run(&arg, HashMap::new(), None).await;
 
         match res.0 {
             Ok(data) => {
@@ -858,6 +865,7 @@ mod tests {
                 .run(
                     &ProstMessageCodec::serialize_message(&create_request)?,
                     HashMap::new(),
+                    None,
                 )
                 .await;
             let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result.0?)?;
@@ -907,6 +915,7 @@ mod tests {
                 .run(
                     &ProstMessageCodec::serialize_message(&find_request)?,
                     HashMap::new(),
+                    None,
                 )
                 .await;
             let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result.0?)?;
@@ -957,6 +966,7 @@ mod tests {
                 .run(
                     &ProstMessageCodec::serialize_message(&find_by_name_request)?,
                     HashMap::new(),
+                    None,
                 )
                 .await;
             let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result.0?)?;
@@ -1027,6 +1037,7 @@ mod tests {
                 .run(
                     &ProstMessageCodec::serialize_message(&update_request)?,
                     HashMap::new(),
+                    None,
                 )
                 .await;
             let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result.0?)?;
@@ -1046,6 +1057,7 @@ mod tests {
                 .run(
                     &ProstMessageCodec::serialize_message(&find_request)?,
                     HashMap::new(),
+                    None,
                 )
                 .await;
             let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result.0?)?;
@@ -1083,6 +1095,7 @@ mod tests {
                 .run(
                     &ProstMessageCodec::serialize_message(&delete_request)?,
                     HashMap::new(),
+                    None,
                 )
                 .await;
             let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result.0?)?;
@@ -1102,6 +1115,7 @@ mod tests {
                 .run(
                     &ProstMessageCodec::serialize_message(&find_request)?,
                     HashMap::new(),
+                    None,
                 )
                 .await;
             let response = ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result.0?)?;
@@ -1168,6 +1182,7 @@ mod tests {
             .run(
                 &ProstMessageCodec::serialize_message(&create_request)?,
                 HashMap::new(),
+                None,
             )
             .await;
 
@@ -1215,6 +1230,7 @@ mod tests {
             .run(
                 &ProstMessageCodec::serialize_message(&create_request_binary)?,
                 HashMap::new(),
+                None,
             )
             .await;
 
@@ -1251,6 +1267,7 @@ mod tests {
             .run(
                 &ProstMessageCodec::serialize_message(&find_request)?,
                 HashMap::new(),
+                None,
             )
             .await;
 
@@ -1291,6 +1308,7 @@ mod tests {
                 .run(
                     &ProstMessageCodec::serialize_message(&delete_request)?,
                     HashMap::new(),
+                    None,
                 )
                 .await;
         }

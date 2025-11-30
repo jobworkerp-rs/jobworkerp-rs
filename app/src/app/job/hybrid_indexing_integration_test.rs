@@ -95,6 +95,7 @@ mod hybrid_indexing_integration_tests {
                     0,
                     None,
                     false,
+                    None, // using
                 )
                 .await?;
 
@@ -256,6 +257,7 @@ mod hybrid_indexing_integration_tests {
                     0,
                     None,
                     false,
+                    None, // using
                 )
                 .await?;
 
@@ -399,6 +401,7 @@ mod hybrid_indexing_integration_tests {
                         0,
                         None,
                         false,
+                        None, // using
                     )
                     .await?;
                 job_ids.push(job_id);
@@ -504,6 +507,7 @@ mod hybrid_indexing_integration_tests {
                     0,
                     None,
                     false,
+                    None, // using
                 )
                 .await?;
 

@@ -6,7 +6,6 @@ use crate::schema_to_json_string;
 use anyhow::Result;
 use itertools::Itertools;
 use jobworkerp_base::error::JobWorkerError;
-use proto::jobworkerp::data::StreamingOutputType;
 use std::{
     collections::HashMap,
     fs::{self, ReadDir},
@@ -231,19 +230,43 @@ pub trait PluginRunner: Send + Sync {
     fn cancel(&mut self) -> bool;
     fn is_canceled(&self) -> bool;
     fn runner_settings_proto(&self) -> String;
-    fn job_args_proto(&self) -> String;
-    fn result_output_proto(&self) -> Option<String>;
-    fn output_type(&self) -> StreamingOutputType {
-        StreamingOutputType::NonStreaming
+
+    /// Phase 6.6.4: Returns the method protobuf schema map for all plugins
+    /// Key: method name (typically DEFAULT_METHOD_NAME ("run")), Value: MethodSchema (input and output schemas)
+    /// This is the unified approach for defining plugin method schemas
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        HashMap::new()
     }
+
+    /// Phase 6.7: Returns JSON Schema map for plugin methods
+    ///
+    /// **Default implementation**: Returns None to use automatic Protobuf→JSON Schema conversion
+    ///
+    /// **Override when**: Plugin has oneof fields that require oneOf constraints in JSON Schema
+    ///
+    /// # Example
+    /// ```ignore
+    /// use std::collections::HashMap;
+    ///
+    /// fn method_json_schema_map(&self) -> Option<HashMap<String, jobworkerp_runner::runner::MethodJsonSchema>> {
+    ///     let mut schemas = HashMap::new();
+    ///     schemas.insert(
+    ///         "run".to_string(),
+    ///         jobworkerp_runner::runner::MethodJsonSchema {
+    ///             args_schema: include_str!("../schema/MyPluginArgs.json").to_string(),
+    ///             result_schema: Some(include_str!("../schema/MyPluginResult.json").to_string()),
+    ///             description: Some("My plugin execution".to_string()),
+    ///         },
+    ///     );
+    ///     Some(schemas)
+    /// }
+    /// ```
+    fn method_json_schema_map(&self) -> Option<HashMap<String, crate::runner::MethodJsonSchema>> {
+        None // Default: use automatic conversion from method_proto_map()
+    }
+
     fn settings_schema(&self) -> String {
         schema_to_json_string!(crate::jobworkerp::runner::Empty, "settings_schema")
-    }
-    fn arguments_schema(&self) -> String {
-        schema_to_json_string!(crate::jobworkerp::runner::Empty, "arguments_schema")
-    }
-    fn output_json_schema(&self) -> Option<String> {
-        None
     }
 }
 

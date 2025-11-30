@@ -128,6 +128,7 @@ impl ResultProcessorImpl {
                         pj.timeout,
                         dat.job_id, // use same job id for periodic job if possible
                         pj.request_streaming,
+                        pj.using, // preserve using for periodic re-execution
                     )
                     .await?;
                 tracing::info!(

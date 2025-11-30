@@ -321,6 +321,19 @@ $defs:
             type: string
             title: RunnerName
             description: The name of the runner (runtime environment) that executes the job (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND, LLM_CHAT, MCP server names, plugin names, etc.)
+          using:
+            type: string
+            title: Using
+            description: |
+              Selects which implementation to use for MCP/Plugin runners with multiple tools.
+
+              - **Required**: For runners with multiple tools (e.g., fetch server with "fetch" and "fetch_html")
+              - **Optional**: For single-tool runners (auto-selected)
+
+              Examples:
+              - MCP fetch server: using: "fetch_html"
+              - MCP time server (single tool): can be omitted
+              - COMMAND runner: not needed
           settings:
             type: object
             title: InitializeSettings
@@ -421,6 +434,13 @@ $defs:
               runnerName:
                 type: string
                 description: The name of the runner that executes job
+              using:
+                type: string
+                description: |
+                  Selects which implementation to use for MCP/Plugin runners with multiple tools.
+
+                  - **Required**: For runners with multiple tools
+                  - **Optional**: For single-tool runners (auto-selected)
               settings:
                 type: object
                 description: The initialization settings JSON, if any. (ref. jobworkerp.data.RunnerData.runner_settings_proto schema) Runtime expression can be used to transform each value (not keys, no mixed plain text).

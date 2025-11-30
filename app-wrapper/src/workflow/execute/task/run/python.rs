@@ -373,6 +373,7 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
                     None,       // No unique key
                     self.default_task_timeout.as_secs() as u32,
                     false, // No streaming
+                    None,  // using not used for Python script execution
                 )
                 .await,
             service_unavailable,

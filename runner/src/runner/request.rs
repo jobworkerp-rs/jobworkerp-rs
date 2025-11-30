@@ -6,7 +6,7 @@ use super::{RunnerSpec, RunnerTrait};
 use crate::jobworkerp::runner::{
     http_response_result, HttpRequestArgs, HttpRequestRunnerSettings, HttpResponseResult,
 };
-use crate::{schema_to_json_string, schema_to_json_string_option};
+use crate::schema_to_json_string;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -16,6 +16,7 @@ use jobworkerp_base::{
     error::JobWorkerError,
 };
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
+use proto::DEFAULT_METHOD_NAME;
 use reqwest::{
     header::{HeaderMap, HeaderName},
     Method, Url,
@@ -96,23 +97,28 @@ impl RunnerSpec for RequestRunner {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/http_request_runner.proto").to_string()
     }
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/http_request_args.proto").to_string()
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        Some(include_str!("../../protobuf/jobworkerp/runner/http_request_result.proto").to_string())
-    }
-    fn output_type(&self) -> StreamingOutputType {
-        StreamingOutputType::Both
+    // Phase 6.6: Unified method_proto_map for all runners
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            DEFAULT_METHOD_NAME.to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!(
+                    "../../protobuf/jobworkerp/runner/http_request_args.proto"
+                )
+                .to_string(),
+                result_proto: include_str!(
+                    "../../protobuf/jobworkerp/runner/http_request_result.proto"
+                )
+                .to_string(),
+                description: Some("Execute HTTP request".to_string()),
+                output_type: StreamingOutputType::Both as i32,
+            },
+        );
+        schemas
     }
     fn settings_schema(&self) -> String {
         schema_to_json_string!(HttpRequestRunnerSettings, "settings_schema")
-    }
-    fn arguments_schema(&self) -> String {
-        schema_to_json_string!(HttpRequestArgs, "arguments_schema")
-    }
-    fn output_schema(&self) -> Option<String> {
-        schema_to_json_string_option!(HttpResponseResult, "output_schema")
     }
 }
 // arg: {headers:{<headers map>}, queries:[<query string array>], body: <body string or struct>}
@@ -127,6 +133,7 @@ impl RunnerTrait for RequestRunner {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let cancellation_token = self.get_cancellation_token().await;
 
@@ -218,6 +225,7 @@ impl RunnerTrait for RequestRunner {
         &mut self,
         arg: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // Set up cancellation token for pre-execution cancellation check
         let cancellation_token = self.get_cancellation_token().await;
@@ -486,7 +494,7 @@ pub mod tests {
         })
         .unwrap();
 
-        let res = runner.run(&arg, HashMap::new()).await;
+        let res = runner.run(&arg, HashMap::new(), None).await;
 
         let out = &res.0.as_ref().unwrap();
         println!(
@@ -525,6 +533,7 @@ pub mod tests {
             .run(
                 &ProstMessageCodec::serialize_message(&http_args).unwrap(),
                 HashMap::new(),
+                None,
             )
             .await;
         let elapsed = start_time.elapsed();

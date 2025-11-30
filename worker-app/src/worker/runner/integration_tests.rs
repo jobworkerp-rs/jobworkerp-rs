@@ -65,6 +65,7 @@ mod streaming_pool_guard_tests {
                 .run_stream(
                     &ProstMessageCodec::serialize_message(&arg).unwrap(),
                     HashMap::new(),
+                    None,
                 )
                 .await;
 
@@ -109,6 +110,7 @@ mod streaming_pool_guard_tests {
                     .run_stream(
                         &ProstMessageCodec::serialize_message(&arg).unwrap(),
                         HashMap::new(),
+                        None,
                     )
                     .await;
 
@@ -205,6 +207,7 @@ mod streaming_pool_guard_tests {
                 .run_stream(
                     &ProstMessageCodec::serialize_message(&arg).unwrap(),
                     HashMap::new(),
+                    None,
                 )
                 .await;
 
@@ -331,6 +334,7 @@ mod streaming_pool_guard_tests {
                 .run_stream(
                     &ProstMessageCodec::serialize_message(&arg).unwrap(),
                     HashMap::new(),
+                    None,
                 )
                 .await;
 

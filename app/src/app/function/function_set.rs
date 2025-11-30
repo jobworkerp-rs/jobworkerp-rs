@@ -143,9 +143,9 @@ pub trait FunctionSetApp: // XXX 1 impl
 
         if let Some(set) = function_set {
             if let Some(data) = set.data {
-                // Use FunctionApp to convert FunctionIds to FunctionSpecs
+                // Use FunctionApp to convert FunctionUsings to FunctionSpecs
                 self.function_app()
-                    .convert_function_ids_to_specs(&data.targets, set_name)
+                    .convert_function_usings_to_specs(&data.targets, set_name)
                     .await
             } else {
                 Ok(Vec::new())

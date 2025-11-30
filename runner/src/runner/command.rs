@@ -1,5 +1,5 @@
 use crate::jobworkerp::runner::{CommandArgs, CommandResult};
-use crate::{schema_to_json_string, schema_to_json_string_option};
+use crate::schema_to_json_string;
 
 use super::{RunnerSpec, RunnerTrait};
 use anyhow::{Context, Result};
@@ -13,6 +13,7 @@ use jobworkerp_base::{
 };
 use proto::jobworkerp::data::{result_output_item::Item, StreamingOutputType};
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
+use proto::DEFAULT_METHOD_NAME;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::{
@@ -174,24 +175,28 @@ impl RunnerSpec for CommandRunnerImpl {
     fn runner_settings_proto(&self) -> String {
         "".to_string()
     }
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/command_args.proto").to_string()
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        Some(include_str!("../../protobuf/jobworkerp/runner/command_result.proto").to_string())
-    }
-    fn output_type(&self) -> StreamingOutputType {
-        StreamingOutputType::Both
+    // Phase 6.6: Unified method_proto_map for all runners
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            DEFAULT_METHOD_NAME.to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!("../../protobuf/jobworkerp/runner/command_args.proto")
+                    .to_string(),
+                result_proto: include_str!("../../protobuf/jobworkerp/runner/command_result.proto")
+                    .to_string(),
+                description: Some("Execute shell command".to_string()),
+                output_type: StreamingOutputType::Both as i32,
+            },
+        );
+        schemas
     }
     fn settings_schema(&self) -> String {
         schema_to_json_string!(crate::jobworkerp::runner::Empty, "settings_schema")
     }
-    fn arguments_schema(&self) -> String {
-        schema_to_json_string!(CommandArgs, "arguments_schema")
-    }
-    fn output_schema(&self) -> Option<String> {
-        schema_to_json_string_option!(CommandResult, "output_schema")
-    }
+
+    // Phase 6.7: arguments_schema() and output_schema() are deprecated
+    // Default implementation in RunnerSpec trait uses method_json_schema_map()
 }
 
 #[async_trait]
@@ -205,6 +210,7 @@ impl RunnerTrait for CommandRunnerImpl {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         // let (span, cx) =
         //     Self::tracing_span_from_metadata(&metadata, APP_WORKER_NAME, "COMMAND::run");
@@ -474,6 +480,7 @@ impl RunnerTrait for CommandRunnerImpl {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // Set up cancellation token using manager
         let cancellation_token = self.get_cancellation_token().await;
@@ -1106,6 +1113,7 @@ mod tests {
             .run(
                 &ProstMessageCodec::serialize_message(&arg).unwrap(),
                 HashMap::new(),
+                None,
             )
             .await;
 
@@ -1145,6 +1153,7 @@ mod tests {
             .run(
                 &ProstMessageCodec::serialize_message(&arg).unwrap(),
                 HashMap::new(),
+                None,
             )
             .await;
 
@@ -1170,6 +1179,7 @@ mod tests {
             .run(
                 &ProstMessageCodec::serialize_message(&arg).unwrap(),
                 HashMap::new(),
+                None,
             )
             .await;
 
@@ -1190,6 +1200,7 @@ mod tests {
             .run_stream(
                 &ProstMessageCodec::serialize_message(&arg).unwrap(),
                 HashMap::new(),
+                None,
             )
             .await;
 
@@ -1273,6 +1284,7 @@ mod tests {
             .run_stream(
                 &ProstMessageCodec::serialize_message(&arg).unwrap(),
                 HashMap::new(),
+                None,
             )
             .await;
 
@@ -1407,7 +1419,8 @@ mod tests {
         let start_time = std::time::Instant::now();
 
         // First, start a command that we will cancel
-        let execution_task = tokio::spawn(async move { runner1.run(&arg_bytes, metadata).await });
+        let execution_task =
+            tokio::spawn(async move { runner1.run(&arg_bytes, metadata, None).await });
 
         // Wait a moment, then test cancel on the second runner (which has no active process)
         sleep(Duration::from_millis(100)).await;

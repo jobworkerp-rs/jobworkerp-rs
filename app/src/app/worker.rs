@@ -249,9 +249,19 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
             ..
         }) = self.runner_app().find_runner(&runner_id).await?
         {
-            match proto::jobworkerp::data::StreamingOutputType::try_from(runner_data.output_type)
-                .ok()
-            {
+            // Phase 6.6.4: Get output_type from method_proto_map (required for all runners)
+            let output_type = if let Some(ref method_proto_map) = runner_data.method_proto_map {
+                method_proto_map
+                    .schemas
+                    .values()
+                    .next()
+                    .map(|schema| schema.output_type)
+                    .unwrap_or(proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32)
+            } else {
+                proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32
+            };
+
+            match proto::jobworkerp::data::StreamingOutputType::try_from(output_type).ok() {
                 Some(proto::jobworkerp::data::StreamingOutputType::Streaming) => {
                     if request_streaming {
                         Ok(())
@@ -275,7 +285,7 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
                 Some(_) => Ok(()), // Both
                 None => Err(JobWorkerError::InvalidParameter(format!(
                     "runner does not support streaming mode: {}",
-                    runner_data.output_type
+                    output_type
                 ))
                 .into()),
             }

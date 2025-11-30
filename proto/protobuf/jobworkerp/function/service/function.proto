@@ -130,8 +130,8 @@ service FunctionService {
   rpc Call(FunctionCallRequest)
       returns (stream jobworkerp.function.data.FunctionResult);
 
-  // Function search by function ID
-  rpc Find(jobworkerp.function.data.FunctionId) returns (OptionalFunctionSpecsResponse);
+  // Function search by function using (FunctionId + optional using)
+  rpc Find(jobworkerp.function.data.FunctionUsing) returns (OptionalFunctionSpecsResponse);
 
   // Function search by function name
   rpc FindByName(FindFunctionByNameRequest) returns (OptionalFunctionSpecsResponse);

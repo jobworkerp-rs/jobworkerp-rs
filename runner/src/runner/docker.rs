@@ -18,6 +18,7 @@ use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     JobData, JobId, JobResult, ResultOutputItem, RunnerType, StreamingOutputType,
 };
+use proto::DEFAULT_METHOD_NAME;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio_stream::StreamExt;
@@ -283,38 +284,24 @@ impl RunnerSpec for DockerExecRunner {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/docker_runner.proto").to_string()
     }
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/docker_args.proto").to_string()
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        Some("".to_string())
-    }
-    fn output_type(&self) -> StreamingOutputType {
-        StreamingOutputType::NonStreaming
+    // Phase 6.6: Unified method_proto_map for all runners
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            DEFAULT_METHOD_NAME.to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!("../../protobuf/jobworkerp/runner/docker_args.proto")
+                    .to_string(),
+                result_proto: "".to_string(), // Binary data (empty proto allowed)
+                description: Some("Execute command in Docker container (exec mode)".to_string()),
+                output_type: StreamingOutputType::NonStreaming as i32,
+            },
+        );
+        schemas
     }
 
     fn settings_schema(&self) -> String {
         schema_to_json_string!(DockerRunnerSettings, "settings_schema")
-    }
-
-    fn arguments_schema(&self) -> String {
-        schema_to_json_string!(DockerArgs, "arguments_schema")
-    }
-
-    fn output_schema(&self) -> Option<String> {
-        // not use macro to assign title to schema
-        let mut schema = schemars::schema_for!(String);
-        schema.insert(
-            "title".to_string(),
-            serde_json::Value::String("Command stdout".to_string()),
-        );
-        match serde_json::to_string(&schema) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::error!("error in output_schema: {:?}", e);
-                None
-            }
-        }
     }
 }
 #[async_trait]
@@ -329,6 +316,7 @@ impl RunnerTrait for DockerExecRunner {
         &mut self,
         arg: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         // Set up cancellation token using helper
         let cancellation_token = self.get_cancellation_token().await;
@@ -406,6 +394,7 @@ impl RunnerTrait for DockerExecRunner {
         &mut self,
         arg: &[u8],
         _metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // Set up cancellation token for pre-execution cancellation check
         let _cancellation_token = self.get_cancellation_token().await;
@@ -439,7 +428,7 @@ async fn exec_test() -> Result<()> {
     })?;
     let handle1 = tokio::spawn(async move {
         let metadata = HashMap::new();
-        let res = runner1.run(&arg, metadata).await;
+        let res = runner1.run(&arg, metadata, None).await;
         tracing::info!("result:{:?}", &res);
         runner1.stop(2, false).await.and(res.0)
     });
@@ -450,7 +439,7 @@ async fn exec_test() -> Result<()> {
     })?;
     let handle2 = tokio::spawn(async move {
         let metadata = HashMap::new();
-        let res = runner2.run(&arg2, metadata).await;
+        let res = runner2.run(&arg2, metadata, None).await;
         tracing::info!("result:{:?}", &res);
         runner2.stop(2, true).await.and(res.0)
     });
@@ -580,37 +569,23 @@ impl RunnerSpec for DockerRunner {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/docker_runner.proto").to_string()
     }
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/docker_args.proto").to_string()
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        Some("".to_string())
-    }
-    fn output_type(&self) -> StreamingOutputType {
-        StreamingOutputType::NonStreaming
+    // Phase 6.6: Unified method_proto_map for all runners
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            DEFAULT_METHOD_NAME.to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!("../../protobuf/jobworkerp/runner/docker_args.proto")
+                    .to_string(),
+                result_proto: "".to_string(), // Binary data (empty proto allowed)
+                description: Some("Execute command in Docker container (run mode)".to_string()),
+                output_type: StreamingOutputType::NonStreaming as i32,
+            },
+        );
+        schemas
     }
     fn settings_schema(&self) -> String {
         schema_to_json_string!(DockerRunnerSettings, "settings_schema")
-    }
-
-    fn arguments_schema(&self) -> String {
-        schema_to_json_string!(DockerArgs, "arguments_schema")
-    }
-
-    fn output_schema(&self) -> Option<String> {
-        // not use macro to assign title to schema
-        let mut schema = schemars::schema_for!(String);
-        schema.insert(
-            "title".to_string(),
-            serde_json::Value::String("Command stdout".to_string()),
-        );
-        match serde_json::to_string(&schema) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::error!("error in output_schema: {:?}", e);
-                None
-            }
-        }
     }
 }
 
@@ -625,6 +600,7 @@ impl RunnerTrait for DockerRunner {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         // Set up cancellation token using helper
         let cancellation_token = self.get_cancellation_token().await;
@@ -758,6 +734,7 @@ impl RunnerTrait for DockerRunner {
         &mut self,
         arg: &[u8],
         _metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         // Set up cancellation token for pre-execution cancellation check
         let _cancellation_token = self.get_cancellation_token().await;
@@ -955,7 +932,7 @@ mod test {
             ..Default::default()
         })?;
         let handle1 = tokio::spawn(async move {
-            let res = runner1.run(&arg, HashMap::new()).await;
+            let res = runner1.run(&arg, HashMap::new(), None).await;
             tracing::info!("result:{:?}", &res);
             res
         });
@@ -966,7 +943,7 @@ mod test {
             ..Default::default()
         })?;
         let handle2 = tokio::spawn(async move {
-            let res = runner2.run(&arg2, HashMap::new()).await;
+            let res = runner2.run(&arg2, HashMap::new(), None).await;
             tracing::info!("result:{:?}", &res);
             res
         });
@@ -1001,6 +978,7 @@ mod test {
             .run(
                 &ProstMessageCodec::serialize_message(&arg).unwrap(),
                 HashMap::new(),
+                None,
             )
             .await;
         let elapsed = start_time.elapsed();
@@ -1052,6 +1030,7 @@ mod test {
             .run(
                 &ProstMessageCodec::serialize_message(&arg).unwrap(),
                 HashMap::new(),
+                None,
             )
             .await;
         tokio::time::sleep(std::time::Duration::from_millis(1000)).await; // Allow some time for cancellation to take effect
@@ -1115,7 +1094,7 @@ mod test {
         let execution_task = tokio::spawn(async move {
             let mut runner_guard = runner_clone.lock().await;
             let stream_result = runner_guard
-                .run_stream(&serialized_args, HashMap::new())
+                .run_stream(&serialized_args, HashMap::new(), None)
                 .await;
 
             match stream_result {
@@ -1214,7 +1193,7 @@ mod test {
         let execution_task = tokio::spawn(async move {
             let mut runner_guard = runner_clone.lock().await;
             let stream_result = runner_guard
-                .run_stream(&serialized_args, HashMap::new())
+                .run_stream(&serialized_args, HashMap::new(), None)
                 .await;
 
             match stream_result {

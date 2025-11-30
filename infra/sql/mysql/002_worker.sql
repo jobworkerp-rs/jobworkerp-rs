@@ -42,6 +42,7 @@ CREATE TABLE `job` (
   `priority` INT(10) NOT NULL DEFAULT '0',
   `timeout` BIGINT(20) NOT NULL DEfAULT 0,
   `request_streaming` TINYINT(1) NOT NULL DEFAULT 0, -- request streaming (available if supported by runner)
+  `using` VARCHAR(255) DEFAULT NULL, -- implementation name for MCP/Plugin runners with multiple tools
   KEY `worker_id_key` (`worker_id`),
   KEY `find_job_key` (`run_after_time`, `grabbed_until_time`, `worker_id`, `priority`),
   KEY `find_job_key2` (`run_after_time`, `grabbed_until_time`, `priority`),
@@ -65,6 +66,7 @@ CREATE TABLE `job_result` (
   `end_time` BIGINT(20) NOT NULL,
   `timeout` BIGINT(20) NOT NULL DEfAULT 0,
   `request_streaming` TINYINT(1) NOT NULL DEFAULT 0,
+  `using` VARCHAR(255) DEFAULT NULL, -- implementation name for MCP/Plugin runners (for retry/periodic re-execution)
   KEY `job_id_key` (`job_id`, `end_time`),
   KEY `worker_id_key` (`worker_id`, `job_id`),
   KEY `uniq_key_idx` (`uniq_key`)
@@ -148,7 +150,8 @@ CREATE TABLE `function_set_target` (
   `set_id` BIGINT(10) NOT NULL, -- function set id
   `target_id` BIGINT(10) NOT NULL, -- function set target id(worker or runner)
   `target_type` INT(10) NOT NULL DEFAULT 0, -- function set target type (runner: 0 or worker: 1)
-  UNIQUE KEY `set_target` (`set_id`, `target_id`, `target_type`)
+  `using` VARCHAR(255), -- optional using parameter for runner sub-methods
+  UNIQUE KEY `set_target` (`set_id`, `target_id`, `target_type`, `using`(191))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Indexes for admin UI filtering and sorting

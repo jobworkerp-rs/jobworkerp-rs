@@ -213,28 +213,14 @@ impl RunnerSpec for CreateWorkflowRunnerImpl {
         CreateWorkflowRunnerSpec::runner_settings_proto(self)
     }
 
-    fn job_args_proto(&self) -> String {
-        CreateWorkflowRunnerSpec::job_args_proto(self)
-    }
-
-    fn result_output_proto(&self) -> Option<String> {
-        CreateWorkflowRunnerSpec::result_output_proto(self)
-    }
-
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        CreateWorkflowRunnerSpec::output_type(self)
+    fn method_proto_map(
+        &self,
+    ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        CreateWorkflowRunnerSpec::method_proto_map(self)
     }
 
     fn settings_schema(&self) -> String {
         CreateWorkflowRunnerSpec::settings_schema(self)
-    }
-
-    fn arguments_schema(&self) -> String {
-        CreateWorkflowRunnerSpec::arguments_schema(self)
-    }
-
-    fn output_schema(&self) -> Option<String> {
-        CreateWorkflowRunnerSpec::output_schema(self)
     }
 }
 
@@ -249,6 +235,7 @@ impl RunnerTrait for CreateWorkflowRunnerImpl {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         tracing::info!("Starting CREATE_WORKFLOW execution");
 
@@ -320,6 +307,7 @@ impl RunnerTrait for CreateWorkflowRunnerImpl {
         &mut self,
         _args: &[u8],
         _metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> Result<
         std::pin::Pin<
             Box<

@@ -264,6 +264,7 @@ async fn redis_test() -> Result<()> {
         response_type: ResponseType::NoResult as i32,
         store_success: true,
         store_failure: true,
+        using: None,
     };
     // clear first
     repo.delete(&id).await?;

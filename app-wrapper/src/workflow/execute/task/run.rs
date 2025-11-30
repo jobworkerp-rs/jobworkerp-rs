@@ -98,6 +98,7 @@ impl RunTaskExecutor {
             None
         }
     }
+    #[allow(clippy::too_many_arguments)]
     async fn execute_by_jobworkerp(
         &self,
         cx: Arc<opentelemetry::Context>,
@@ -106,6 +107,7 @@ impl RunTaskExecutor {
         options: Option<workflow::WorkerOptions>,
         job_args: serde_json::Value,
         worker_name: &str,
+        using: Option<String>,
     ) -> Result<serde_json::Value> {
         let runner = self
             .job_executor_wrapper
@@ -150,6 +152,7 @@ impl RunTaskExecutor {
                 None, // XXX no uniq_key,
                 self.default_task_timeout.as_secs() as u32,
                 false, // no streaming
+                using,
             )
             .await
     }
@@ -251,6 +254,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         None,
                         timeout_sec,
                         false,
+                        None, // using not used in workflow tasks
                     )
                     .await
                 {
@@ -280,6 +284,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         name: runner_name,
                         options,
                         settings,
+                        using,
                     },
             }) => {
                 task_context.add_position_name("runner".to_string()).await;
@@ -326,6 +331,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         options.clone(),
                         args,
                         task_name,
+                        using.clone(),
                     )
                     .await
                 {
@@ -384,6 +390,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         None,
                         timeout_sec,
                         false,
+                        None, // using not used in workflow tasks
                     )
                     .await
                 {
@@ -413,6 +420,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         options,
                         runner_name,
                         settings,
+                        using,
                     },
             }) => {
                 task_context.add_position_name("function".to_string()).await;
@@ -460,6 +468,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         options.clone(),
                         args,
                         task_name,
+                        using.clone(),
                     )
                     .await
                 {

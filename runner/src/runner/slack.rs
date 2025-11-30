@@ -1,12 +1,11 @@
+use proto::DEFAULT_METHOD_NAME;
 pub mod client;
 pub mod repository;
 
 use self::repository::SlackRepository;
-use crate::jobworkerp::runner::{
-    SlackChatPostMessageArgs, SlackChatPostMessageResult, SlackRunnerSettings,
-};
+use crate::jobworkerp::runner::{SlackChatPostMessageArgs, SlackRunnerSettings};
 use crate::runner::RunnerTrait;
-use crate::{schema_to_json_string, schema_to_json_string_option};
+use crate::schema_to_json_string;
 use anyhow::{anyhow, Result};
 use futures::stream::BoxStream;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
@@ -78,23 +77,24 @@ impl RunnerSpec for SlackPostMessageRunner {
         include_str!("../../protobuf/jobworkerp/runner/slack_runner.proto").to_string()
     }
     // use JobResult as job_args
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/slack_args.proto").to_string()
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        Some(include_str!("../../protobuf/jobworkerp/runner/slack_result.proto").to_string())
-    }
-    fn output_type(&self) -> StreamingOutputType {
-        StreamingOutputType::NonStreaming
+    // Phase 6.6: Unified method_proto_map for all runners
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            DEFAULT_METHOD_NAME.to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!("../../protobuf/jobworkerp/runner/slack_args.proto")
+                    .to_string(),
+                result_proto: include_str!("../../protobuf/jobworkerp/runner/slack_result.proto")
+                    .to_string(),
+                description: Some("Post message to Slack channel".to_string()),
+                output_type: StreamingOutputType::NonStreaming as i32,
+            },
+        );
+        schemas
     }
     fn settings_schema(&self) -> String {
         schema_to_json_string!(SlackRunnerSettings, "settings_schema")
-    }
-    fn arguments_schema(&self) -> String {
-        schema_to_json_string!(SlackChatPostMessageArgs, "arguments_schema")
-    }
-    fn output_schema(&self) -> Option<String> {
-        schema_to_json_string_option!(SlackChatPostMessageResult, "output_schema")
     }
 }
 #[async_trait]
@@ -108,6 +108,7 @@ impl RunnerTrait for SlackPostMessageRunner {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let cancellation_token = self.get_cancellation_token().await;
 
@@ -164,6 +165,7 @@ impl RunnerTrait for SlackPostMessageRunner {
         &mut self,
         arg: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let cancellation_token = self.get_cancellation_token().await;
 
@@ -342,7 +344,7 @@ mod tests {
 
         // Execute with pre-cancelled token
         let start_time = std::time::Instant::now();
-        let (result, _) = runner.run(&arg_bytes, metadata).await;
+        let (result, _) = runner.run(&arg_bytes, metadata, None).await;
         let elapsed = start_time.elapsed();
 
         // Should fail immediately due to pre-execution cancellation
@@ -400,7 +402,7 @@ mod tests {
         let execution_task = tokio::spawn(async move {
             let mut runner_guard = runner_clone.lock().await;
             let stream_result = runner_guard
-                .run_stream(&serialized_args, HashMap::new())
+                .run_stream(&serialized_args, HashMap::new(), None)
                 .await;
 
             match stream_result {

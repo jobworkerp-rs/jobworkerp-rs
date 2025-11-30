@@ -94,28 +94,14 @@ impl RunnerSpec for LLMChatRunnerImpl {
         LLMChatRunnerSpec::runner_settings_proto(self)
     }
 
-    fn job_args_proto(&self) -> String {
-        LLMChatRunnerSpec::job_args_proto(self)
-    }
-
-    fn result_output_proto(&self) -> Option<String> {
-        LLMChatRunnerSpec::result_output_proto(self)
-    }
-
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        LLMChatRunnerSpec::output_type(self)
+    fn method_proto_map(
+        &self,
+    ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        LLMChatRunnerSpec::method_proto_map(self)
     }
 
     fn settings_schema(&self) -> String {
         LLMChatRunnerSpec::settings_schema(self)
-    }
-
-    fn arguments_schema(&self) -> String {
-        LLMChatRunnerSpec::arguments_schema(self)
-    }
-
-    fn output_schema(&self) -> Option<String> {
-        LLMChatRunnerSpec::output_schema(self)
     }
 }
 
@@ -187,6 +173,7 @@ impl RunnerTrait for LLMChatRunnerImpl {
         &mut self,
         arg: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let cancellation_token = self.get_cancellation_token().await;
 
@@ -279,6 +266,7 @@ impl RunnerTrait for LLMChatRunnerImpl {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let cancellation_token = self.get_cancellation_token().await;
 

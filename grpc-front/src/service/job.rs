@@ -134,6 +134,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
                         None,
                         false,
+                        req.using,
                     )
                     .await
             }
@@ -150,6 +151,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
                         None,
                         false,
+                        req.using,
                     )
                     .await
             }
@@ -222,6 +224,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
                         None,
                         true,
+                        req.using,
                     )
                     .await
             }
@@ -238,6 +241,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
                         None,
                         true,
+                        req.using,
                     )
                     .await
             }

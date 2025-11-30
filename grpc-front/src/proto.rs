@@ -6,15 +6,14 @@ pub mod jobworkerp {
             pub use data::function_id;
             use proto::jobworkerp::function::data;
             pub type FunctionId = data::FunctionId;
+            pub type FunctionUsing = data::FunctionUsing;
             pub type FunctionSetData = data::FunctionSetData;
             pub type FunctionSet = data::FunctionSet;
             pub type FunctionSetId = data::FunctionSetId;
             pub type FunctionSetDetail = data::FunctionSetDetail;
             pub type FunctionSetDetailData = data::FunctionSetDetailData;
             pub type FunctionSpecs = data::FunctionSpecs;
-            pub type FunctionSchema = data::FunctionSchema;
-            pub type McpToolList = data::McpToolList;
-            pub type McpTool = data::McpTool;
+            // Phase 6.7: FunctionSchema, McpToolList, McpTool deleted (replaced by MethodSchemaMap)
             pub type WorkerOptions = data::WorkerOptions;
             pub type FunctionCallOptions = data::FunctionCallOptions;
             pub type FunctionExecutionInfo = data::FunctionExecutionInfo;
