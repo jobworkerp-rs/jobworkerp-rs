@@ -223,15 +223,12 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                 .ok_or_else(|| {
                     JobWorkerError::WorkerNotFound(format!("worker or mcp tool not found: {name}"))
                 })?;
-            let args = if let Some(ref tool_name) = tool_name_opt {
-                Self::correct_mcp_worker_args(tool_name.clone(), request_args.clone())?
-            } else {
-                request_args
-            };
+            // Phase 6.8: Arguments are now passed directly without MCP-specific correction
+            // tool_name is passed via 'using' parameter to enqueue_temp_worker_with_json
             self.enqueue_temp_worker_with_json(
                 meta,
                 &worker_data,
-                Value::Object(args),
+                Value::Object(request_args),
                 unique_key,
                 streaming,
                 tool_name_opt, // Pass using parameter for MCP worker tools
@@ -346,36 +343,6 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         }
     }
 
-    fn correct_mcp_worker_args(
-        tool_name: String,
-        arguments: Map<String, Value>,
-    ) -> Result<Map<String, Value>> {
-        if arguments.contains_key("tool_name") {
-            if let Some(Value::String(s)) = arguments.get("tool_name") {
-                if s == &tool_name {
-                    return Ok(arguments);
-                }
-            }
-            tracing::warn!(
-                "tool_name is not matched: {} != {}",
-                tool_name,
-                arguments["tool_name"]
-            );
-            Err(JobWorkerError::InvalidParameter(format!(
-                "tool_name is not matched: {} != {}",
-                tool_name, arguments["tool_name"]
-            ))
-            .into())
-        } else {
-            // correct mcp worker args
-            tracing::warn!("tool_name is not found. insert: {}", tool_name);
-            let mut new_arguments = Map::new();
-            new_arguments.insert("tool_name".to_string(), Value::String(tool_name));
-            new_arguments.insert("arg_json".to_string(), Value::Object(arguments));
-            Ok(new_arguments)
-        }
-    }
-
     fn create_default_worker_data(
         runner_id: RunnerId,
         runner_name: &str,
@@ -462,42 +429,20 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
 
     fn prepare_runner_call_arguments(
         mut request_args: Map<String, Value>,
-        runner: &RunnerWithSchema,
-        tool_name_opt: Option<String>,
+        _runner: &RunnerWithSchema, // Reserved for future validation logic
+        _tool_name_opt: Option<String>, // tool_name now passed via 'using' parameter
     ) -> impl Future<Output = Result<(Option<Value>, Value)>> + Send + '_ {
         async move {
             let settings = request_args.remove("settings");
-            let arguments = if runner
-                .data
-                .as_ref()
-                .is_some_and(|r| r.runner_type() == RunnerType::McpServer)
-            {
-                let mut obj_map = Map::new();
-                obj_map.insert(
-                    "tool_name".to_string(),
-                    serde_json::to_value(tool_name_opt).map_err(|e| {
-                        JobWorkerError::InvalidParameter(format!(
-                            "Failed to parse tool_name: {e:?}"
-                        ))
-                    })?,
-                );
-                obj_map.insert(
-                    "arg_json".to_string(),
-                    Value::String(serde_json::to_string(&request_args).map_err(|e| {
-                        JobWorkerError::InvalidParameter(format!(
-                            "Failed to parse settings as json: {e:?}"
-                        ))
-                    })?),
-                );
-                Value::Object(obj_map)
-            } else {
-                request_args.get("arguments").cloned().ok_or_else(|| {
-                    JobWorkerError::InvalidParameter(format!(
-                        "Failed to find 'arguments' in request_args: {:#?}",
-                        &request_args
-                    ))
-                })?
-            };
+
+            // All runners now use unified 'arguments' field
+            // tool_name is passed separately via 'using' parameter to worker layer
+            let arguments = request_args.get("arguments").cloned().ok_or_else(|| {
+                JobWorkerError::InvalidParameter(format!(
+                    "Failed to find 'arguments' in request_args: {:#?}",
+                    &request_args
+                ))
+            })?;
 
             tracing::debug!(
                 "runner settings: {:#?}, arguments: {:#?}",
@@ -506,33 +451,6 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
             );
 
             Ok((settings, arguments))
-        }
-    }
-
-    fn prepare_worker_call_arguments(
-        request_args: Map<String, Value>,
-        worker_data: &WorkerData,
-        tool_name_opt: Option<String>,
-    ) -> Value {
-        let args = request_args
-            .get("arguments")
-            .cloned()
-            .unwrap_or(Value::Null);
-
-        if worker_data.runner_id.is_some_and(|id| id.value < 0) {
-            tracing::info!("worker is reusable workflow");
-            serde_json::json!({
-                "input": args.to_string(),
-            })
-        } else if let Some(tool_name) = tool_name_opt {
-            serde_json::json!(
-                {
-                    "tool_name": tool_name,
-                    "arg_json": args
-                }
-            )
-        } else {
-            args
         }
     }
 
@@ -768,173 +686,5 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
             tracing::warn!("No output found");
             Ok(None)
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use memory_utils::cache::moka::{MokaCacheConfig, MokaCacheImpl};
-    use proto::ProtobufHelper;
-
-    use super::*;
-    use crate::{
-        app::{
-            job::UseJobApp,
-            job_result::UseJobResultApp,
-            runner::{RunnerDataWithDescriptor, UseRunnerApp, UseRunnerParserWithCache},
-            worker::UseWorkerApp,
-        },
-        module::test::create_hybrid_test_app,
-    };
-    use std::{sync::Arc, time::Duration};
-
-    // Create a test implementation of FunctionCallHelper using the app
-    struct TestFunctionCallHelper {
-        app: crate::module::AppModule,
-        descriptor_cache: MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>,
-    }
-
-    // Implement required traits
-    impl UseJobApp for TestFunctionCallHelper {
-        fn job_app(&self) -> &Arc<dyn crate::app::job::JobApp + 'static> {
-            &self.app.job_app
-        }
-    }
-
-    impl UseRunnerApp for TestFunctionCallHelper {
-        fn runner_app(&self) -> Arc<dyn crate::app::runner::RunnerApp> {
-            self.app.runner_app.clone()
-        }
-    }
-
-    impl UseWorkerApp for TestFunctionCallHelper {
-        fn worker_app(&self) -> &Arc<dyn crate::app::worker::WorkerApp + 'static> {
-            &self.app.worker_app
-        }
-    }
-
-    impl UseJobResultApp for TestFunctionCallHelper {
-        fn job_result_app(&self) -> &Arc<dyn crate::app::job_result::JobResultApp + 'static> {
-            &self.app.job_result_app
-        }
-    }
-    impl UseJobExecutor for TestFunctionCallHelper {}
-    impl UseRunnerParserWithCache for TestFunctionCallHelper {
-        fn descriptor_cache(&self) -> &MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor> {
-            &self.descriptor_cache
-        }
-    }
-
-    impl ProtobufHelper for TestFunctionCallHelper {}
-
-    impl McpNameConverter for TestFunctionCallHelper {}
-
-    impl FunctionCallHelper for TestFunctionCallHelper {
-        fn timeout_sec(&self) -> u32 {
-            30 // Default timeout for tests
-        }
-
-        fn job_queue_config(&self) -> &infra::infra::JobQueueConfig {
-            &self.app.config_module.job_queue_config
-        }
-
-        fn worker_config(&self) -> &WorkerConfig {
-            &self.app.config_module.worker_config
-        }
-    }
-
-    #[test]
-    fn test_function_call_helper_correct_mcp_worker_args_with_tool_name() {
-        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
-            // tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-            // Get test app instance
-            let app = create_hybrid_test_app().await.unwrap();
-            let descriptor_cache = MokaCacheImpl::new(&MokaCacheConfig {
-                num_counters: 10000,
-                ttl: Some(Duration::from_secs(60)), // 1 minute TTL for test
-            });
-            let _helper = TestFunctionCallHelper {
-                app,
-                descriptor_cache,
-            };
-
-            // Case 1: tool_name already exists and matches the value
-            let tool_name = "test_tool".to_string();
-            let mut arguments = Map::new();
-            arguments.insert(
-                "tool_name".to_string(),
-                Value::String("test_tool".to_string()),
-            );
-            arguments.insert("arg_json".to_string(), Value::String("value1".to_string()));
-
-            // Using FunctionCallHelper's static method through the struct
-            let result =
-                TestFunctionCallHelper::correct_mcp_worker_args(tool_name, arguments.clone());
-            assert!(result.is_ok());
-            let result_args = result.unwrap();
-            assert_eq!(result_args.len(), 2);
-            assert_eq!(
-                result_args["tool_name"],
-                Value::String("test_tool".to_string())
-            );
-            assert_eq!(result_args["arg_json"], Value::String("value1".to_string()));
-
-            // Case 2: tool_name exists but with different value
-            let tool_name = "different_tool".to_string();
-            let result = TestFunctionCallHelper::correct_mcp_worker_args(tool_name, arguments);
-            assert!(result.is_err());
-            if let Err(err) = result {
-                let err_string = err.to_string();
-                assert!(err_string.contains("tool_name is not matched"));
-            }
-        })
-    }
-
-    #[test]
-    fn test_function_call_helper_correct_mcp_worker_args_without_tool_name() {
-        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
-            // tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-            // Get test app instance
-            let app = create_hybrid_test_app().await.unwrap();
-            let descriptor_cache = MokaCacheImpl::new(&MokaCacheConfig {
-                num_counters: 10000,
-                ttl: Some(Duration::from_secs(60)), // 1 minute TTL for test
-            });
-            let _helper = TestFunctionCallHelper {
-                app,
-                descriptor_cache,
-            };
-
-            // Case 3: tool_name doesn't exist
-            let tool_name = "new_tool".to_string();
-            let mut arguments = Map::new();
-            arguments.insert("param1".to_string(), Value::String("value1".to_string()));
-            arguments.insert(
-                "param2".to_string(),
-                Value::Number(serde_json::Number::from(42)),
-            );
-
-            // Using FunctionCallHelper's static method through the struct
-            let result =
-                TestFunctionCallHelper::correct_mcp_worker_args(tool_name.clone(), arguments);
-            assert!(result.is_ok());
-            let result_args = result.unwrap();
-
-            // Verify the new arguments object is constructed correctly
-            assert_eq!(result_args.len(), 2);
-            assert_eq!(result_args["tool_name"], Value::String(tool_name));
-
-            // Verify that the original arguments map is stored in arg_json field
-            if let Value::Object(arg_json_map) = &result_args["arg_json"] {
-                assert_eq!(arg_json_map.len(), 2);
-                assert_eq!(arg_json_map["param1"], Value::String("value1".to_string()));
-                assert_eq!(
-                    arg_json_map["param2"],
-                    Value::Number(serde_json::Number::from(42))
-                );
-            } else {
-                panic!("arg_json is not an object");
-            }
-        })
     }
 }

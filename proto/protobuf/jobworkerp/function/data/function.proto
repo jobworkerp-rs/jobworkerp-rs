@@ -81,10 +81,6 @@ message FunctionSpecs {
   // - Single-method runners: contains 1 entry (key = "run")
   // - MCP/Plugin runners: contains multiple entries (keys = tool names)
   MethodSchemaMap methods = 7;
-
-  // Phase 6.7: Deleted fields (reserved for future use)
-  reserved 8, 9, 10;
-  reserved "output_type", "single_schema", "mcp_tools";
 }
 
 // # Method Schema Map
