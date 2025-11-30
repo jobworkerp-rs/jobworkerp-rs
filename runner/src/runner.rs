@@ -98,14 +98,16 @@ macro_rules! schema_to_json_string_option {
 ///
 /// Phase 6.7: This struct is used to provide JSON Schema for each method
 /// in a runner's method_json_schema_map().
+///
+/// NOTE: description is NOT included here - it should be retrieved from
+/// MethodSchema.description in method_proto_map instead.
+/// Reason: Caching description is redundant as it's not converted (just copied).
 #[derive(Debug, Clone)]
 pub struct MethodJsonSchema {
     /// JSON Schema for method arguments
     pub args_schema: String,
     /// JSON Schema for method result (None for unstructured output)
     pub result_schema: Option<String>,
-    /// Method description (used by LLM for tool selection)
-    pub description: Option<String>,
 }
 
 impl MethodJsonSchema {
@@ -117,7 +119,6 @@ impl MethodJsonSchema {
         proto::jobworkerp::data::MethodJsonSchema {
             args_schema: self.args_schema.clone(),
             result_schema: self.result_schema.clone(),
-            description: self.description.clone(),
         }
     }
 
@@ -204,7 +205,6 @@ impl MethodJsonSchema {
                     MethodJsonSchema {
                         args_schema,
                         result_schema,
-                        description: proto_schema.description.clone(),
                     },
                 ))
             })

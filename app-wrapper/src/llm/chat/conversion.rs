@@ -1,7 +1,7 @@
 use app::app::function::helper::McpNameConverter;
 use command_utils::util::json_schema::SchemaCombiner;
 use proto::jobworkerp::data::RunnerType;
-use proto::jobworkerp::function::data::{function_specs, FunctionSpecs};
+use proto::jobworkerp::function::data::FunctionSpecs;
 use rmcp::model::{ListToolsResult, Tool};
 use rmcp::ErrorData as McpError;
 use serde_json;
@@ -19,31 +19,24 @@ impl McpNameConverter for ToolConverter {}
 
 impl ToolConverter {
     pub fn convert_reusable_workflow(tool: &FunctionSpecs) -> Option<Tool> {
+        // Phase 6.7: Use settings_schema directly (not from schema oneof)
+        let input_schema = if !tool.settings_schema.is_empty() {
+            serde_json::from_str(&tool.settings_schema)
+                .or_else(|e1| {
+                    tracing::warn!("Failed to parse settings_schema as json: {}", e1);
+                    serde_yaml::from_str(&tool.settings_schema).inspect_err(|e2| {
+                        tracing::warn!("Failed to parse settings_schema as yaml: {}", e2);
+                    })
+                })
+                .ok()
+        } else {
+            None
+        };
+
         Some(Tool::new(
             tool.name.clone(),
             CREATION_TOOL_DESCRIPTION,
-            tool.schema
-                .as_ref()
-                .and_then(|s| match s {
-                    function_specs::Schema::SingleSchema(function) => {
-                        // use settings as input schema for creation workflow as tool
-                        function.settings.as_ref().and_then(|f| {
-                            serde_json::from_str(f.as_str())
-                                .or_else(|e1| {
-                                    tracing::warn!("Failed to parse settings as json: {}", e1);
-                                    serde_yaml::from_str(f.as_str()).inspect_err(|e2| {
-                                        tracing::warn!("Failed to parse settings as yaml: {}", e2);
-                                    })
-                                })
-                                .ok()
-                        })
-                    }
-                    function_specs::Schema::McpTools(mcp) => {
-                        let mes = format!("error: expect workflow but got mcp: {mcp:?}");
-                        tracing::error!(mes);
-                        None
-                    }
-                })
+            input_schema
                 .unwrap_or(serde_json::json!({}))
                 .as_object()
                 .cloned()
@@ -51,76 +44,63 @@ impl ToolConverter {
         ))
     }
 
+    // Phase 6.7: Unified method for all runners (MCP/Plugin/Normal)
     pub fn convert_mcp_server(tool: &FunctionSpecs) -> Vec<Tool> {
         let server_name = tool.name.as_str();
-        match &tool.schema {
-            Some(function_specs::Schema::McpTools(
-                proto::jobworkerp::function::data::McpToolList { list },
-            )) => list
-                .iter()
-                .map(|tool| {
-                    Tool::new(
-                        Self::combine_names(server_name, tool.name.as_str()),
-                        tool.description.clone().unwrap_or_default(),
-                        serde_json::from_str(tool.input_schema.as_str())
-                            .unwrap_or(serde_json::json!({}))
-                            .as_object()
-                            .cloned()
-                            .unwrap_or_default(),
-                    )
-                })
-                .collect(),
-            Some(function_specs::Schema::SingleSchema(function)) => {
-                tracing::error!("error: expect workflow but got function: {:?}", function);
+        tool.methods
+            .as_ref()
+            .map(|methods| {
+                methods
+                    .schemas
+                    .iter()
+                    .map(|(method_name, method_schema)| {
+                        Tool::new(
+                            Self::combine_names(server_name, method_name.as_str()),
+                            method_schema.description.clone().unwrap_or_default(),
+                            serde_json::from_str(method_schema.arguments_schema.as_str())
+                                .unwrap_or(serde_json::json!({}))
+                                .as_object()
+                                .cloned()
+                                .unwrap_or_default(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_else(|| {
+                tracing::error!("error: no methods found for MCP server: {:?}", &tool);
                 vec![]
-            }
-            None => {
-                tracing::error!("error: expect workflow but got none: {:?}", &tool);
-                vec![]
-            }
-        }
+            })
     }
 
     pub fn convert_normal_function(tool: &FunctionSpecs) -> Option<Tool> {
         let mut schema_combiner = SchemaCombiner::new();
-        tool.schema
+
+        // Phase 6.7: settings_schema is now a direct field (not in schema oneof)
+        if !tool.settings_schema.is_empty() {
+            schema_combiner
+                .add_schema_from_string(
+                    "settings",
+                    &tool.settings_schema,
+                    Some("Tool init settings".to_string()),
+                )
+                .ok();
+        }
+
+        // Phase 6.7: Get default method "run" arguments_schema from methods map
+        tool.methods
             .as_ref()
-            .and_then(|s| match s {
-                function_specs::Schema::SingleSchema(function) => function.settings.clone(),
-                function_specs::Schema::McpTools(_) => {
-                    tracing::error!("got mcp tool in not mcp tool runner type: {:#?}", &tool);
-                    None
-                }
-            })
-            .and_then(|s| {
-                schema_combiner
-                    .add_schema_from_string(
-                        "settings",
-                        s.as_str(),
-                        Some("Tool init settings".to_string()),
-                    )
-                    .inspect_err(|e| tracing::error!("Failed to parse schema: {}", e))
-                    .ok()
-            });
-        tool.schema
-            .as_ref()
-            .map(|s| match s {
-                function_specs::Schema::SingleSchema(function) => function.arguments.clone(),
-                function_specs::Schema::McpTools(_) => {
-                    tracing::error!("got mcp tool in not mcp tool runner type: {:#?}", &tool);
-                    "".to_string()
-                }
-            })
-            .and_then(|args| {
+            .and_then(|methods| methods.schemas.get(proto::DEFAULT_METHOD_NAME))
+            .and_then(|method_schema| {
                 schema_combiner
                     .add_schema_from_string(
                         "arguments",
-                        args.as_str(),
+                        &method_schema.arguments_schema,
                         Some("Tool arguments".to_string()),
                     )
-                    .inspect_err(|e| tracing::error!("Failed to parse schema: {}", e))
+                    .inspect_err(|e| tracing::error!("Failed to parse arguments schema: {}", e))
                     .ok()
             });
+
         match schema_combiner.generate_combined_schema() {
             Ok(schema) => Some(Tool::new(
                 tool.name.clone(),
@@ -170,102 +150,110 @@ impl ToolConverter {
         functions
             .into_iter()
             .flat_map(|tool| {
-                match &tool.schema {
-                    Some(function_specs::Schema::SingleSchema(function))
-                        if tool.runner_type == RunnerType::ReusableWorkflow as i32 =>
-                    {
-                        // ReusableWorkflow: use settings as JSON Schema
-                        let name = tool.name.clone();
-                        let description = CREATION_TOOL_DESCRIPTION.to_string();
-                        let params_schema: Option<schemars::Schema> = function
-                            .settings
-                            .as_ref()
-                            .and_then(|s| serde_json::from_str(s).ok());
-                        params_schema
-                            .map(|parameters| ToolInfo {
-                                tool_type: ollama_rs::generation::tools::ToolType::Function,
-                                function: ollama_rs::generation::tools::ToolFunctionInfo {
-                                    name,
-                                    description,
-                                    parameters,
-                                },
-                            })
-                            .into_iter()
-                            .collect::<Vec<_>>()
-                    }
-                    Some(function_specs::Schema::SingleSchema(function)) => {
-                        let name = tool.name.clone();
-                        let description = tool.description.clone();
+                // Phase 6.7: Handle ReusableWorkflow specially (use settings_schema)
+                if tool.runner_type == RunnerType::ReusableWorkflow as i32 {
+                    let name = tool.name.clone();
+                    let description = CREATION_TOOL_DESCRIPTION.to_string();
+                    let params_schema: Option<schemars::Schema> =
+                        if !tool.settings_schema.is_empty() {
+                            serde_json::from_str(&tool.settings_schema).ok()
+                        } else {
+                            None
+                        };
+                    return params_schema
+                        .map(|parameters| ToolInfo {
+                            tool_type: ollama_rs::generation::tools::ToolType::Function,
+                            function: ollama_rs::generation::tools::ToolFunctionInfo {
+                                name,
+                                description,
+                                parameters,
+                            },
+                        })
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                }
 
-                        // Use SchemaCombiner to combine settings and arguments schemas
-                        let mut schema_combiner = SchemaCombiner::new();
+                // Phase 6.7: MCP Server - iterate all methods
+                if tool.runner_type == RunnerType::McpServer as i32 {
+                    return tool
+                        .methods
+                        .as_ref()
+                        .map(|methods| {
+                            methods
+                                .schemas
+                                .iter()
+                                .filter_map(|(method_name, method_schema)| {
+                                    let name = Self::combine_names(&tool.name, method_name);
+                                    let description =
+                                        method_schema.description.clone().unwrap_or_default();
+                                    let params_schema: Option<schemars::Schema> =
+                                        serde_json::from_str(&method_schema.arguments_schema).ok();
+                                    params_schema.map(|parameters| ToolInfo {
+                                        tool_type: ollama_rs::generation::tools::ToolType::Function,
+                                        function: ollama_rs::generation::tools::ToolFunctionInfo {
+                                            name,
+                                            description,
+                                            parameters,
+                                        },
+                                    })
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                }
 
-                        // Add settings schema if present
-                        if let Some(settings) = &function.settings {
-                            let _ = schema_combiner
-                                .add_schema_from_string(
-                                    "settings",
-                                    settings.as_str(),
-                                    Some("Tool init settings".to_string()),
-                                )
-                                .inspect_err(|e| {
-                                    tracing::error!("Failed to parse settings schema: {}", e)
-                                });
-                        }
+                // Phase 6.7: Normal runner/worker - combine settings_schema and arguments_schema
+                let name = tool.name.clone();
+                let description = tool.description.clone();
 
-                        // Add arguments schema
+                let mut schema_combiner = SchemaCombiner::new();
+
+                // Add settings_schema if present
+                if !tool.settings_schema.is_empty() {
+                    let _ = schema_combiner
+                        .add_schema_from_string(
+                            "settings",
+                            &tool.settings_schema,
+                            Some("Tool init settings".to_string()),
+                        )
+                        .inspect_err(|e| tracing::error!("Failed to parse settings_schema: {}", e));
+                }
+
+                // Add default method's arguments_schema
+                if let Some(methods) = &tool.methods {
+                    if let Some(method_schema) = methods.schemas.get(proto::DEFAULT_METHOD_NAME) {
                         let _ = schema_combiner
                             .add_schema_from_string(
                                 "arguments",
-                                function.arguments.as_str(),
+                                &method_schema.arguments_schema,
                                 Some("Tool arguments".to_string()),
                             )
                             .inspect_err(|e| {
-                                tracing::error!("Failed to parse arguments schema: {}", e)
+                                tracing::error!("Failed to parse arguments_schema: {}", e)
                             });
-
-                        // Generate combined schema and convert to schemars::Schema
-                        let params_schema: Option<schemars::Schema> = schema_combiner
-                            .generate_combined_schema()
-                            .ok()
-                            .and_then(|combined_map| {
-                                let combined_value = serde_json::Value::Object(combined_map);
-                                serde_json::from_value(combined_value).ok()
-                            });
-
-                        params_schema
-                            .map(|parameters| ToolInfo {
-                                tool_type: ollama_rs::generation::tools::ToolType::Function,
-                                function: ollama_rs::generation::tools::ToolFunctionInfo {
-                                    name,
-                                    description,
-                                    parameters,
-                                },
-                            })
-                            .into_iter()
-                            .collect::<Vec<_>>()
                     }
-                    Some(function_specs::Schema::McpTools(mcp_tools)) => mcp_tools
-                        .list
-                        .iter()
-                        .filter_map(|mcp_tool| {
-                            let name =
-                                Self::combine_names(tool.name.as_str(), mcp_tool.name.as_str());
-                            let description = mcp_tool.description.clone().unwrap_or_default();
-                            let params_schema: Option<schemars::Schema> =
-                                serde_json::from_str(&mcp_tool.input_schema).ok();
-                            params_schema.map(|parameters| ToolInfo {
-                                tool_type: ollama_rs::generation::tools::ToolType::Function,
-                                function: ollama_rs::generation::tools::ToolFunctionInfo {
-                                    name,
-                                    description,
-                                    parameters,
-                                },
-                            })
-                        })
-                        .collect::<Vec<_>>(),
-                    _ => Vec::new(),
                 }
+
+                // Generate combined schema
+                let params_schema: Option<schemars::Schema> = schema_combiner
+                    .generate_combined_schema()
+                    .ok()
+                    .and_then(|combined_map| {
+                        let combined_value = serde_json::Value::Object(combined_map);
+                        serde_json::from_value(combined_value).ok()
+                    });
+
+                params_schema
+                    .map(|parameters| ToolInfo {
+                        tool_type: ollama_rs::generation::tools::ToolType::Function,
+                        function: ollama_rs::generation::tools::ToolFunctionInfo {
+                            name,
+                            description,
+                            parameters,
+                        },
+                    })
+                    .into_iter()
+                    .collect::<Vec<_>>()
             })
             .collect()
     }
@@ -278,17 +266,17 @@ impl ToolConverter {
         use serde_json::Value;
         functions
             .into_iter()
-            .flat_map(|tool| match &tool.schema {
-                Some(function_specs::Schema::SingleSchema(function))
-                    if tool.runner_type == RunnerType::ReusableWorkflow as i32 =>
-                {
+            .flat_map(|tool| {
+                // Phase 6.7: Handle ReusableWorkflow specially (use settings_schema)
+                if tool.runner_type == RunnerType::ReusableWorkflow as i32 {
                     let name = tool.name.clone();
                     let description = Some(CREATION_TOOL_DESCRIPTION.to_string());
-                    let schema: Option<Value> = function
-                        .settings
-                        .as_ref()
-                        .and_then(|s| serde_json::from_str::<Value>(s).ok());
-                    schema
+                    let schema: Option<Value> = if !tool.settings_schema.is_empty() {
+                        serde_json::from_str::<Value>(&tool.settings_schema).ok()
+                    } else {
+                        None
+                    };
+                    return schema
                         .map(|schema| Tool {
                             name,
                             description,
@@ -296,72 +284,85 @@ impl ToolConverter {
                             config: None,
                         })
                         .into_iter()
-                        .collect::<Vec<_>>()
+                        .collect::<Vec<_>>();
                 }
-                Some(function_specs::Schema::SingleSchema(function)) => {
-                    let name = tool.name.clone();
-                    let description = Some(tool.description.clone());
 
-                    // Use SchemaCombiner to combine settings and arguments schemas
-                    let mut schema_combiner = SchemaCombiner::new();
+                // Phase 6.7: MCP Server - iterate all methods
+                if tool.runner_type == RunnerType::McpServer as i32 {
+                    return tool
+                        .methods
+                        .as_ref()
+                        .map(|methods| {
+                            methods
+                                .schemas
+                                .iter()
+                                .filter_map(|(method_name, method_schema)| {
+                                    let name = Self::combine_names(&tool.name, method_name);
+                                    let description =
+                                        Some(method_schema.description.clone().unwrap_or_default());
+                                    let schema: Option<Value> = serde_json::from_str::<Value>(
+                                        &method_schema.arguments_schema,
+                                    )
+                                    .ok();
+                                    schema.map(|schema| Tool {
+                                        name,
+                                        description,
+                                        schema: Some(schema),
+                                        config: None,
+                                    })
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                }
 
-                    // Add settings schema if present
-                    if let Some(settings) = &function.settings {
-                        let _ = schema_combiner
-                            .add_schema_from_string(
-                                "settings",
-                                settings.as_str(),
-                                Some("Tool init settings".to_string()),
-                            )
-                            .inspect_err(|e| {
-                                tracing::error!("Failed to parse settings schema: {}", e)
-                            });
-                    }
+                // Phase 6.7: Normal runner/worker - combine settings_schema and arguments_schema
+                let name = tool.name.clone();
+                let description = Some(tool.description.clone());
 
-                    // Add arguments schema
+                let mut schema_combiner = SchemaCombiner::new();
+
+                // Add settings_schema if present
+                if !tool.settings_schema.is_empty() {
                     let _ = schema_combiner
                         .add_schema_from_string(
-                            "arguments",
-                            function.arguments.as_str(),
-                            Some("Tool arguments".to_string()),
+                            "settings",
+                            &tool.settings_schema,
+                            Some("Tool init settings".to_string()),
                         )
-                        .inspect_err(|e| {
-                            tracing::error!("Failed to parse arguments schema: {}", e)
-                        });
-
-                    // Generate combined schema
-                    let schema: Option<Value> = schema_combiner
-                        .generate_combined_schema()
-                        .ok()
-                        .map(serde_json::Value::Object);
-
-                    schema
-                        .map(|schema| Tool {
-                            name,
-                            description,
-                            schema: Some(schema),
-                            config: None,
-                        })
-                        .into_iter()
-                        .collect::<Vec<_>>()
+                        .inspect_err(|e| tracing::error!("Failed to parse settings_schema: {}", e));
                 }
-                Some(function_specs::Schema::McpTools(mcp_tools)) => mcp_tools
-                    .list
-                    .iter()
-                    .filter_map(|mcp_tool| {
-                        let name = Self::combine_names(tool.name.as_str(), mcp_tool.name.as_str());
-                        let description = Some(mcp_tool.description.clone().unwrap_or_default());
-                        let schema: Option<Value> =
-                            serde_json::from_str::<Value>(&mcp_tool.input_schema).ok();
-                        schema.map(|schema| Tool {
-                            name,
-                            description,
-                            schema: Some(schema),
-                            config: None,
-                        })
+
+                // Add default method's arguments_schema
+                if let Some(methods) = &tool.methods {
+                    if let Some(method_schema) = methods.schemas.get(proto::DEFAULT_METHOD_NAME) {
+                        let _ = schema_combiner
+                            .add_schema_from_string(
+                                "arguments",
+                                &method_schema.arguments_schema,
+                                Some("Tool arguments".to_string()),
+                            )
+                            .inspect_err(|e| {
+                                tracing::error!("Failed to parse arguments_schema: {}", e)
+                            });
+                    }
+                }
+
+                // Generate combined schema
+                let schema: Option<Value> = schema_combiner
+                    .generate_combined_schema()
+                    .ok()
+                    .map(serde_json::Value::Object);
+
+                schema
+                    .map(|schema| Tool {
+                        name,
+                        description,
+                        schema: Some(schema),
+                        config: None,
                     })
-                    .collect::<Vec<_>>(),
-                _ => Vec::new(),
+                    .into_iter()
+                    .collect::<Vec<_>>()
             })
             .collect()
     }
@@ -370,75 +371,99 @@ impl ToolConverter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proto::jobworkerp::function::data::{function_specs, FunctionSpecs, McpTool, McpToolList};
+    use proto::jobworkerp::function::data::FunctionSpecs;
     use serde_json::{json, Value};
 
+    // Phase 6.7: Updated to use MethodSchemaMap structure
     fn make_single_schema_spec() -> FunctionSpecs {
+        let mut method_schemas = std::collections::HashMap::new();
+        method_schemas.insert(
+            proto::DEFAULT_METHOD_NAME.to_string(),
+            proto::jobworkerp::function::data::MethodSchema {
+                description: Some("desc_single".to_string()),
+                arguments_schema:
+                    json!({"type": "object", "properties": {"arg_a": {"type": "boolean"}}})
+                        .to_string(),
+                result_schema: Some(
+                    json!({"type": "object", "properties": {"result": {"type": "string"}}})
+                        .to_string(),
+                ),
+                output_type: proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32,
+                annotations: None,
+            },
+        );
+
         FunctionSpecs {
             name: "test_single".to_string(),
             description: "desc_single".to_string(),
-            schema: Some(function_specs::Schema::SingleSchema(
-                proto::jobworkerp::function::data::FunctionSchema {
-                    settings: Some(
-                        json!({"type": "object", "properties": {"setting_a": {"type": "string"}}})
-                            .to_string(),
-                    ),
-                    arguments:
-                        json!({"type": "object", "properties": {"arg_a": {"type": "boolean"}}})
-                            .to_string(),
-                    result_output_schema: Some(
-                        json!({"type": "object", "properties": {"result": {"type": "string"}}})
-                            .to_string(),
-                    ),
-                },
-            )),
+            settings_schema:
+                json!({"type": "object", "properties": {"setting_a": {"type": "string"}}})
+                    .to_string(),
+            methods: Some(proto::jobworkerp::function::data::MethodSchemaMap {
+                schemas: method_schemas,
+            }),
             runner_type: proto::jobworkerp::data::RunnerType::Command as i32,
             worker_id: None,
             ..Default::default()
         }
     }
 
-    // reusable workflow (creation tool)
+    // Phase 6.7: ReusableWorkflow uses settings_schema as input schema
     fn make_reusable_workflow_spec() -> FunctionSpecs {
+        let mut method_schemas = std::collections::HashMap::new();
+        method_schemas.insert(
+            proto::DEFAULT_METHOD_NAME.to_string(),
+            proto::jobworkerp::function::data::MethodSchema {
+                description: Some("desc_workflow".to_string()),
+                arguments_schema:
+                    json!({"type": "object", "properties": {"arg_b": {"type": "number"}}})
+                        .to_string(),
+                result_schema: Some(
+                    json!({"type": "object", "properties": {"result": {"type": "string"}}})
+                        .to_string(),
+                ),
+                output_type: proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32,
+                annotations: None,
+            },
+        );
+
         FunctionSpecs {
             name: "test_workflow".to_string(),
             description: "desc_workflow".to_string(),
-            schema: Some(function_specs::Schema::SingleSchema(
-                proto::jobworkerp::function::data::FunctionSchema {
-                    settings: Some(
-                        json!({"type": "object", "properties": {"setting_b": {"type": "integer"}}})
-                            .to_string(),
-                    ),
-                    arguments:
-                        json!({"type": "object", "properties": {"arg_b": {"type": "number"}}})
-                            .to_string(),
-                    result_output_schema: Some(
-                        json!({"type": "object", "properties": {"result": {"type": "string"}}})
-                            .to_string(),
-                    ),
-                },
-            )),
+            settings_schema:
+                json!({"type": "object", "properties": {"setting_b": {"type": "integer"}}})
+                    .to_string(),
+            methods: Some(proto::jobworkerp::function::data::MethodSchemaMap {
+                schemas: method_schemas,
+            }),
             runner_type: proto::jobworkerp::data::RunnerType::ReusableWorkflow as i32,
             worker_id: None,
             ..Default::default()
         }
     }
 
-    // mcp tools (multiple tools in a Mcp server, combined name)
+    // Phase 6.7: MCP Server uses MethodSchemaMap with multiple methods
     fn make_mcp_tools_spec() -> FunctionSpecs {
+        let mut method_schemas = std::collections::HashMap::new();
+        method_schemas.insert(
+            "inner".to_string(),
+            proto::jobworkerp::function::data::MethodSchema {
+                description: Some("desc_inner".to_string()),
+                arguments_schema:
+                    json!({"type": "object", "properties": {"c": {"type": "boolean"}}}).to_string(),
+                result_schema: None,
+                output_type: proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32,
+                annotations: None,
+            },
+        );
+
         FunctionSpecs {
             name: "test_mcp".to_string(),
             description: "desc_mcp".to_string(),
-            schema: Some(function_specs::Schema::McpTools(McpToolList {
-                list: vec![McpTool {
-                    name: "inner".to_string(),
-                    description: Some("desc_inner".to_string()),
-                    input_schema:
-                        json!({"type": "object", "properties": {"c": {"type": "boolean"}}})
-                            .to_string(),
-                    ..Default::default()
-                }],
-            })),
+            settings_schema: String::new(), // MCP Server typically doesn't have settings
+            methods: Some(proto::jobworkerp::function::data::MethodSchemaMap {
+                schemas: method_schemas,
+            }),
             runner_type: proto::jobworkerp::data::RunnerType::McpServer as i32,
             worker_id: None,
             ..Default::default()
@@ -791,23 +816,31 @@ mod tests {
 
     #[test]
     fn test_command_runner_schema_generation() {
-        // Test to verify COMMAND runner generates proper schema with command and args parameters
+        // Phase 6.7: Updated to use MethodSchemaMap
+        let mut method_schemas = std::collections::HashMap::new();
+        method_schemas.insert(
+            proto::DEFAULT_METHOD_NAME.to_string(),
+            proto::jobworkerp::function::data::MethodSchema {
+                description: Some("Run shell commands".to_string()),
+                // CommandArgs schema with "command" and "args" fields
+                arguments_schema: r#"{"type": "object", "properties": {"command": {"type": "string", "description": "The command to execute"}, "args": {"type": "array", "items": {"type": "string"}, "description": "Command arguments"}, "with_memory_monitoring": {"type": "boolean", "description": "Enable memory monitoring"}}, "required": ["command", "args"]}"#.to_string(),
+                result_schema: Some(r#"{"type": "object", "properties": {"exit_code": {"type": "integer"}, "stdout": {"type": "string"}, "stderr": {"type": "string"}}}"#.to_string()),
+                output_type: proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32,
+                annotations: None,
+            },
+        );
+
         let command_spec = FunctionSpecs {
             name: "COMMAND".to_string(),
             description: "Run shell commands".to_string(),
-            schema: Some(function_specs::Schema::SingleSchema(
-                proto::jobworkerp::function::data::FunctionSchema {
-                    // Empty settings schema (as COMMAND runner returns)
-                    settings: Some(r#"{"type": "object", "properties": {}}"#.to_string()),
-                    // CommandArgs schema with "command" and "args" fields
-                    arguments: r#"{"type": "object", "properties": {"command": {"type": "string", "description": "The command to execute"}, "args": {"type": "array", "items": {"type": "string"}, "description": "Command arguments"}, "with_memory_monitoring": {"type": "boolean", "description": "Enable memory monitoring"}}, "required": ["command", "args"]}"#.to_string(),
-                    result_output_schema: Some(r#"{"type": "object", "properties": {"exit_code": {"type": "integer"}, "stdout": {"type": "string"}, "stderr": {"type": "string"}}}"#.to_string()),
-                },
-            )),
+            // Empty settings schema (as COMMAND runner returns)
+            settings_schema: r#"{"type": "object", "properties": {}}"#.to_string(),
+            methods: Some(proto::jobworkerp::function::data::MethodSchemaMap {
+                schemas: method_schemas,
+            }),
             runner_type: proto::jobworkerp::data::RunnerType::Command as i32,
             runner_id: None,
             worker_id: None,
-            output_type: 0,
         };
 
         let ollama_tools = ToolConverter::convert_functions_to_ollama_tools(vec![command_spec]);
