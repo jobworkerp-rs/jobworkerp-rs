@@ -103,7 +103,6 @@ pub trait MethodJsonSchemaConverter {
                     MethodJsonSchema {
                         args_schema,
                         result_schema,
-                        description: proto_schema.description.clone(),
                     },
                 ))
             })
@@ -219,8 +218,8 @@ message TestResult {
         let result = run_schema.result_schema.as_ref().unwrap();
         assert!(result.contains("content"));
 
-        // Verify description
-        assert_eq!(run_schema.description, Some("Test method".to_string()));
+        // Note: description is NOT cached in MethodJsonSchema
+        // It should be retrieved from method_proto_map instead
 
         Ok(())
     }
@@ -251,7 +250,7 @@ message TestResult {
         let schema = json_map.get("empty_method").unwrap();
         assert_eq!(schema.args_schema, "{}");
         assert!(schema.result_schema.is_none());
-        assert!(schema.description.is_none());
+        // Note: description is NOT cached in MethodJsonSchema
     }
 
     #[test]
@@ -274,10 +273,9 @@ message FetchArgs {
         let json_map = TestConverter::convert_method_proto_map_to_json_schema_map(&proto_map);
         let schema = json_map.get("fetch").unwrap();
 
-        assert_eq!(
-            schema.description,
-            Some("Fetches content from URL".to_string())
-        );
+        // Note: description is NOT cached in MethodJsonSchema
+        // It should be retrieved from method_proto_map instead
+        assert!(schema.args_schema.contains("url"));
     }
 
     #[test]

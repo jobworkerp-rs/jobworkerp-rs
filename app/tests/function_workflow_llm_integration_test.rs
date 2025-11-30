@@ -357,7 +357,7 @@ fn test_workflow_function_discovery_via_find_functions() -> Result<()> {
         );
         println!("✅ REUSABLE_WORKFLOW function detected");
 
-        // Display function details
+        // Display function details (Phase 6.7: Updated to use methods instead of schema)
         for func in functions
             .iter()
             .filter(|f| f.name == "CREATE_WORKFLOW" || f.name == "REUSABLE_WORKFLOW")
@@ -365,18 +365,17 @@ fn test_workflow_function_discovery_via_find_functions() -> Result<()> {
             println!("📋 Function: {}", func.name);
             println!("   - Description: {}", func.description);
             println!("   - Type: {:?}", func.runner_type);
-            println!("   - Output type: {:?}", func.output_type);
-            if let Some(schema) = &func.schema {
-                match schema {
-                    proto::jobworkerp::function::data::function_specs::Schema::SingleSchema(s) => {
-                        println!("   - Regular schema available: {s:?}");
-                    }
-                    proto::jobworkerp::function::data::function_specs::Schema::McpTools(_) => {
-                        return Err(JobWorkerError::RuntimeError(
-                            "MCP Tools schema is not supported in this test".to_string(),
-                        )
-                        .into());
-                    }
+            println!("   - Settings schema: {}", func.settings_schema);
+            if let Some(methods) = &func.methods {
+                println!(
+                    "   - Available methods: {} method(s)",
+                    methods.schemas.len()
+                );
+                for (method_name, method_schema) in &methods.schemas {
+                    println!(
+                        "     - Method '{}': output_type={:?}",
+                        method_name, method_schema.output_type
+                    );
                 }
             }
         }
