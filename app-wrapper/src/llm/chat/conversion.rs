@@ -45,6 +45,7 @@ impl ToolConverter {
     }
 
     // Phase 6.7: Unified method for all runners (MCP/Plugin/Normal)
+    // MCP Server uses flat schema (no settings), returns multiple tools
     pub fn convert_mcp_server(tool: &FunctionSpecs) -> Vec<Tool> {
         let server_name = tool.name.as_str();
         tool.methods
@@ -72,46 +73,77 @@ impl ToolConverter {
             })
     }
 
-    pub fn convert_normal_function(tool: &FunctionSpecs) -> Option<Tool> {
-        let mut schema_combiner = SchemaCombiner::new();
-
-        // Phase 6.7: settings_schema is now a direct field (not in schema oneof)
-        if !tool.settings_schema.is_empty() {
-            schema_combiner
-                .add_schema_from_string(
-                    "settings",
-                    &tool.settings_schema,
-                    Some("Tool init settings".to_string()),
-                )
-                .ok();
-        }
-
-        // Phase 6.7: Get default method "run" arguments_schema from methods map
+    // Phase 6.7: Unified method for all runners (Normal/Plugin)
+    // Normal Runners combine settings + arguments, returns multiple tools (for future multi-method runners)
+    pub fn convert_normal_function(tool: &FunctionSpecs) -> Vec<Tool> {
         tool.methods
             .as_ref()
-            .and_then(|methods| methods.schemas.get(proto::DEFAULT_METHOD_NAME))
-            .and_then(|method_schema| {
-                schema_combiner
-                    .add_schema_from_string(
-                        "arguments",
-                        &method_schema.arguments_schema,
-                        Some("Tool arguments".to_string()),
-                    )
-                    .inspect_err(|e| tracing::error!("Failed to parse arguments schema: {}", e))
-                    .ok()
-            });
+            .map(|methods| {
+                methods
+                    .schemas
+                    .iter()
+                    .filter_map(|(method_name, method_schema)| {
+                        let mut schema_combiner = SchemaCombiner::new();
 
-        match schema_combiner.generate_combined_schema() {
-            Ok(schema) => Some(Tool::new(
-                tool.name.clone(),
-                tool.description.clone(),
-                schema,
-            )),
-            Err(e) => {
-                tracing::error!("Failed to generate schema: {}", e);
-                None
-            }
-        }
+                        // Add settings_schema if present
+                        if !tool.settings_schema.is_empty() {
+                            schema_combiner
+                                .add_schema_from_string(
+                                    "settings",
+                                    &tool.settings_schema,
+                                    Some("Tool init settings".to_string()),
+                                )
+                                .ok();
+                        }
+
+                        // Add method's arguments_schema
+                        schema_combiner
+                            .add_schema_from_string(
+                                "arguments",
+                                &method_schema.arguments_schema,
+                                Some("Tool arguments".to_string()),
+                            )
+                            .inspect_err(|e| {
+                                tracing::error!("Failed to parse arguments schema: {}", e)
+                            })
+                            .ok();
+
+                        // Generate combined schema
+                        match schema_combiner.generate_combined_schema() {
+                            Ok(schema) => {
+                                // For single-method runners, use runner name
+                                // For multi-method runners, combine runner name + method name
+                                let tool_name = if methods.schemas.len() == 1 {
+                                    tool.name.clone()
+                                } else {
+                                    Self::combine_names(&tool.name, method_name)
+                                };
+
+                                Some(Tool::new(
+                                    tool_name,
+                                    method_schema
+                                        .description
+                                        .clone()
+                                        .unwrap_or_else(|| tool.description.clone()),
+                                    schema,
+                                ))
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to generate schema for method '{}': {}",
+                                    method_name,
+                                    e
+                                );
+                                None
+                            }
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_else(|| {
+                tracing::error!("error: no methods found for runner: {:?}", &tool);
+                vec![]
+            })
     }
 
     pub fn convert_functions_to_mcp_tools(
@@ -129,9 +161,8 @@ impl ToolConverter {
                 } else if tool.runner_type == RunnerType::McpServer as i32 {
                     Self::convert_mcp_server(&tool)
                 } else {
+                    // Phase 6.7: convert_normal_function now returns Vec<Tool>
                     Self::convert_normal_function(&tool)
-                        .into_iter()
-                        .collect::<Vec<_>>()
                 }
             })
             .collect::<Vec<_>>();
@@ -142,118 +173,62 @@ impl ToolConverter {
         })
     }
 
+    /// Convert MCP Tool to Ollama ToolInfo
+    fn mcp_tool_to_ollama(tool: &Tool) -> Option<ollama_rs::generation::tools::ToolInfo> {
+        use ollama_rs::generation::tools::{ToolFunctionInfo, ToolInfo, ToolType};
+        let params_schema: Option<schemars::Schema> =
+            serde_json::from_value(serde_json::Value::Object((*tool.input_schema).clone())).ok();
+        params_schema.map(|parameters| ToolInfo {
+            tool_type: ToolType::Function,
+            function: ToolFunctionInfo {
+                name: tool.name.to_string(),
+                description: tool
+                    .description
+                    .as_ref()
+                    .map(|d| d.to_string())
+                    .unwrap_or_default(),
+                parameters,
+            },
+        })
+    }
+
+    /// Convert MCP Tool to GenAI Tool
+    fn mcp_tool_to_genai(tool: &Tool) -> genai::chat::Tool {
+        use genai::chat::Tool as GenAITool;
+        GenAITool {
+            name: tool.name.to_string(),
+            description: tool.description.as_ref().map(|d| d.to_string()),
+            schema: Some(serde_json::Value::Object((*tool.input_schema).clone())),
+            config: None,
+        }
+    }
+
     /// Convert a list of FunctionSpecs to Vec<ToolInfo> for Ollama FunctionCalling
     pub fn convert_functions_to_ollama_tools(
         functions: Vec<FunctionSpecs>,
     ) -> Vec<ollama_rs::generation::tools::ToolInfo> {
-        use ollama_rs::generation::tools::ToolInfo;
         functions
             .into_iter()
             .flat_map(|tool| {
-                // Phase 6.7: Handle ReusableWorkflow specially (use settings_schema)
-                if tool.runner_type == RunnerType::ReusableWorkflow as i32 {
-                    let name = tool.name.clone();
-                    let description = CREATION_TOOL_DESCRIPTION.to_string();
-                    let params_schema: Option<schemars::Schema> =
-                        if !tool.settings_schema.is_empty() {
-                            serde_json::from_str(&tool.settings_schema).ok()
-                        } else {
-                            None
-                        };
-                    return params_schema
-                        .map(|parameters| ToolInfo {
-                            tool_type: ollama_rs::generation::tools::ToolType::Function,
-                            function: ollama_rs::generation::tools::ToolFunctionInfo {
-                                name,
-                                description,
-                                parameters,
-                            },
-                        })
+                // Use existing conversion methods and convert to Ollama format
+                if tool.worker_id.is_none()
+                    && tool.runner_type == RunnerType::ReusableWorkflow as i32
+                {
+                    Self::convert_reusable_workflow(&tool)
                         .into_iter()
-                        .collect::<Vec<_>>();
+                        .filter_map(|mcp_tool| Self::mcp_tool_to_ollama(&mcp_tool))
+                        .collect::<Vec<_>>()
+                } else if tool.runner_type == RunnerType::McpServer as i32 {
+                    Self::convert_mcp_server(&tool)
+                        .into_iter()
+                        .filter_map(|mcp_tool| Self::mcp_tool_to_ollama(&mcp_tool))
+                        .collect::<Vec<_>>()
+                } else {
+                    Self::convert_normal_function(&tool)
+                        .into_iter()
+                        .filter_map(|mcp_tool| Self::mcp_tool_to_ollama(&mcp_tool))
+                        .collect::<Vec<_>>()
                 }
-
-                // Phase 6.7: MCP Server - iterate all methods
-                if tool.runner_type == RunnerType::McpServer as i32 {
-                    return tool
-                        .methods
-                        .as_ref()
-                        .map(|methods| {
-                            methods
-                                .schemas
-                                .iter()
-                                .filter_map(|(method_name, method_schema)| {
-                                    let name = Self::combine_names(&tool.name, method_name);
-                                    let description =
-                                        method_schema.description.clone().unwrap_or_default();
-                                    let params_schema: Option<schemars::Schema> =
-                                        serde_json::from_str(&method_schema.arguments_schema).ok();
-                                    params_schema.map(|parameters| ToolInfo {
-                                        tool_type: ollama_rs::generation::tools::ToolType::Function,
-                                        function: ollama_rs::generation::tools::ToolFunctionInfo {
-                                            name,
-                                            description,
-                                            parameters,
-                                        },
-                                    })
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                }
-
-                // Phase 6.7: Normal runner/worker - combine settings_schema and arguments_schema
-                let name = tool.name.clone();
-                let description = tool.description.clone();
-
-                let mut schema_combiner = SchemaCombiner::new();
-
-                // Add settings_schema if present
-                if !tool.settings_schema.is_empty() {
-                    let _ = schema_combiner
-                        .add_schema_from_string(
-                            "settings",
-                            &tool.settings_schema,
-                            Some("Tool init settings".to_string()),
-                        )
-                        .inspect_err(|e| tracing::error!("Failed to parse settings_schema: {}", e));
-                }
-
-                // Add default method's arguments_schema
-                if let Some(methods) = &tool.methods {
-                    if let Some(method_schema) = methods.schemas.get(proto::DEFAULT_METHOD_NAME) {
-                        let _ = schema_combiner
-                            .add_schema_from_string(
-                                "arguments",
-                                &method_schema.arguments_schema,
-                                Some("Tool arguments".to_string()),
-                            )
-                            .inspect_err(|e| {
-                                tracing::error!("Failed to parse arguments_schema: {}", e)
-                            });
-                    }
-                }
-
-                // Generate combined schema
-                let params_schema: Option<schemars::Schema> = schema_combiner
-                    .generate_combined_schema()
-                    .ok()
-                    .and_then(|combined_map| {
-                        let combined_value = serde_json::Value::Object(combined_map);
-                        serde_json::from_value(combined_value).ok()
-                    });
-
-                params_schema
-                    .map(|parameters| ToolInfo {
-                        tool_type: ollama_rs::generation::tools::ToolType::Function,
-                        function: ollama_rs::generation::tools::ToolFunctionInfo {
-                            name,
-                            description,
-                            parameters,
-                        },
-                    })
-                    .into_iter()
-                    .collect::<Vec<_>>()
             })
             .collect()
     }
@@ -262,107 +237,28 @@ impl ToolConverter {
     pub fn convert_functions_to_genai_tools(
         functions: Vec<FunctionSpecs>,
     ) -> Vec<genai::chat::Tool> {
-        use genai::chat::Tool;
-        use serde_json::Value;
         functions
             .into_iter()
             .flat_map(|tool| {
-                // Phase 6.7: Handle ReusableWorkflow specially (use settings_schema)
-                if tool.runner_type == RunnerType::ReusableWorkflow as i32 {
-                    let name = tool.name.clone();
-                    let description = Some(CREATION_TOOL_DESCRIPTION.to_string());
-                    let schema: Option<Value> = if !tool.settings_schema.is_empty() {
-                        serde_json::from_str::<Value>(&tool.settings_schema).ok()
-                    } else {
-                        None
-                    };
-                    return schema
-                        .map(|schema| Tool {
-                            name,
-                            description,
-                            schema: Some(schema),
-                            config: None,
-                        })
+                // Use existing conversion methods and convert to GenAI format
+                if tool.worker_id.is_none()
+                    && tool.runner_type == RunnerType::ReusableWorkflow as i32
+                {
+                    Self::convert_reusable_workflow(&tool)
                         .into_iter()
-                        .collect::<Vec<_>>();
+                        .map(|mcp_tool| Self::mcp_tool_to_genai(&mcp_tool))
+                        .collect::<Vec<_>>()
+                } else if tool.runner_type == RunnerType::McpServer as i32 {
+                    Self::convert_mcp_server(&tool)
+                        .into_iter()
+                        .map(|mcp_tool| Self::mcp_tool_to_genai(&mcp_tool))
+                        .collect::<Vec<_>>()
+                } else {
+                    Self::convert_normal_function(&tool)
+                        .into_iter()
+                        .map(|mcp_tool| Self::mcp_tool_to_genai(&mcp_tool))
+                        .collect::<Vec<_>>()
                 }
-
-                // Phase 6.7: MCP Server - iterate all methods
-                if tool.runner_type == RunnerType::McpServer as i32 {
-                    return tool
-                        .methods
-                        .as_ref()
-                        .map(|methods| {
-                            methods
-                                .schemas
-                                .iter()
-                                .filter_map(|(method_name, method_schema)| {
-                                    let name = Self::combine_names(&tool.name, method_name);
-                                    let description =
-                                        Some(method_schema.description.clone().unwrap_or_default());
-                                    let schema: Option<Value> = serde_json::from_str::<Value>(
-                                        &method_schema.arguments_schema,
-                                    )
-                                    .ok();
-                                    schema.map(|schema| Tool {
-                                        name,
-                                        description,
-                                        schema: Some(schema),
-                                        config: None,
-                                    })
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                }
-
-                // Phase 6.7: Normal runner/worker - combine settings_schema and arguments_schema
-                let name = tool.name.clone();
-                let description = Some(tool.description.clone());
-
-                let mut schema_combiner = SchemaCombiner::new();
-
-                // Add settings_schema if present
-                if !tool.settings_schema.is_empty() {
-                    let _ = schema_combiner
-                        .add_schema_from_string(
-                            "settings",
-                            &tool.settings_schema,
-                            Some("Tool init settings".to_string()),
-                        )
-                        .inspect_err(|e| tracing::error!("Failed to parse settings_schema: {}", e));
-                }
-
-                // Add default method's arguments_schema
-                if let Some(methods) = &tool.methods {
-                    if let Some(method_schema) = methods.schemas.get(proto::DEFAULT_METHOD_NAME) {
-                        let _ = schema_combiner
-                            .add_schema_from_string(
-                                "arguments",
-                                &method_schema.arguments_schema,
-                                Some("Tool arguments".to_string()),
-                            )
-                            .inspect_err(|e| {
-                                tracing::error!("Failed to parse arguments_schema: {}", e)
-                            });
-                    }
-                }
-
-                // Generate combined schema
-                let schema: Option<Value> = schema_combiner
-                    .generate_combined_schema()
-                    .ok()
-                    .map(serde_json::Value::Object);
-
-                schema
-                    .map(|schema| Tool {
-                        name,
-                        description,
-                        schema: Some(schema),
-                        config: None,
-                    })
-                    .into_iter()
-                    .collect::<Vec<_>>()
             })
             .collect()
     }
@@ -470,6 +366,56 @@ mod tests {
         }
     }
 
+    // Multi-method Plugin runner spec for testing
+    fn make_multi_method_plugin_spec() -> FunctionSpecs {
+        let mut method_schemas = std::collections::HashMap::new();
+
+        method_schemas.insert(
+            "method_a".to_string(),
+            proto::jobworkerp::function::data::MethodSchema {
+                description: Some("First method".to_string()),
+                arguments_schema:
+                    json!({"type": "object", "properties": {"param_a": {"type": "string"}}})
+                        .to_string(),
+                result_schema: Some(
+                    json!({"type": "object", "properties": {"output_a": {"type": "string"}}})
+                        .to_string(),
+                ),
+                output_type: proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32,
+                annotations: None,
+            },
+        );
+
+        method_schemas.insert(
+            "method_b".to_string(),
+            proto::jobworkerp::function::data::MethodSchema {
+                description: Some("Second method".to_string()),
+                arguments_schema:
+                    json!({"type": "object", "properties": {"param_b": {"type": "integer"}}})
+                        .to_string(),
+                result_schema: Some(
+                    json!({"type": "object", "properties": {"output_b": {"type": "integer"}}})
+                        .to_string(),
+                ),
+                output_type: proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32,
+                annotations: None,
+            },
+        );
+
+        FunctionSpecs {
+            name: "test_plugin".to_string(),
+            description: "Multi-method plugin".to_string(),
+            settings_schema:
+                json!({"type": "object", "properties": {"api_key": {"type": "string"}}}).to_string(),
+            methods: Some(proto::jobworkerp::function::data::MethodSchemaMap {
+                schemas: method_schemas,
+            }),
+            runner_type: proto::jobworkerp::data::RunnerType::Plugin as i32,
+            worker_id: None,
+            ..Default::default()
+        }
+    }
+
     /// Helper function to verify schema has required fields
     fn assert_schema_required_fields(
         schema: &serde_json::Map<String, Value>,
@@ -555,6 +501,7 @@ mod tests {
             make_single_schema_spec(),
             make_reusable_workflow_spec(),
             make_mcp_tools_spec(),
+            make_multi_method_plugin_spec(),
         ];
         let result = ToolConverter::convert_functions_to_mcp_tools(specs).unwrap();
 
@@ -645,6 +592,76 @@ mod tests {
         });
 
         assert_json_schema_match(&tool.input_schema, &expected_mcp_schema);
+
+        // Multi-method Plugin - should generate 2 tools
+        let plugin_tools: Vec<_> = result
+            .tools
+            .iter()
+            .filter(|t| t.name.starts_with("test_plugin"))
+            .collect();
+        assert_eq!(
+            plugin_tools.len(),
+            2,
+            "Multi-method plugin should generate 2 tools"
+        );
+
+        // Verify method_a tool
+        let tool_a = result
+            .tools
+            .iter()
+            .find(|t| t.name == "test_plugin___method_a")
+            .expect("Should have test_plugin___method_a tool");
+        assert_eq!(tool_a.name, "test_plugin___method_a");
+        assert_eq!(tool_a.description.as_ref().unwrap(), "First method");
+
+        // Verify schema has settings and arguments combined
+        assert_schema_required_fields(&tool_a.input_schema, &["arguments", "settings"]);
+
+        let expected_settings = json!({
+            "type": "object",
+            "properties": {
+                "api_key": {
+                    "type": "string"
+                }
+            },
+            "description": "Tool init settings"
+        });
+        assert_schema_property(&tool_a.input_schema, "settings", &expected_settings);
+
+        let expected_arguments_a = json!({
+            "type": "object",
+            "properties": {
+                "param_a": {
+                    "type": "string"
+                }
+            },
+            "description": "Tool arguments"
+        });
+        assert_schema_property(&tool_a.input_schema, "arguments", &expected_arguments_a);
+
+        // Verify method_b tool
+        let tool_b = result
+            .tools
+            .iter()
+            .find(|t| t.name == "test_plugin___method_b")
+            .expect("Should have test_plugin___method_b tool");
+        assert_eq!(tool_b.name, "test_plugin___method_b");
+        assert_eq!(tool_b.description.as_ref().unwrap(), "Second method");
+
+        // Verify schema has settings and arguments combined
+        assert_schema_required_fields(&tool_b.input_schema, &["arguments", "settings"]);
+
+        let expected_arguments_b = json!({
+            "type": "object",
+            "properties": {
+                "param_b": {
+                    "type": "integer"
+                }
+            },
+            "description": "Tool arguments"
+        });
+        assert_schema_property(&tool_b.input_schema, "arguments", &expected_arguments_b);
+        assert_schema_property(&tool_b.input_schema, "settings", &expected_settings);
     }
     #[test]
     fn test_convert_functions_to_ollama_tools() {
@@ -652,6 +669,7 @@ mod tests {
             make_single_schema_spec(),
             make_reusable_workflow_spec(),
             make_mcp_tools_spec(),
+            make_multi_method_plugin_spec(),
         ];
         let result = ToolConverter::convert_functions_to_ollama_tools(specs);
 
@@ -812,6 +830,114 @@ mod tests {
             Some("boolean"),
             "c should have type boolean"
         );
+
+        // Multi-method Plugin - should generate 2 tools
+        let plugin_tools: Vec<_> = result
+            .iter()
+            .filter(|t| t.function.name.starts_with("test_plugin"))
+            .collect();
+        assert_eq!(
+            plugin_tools.len(),
+            2,
+            "Multi-method plugin should generate 2 tools"
+        );
+
+        // Verify method_a tool
+        let tool_a = result
+            .iter()
+            .find(|t| t.function.name == "test_plugin___method_a")
+            .expect("Should have test_plugin___method_a tool");
+        assert_eq!(tool_a.function.name, "test_plugin___method_a");
+        assert_eq!(tool_a.function.description, "First method");
+
+        let schema_value_a = tool_a.function.parameters.clone().to_value();
+        let schema_obj_a = schema_value_a.as_object().unwrap();
+        let props_a = schema_obj_a
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .unwrap();
+
+        // Verify has settings and arguments
+        assert!(
+            props_a.contains_key("settings"),
+            "Schema should contain settings property"
+        );
+        assert!(
+            props_a.contains_key("arguments"),
+            "Schema should contain arguments property"
+        );
+
+        // Verify settings.api_key
+        let settings_a = props_a.get("settings").and_then(|s| s.as_object()).unwrap();
+        let settings_props_a = settings_a
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .unwrap();
+        assert!(
+            settings_props_a.contains_key("api_key"),
+            "Settings should contain api_key"
+        );
+
+        // Verify arguments.param_a
+        let arguments_a = props_a
+            .get("arguments")
+            .and_then(|a| a.as_object())
+            .unwrap();
+        let args_props_a = arguments_a
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .unwrap();
+        assert!(
+            args_props_a.contains_key("param_a"),
+            "Arguments should contain param_a"
+        );
+        let param_a = args_props_a
+            .get("param_a")
+            .and_then(|p| p.as_object())
+            .unwrap();
+        assert_eq!(
+            param_a.get("type").and_then(|t| t.as_str()),
+            Some("string"),
+            "param_a should have type string"
+        );
+
+        // Verify method_b tool
+        let tool_b = result
+            .iter()
+            .find(|t| t.function.name == "test_plugin___method_b")
+            .expect("Should have test_plugin___method_b tool");
+        assert_eq!(tool_b.function.name, "test_plugin___method_b");
+        assert_eq!(tool_b.function.description, "Second method");
+
+        let schema_value_b = tool_b.function.parameters.clone().to_value();
+        let schema_obj_b = schema_value_b.as_object().unwrap();
+        let props_b = schema_obj_b
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .unwrap();
+
+        // Verify arguments.param_b
+        let arguments_b = props_b
+            .get("arguments")
+            .and_then(|a| a.as_object())
+            .unwrap();
+        let args_props_b = arguments_b
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .unwrap();
+        assert!(
+            args_props_b.contains_key("param_b"),
+            "Arguments should contain param_b"
+        );
+        let param_b = args_props_b
+            .get("param_b")
+            .and_then(|p| p.as_object())
+            .unwrap();
+        assert_eq!(
+            param_b.get("type").and_then(|t| t.as_str()),
+            Some("integer"),
+            "param_b should have type integer"
+        );
     }
 
     #[test]
@@ -917,6 +1043,7 @@ mod tests {
             make_single_schema_spec(),
             make_reusable_workflow_spec(),
             make_mcp_tools_spec(),
+            make_multi_method_plugin_spec(),
         ];
         let result = ToolConverter::convert_functions_to_genai_tools(specs);
 
@@ -1068,6 +1195,114 @@ mod tests {
             prop_c.get("type").and_then(|t| t.as_str()),
             Some("boolean"),
             "c should have type boolean"
+        );
+
+        // Multi-method Plugin - should generate 2 tools
+        let plugin_tools: Vec<_> = result
+            .iter()
+            .filter(|t| t.name.starts_with("test_plugin"))
+            .collect();
+        assert_eq!(
+            plugin_tools.len(),
+            2,
+            "Multi-method plugin should generate 2 tools"
+        );
+
+        // Verify method_a tool
+        let tool_a = result
+            .iter()
+            .find(|t| t.name == "test_plugin___method_a")
+            .expect("Should have test_plugin___method_a tool");
+        assert_eq!(tool_a.name, "test_plugin___method_a");
+        assert_eq!(tool_a.description.as_ref().unwrap(), "First method");
+
+        let schema_a = tool_a.schema.as_ref().unwrap();
+        let schema_obj_a = schema_a.as_object().unwrap();
+        let props_a = schema_obj_a
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .unwrap();
+
+        // Verify has settings and arguments
+        assert!(
+            props_a.contains_key("settings"),
+            "Schema should contain settings property"
+        );
+        assert!(
+            props_a.contains_key("arguments"),
+            "Schema should contain arguments property"
+        );
+
+        // Verify settings.api_key
+        let settings_a = props_a.get("settings").and_then(|s| s.as_object()).unwrap();
+        let settings_props_a = settings_a
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .unwrap();
+        assert!(
+            settings_props_a.contains_key("api_key"),
+            "Settings should contain api_key"
+        );
+
+        // Verify arguments.param_a
+        let arguments_a = props_a
+            .get("arguments")
+            .and_then(|a| a.as_object())
+            .unwrap();
+        let args_props_a = arguments_a
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .unwrap();
+        assert!(
+            args_props_a.contains_key("param_a"),
+            "Arguments should contain param_a"
+        );
+        let param_a = args_props_a
+            .get("param_a")
+            .and_then(|p| p.as_object())
+            .unwrap();
+        assert_eq!(
+            param_a.get("type").and_then(|t| t.as_str()),
+            Some("string"),
+            "param_a should have type string"
+        );
+
+        // Verify method_b tool
+        let tool_b = result
+            .iter()
+            .find(|t| t.name == "test_plugin___method_b")
+            .expect("Should have test_plugin___method_b tool");
+        assert_eq!(tool_b.name, "test_plugin___method_b");
+        assert_eq!(tool_b.description.as_ref().unwrap(), "Second method");
+
+        let schema_b = tool_b.schema.as_ref().unwrap();
+        let schema_obj_b = schema_b.as_object().unwrap();
+        let props_b = schema_obj_b
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .unwrap();
+
+        // Verify arguments.param_b
+        let arguments_b = props_b
+            .get("arguments")
+            .and_then(|a| a.as_object())
+            .unwrap();
+        let args_props_b = arguments_b
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .unwrap();
+        assert!(
+            args_props_b.contains_key("param_b"),
+            "Arguments should contain param_b"
+        );
+        let param_b = args_props_b
+            .get("param_b")
+            .and_then(|p| p.as_object())
+            .unwrap();
+        assert_eq!(
+            param_b.get("type").and_then(|t| t.as_str()),
+            Some("integer"),
+            "param_b should have type integer"
         );
     }
 }
