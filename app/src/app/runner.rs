@@ -635,7 +635,7 @@ pub mod test {
                         proto::jobworkerp::data::MethodJsonSchema {
                             args_schema: "arguments_schema".to_string(),
                             result_schema: Some("output_schema".to_string()),
-                            description: None,
+                            // Note: description removed - retrieve from method_proto_map instead
                         },
                     );
                     map
