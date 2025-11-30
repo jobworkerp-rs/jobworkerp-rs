@@ -263,6 +263,7 @@ impl RunnerSpec for McpServerRunnerImpl {
                             McpServerResult,
                             "mcp_server_output_schema"
                         ),
+                        description: info.description.clone(),
                     },
                 )
             })

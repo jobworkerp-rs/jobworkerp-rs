@@ -196,6 +196,7 @@ impl RunnerSpec for PythonCommandRunner {
             super::MethodJsonSchema {
                 args_schema: include_str!("../../schema/PythonCommandArgs.json").to_string(),
                 result_schema: schema_to_json_string_option!(PythonCommandResult, "output_schema"),
+                description: None,
             },
         );
         schemas
