@@ -166,23 +166,8 @@ impl McpServerRunnerImpl {
         self.available_tools.get(tool_name)
     }
 
-    /// Get tools as McpTool list (for compatibility with Function layer)
-    pub fn tools(&self) -> Result<Vec<proto::jobworkerp::function::data::McpTool>> {
-        Ok(self
-            .available_tools
-            .values()
-            .map(|tool_info| proto::jobworkerp::function::data::McpTool {
-                name: tool_info.name.clone(),
-                description: tool_info.description.clone(),
-                input_schema: serde_json::to_string(&tool_info.input_schema)
-                    .inspect_err(|e| {
-                        tracing::error!("Failed to serialize tool input schema: {}", e)
-                    })
-                    .unwrap_or_default(),
-                annotations: None, // MCP tool annotations not preserved in ToolInfo
-            })
-            .collect())
-    }
+    // Phase 6.7: Removed tools() method
+    // McpTool type no longer exists - use method_proto_map() from RunnerSpec trait instead
 
     /// Resolve using to actual tool name
     ///
@@ -263,7 +248,7 @@ impl RunnerSpec for McpServerRunnerImpl {
                             McpServerResult,
                             "mcp_server_output_schema"
                         ),
-                        description: info.description.clone(),
+                        // Note: description is not cached - retrieve from method_proto_map instead
                     },
                 )
             })

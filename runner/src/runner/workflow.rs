@@ -42,7 +42,6 @@ pub trait InlineWorkflowRunnerSpec: RunnerSpec {
             super::MethodJsonSchema {
                 args_schema: include_str!("../../schema/WorkflowArgs.json").to_string(),
                 result_schema: schema_to_json_string_option!(WorkflowResult, "output_schema"),
-                description: None,
             },
         );
         schemas

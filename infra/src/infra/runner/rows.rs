@@ -1,8 +1,5 @@
-use jobworkerp_runner::runner::{
-    mcp::McpServerRunnerImpl, timeout_config::RunnerTimeoutConfig, RunnerSpec,
-};
+use jobworkerp_runner::runner::RunnerSpec;
 use proto::jobworkerp::data::{Runner, RunnerData, RunnerId};
-use std::any::Any;
 
 // db row definitions
 #[derive(sqlx::FromRow, Debug, Clone, PartialEq)]
@@ -23,163 +20,46 @@ impl RunnerRow {
     ///
     /// **Performance**: JSON Schema conversion happens only once during this call.
     /// All subsequent usage (FunctionSpecs conversion, etc.) reuses the cached data.
+    ///
+    /// Phase 6.7 Final: Unified schema loading for all runners (MCP/Plugin/Normal).
+    /// - MCP Server: Instant (from in-memory available_tools)
+    /// - Plugin: Synchronous FFI call (timeout handled at plugin initialization)
+    /// - Normal Runners: Instant (hardcoded schemas)
     pub async fn to_runner_with_schema(
         &self,
         runner: Box<dyn RunnerSpec + Send + Sync>,
     ) -> RunnerWithSchema {
-        if let Some(_mcp_runner) =
-            (runner.as_ref() as &dyn Any).downcast_ref::<McpServerRunnerImpl>()
-        {
-            // Phase 6.6.4: method_proto_map is now required for all runners
-            let proto_map = runner.method_proto_map();
-            let method_proto_map = Some(proto::jobworkerp::data::MethodProtoMap {
-                schemas: proto_map.clone(),
-            });
+        let runner_settings_proto = runner.runner_settings_proto();
 
-            // Phase 6.7: Use RunnerSpec::method_json_schema_map() to respect custom schemas
-            // CRITICAL: Call runner.method_json_schema_map() instead of auto-converting
-            // Reason: Runners like InlineWorkflowRunnerSpec provide hand-crafted JSON Schema
-            //         with oneOf constraints that would be lost in auto-conversion
-            use jobworkerp_runner::runner::MethodJsonSchema;
-            let json_schema_map = MethodJsonSchema::map_to_proto(runner.method_json_schema_map());
-            let method_json_schema_map = Some(proto::jobworkerp::data::MethodJsonSchemaMap {
-                schemas: json_schema_map,
-            });
+        let proto_map = runner.method_proto_map();
+        let method_proto_map = Some(proto::jobworkerp::data::MethodProtoMap {
+            schemas: proto_map.clone(),
+        });
 
-            RunnerWithSchema {
-                id: Some(RunnerId { value: self.id }),
-                data: Some(RunnerData {
-                    name: self.name.clone(),
-                    description: self.description.clone(),
-                    runner_type: self.r#type,
-                    runner_settings_proto: runner.runner_settings_proto(),
-                    definition: self.definition.clone(),
-                    method_proto_map,
-                }),
-                settings_schema: runner.settings_schema(),
-                method_json_schema_map, // ✅ Cached JSON Schema
-            }
-        } else {
-            // Plugin schema methods are synchronous and may block, so we need to run them in spawn_blocking
-            // to allow timeout to work properly
-            let timeout_config = RunnerTimeoutConfig::global();
-            let id = self.id;
-            let description = self.description.clone();
-            let r#type = self.r#type;
-            let definition = self.definition.clone();
+        // Phase 6.7: Use RunnerSpec::method_json_schema_map() to respect custom schemas
+        // CRITICAL: Call runner.method_json_schema_map() instead of auto-converting
+        // Reason: Runners like InlineWorkflowRunnerSpec provide hand-crafted JSON Schema
+        //         with oneOf constraints that would be lost in auto-conversion
+        use jobworkerp_runner::runner::MethodJsonSchema;
+        let json_schema_map = MethodJsonSchema::map_to_proto(runner.method_json_schema_map());
+        let method_json_schema_map = Some(proto::jobworkerp::data::MethodJsonSchemaMap {
+            schemas: json_schema_map,
+        });
 
-            let schema_result = tokio::time::timeout(
-                timeout_config.plugin_schema_load,
-                tokio::task::spawn_blocking(move || {
-                    let runner_settings_proto = runner.runner_settings_proto();
-                    // Phase 6.6.4: method_proto_map is now required for all runners
-                    let proto_map = runner.method_proto_map();
-                    let method_proto_map = Some(proto::jobworkerp::data::MethodProtoMap {
-                        schemas: proto_map.clone(),
-                    });
+        let settings_schema = runner.settings_schema();
 
-                    // Phase 6.7: Use RunnerSpec::method_json_schema_map() to respect custom schemas
-                    // CRITICAL: Call runner.method_json_schema_map() instead of auto-converting
-                    // Reason: Runners like InlineWorkflowRunnerSpec provide hand-crafted JSON Schema
-                    //         with oneOf constraints that would be lost in auto-conversion
-                    use jobworkerp_runner::runner::MethodJsonSchema;
-                    let json_schema_map =
-                        MethodJsonSchema::map_to_proto(runner.method_json_schema_map());
-                    let method_json_schema_map =
-                        Some(proto::jobworkerp::data::MethodJsonSchemaMap {
-                            schemas: json_schema_map,
-                        });
-
-                    let settings_schema = runner.settings_schema();
-
-                    (
-                        runner_settings_proto,
-                        method_proto_map,
-                        method_json_schema_map,
-                        settings_schema,
-                    )
-                }),
-            )
-            .await;
-
-            match schema_result {
-                Ok(Ok((
-                    runner_settings_proto,
-                    method_proto_map,
-                    method_json_schema_map,
-                    settings_schema,
-                ))) => RunnerWithSchema {
-                    id: Some(RunnerId { value: id }),
-                    data: Some(RunnerData {
-                        name: self.name.clone(),
-                        description,
-                        runner_type: r#type,
-                        runner_settings_proto,
-                        definition,
-                        method_proto_map,
-                    }),
-                    settings_schema,
-                    method_json_schema_map, // ✅ Cached JSON Schema
-                },
-                Ok(Err(e)) => {
-                    tracing::error!(
-                        "Plugin runner '{}' (id={}, definition='{}') schema loading failed: {:?}",
-                        self.name,
-                        id,
-                        self.definition,
-                        e
-                    );
-                    // Return minimal schema on error
-                    RunnerWithSchema {
-                        id: Some(RunnerId { value: id }),
-                        data: Some(RunnerData {
-                            name: self.name.clone(),
-                            description,
-                            runner_type: r#type,
-                            runner_settings_proto: String::new(),
-                            definition,
-                            method_proto_map: Some(proto::jobworkerp::data::MethodProtoMap {
-                                schemas: std::collections::HashMap::new(),
-                            }),
-                        }),
-                        settings_schema: String::new(),
-                        method_json_schema_map: Some(
-                            proto::jobworkerp::data::MethodJsonSchemaMap {
-                                schemas: std::collections::HashMap::new(),
-                            },
-                        ),
-                    }
-                }
-                Err(_) => {
-                    tracing::error!(
-                        "Plugin runner '{}' (id={}, definition='{}') schema loading timed out after {:?}",
-                        self.name,
-                        id,
-                        self.definition,
-                        timeout_config.plugin_schema_load
-                    );
-                    // Return minimal schema on timeout
-                    RunnerWithSchema {
-                        id: Some(RunnerId { value: id }),
-                        data: Some(RunnerData {
-                            name: self.name.clone(),
-                            description,
-                            runner_type: r#type,
-                            runner_settings_proto: String::new(),
-                            definition,
-                            method_proto_map: Some(proto::jobworkerp::data::MethodProtoMap {
-                                schemas: std::collections::HashMap::new(),
-                            }),
-                        }),
-                        settings_schema: String::new(),
-                        method_json_schema_map: Some(
-                            proto::jobworkerp::data::MethodJsonSchemaMap {
-                                schemas: std::collections::HashMap::new(),
-                            },
-                        ),
-                    }
-                }
-            }
+        RunnerWithSchema {
+            id: Some(RunnerId { value: self.id }),
+            data: Some(RunnerData {
+                name: self.name.clone(),
+                description: self.description.clone(),
+                runner_type: self.r#type,
+                runner_settings_proto,
+                definition: self.definition.clone(),
+                method_proto_map,
+            }),
+            settings_schema,
+            method_json_schema_map, // ✅ Cached JSON Schema
         }
     }
 }
