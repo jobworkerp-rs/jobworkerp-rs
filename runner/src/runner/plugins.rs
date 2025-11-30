@@ -245,7 +245,9 @@ pub trait PluginRunner: Send + Sync {
     /// **Override when**: Plugin has oneof fields that require oneOf constraints in JSON Schema
     ///
     /// # Example
-    /// ```rust
+    /// ```ignore
+    /// use std::collections::HashMap;
+    ///
     /// fn method_json_schema_map(&self) -> Option<HashMap<String, jobworkerp_runner::runner::MethodJsonSchema>> {
     ///     let mut schemas = HashMap::new();
     ///     schemas.insert(
@@ -253,6 +255,7 @@ pub trait PluginRunner: Send + Sync {
     ///         jobworkerp_runner::runner::MethodJsonSchema {
     ///             args_schema: include_str!("../schema/MyPluginArgs.json").to_string(),
     ///             result_schema: Some(include_str!("../schema/MyPluginResult.json").to_string()),
+    ///             description: Some("My plugin execution".to_string()),
     ///         },
     ///     );
     ///     Some(schemas)

@@ -104,9 +104,35 @@ pub struct MethodJsonSchema {
     pub args_schema: String,
     /// JSON Schema for method result (None for unstructured output)
     pub result_schema: Option<String>,
+    /// Method description (used by LLM for tool selection)
+    pub description: Option<String>,
 }
 
 impl MethodJsonSchema {
+    /// Convert to proto::MethodJsonSchema
+    ///
+    /// This method converts runner::MethodJsonSchema to proto::jobworkerp::data::MethodJsonSchema
+    /// for use in RunnerWithSchema caching.
+    pub fn to_proto(&self) -> proto::jobworkerp::data::MethodJsonSchema {
+        proto::jobworkerp::data::MethodJsonSchema {
+            args_schema: self.args_schema.clone(),
+            result_schema: self.result_schema.clone(),
+            description: self.description.clone(),
+        }
+    }
+
+    /// Convert a HashMap of MethodJsonSchema to proto format
+    ///
+    /// This is a convenience method for converting the entire method_json_schema_map
+    /// returned by RunnerSpec::method_json_schema_map() to proto format.
+    pub fn map_to_proto(
+        map: HashMap<String, MethodJsonSchema>,
+    ) -> HashMap<String, proto::jobworkerp::data::MethodJsonSchema> {
+        map.into_iter()
+            .map(|(method_name, schema)| (method_name, schema.to_proto()))
+            .collect()
+    }
+
     /// Convert Protobuf MethodSchema to JSON Schema
     ///
     /// This is the common conversion logic used by both RunnerSpec and PluginRunnerWrapperImpl
@@ -178,6 +204,7 @@ impl MethodJsonSchema {
                     MethodJsonSchema {
                         args_schema,
                         result_schema,
+                        description: proto_schema.description.clone(),
                     },
                 ))
             })
