@@ -213,16 +213,10 @@ impl RunnerSpec for CreateWorkflowRunnerImpl {
         CreateWorkflowRunnerSpec::runner_settings_proto(self)
     }
 
-    fn job_args_proto(&self) -> Option<String> {
-        CreateWorkflowRunnerSpec::job_args_proto(self)
-    }
-
-    fn result_output_proto(&self) -> Option<String> {
-        CreateWorkflowRunnerSpec::result_output_proto(self)
-    }
-
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        CreateWorkflowRunnerSpec::output_type(self)
+    fn method_proto_map(
+        &self,
+    ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        CreateWorkflowRunnerSpec::method_proto_map(self)
     }
 
     fn settings_schema(&self) -> String {

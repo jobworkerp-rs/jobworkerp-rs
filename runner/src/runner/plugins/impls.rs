@@ -11,7 +11,6 @@ use futures::stream::BoxStream;
 use futures::stream::StreamExt;
 use proto::jobworkerp::data::result_output_item;
 use proto::jobworkerp::data::ResultOutputItem;
-use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::data::Trailer;
 use tokio::sync::RwLock;
 
@@ -67,22 +66,12 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
         // .map(|p| p.runner_settings_proto())
         // .unwrap_or_else(|e| format!("Error occurred: {:}", e))
     }
-    fn job_args_proto(&self) -> Option<String> {
-        block_on(self.plugin_runner.read()).job_args_proto()
-    }
-
     fn method_proto_map(
         &self,
-    ) -> Option<std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema>> {
+    ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
         block_on(self.plugin_runner.read()).method_proto_map()
     }
 
-    fn result_output_proto(&self) -> Option<String> {
-        block_on(self.plugin_runner.read()).result_output_proto()
-    }
-    fn output_type(&self) -> StreamingOutputType {
-        block_on(self.plugin_runner.read()).output_type()
-    }
     fn settings_schema(&self) -> String {
         block_on(self.plugin_runner.read()).settings_schema()
     }

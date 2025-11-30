@@ -95,13 +95,21 @@ impl PluginRunner for TestPlugin {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../../proto/protobuf/test_runner.proto").to_string()
     }
-    fn job_args_proto(&self) -> Option<String> {
-        Some(include_str!("../../../proto/protobuf/test_args.proto").to_string())
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        None
-    }
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        proto::jobworkerp::data::StreamingOutputType::NonStreaming
+
+    // Phase 6.6.4: Implement method_proto_map for new unified API
+    fn method_proto_map(
+        &self,
+    ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        let mut schemas = std::collections::HashMap::new();
+        schemas.insert(
+            "run".to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!("../../../proto/protobuf/test_args.proto").to_string(),
+                result_proto: String::new(), // No result proto for this runner
+                description: Some("Test plugin for runner testing".to_string()),
+                output_type: proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32,
+            },
+        );
+        schemas
     }
 }

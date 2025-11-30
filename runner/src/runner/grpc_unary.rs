@@ -13,6 +13,7 @@ use prost_reflect::{DescriptorPool, MessageDescriptor};
 use proto::jobworkerp::data::{
     JobData, JobId, JobResult, ResultOutputItem, RunnerType, StreamingOutputType,
 };
+use proto::DEFAULT_METHOD_NAME;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -393,14 +394,23 @@ impl RunnerSpec for GrpcUnaryRunner {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/grpc_unary_runner.proto").to_string()
     }
-    fn job_args_proto(&self) -> Option<String> {
-        Some(include_str!("../../protobuf/jobworkerp/runner/grpc_unary_args.proto").to_string())
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        Some(include_str!("../../protobuf/jobworkerp/runner/grpc_unary_result.proto").to_string())
-    }
-    fn output_type(&self) -> StreamingOutputType {
-        StreamingOutputType::NonStreaming
+    // Phase 6.6: Unified method_proto_map for all runners
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            DEFAULT_METHOD_NAME.to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!("../../protobuf/jobworkerp/runner/grpc_unary_args.proto")
+                    .to_string(),
+                result_proto: include_str!(
+                    "../../protobuf/jobworkerp/runner/grpc_unary_result.proto"
+                )
+                .to_string(),
+                description: Some("Execute gRPC unary request".to_string()),
+                output_type: StreamingOutputType::NonStreaming as i32,
+            },
+        );
+        schemas
     }
     fn settings_schema(&self) -> String {
         schema_to_json_string!(GrpcUnaryRunnerSettings, "settings_schema")

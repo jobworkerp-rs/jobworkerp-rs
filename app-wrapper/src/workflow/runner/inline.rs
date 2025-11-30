@@ -10,7 +10,7 @@ use futures::{pin_mut, StreamExt};
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_base::APP_NAME;
 use jobworkerp_runner::jobworkerp::runner::workflow_result::WorkflowStatus;
-use jobworkerp_runner::jobworkerp::runner::{Empty, InlineWorkflowArgs, WorkflowResult};
+use jobworkerp_runner::jobworkerp::runner::{InlineWorkflowArgs, WorkflowResult};
 use jobworkerp_runner::runner::cancellation_helper::{
     CancelMonitoringHelper, UseCancelMonitoringHelper,
 };
@@ -18,9 +18,7 @@ use jobworkerp_runner::runner::workflow::InlineWorkflowRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use opentelemetry::trace::TraceContextExt;
 use prost::Message;
-use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
-use schemars::JsonSchema;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -68,12 +66,8 @@ impl InlineWorkflowRunner {
         self.cancel_helper = Some(helper);
     }
 }
-impl InlineWorkflowRunnerSpec for InlineWorkflowRunner {}
 
-#[derive(Debug, JsonSchema, serde::Deserialize, serde::Serialize)]
-struct WorkflowRunnerInputSchema {
-    args: InlineWorkflowArgs,
-}
+impl InlineWorkflowRunnerSpec for InlineWorkflowRunner {}
 
 impl RunnerSpec for InlineWorkflowRunner {
     fn name(&self) -> String {
@@ -84,48 +78,22 @@ impl RunnerSpec for InlineWorkflowRunner {
         InlineWorkflowRunnerSpec::runner_settings_proto(self)
     }
 
-    fn job_args_proto(&self) -> Option<String> {
-        InlineWorkflowRunnerSpec::job_args_proto(self)
+    fn method_proto_map(
+        &self,
+    ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        InlineWorkflowRunnerSpec::method_proto_map(self)
     }
 
-    fn result_output_proto(&self) -> Option<String> {
-        InlineWorkflowRunnerSpec::result_output_proto(self)
-    }
-
-    fn output_type(&self) -> StreamingOutputType {
-        InlineWorkflowRunnerSpec::output_type(self)
-    }
     fn settings_schema(&self) -> String {
-        // plain string with title
-        let schema = schemars::schema_for!(Empty);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in settings_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+        InlineWorkflowRunnerSpec::settings_schema(self)
     }
+
     fn arguments_schema(&self) -> String {
-        let schema = schemars::schema_for!(WorkflowRunnerInputSchema);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+        InlineWorkflowRunnerSpec::arguments_schema(self)
     }
+
     fn output_schema(&self) -> Option<String> {
-        // plain string with title
-        let schema = schemars::schema_for!(WorkflowResult);
-        match serde_json::to_string(&schema) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::error!("error in output_json_schema: {:?}", e);
-                None
-            }
-        }
+        InlineWorkflowRunnerSpec::output_schema(self)
     }
 }
 
