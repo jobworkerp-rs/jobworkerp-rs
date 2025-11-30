@@ -213,26 +213,6 @@ impl PluginRunner for HelloPlugin {
             }
         }
     }
-    fn arguments_schema(&self) -> String {
-        let schema = schemars::schema_for!(HelloArgs);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
-    }
-    fn output_json_schema(&self) -> Option<String> {
-        let schema = schemars::schema_for!(HelloRunnerResult);
-        match serde_json::to_string(&schema) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                None
-            }
-        }
-    }
 }
 
 impl Drop for HelloPlugin {

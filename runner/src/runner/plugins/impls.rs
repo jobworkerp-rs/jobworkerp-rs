@@ -72,14 +72,19 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
         block_on(self.plugin_runner.read()).method_proto_map()
     }
 
+    // Phase 6.7: Override method_json_schema_map() to support plugin-provided JSON schemas
+    fn method_json_schema_map(&self) -> HashMap<String, crate::runner::MethodJsonSchema> {
+        // Check if plugin provides custom JSON schemas
+        if let Some(custom_schemas) = block_on(self.plugin_runner.read()).method_json_schema_map() {
+            custom_schemas
+        } else {
+            // Fall back to automatic Protobuf→JSON Schema conversion
+            crate::runner::MethodJsonSchema::from_proto_map(self.method_proto_map())
+        }
+    }
+
     fn settings_schema(&self) -> String {
         block_on(self.plugin_runner.read()).settings_schema()
-    }
-    fn arguments_schema(&self) -> String {
-        block_on(self.plugin_runner.read()).arguments_schema()
-    }
-    fn output_schema(&self) -> Option<String> {
-        block_on(self.plugin_runner.read()).output_json_schema()
     }
 }
 #[async_trait]

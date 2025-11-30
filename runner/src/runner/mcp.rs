@@ -166,23 +166,8 @@ impl McpServerRunnerImpl {
         self.available_tools.get(tool_name)
     }
 
-    /// Get tools as McpTool list (for compatibility with Function layer)
-    pub fn tools(&self) -> Result<Vec<proto::jobworkerp::function::data::McpTool>> {
-        Ok(self
-            .available_tools
-            .values()
-            .map(|tool_info| proto::jobworkerp::function::data::McpTool {
-                name: tool_info.name.clone(),
-                description: tool_info.description.clone(),
-                input_schema: serde_json::to_string(&tool_info.input_schema)
-                    .inspect_err(|e| {
-                        tracing::error!("Failed to serialize tool input schema: {}", e)
-                    })
-                    .unwrap_or_default(),
-                annotations: None, // MCP tool annotations not preserved in ToolInfo
-            })
-            .collect())
-    }
+    // Phase 6.7: Removed tools() method
+    // McpTool type no longer exists - use method_proto_map() from RunnerSpec trait instead
 
     /// Resolve using to actual tool name
     ///
@@ -246,18 +231,36 @@ impl RunnerSpec for McpServerRunnerImpl {
             .collect()
     }
 
+    // Phase 6.7: Explicit implementation of method_json_schema_map for MCP Server
+    // Uses existing JSON Schema from available_tools
+    fn method_json_schema_map(&self) -> HashMap<String, crate::runner::MethodJsonSchema> {
+        self.available_tools
+            .iter()
+            .map(|(name, info)| {
+                (
+                    name.clone(),
+                    crate::runner::MethodJsonSchema {
+                        // MCP tool's JSON Schema (already available)
+                        args_schema: serde_json::to_string(&info.input_schema)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                        // Common output schema for all MCP tools
+                        result_schema: schema_to_json_string_option!(
+                            McpServerResult,
+                            "mcp_server_output_schema"
+                        ),
+                        // Note: description is not cached - retrieve from method_proto_map instead
+                    },
+                )
+            })
+            .collect()
+    }
+
     fn settings_schema(&self) -> String {
         "{}".to_string() // Empty JSON object (no settings required)
     }
 
-    // Empty JSON - actual tool schemas are provided via RunnerWithSchema.tools field
-    fn arguments_schema(&self) -> String {
-        "{}".to_string()
-    }
-
-    fn output_schema(&self) -> Option<String> {
-        schema_to_json_string_option!(McpServerResult, "output_schema")
-    }
+    // Phase 6.7: arguments_schema() and output_schema() are deprecated
+    // Default implementation in RunnerSpec trait uses method_json_schema_map()
 }
 
 impl Tracing for McpServerRunnerImpl {}

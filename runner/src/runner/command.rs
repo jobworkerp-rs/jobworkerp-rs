@@ -1,5 +1,5 @@
 use crate::jobworkerp::runner::{CommandArgs, CommandResult};
-use crate::{schema_to_json_string, schema_to_json_string_option};
+use crate::schema_to_json_string;
 
 use super::{RunnerSpec, RunnerTrait};
 use anyhow::{Context, Result};
@@ -194,12 +194,9 @@ impl RunnerSpec for CommandRunnerImpl {
     fn settings_schema(&self) -> String {
         schema_to_json_string!(crate::jobworkerp::runner::Empty, "settings_schema")
     }
-    fn arguments_schema(&self) -> String {
-        schema_to_json_string!(CommandArgs, "arguments_schema")
-    }
-    fn output_schema(&self) -> Option<String> {
-        schema_to_json_string_option!(CommandResult, "output_schema")
-    }
+
+    // Phase 6.7: arguments_schema() and output_schema() are deprecated
+    // Default implementation in RunnerSpec trait uses method_json_schema_map()
 }
 
 #[async_trait]

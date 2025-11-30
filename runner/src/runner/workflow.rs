@@ -1,6 +1,4 @@
-use crate::jobworkerp::runner::{
-    Empty, ReusableWorkflowArgs, ReusableWorkflowRunnerSettings, WorkflowResult,
-};
+use crate::jobworkerp::runner::{Empty, ReusableWorkflowRunnerSettings, WorkflowResult};
 use crate::{schema_to_json_string, schema_to_json_string_option};
 use proto::DEFAULT_METHOD_NAME;
 
@@ -35,16 +33,22 @@ pub trait InlineWorkflowRunnerSpec: RunnerSpec {
         schemas
     }
 
+    // Phase 6.7: Override method_json_schema_map() to use hand-crafted JSON Schema
+    // Reason: Protobuf oneof field workflow_source requires oneOf constraint
+    fn method_json_schema_map(&self) -> HashMap<String, super::MethodJsonSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            DEFAULT_METHOD_NAME.to_string(),
+            super::MethodJsonSchema {
+                args_schema: include_str!("../../schema/WorkflowArgs.json").to_string(),
+                result_schema: schema_to_json_string_option!(WorkflowResult, "output_schema"),
+            },
+        );
+        schemas
+    }
+
     fn settings_schema(&self) -> String {
         schema_to_json_string!(Empty, "settings_schema")
-    }
-
-    fn arguments_schema(&self) -> String {
-        include_str!("../../schema/WorkflowArgs.json").to_string()
-    }
-
-    fn output_schema(&self) -> Option<String> {
-        schema_to_json_string_option!(WorkflowResult, "output_schema")
     }
 }
 
@@ -77,16 +81,12 @@ impl RunnerSpec for InlineWorkflowRunnerSpecImpl {
         InlineWorkflowRunnerSpec::method_proto_map(self)
     }
 
+    fn method_json_schema_map(&self) -> HashMap<String, super::MethodJsonSchema> {
+        InlineWorkflowRunnerSpec::method_json_schema_map(self)
+    }
+
     fn settings_schema(&self) -> String {
         InlineWorkflowRunnerSpec::settings_schema(self)
-    }
-
-    fn arguments_schema(&self) -> String {
-        InlineWorkflowRunnerSpec::arguments_schema(self)
-    }
-
-    fn output_schema(&self) -> Option<String> {
-        InlineWorkflowRunnerSpec::output_schema(self)
     }
 }
 
@@ -116,7 +116,7 @@ pub trait ReusableWorkflowRunnerSpec: RunnerSpec {
                     "../../protobuf/jobworkerp/runner/workflow_result.proto"
                 )
                 .to_string(),
-                description: Some("Execute reusable workflow from external source".to_string()),
+                description: Some("Execute reusable workflow".to_string()),
                 output_type: StreamingOutputType::Both as i32,
             },
         );
@@ -125,14 +125,6 @@ pub trait ReusableWorkflowRunnerSpec: RunnerSpec {
 
     fn settings_schema(&self) -> String {
         schema_to_json_string!(ReusableWorkflowRunnerSettings, "settings_schema")
-    }
-
-    fn arguments_schema(&self) -> String {
-        schema_to_json_string!(ReusableWorkflowArgs, "arguments_schema")
-    }
-
-    fn output_schema(&self) -> Option<String> {
-        schema_to_json_string_option!(WorkflowResult, "output_schema")
     }
 }
 
@@ -167,13 +159,5 @@ impl RunnerSpec for ReusableWorkflowRunnerSpecImpl {
 
     fn settings_schema(&self) -> String {
         ReusableWorkflowRunnerSpec::settings_schema(self)
-    }
-
-    fn arguments_schema(&self) -> String {
-        ReusableWorkflowRunnerSpec::arguments_schema(self)
-    }
-
-    fn output_schema(&self) -> Option<String> {
-        ReusableWorkflowRunnerSpec::output_schema(self)
     }
 }

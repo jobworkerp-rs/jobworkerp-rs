@@ -222,14 +222,6 @@ impl RunnerSpec for CreateWorkflowRunnerImpl {
     fn settings_schema(&self) -> String {
         CreateWorkflowRunnerSpec::settings_schema(self)
     }
-
-    fn arguments_schema(&self) -> String {
-        CreateWorkflowRunnerSpec::arguments_schema(self)
-    }
-
-    fn output_schema(&self) -> Option<String> {
-        CreateWorkflowRunnerSpec::output_schema(self)
-    }
 }
 
 #[async_trait]

@@ -103,14 +103,6 @@ impl RunnerSpec for LLMChatRunnerImpl {
     fn settings_schema(&self) -> String {
         LLMChatRunnerSpec::settings_schema(self)
     }
-
-    fn arguments_schema(&self) -> String {
-        LLMChatRunnerSpec::arguments_schema(self)
-    }
-
-    fn output_schema(&self) -> Option<String> {
-        LLMChatRunnerSpec::output_schema(self)
-    }
 }
 
 #[async_trait]

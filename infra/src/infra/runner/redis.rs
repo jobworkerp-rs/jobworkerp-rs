@@ -233,10 +233,10 @@ async fn redis_test() -> Result<()> {
     let runner_with_schema = RunnerWithSchema {
         id: Some(id),
         data: Some(runner_data.clone()),
-        settings_schema: "hoge4".to_string(),
-        arguments_schema: "hoge6".to_string(),
-        output_schema: Some("hoge8".to_string()),
-        tools: Vec::default(),
+        settings_schema: "hoge14".to_string(),
+        method_json_schema_map: Some(proto::jobworkerp::data::MethodJsonSchemaMap {
+            schemas: std::collections::HashMap::new(),
+        }),
     };
 
     // create and find
@@ -265,10 +265,10 @@ async fn redis_test() -> Result<()> {
     let runner_with_schema2 = RunnerWithSchema {
         id: Some(id),
         data: Some(runner_data2.clone()),
-        settings_schema: "fuga4".to_string(),
-        arguments_schema: "fuga6".to_string(),
-        output_schema: Some("fuga8".to_string()),
-        tools: vec![],
+        settings_schema: "fuga14".to_string(),
+        method_json_schema_map: Some(proto::jobworkerp::data::MethodJsonSchemaMap {
+            schemas: std::collections::HashMap::new(),
+        }),
     };
     // update and find
     assert!(!repo.upsert(&id, &runner_with_schema2).await?);
