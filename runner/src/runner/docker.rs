@@ -303,26 +303,6 @@ impl RunnerSpec for DockerExecRunner {
     fn settings_schema(&self) -> String {
         schema_to_json_string!(DockerRunnerSettings, "settings_schema")
     }
-
-    fn arguments_schema(&self) -> String {
-        schema_to_json_string!(DockerArgs, "arguments_schema")
-    }
-
-    fn output_schema(&self) -> Option<String> {
-        // not use macro to assign title to schema
-        let mut schema = schemars::schema_for!(String);
-        schema.insert(
-            "title".to_string(),
-            serde_json::Value::String("Command stdout".to_string()),
-        );
-        match serde_json::to_string(&schema) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::error!("error in output_schema: {:?}", e);
-                None
-            }
-        }
-    }
 }
 #[async_trait]
 impl RunnerTrait for DockerExecRunner {
@@ -606,26 +586,6 @@ impl RunnerSpec for DockerRunner {
     }
     fn settings_schema(&self) -> String {
         schema_to_json_string!(DockerRunnerSettings, "settings_schema")
-    }
-
-    fn arguments_schema(&self) -> String {
-        schema_to_json_string!(DockerArgs, "arguments_schema")
-    }
-
-    fn output_schema(&self) -> Option<String> {
-        // not use macro to assign title to schema
-        let mut schema = schemars::schema_for!(String);
-        schema.insert(
-            "title".to_string(),
-            serde_json::Value::String("Command stdout".to_string()),
-        );
-        match serde_json::to_string(&schema) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::error!("error in output_schema: {:?}", e);
-                None
-            }
-        }
     }
 }
 

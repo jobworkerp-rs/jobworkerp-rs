@@ -801,9 +801,14 @@ mod test {
                 }),
             }),
             settings_schema: plugin.settings_schema(),
-            arguments_schema: plugin.arguments_schema(),
-            output_schema: plugin.output_schema(),
-            tools: Vec::default(),
+            // Phase 6.7: Use method_json_schema_map instead of deprecated fields
+            method_json_schema_map: {
+                use crate::infra::runner::schema_converter::MethodJsonSchemaConverter;
+                let proto_map = plugin.method_proto_map();
+                Some(proto::jobworkerp::data::MethodJsonSchemaMap {
+                    schemas: RunnerRow::convert_method_proto_map_to_json_schema_map(&proto_map),
+                })
+            },
         };
 
         // find

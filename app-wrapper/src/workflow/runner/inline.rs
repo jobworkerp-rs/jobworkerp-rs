@@ -87,14 +87,6 @@ impl RunnerSpec for InlineWorkflowRunner {
     fn settings_schema(&self) -> String {
         InlineWorkflowRunnerSpec::settings_schema(self)
     }
-
-    fn arguments_schema(&self) -> String {
-        InlineWorkflowRunnerSpec::arguments_schema(self)
-    }
-
-    fn output_schema(&self) -> Option<String> {
-        InlineWorkflowRunnerSpec::output_schema(self)
-    }
 }
 
 #[async_trait]

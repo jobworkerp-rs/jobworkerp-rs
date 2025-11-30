@@ -1,7 +1,4 @@
-use crate::{
-    jobworkerp::runner::llm::{LlmChatArgs, LlmChatResult, LlmRunnerSettings},
-    schema_to_json_string, schema_to_json_string_option,
-};
+use crate::{jobworkerp::runner::llm::LlmRunnerSettings, schema_to_json_string};
 use proto::DEFAULT_METHOD_NAME;
 
 use super::RunnerSpec;
@@ -53,13 +50,6 @@ pub trait LLMChatRunnerSpec {
         // include_str!("../../schema/llm/LLMRunnerSettings.json").to_string()
         schema_to_json_string!(LlmRunnerSettings, "settings_schema")
     }
-    fn arguments_schema(&self) -> String {
-        // include_str!("../../schema/llm/LLMCompletionArgs.json").to_string()
-        schema_to_json_string!(LlmChatArgs, "arguments_schema")
-    }
-    fn output_schema(&self) -> Option<String> {
-        schema_to_json_string_option!(LlmChatResult, "output_schema")
-    }
 }
 
 impl LLMChatRunnerSpec for LLMChatRunnerSpecImpl {}
@@ -81,11 +71,5 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
 
     fn settings_schema(&self) -> String {
         LLMChatRunnerSpec::settings_schema(self)
-    }
-    fn arguments_schema(&self) -> String {
-        LLMChatRunnerSpec::arguments_schema(self)
-    }
-    fn output_schema(&self) -> Option<String> {
-        LLMChatRunnerSpec::output_schema(self)
     }
 }

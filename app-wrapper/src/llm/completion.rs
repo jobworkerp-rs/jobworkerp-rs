@@ -100,14 +100,6 @@ impl RunnerSpec for LLMCompletionRunnerImpl {
     fn settings_schema(&self) -> String {
         LLMCompletionRunnerSpec::settings_schema(self)
     }
-
-    fn arguments_schema(&self) -> String {
-        LLMCompletionRunnerSpec::arguments_schema(self)
-    }
-
-    fn output_schema(&self) -> Option<String> {
-        LLMCompletionRunnerSpec::output_schema(self)
-    }
 }
 
 #[async_trait]

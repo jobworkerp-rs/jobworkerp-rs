@@ -1,4 +1,5 @@
 use crate::runner::mcp::config::{McpServerConfig, McpServerTransportConfig};
+use crate::runner::RunnerSpec;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -847,18 +848,18 @@ async fn test_mcp_tool_name_validation() -> Result<()> {
     let client = factory.connect_server("time").await?;
     let runner = McpServerRunnerImpl::new(client, None).await?;
 
-    // Verify tools list contains expected tool
-    let tools = runner.tools()?;
-    assert!(!tools.is_empty(), "MCP server should have tools");
+    // Phase 6.7: Verify tools via method_proto_map() instead of tools()
+    let method_map = runner.method_proto_map();
+    assert!(!method_map.is_empty(), "MCP server should have methods");
 
-    let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    let tool_names: Vec<&str> = method_map.keys().map(|s| s.as_str()).collect();
     assert!(
         tool_names.contains(&"get_current_time"),
         "Time server should have get_current_time tool"
     );
 
     eprintln!("✅ MCP tool name validation test passed");
-    eprintln!("   Available tools: {:?}", tool_names);
+    eprintln!("   Available methods: {:?}", tool_names);
     Ok(())
 }
 

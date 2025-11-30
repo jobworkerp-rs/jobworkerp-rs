@@ -93,14 +93,6 @@ impl RunnerSpec for ReusableWorkflowRunner {
     fn settings_schema(&self) -> String {
         ReusableWorkflowRunnerSpec::settings_schema(self)
     }
-
-    fn arguments_schema(&self) -> String {
-        ReusableWorkflowRunnerSpec::arguments_schema(self)
-    }
-
-    fn output_schema(&self) -> Option<String> {
-        ReusableWorkflowRunnerSpec::output_schema(self)
-    }
 }
 
 impl Tracing for ReusableWorkflowRunner {}

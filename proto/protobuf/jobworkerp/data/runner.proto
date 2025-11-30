@@ -93,6 +93,41 @@ message MethodSchema {
   StreamingOutputType output_type = 4;
 }
 
+// # Method JSON Schema Map (Phase 6.7)
+// Mapping of method names to their JSON Schema definitions
+// This is generated from MethodProtoMap and cached in RunnerWithSchema
+// to avoid repeated Protobuf → JSON Schema conversions
+message MethodJsonSchemaMap {
+  // # Schemas Map
+  // Key: method name (e.g., "run", "fetch_html", "get_current_time")
+  // Value: MethodJsonSchema containing input/output JSON schemas
+  map<string, MethodJsonSchema> schemas = 1;
+}
+
+// # Method JSON Schema (Phase 6.7)
+// JSON Schema definition for a single method/tool
+// Replaces the deprecated arguments_schema/output_schema/tools fields in RunnerWithSchema
+//
+// NOTE: description is NOT cached here - retrieve from MethodSchema.description instead
+// Reason: description is not converted (just copied), so caching it is redundant
+message MethodJsonSchema {
+  // # Arguments JSON Schema (REQUIRED)
+  // JSON Schema for method arguments
+  // - Generated from MethodSchema.args_proto
+  // - Example: {"type": "object", "properties": {"url": {"type": "string"}}}
+  string args_schema = 1;
+
+  // # Result JSON Schema (Optional)
+  // JSON Schema for method result
+  // - Generated from MethodSchema.result_proto
+  // - None for unstructured output (empty result_proto)
+  optional string result_schema = 2;
+
+  // Field 3 reserved (was description, removed as redundant)
+  reserved 3;
+  reserved "description";
+}
+
 message RunnerId { int64 value = 1; }
 
 message Runner {

@@ -16,9 +16,7 @@ use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::ReusableWorkflowRunnerSettings;
 use memory_utils::cache::moka::{MokaCacheImpl, UseMokaCache};
 use proto::jobworkerp::data::{RunnerData, RunnerType, StreamingOutputType, WorkerData, WorkerId};
-use proto::jobworkerp::function::data::{
-    function_specs, FunctionResult, FunctionSchema, FunctionSpecs, McpToolList, WorkerOptions,
-};
+use proto::jobworkerp::function::data::{FunctionResult, FunctionSpecs, WorkerOptions};
 use proto::ProtobufHelper;
 use serde_json::json;
 use std::collections::HashMap;
@@ -108,7 +106,7 @@ pub trait FunctionApp:
     fn handle_runner_for_front<'a>(
         &'a self,
         metadata: Arc<HashMap<String, String>>,
-        runner_name: &'a str,
+        name: &'a str,
         runner_settings: Option<serde_json::Value>,
         worker_options: Option<WorkerOptions>,
         arg_json: serde_json::Value,
@@ -121,14 +119,20 @@ pub trait FunctionApp:
         let future = async move {
             tracing::debug!(
                 "handle_runner_for_front: runner_name: {:?}, uniq_key: {:?}, streaming: {}",
-                runner_name,
+                name,
                 uniq_key,
                 streaming
             );
-
+            // Extract tool name from combined name if present (e.g., "server___tool")
+            let (runner_name, tool_name_opt) =
+                if let Some((server_name, tool_name)) = Self::divide_names(name) {
+                    (server_name, Some(tool_name))
+                } else {
+                    (name.to_string(), None)
+                };
             let runner = self
                 .runner_app()
-                .find_runner_by_name(runner_name)
+                .find_runner_by_name(&runner_name)
                 .await?
                 .ok_or(JobWorkerError::NotFound(format!(
                     "Runner with name '{runner_name}' not found"
@@ -155,7 +159,7 @@ pub trait FunctionApp:
                         uniq_key,
                         timeout_sec,
                         streaming,
-                        None, // using not used via front API (only for LLM tool calling)
+                        tool_name_opt.clone(),
                     )
                     .await
                 {
@@ -173,7 +177,7 @@ pub trait FunctionApp:
                             jres,
                             stream_opt,
                             runner_name,
-                            None, // using not used via front API
+                            tool_name_opt,
                         ))
                     }
                     Err(e) => {
@@ -214,7 +218,7 @@ pub trait FunctionApp:
         Box::pin(stream! {
             tracing::info!("runner not found, run as worker: {:?}", &name);
 
-            // Extract MCP tool name from combined name if present (e.g., "server___tool")
+            // Extract using method name from combined name if present (e.g., "server___tool")
             let (worker_name, tool_name_opt) = if let Some((server_name, tool_name)) = Self::divide_names(name) {
                 (server_name, Some(tool_name))
             } else {
@@ -229,7 +233,7 @@ pub trait FunctionApp:
                     unique_key,
                     job_timeout_sec,
                     streaming,
-                    tool_name_opt.clone(), // Pass using parameter for MCP worker tools
+                    tool_name_opt.clone(), // Pass using parameter for worker tools
                 )
                 .await;
 
@@ -790,14 +794,14 @@ pub trait FunctionApp:
                 // Standard runner processing
                 let arguments = self.transform_function_arguments(rdata.runner_type(), arguments);
                 tracing::debug!("call_function_for_llm: {}: {arguments:#?}", rid.value);
-                // Re-create runner object for standard handling
+                // Phase 6.7: Re-create runner object for standard handling
                 let runner = RunnerWithSchema {
                     id: Some(rid),
                     data: Some(rdata),
                     settings_schema: String::new(),
-                    arguments_schema: String::new(),
-                    output_schema: None,
-                    tools: Vec::new(),
+                    method_json_schema_map: Some(proto::jobworkerp::data::MethodJsonSchemaMap {
+                        schemas: std::collections::HashMap::new(),
+                    }),
                 };
                 self.handle_runner_call_from_llm(
                     meta,
@@ -956,91 +960,82 @@ pub trait UseFunctionApp {
 }
 
 pub trait FunctionSpecConverter {
-    // Helper function to get output_type from RunnerData
-    // Phase 6.6: Prefer method_proto_map over deprecated output_type field
-    #[allow(deprecated)]
-    fn get_runner_output_type(runner_data: &RunnerData) -> i32 {
-        // Phase 6.6.4: Get output_type from method_proto_map (required for all runners)
-        if let Some(ref method_proto_map) = runner_data.method_proto_map {
-            if let Some(schema) = method_proto_map.schemas.values().next() {
-                return schema.output_type;
-            }
-        }
-        // If no schemas found, default to NON_STREAMING
-        StreamingOutputType::NonStreaming as i32
+    // Helper function to get output_type for a specific method
+    // Phase 6.7: Get from method_proto_map (method-specific)
+    fn get_method_output_type(runner_data: Option<&RunnerData>, method_name: &str) -> i32 {
+        runner_data
+            .and_then(|d| d.method_proto_map.as_ref())
+            .and_then(|map| map.schemas.get(method_name))
+            .map(|schema| schema.output_type)
+            .unwrap_or(StreamingOutputType::NonStreaming as i32)
     }
 
-    // Helper function to convert Runner to FunctionSpecs
+    // Helper function to convert Runner to FunctionSpecs (Phase 6.7)
+    // Phase 6.7: Unified schema conversion for all runners (MCP/Plugin/Normal)
     fn convert_runner_to_function_specs(runner: RunnerWithSchema) -> FunctionSpecs {
-        if runner
-            .data
-            .as_ref()
-            .is_some_and(|r| r.runner_type == RunnerType::McpServer as i32)
-        {
-            FunctionSpecs {
-                runner_type: RunnerType::McpServer as i32,
-                runner_id: runner.id,
-                worker_id: None,
-                name: runner
-                    .data
-                    .as_ref()
-                    .map_or(String::new(), |data| data.name.clone()),
-                description: runner
-                    .data
-                    .as_ref()
-                    .map_or(String::new(), |data| data.description.clone()),
-                schema: Some(function_specs::Schema::McpTools(McpToolList {
-                    list: runner.tools,
-                })),
-                output_type: runner
-                    .data
-                    .as_ref()
-                    .map(|data| Self::get_runner_output_type(data))
-                    .unwrap_or(StreamingOutputType::NonStreaming as i32),
-            }
-        } else {
-            FunctionSpecs {
-                runner_type: runner
-                    .data
-                    .as_ref()
-                    .map(|data| data.runner_type)
-                    .unwrap_or(RunnerType::Plugin as i32),
-                runner_id: runner.id,
-                worker_id: None,
-                name: runner
-                    .data
-                    .as_ref()
-                    .map_or(String::new(), |data| data.name.clone()),
-                description: runner
-                    .data
-                    .as_ref()
-                    .map_or(String::new(), |data| data.description.clone()),
-                schema: Some(function_specs::Schema::SingleSchema(FunctionSchema {
-                    settings: Some(runner.settings_schema),
-                    arguments: runner.arguments_schema,
-                    result_output_schema: runner.output_schema,
-                })),
-                output_type: runner
-                    .data
-                    .as_ref()
-                    .map(|data| Self::get_runner_output_type(data))
-                    .unwrap_or(StreamingOutputType::NonStreaming as i32),
-            }
+        let runner_data = runner.data.as_ref();
+
+        // Phase 6.7: Combine method_proto_map (for description) and method_json_schema_map (for schemas)
+        // - description: from method_proto_map (not cached in method_json_schema_map)
+        // - arguments_schema/result_schema: from method_json_schema_map (cached conversion)
+        let method_schemas = runner_data
+            .and_then(|d| d.method_proto_map.as_ref())
+            .map(|proto_map| {
+                proto_map
+                    .schemas
+                    .iter()
+                    .map(|(name, proto_schema)| {
+                        // Get cached JSON schema conversion
+                        let json_schema = runner
+                            .method_json_schema_map
+                            .as_ref()
+                            .and_then(|m| m.schemas.get(name));
+
+                        (
+                            name.clone(),
+                            proto::jobworkerp::function::data::MethodSchema {
+                                description: proto_schema.description.clone(),
+                                arguments_schema: json_schema
+                                    .map(|s| s.args_schema.clone())
+                                    .unwrap_or_else(|| "{}".to_string()),
+                                result_schema: json_schema.and_then(|s| s.result_schema.clone()),
+                                output_type: Self::get_method_output_type(runner_data, name),
+                                annotations: None, // MCP annotations can be added here if needed
+                            },
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        FunctionSpecs {
+            runner_type: runner_data
+                .map(|d| d.runner_type)
+                .unwrap_or(RunnerType::Plugin as i32),
+            runner_id: runner.id,
+            worker_id: None,
+            name: runner_data.map_or(String::new(), |d| d.name.clone()),
+            description: runner_data.map_or(String::new(), |d| d.description.clone()),
+            settings_schema: runner.settings_schema, // REQUIRED (empty string if no settings)
+            methods: Some(proto::jobworkerp::function::data::MethodSchemaMap {
+                schemas: method_schemas,
+            }),
         }
     }
 
-    // Helper function to convert Worker to FunctionSpecs
+    // Helper function to convert Worker to FunctionSpecs (Phase 6.7)
     fn convert_worker_to_function_specs(
         id: WorkerId,
         data: WorkerData,
         runner: RunnerWithSchema,
     ) -> Result<FunctionSpecs> {
-        // change input schema to the input of saved workflow
-        if runner
-            .data
-            .as_ref()
+        let runner_data = runner.data.as_ref();
+
+        // Phase 6.7: Unified schema conversion (all workers use MethodSchemaMap)
+        let method_schemas = if runner_data
             .is_some_and(|d| d.runner_type == RunnerType::ReusableWorkflow as i32)
         {
+            // ReusableWorkflow: Override arguments schema with saved workflow's input schema
             let settings = ProstMessageCodec::deserialize_message::<ReusableWorkflowRunnerSettings>(
                 data.runner_settings.as_slice(),
             )?;
@@ -1049,73 +1044,84 @@ pub trait FunctionSpecConverter {
                 .map(|s| Self::parse_as_json_with_key_or_noop("schema", s));
             let input_schema =
                 input_schema.map(|s| Self::parse_as_json_with_key_or_noop("document", s));
-            Ok(FunctionSpecs {
-                runner_type: RunnerType::ReusableWorkflow as i32,
-                runner_id: runner.id,
-                worker_id: Some(id),
-                name: data.name,
-                description: data.description,
-                schema: Some(function_specs::Schema::SingleSchema(FunctionSchema {
-                    settings: None, // Workers don't have config (already set)
-                    arguments: input_schema.map(|s| s.to_string()).unwrap_or_default(),
-                    result_output_schema: runner.output_schema,
-                })),
-                output_type: runner
-                    .data
-                    .as_ref()
-                    .map(|data| Self::get_runner_output_type(data))
-                    .unwrap_or(StreamingOutputType::NonStreaming as i32),
-            })
-        } else if runner
-            .data
-            .as_ref()
-            .is_some_and(|r| r.runner_type == RunnerType::McpServer as i32)
-        {
-            Ok(FunctionSpecs {
-                runner_type: RunnerType::McpServer as i32,
-                runner_id: runner.id,
-                worker_id: Some(id),
-                name: data.name,
-                description: data.description,
-                // TODO divide and extract settings for each tool
-                schema: Some(function_specs::Schema::McpTools(McpToolList {
-                    list: runner.tools,
-                })),
-                output_type: runner
-                    .data
-                    .as_ref()
-                    .map(|data| Self::get_runner_output_type(data))
-                    .unwrap_or(StreamingOutputType::NonStreaming as i32),
-            })
+
+            // Get result schema and output_type from runner's default method
+            let default_method = runner
+                .method_json_schema_map
+                .as_ref()
+                .and_then(|map| map.schemas.get(proto::DEFAULT_METHOD_NAME));
+
+            let result_schema = default_method.and_then(|schema| schema.result_schema.clone());
+            let output_type = Self::get_method_output_type(runner_data, proto::DEFAULT_METHOD_NAME);
+
+            // Create single method with overridden input schema
+            let mut schemas = std::collections::HashMap::new();
+            schemas.insert(
+                proto::DEFAULT_METHOD_NAME.to_string(),
+                proto::jobworkerp::function::data::MethodSchema {
+                    description: None,
+                    arguments_schema: input_schema
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "{}".to_string()),
+                    result_schema,
+                    output_type,
+                    annotations: None,
+                },
+            );
+            schemas
         } else {
-            Ok(FunctionSpecs {
-                runner_type: runner
-                    .data
-                    .as_ref()
-                    .map(|data| data.runner_type)
-                    .unwrap_or(RunnerType::Plugin as i32),
-                runner_id: runner.id,
-                worker_id: Some(id),
-                name: data.name,
-                description: data.description,
-                schema: Some(function_specs::Schema::SingleSchema(FunctionSchema {
-                    settings: None, // Workers don't have config (already set)
-                    arguments: runner.arguments_schema,
-                    result_output_schema: runner.output_schema,
-                })),
-                output_type: runner
-                    .data
-                    .as_ref()
-                    .map(|data| Self::get_runner_output_type(data))
-                    .unwrap_or(StreamingOutputType::NonStreaming as i32),
-            })
-        }
+            // All other workers: Combine method_proto_map and method_json_schema_map
+            runner_data
+                .and_then(|d| d.method_proto_map.as_ref())
+                .map(|proto_map| {
+                    proto_map
+                        .schemas
+                        .iter()
+                        .map(|(name, proto_schema)| {
+                            // Get cached JSON schema conversion
+                            let json_schema = runner
+                                .method_json_schema_map
+                                .as_ref()
+                                .and_then(|m| m.schemas.get(name));
+
+                            (
+                                name.clone(),
+                                proto::jobworkerp::function::data::MethodSchema {
+                                    description: proto_schema.description.clone(),
+                                    arguments_schema: json_schema
+                                        .map(|s| s.args_schema.clone())
+                                        .unwrap_or_else(|| "{}".to_string()),
+                                    result_schema: json_schema
+                                        .and_then(|s| s.result_schema.clone()),
+                                    output_type: Self::get_method_output_type(runner_data, name),
+                                    annotations: None,
+                                },
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        Ok(FunctionSpecs {
+            runner_type: runner_data
+                .map(|d| d.runner_type)
+                .unwrap_or(RunnerType::Plugin as i32),
+            runner_id: runner.id,
+            worker_id: Some(id),
+            name: data.name,
+            description: data.description,
+            settings_schema: String::new(), // Workers don't have settings (empty string)
+            methods: Some(proto::jobworkerp::function::data::MethodSchemaMap {
+                schemas: method_schemas,
+            }),
+        })
     }
 
-    /// Convert Runner + specific using to FunctionSpecs
+    /// Convert Runner + specific using to FunctionSpecs (Phase 6.7)
     ///
     /// Returns a FunctionSpecs with a single tool (the specified using).
-    /// For MCP runners, extracts the specific tool from the McpToolList.
+    /// Works for MCP servers, Plugins, and all other runners with method_json_schema_map.
     /// Returns error if the runner doesn't support usings or the using doesn't exist.
     fn convert_runner_using_to_function_specs(
         runner: RunnerWithSchema,
@@ -1126,84 +1132,60 @@ pub trait FunctionSpecConverter {
             .as_ref()
             .ok_or_else(|| JobWorkerError::NotFound("Runner data not found".to_string()))?;
 
-        // Check if this is an MCP server runner with tools
-        if runner_data.runner_type == RunnerType::McpServer as i32 {
-            // Find the specific tool in the McpToolList
-            let tool = runner
-                .tools
-                .iter()
-                .find(|t| t.name == using)
-                .ok_or_else(|| {
-                    JobWorkerError::NotFound(format!(
-                        "using '{}' not found in MCP server '{}'. Available: {:?}",
-                        using,
-                        runner_data.name,
-                        runner.tools.iter().map(|t| &t.name).collect::<Vec<_>>()
-                    ))
-                })?;
-
-            // Return FunctionSpecs with single tool
-            Ok(FunctionSpecs {
-                runner_type: RunnerType::McpServer as i32,
-                runner_id: runner.id,
-                worker_id: None,
-                // Use combined name for LLM tool calling: "server_name___tool_name"
-                name: format!("{}___{}", runner_data.name, using),
-                description: tool
-                    .description
-                    .clone()
-                    .unwrap_or_else(|| format!("{} - {}", runner_data.description, using)),
-                schema: Some(function_specs::Schema::SingleSchema(FunctionSchema {
-                    settings: None,
-                    arguments: tool.input_schema.clone(),
-                    result_output_schema: runner.output_schema.clone(),
-                })),
-                output_type: Self::get_runner_output_type(runner_data),
-            })
-        } else if runner_data.method_proto_map.is_some() {
-            // Plugin or other runner with method_proto_map
-            let proto_map = runner_data.method_proto_map.as_ref().unwrap();
-            let method_schema = proto_map.schemas.get(using).ok_or_else(|| {
+        // Get proto schema for description
+        let proto_schema = runner_data
+            .method_proto_map
+            .as_ref()
+            .and_then(|map| map.schemas.get(using))
+            .ok_or_else(|| {
                 JobWorkerError::NotFound(format!(
-                    "using '{}' not found in runner '{}'. Available: {:?}",
-                    using,
-                    runner_data.name,
-                    proto_map.schemas.keys().collect::<Vec<_>>()
+                    "Method '{}' not found in runner '{}'",
+                    using, runner_data.name
                 ))
             })?;
 
-            Ok(FunctionSpecs {
-                runner_type: runner_data.runner_type,
-                runner_id: runner.id,
-                worker_id: None,
-                name: format!("{}___{}", runner_data.name, using),
-                description: method_schema
-                    .description
-                    .clone()
-                    .unwrap_or_else(|| format!("{} - {}", runner_data.description, using)),
-                schema: Some(function_specs::Schema::SingleSchema(FunctionSchema {
-                    settings: None,
-                    arguments: method_schema.args_proto.clone(),
-                    // Rev.8.1: result_proto is now required (not optional)
-                    result_output_schema: Some(method_schema.result_proto.clone()),
-                })),
-                output_type: Self::get_runner_output_type(runner_data),
-            })
-        } else {
-            // Runner doesn't support usings
-            Err(JobWorkerError::InvalidParameter(format!(
-                "Runner '{}' does not support usings",
-                runner_data.name
-            ))
-            .into())
-        }
+        // Get cached JSON schema for args/result
+        let json_schema = runner
+            .method_json_schema_map
+            .as_ref()
+            .and_then(|map| map.schemas.get(using));
+
+        // Phase 6.7: Use methods map with single method
+        let mut method_schemas = std::collections::HashMap::new();
+        method_schemas.insert(
+            using.to_string(),
+            proto::jobworkerp::function::data::MethodSchema {
+                description: proto_schema.description.clone(),
+                arguments_schema: json_schema
+                    .map(|s| s.args_schema.clone())
+                    .unwrap_or_else(|| "{}".to_string()),
+                result_schema: json_schema.and_then(|s| s.result_schema.clone()),
+                output_type: Self::get_method_output_type(Some(runner_data), using),
+                annotations: None,
+            },
+        );
+
+        Ok(FunctionSpecs {
+            runner_type: runner_data.runner_type,
+            runner_id: runner.id,
+            worker_id: None,
+            name: format!("{}___{}", runner_data.name, using),
+            description: proto_schema
+                .description
+                .clone()
+                .unwrap_or_else(|| format!("{} - {}", runner_data.description, using)),
+            settings_schema: String::new(), // Using-specific functions don't need settings
+            methods: Some(proto::jobworkerp::function::data::MethodSchemaMap {
+                schemas: method_schemas,
+            }),
+        })
     }
 
-    /// Convert Worker + specific using to FunctionSpecs
+    /// Convert Worker + specific using to FunctionSpecs (Phase 6.7)
     ///
     /// Returns a FunctionSpecs with a single tool (the specified using).
-    /// For Workers backed by MCP/Plugin runners, extracts the specific tool.
-    /// For normal runners, returns error with warning that using is ignored.
+    /// Works for Workers backed by MCP servers, Plugins, and all other runners with method_json_schema_map.
+    /// Returns error if the runner doesn't support usings or the using doesn't exist.
     fn convert_worker_using_to_function_specs(
         worker_id: WorkerId,
         worker_data: WorkerData,
@@ -1215,86 +1197,53 @@ pub trait FunctionSpecConverter {
             .as_ref()
             .ok_or_else(|| JobWorkerError::NotFound("Runner data not found".to_string()))?;
 
-        // Check if this is an MCP server runner with tools
-        if runner_data.runner_type == RunnerType::McpServer as i32 {
-            // Find the specific tool in the McpToolList
-            let tool = runner
-                .tools
-                .iter()
-                .find(|t| t.name == using)
-                .ok_or_else(|| {
-                    JobWorkerError::NotFound(format!(
-                        "using '{}' not found in Worker '{}' (MCP server '{}'). Available: {:?}",
-                        using,
-                        worker_data.name,
-                        runner_data.name,
-                        runner.tools.iter().map(|t| &t.name).collect::<Vec<_>>()
-                    ))
-                })?;
-
-            // Return FunctionSpecs with single tool
-            Ok(FunctionSpecs {
-                runner_type: RunnerType::McpServer as i32,
-                runner_id: runner.id,
-                worker_id: Some(worker_id),
-                // Use worker name + tool name for clarity
-                name: format!("{}___{}", worker_data.name, using),
-                description: tool
-                    .description
-                    .clone()
-                    .unwrap_or_else(|| format!("{} - {}", worker_data.description, using)),
-                schema: Some(function_specs::Schema::SingleSchema(FunctionSchema {
-                    settings: None, // Workers don't have config (already set)
-                    arguments: tool.input_schema.clone(),
-                    result_output_schema: runner.output_schema.clone(),
-                })),
-                output_type: Self::get_runner_output_type(runner_data),
-            })
-        } else if runner_data.method_proto_map.is_some() {
-            // Plugin or other runner with method_proto_map
-            let proto_map = runner_data.method_proto_map.as_ref().unwrap();
-            let method_schema = proto_map.schemas.get(using).ok_or_else(|| {
+        // Get proto schema for description
+        let proto_schema = runner_data
+            .method_proto_map
+            .as_ref()
+            .and_then(|map| map.schemas.get(using))
+            .ok_or_else(|| {
                 JobWorkerError::NotFound(format!(
-                    "using '{}' not found in Worker '{}' (runner '{}'). Available: {:?}",
-                    using,
-                    worker_data.name,
-                    runner_data.name,
-                    proto_map.schemas.keys().collect::<Vec<_>>()
+                    "Method '{}' not found in Worker '{}' (runner '{}')",
+                    using, worker_data.name, runner_data.name
                 ))
             })?;
 
-            Ok(FunctionSpecs {
-                runner_type: runner_data.runner_type,
-                runner_id: runner.id,
-                worker_id: Some(worker_id),
-                name: format!("{}___{}", worker_data.name, using),
-                description: method_schema
-                    .description
-                    .clone()
-                    .unwrap_or_else(|| format!("{} - {}", worker_data.description, using)),
-                schema: Some(function_specs::Schema::SingleSchema(FunctionSchema {
-                    settings: None, // Workers don't have config (already set)
-                    arguments: method_schema.args_proto.clone(),
-                    // Rev.8.1: result_proto is now required (not optional)
-                    result_output_schema: Some(method_schema.result_proto.clone()),
-                })),
-                output_type: Self::get_runner_output_type(runner_data),
-            })
-        } else {
-            // Worker→Runner doesn't support usings - log warning and return error
-            tracing::warn!(
-                "Worker '{}' (ID={}) does not support using. Worker is backed by runner '{}' which has no MCP tools or method_proto_map. Ignoring using='{}'",
-                worker_data.name,
-                worker_id.value,
-                runner_data.name,
-                using
-            );
-            Err(JobWorkerError::InvalidParameter(format!(
-                "Worker '{}' does not support usings (backed by runner '{}' with no tools/methods)",
-                worker_data.name, runner_data.name
-            ))
-            .into())
-        }
+        // Get cached JSON schema for args/result
+        let json_schema = runner
+            .method_json_schema_map
+            .as_ref()
+            .and_then(|map| map.schemas.get(using));
+
+        // Phase 6.7: Use methods map with single method
+        let mut method_schemas = std::collections::HashMap::new();
+        method_schemas.insert(
+            using.to_string(),
+            proto::jobworkerp::function::data::MethodSchema {
+                description: proto_schema.description.clone(),
+                arguments_schema: json_schema
+                    .map(|s| s.args_schema.clone())
+                    .unwrap_or_else(|| "{}".to_string()),
+                result_schema: json_schema.and_then(|s| s.result_schema.clone()),
+                output_type: Self::get_method_output_type(Some(runner_data), using),
+                annotations: None,
+            },
+        );
+
+        Ok(FunctionSpecs {
+            runner_type: runner_data.runner_type,
+            runner_id: runner.id,
+            worker_id: Some(worker_id),
+            name: format!("{}___{}", worker_data.name, using),
+            description: proto_schema
+                .description
+                .clone()
+                .unwrap_or_else(|| format!("{} - {}", worker_data.description, using)),
+            settings_schema: String::new(), // Workers don't have settings (already configured)
+            methods: Some(proto::jobworkerp::function::data::MethodSchemaMap {
+                schemas: method_schemas,
+            }),
+        })
     }
 
     // Parse JSON value with key extraction
