@@ -15,7 +15,7 @@ use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::ReusableWorkflowRunnerSettings;
 use memory_utils::cache::moka::{MokaCacheImpl, UseMokaCache};
-use proto::jobworkerp::data::{RunnerType, StreamingOutputType, WorkerData, WorkerId};
+use proto::jobworkerp::data::{RunnerData, RunnerType, StreamingOutputType, WorkerData, WorkerId};
 use proto::jobworkerp::function::data::{
     function_specs, FunctionResult, FunctionSchema, FunctionSpecs, McpToolList, WorkerOptions,
 };
@@ -173,6 +173,7 @@ pub trait FunctionApp:
                             jres,
                             stream_opt,
                             runner_name,
+                            None, // using not used via front API
                         ))
                     }
                     Err(e) => {
@@ -228,7 +229,7 @@ pub trait FunctionApp:
                     unique_key,
                     job_timeout_sec,
                     streaming,
-                    tool_name_opt, // Pass using parameter for MCP worker tools
+                    tool_name_opt.clone(), // Pass using parameter for MCP worker tools
                 )
                 .await;
 
@@ -261,6 +262,7 @@ pub trait FunctionApp:
                         jres,
                         stream_opt,
                         runner_name,
+                        tool_name_opt,
                     );
 
                     // Yield all results from the stream
@@ -286,6 +288,7 @@ pub trait FunctionApp:
             futures::stream::BoxStream<'static, proto::jobworkerp::data::ResultOutputItem>,
         >,
         runner_name: Option<String>,
+        using: Option<String>, // Phase 6.6.7: Add using for method-specific decoding
     ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<FunctionResult>> + Send + 'a>> {
         use futures::StreamExt;
         use proto::jobworkerp::data::{result_output_item, ResultStatus};
@@ -299,7 +302,7 @@ pub trait FunctionApp:
                         Some(result_output_item::Item::Data(data)) => {
                             // Decode the data using runner information
                             let decoded_output = if let Some(ref rname) = runner_name {
-                                self.decode_job_result_output(None, Some(rname), &data).await?
+                                self.decode_job_result_output(None, Some(rname), &data, using.as_deref()).await?
                             } else {
                                 Err(JobWorkerError::NotFound(
                                     "Runner name not found for decoding".to_string(),
@@ -353,7 +356,7 @@ pub trait FunctionApp:
 
                     // Decode the output using runner information
                     let decoded_output = if let Some(ref rname) = runner_name {
-                        match self.decode_job_result_output(None, Some(rname), &raw_output).await {
+                        match self.decode_job_result_output(None, Some(rname), &raw_output, using.as_deref()).await {
                             Ok(decoded) => decoded.to_string(),
                             Err(_) => String::from_utf8_lossy(&raw_output).to_string(),
                         }
@@ -953,6 +956,20 @@ pub trait UseFunctionApp {
 }
 
 pub trait FunctionSpecConverter {
+    // Helper function to get output_type from RunnerData
+    // Phase 6.6: Prefer method_proto_map over deprecated output_type field
+    #[allow(deprecated)]
+    fn get_runner_output_type(runner_data: &RunnerData) -> i32 {
+        // Phase 6.6.4: Get output_type from method_proto_map (required for all runners)
+        if let Some(ref method_proto_map) = runner_data.method_proto_map {
+            if let Some(schema) = method_proto_map.schemas.values().next() {
+                return schema.output_type;
+            }
+        }
+        // If no schemas found, default to NON_STREAMING
+        StreamingOutputType::NonStreaming as i32
+    }
+
     // Helper function to convert Runner to FunctionSpecs
     fn convert_runner_to_function_specs(runner: RunnerWithSchema) -> FunctionSpecs {
         if runner
@@ -978,7 +995,7 @@ pub trait FunctionSpecConverter {
                 output_type: runner
                     .data
                     .as_ref()
-                    .map(|data| data.output_type)
+                    .map(|data| Self::get_runner_output_type(data))
                     .unwrap_or(StreamingOutputType::NonStreaming as i32),
             }
         } else {
@@ -1006,7 +1023,7 @@ pub trait FunctionSpecConverter {
                 output_type: runner
                     .data
                     .as_ref()
-                    .map(|data| data.output_type)
+                    .map(|data| Self::get_runner_output_type(data))
                     .unwrap_or(StreamingOutputType::NonStreaming as i32),
             }
         }
@@ -1046,7 +1063,7 @@ pub trait FunctionSpecConverter {
                 output_type: runner
                     .data
                     .as_ref()
-                    .map(|data| data.output_type)
+                    .map(|data| Self::get_runner_output_type(data))
                     .unwrap_or(StreamingOutputType::NonStreaming as i32),
             })
         } else if runner
@@ -1067,7 +1084,7 @@ pub trait FunctionSpecConverter {
                 output_type: runner
                     .data
                     .as_ref()
-                    .map(|data| data.output_type)
+                    .map(|data| Self::get_runner_output_type(data))
                     .unwrap_or(StreamingOutputType::NonStreaming as i32),
             })
         } else {
@@ -1089,7 +1106,7 @@ pub trait FunctionSpecConverter {
                 output_type: runner
                     .data
                     .as_ref()
-                    .map(|data| data.output_type)
+                    .map(|data| Self::get_runner_output_type(data))
                     .unwrap_or(StreamingOutputType::NonStreaming as i32),
             })
         }
@@ -1141,7 +1158,7 @@ pub trait FunctionSpecConverter {
                     arguments: tool.input_schema.clone(),
                     result_output_schema: runner.output_schema.clone(),
                 })),
-                output_type: runner_data.output_type,
+                output_type: Self::get_runner_output_type(runner_data),
             })
         } else if runner_data.method_proto_map.is_some() {
             // Plugin or other runner with method_proto_map
@@ -1170,7 +1187,7 @@ pub trait FunctionSpecConverter {
                     // Rev.8.1: result_proto is now required (not optional)
                     result_output_schema: Some(method_schema.result_proto.clone()),
                 })),
-                output_type: runner_data.output_type,
+                output_type: Self::get_runner_output_type(runner_data),
             })
         } else {
             // Runner doesn't support usings
@@ -1231,7 +1248,7 @@ pub trait FunctionSpecConverter {
                     arguments: tool.input_schema.clone(),
                     result_output_schema: runner.output_schema.clone(),
                 })),
-                output_type: runner_data.output_type,
+                output_type: Self::get_runner_output_type(runner_data),
             })
         } else if runner_data.method_proto_map.is_some() {
             // Plugin or other runner with method_proto_map
@@ -1261,7 +1278,7 @@ pub trait FunctionSpecConverter {
                     // Rev.8.1: result_proto is now required (not optional)
                     result_output_schema: Some(method_schema.result_proto.clone()),
                 })),
-                output_type: runner_data.output_type,
+                output_type: Self::get_runner_output_type(runner_data),
             })
         } else {
             // Worker→Runner doesn't support usings - log warning and return error

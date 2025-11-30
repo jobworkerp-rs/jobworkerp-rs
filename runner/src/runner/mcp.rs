@@ -227,39 +227,23 @@ impl RunnerSpec for McpServerRunnerImpl {
         "".to_string()
     }
 
-    // MCP Runner uses using-based approach, returns None (uses method_proto_map)
-    fn job_args_proto(&self) -> Option<String> {
-        None
-    }
-
+    // Phase 6.6.4: method_proto_map is required for all runners
     // Return tool-specific Protobuf definitions
-    fn method_proto_map(&self) -> Option<HashMap<String, proto::jobworkerp::data::MethodSchema>> {
-        if self.available_tools.is_empty() {
-            return None;
-        }
-        Some(
-            self.available_tools
-                .iter()
-                .map(|(name, info)| {
-                    (
-                        name.clone(),
-                        proto::jobworkerp::data::MethodSchema {
-                            args_proto: info.args_proto_schema.clone(),
-                            result_proto: info.result_proto_schema.clone(),
-                            description: info.description.clone(),
-                        },
-                    )
-                })
-                .collect(),
-        )
-    }
-
-    fn result_output_proto(&self) -> Option<String> {
-        Some(include_str!("../../protobuf/jobworkerp/runner/mcp_server_result.proto").to_string())
-    }
-
-    fn output_type(&self) -> StreamingOutputType {
-        StreamingOutputType::Both
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        self.available_tools
+            .iter()
+            .map(|(name, info)| {
+                (
+                    name.clone(),
+                    proto::jobworkerp::data::MethodSchema {
+                        args_proto: info.args_proto_schema.clone(),
+                        result_proto: info.result_proto_schema.clone(),
+                        description: info.description.clone(),
+                        output_type: StreamingOutputType::Both as i32, // Phase 6.6: MCP tools support both streaming and non-streaming
+                    },
+                )
+            })
+            .collect()
     }
 
     fn settings_schema(&self) -> String {

@@ -17,7 +17,7 @@ use proto::jobworkerp::data::{
     JobId, JobResult, Priority, QueueType, ResponseType, ResultOutputItem, ResultStatus,
     RetryPolicy, RetryType, RunnerData, RunnerId, Worker, WorkerData, WorkerId,
 };
-use proto::ProtobufHelper;
+use proto::{ProtobufHelper, DEFAULT_METHOD_NAME};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -318,7 +318,9 @@ pub trait UseJobExecutor:
             // TODO local cache? (2 times request in this function)
             {
                 tracing::debug!("job args: {:#?}", &job_args);
-                let job_args = self.transform_job_args(&rid, &rdata, &job_args).await?;
+                let job_args = self
+                    .transform_job_args(&rid, &rdata, &job_args, using.as_deref())
+                    .await?;
                 let wid = if worker_data.use_static {
                     self.find_or_create_worker(&worker_data).await?.id
                 } else {
@@ -361,7 +363,9 @@ pub trait UseJobExecutor:
             // TODO local cache? (2 times request in this function)
             {
                 tracing::debug!("job args: {:#?}", &job_args);
-                let job_args = self.transform_job_args(&rid, &rdata, &job_args).await?;
+                let job_args = self
+                    .transform_job_args(&rid, &rdata, &job_args, using.as_deref())
+                    .await?;
 
                 let wid = if worker_data.use_static {
                     self.find_or_create_worker(&worker_data).await?.id
@@ -377,7 +381,7 @@ pub trait UseJobExecutor:
                         uniq_key,
                         job_timeout_sec,
                         false, // no streaming
-                        using,
+                        using.clone(),
                     )
                     .await?;
                 let output = res
@@ -386,7 +390,8 @@ pub trait UseJobExecutor:
                         "Failed to enqueue job or job result not found"
                     ))
                     .and_then(|output| output)?;
-                self.transform_raw_output(&rid, &rdata, &output).await
+                self.transform_raw_output(&rid, &rdata, &output, using.as_deref())
+                    .await
             } else {
                 Err(anyhow::anyhow!("Not found runner: {}", runner_name))
             }
@@ -438,7 +443,9 @@ pub trait UseJobExecutor:
                         )?)
                         .await?
                 {
-                    let job_args = self.transform_job_args(&rid, &rdata, job_args).await?;
+                    let job_args = self
+                        .transform_job_args(&rid, &rdata, job_args, using.as_deref())
+                        .await?;
                     self.enqueue_with_worker_or_temp(
                         metadata,
                         Some(wid), // worker
@@ -501,7 +508,9 @@ pub trait UseJobExecutor:
                         )?)
                         .await?
                 {
-                    let job_args = self.transform_job_args(&rid, &rdata, job_args).await?;
+                    let job_args = self
+                        .transform_job_args(&rid, &rdata, job_args, using.as_deref())
+                        .await?;
                     let res = self
                         .enqueue_with_worker_or_temp(
                             metadata,
@@ -511,12 +520,12 @@ pub trait UseJobExecutor:
                             uniq_key,
                             job_timeout_sec,
                             streaming,
-                            using, // Pass using parameter for MCP/Plugin workers
+                            using.clone(), // Pass using parameter for MCP/Plugin workers
                         )
                         .await?;
                     if let Some(res) = res.1 {
                         let output = self.extract_job_result_output(res)?;
-                        self.transform_raw_output(&rid, &rdata, output.as_slice())
+                        self.transform_raw_output(&rid, &rdata, output.as_slice(), using.as_deref())
                             .await
                     } else {
                         Err(anyhow::anyhow!(
@@ -535,26 +544,46 @@ pub trait UseJobExecutor:
         }
     }
 
+    /// Transform job arguments from JSON to Protobuf binary
+    ///
+    /// Phase 6.6.7: Now supports using parameter for method-specific schema resolution
     fn transform_job_args(
         &self,
         rid: &RunnerId,
         rdata: &RunnerData,
         job_args: &serde_json::Value, // enqueue job args
+        using: Option<&str>,          // method name for MCP/Plugin runners
     ) -> impl std::future::Future<Output = Result<Vec<u8>>> + Send {
         async move {
             let descriptors = self.parse_proto_with_cache(rid, rdata).await?;
-            let args_descriptor = descriptors
-                .args_descriptor
-                .and_then(|d| d.get_messages().first().cloned());
 
-            tracing::debug!("job args: {:#?}", &job_args);
-            if let Some(desc) = args_descriptor.clone() {
+            // Phase 6.6.7: Get method-specific args descriptor
+            let mut args_descriptor =
+                descriptors
+                    .get_job_args_message_for_method(using)
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "Failed to get args descriptor for method '{}': {:#?}",
+                            using.unwrap_or(DEFAULT_METHOD_NAME),
+                            e
+                        )
+                    })?;
+
+            // Fallback: parse the descriptor directly from method_proto_map when cache lacks it
+            if args_descriptor.is_none() {
+                let method_name = using.unwrap_or(DEFAULT_METHOD_NAME);
+                args_descriptor = Self::parse_job_args_schema_descriptor(rdata, method_name)?;
+            }
+
+            tracing::debug!("job args (using: {:?}): {:#?}", using, &job_args);
+            if let Some(desc) = args_descriptor {
                 Ok(
                     ProtobufDescriptor::json_value_to_message(desc, job_args, true).map_err(
                         |e| anyhow::anyhow!("Failed to parse job_args schema: {:#?}", e),
                     )?,
                 )
             } else {
+                // Fallback: serialize as JSON string
                 Ok(serde_json::to_string(&job_args)
                     .map_err(|e| anyhow::anyhow!("Failed to serialize job_args: {:#?}", e))?
                     .as_bytes()
@@ -591,21 +620,39 @@ pub trait UseJobExecutor:
         }
     }
 
+    /// Transform raw job result output from Protobuf binary to JSON
+    ///
+    /// Phase 6.6.7: Now supports using parameter for method-specific schema resolution
     #[inline]
     fn transform_raw_output(
         &self,
         rid: &RunnerId,
         rdata: &RunnerData,
-        output: &[u8], // enqueue job args
+        output: &[u8],       // raw job output
+        using: Option<&str>, // method name for MCP/Plugin runners
     ) -> impl std::future::Future<Output = Result<serde_json::Value>> + Send {
         async move {
             // with cache
             let descriptors = self.parse_proto_with_cache(rid, rdata).await?;
-            let result_descriptor = descriptors
-                .result_descriptor
-                .and_then(|d| d.get_messages().first().cloned());
 
-            tracing::debug!("job output length: {}", output.len());
+            // Phase 6.6.7: Get method-specific result descriptor
+            let mut result_descriptor = descriptors
+                .get_job_result_message_descriptor_for_method(using)
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to get result descriptor for method '{}': {:#?}",
+                        using.unwrap_or(DEFAULT_METHOD_NAME),
+                        e
+                    )
+                })?;
+
+            // Fallback: parse the descriptor directly from method_proto_map when cache lacks it
+            if result_descriptor.is_none() {
+                let method_name = using.unwrap_or(DEFAULT_METHOD_NAME);
+                result_descriptor = Self::parse_job_result_schema_descriptor(rdata, method_name)?;
+            }
+
+            tracing::debug!("job output length (using: {:?}): {}", using, output.len());
             if let Some(desc) = result_descriptor {
                 match ProtobufDescriptor::get_message_from_bytes(desc.clone(), output) {
                     Ok(m) => {
@@ -638,7 +685,9 @@ pub trait UseJobExecutor:
             .as_ref()
             .and_then(|r| r.output.as_ref().map(|o| &o.items));
         if let Some(output) = output {
-            let result_descriptor = Self::parse_job_result_schema_descriptor(runner_data)?;
+            // Phase 6.6.4: Use default method name DEFAULT_METHOD_NAME ("run") for single-method runners
+            let result_descriptor =
+                Self::parse_job_result_schema_descriptor(runner_data, DEFAULT_METHOD_NAME)?;
             if let Some(desc) = result_descriptor {
                 match ProtobufDescriptor::get_message_from_bytes(desc, output) {
                     Ok(m) => {
@@ -676,6 +725,7 @@ pub trait UseJobExecutor:
         runner_id: Option<&RunnerId>, // runner(runner) id
         runner_name: Option<&str>,    // runner(runner) name
         output: &[u8],                // enqueue job args
+        using: Option<&str>,          // method name for MCP/Plugin runners
     ) -> impl std::future::Future<Output = Result<serde_json::Value>> + Send {
         async move {
             if let Some(RunnerWithSchema {
@@ -693,7 +743,7 @@ pub trait UseJobExecutor:
                     ));
                 }
             } {
-                self.transform_raw_output(&rid, &rdata, output).await
+                self.transform_raw_output(&rid, &rdata, output, using).await
             } else {
                 Err(anyhow::anyhow!("Not found runner for job result output"))
             }

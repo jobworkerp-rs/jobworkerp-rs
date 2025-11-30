@@ -94,16 +94,10 @@ impl RunnerSpec for LLMChatRunnerImpl {
         LLMChatRunnerSpec::runner_settings_proto(self)
     }
 
-    fn job_args_proto(&self) -> Option<String> {
-        LLMChatRunnerSpec::job_args_proto(self)
-    }
-
-    fn result_output_proto(&self) -> Option<String> {
-        LLMChatRunnerSpec::result_output_proto(self)
-    }
-
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        LLMChatRunnerSpec::output_type(self)
+    fn method_proto_map(
+        &self,
+    ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        LLMChatRunnerSpec::method_proto_map(self)
     }
 
     fn settings_schema(&self) -> String {

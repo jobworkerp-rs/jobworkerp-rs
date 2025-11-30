@@ -16,6 +16,7 @@ use jobworkerp_base::{
     error::JobWorkerError,
 };
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
+use proto::DEFAULT_METHOD_NAME;
 use reqwest::{
     header::{HeaderMap, HeaderName},
     Method, Url,
@@ -96,14 +97,25 @@ impl RunnerSpec for RequestRunner {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/http_request_runner.proto").to_string()
     }
-    fn job_args_proto(&self) -> Option<String> {
-        Some(include_str!("../../protobuf/jobworkerp/runner/http_request_args.proto").to_string())
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        Some(include_str!("../../protobuf/jobworkerp/runner/http_request_result.proto").to_string())
-    }
-    fn output_type(&self) -> StreamingOutputType {
-        StreamingOutputType::Both
+    // Phase 6.6: Unified method_proto_map for all runners
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            DEFAULT_METHOD_NAME.to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!(
+                    "../../protobuf/jobworkerp/runner/http_request_args.proto"
+                )
+                .to_string(),
+                result_proto: include_str!(
+                    "../../protobuf/jobworkerp/runner/http_request_result.proto"
+                )
+                .to_string(),
+                description: Some("Execute HTTP request".to_string()),
+                output_type: StreamingOutputType::Both as i32,
+            },
+        );
+        schemas
     }
     fn settings_schema(&self) -> String {
         schema_to_json_string!(HttpRequestRunnerSettings, "settings_schema")

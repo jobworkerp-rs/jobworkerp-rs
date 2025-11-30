@@ -18,6 +18,7 @@ use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     JobData, JobId, JobResult, ResultOutputItem, RunnerType, StreamingOutputType,
 };
+use proto::DEFAULT_METHOD_NAME;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio_stream::StreamExt;
@@ -283,14 +284,20 @@ impl RunnerSpec for DockerExecRunner {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/docker_runner.proto").to_string()
     }
-    fn job_args_proto(&self) -> Option<String> {
-        Some(include_str!("../../protobuf/jobworkerp/runner/docker_args.proto").to_string())
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        Some("".to_string())
-    }
-    fn output_type(&self) -> StreamingOutputType {
-        StreamingOutputType::NonStreaming
+    // Phase 6.6: Unified method_proto_map for all runners
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            DEFAULT_METHOD_NAME.to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!("../../protobuf/jobworkerp/runner/docker_args.proto")
+                    .to_string(),
+                result_proto: "".to_string(), // Binary data (empty proto allowed)
+                description: Some("Execute command in Docker container (exec mode)".to_string()),
+                output_type: StreamingOutputType::NonStreaming as i32,
+            },
+        );
+        schemas
     }
 
     fn settings_schema(&self) -> String {
@@ -582,14 +589,20 @@ impl RunnerSpec for DockerRunner {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/docker_runner.proto").to_string()
     }
-    fn job_args_proto(&self) -> Option<String> {
-        Some(include_str!("../../protobuf/jobworkerp/runner/docker_args.proto").to_string())
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        Some("".to_string())
-    }
-    fn output_type(&self) -> StreamingOutputType {
-        StreamingOutputType::NonStreaming
+    // Phase 6.6: Unified method_proto_map for all runners
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            DEFAULT_METHOD_NAME.to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!("../../protobuf/jobworkerp/runner/docker_args.proto")
+                    .to_string(),
+                result_proto: "".to_string(), // Binary data (empty proto allowed)
+                description: Some("Execute command in Docker container (run mode)".to_string()),
+                output_type: StreamingOutputType::NonStreaming as i32,
+            },
+        );
+        schemas
     }
     fn settings_schema(&self) -> String {
         schema_to_json_string!(DockerRunnerSettings, "settings_schema")

@@ -1,5 +1,7 @@
 use super::RunnerSpec;
 use proto::jobworkerp::data::RunnerType;
+use proto::DEFAULT_METHOD_NAME;
+use std::collections::HashMap;
 
 pub struct LLMCompletionRunnerSpecImpl {}
 
@@ -22,17 +24,25 @@ pub trait LLMCompletionRunnerSpec {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/llm/runner.proto").to_string()
     }
-    fn job_args_proto(&self) -> Option<String> {
-        Some(include_str!("../../protobuf/jobworkerp/runner/llm/completion_args.proto").to_string())
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        Some(
-            include_str!("../../protobuf/jobworkerp/runner/llm/completion_result.proto")
+    // Phase 6.6: Unified method_proto_map for all runners
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            DEFAULT_METHOD_NAME.to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!(
+                    "../../protobuf/jobworkerp/runner/llm/completion_args.proto"
+                )
                 .to_string(),
-        )
-    }
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        proto::jobworkerp::data::StreamingOutputType::Both
+                result_proto: include_str!(
+                    "../../protobuf/jobworkerp/runner/llm/completion_result.proto"
+                )
+                .to_string(),
+                description: Some("Generate text completion using LLM".to_string()),
+                output_type: proto::jobworkerp::data::StreamingOutputType::Both as i32,
+            },
+        );
+        schemas
     }
     fn settings_schema(&self) -> String {
         include_str!("../../schema/llm/LLMRunnerSettings.json").to_string()
@@ -56,17 +66,12 @@ impl RunnerSpec for LLMCompletionRunnerSpecImpl {
         LLMCompletionRunnerSpec::runner_settings_proto(self)
     }
 
-    fn job_args_proto(&self) -> Option<String> {
-        LLMCompletionRunnerSpec::job_args_proto(self)
+    fn method_proto_map(
+        &self,
+    ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        LLMCompletionRunnerSpec::method_proto_map(self)
     }
 
-    fn result_output_proto(&self) -> Option<String> {
-        LLMCompletionRunnerSpec::result_output_proto(self)
-    }
-
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        LLMCompletionRunnerSpec::output_type(self)
-    }
     fn settings_schema(&self) -> String {
         LLMCompletionRunnerSpec::settings_schema(self)
     }

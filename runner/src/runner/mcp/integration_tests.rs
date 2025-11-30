@@ -385,8 +385,6 @@ async fn test_using_mode_initialization() -> Result<()> {
 
     // Verify method_proto_map returns tool schemas
     let proto_map = runner.method_proto_map();
-    assert!(proto_map.is_some(), "Should return proto map in using mode");
-    let proto_map = proto_map.unwrap();
     assert!(
         proto_map.contains_key("get_current_time"),
         "Proto map should contain get_current_time"
@@ -947,8 +945,7 @@ async fn test_mcp_error_with_invalid_using() -> Result<()> {
 
 /// Phase 6.5 Test: Verify method_proto_map() returns MethodSchema
 #[tokio::test]
-#[ignore] // Requires MCP server - run with --ignored for full testing
-async fn test_phase65_method_proto_map() -> Result<()> {
+async fn test_method_proto_map() -> Result<()> {
     use crate::runner::mcp::config::McpConfig;
     use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerSpec;
@@ -963,9 +960,7 @@ async fn test_phase65_method_proto_map() -> Result<()> {
     let runner = McpServerRunnerImpl::new(client, None).await?;
 
     // Verify method_proto_map returns MethodSchema
-    let method_proto_map = runner
-        .method_proto_map()
-        .expect("method_proto_map should return Some for MCP runner");
+    let method_proto_map = runner.method_proto_map();
 
     eprintln!(
         "✅ method_proto_map returned {} methods",
@@ -1014,8 +1009,7 @@ async fn test_phase65_method_proto_map() -> Result<()> {
 
 /// Phase 6.5 Test: Verify MethodSchema with multiple tools (fetch server)
 #[tokio::test]
-#[ignore] // Requires MCP server - run with --ignored for full testing
-async fn test_phase65_method_proto_map_multiple_tools() -> Result<()> {
+async fn test_method_proto_map_multiple_tools() -> Result<()> {
     use crate::runner::mcp::config::McpConfig;
     use crate::runner::mcp::McpServerRunnerImpl;
     use crate::runner::RunnerSpec;
@@ -1030,12 +1024,11 @@ async fn test_phase65_method_proto_map_multiple_tools() -> Result<()> {
     let runner = McpServerRunnerImpl::new(client, None).await?;
 
     // Verify method_proto_map returns MethodSchema for all tools
-    let method_proto_map = runner
-        .method_proto_map()
-        .expect("method_proto_map should return Some for MCP runner");
+    let method_proto_map = runner.method_proto_map();
 
     let tool_count = method_proto_map.len();
     eprintln!("✅ method_proto_map returned {} tools", tool_count);
+    eprintln!("✅ method_proto_map {:?}", &method_proto_map);
 
     // Verify fetch server has at least one tool
     assert!(

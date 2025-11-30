@@ -27,30 +27,20 @@ message RunnerData {
   // # Runner Settings Definition
   // Proto file definition for runner configuration
   string runner_settings_proto = 4;
-  // # Job Arguments Definition
-  // Proto file definition for job arguments
-  // For normal runners: single proto schema
-  // For multi-tool runners (MCP/Plugin): must be empty (use method_proto_map instead)
-  // Runtime validation ensures job_args_proto and method_proto_map are mutually exclusive
-  optional string job_args_proto = 5;
-  // # Result Output Definition
-  // Proto file definition for job execution results
-  // If empty, UTF-8 string will be used as bytes array for result output
-  optional string result_output_proto = 6;
-  // # Output Type Configuration
-  // Specifies the streaming capability of this runner
-  // This determines how job results can be retrieved from this runner
-  StreamingOutputType output_type = 7;
+  // Phase 6.6.4: Fields 5-7 deleted, reserved to prevent reuse
+  reserved 5, 6, 7;
+  reserved "job_args_proto", "result_output_proto", "output_type";
   // # definition
   // runner definition
   // mcp: mcp_server toml
   // plugin: plugin filepath
   string definition = 8;
-  // # Method Proto Map
-  // For MCP/Plugin runners that support multiple sub-methods
-  // Maps using name to its input/output protobuf schema definitions
-  // Runtime validation ensures this is mutually exclusive with job_args_proto
-  optional MethodProtoMap method_proto_map = 10;
+  // # Method Proto Map (REQUIRED in Phase 6.6.4+)
+  // All runners must provide method-level schema definitions
+  // - Single-method runners: use default method name "run"
+  // - MCP/Plugin runners: use tool-specific method names
+  // Maps method name to its input/output protobuf schema definitions
+  MethodProtoMap method_proto_map = 10;
 }
 
 // # Method Proto Map
@@ -76,12 +66,14 @@ message MethodSchema {
   //   "syntax = \"proto3\";\nmessage FetchFetchHtmlArgs { string url = 1; optional int32 timeout_ms = 2; }"
   string args_proto = 1;
 
-  // # Output Result Schema (Required)
+  // # Output Result Schema (REQUIRED - proto3 constraint)
   // Protobuf schema definition for method result
-  // - For MCP Servers: uses common output schema (may be duplicated across tools)
-  // - For Plugins: can specify method-specific output schema
-  // - Message name follows convention: {ServerName}{ToolName}Result
-  // - REQUIRED: jobworkerp must always explicitly define output schema for type safety
+  //
+  // - **REQUIRED**: This field MUST always be set by application layer
+  // - **Proto3 limitation**: Cannot use `required` keyword (proto3 spec)
+  // - **Empty string ALLOWED**: For unstructured/binary output
+  //
+  // Details: See docs/runner-proto-unification-spec.md Section 7.1
   string result_proto = 2;
 
   // # Method Description (Optional)
@@ -91,6 +83,14 @@ message MethodSchema {
   // - For Plugins: provided by plugin developer
   // - Example: "Fetches HTML content from a URL"
   optional string description = 3;
+
+  // # Output Type Configuration (Phase 6.6)
+  // Specifies the streaming capability of this specific method
+  // Allows different methods within the same runner to have different streaming support
+  // - NON_STREAMING: Method only supports non-streaming output
+  // - STREAMING: Method only supports streaming output
+  // - BOTH: Method supports both streaming and non-streaming outputs
+  StreamingOutputType output_type = 4;
 }
 
 message RunnerId { int64 value = 1; }
