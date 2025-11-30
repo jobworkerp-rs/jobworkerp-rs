@@ -29,6 +29,7 @@ pub mod test {
     /// Test configuration
     const OLLAMA_HOST: &str = "http://ollama.ollama.svc.cluster.local:11434";
     const TEST_MODEL: &str = "qwen3:30b"; // Use qwen3:30b model
+    // const TEST_MODEL: &str = "gpt-oss:20b";
     const TEST_TIMEOUT: Duration = Duration::from_secs(180);
 
     /// Setup function app with COMMAND runner for tool calls using test infrastructure
@@ -118,7 +119,7 @@ pub mod test {
 
         // Test with a simple echo command
         let args = create_test_chat_args_with_tools(
-            "Please run the command 'echo Hello, World!' and show me the output.",
+            "Please run the command 'echo' with arguments 'Hello, World!' and show me the output.",
         );
 
         let context = opentelemetry::Context::current();
