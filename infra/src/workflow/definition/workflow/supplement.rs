@@ -92,42 +92,36 @@ impl Duration {
                 let mut total_ms: u64 = 0;
 
                 if let Some(days) = days {
-                    // Convert days to u64 before multiplication to avoid overflow
                     if let Some(ms) = (*days as u64).checked_mul(24 * 60 * 60 * 1000) {
                         total_ms = total_ms.saturating_add(ms);
                     }
                 }
 
                 if let Some(hours) = hours {
-                    // Convert hours to u64 before multiplication to avoid overflow
                     if let Some(ms) = (*hours as u64).checked_mul(60 * 60 * 1000) {
                         total_ms = total_ms.saturating_add(ms);
                     }
                 }
 
                 if let Some(minutes) = minutes {
-                    // Convert minutes to u64 before multiplication to avoid overflow
                     if let Some(ms) = (*minutes as u64).checked_mul(60 * 1000) {
                         total_ms = total_ms.saturating_add(ms);
                     }
                 }
 
                 if let Some(seconds) = seconds {
-                    // Convert seconds to u64 before multiplication to avoid overflow
                     if let Some(ms) = (*seconds as u64).checked_mul(1000) {
                         total_ms = total_ms.saturating_add(ms);
                     }
                 }
 
                 if let Some(milliseconds) = milliseconds {
-                    // Add milliseconds directly, checking for overflow
                     total_ms = total_ms.saturating_add(*milliseconds as u64);
                 }
 
                 total_ms
             }
             Duration::Expression(expr) => {
-                // Parse ISO 8601 duration expression
                 // Format: P[n]Y[n]M[n]DT[n]H[n]M[n]S
                 // P is the duration designator, T is the time designator
 
@@ -139,7 +133,6 @@ impl Duration {
                 let date_part = parts[0].strip_prefix('P').unwrap_or("");
                 let time_part = if parts.len() > 1 { parts[1] } else { "" };
 
-                // Parse date part (P[n]Y[n]M[n]W[n]D)
                 let mut current_number = String::new();
                 for c in date_part.chars() {
                     if c.is_ascii_digit() || c == '.' {
@@ -169,7 +162,6 @@ impl Duration {
                     }
                 }
 
-                // Parse time part ([n]H[n]M[n]S)
                 current_number.clear();
                 for c in time_part.chars() {
                     if c.is_ascii_digit() || c == '.' {
@@ -248,7 +240,6 @@ impl Default for WorkflowSchema {
 }
 impl WorkflowSchema {
     pub fn create_do_task(&self, metadata: Arc<HashMap<String, String>>) -> DoTask {
-        // Convert HashMap<String, String> to serde_json::Map<String, Value>
         let mut meta_map = serde_json::Map::new();
         for (k, v) in metadata.iter() {
             meta_map.insert(k.clone(), serde_json::Value::String(v.clone()));

@@ -33,7 +33,6 @@ pub trait InlineWorkflowRunnerSpec: RunnerSpec {
         schemas
     }
 
-    // Phase 6.7: Override method_json_schema_map() to use hand-crafted JSON Schema
     // Reason: Protobuf oneof field workflow_source requires oneOf constraint
     fn method_json_schema_map(&self) -> HashMap<String, super::MethodJsonSchema> {
         let mut schemas = HashMap::new();

@@ -284,7 +284,6 @@ impl RunnerSpec for DockerExecRunner {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/docker_runner.proto").to_string()
     }
-    // Phase 6.6: Unified method_proto_map for all runners
     fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(
@@ -329,7 +328,6 @@ impl RunnerTrait for DockerExecRunner {
                 c.attach_stdout = Some(true);
                 c.attach_stderr = Some(true);
 
-                // Check cancellation before creating exec
                 if cancellation_token.is_cancelled() {
                     tracing::info!("Docker exec execution was cancelled before create_exec");
                     return Err(anyhow::anyhow!("Docker exec execution was cancelled before create_exec"));
@@ -387,7 +385,6 @@ impl RunnerTrait for DockerExecRunner {
         }
         .await;
 
-        // Use new cancellation approach
         (result, metadata)
     }
     async fn run_stream(
@@ -569,7 +566,6 @@ impl RunnerSpec for DockerRunner {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/docker_runner.proto").to_string()
     }
-    // Phase 6.6: Unified method_proto_map for all runners
     fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(
@@ -612,7 +608,6 @@ impl RunnerTrait for DockerRunner {
                 self.create(&create_option).await?;
             }
             if let Some(docker) = self.docker.as_ref() {
-                // Check cancellation before creating image
                 if cancellation_token.is_cancelled() {
                     tracing::info!("Docker execution was cancelled before create_image");
                     return Err(anyhow::anyhow!("Docker execution was cancelled before create_image"));
@@ -727,7 +722,6 @@ impl RunnerTrait for DockerRunner {
 
         // Clear container ID after execution completes
         self.current_container_id = None;
-        // Use new cancellation approach
         (result, metadata)
     }
     async fn run_stream(
@@ -1067,17 +1061,14 @@ mod test {
         use std::time::{Duration, Instant};
         use tokio::sync::Mutex;
 
-        // Use Arc<tokio::sync::Mutex<>> to share runner between tasks (similar to LLM pattern)
         let runner = Arc::new(Mutex::new(DockerExecRunner::new()));
 
-        // Create test arguments
         use crate::jobworkerp::runner::DockerArgs;
         let arg = DockerArgs {
             cmd: vec!["sleep".to_string(), "10".to_string()],
             ..Default::default()
         };
 
-        // Create cancellation token and set it on the runner
         let cancellation_token = tokio_util::sync::CancellationToken::new();
         {
             let _runner_guard = runner.lock().await;
@@ -1124,29 +1115,25 @@ mod test {
         eprintln!("Docker exec stream execution completed in {elapsed:?}");
 
         match execution_result {
-            Ok(stream_processing_result) => {
-                match stream_processing_result {
-                    Ok(_item_count) => {
-                        eprintln!("WARNING: Docker exec stream should be unimplemented");
-                    }
-                    Err(e) => {
-                        eprintln!("✓ Docker exec stream processing was cancelled as expected: {e}");
-                        // Check if it's a cancellation error or unimplemented error
-                        if e.to_string().contains("cancelled") {
-                            eprintln!("✓ Cancellation was properly detected");
-                        } else if e.to_string().contains("not implemented") {
-                            eprintln!("✓ Stream is unimplemented but cancellation check worked");
-                        }
+            Ok(stream_processing_result) => match stream_processing_result {
+                Ok(_item_count) => {
+                    eprintln!("WARNING: Docker exec stream should be unimplemented");
+                }
+                Err(e) => {
+                    eprintln!("✓ Docker exec stream processing was cancelled as expected: {e}");
+                    if e.to_string().contains("cancelled") {
+                        eprintln!("✓ Cancellation was properly detected");
+                    } else if e.to_string().contains("not implemented") {
+                        eprintln!("✓ Stream is unimplemented but cancellation check worked");
                     }
                 }
-            }
+            },
             Err(e) => {
                 eprintln!("Docker exec stream execution task failed: {e}");
                 panic!("Task failed: {e}");
             }
         }
 
-        // Verify that cancellation happened very quickly (since stream is unimplemented)
         if elapsed > Duration::from_secs(1) {
             panic!(
             "Stream processing took too long ({elapsed:?}), should be immediate for unimplemented stream"
@@ -1165,10 +1152,8 @@ mod test {
         use std::time::{Duration, Instant};
         use tokio::sync::Mutex;
 
-        // Use Arc<tokio::sync::Mutex<>> to share runner between tasks (similar to LLM pattern)
         let runner = Arc::new(Mutex::new(DockerRunner::new()));
 
-        // Create test arguments
         use crate::jobworkerp::runner::DockerArgs;
         let arg = DockerArgs {
             image: Some("busybox:latest".to_string()),
@@ -1176,7 +1161,6 @@ mod test {
             ..Default::default()
         };
 
-        // Create cancellation token and set it on the runner
         let cancellation_token = tokio_util::sync::CancellationToken::new();
         {
             let _runner_guard = runner.lock().await;
@@ -1225,31 +1209,25 @@ mod test {
         eprintln!("Docker runner stream execution completed in {elapsed:?}");
 
         match execution_result {
-            Ok(stream_processing_result) => {
-                match stream_processing_result {
-                    Ok(_item_count) => {
-                        eprintln!("WARNING: Docker runner stream should be unimplemented");
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "✓ Docker runner stream processing was cancelled as expected: {e}"
-                        );
-                        // Check if it's a cancellation error or unimplemented error
-                        if e.to_string().contains("cancelled") {
-                            eprintln!("✓ Cancellation was properly detected");
-                        } else if e.to_string().contains("not implemented") {
-                            eprintln!("✓ Stream is unimplemented but cancellation check worked");
-                        }
+            Ok(stream_processing_result) => match stream_processing_result {
+                Ok(_item_count) => {
+                    eprintln!("WARNING: Docker runner stream should be unimplemented");
+                }
+                Err(e) => {
+                    eprintln!("✓ Docker runner stream processing was cancelled as expected: {e}");
+                    if e.to_string().contains("cancelled") {
+                        eprintln!("✓ Cancellation was properly detected");
+                    } else if e.to_string().contains("not implemented") {
+                        eprintln!("✓ Stream is unimplemented but cancellation check worked");
                     }
                 }
-            }
+            },
             Err(e) => {
                 eprintln!("Docker runner stream execution task failed: {e}");
                 panic!("Task failed: {e}");
             }
         }
 
-        // Verify that cancellation happened very quickly (since stream is unimplemented)
         if elapsed > Duration::from_secs(1) {
             panic!(
             "Stream processing took too long ({elapsed:?}), should be immediate for unimplemented stream"

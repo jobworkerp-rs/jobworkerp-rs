@@ -479,14 +479,12 @@ mod tests {
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
         let job_executors = Arc::new(JobExecutorWrapper::new(app_module));
 
-        // Use local-only loader for loading local test files (no network access needed)
         let loader = WorkflowLoader::new_local_only();
         let flow = loader
             .load_workflow(Some("test-files/ls-test.yaml"), None, false)
             .await
             .unwrap();
 
-        // Generate TryTask (stored with static lifetime)
         let try_task = Box::leak(Box::new(try_task_config.unwrap_or_else(|| {
             workflow::TryTask {
                 try_: TaskList::default(),
@@ -745,7 +743,6 @@ mod tests {
                 "When error matches filter, catch block should succeed"
             );
 
-            // Verify error information is added to context
             let context = result.unwrap();
             let error_value = context.get_context_value("custom_error").await;
             assert!(
@@ -754,7 +751,6 @@ mod tests {
             );
             // println!("error_value: {:?}", error_value);
 
-            // Verify error information content
             let error_json = error_value.unwrap();
             let error_status = error_json["status"].as_i64().unwrap();
             assert_eq!(error_status, 500, "Error status should be correctly stored");
@@ -765,7 +761,6 @@ mod tests {
     fn test_trytask_success_output_passthrough() {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
-            // Create a TaskList with a DoTask that sets a known output
             use std::collections::HashMap;
             let set_task = workflow::SetTask {
                 set: serde_json::json!({
@@ -835,7 +830,6 @@ mod tests {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
-            // Create a successful try task
             use std::collections::HashMap;
             let set_task_try = workflow::SetTask {
                 set: serde_json::json!({
@@ -856,7 +850,6 @@ mod tests {
                 workflow::Task::SetTask(set_task_try),
             )])]);
 
-            // Create catch do task that sets a different value
             let set_task_catch = workflow::SetTask {
                 set: serde_json::json!({
                     "name": "catch_output".to_string(),
@@ -907,7 +900,6 @@ mod tests {
                 "Output should be from try block, not catch block when try succeeds"
             );
 
-            // Verify catch do was NOT executed by checking context values
             let catch_value = context.get_context_value("catch_output").await;
             assert!(
                 catch_value.is_none(),
@@ -924,7 +916,6 @@ mod tests {
             // This test verifies that catch.do executes when try block fails
             use std::collections::HashMap;
 
-            // Create a failing try task (RaiseTask to throw an error)
             let raise_task = workflow::RaiseTask {
                 raise: workflow::RaiseTaskConfiguration {
                     error: workflow::RaiseTaskError::Error(workflow::Error {
@@ -949,7 +940,6 @@ mod tests {
                 workflow::Task::RaiseTask(raise_task),
             )])]);
 
-            // Create catch.do task that sets a marker value to verify execution
             let set_task_catch_do = workflow::SetTask {
                 set: serde_json::json!({
                     "catch_do_executed": true,
@@ -996,7 +986,6 @@ mod tests {
 
             let context = result.unwrap();
 
-            // Verify error information is added to context (error is added to task context)
             let error_value = context.get_context_value("error").await;
             assert!(
                 error_value.is_some(),
@@ -1019,7 +1008,6 @@ mod tests {
                 "catch.do should have set catch_do_executed to true in workflow context"
             );
 
-            // Verify the output is from catch.do
             let output = &*context.output;
             assert_eq!(
                 *output,
@@ -1085,7 +1073,6 @@ mod tests {
             );
 
             let context = result.unwrap();
-            // Verify error information is added to context
             let error_value = context.get_context_value("error").await;
             assert!(
                 error_value.is_some(),
@@ -1337,11 +1324,9 @@ mod tests {
             use std::collections::HashMap;
             use std::sync::atomic::{AtomicU32, Ordering};
 
-            // Use atomic counter to fail first attempt, succeed on retry
             static ATTEMPT_COUNT: AtomicU32 = AtomicU32::new(0);
             ATTEMPT_COUNT.store(0, Ordering::SeqCst);
 
-            // Create a task that fails on first attempt but succeeds on retry
             // We'll use SetTask with conditional logic via context
             let set_task = workflow::SetTask {
                 set: serde_json::json!({
@@ -1363,7 +1348,6 @@ mod tests {
             // This is implicitly tested in the implementation - when retry succeeds,
             // error_caught is set to false (line 95), so catch.do won't execute
 
-            // Create a simpler test: if try succeeds on first attempt with retry configured
             let try_task_list = workflow::TaskList(vec![HashMap::from([(
                 "set_task_success".to_string(),
                 workflow::Task::SetTask(set_task),
@@ -1417,7 +1401,6 @@ mod tests {
             assert!(result.is_ok(), "TryTask should succeed");
             let context = result.unwrap();
 
-            // Verify catch.do was NOT executed
             let workflow_context = _workflow_context.read().await;
             let context_vars = workflow_context.context_variables.lock().await;
             let catch_do_value = context_vars.get("catch_do_executed");
@@ -1426,7 +1409,6 @@ mod tests {
                 "catch.do should NOT execute when try succeeds (even with retry configured)"
             );
 
-            // Verify output is from try block
             let output = &*context.output;
             assert_eq!(
                 *output,
@@ -1442,7 +1424,6 @@ mod tests {
             // Test that when retry limit is reached, catch.do is executed
             use std::collections::HashMap;
 
-            // Create a task that always fails
             let raise_task = workflow::RaiseTask {
                 raise: workflow::RaiseTaskConfiguration {
                     error: workflow::RaiseTaskError::Error(workflow::Error {
@@ -1519,7 +1500,6 @@ mod tests {
                 "TryTask should succeed after retry limit is reached and catch.do executes"
             );
 
-            // Verify catch.do was executed
             let workflow_context = _workflow_context.read().await;
             let context_vars = workflow_context.context_variables.lock().await;
             let catch_do_value = context_vars.get("catch_do_after_retry");
@@ -1533,7 +1513,6 @@ mod tests {
                 "catch.do should have set catch_do_after_retry to true"
             );
 
-            // Verify output is from catch.do
             let context = result.unwrap();
             let output = &*context.output;
             assert_eq!(

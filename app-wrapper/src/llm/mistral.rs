@@ -191,7 +191,6 @@ impl MistralLlmServiceImpl {
         // Clone the model to avoid lifetime issues
         let model = self.model.clone();
 
-        // Use channel-based streaming to handle lifetime issues
         let (tx, rx) = futures::channel::mpsc::unbounded();
 
         // Spawn task to handle MistralRS streaming
@@ -215,7 +214,6 @@ impl MistralLlmServiceImpl {
             }
         });
 
-        // Convert receiver to BoxStream
         Ok(rx.boxed())
     }
 
@@ -385,16 +383,12 @@ mod tests {
     #[ignore]
     #[tokio::test]
     async fn test_completion_llm_runner() -> Result<()> {
-        // Create settings
         let settings = create_mistral_settings()?;
 
-        // Create service instance
         let service = MistralLlmServiceImpl::new(&settings).await?;
 
-        // Create completion args
         let args = create_completion_args(false)?;
 
-        // Create function app for converter
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
         struct TestLLMService {
@@ -422,10 +416,8 @@ mod tests {
         // Send request
         let response = service.request_chat(request_builder).await?;
 
-        // Convert to result
         let result = DefaultLLMResultConverter::convert_chat_completion_result(&response);
 
-        // Verify response
         assert!(result.done || result.content.is_some());
         if let Some(content) = result.content {
             if let Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) = content.content {
@@ -446,16 +438,12 @@ mod tests {
     #[ignore]
     #[tokio::test]
     async fn test_chat_llm_runner() -> Result<()> {
-        // Create settings
         let settings = create_mistral_settings()?;
 
-        // Create service instance
         let service = MistralLlmServiceImpl::new(&settings).await?;
 
-        // Create chat args
         let args = create_chat_args(false)?;
 
-        // Create function app for converter
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
         struct TestChatService {
@@ -483,10 +471,8 @@ mod tests {
         // Send request
         let response = service.request_chat(request_builder).await?;
 
-        // Convert to result
         let result = DefaultLLMResultConverter::convert_chat_completion_result(&response);
 
-        // Verify response
         assert!(result.done || result.content.is_some());
         if let Some(content) = result.content {
             if let Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) = content.content {
@@ -501,16 +487,12 @@ mod tests {
     #[ignore]
     #[tokio::test]
     async fn test_gguf_model() -> Result<()> {
-        // Create GGUF settings
         let settings = create_gguf_mistral_settings()?;
 
-        // Create service instance
         let service = MistralLlmServiceImpl::new(&settings).await?;
 
-        // Create chat args
         let args = create_chat_args(false)?;
 
-        // Create function app for converter
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
         struct TestGGUFService {
@@ -538,10 +520,8 @@ mod tests {
         // Send request
         let response = service.request_chat(request_builder).await?;
 
-        // Convert to result
         let result = DefaultLLMResultConverter::convert_chat_completion_result(&response);
 
-        // Verify response
         assert!(result.done || result.content.is_some());
         if let Some(content) = result.content {
             if let Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) = content.content {
@@ -556,19 +536,14 @@ mod tests {
     #[ignore]
     #[tokio::test]
     async fn test_llm_runner_stream() -> Result<()> {
-        // Create settings
         let settings = create_mistral_settings()?;
 
-        // Create service instance
         let service = MistralLlmServiceImpl::new(&settings).await?;
 
-        // Create chat args for streaming
         let args = create_chat_args(true)?;
 
-        // Create function app for converter
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
-        // Create test service with mixin for streaming
         struct TestLLMStreamService {
             function_app: Arc<FunctionAppImpl>,
             function_set_app: Arc<FunctionSetAppImpl>,
@@ -591,7 +566,6 @@ mod tests {
         };
         let request_builder = test_service.build_request(&args, true).await?;
 
-        // Use MistralCoreService stream_chat method
         let stream = service.stream_chat(request_builder).await?;
 
         let mut stream = stream;
@@ -599,7 +573,6 @@ mod tests {
         let mut output = Vec::new();
 
         while let Some(response) = stream.next().await {
-            // Convert MistralRS response to LlmChatResult based on response type
             let result = match response {
                 mistralrs::Response::Chunk(chunk) => {
                     DefaultLLMResultConverter::convert_chat_completion_chunk_result(&chunk)
@@ -644,19 +617,14 @@ mod tests {
     #[ignore]
     #[tokio::test]
     async fn test_gguf_llm_runner_stream() -> Result<()> {
-        // Create GGUF settings
         let settings = create_gguf_mistral_settings()?;
 
-        // Create service instance
         let service = MistralLlmServiceImpl::new(&settings).await?;
 
-        // Create chat args for streaming
         let args = create_chat_args(true)?;
 
-        // Create function app for converter
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
-        // Create test service with mixin for GGUF streaming
         struct TestGGUFStreamService {
             function_app: Arc<FunctionAppImpl>,
             function_set_app: Arc<FunctionSetAppImpl>,
@@ -679,7 +647,6 @@ mod tests {
         };
         let request_builder = test_service.build_request(&args, true).await?;
 
-        // Use MistralCoreService stream_chat method
         let stream = service.stream_chat(request_builder).await?;
 
         let mut stream = stream;
@@ -687,7 +654,6 @@ mod tests {
         let mut output = Vec::new();
 
         while let Some(response) = stream.next().await {
-            // Convert MistralRS response to LlmChatResult based on response type
             let result = match response {
                 mistralrs::Response::Chunk(chunk) => {
                     DefaultLLMResultConverter::convert_chat_completion_chunk_result(&chunk)
@@ -730,10 +696,8 @@ mod tests {
     #[ignore]
     #[tokio::test]
     async fn test_llm_tool_runner() -> Result<()> {
-        // Create tool-capable settings
         let settings = create_mistral_tool_settings()?;
 
-        // Create function app for tool execution
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
         let function_set_name = "test_set";
@@ -746,7 +710,6 @@ mod tests {
         )
         .await?;
 
-        // Create tool args with financial data query
         let args = create_tool_args(Some(function_set_name))?;
 
         println!("Using MistralRSToolCallingService with tool calling support");
@@ -795,10 +758,8 @@ mod tests {
     #[ignore]
     #[tokio::test]
     async fn test_gguf_llm_tool_runner() -> Result<()> {
-        // Create GGUF tool-capable settings
         let settings = create_gguf_mistral_tool_settings()?;
 
-        // Create function app for tool execution
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
         // Using the new MistralRSToolCallingService (GGUF version)
@@ -809,7 +770,6 @@ mod tests {
         )
         .await?;
 
-        // Create tool args with financial data query
         let args = create_tool_args(None)?;
 
         println!("Using GGUF MistralRSToolCallingService with tool calling support");
@@ -1037,10 +997,8 @@ mod tests {
     async fn test_mistralrs_tool_calling_stream() -> Result<()> {
         println!("Testing MistralRS Tool Calling Service streaming...");
 
-        // Create tool-capable settings
         let settings = create_mistral_tool_settings()?;
 
-        // Create function app for tool execution
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
         // Using the new MistralRSToolCallingService
@@ -1051,7 +1009,6 @@ mod tests {
         )
         .await?;
 
-        // Create simple args WITHOUT tool calling for pure streaming test
         let args = create_chat_args(true)?; // stream=true for streaming test
 
         println!("Testing streaming WITHOUT tool calling...");
@@ -1095,10 +1052,8 @@ mod tests {
     async fn test_mistralrs_tool_calling_stream_with_tools() -> Result<()> {
         println!("Testing MistralRS Tool Calling Service streaming with tools...");
 
-        // Create tool-capable settings
         let settings = create_mistral_tool_settings()?;
 
-        // Create function app for tool execution
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
         let function_set_name = "test_stream_set";
@@ -1124,7 +1079,6 @@ mod tests {
         )
         .await?;
 
-        // Create args WITH tool calling - should use strategy 1 (non-streaming tool calling + final streaming)
         let args = create_tool_args(Some(function_set_name))?;
 
         println!("Testing streaming WITH tool calling (Strategy 1)...");
@@ -1192,7 +1146,6 @@ mod tests {
     async fn test_mistralrs_performance_benchmark() -> Result<()> {
         println!("=== MistralRS Performance Benchmark ===");
 
-        // Create performance-optimized settings
         let settings = create_mistral_tool_settings()?;
         let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
@@ -1247,7 +1200,6 @@ mod tests {
             tool_duration - simple_duration
         );
 
-        // Verify tool calling worked
         assert!(tool_result.content.is_some());
         if let Some(content) = tool_result.content {
             match content.content {
@@ -1352,7 +1304,6 @@ mod tests {
         )
         .await?;
 
-        // Verify OpenTelemetry client is active
         println!("📊 Tracing Configuration:");
         println!("   - OTel Client Active: {}", service.otel_client.is_some());
 
@@ -1381,7 +1332,6 @@ mod tests {
             )
             .await?;
 
-        // Validate tracing worked by checking result
         println!("📊 Result content: {:?}", result.content);
 
         assert!(result.content.is_some());
@@ -1431,7 +1381,6 @@ mod tests {
             )
             .await?;
 
-        // Verify response structure
         assert!(result.content.is_some(), "Expected content in response");
         if let Some(content) = result.content {
             match content.content {
@@ -1443,7 +1392,6 @@ mod tests {
             }
         }
 
-        // Verify usage information is present
         if let Some(usage) = result.usage {
             println!("📊 Usage information captured:");
             let prompt_tokens = usage.prompt_tokens.unwrap_or(0);

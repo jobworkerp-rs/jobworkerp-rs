@@ -42,7 +42,6 @@ async fn create_test_service() -> Result<OllamaChatService> {
     // Try to delete existing function set if it exists to avoid unique constraint error
     // Note: delete_function_set requires FunctionSetId, so we'll handle the error if it already exists
 
-    // Create function set with only COMMAND runner (id=1)
     // If it already exists, ignore the error and continue
     let _result = app_module
         .function_set_app

@@ -17,7 +17,6 @@ pub trait GenaiTracingHelper: GenericLLMTracingHelper {
                     "content": m.get_content()
                 });
 
-                // Add additional content info for non-text messages
                 let parts = m.content.parts();
                 if parts.len() > 1 {
                     msg_json["parts_count"] = serde_json::json!(parts.len());
@@ -125,7 +124,6 @@ impl crate::llm::tracing::LLMRequestData for genai::chat::ChatRequest {
                         "content": m.content.joined_texts().unwrap_or_else(|| "[non-text content]".to_string())
                     });
 
-                    // Add additional content info for non-text messages
                     let parts = m.content.parts();
                     if parts.len() > 1 {
                         msg_json["parts_count"] = serde_json::json!(parts.len());
@@ -176,7 +174,6 @@ impl crate::llm::tracing::LLMRequestData for genai::chat::ChatRequest {
 
 impl crate::llm::tracing::LLMResponseData for genai::chat::ChatResponse {
     fn to_trace_output(&self) -> serde_json::Value {
-        // Return only the message content for trace output, not the full structure
         serde_json::json!(self.first_text())
     }
 
@@ -212,7 +209,6 @@ pub trait GenaiCompletionTracingHelper: GenericLLMTracingHelper {
                 options,
             );
 
-        // Create completion-specific span attributes
         let mut span_builder = command_utils::trace::attr::OtelSpanBuilder::new(format!(
             "{}.completions",
             self.get_provider_name()

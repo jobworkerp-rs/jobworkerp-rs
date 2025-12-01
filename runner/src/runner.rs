@@ -94,10 +94,7 @@ macro_rules! schema_to_json_string_option {
     }};
 }
 
-/// JSON Schema definition for a single method/tool
-///
-/// Phase 6.7: This struct is used to provide JSON Schema for each method
-/// in a runner's method_json_schema_map().
+/// JSON Schema definition for a single method/tool in a runner's method_json_schema_map().
 ///
 /// NOTE: description is NOT included here - it should be retrieved from
 /// MethodSchema.description in method_proto_map instead.
@@ -217,7 +214,7 @@ pub trait RunnerSpec: Send + Sync + Any {
     // only implement for stream runner (output_as_stream() == true)
     fn runner_settings_proto(&self) -> String;
 
-    /// Returns the method protobuf schema map for all runners (REQUIRED in Phase 6.6.4+)
+    /// Returns the method protobuf schema map for all runners
     /// - Key: method name (e.g., DEFAULT_METHOD_NAME ("run") for single-method runners, tool names for MCP/Plugin)
     /// - Value: MethodSchema (input schema, output schema, description, output_type)
     /// - Single-method runners: use default method name DEFAULT_METHOD_NAME ("run")
@@ -226,8 +223,6 @@ pub trait RunnerSpec: Send + Sync + Any {
         &self,
     ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema>;
 
-    /// Phase 6.7: JSON Schema definition for each method
-    ///
     /// Returns a map of method names to their JSON Schemas.
     /// - Key: method name (e.g., DEFAULT_METHOD_NAME ("run") for single-method runners, tool names for MCP/Plugin)
     /// - Value: MethodJsonSchema (args_schema, result_schema)
@@ -245,7 +240,7 @@ pub trait RunnerSpec: Send + Sync + Any {
 
     /// JSON schema methods for Workflow API validation
     ///
-    /// **DEPRECATED (Phase 6.7)**: Use method_json_schema_map() instead.
+    /// **DEPRECATED**: Use method_json_schema_map() instead.
     ///
     /// **IMPORTANT**: These methods are for **normal runners only** (non-using runners).
     /// For using-based runners (MCP Server, Plugin with multiple methods):

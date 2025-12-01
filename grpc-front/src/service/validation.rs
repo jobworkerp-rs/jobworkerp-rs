@@ -166,7 +166,6 @@ pub fn validate_time_range(
             )));
         }
     } else {
-        // Validate individual time values if only one is specified
         if let Some(from) = time_from {
             if from < 0 {
                 return Err(Status::invalid_argument(format!(

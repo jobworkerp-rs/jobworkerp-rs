@@ -46,7 +46,6 @@ message FunctionUsing {
 // # Function Specs
 // Metadata that describes function capabilities and interface for clients
 // Represents either a runner or worker as a function
-// Phase 6.7: Unified schema structure for all runners (MCP/Plugin/Normal)
 message FunctionSpecs {
   // # Runner Type
   jobworkerp.data.RunnerType runner_type = 1;
@@ -86,7 +85,6 @@ message FunctionSpecs {
 // # Method Schema Map
 // Container for all method schemas in a function
 // Uses map for O(1) access and consistency with RunnerData.method_proto_map
-// Phase 6.7: Replaces both FunctionSchema and McpToolList
 message MethodSchemaMap {
   // # Schemas Map
   // Key: method name (e.g., "run", "fetch_html", "get_current_time")
@@ -101,7 +99,6 @@ message MethodSchemaMap {
 
 // # Method Schema
 // JSON Schema definition for a single method/tool
-// Phase 6.7: Unified structure replacing both FunctionSchema and McpTool
 message MethodSchema {
   // NOTE: method name is stored in map key, not here
 

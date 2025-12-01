@@ -7,8 +7,6 @@ use proto::jobworkerp::data::{RunnerData, RunnerType, StreamingOutputType, Worke
 use proto::jobworkerp::function::data::FunctionSpecs;
 
 pub trait FunctionSpecConverter {
-    // Helper function to get output_type for a specific method
-    // Phase 6.7: Get from method_proto_map (method-specific)
     fn get_method_output_type(runner_data: Option<&RunnerData>, method_name: &str) -> i32 {
         runner_data
             .and_then(|d| d.method_proto_map.as_ref())
@@ -17,14 +15,9 @@ pub trait FunctionSpecConverter {
             .unwrap_or(StreamingOutputType::NonStreaming as i32)
     }
 
-    // Helper function to convert Runner to FunctionSpecs (Phase 6.7)
-    // Phase 6.7: Unified schema conversion for all runners (MCP/Plugin/Normal)
     fn convert_runner_to_function_specs(runner: RunnerWithSchema) -> FunctionSpecs {
         let runner_data = runner.data.as_ref();
 
-        // Phase 6.7: Combine method_proto_map (for description) and method_json_schema_map (for schemas)
-        // - description: from method_proto_map (not cached in method_json_schema_map)
-        // - arguments_schema/result_schema: from method_json_schema_map (cached conversion)
         let method_schemas = runner_data
             .and_then(|d| d.method_proto_map.as_ref())
             .map(|proto_map| {
@@ -32,7 +25,6 @@ pub trait FunctionSpecConverter {
                     .schemas
                     .iter()
                     .map(|(name, proto_schema)| {
-                        // Get cached JSON schema conversion
                         let json_schema = runner
                             .method_json_schema_map
                             .as_ref()
@@ -63,14 +55,13 @@ pub trait FunctionSpecConverter {
             worker_id: None,
             name: runner_data.map_or(String::new(), |d| d.name.clone()),
             description: runner_data.map_or(String::new(), |d| d.description.clone()),
-            settings_schema: runner.settings_schema, // REQUIRED (empty string if no settings)
+            settings_schema: runner.settings_schema,
             methods: Some(proto::jobworkerp::function::data::MethodSchemaMap {
                 schemas: method_schemas,
             }),
         }
     }
 
-    // Helper function to convert Worker to FunctionSpecs (Phase 6.7)
     fn convert_worker_to_function_specs(
         id: WorkerId,
         data: WorkerData,
@@ -78,7 +69,6 @@ pub trait FunctionSpecConverter {
     ) -> Result<FunctionSpecs> {
         let runner_data = runner.data.as_ref();
 
-        // Phase 6.7: Unified schema conversion (all workers use MethodSchemaMap)
         let method_schemas = if runner_data
             .is_some_and(|d| d.runner_type == RunnerType::ReusableWorkflow as i32)
         {
@@ -107,7 +97,6 @@ pub trait FunctionSpecConverter {
             let input_schema =
                 input_schema.map(|s| Self::parse_as_json_with_key_or_noop("document", s));
 
-            // Get result schema and output_type from runner's default method
             let default_method = runner
                 .method_json_schema_map
                 .as_ref()
@@ -116,7 +105,6 @@ pub trait FunctionSpecConverter {
             let result_schema = default_method.and_then(|schema| schema.result_schema.clone());
             let output_type = Self::get_method_output_type(runner_data, proto::DEFAULT_METHOD_NAME);
 
-            // Create single method with overridden input schema
             let mut schemas = std::collections::HashMap::new();
             schemas.insert(
                 name.unwrap_or(proto::DEFAULT_METHOD_NAME.to_string()),
@@ -132,7 +120,6 @@ pub trait FunctionSpecConverter {
             );
             schemas
         } else {
-            // All other workers: Combine method_proto_map and method_json_schema_map
             runner_data
                 .and_then(|d| d.method_proto_map.as_ref())
                 .map(|proto_map| {
@@ -140,7 +127,6 @@ pub trait FunctionSpecConverter {
                         .schemas
                         .iter()
                         .map(|(name, proto_schema)| {
-                            // Get cached JSON schema conversion
                             let json_schema = runner
                                 .method_json_schema_map
                                 .as_ref()
@@ -173,14 +159,14 @@ pub trait FunctionSpecConverter {
             worker_id: Some(id),
             name: data.name,
             description: data.description,
-            settings_schema: String::new(), // Workers don't have settings (empty string)
+            settings_schema: String::new(),
             methods: Some(proto::jobworkerp::function::data::MethodSchemaMap {
                 schemas: method_schemas,
             }),
         })
     }
 
-    /// Convert Runner + specific using to FunctionSpecs (Phase 6.7)
+    /// Convert Runner + specific using to FunctionSpecs
     ///
     /// Returns a FunctionSpecs with a single tool (the specified using).
     /// Works for MCP servers, Plugins, and all other runners with method_json_schema_map.
@@ -194,7 +180,6 @@ pub trait FunctionSpecConverter {
             .as_ref()
             .ok_or_else(|| JobWorkerError::NotFound("Runner data not found".to_string()))?;
 
-        // Get proto schema for description
         let proto_schema = runner_data
             .method_proto_map
             .as_ref()
@@ -206,13 +191,11 @@ pub trait FunctionSpecConverter {
                 ))
             })?;
 
-        // Get cached JSON schema for args/result
         let json_schema = runner
             .method_json_schema_map
             .as_ref()
             .and_then(|map| map.schemas.get(using));
 
-        // Phase 6.7: Use methods map with single method
         let mut method_schemas = std::collections::HashMap::new();
         method_schemas.insert(
             using.to_string(),
@@ -236,14 +219,14 @@ pub trait FunctionSpecConverter {
                 .description
                 .clone()
                 .unwrap_or_else(|| format!("{} - {}", runner_data.description, using)),
-            settings_schema: String::new(), // Using-specific functions don't need settings
+            settings_schema: String::new(),
             methods: Some(proto::jobworkerp::function::data::MethodSchemaMap {
                 schemas: method_schemas,
             }),
         })
     }
 
-    /// Convert Worker + specific using to FunctionSpecs (Phase 6.7)
+    /// Convert Worker + specific using to FunctionSpecs
     ///
     /// Returns a FunctionSpecs with a single tool (the specified using).
     /// Works for Workers backed by MCP servers, Plugins, and all other runners with method_json_schema_map.
@@ -259,7 +242,6 @@ pub trait FunctionSpecConverter {
             .as_ref()
             .ok_or_else(|| JobWorkerError::NotFound("Runner data not found".to_string()))?;
 
-        // Get proto schema for description
         let proto_schema = runner_data
             .method_proto_map
             .as_ref()
@@ -271,13 +253,11 @@ pub trait FunctionSpecConverter {
                 ))
             })?;
 
-        // Get cached JSON schema for args/result
         let json_schema = runner
             .method_json_schema_map
             .as_ref()
             .and_then(|map| map.schemas.get(using));
 
-        // Phase 6.7: Use methods map with single method
         let mut method_schemas = std::collections::HashMap::new();
         method_schemas.insert(
             using.to_string(),
@@ -301,21 +281,18 @@ pub trait FunctionSpecConverter {
                 .description
                 .clone()
                 .unwrap_or_else(|| format!("{} - {}", worker_data.description, using)),
-            settings_schema: String::new(), // Workers don't have settings (already configured)
+            settings_schema: String::new(),
             methods: Some(proto::jobworkerp::function::data::MethodSchemaMap {
                 schemas: method_schemas,
             }),
         })
     }
 
-    // Parse JSON value with key extraction
     #[allow(clippy::if_same_then_else)]
     fn parse_as_json_with_key_or_noop(key: &str, value: serde_json::Value) -> serde_json::Value {
         match value {
             serde_json::Value::Object(mut value_map) => {
                 if let Some(candidate_value) = value_map.remove(key) {
-                    // Try to remove key or noop
-                    // Check if not empty object
                     if candidate_value.is_object()
                         && candidate_value.as_object().is_some_and(|o| !o.is_empty())
                     {
@@ -330,7 +307,6 @@ pub trait FunctionSpecConverter {
                             key,
                             &candidate_value
                         );
-                        // Original value
                         value_map.insert(key.to_string(), candidate_value.clone());
                         serde_json::Value::Object(value_map)
                     }

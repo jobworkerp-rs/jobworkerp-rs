@@ -72,9 +72,7 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
         block_on(self.plugin_runner.read()).method_proto_map()
     }
 
-    // Phase 6.7: Override method_json_schema_map() to support plugin-provided JSON schemas
     fn method_json_schema_map(&self) -> HashMap<String, crate::runner::MethodJsonSchema> {
-        // Check if plugin provides custom JSON schemas
         if let Some(custom_schemas) = block_on(self.plugin_runner.read()).method_json_schema_map() {
             custom_schemas
         } else {
@@ -149,7 +147,6 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         })?;
         let plugin_runner = self.plugin_runner.clone();
 
-        // Get cancellation token if available
         let cancel_token = if let Some(helper) = &self.cancel_helper {
             Some(helper.get_cancellation_token().await)
         } else {

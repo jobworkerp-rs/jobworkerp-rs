@@ -16,7 +16,6 @@ use mistralrs::{
 #[async_trait]
 pub trait MistralModelLoader {
     async fn load_model(mistral_settings: &LocalRunnerSettings) -> Result<Model> {
-        // Extract model settings
         match &mistral_settings.model_settings {
             Some(model_settings) => match model_settings {
             // TextModel implementation

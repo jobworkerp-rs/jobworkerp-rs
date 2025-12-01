@@ -665,8 +665,6 @@ mod test {
         })
     }
 
-    // Sprint 4 Phase 5: Advanced filtering and bulk operations tests
-
     /// Helper function to create test job result data
     #[allow(dead_code)]
     fn create_test_job_result_data(
@@ -712,7 +710,6 @@ mod test {
         let repository = RdbJobResultRepositoryImpl::new(pool);
 
         // Prepare test data: 3 results from worker 1, 2 results from worker 2
-        // Use unique IDs for this test
         let base_id = 8000;
         let now = command_utils::util::datetime::now_millis();
         for i in 1..=5 {
@@ -796,7 +793,6 @@ mod test {
         let repository = RdbJobResultRepositoryImpl::new(pool);
 
         // Prepare test data: 2 SUCCESS, 2 FATAL_ERROR, 1 ERROR_AND_RETRY
-        // Use unique IDs for this test
         let base_id = 10000;
         let now = command_utils::util::datetime::now_millis();
         let statuses = [
@@ -1478,7 +1474,6 @@ mod test {
             .await?;
         assert_eq!(deleted_count, 5, "Should delete all 5 old results");
 
-        // Verify deletion
         let remaining = repository.count_list_tx(pool).await?;
         assert_eq!(remaining, 0, "Should have no remaining results");
 
@@ -1493,7 +1488,6 @@ mod test {
         let now = command_utils::util::datetime::now_millis();
         let two_days_ago = now - (48 * 60 * 60 * 1000);
 
-        // Use unique IDs for this test to avoid conflicts with other tests
         let base_id = 2000;
         let data1 = create_test_job_result_data(
             1,
@@ -1527,7 +1521,6 @@ mod test {
             .await?;
         assert_eq!(deleted_count, 1, "Should delete 1 FATAL_ERROR result");
 
-        // Verify remaining
         let remaining = repository.count_list_tx(pool).await?;
         assert_eq!(remaining, 1, "Should have 1 remaining SUCCESS result");
 
@@ -1592,7 +1585,6 @@ mod test {
             .await?;
         assert_eq!(deleted, 1);
 
-        // Verify deletion committed
         let count_after = repository.count_list_tx(pool).await?;
         assert_eq!(count_after, 0, "Deletion should be committed");
 
@@ -1631,7 +1623,6 @@ mod test {
         // Expected: 24-hour protection enforced, no deletion
         assert_eq!(deleted, 0, "Recent data (1 hour ago) should not be deleted");
 
-        // Verify data still exists
         let found = repository.find(&JobResultId { value: base_id + 1 }).await?;
         assert!(found.is_some(), "Recent data should still exist");
 
@@ -1700,7 +1691,6 @@ mod test {
         // Expected: Old data (48 hours ago) should be deleted
         assert_eq!(deleted, 1, "Old data (48 hours ago) should be deleted");
 
-        // Verify deletion
         let found = repository.find(&JobResultId { value: base_id + 1 }).await?;
         assert!(found.is_none(), "Old data should be deleted");
 
@@ -1753,18 +1743,14 @@ mod test {
         // Expected: Only old data deleted
         assert_eq!(deleted, 1, "Only old data should be deleted");
 
-        // Verify recent data still exists
         let recent_found = repository.find(&JobResultId { value: base_id + 1 }).await?;
         assert!(recent_found.is_some(), "Recent data should still exist");
 
-        // Verify old data deleted
         let old_found = repository.find(&JobResultId { value: base_id + 2 }).await?;
         assert!(old_found.is_none(), "Old data should be deleted");
 
         Ok(())
     }
-
-    // Test runner functions for Sprint 4
 
     #[cfg(not(feature = "mysql"))]
     #[test]

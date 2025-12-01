@@ -187,7 +187,6 @@ mod tests {
                 .await
                 .unwrap();
 
-            // Verify that flow_directive has been changed to case1-route
             assert_eq!(
                 result.flow_directive,
                 Then::TaskName("case1-route".to_string())
@@ -228,7 +227,6 @@ mod tests {
                 .await
                 .unwrap();
 
-            // Verify that flow_directive has been changed to case2-route
             assert_eq!(
                 result.flow_directive,
                 Then::TaskName("case2-route".to_string())
@@ -269,7 +267,6 @@ mod tests {
                 .await
                 .unwrap();
 
-            // Verify that flow_directive has been changed to default-route
             assert_eq!(
                 result.flow_directive,
                 Then::TaskName("default-route".to_string())
@@ -307,7 +304,6 @@ mod tests {
                 .await
                 .unwrap();
 
-            // Verify that the condition matches and flow_directive has been changed to case1-route
             assert_eq!(
                 result.flow_directive,
                 Then::TaskName("case1-route".to_string())

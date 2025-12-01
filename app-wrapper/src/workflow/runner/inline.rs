@@ -144,7 +144,6 @@ impl RunnerTrait for InlineWorkflowRunner {
                 anyhow::anyhow!("workflow_source is required in workflow args")
             })?;
             tracing::debug!("workflow source: {:?}", source);
-            // Use WorkflowLoader from AppModule (no http_client dependency needed)
             let workflow = self
                 .app_module
                 .workflow_loader
@@ -168,7 +167,6 @@ impl RunnerTrait for InlineWorkflowRunner {
                 chpoint,
             )
             .await?;
-            // Get the stjream of workflow context updates
             let workflow_stream = executor.execute_workflow(Arc::new(cx));
             pin_mut!(workflow_stream);
 
@@ -201,7 +199,6 @@ impl RunnerTrait for InlineWorkflowRunner {
                 }
             }
 
-            // Return the final workflow context or an error if none was received
             let res =
                 final_context.ok_or_else(|| anyhow::anyhow!("No workflow context was returned"))?;
 
@@ -275,7 +272,6 @@ impl RunnerTrait for InlineWorkflowRunner {
         tracing::debug!("workflow source: {:?}", source);
         let app_module = self.app_module.clone();
 
-        // Use WorkflowLoader from AppModule (no http_client dependency needed)
         let workflow = app_module
             .workflow_loader
             .load_workflow_source(source)
@@ -317,7 +313,6 @@ impl RunnerTrait for InlineWorkflowRunner {
             .then(|result| async move {
                 match result {
                     Ok(context) => {
-                        // Create a WorkflowResult from the context
                         let workflow_result = WorkflowResult {
                             id: context.id.to_string(),
                             output: serde_json::to_string(&context.output).unwrap_or_default(),
@@ -364,7 +359,6 @@ impl RunnerTrait for InlineWorkflowRunner {
                 }
             })
             .chain(futures::stream::once(async move {
-                // Add an End item at the end of the stream
                 tracing::debug!(
                     "Workflow execution completed, sending end of stream: {metadata:#?}"
                 );

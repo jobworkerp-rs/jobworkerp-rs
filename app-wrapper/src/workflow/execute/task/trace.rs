@@ -12,7 +12,6 @@ pub trait TaskTracing: Tracing {
         task: &TaskContext,
         position_json_pointer: String,
     ) {
-        // Use tracing helper to record input information
         Self::record_task_input(span, operation_name, task, position_json_pointer);
     }
     fn record_task_input(

@@ -60,7 +60,6 @@ impl ChatResponse for ChatMessageResponse {
                 })
                 .collect::<Vec<_>>();
 
-            // Return tool calls as JSON structure with available fields
             let mut response = serde_json::json!({
                 "role": "assistant",
                 "tool_calls": tool_calls,
@@ -70,7 +69,6 @@ impl ChatResponse for ChatMessageResponse {
                 "done": self.done
             });
 
-            // Add final_data information if available
             if let Some(ref final_data) = self.final_data {
                 response["total_duration"] = serde_json::json!(final_data.total_duration);
                 response["load_duration"] = serde_json::json!(final_data.load_duration);
@@ -92,7 +90,6 @@ impl ChatResponse for ChatMessageResponse {
                 "done": self.done
             });
 
-            // Add final_data information if available
             if let Some(ref final_data) = self.final_data {
                 response["total_duration"] = serde_json::json!(final_data.total_duration);
                 response["load_duration"] = serde_json::json!(final_data.load_duration);
@@ -147,7 +144,6 @@ pub trait OllamaTracingHelper: GenericLLMTracingHelper {
                     "content": m.content
                 });
 
-                // Add tool_calls if present
                 if !m.tool_calls.is_empty() {
                     msg_json["tool_calls"] = serde_json::json!(m
                         .tool_calls
@@ -161,7 +157,6 @@ pub trait OllamaTracingHelper: GenericLLMTracingHelper {
                         .collect::<Vec<_>>());
                 }
 
-                // Add images if present
                 if let Some(images) = &m.images {
                     if !images.is_empty() {
                         msg_json["images"] = serde_json::json!(images.len());

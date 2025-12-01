@@ -26,7 +26,6 @@ pub trait LLMChatRunnerSpec {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/llm/runner.proto").to_string()
     }
-    // Phase 6.6: Unified method_proto_map for all runners
     fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(

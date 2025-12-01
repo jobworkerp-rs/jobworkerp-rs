@@ -169,7 +169,6 @@ async fn test_slack_error_handling_with_job_runner() -> Result<()> {
     let args_bytes = ProstMessageCodec::serialize_message(&args)?;
     let result = execute_normal_job(RunnerType::SlackPostMessage, args_bytes, 8000).await?;
 
-    // Verify that error responses are handled gracefully
     assert!(result.job_result.data.is_some());
     let data = result.job_result.data.as_ref().unwrap();
 

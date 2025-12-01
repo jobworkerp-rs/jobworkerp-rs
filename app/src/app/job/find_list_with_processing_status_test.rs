@@ -27,7 +27,6 @@ mod tests {
         TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
 
-            // Create test worker
             let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
@@ -58,7 +57,6 @@ mod tests {
             // Test finding jobs with different statuses
             let metadata = Arc::new(HashMap::new());
 
-            // Create a job and test various status transitions
             let (job_id, res, _) = app
                 .enqueue_job(
                     metadata.clone(),
@@ -143,7 +141,6 @@ mod tests {
         TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
 
-            // Create test worker
             let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
@@ -171,7 +168,6 @@ mod tests {
                     args: vec!["/".to_string()],
                 });
 
-            // Create multiple jobs to test list functionality
             let metadata = Arc::new(HashMap::new());
             let mut job_ids = Vec::new();
 
@@ -200,7 +196,6 @@ mod tests {
             // Small delay to ensure async operations complete
             tokio::time::sleep(Duration::from_millis(50)).await;
 
-            // Verify all jobs have Pending status
             for job_id in &job_ids {
                 let status = app
                     .job_processing_status_repository()
@@ -220,7 +215,6 @@ mod tests {
         TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
 
-            // Create test worker
             let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
@@ -326,7 +320,6 @@ mod tests {
         TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
 
-            // Create test worker with QueueType::Normal
             let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "sleep".to_string(),
@@ -378,7 +371,6 @@ mod tests {
             // Small delay to ensure enqueue operations complete
             tokio::time::sleep(Duration::from_millis(100)).await;
 
-            // Check that job is initially Pending
             let pending_jobs = app
                 .find_list_with_processing_status(JobProcessingStatus::Pending, Some(&10))
                 .await?;
@@ -393,14 +385,12 @@ mod tests {
                 .upsert_status(&job_id, &JobProcessingStatus::Running)
                 .await?;
 
-            // Verify job can be found via find_job (should use individual TTL key)
             let found_job = app.find_job(&job_id).await?;
             assert!(
                 found_job.is_some(),
                 "Running job should be findable via individual TTL key"
             );
 
-            // Verify job appears in find_list_with_processing_status for Running status
             let running_jobs = app
                 .find_list_with_processing_status(JobProcessingStatus::Running, Some(&10))
                 .await?;
@@ -414,7 +404,6 @@ mod tests {
                 "Running job should be visible in find_list_with_processing_status"
             );
 
-            // Verify job metadata is correct
             if let Some((found_job, status)) = running_jobs
                 .iter()
                 .find(|(job, _)| job.id.as_ref().map(|id| id.value) == Some(job_id.value))
@@ -435,7 +424,6 @@ mod tests {
         TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
 
-            // Create test worker
             let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "echo".to_string(),
@@ -463,13 +451,11 @@ mod tests {
                     args: vec!["test".to_string()],
                 });
 
-            // Create multiple jobs for performance testing
             let metadata = Arc::new(HashMap::new());
             let mut job_ids = Vec::new();
 
             let start_time = std::time::Instant::now();
 
-            // Create 10 jobs
             for i in 0..10 {
                 let (job_id, _, _) = app
                     .enqueue_job(
@@ -508,7 +494,6 @@ mod tests {
                 find_time
             );
 
-            // Verify all our test jobs are found
             let found_count = job_ids
                 .iter()
                 .filter(|job_id| {

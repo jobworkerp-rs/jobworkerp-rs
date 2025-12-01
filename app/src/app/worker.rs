@@ -225,7 +225,6 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
     // for pubsub
     async fn clear_cache_by(&self, id: Option<&WorkerId>, name: Option<&String>) -> Result<()>;
 
-    // Check if the worker(runner) supports streaming mode or not
     async fn check_worker_streaming(&self, id: &WorkerId, request_streaming: bool) -> Result<()> {
         let runner_id = if let Some(Worker {
             id: _,
@@ -249,7 +248,6 @@ pub trait WorkerApp: UseRunnerApp + fmt::Debug + Send + Sync + 'static {
             ..
         }) = self.runner_app().find_runner(&runner_id).await?
         {
-            // Phase 6.6.4: Get output_type from method_proto_map (required for all runners)
             let output_type = if let Some(ref method_proto_map) = runner_data.method_proto_map {
                 method_proto_map
                     .schemas

@@ -281,7 +281,6 @@ impl RdbJobProcessingStatusIndexRepository {
              WHERE deleted_at IS NULL",
         );
 
-        // Add dynamic filters with automatic binding
         if let Some(s) = status {
             query_builder.push(" AND status = ").push_bind(s as i32);
         }
@@ -313,7 +312,6 @@ impl RdbJobProcessingStatusIndexRepository {
             .await
             .map_err(JobWorkerError::DBError)?;
 
-        // Convert rows to domain objects
         Ok(rows
             .into_iter()
             .map(|row| JobProcessingStatusDetail {
@@ -527,7 +525,6 @@ mod tests {
 
             assert!(result.is_ok());
 
-            // Verify record was created
             let count: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM job_processing_status WHERE job_id = 100")
                     .fetch_one(pool)
@@ -634,7 +631,6 @@ mod tests {
             // Should succeed (no error) but log warning
             assert!(result.is_ok());
 
-            // Verify no record was created
             let count: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM job_processing_status WHERE job_id = 300")
                     .fetch_one(pool)
@@ -693,7 +689,6 @@ mod tests {
             // Should succeed but not insert
             assert!(result.is_ok());
 
-            // Verify only one record exists (the deleted one)
             let count: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM job_processing_status WHERE job_id = 400")
                     .fetch_one(pool)
@@ -864,7 +859,6 @@ mod tests {
             repo.update_status_by_job_id(&job_id, &JobProcessingStatus::Running)
                 .await?;
 
-            // Verify the status was updated and monitoring columns populated
             let query =
                 "SELECT status, start_time, version FROM job_processing_status WHERE job_id = ?";
             let (status, start_time, version): (i32, Option<i64>, i64) = sqlx::query_as(query)
@@ -973,7 +967,6 @@ mod tests {
             // Mark as deleted using mark_deleted_by_job_id
             repo.mark_deleted_by_job_id(&job_id).await?;
 
-            // Verify deleted_at was set
             let query = "SELECT deleted_at FROM job_processing_status WHERE job_id = ?";
             let deleted_at: Option<i64> = sqlx::query_scalar(query)
                 .bind(job_id.value)
@@ -1007,7 +1000,6 @@ mod tests {
             let job_id = JobId { value: 300 };
             let worker_id = WorkerId { value: 1 };
 
-            // Create a PENDING status
             repo.index_status(
                 &job_id,
                 &JobProcessingStatus::Pending,
@@ -1027,7 +1019,6 @@ mod tests {
             repo.update_status_by_job_id(&job_id, &JobProcessingStatus::Running)
                 .await?;
 
-            // Verify status was NOT updated (should still be PENDING)
             let query = "SELECT status FROM job_processing_status WHERE job_id = ?";
             let status: i32 = sqlx::query_scalar(query)
                 .bind(job_id.value)
@@ -1061,7 +1052,6 @@ mod tests {
             let job_id = JobId { value: 400 };
             let worker_id = WorkerId { value: 1 };
 
-            // Create a PENDING status
             repo.index_status(
                 &job_id,
                 &JobProcessingStatus::Pending,

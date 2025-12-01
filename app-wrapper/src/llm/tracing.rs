@@ -164,13 +164,10 @@ pub trait LLMTracingHelper: Send + Sync {
         let content = response_data.extract_content();
 
         async move {
-            // Create and execute main span containing all LLM operation details
             if let Some(client) = otel_client {
                 if let Some(ref main_span_attributes) = context.main_span_attributes {
-                    // Add response output to main span attributes (only one field)
                     let mut updated_attributes = main_span_attributes.clone();
 
-                    // Create assistant message in the same format as input messages
                     // Input uses: [{"role": "user", "content": "..."}, ...]
                     // Output should use: [{"role": "assistant", "content": "..."}]
 
@@ -181,7 +178,6 @@ pub trait LLMTracingHelper: Send + Sync {
                             serde_json::to_string(&response_output).unwrap_or_default()
                         };
 
-                    // Create completion message array in same format as input messages
                     let completion_messages = serde_json::json!([{
                         "role": "assistant",
                         "content": assistant_content
@@ -200,12 +196,10 @@ pub trait LLMTracingHelper: Send + Sync {
                     // Clear any interfering metadata
                     updated_attributes.data.metadata = None;
 
-                    // Add usage information to main span if available
                     if let Some(usage_ref) = usage.as_ref() {
                         updated_attributes.usage = Some(usage_ref.to_usage_map());
                     }
 
-                    // Use with_span_result_and_response_parser to preserve our response data
                     client
                         .with_span_result_and_response_parser(
                             updated_attributes,
@@ -248,10 +242,8 @@ pub trait LLMTracingHelper: Send + Sync {
         let error_message = error.to_string();
 
         async move {
-            // Create main span with error information
             if let Some(client) = otel_client {
                 if let Some(ref main_span_attributes) = context.main_span_attributes {
-                    // Add error information to main span attributes (only one field)
                     let mut updated_attributes = main_span_attributes.clone();
                     let error_output = serde_json::json!({
                         "error": error_message,
@@ -260,7 +252,6 @@ pub trait LLMTracingHelper: Send + Sync {
                     updated_attributes.data.output = Some(error_output); // Use only OpenInference standard field
                     updated_attributes.level = Some("ERROR".to_string());
 
-                    // Use with_span_result_and_response_parser to preserve our error data
                     client
                         .with_span_result_and_response_parser(
                             updated_attributes,
@@ -341,7 +332,6 @@ pub trait LLMTracingHelper: Send + Sync {
             // span_builder = span_builder.tools(tools_json);
         }
 
-        // Add metadata
         if let Some(sid) = metadata.get("session_id").cloned() {
             span_builder = span_builder.session_id(sid);
         }
@@ -636,7 +626,6 @@ impl crate::llm::tracing::LLMRequestData
 
 impl crate::llm::tracing::LLMResponseData for ChatMessageResponse {
     fn to_trace_output(&self) -> serde_json::Value {
-        // Return only the message content for trace output, not the full structure
         serde_json::json!(self.message.content)
     }
 

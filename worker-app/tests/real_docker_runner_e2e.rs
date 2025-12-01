@@ -166,12 +166,10 @@ async fn test_real_docker_basic_execution() -> Result<()> {
         .await;
     let elapsed_time = start_time.elapsed();
 
-    // Verify successful execution
     assert!(result.data.is_some());
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32);
 
-    // Verify actual Docker output (UTF-8 string, not protobuf)
     assert!(data.output.is_some());
     let docker_result: String = String::from_utf8_lossy(&data.output.unwrap().items).to_string();
     assert!(docker_result.contains("Hello Real Docker E2E Test"));
@@ -207,11 +205,9 @@ async fn test_real_docker_linux_commands() -> Result<()> {
         .run_job(&runner_data, &worker_id, &worker_data, job)
         .await;
 
-    // Verify successful execution
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32);
 
-    // Verify complex command outputs
     let docker_result: String = String::from_utf8_lossy(&data.output.unwrap().items).to_string();
     assert!(docker_result.contains("Starting Docker test"));
     assert!(docker_result.contains("14")); // 2 + 3 * 4 = 14
@@ -227,7 +223,6 @@ async fn test_real_docker_linux_commands() -> Result<()> {
 async fn test_real_docker_filesystem_operations() -> Result<()> {
     let job_runner = get_real_job_runner().await;
 
-    // Create and manipulate files within container
     let job = create_docker_job(
         "alpine:latest",
         vec![
@@ -252,11 +247,9 @@ async fn test_real_docker_filesystem_operations() -> Result<()> {
         .run_job(&runner_data, &worker_id, &worker_data, job)
         .await;
 
-    // Verify successful execution
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32);
 
-    // Verify file operations worked
     let docker_result: String = String::from_utf8_lossy(&data.output.unwrap().items).to_string();
     assert!(docker_result.contains("Real Docker E2E Test Data"));
     assert!(docker_result.contains("File size:"));
@@ -298,11 +291,9 @@ async fn test_real_docker_package_operations() -> Result<()> {
         .run_job(&runner_data, &worker_id, &worker_data, job)
         .await;
 
-    // Verify successful execution
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32);
 
-    // Verify operations worked
     let docker_result: String = String::from_utf8_lossy(&data.output.unwrap().items).to_string();
     assert!(docker_result.contains("Starting operations"));
     assert!(docker_result.contains("Operations completed successfully"));
@@ -334,11 +325,9 @@ async fn test_real_docker_error_handling() -> Result<()> {
         .run_job(&runner_data, &worker_id, &worker_data, job)
         .await;
 
-    // Verify execution completed (Docker runner successful)
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32); // Docker runner completed successfully
 
-    // Verify container exit code was captured
     let docker_result: String = String::from_utf8_lossy(&data.output.unwrap().items).to_string();
     assert!(docker_result.contains("Starting error test"));
 
@@ -375,11 +364,9 @@ async fn test_real_docker_timeout() -> Result<()> {
         .await;
     let elapsed_time = start_time.elapsed();
 
-    // Verify timeout occurred
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::MaxRetry as i32);
 
-    // Verify timeout message
     assert!(String::from_utf8_lossy(&data.output.unwrap().items).contains("timeout"));
 
     // Should timeout around 3 seconds, not wait full 10 seconds
@@ -409,11 +396,9 @@ async fn test_real_docker_nonexistent_image() -> Result<()> {
         .run_job(&runner_data, &worker_id, &worker_data, job)
         .await;
 
-    // Verify execution completed with error
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::OtherError as i32); // Docker runner failed with image not found
 
-    // Verify error was captured in output
     let docker_result: String = String::from_utf8_lossy(&data.output.unwrap().items).to_string();
     // Error message may contain information about image not found
     assert!(!docker_result.is_empty());
@@ -492,7 +477,6 @@ async fn test_real_docker_runner_complete_workflow() -> Result<()> {
     let data4 = result4.data.unwrap();
     assert_eq!(data4.status, ResultStatus::Success as i32);
 
-    // Verify mathematical result
     let output: String = String::from_utf8_lossy(&data4.output.unwrap().items).to_string();
     assert!(output.contains("56088")); // 123 * 456 = 56088
     println!("  ✓ Mathematical computation passed");

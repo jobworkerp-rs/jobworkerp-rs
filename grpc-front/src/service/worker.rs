@@ -271,16 +271,13 @@ impl<
         let _s = Self::trace_request("worker", "find_list", &request);
         let req = request.into_inner();
 
-        // Validate request parameters
         super::validation::validate_limit(req.limit)?;
         super::validation::validate_offset(req.offset)?;
         super::validation::validate_name_filter(req.name_filter.as_ref())?;
         super::validation::validate_filter_enums(&req.runner_types, "runner_types")?;
 
-        // Convert RunnerId to i64
         let runner_ids: Vec<i64> = req.runner_ids.into_iter().map(|rid| rid.value).collect();
         super::validation::validate_filter_ids(&runner_ids, "runner_ids")?;
-        // Convert i32 to WorkerSortField enum
         let sort_by = req
             .sort_by
             .and_then(|val| proto::jobworkerp::data::WorkerSortField::try_from(val).ok());
@@ -333,12 +330,10 @@ impl<
         let _s = Self::trace_request("worker", "count_by", &request);
         let req = request.into_inner();
 
-        // Validate request parameters
         super::validation::validate_name_filter(req.name_filter.as_ref())?;
         super::validation::validate_channel(req.channel.as_ref())?;
         super::validation::validate_filter_enums(&req.runner_types, "runner_types")?;
 
-        // Convert RunnerId to i64
         let runner_ids: Vec<i64> = req.runner_ids.into_iter().map(|rid| rid.value).collect();
         super::validation::validate_filter_ids(&runner_ids, "runner_ids")?;
         match self
@@ -368,7 +363,6 @@ impl<
     ) -> Result<tonic::Response<FindChannelListResponse>, tonic::Status> {
         let _s = Self::trace_request("worker", "find_channel_list", &request);
 
-        // Get worker count by channel from database
         let worker_counts = match self.app().count_by_channel().await {
             Ok(counts) => counts
                 .into_iter()

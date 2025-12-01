@@ -10,8 +10,8 @@ pub struct ToolConverter;
 impl McpNameConverter for ToolConverter {}
 
 impl ToolConverter {
-    // Phase 6.7: Unified conversion for all runners (MCP/Plugin/Normal/ReusableWorkflow)
-    // All runners use settings + arguments structure to match prepare_runner_call_arguments()
+    /// Convert FunctionSpecs to MCP Tools by combining settings and arguments schemas.
+    /// All runners use unified settings + arguments structure for consistency across runner types.
     pub fn convert_normal_function(tool: &FunctionSpecs) -> Vec<Tool> {
         tool.methods
             .as_ref()
@@ -22,7 +22,6 @@ impl ToolConverter {
                     .filter_map(|(method_name, method_schema)| {
                         let mut schema_combiner = SchemaCombiner::new();
 
-                        // Add settings_schema if present
                         if !tool.settings_schema.is_empty() {
                             schema_combiner
                                 .add_schema_from_string(
@@ -33,7 +32,6 @@ impl ToolConverter {
                                 .ok();
                         }
 
-                        // Add method's arguments_schema
                         schema_combiner
                             .add_schema_from_string(
                                 "arguments",
@@ -45,12 +43,10 @@ impl ToolConverter {
                             })
                             .ok();
 
-                        // Generate combined schema
                         match schema_combiner.generate_combined_schema() {
                             Ok(schema) => {
-                                // Tool naming logic:
-                                // - DEFAULT_METHOD_NAME ("run"): omit method name (just runner name)
-                                // - Other methods: always combine runner___method (for divide_names())
+                                // Default method uses runner name only for simpler tool naming.
+                                // Non-default methods combine runner and method names to avoid conflicts.
                                 let tool_name = if method_name == proto::DEFAULT_METHOD_NAME {
                                     tool.name.clone()
                                 } else {
@@ -163,7 +159,6 @@ mod tests {
     use proto::jobworkerp::function::data::FunctionSpecs;
     use serde_json::{json, Value};
 
-    // Phase 6.7: Updated to use MethodSchemaMap structure
     fn make_single_schema_spec() -> FunctionSpecs {
         let mut method_schemas = std::collections::HashMap::new();
         method_schemas.insert(
@@ -197,7 +192,6 @@ mod tests {
         }
     }
 
-    // Phase 6.7: ReusableWorkflow uses settings_schema as input schema
     fn make_reusable_workflow_spec() -> FunctionSpecs {
         let mut method_schemas = std::collections::HashMap::new();
         method_schemas.insert(
@@ -231,7 +225,6 @@ mod tests {
         }
     }
 
-    // Phase 6.7: MCP Server uses MethodSchemaMap with multiple methods
     fn make_mcp_tools_spec() -> FunctionSpecs {
         let mut method_schemas = std::collections::HashMap::new();
         method_schemas.insert(
@@ -259,7 +252,6 @@ mod tests {
         }
     }
 
-    // Multi-method Plugin runner spec for testing
     fn make_multi_method_plugin_spec() -> FunctionSpecs {
         let mut method_schemas = std::collections::HashMap::new();
 
@@ -401,17 +393,14 @@ mod tests {
         assert_eq!(tool.name, "test_single");
         assert_eq!(tool.description.as_ref().unwrap(), "desc_single");
 
-        // Verify the schema has the correct type
         assert_eq!(
             tool.input_schema.get("type").and_then(|v| v.as_str()),
             Some("object"),
             "Schema should have type 'object'"
         );
 
-        // Verify required fields
         assert_schema_required_fields(&tool.input_schema, &["arguments", "settings"]);
 
-        // Verify arguments property
         let arguments_expected = json!({
             "type": "object",
             "properties": {
@@ -423,7 +412,6 @@ mod tests {
         });
         assert_schema_property(&tool.input_schema, "arguments", &arguments_expected);
 
-        // Verify settings property
         let settings_expected = json!({
             "type": "object",
             "properties": {
@@ -504,7 +492,6 @@ mod tests {
             "Multi-method plugin should generate 2 tools"
         );
 
-        // Verify method_a tool
         let tool_a = result
             .tools
             .iter()
@@ -513,7 +500,6 @@ mod tests {
         assert_eq!(tool_a.name, "test_plugin___method_a");
         assert_eq!(tool_a.description.as_ref().unwrap(), "First method");
 
-        // Verify schema has settings and arguments combined
         assert_schema_required_fields(&tool_a.input_schema, &["arguments", "settings"]);
 
         let expected_settings = json!({
@@ -538,7 +524,6 @@ mod tests {
         });
         assert_schema_property(&tool_a.input_schema, "arguments", &expected_arguments_a);
 
-        // Verify method_b tool
         let tool_b = result
             .tools
             .iter()
@@ -547,7 +532,6 @@ mod tests {
         assert_eq!(tool_b.name, "test_plugin___method_b");
         assert_eq!(tool_b.description.as_ref().unwrap(), "Second method");
 
-        // Verify schema has settings and arguments combined
         assert_schema_required_fields(&tool_b.input_schema, &["arguments", "settings"]);
 
         let expected_arguments_b = json!({
@@ -581,10 +565,8 @@ mod tests {
         assert_eq!(tool.function.name, "test_single");
         assert_eq!(tool.function.description, "desc_single");
 
-        // Convert Schema to Value for easier inspection and comparison
         let schema_value = tool.function.parameters.clone().to_value();
 
-        // Verify schema is an object with the right type
         let schema_obj = schema_value.as_object().unwrap();
         assert_eq!(
             schema_obj.get("type").and_then(|v| v.as_str()),
@@ -592,7 +574,6 @@ mod tests {
             "Schema should have type 'object'"
         );
 
-        // Verify schema has properties object with settings and arguments
         let props = schema_obj
             .get("properties")
             .and_then(|p| p.as_object())
@@ -606,7 +587,6 @@ mod tests {
             "Schema should contain arguments property"
         );
 
-        // Verify settings has setting_a property
         let settings = props.get("settings").and_then(|s| s.as_object()).unwrap();
         let settings_props = settings
             .get("properties")
@@ -617,7 +597,6 @@ mod tests {
             "Settings should contain setting_a property"
         );
 
-        // Verify setting_a has correct type
         let setting_a = settings_props
             .get("setting_a")
             .and_then(|s| s.as_object())
@@ -628,7 +607,6 @@ mod tests {
             "setting_a should have type string"
         );
 
-        // Verify arguments has arg_a property
         let arguments = props.get("arguments").and_then(|s| s.as_object()).unwrap();
         let args_props = arguments
             .get("properties")
@@ -639,7 +617,6 @@ mod tests {
             "Arguments should contain arg_a property"
         );
 
-        // Verify arg_a has correct type
         let arg_a = args_props.get("arg_a").and_then(|s| s.as_object()).unwrap();
         assert_eq!(
             arg_a.get("type").and_then(|t| t.as_str()),
@@ -656,11 +633,9 @@ mod tests {
         assert_eq!(tool.function.name, "test_workflow");
         assert_eq!(tool.function.description, "desc_workflow");
 
-        // Convert Schema to Value for easier inspection and comparison
         let schema_value = tool.function.parameters.clone().to_value();
         let schema_obj = schema_value.as_object().unwrap();
 
-        // Verify schema is an object
         assert_eq!(
             schema_obj.get("type").and_then(|v| v.as_str()),
             Some("object"),
@@ -673,7 +648,6 @@ mod tests {
             .and_then(|p| p.as_object())
             .unwrap();
 
-        // Verify settings property exists
         assert!(
             props.contains_key("settings"),
             "Schema should contain settings property"
@@ -697,7 +671,6 @@ mod tests {
             "setting_b should have type integer"
         );
 
-        // Verify arguments property exists
         assert!(
             props.contains_key("arguments"),
             "Schema should contain arguments property"
@@ -727,18 +700,15 @@ mod tests {
         assert_eq!(tool.function.name, "test_mcp___inner");
         assert_eq!(tool.function.description, "desc_inner");
 
-        // Convert Schema to Value for easier inspection and comparison
         let schema_value = tool.function.parameters.clone().to_value();
         let schema_obj = schema_value.as_object().unwrap();
 
-        // Verify schema is an object with settings/arguments structure
         assert_eq!(
             schema_obj.get("type").and_then(|v| v.as_str()),
             Some("object"),
             "Schema should have type 'object'"
         );
 
-        // Verify schema has arguments property with c
         let props = schema_obj
             .get("properties")
             .and_then(|p| p.as_object())
@@ -748,7 +718,6 @@ mod tests {
             "Schema should contain arguments property"
         );
 
-        // Verify arguments.c has correct type
         let arguments = props.get("arguments").and_then(|a| a.as_object()).unwrap();
         let args_props = arguments
             .get("properties")
@@ -776,7 +745,6 @@ mod tests {
             "Multi-method plugin should generate 2 tools"
         );
 
-        // Verify method_a tool
         let tool_a = result
             .iter()
             .find(|t| t.function.name == "test_plugin___method_a")
@@ -791,7 +759,6 @@ mod tests {
             .and_then(|p| p.as_object())
             .unwrap();
 
-        // Verify has settings and arguments
         assert!(
             props_a.contains_key("settings"),
             "Schema should contain settings property"
@@ -801,7 +768,6 @@ mod tests {
             "Schema should contain arguments property"
         );
 
-        // Verify settings.api_key
         let settings_a = props_a.get("settings").and_then(|s| s.as_object()).unwrap();
         let settings_props_a = settings_a
             .get("properties")
@@ -812,7 +778,6 @@ mod tests {
             "Settings should contain api_key"
         );
 
-        // Verify arguments.param_a
         let arguments_a = props_a
             .get("arguments")
             .and_then(|a| a.as_object())
@@ -835,7 +800,6 @@ mod tests {
             "param_a should have type string"
         );
 
-        // Verify method_b tool
         let tool_b = result
             .iter()
             .find(|t| t.function.name == "test_plugin___method_b")
@@ -850,7 +814,6 @@ mod tests {
             .and_then(|p| p.as_object())
             .unwrap();
 
-        // Verify arguments.param_b
         let arguments_b = props_b
             .get("arguments")
             .and_then(|a| a.as_object())
@@ -876,13 +839,11 @@ mod tests {
 
     #[test]
     fn test_command_runner_schema_generation() {
-        // Phase 6.7: Updated to use MethodSchemaMap
         let mut method_schemas = std::collections::HashMap::new();
         method_schemas.insert(
             proto::DEFAULT_METHOD_NAME.to_string(),
             proto::jobworkerp::function::data::MethodSchema {
                 description: Some("Run shell commands".to_string()),
-                // CommandArgs schema with "command" and "args" fields
                 arguments_schema: r#"{"type": "object", "properties": {"command": {"type": "string", "description": "The command to execute"}, "args": {"type": "array", "items": {"type": "string"}, "description": "Command arguments"}, "with_memory_monitoring": {"type": "boolean", "description": "Enable memory monitoring"}}, "required": ["command", "args"]}"#.to_string(),
                 result_schema: Some(r#"{"type": "object", "properties": {"exit_code": {"type": "integer"}, "stdout": {"type": "string"}, "stderr": {"type": "string"}}}"#.to_string()),
                 output_type: proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32,
@@ -893,7 +854,6 @@ mod tests {
         let command_spec = FunctionSpecs {
             name: "COMMAND".to_string(),
             description: "Run shell commands".to_string(),
-            // Empty settings schema (as COMMAND runner returns)
             settings_schema: r#"{"type": "object", "properties": {}}"#.to_string(),
             methods: Some(proto::jobworkerp::function::data::MethodSchemaMap {
                 schemas: method_schemas,
@@ -911,17 +871,14 @@ mod tests {
         assert_eq!(tool.function.name, "COMMAND");
         assert_eq!(tool.function.description, "Run shell commands");
 
-        // Convert to JSON for easier inspection
         let schema_value = tool.function.parameters.clone().to_value();
         let schema_obj = schema_value.as_object().unwrap();
 
-        // Verify the schema has the expected structure
         let props = schema_obj
             .get("properties")
             .and_then(|p| p.as_object())
             .unwrap();
 
-        // Check for both settings and arguments
         assert!(
             props.contains_key("settings"),
             "Schema should contain settings"
@@ -931,7 +888,6 @@ mod tests {
             "Schema should contain arguments"
         );
 
-        // Check arguments for command and args fields
         let arguments = props.get("arguments").and_then(|a| a.as_object()).unwrap();
         let arg_props = arguments
             .get("properties")
@@ -951,7 +907,6 @@ mod tests {
             "Arguments should contain 'with_memory_monitoring' field"
         );
 
-        // Verify command field is a string
         let command_field = arg_props
             .get("command")
             .and_then(|c| c.as_object())
@@ -962,7 +917,6 @@ mod tests {
             "Command field should be a string"
         );
 
-        // Verify args field is an array
         let args_field = arg_props.get("args").and_then(|a| a.as_object()).unwrap();
         assert_eq!(
             args_field.get("type").and_then(|t| t.as_str()),
@@ -986,18 +940,15 @@ mod tests {
         assert_eq!(tool.name, "test_single");
         assert_eq!(tool.description.as_ref().unwrap(), "desc_single");
 
-        // Verify schema structure
         let schema = tool.schema.as_ref().unwrap();
         let schema_obj = schema.as_object().unwrap();
 
-        // Check that it's an object type
         assert_eq!(
             schema_obj.get("type").and_then(|v| v.as_str()),
             Some("object"),
             "Schema should have type 'object'"
         );
 
-        // Check that it has properties
         let props = schema_obj
             .get("properties")
             .and_then(|p| p.as_object())
@@ -1011,7 +962,6 @@ mod tests {
             "Schema should contain arguments property"
         );
 
-        // Verify settings has setting_a property
         let settings = props.get("settings").and_then(|s| s.as_object()).unwrap();
         let settings_props = settings
             .get("properties")
@@ -1022,7 +972,6 @@ mod tests {
             "Settings should contain setting_a property"
         );
 
-        // Check setting_a type
         let setting_a = settings_props
             .get("setting_a")
             .and_then(|s| s.as_object())
@@ -1033,7 +982,6 @@ mod tests {
             "setting_a should have type string"
         );
 
-        // Verify arguments has arg_a property
         let arguments = props.get("arguments").and_then(|s| s.as_object()).unwrap();
         let args_props = arguments
             .get("properties")
@@ -1044,7 +992,6 @@ mod tests {
             "Arguments should contain arg_a property"
         );
 
-        // Check arg_a type
         let arg_a = args_props.get("arg_a").and_then(|s| s.as_object()).unwrap();
         assert_eq!(
             arg_a.get("type").and_then(|t| t.as_str()),
@@ -1060,7 +1007,6 @@ mod tests {
         let schema = tool.schema.as_ref().unwrap();
         let schema_obj = schema.as_object().unwrap();
 
-        // Verify schema is an object
         assert_eq!(
             schema_obj.get("type").and_then(|v| v.as_str()),
             Some("object"),
@@ -1073,7 +1019,6 @@ mod tests {
             .and_then(|p| p.as_object())
             .unwrap();
 
-        // Verify settings property exists
         assert!(
             props.contains_key("settings"),
             "Schema should contain settings property"
@@ -1097,7 +1042,6 @@ mod tests {
             "setting_b should have type integer"
         );
 
-        // Verify arguments property exists
         assert!(
             props.contains_key("arguments"),
             "Schema should contain arguments property"
@@ -1129,14 +1073,12 @@ mod tests {
         let schema = tool.schema.as_ref().unwrap();
         let schema_obj = schema.as_object().unwrap();
 
-        // Verify schema is an object with settings/arguments structure
         assert_eq!(
             schema_obj.get("type").and_then(|v| v.as_str()),
             Some("object"),
             "Schema should have type 'object'"
         );
 
-        // Verify schema has arguments property with c
         let props = schema_obj
             .get("properties")
             .and_then(|p| p.as_object())
@@ -1146,7 +1088,6 @@ mod tests {
             "Schema should contain arguments property"
         );
 
-        // Verify arguments.c has correct type
         let arguments = props.get("arguments").and_then(|a| a.as_object()).unwrap();
         let args_props = arguments
             .get("properties")
@@ -1174,7 +1115,6 @@ mod tests {
             "Multi-method plugin should generate 2 tools"
         );
 
-        // Verify method_a tool
         let tool_a = result
             .iter()
             .find(|t| t.name == "test_plugin___method_a")
@@ -1189,7 +1129,6 @@ mod tests {
             .and_then(|p| p.as_object())
             .unwrap();
 
-        // Verify has settings and arguments
         assert!(
             props_a.contains_key("settings"),
             "Schema should contain settings property"
@@ -1199,7 +1138,6 @@ mod tests {
             "Schema should contain arguments property"
         );
 
-        // Verify settings.api_key
         let settings_a = props_a.get("settings").and_then(|s| s.as_object()).unwrap();
         let settings_props_a = settings_a
             .get("properties")
@@ -1210,7 +1148,6 @@ mod tests {
             "Settings should contain api_key"
         );
 
-        // Verify arguments.param_a
         let arguments_a = props_a
             .get("arguments")
             .and_then(|a| a.as_object())
@@ -1233,7 +1170,6 @@ mod tests {
             "param_a should have type string"
         );
 
-        // Verify method_b tool
         let tool_b = result
             .iter()
             .find(|t| t.name == "test_plugin___method_b")
@@ -1248,7 +1184,6 @@ mod tests {
             .and_then(|p| p.as_object())
             .unwrap();
 
-        // Verify arguments.param_b
         let arguments_b = props_b
             .get("arguments")
             .and_then(|a| a.as_object())
