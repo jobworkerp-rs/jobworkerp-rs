@@ -216,7 +216,7 @@ dependencies = [
  "itertools 0.14.0",
  "jobworkerp-base",
  "jobworkerp-runner",
- "jsonschema",
+ "jsonschema 0.33.0",
  "libloading",
  "liquid",
  "memory-utils 0.1.0",
@@ -2242,6 +2242,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fluent-uri"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc74ac4d8359ae70623506d512209619e5cf8f347124910440dbc221714b328e"
+dependencies = [
+ "borrow-or-share",
+ "ref-cast",
+ "serde",
+]
+
+[[package]]
 name = "flume"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3460,7 +3471,7 @@ dependencies = [
  "itertools 0.14.0",
  "jobworkerp-base",
  "jobworkerp-runner",
- "jsonschema",
+ "jsonschema 0.33.0",
  "libloading",
  "liquid",
  "memory-utils 0.1.0",
@@ -3729,7 +3740,7 @@ dependencies = [
  "http",
  "itertools 0.14.0",
  "jobworkerp-base",
- "jsonschema",
+ "jsonschema 0.37.4",
  "libloading",
  "memory-utils 0.1.0",
  "net-utils",
@@ -3795,12 +3806,40 @@ dependencies = [
  "num-traits",
  "once_cell",
  "percent-encoding",
- "referencing",
+ "referencing 0.33.0",
  "regex",
  "regex-syntax",
  "reqwest",
  "serde",
  "serde_json",
+ "uuid-simd",
+]
+
+[[package]]
+name = "jsonschema"
+version = "0.37.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73c9ffb2b5c56d58030e1b532d8e8389da94590515f118cf35b5cb68e4764a7e"
+dependencies = [
+ "ahash",
+ "bytecount",
+ "data-encoding",
+ "email_address",
+ "fancy-regex 0.16.2",
+ "fraction",
+ "getrandom 0.3.4",
+ "idna",
+ "itoa",
+ "num-cmp",
+ "num-traits",
+ "percent-encoding",
+ "referencing 0.37.4",
+ "regex",
+ "regex-syntax",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "unicode-general-category",
  "uuid-simd",
 ]
 
@@ -3828,6 +3867,28 @@ name = "lebe"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a79a3332a6609480d7d0c9eab957bca6b455b91bb84e66d19f5ff66294b85b8"
+
+[[package]]
+name = "legacy_compat_test"
+version = "0.18.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "futures",
+ "jobworkerp-runner",
+ "prost 0.14.1",
+ "proto",
+ "schemars 1.1.0",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tonic 0.14.2",
+ "tonic-prost-build",
+ "tracing",
+ "tracing-subscriber",
+ "uuid 1.18.1",
+]
 
 [[package]]
 name = "libc"
@@ -6391,8 +6452,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e9c261f7ce75418b3beadfb3f0eb1299fe8eb9640deba45ffa2cb783098697d"
 dependencies = [
  "ahash",
- "fluent-uri",
+ "fluent-uri 0.3.2",
  "once_cell",
+ "parking_lot 0.12.5",
+ "percent-encoding",
+ "serde_json",
+]
+
+[[package]]
+name = "referencing"
+version = "0.37.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4283168a506f0dcbdce31c9f9cce3129c924da4c6bca46e46707fcb746d2d70c"
+dependencies = [
+ "ahash",
+ "fluent-uri 0.4.1",
+ "getrandom 0.3.4",
+ "hashbrown 0.16.0",
  "parking_lot 0.12.5",
  "percent-encoding",
  "serde_json",
@@ -9008,6 +9084,12 @@ name = "unicode-bidi"
 version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c1cb5db39152898a79168971543b1cb5020dff7fe43c8dc468b0885f5e29df5"
+
+[[package]]
+name = "unicode-general-category"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b993bddc193ae5bd0d623b49ec06ac3e9312875fdae725a975c51db1cc1677f"
 
 [[package]]
 name = "unicode-ident"

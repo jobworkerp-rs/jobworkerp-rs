@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use jobworkerp_runner::runner::plugins::PluginRunner;
+use jobworkerp_runner::runner::plugins::MultiMethodPluginRunner;
 use prost::Message;
 use std::{alloc::System, collections::HashMap};
 use test::{TestArgs, TestRunnerSettings};
@@ -13,16 +13,16 @@ pub mod test {
 #[global_allocator]
 static ALLOCATOR: System = System;
 
-// suppress warn improper_ctypes_definitions
+// Multi-method plugin FFI symbols
 #[allow(improper_ctypes_definitions)]
 #[unsafe(no_mangle)]
-pub extern "C" fn load_plugin() -> Box<dyn PluginRunner + Send + Sync> {
+pub extern "C" fn load_multi_method_plugin() -> Box<dyn MultiMethodPluginRunner + Send + Sync> {
     Box::new(TestPlugin::new())
 }
 
 #[unsafe(no_mangle)]
 #[allow(improper_ctypes_definitions)]
-pub extern "C" fn free_plugin(ptr: Box<dyn PluginRunner + Send + Sync>) {
+pub extern "C" fn free_multi_method_plugin(ptr: Box<dyn MultiMethodPluginRunner + Send + Sync>) {
     drop(ptr);
 }
 
@@ -50,7 +50,7 @@ impl TestPlugin {
 }
 
 #[async_trait]
-impl PluginRunner for TestPlugin {
+impl MultiMethodPluginRunner for TestPlugin {
     fn name(&self) -> String {
         // specify as same string as worker.runner
         String::from("Test")
