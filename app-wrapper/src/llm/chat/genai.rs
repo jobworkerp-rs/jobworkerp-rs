@@ -243,7 +243,6 @@ impl GenaiChatService {
         let model = args.model.clone().unwrap_or_else(|| self.model.clone());
         let mut messages = self.trans_messages(args);
 
-        // Add system prompt if exists
         if let Some(system_prompt) = self.system_prompt.clone() {
             messages.retain(|m| !matches!(m.role, genai::chat::ChatRole::System));
             messages.insert(
@@ -258,7 +257,6 @@ impl GenaiChatService {
 
         let messages = Arc::new(Mutex::new(messages));
 
-        // Use internal method with tool call support
         let res = Self::request_chat_internal_with_tracing(
             Arc::new(self.clone()),
             model,
@@ -270,7 +268,6 @@ impl GenaiChatService {
         )
         .await?;
 
-        // Convert response to LlmChatResult
         let (prompt, think) = Self::divide_think_tag(res.first_text().unwrap_or("").to_string());
 
         let chat_result = LlmChatResult {
@@ -303,7 +300,6 @@ impl GenaiChatService {
 
         // Execute with tracing using generic_tracing_helper approach
         let (res, current_context) = if GenericLLMTracingHelper::get_otel_client(&*self).is_some() {
-            // Create span attributes using generic helper
             let input_messages = Self::convert_messages_to_input_genai(&current_messages);
 
             let chat_req = ChatRequest::new(current_messages.clone());
@@ -325,7 +321,6 @@ impl GenaiChatService {
                     .map_err(|e| JobWorkerError::OtherError(format!("Chat API error: {e}")))
             };
 
-            // Create model parameters from ChatOptions
             let model_parameters = {
                 let mut params = HashMap::new();
                 if let Some(ref opts) = options {
@@ -350,7 +345,6 @@ impl GenaiChatService {
                 &metadata,
             );
 
-            // Use provided parent_context or current context as parent for the span
             let parent_ctx = parent_context.unwrap_or_else(opentelemetry::Context::current);
 
             // Execute chat API call with generic tracing
@@ -382,7 +376,6 @@ impl GenaiChatService {
 
         tracing::debug!("GenAI chat response: {:#?}", &res);
 
-        // Check for tool calls in response
         if let Some(tool_calls) = Self::extract_tool_calls(&res) {
             if !tool_calls.is_empty() {
                 tracing::debug!("Tool calls in response: {:#?}", &tool_calls);
@@ -426,7 +419,6 @@ impl GenaiChatService {
     fn extract_tool_calls(
         response: &genai::chat::ChatResponse,
     ) -> Option<Vec<genai::chat::ToolCall>> {
-        // Check if response contains tool calls
         let tools = response.content.tool_calls();
         if tools.is_empty() {
             None
@@ -501,7 +493,6 @@ impl GenaiChatService {
 
             tracing::debug!("Tool response: {}", &tool_result);
 
-            // Add tool result to messages
             messages.lock().await.push(ChatMessage {
                 role: genai::chat::ChatRole::Tool,
                 content: GenaiMessageContent::from_text(tool_result.to_string()),
@@ -547,7 +538,6 @@ impl GenaiChatService {
 
             tracing::debug!("Tool response: {}", &tool_result);
 
-            // Add tool result to messages
             messages.lock().await.push(ChatMessage {
                 role: genai::chat::ChatRole::Tool,
                 content: GenaiMessageContent::from_text(tool_result.to_string()),
@@ -584,7 +574,6 @@ impl GenaiChatService {
         // XXX TODO tracing metadata
         let metadata = Trailer { metadata };
         let metadata_clone = metadata.clone();
-        // Use flatmap to allow returning multiple ResultOutputItems from a single event
         let stream = res
             .stream
             .filter_map(move |event_result| {
@@ -598,7 +587,6 @@ impl GenaiChatService {
                                 None
                             }
                             ChatStreamEvent::Chunk(chunk) => {
-                                // Convert text chunk to LlmChatResult and serialize
                                 let llm_result = LlmChatResult {
                                     content: Some(llm_chat_result::MessageContent {
                                         content: Some(message_content::Content::Text(
@@ -624,7 +612,6 @@ impl GenaiChatService {
                                 })
                             }
                             ChatStreamEvent::ReasoningChunk(chunk) => {
-                                // Convert reasoning chunk to LlmChatResult and serialize
                                 let llm_result = LlmChatResult {
                                     reasoning_content: Some(chunk.content),
                                     done: false,
@@ -659,7 +646,6 @@ impl GenaiChatService {
                                     done: true,
                                     ..Default::default()
                                 };
-                                // Add usage if available
                                 if let Some(usage) = end.captured_usage {
                                     llm_result.usage = Some(llm_chat_result::Usage {
                                         model: value.to_string(),
@@ -670,7 +656,6 @@ impl GenaiChatService {
                                         ..Default::default()
                                     });
                                 }
-                                // Add final content if available
                                 if let Some(text) =
                                     end.captured_content.as_ref().and_then(|c| c.first_text())
                                 {
@@ -680,7 +665,6 @@ impl GenaiChatService {
                                         )),
                                     });
                                 }
-                                // Add final reasoning content if available
                                 if let Some(reasoning) = end.captured_reasoning_content {
                                     llm_result.reasoning_content = Some(reasoning);
                                 }
@@ -696,7 +680,6 @@ impl GenaiChatService {
                                         });
                                     }
                                 };
-                                // Return only data item here, flat_map will add subsequent End item
                                 Some(ResultOutputItem {
                                     item: Some(result_output_item::Item::Data(bytes)),
                                 })

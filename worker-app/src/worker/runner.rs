@@ -70,7 +70,6 @@ pub trait JobRunner:
                 .await;
             match p {
                 Ok(Some(runner)) => {
-                    // Check job.data first for streaming determination
                     let is_streaming = job.data.as_ref().is_some_and(|data| data.request_streaming);
 
                     if is_streaming {

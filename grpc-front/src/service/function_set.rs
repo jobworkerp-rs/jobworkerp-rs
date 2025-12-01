@@ -149,7 +149,6 @@ impl<T: FunctionSetGrpc + Tracing + Send + Debug + Sync + 'static> FunctionSetSe
         let _s = Self::trace_request("function_set", "find_detail", &request);
         let req = request.into_inner();
 
-        // Validate FunctionSetId
         if req.value <= 0 {
             return Err(tonic::Status::invalid_argument(
                 "FunctionSetId value must be greater than 0",
@@ -159,7 +158,6 @@ impl<T: FunctionSetGrpc + Tracing + Send + Debug + Sync + 'static> FunctionSetSe
         match self.app().find_function_set(&req).await {
             Ok(Some(function_set)) => {
                 if let Some(data) = function_set.data {
-                    // Use FunctionApp to convert FunctionUsings to FunctionSpecs
                     match self
                         .function_app()
                         .convert_function_usings_to_specs(&data.targets, &data.name)
@@ -202,7 +200,6 @@ impl<T: FunctionSetGrpc + Tracing + Send + Debug + Sync + 'static> FunctionSetSe
         let _s = Self::trace_request("function_set", "find_detail_by_name", &request);
         let req = request.into_inner();
 
-        // Validate name
         if req.name.trim().is_empty() {
             return Err(tonic::Status::invalid_argument(
                 "FunctionSet name must not be empty",
@@ -212,7 +209,6 @@ impl<T: FunctionSetGrpc + Tracing + Send + Debug + Sync + 'static> FunctionSetSe
         match self.app().find_function_set_by_name(&req.name).await {
             Ok(Some(function_set)) => {
                 if let Some(data) = function_set.data {
-                    // Use FunctionApp to convert FunctionUsings to FunctionSpecs
                     match self
                         .function_app()
                         .convert_function_usings_to_specs(&data.targets, &data.name)

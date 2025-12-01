@@ -308,7 +308,6 @@ impl UseRunnerParserWithCache for RdbWorkerAppImpl {
 
 impl UseRunnerAppParserWithCache for RdbWorkerAppImpl {}
 
-// Add tests for RdbWorkerAppImpl
 #[cfg(test)]
 mod tests {
     use crate::app::runner::rdb::RdbRunnerAppImpl;
@@ -350,7 +349,6 @@ mod tests {
             restore_at_startup: Some(false),
         });
 
-        // Create and initialize runner app
         let runner_app = RdbRunnerAppImpl::new(
             TEST_PLUGIN_DIR.to_string(),
             storage_config.clone(),
@@ -360,7 +358,6 @@ mod tests {
         );
         runner_app.load_runner().await?;
 
-        // Create worker app with runner app
         let worker_app = RdbWorkerAppImpl::new(
             storage_config.clone(),
             id_generator.clone(),
@@ -382,7 +379,6 @@ mod tests {
                 name: "testRunner1".to_string(),
             });
 
-            // Create three workers
             let w1 = WorkerData {
                 name: "test_rdb_1".to_string(),
                 runner_settings: runner_settings.clone(),
@@ -402,7 +398,6 @@ mod tests {
                 ..Default::default()
             };
 
-            // Create the workers and verify IDs
             let id1 = app.create(&w1).await?;
             let id2 = app.create(&w2).await?;
             let id3 = app.create(&w3).await?;
@@ -428,22 +423,18 @@ mod tests {
             let res = app.update(&id1, &Some(w4.clone())).await?;
             assert!(res);
 
-            // Verify the update worked
             let found = app.find(&id1).await?;
             assert!(found.is_some());
             let worker_data = found.and_then(|w| w.data);
             assert!(worker_data.is_some());
             assert_eq!(worker_data.unwrap().name, w4.name);
 
-            // Verify we can retrieve by name
             let found_by_name = app.find_by_name("test_rdb_updated").await?;
             assert!(found_by_name.is_some());
 
-            // Delete a worker
             let deleted = app.delete(&id1).await?;
             assert!(deleted);
 
-            // Verify it's gone
             let list = app
                 .find_list(vec![], None, None, None, None, None, vec![], None, None)
                 .await?;
@@ -473,7 +464,6 @@ mod tests {
                 ..Default::default()
             };
 
-            // Create temporary worker
             let id = app.create_temp(temp_worker.clone(), true).await?;
             assert!(id.value > 0);
 
@@ -488,11 +478,9 @@ mod tests {
                 .name
                 .starts_with(&temp_worker.name));
 
-            // Delete the worker
             let deleted = app.delete(&id).await?;
             assert!(deleted);
 
-            // Verify it's gone
             let not_found = app.find(&id).await?;
             assert!(not_found.is_none());
 

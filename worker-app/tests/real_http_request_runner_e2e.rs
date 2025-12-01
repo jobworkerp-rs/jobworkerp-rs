@@ -126,7 +126,6 @@ fn create_http_request_job(
 
 /// Create test worker and runner data
 fn create_test_data() -> (WorkerData, RunnerData) {
-    // Create HTTP request runner settings with httpbin.org as base_url
     let http_settings = jobworkerp_runner::jobworkerp::runner::HttpRequestRunnerSettings {
         base_url: "https://httpbin.org".to_string(),
     };
@@ -160,7 +159,6 @@ async fn test_real_http_get_request() -> Result<()> {
 
     let job_runner = get_real_job_runner().await;
 
-    // Use a reliable public API for testing
     let job = create_http_request_job(
         "/get",
         "GET",
@@ -180,19 +178,16 @@ async fn test_real_http_get_request() -> Result<()> {
         .await;
     let elapsed_time = start_time.elapsed();
 
-    // Verify successful execution
     assert!(result.data.is_some());
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32);
 
-    // Verify actual HTTP response
     assert!(data.output.is_some());
     let http_result: HttpResponseResult =
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
     assert_eq!(http_result.status_code, 200);
 
-    // Check response data
     if let Some(response_data) = &http_result.response_data {
         match response_data {
             jobworkerp_runner::jobworkerp::runner::http_response_result::ResponseData::Content(
@@ -250,17 +245,14 @@ async fn test_real_http_post_request() -> Result<()> {
         .run_job(&runner_data, &worker_id, &worker_data, job)
         .await;
 
-    // Verify successful execution
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32);
 
-    // Verify HTTP POST response
     let http_result: HttpResponseResult =
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
     assert_eq!(http_result.status_code, 200);
 
-    // Check response data
     if let Some(response_data) = &http_result.response_data {
         match response_data {
             jobworkerp_runner::jobworkerp::runner::http_response_result::ResponseData::Content(
@@ -308,17 +300,14 @@ async fn test_real_http_query_parameters() -> Result<()> {
         .run_job(&runner_data, &worker_id, &worker_data, job)
         .await;
 
-    // Verify successful execution
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32);
 
-    // Verify query parameters were sent correctly
     let http_result: HttpResponseResult =
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
     assert_eq!(http_result.status_code, 200);
 
-    // Check response data
     if let Some(response_data) = &http_result.response_data {
         let body_content = match response_data {
             jobworkerp_runner::jobworkerp::runner::http_response_result::ResponseData::Content(
@@ -346,7 +335,6 @@ async fn test_real_http_query_parameters() -> Result<()> {
 async fn test_real_http_timeout() -> Result<()> {
     let job_runner = get_real_job_runner().await;
 
-    // Use httpbin.org delay endpoint that takes 5 seconds
     let job = create_http_request_job(
         "/delay/5",
         "GET",
@@ -363,7 +351,6 @@ async fn test_real_http_timeout() -> Result<()> {
         .await;
     let elapsed_time = start_time.elapsed();
 
-    // Verify timeout occurred
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::MaxRetry as i32);
 
@@ -390,11 +377,9 @@ async fn test_real_http_error_handling() -> Result<()> {
         .run_job(&runner_data, &worker_id, &worker_data, job)
         .await;
 
-    // Verify execution completed (HTTP runner successful)
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32); // HTTP runner completed successfully
 
-    // Verify 404 status code was captured
     let http_result: HttpResponseResult =
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
@@ -437,17 +422,14 @@ async fn test_real_http_custom_headers() -> Result<()> {
         .run_job(&runner_data, &worker_id, &worker_data, job)
         .await;
 
-    // Verify successful execution
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32);
 
-    // Verify custom headers were sent
     let http_result: HttpResponseResult =
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
     assert_eq!(http_result.status_code, 200);
 
-    // Check response data
     if let Some(response_data) = &http_result.response_data {
         let body_content = match response_data {
             jobworkerp_runner::jobworkerp::runner::http_response_result::ResponseData::Content(
@@ -493,17 +475,14 @@ async fn test_real_http_put_request() -> Result<()> {
         .run_job(&runner_data, &worker_id, &worker_data, job)
         .await;
 
-    // Verify successful execution
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32);
 
-    // Verify PUT response
     let http_result: HttpResponseResult =
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
     assert_eq!(http_result.status_code, 200);
 
-    // Check response data
     if let Some(response_data) = &http_result.response_data {
         let body_content = match response_data {
             jobworkerp_runner::jobworkerp::runner::http_response_result::ResponseData::Content(
@@ -581,7 +560,6 @@ async fn test_real_http_request_runner_complete_workflow() -> Result<()> {
     let data4 = result4.data.unwrap();
     assert_eq!(data4.status, ResultStatus::Success as i32);
 
-    // Verify specific status code
     let http_result: HttpResponseResult =
         ProstMessageCodec::deserialize_message(&data4.output.unwrap().items)?;
     assert_eq!(http_result.status_code, 201);

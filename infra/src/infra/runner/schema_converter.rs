@@ -4,7 +4,7 @@
 //! to JSON Schema format. The conversion is cached in RunnerWithSchema to
 //! avoid repeated expensive operations.
 //!
-//! # Phase 6.7: Design
+//! # Design
 //!
 //! The conversion logic is extracted into a reusable trait to:
 //! - Centralize Protobuf → JSON Schema conversion
@@ -71,7 +71,6 @@ pub trait MethodJsonSchemaConverter {
         method_proto_map
             .iter()
             .filter_map(|(method_name, proto_schema)| {
-                // Convert args_proto → args JSON Schema
                 let args_schema = if proto_schema.args_proto.is_empty() {
                     "{}".to_string()
                 } else {
@@ -86,7 +85,6 @@ pub trait MethodJsonSchemaConverter {
                         })
                 };
 
-                // Convert result_proto → result JSON Schema
                 let result_schema = if proto_schema.result_proto.is_empty() {
                     None
                 } else {
@@ -208,12 +206,10 @@ message TestResult {
         assert_eq!(json_map.len(), 1);
         let run_schema = json_map.get("run").unwrap();
 
-        // Verify args_schema contains expected fields
         assert!(run_schema.args_schema.contains("url"));
         // Note: Protobuf field timeout_ms is converted to timeoutMs in JSON Schema (camelCase)
         assert!(run_schema.args_schema.contains("timeoutMs"));
 
-        // Verify result_schema
         assert!(run_schema.result_schema.is_some());
         let result = run_schema.result_schema.as_ref().unwrap();
         assert!(result.contains("content"));

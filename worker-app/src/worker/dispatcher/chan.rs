@@ -220,7 +220,6 @@ pub trait ChanJobDispatcher:
             Err(JobWorkerError::NotFound(mes))
         }?;
 
-        // Check JobProcessingStatus before job execution (detect cancellation request)
         if let Some(cancelled_result) = self
             .check_cancellation_status(&jid, &wid, &wdat, metadata.clone(), &jdat)
             .await?

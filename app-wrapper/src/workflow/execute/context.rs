@@ -318,16 +318,13 @@ impl TaskContext {
         self.output = output.clone();
     }
 
-    // Create a completely independent deep copy of the TaskContext
     pub async fn deep_copy(&self) -> Self {
         Self {
             definition: self.definition.clone(),
-            // Create new Arc instances for all values to ensure independent copies
             raw_input: Arc::new(self.raw_input.as_ref().clone()),
             input: Arc::new(self.input.as_ref().clone()),
             raw_output: Arc::new(self.raw_output.as_ref().clone()),
             output: Arc::new(self.output.as_ref().clone()),
-            // Create a new mutex with a copy of the context variables
             context_variables: Arc::new(Mutex::new(self.context_variables.lock().await.clone())),
             started_at: self.started_at,
             completed_at: self.completed_at,

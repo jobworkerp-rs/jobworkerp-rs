@@ -79,14 +79,12 @@ impl RunTaskExecutor {
                 store_failure: options.store_failure.unwrap_or(false),
                 store_success: options.store_success.unwrap_or(false),
                 use_static: options.use_static.unwrap_or(false),
-                // Use queue_type from WorkerOptions (default: NORMAL)
                 queue_type: options
                     .queue_type
                     .map(Self::convert_queue_type)
                     .unwrap_or(QueueType::Normal as i32),
                 channel: options.channel,
                 retry_policy: options.retry.map(|r| r.to_jobworkerp()),
-                // Use response_type from WorkerOptions (default: DIRECT)
                 response_type: options
                     .response_type
                     .map(Self::convert_response_type)

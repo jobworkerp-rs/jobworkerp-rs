@@ -127,7 +127,6 @@ impl GenaiCompletionService {
         let messages = self.messages(args);
         let chat_req = ChatRequest::new(messages);
 
-        // Use tracing-enabled internal call
         let res = Self::request_completion_internal_with_tracing(
             Arc::new(self.clone()),
             chat_req,
@@ -211,7 +210,6 @@ impl GenaiCompletionService {
 
         // Execute completion API call and get both result and context
         let (res, _current_context) = if let Some(_otel_client) = self.get_otel_client() {
-            // Create span attributes for completion API call
             let span_attributes = self
                 .create_completion_span_from_request(
                     &model_for_span,
@@ -261,7 +259,6 @@ impl GenaiCompletionService {
         let model_name = Arc::new(res.model_iden.model_name.to_string().clone());
 
         let metadata_clone = metadata.clone();
-        // Use flatmap to allow returning multiple ResultOutputItems from a single event
         let stream = res.stream
             .filter_map(move |event_result| {
             let value = model_name.clone();
@@ -274,7 +271,6 @@ impl GenaiCompletionService {
                             None
                         },
                         ChatStreamEvent::Chunk(chunk) => {
-                            // Convert text chunk to LlmCompletionResult and serialize
                             let llm_result = LlmCompletionResult {
                                 content: Some(llm_completion_result::MessageContent {
                                     content: Some(message_content::Content::Text(chunk.content)),
@@ -296,7 +292,6 @@ impl GenaiCompletionService {
                             })
                         },
                         ChatStreamEvent::ReasoningChunk(chunk) => {
-                            // Convert reasoning chunk to LlmCompletionResult and serialize
                             let llm_result = LlmCompletionResult {
                                 reasoning_content: Some(chunk.content),
                                 done: false,
@@ -326,7 +321,6 @@ impl GenaiCompletionService {
                                 done: true,
                                 ..Default::default()
                             };
-                            // Add usage if available
                             if let Some(usage) = end.captured_usage {
                                 llm_result.usage = Some(llm_completion_result::Usage {
                                     model: value.to_string(),
@@ -335,13 +329,11 @@ impl GenaiCompletionService {
                                     ..Default::default()
                                 });
                             }
-                            // Add final content if available
                             if let Some(text) = end.captured_content.as_ref().and_then(|c| c.first_text()) {
                                 llm_result.content = Some(llm_completion_result::MessageContent {
                                     content: Some(message_content::Content::Text(text.to_string())),
                                 });
                             }
-                            // Add final reasoning content if available
                             if let Some(reasoning) = end.captured_reasoning_content {
                                 llm_result.reasoning_content = Some(reasoning);
                             }
@@ -357,7 +349,6 @@ impl GenaiCompletionService {
                                     });
                                 }
                             };
-                            // Return only data item here, flat_map will add subsequent End item
                             Some(ResultOutputItem {
                                 item: Some(result_output_item::Item::Data(bytes)),
                             })

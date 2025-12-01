@@ -115,7 +115,6 @@ impl RunnerSpecFactory {
     ) -> Option<Box<dyn RunnerSpec + Send + Sync>> {
         match RunnerType::from_str_name(name) {
             Some(RunnerType::Command) => {
-                // Create a dummy cancellation manager for RunnerSpec purposes
                 #[derive(Debug)]
                 #[allow(dead_code)]
                 struct DummyCancellationManager;
@@ -186,7 +185,6 @@ impl RunnerSpecFactory {
             _ => {
                 if let Ok(server) = self.mcp_clients.as_ref().connect_server(name).await {
                     tracing::debug!("MCP server found: {}", &name);
-                    // Create and initialize MCP runner
                     match McpServerRunnerImpl::new(server, None).await {
                         Ok(mcp_runner) => {
                             Some(Box::new(mcp_runner) as Box<dyn RunnerSpec + Send + Sync>)

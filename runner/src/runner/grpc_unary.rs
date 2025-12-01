@@ -90,7 +90,6 @@ impl GrpcUnaryRunner {
             "http://"
         };
 
-        // Create the base endpoint
         let mut endpoint = Endpoint::new(format!("{prtcl}{host}:{port}"))?;
 
         // Apply timeout if specified
@@ -184,7 +183,6 @@ impl GrpcUnaryRunner {
             }
         }
 
-        // Create the client
         self.client = Some(tonic::client::Grpc::new(channel));
 
         tracing::debug!(
@@ -211,7 +209,6 @@ impl GrpcUnaryRunner {
 
         // First check if we have a reflection client available
         if let Some(ref reflection_client) = self.reflection_client {
-            // Get service descriptor pool using the reflection client
             let pool = reflection_client
                 .get_service_with_dependencies(&service_name)
                 .await?;
@@ -256,7 +253,6 @@ impl GrpcUnaryRunner {
 
         // First check if we have a reflection client available
         if let Some(ref reflection_client) = self.reflection_client {
-            // Get service descriptor pool using the reflection client
             let pool = reflection_client
                 .get_service_with_dependencies(&service_name)
                 .await?;
@@ -305,7 +301,6 @@ impl GrpcUnaryRunner {
             input_descriptor
         );
 
-        // Use ProtobufDescriptor utility to convert JSON to protobuf bytes
         let bytes = ProtobufDescriptor::json_to_message(input_descriptor, json_str)?;
 
         tracing::debug!(
@@ -324,7 +319,6 @@ impl GrpcUnaryRunner {
         response_bytes: &[u8],
     ) -> Result<String> {
         if let Some(ref reflection_client) = self.reflection_client {
-            // Get the output message descriptor for the method
             let output_descriptor = self.get_output_message_descriptor(method_path).await?;
             let message_name = output_descriptor.full_name();
 
@@ -334,7 +328,6 @@ impl GrpcUnaryRunner {
                 message_name
             );
 
-            // Use reflection client to parse bytes to JSON
             reflection_client
                 .parse_bytes_to_json(message_name, response_bytes)
                 .await
@@ -394,7 +387,6 @@ impl RunnerSpec for GrpcUnaryRunner {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/grpc_unary_runner.proto").to_string()
     }
-    // Phase 6.6: Unified method_proto_map for all runners
     fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(
@@ -533,7 +525,6 @@ impl RunnerTrait for GrpcUnaryRunner {
                         let response_body = response.into_inner();
                         let mut json_body = None;
 
-                        // Convert to JSON if as_json flag is enabled and reflection is available
                         if req.as_json && self.use_reflection && self.reflection_client.is_some() {
                             match self.convert_response_to_json(&req.method, &response_body).await {
                                 Ok(json_str) => {
@@ -575,7 +566,6 @@ impl RunnerTrait for GrpcUnaryRunner {
             }
         }.await;
 
-        // Use new cancellation approach
         (result, metadata)
     }
 
@@ -730,12 +720,10 @@ mod tests {
             .load(ProstMessageCodec::serialize_message(&settings)?)
             .await?;
 
-        // Create properly encoded protobuf message
         let runner_id = proto::jobworkerp::data::RunnerId { value: 1 };
         let mut buf = Vec::with_capacity(runner_id.encoded_len());
         runner_id.encode(&mut buf)?;
 
-        // Convert binary protobuf to base64 for backward compatibility
         let base64_encoded = base64::engine::general_purpose::STANDARD.encode(&buf);
 
         let arg = crate::jobworkerp::runner::GrpcUnaryArgs {
@@ -876,7 +864,6 @@ mod tests {
                 "Expected OK response for Create"
             );
 
-            // Parse the response to extract the created function set ID
             let reflection_client = runner.reflection_client.as_ref().unwrap();
             let response_message = "jobworkerp.function.service.CreateFunctionSetResponse";
             let json_response = reflection_client
@@ -926,7 +913,6 @@ mod tests {
                 "Expected OK response for Find"
             );
 
-            // Parse the response to verify the function set
             let reflection_client = runner.reflection_client.as_ref().unwrap();
             let response_message = "jobworkerp.function.service.OptionalFunctionSetResponse";
             let json_response = reflection_client
@@ -935,7 +921,6 @@ mod tests {
 
             println!("Found function set: {json_response}");
 
-            // Verify correct function set was found
             let response_value: serde_json::Value = serde_json::from_str(&json_response)?;
             assert!(
                 response_value["data"].is_object(),
@@ -977,7 +962,6 @@ mod tests {
                 "Expected OK response for FindByName"
             );
 
-            // Parse the response
             let reflection_client = runner.reflection_client.as_ref().unwrap();
             let response_message = "jobworkerp.function.service.OptionalFunctionSetResponse";
             let json_response = reflection_client
@@ -986,7 +970,6 @@ mod tests {
 
             println!("Found function set by name: {json_response}");
 
-            // Verify correct function set was found
             let response_value: serde_json::Value = serde_json::from_str(&json_response)?;
             assert!(
                 response_value["data"].is_object(),
@@ -1008,7 +991,6 @@ mod tests {
         // 8. Update the function set
         let update_request = {
             let mut function_set: serde_json::Value = serde_json::from_str(&find_result)?;
-            // Extract the "data" object which is the FunctionSet
             if let Some(data) = function_set.get_mut("data") {
                 if let Some(data_obj) = data.as_object_mut() {
                     // Update the description
@@ -1068,7 +1050,6 @@ mod tests {
                 .parse_bytes_to_json(response_message, &response.body)
                 .await?;
 
-            // Verify the description was updated
             let response_value: serde_json::Value = serde_json::from_str(&json_response)?;
             assert_eq!(
                 response_value["data"]["data"]["description"]
@@ -1128,7 +1109,6 @@ mod tests {
 
             let response_value: serde_json::Value = serde_json::from_str(&json_response)?;
 
-            // Check that data field is null after deletion
             assert!(
                 response_value["data"].is_null(),
                 "Function set should be deleted"
@@ -1190,7 +1170,6 @@ mod tests {
             ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result?)?;
         assert_eq!(response_with_json.code, tonic::Code::Ok as i32);
 
-        // Verify json_body field is populated when as_json = true
         assert!(
             response_with_json.json_body.is_some(),
             "json_body should be populated when as_json = true"
@@ -1199,7 +1178,6 @@ mod tests {
         let json_response_str = response_with_json.json_body.as_ref().unwrap();
         println!("JSON response body: {json_response_str}");
 
-        // Verify it's valid JSON
         let json_value: serde_json::Value = serde_json::from_str(json_response_str)?;
         assert!(json_value.is_object(), "Response should be JSON object");
 
@@ -1209,7 +1187,6 @@ mod tests {
             "Binary body should still be present"
         );
 
-        // Extract the created function set ID
         let function_set_id = json_value["id"]["value"]
             .as_str()
             .ok_or_else(|| anyhow!("Could not find id in JSON response"))?
@@ -1238,7 +1215,6 @@ mod tests {
             ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&result_binary?)?;
         assert_eq!(response_binary.code, tonic::Code::Ok as i32);
 
-        // Verify json_body field is None when as_json = false
         assert!(
             response_binary.json_body.is_none(),
             "json_body should be None when as_json = false"
@@ -1275,7 +1251,6 @@ mod tests {
             ProstMessageCodec::deserialize_message::<GrpcUnaryResult>(&find_result?)?;
         assert_eq!(find_response.code, tonic::Code::Ok as i32);
 
-        // Verify json_body field is populated for Find request too
         assert!(
             find_response.json_body.is_some(),
             "json_body should be populated for Find request with as_json = true"

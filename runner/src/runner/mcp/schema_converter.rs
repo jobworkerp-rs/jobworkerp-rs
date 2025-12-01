@@ -12,7 +12,7 @@
 //! | number | double | Floating point |
 //! | boolean | bool | |
 //! | array | repeated T | items required |
-//! | object | string | Phase 1: serialized as JSON string |
+//! | object | string | Serialized as JSON string |
 //! | null | ERROR | Not supported |
 //! | anyOf/oneOf/allOf | ERROR | Not supported |
 
@@ -141,10 +141,8 @@ pub fn json_schema_to_protobuf(
     server_name: &str,
     tool_name: &str,
 ) -> Result<String> {
-    // Validate tool name
     validate_using_name(tool_name)?;
 
-    // Generate message name: {ServerName}{ToolName}Args
     let sanitized_server_name = sanitize_name(server_name);
     let sanitized_tool_name = sanitize_name(tool_name);
 
@@ -154,10 +152,8 @@ pub fn json_schema_to_protobuf(
         to_pascal_case(&sanitized_tool_name)
     );
 
-    // Extract fields from JSON Schema
     let fields = extract_fields_from_schema(json_schema, &message_name, 0)?;
 
-    // Generate Protobuf schema string
     let proto_schema = format!(
         "syntax = \"proto3\";\n\nmessage {} {{\n{}\n}}",
         message_name,
@@ -194,7 +190,6 @@ fn extract_fields_from_schema(
         }
     };
 
-    // Get required fields
     let required: HashSet<&str> = schema
         .get("required")
         .and_then(|r| r.as_array())
@@ -227,7 +222,6 @@ fn extract_fields_from_schema(
 
 /// Convert JSON Schema type to Protobuf type
 fn json_type_to_proto_type(schema: &Value) -> Result<String> {
-    // Check for anyOf/oneOf/allOf (not supported)
     if schema.get("anyOf").is_some()
         || schema.get("oneOf").is_some()
         || schema.get("allOf").is_some()
@@ -256,8 +250,7 @@ fn json_type_to_proto_type(schema: &Value) -> Result<String> {
             format!("repeated {}", item_type)
         }
         "object" => {
-            // Phase 1: Serialize nested objects as JSON string
-            // Phase 2+: Generate nested message definitions
+            // Nested objects are serialized as JSON string for simplicity
             "string".to_string()
         }
         "null" => {
@@ -437,7 +430,7 @@ mod tests {
         assert!(result.contains("optional double value"));
         assert!(result.contains("optional bool enabled"));
         assert!(result.contains("optional repeated string tags"));
-        assert!(result.contains("optional string metadata")); // object → string (Phase 1)
+        assert!(result.contains("optional string metadata")); // object → string
     }
 
     #[test]

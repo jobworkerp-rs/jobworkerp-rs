@@ -81,7 +81,6 @@ mod streaming_pool_guard_tests {
             let items: Vec<_> = guard_stream.collect().await;
             tracing::debug!("Stream items collected: {}", items.len());
 
-            // Verify pool is reusable after guard cleanup to ensure no resource leaks
             let pool_object2 = pool.get().await?;
             assert!(!pool_object2.lock().await.name().is_empty());
 
@@ -128,7 +127,6 @@ mod streaming_pool_guard_tests {
                 tracing::debug!("Completed stream guard cycle {}", i);
             }
 
-            // Verify pool continues functioning correctly after multiple cycles to ensure stability
             let final_pool_object = pool.get().await?;
             assert!(!final_pool_object.lock().await.name().is_empty());
 
@@ -186,15 +184,12 @@ mod streaming_pool_guard_tests {
                 }
             }
 
-            // Create cancel monitoring helper to test cancellation integration
             let manager = Box::new(TestCancellationManager::new());
             let cancel_helper = CancelMonitoringHelper::new(manager);
 
-            // Create CommandRunnerImpl for non-static mode to test dynamic cancellation handling
             let mut runner = Box::new(CommandRunnerImpl::new_with_cancel_monitoring(cancel_helper))
                 as Box<dyn CancellableRunner + Send + Sync>;
 
-            // Get cancel helper before streaming to ensure cancellation capability is preserved
             let cancel_helper = runner.clone_cancel_helper_for_stream();
 
             let arg = CommandArgs {
@@ -237,8 +232,6 @@ mod streaming_pool_guard_tests {
     #[test]
     fn test_real_non_static_streaming_with_cancel_guard() -> Result<()> {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
-            // Use direct approach instead of MockJobRunner to test the actual implementation
-            // Verify the planned fix works correctly in real scenarios
             tracing::info!("🔍 Testing clone_cancel_helper_for_stream implementation");
 
             use async_trait::async_trait;
@@ -291,18 +284,15 @@ mod streaming_pool_guard_tests {
                 }
             }
 
-            // Create cancel monitoring helper for testing the fix
             let manager = Box::new(TestCancellationManager::new());
             let cancel_helper = CancelMonitoringHelper::new(manager);
 
-            // Create CommandRunnerImpl to test the actual implementation
             let runner = CommandRunnerImpl::new_with_cancel_monitoring(cancel_helper);
 
             // Test the fixed clone_cancel_helper_for_stream implementation
             let cloned_helper = runner.clone_cancel_helper_for_stream();
             assert!(cloned_helper.is_some(), "Clone should succeed");
 
-            // Verify original helper still exists after clone (this is the key point of our fix)
             let original_helper = runner.cancel_monitoring_helper();
             assert!(
                 original_helper.is_some(),
@@ -348,7 +338,6 @@ mod streaming_pool_guard_tests {
             // Drop stream early to verify pool guard's drop behavior handles premature cleanup
             drop(guard_stream);
 
-            // Verify pool remains reusable after early drop to ensure robust resource management
             let pool_object2 = pool.get().await?;
             assert!(!pool_object2.lock().await.name().is_empty());
 

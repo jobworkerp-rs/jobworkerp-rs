@@ -88,7 +88,6 @@ impl CreateWorkflowRunnerImpl {
     async fn load_workflow_from_url(&self, url: &str) -> Result<serde_json::Value> {
         tracing::info!("Loading workflow from URL: {}", url);
 
-        // Use WorkflowLoader from AppModule (handles URL validation, HTTP fetching, and JSON/YAML parsing)
         let workflow_schema = self
             .app
             .workflow_loader
@@ -96,7 +95,6 @@ impl CreateWorkflowRunnerImpl {
             .await
             .context("Failed to load workflow from URL")?;
 
-        // Convert WorkflowSchema to serde_json::Value for compatibility with existing code
         let workflow_json = serde_json::to_value(&workflow_schema)
             .context("Failed to serialize WorkflowSchema to JSON")?;
 
@@ -116,7 +114,6 @@ impl CreateWorkflowRunnerImpl {
         let worker_data =
             self.build_worker_data(worker_name.clone(), workflow_def, worker_options)?;
 
-        // Create worker using WorkerApp API
         let worker = self
             .app
             .worker_app
@@ -126,7 +123,6 @@ impl CreateWorkflowRunnerImpl {
 
         tracing::info!("CREATE_WORKFLOW Worker created: {:?}", worker);
 
-        // Convert WorkerId to CreateWorkflowWorkerId and return
         let create_workflow_worker_id = CreateWorkflowWorkerId {
             value: worker.value,
         };
@@ -142,7 +138,6 @@ impl CreateWorkflowRunnerImpl {
         use prost::Message;
         use proto::jobworkerp::data::{ResponseType, RunnerId, RunnerType};
 
-        // Extract description from workflow definition
         let document = workflow_def.get("document");
         let workflow_description = document
             .and_then(|d| d.get("summary"))

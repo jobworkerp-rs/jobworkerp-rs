@@ -4,7 +4,6 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-// Get the path to the MCP server
 fn get_mcp_server_path(server_name: &str) -> PathBuf {
     let base_path = PathBuf::from("../modules/mcp-servers/src");
     base_path.join(server_name)
@@ -55,13 +54,11 @@ async fn setup_python_environment_with_uv(
         return Err(anyhow::anyhow!("Failed to install dependencies with uv"));
     }
 
-    // Return to original directory
     std::env::set_current_dir(original_dir)?;
 
     // Set environment variables
     let mut envs = setup_python_env(server_path);
 
-    // Add virtual environment path to environment variables
     let venv_path = server_path.join(".venv");
     let venv_bin_path = if cfg!(target_os = "windows") {
         venv_path.join("Scripts")
@@ -69,7 +66,6 @@ async fn setup_python_environment_with_uv(
         venv_path.join("bin")
     };
 
-    // Add virtual environment bin directory to the beginning of PATH
     let path_env = std::env::var("PATH").unwrap_or_default();
     let new_path = format!("{}:{}", venv_bin_path.to_string_lossy(), path_env);
     envs.insert("PATH".to_string(), new_path);
@@ -95,7 +91,6 @@ pub async fn create_time_mcp_server_transport() -> Result<McpServerTransportConf
     // Set up virtual environment
     let envs = setup_python_environment_with_uv(&time_server_path).await?;
 
-    // Use Python directly from the virtual environment
     let venv_python = get_venv_python(&time_server_path);
     Ok(McpServerTransportConfig::Stdio {
         command: venv_python.to_string_lossy().to_string(),
@@ -125,7 +120,6 @@ pub async fn create_fetch_mcp_server_transport() -> Result<McpServerTransportCon
     // Set up virtual environment
     let envs = setup_python_environment_with_uv(&fetch_server_path).await?;
 
-    // Use Python directly from the virtual environment
     let venv_python = get_venv_python(&fetch_server_path);
     Ok(McpServerTransportConfig::Stdio {
         command: venv_python.to_string_lossy().to_string(),
@@ -150,7 +144,6 @@ async fn test_time_mcp_server() -> Result<()> {
         server: vec![create_time_mcp_server().await?],
     };
 
-    // Create McpClients
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let mut clients = factory.test_all().await?;
     assert_eq!(clients.len(), 1);
@@ -170,7 +163,6 @@ async fn test_time_mcp_server() -> Result<()> {
     // Display results
     println!("Time server result: {result:?}");
 
-    // Validate results
     assert!(!result.content.is_empty());
 
     Ok(())
@@ -186,11 +178,9 @@ async fn test_mcp_cancellation() -> Result<()> {
         server: vec![create_time_mcp_server().await?],
     };
 
-    // Create McpClients
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let client = factory.connect_server("time").await?;
 
-    // Create MCP runner instance with the client
     let mut runner = McpServerRunnerImpl::new(client, None).await?;
 
     // Test cancellation without active request
@@ -366,14 +356,11 @@ async fn test_using_mode_initialization() -> Result<()> {
         server: vec![create_time_mcp_server().await?],
     };
 
-    // Create McpClients
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let client = factory.connect_server("time").await?;
 
-    // Create MCP runner instance
     let runner = McpServerRunnerImpl::new(client, None).await?;
 
-    // Verify available tools
     let tool_names = runner.available_tool_names();
     assert!(
         !tool_names.is_empty(),
@@ -384,14 +371,12 @@ async fn test_using_mode_initialization() -> Result<()> {
         "Should have get_current_time tool"
     );
 
-    // Verify method_proto_map returns tool schemas
     let proto_map = runner.method_proto_map();
     assert!(
         proto_map.contains_key("get_current_time"),
         "Proto map should contain get_current_time"
     );
 
-    // Verify schema content
     let method_schema = proto_map.get("get_current_time").unwrap();
     assert!(
         method_schema.args_proto.contains("TimeGetCurrentTimeArgs")
@@ -417,7 +402,6 @@ async fn test_using_mode_execution_with_explicit_method() -> Result<()> {
         server: vec![create_time_mcp_server().await?],
     };
 
-    // Create MCP runner
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let client = factory.connect_server("time").await?;
     let mut runner = McpServerRunnerImpl::new(client, None).await?;
@@ -458,7 +442,6 @@ async fn test_using_mode_auto_select_single_tool() -> Result<()> {
         server: vec![create_time_mcp_server().await?],
     };
 
-    // Create MCP runner
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let client = factory.connect_server("time").await?;
     let mut runner = McpServerRunnerImpl::new(client, None).await?;
@@ -503,7 +486,6 @@ async fn test_using_mode_error_when_method_required() -> Result<()> {
         server: vec![create_fetch_mcp_server().await?],
     };
 
-    // Create MCP runner
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let client = factory.connect_server("fetch").await?;
     let mut runner = McpServerRunnerImpl::new(client, None).await?;
@@ -555,7 +537,6 @@ async fn test_using_mode_error_unknown_method() -> Result<()> {
         server: vec![create_time_mcp_server().await?],
     };
 
-    // Create MCP runner
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let client = factory.connect_server("time").await?;
     let mut runner = McpServerRunnerImpl::new(client, None).await?;
@@ -600,18 +581,15 @@ async fn test_using_mode_with_cancel_helper() -> Result<()> {
         server: vec![create_time_mcp_server().await?],
     };
 
-    // Create McpClients
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let client = factory.connect_server("time").await?;
 
-    // Create cancellation helper with pre-cancelled token
     let cancel_token = CancellationToken::new();
     cancel_token.cancel(); // Pre-cancel to test cancellation behavior
     use crate::runner::test_common::mock::MockCancellationManager;
     let mock_manager = MockCancellationManager::new_with_token(cancel_token);
     let cancel_helper = CancelMonitoringHelper::new(Box::new(mock_manager));
 
-    // Create MCP runner
     let mut runner = McpServerRunnerImpl::new(client, Some(cancel_helper)).await?;
 
     // Prepare JSON arguments (using mode uses JSON bytes)
@@ -651,11 +629,9 @@ async fn test_using_mode_stream_execution() -> Result<()> {
         server: vec![create_time_mcp_server().await?],
     };
 
-    // Create McpClients
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let client = factory.connect_server("time").await?;
 
-    // Create MCP runner
     let mut runner = McpServerRunnerImpl::new(client, None).await?;
 
     // Prepare JSON arguments (using mode uses JSON bytes)
@@ -696,7 +672,6 @@ async fn test_using_mode_stream_execution() -> Result<()> {
     let elapsed = start_time.elapsed();
     eprintln!("Using mode stream completed in {elapsed:?}");
 
-    // Verify stream behavior
     assert!(received_data, "Should have received data item");
     assert!(received_end, "Should have received end marker");
     assert_eq!(
@@ -731,11 +706,9 @@ async fn test_using_mode_stream_with_cancellation() -> Result<()> {
         server: vec![create_time_mcp_server().await?],
     };
 
-    // Create McpClients
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let client = factory.connect_server("time").await?;
 
-    // Create MCP runner
     let temp_runner = McpServerRunnerImpl::new(client, None).await?;
     let runner = Arc::new(Mutex::new(temp_runner));
 
@@ -820,7 +793,6 @@ async fn test_using_mode_stream_with_cancellation() -> Result<()> {
         }
     }
 
-    // Verify that cancellation happened quickly
     if elapsed > Duration::from_secs(2) {
         panic!("Stream processing took too long ({elapsed:?})");
     }
@@ -843,12 +815,10 @@ async fn test_mcp_tool_name_validation() -> Result<()> {
         server: vec![create_time_mcp_server().await?],
     };
 
-    // Create MCP runner
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let client = factory.connect_server("time").await?;
     let runner = McpServerRunnerImpl::new(client, None).await?;
 
-    // Phase 6.7: Verify tools via method_proto_map() instead of tools()
     let method_map = runner.method_proto_map();
     assert!(!method_map.is_empty(), "MCP server should have methods");
 
@@ -876,7 +846,6 @@ async fn test_mcp_execution_with_valid_using() -> Result<()> {
         server: vec![create_time_mcp_server().await?],
     };
 
-    // Create MCP runner
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let client = factory.connect_server("time").await?;
     let mut runner = McpServerRunnerImpl::new(client, None).await?;
@@ -916,7 +885,6 @@ async fn test_mcp_error_with_invalid_using() -> Result<()> {
         server: vec![create_time_mcp_server().await?],
     };
 
-    // Create MCP runner
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let client = factory.connect_server("time").await?;
     let mut runner = McpServerRunnerImpl::new(client, None).await?;
@@ -944,7 +912,6 @@ async fn test_mcp_error_with_invalid_using() -> Result<()> {
     Ok(())
 }
 
-/// Phase 6.5 Test: Verify method_proto_map() returns MethodSchema
 #[tokio::test]
 async fn test_method_proto_map() -> Result<()> {
     use crate::runner::mcp::config::McpConfig;
@@ -955,12 +922,10 @@ async fn test_method_proto_map() -> Result<()> {
         server: vec![create_time_mcp_server().await?],
     };
 
-    // Create MCP runner
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let client = factory.connect_server("time").await?;
     let runner = McpServerRunnerImpl::new(client, None).await?;
 
-    // Verify method_proto_map returns MethodSchema
     let method_proto_map = runner.method_proto_map();
 
     eprintln!(
@@ -968,7 +933,6 @@ async fn test_method_proto_map() -> Result<()> {
         method_proto_map.len()
     );
 
-    // Verify time server has get_current_time method
     assert!(
         method_proto_map.contains_key("get_current_time"),
         "Should contain get_current_time method"
@@ -976,14 +940,12 @@ async fn test_method_proto_map() -> Result<()> {
 
     let method_schema = method_proto_map.get("get_current_time").unwrap();
 
-    // Verify args_proto is not empty
     assert!(
         !method_schema.args_proto.is_empty(),
         "args_proto should not be empty"
     );
     eprintln!("✅ args_proto length: {}", method_schema.args_proto.len());
 
-    // Verify args_proto contains expected Protobuf syntax
     assert!(
         method_schema.args_proto.contains("syntax = \"proto3\""),
         "args_proto should contain proto3 syntax"
@@ -994,7 +956,6 @@ async fn test_method_proto_map() -> Result<()> {
     );
     eprintln!("✅ args_proto contains valid Protobuf schema");
 
-    // Verify result_proto for MCP server
     assert!(
         !method_schema.result_proto.is_empty(),
         "MCP server must have result_proto"
@@ -1008,7 +969,6 @@ async fn test_method_proto_map() -> Result<()> {
     Ok(())
 }
 
-/// Phase 6.5 Test: Verify MethodSchema with multiple tools (fetch server)
 #[tokio::test]
 async fn test_method_proto_map_multiple_tools() -> Result<()> {
     use crate::runner::mcp::config::McpConfig;
@@ -1019,29 +979,24 @@ async fn test_method_proto_map_multiple_tools() -> Result<()> {
         server: vec![create_fetch_mcp_server().await?],
     };
 
-    // Create MCP runner
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let client = factory.connect_server("fetch").await?;
     let runner = McpServerRunnerImpl::new(client, None).await?;
 
-    // Verify method_proto_map returns MethodSchema for all tools
     let method_proto_map = runner.method_proto_map();
 
     let tool_count = method_proto_map.len();
     eprintln!("✅ method_proto_map returned {} tools", tool_count);
     eprintln!("✅ method_proto_map {:?}", &method_proto_map);
 
-    // Verify fetch server has at least one tool
     assert!(
         tool_count >= 1,
         "Fetch server should have at least one tool"
     );
 
-    // Verify each tool has valid MethodSchema
     for (tool_name, method_schema) in &method_proto_map {
         eprintln!("  Tool: {}", tool_name);
 
-        // Verify args_proto
         assert!(
             !method_schema.args_proto.is_empty(),
             "Tool {} should have args_proto",
@@ -1057,7 +1012,6 @@ async fn test_method_proto_map_multiple_tools() -> Result<()> {
             method_schema.args_proto.len()
         );
 
-        // Verify result_proto is present
         assert!(
             !method_schema.result_proto.is_empty(),
             "Tool {} must have result_proto (required)",
