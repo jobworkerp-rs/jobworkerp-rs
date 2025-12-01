@@ -14,11 +14,9 @@ pub trait LLMResultConverter {
     fn convert_chat_completion_result(
         llm_response: &mistralrs::ChatCompletionResponse,
     ) -> LlmChatResult {
-        // Extract content and tool calls from the first choice
         let (content, done) = if let Some(first_choice) = llm_response.choices.first() {
             let content = if let Some(tool_calls) = &first_choice.message.tool_calls {
                 if !tool_calls.is_empty() {
-                    // Create tool calls
                     let converted_tool_calls = tool_calls
                         .iter()
                         .map(|tc| ToolCall {
@@ -55,7 +53,6 @@ pub trait LLMResultConverter {
             (None, true)
         };
 
-        // Convert usage stats
         let usage = Some(ChatUsage {
             model: llm_response.model.clone(),
             prompt_tokens: Some(llm_response.usage.prompt_tokens as u32),
@@ -82,11 +79,9 @@ pub trait LLMResultConverter {
     fn convert_chat_completion_chunk_result(
         llm_response: &mistralrs::ChatCompletionChunkResponse,
     ) -> LlmChatResult {
-        // Extract content and tool calls from the first choice delta
         let (content, done) = if let Some(first_choice) = llm_response.choices.first() {
             let content = if let Some(tool_calls) = &first_choice.delta.tool_calls {
                 if !tool_calls.is_empty() {
-                    // Create tool calls from delta
                     let converted_delta_tool_calls = tool_calls
                         .iter()
                         .map(|tc| ToolCall {
@@ -123,7 +118,6 @@ pub trait LLMResultConverter {
             (None, true)
         };
 
-        // Convert usage stats if present
         let usage = llm_response.usage.as_ref().map(|u| ChatUsage {
             model: llm_response.model.clone(),
             prompt_tokens: Some(u.prompt_tokens as u32),
@@ -149,7 +143,6 @@ pub trait LLMResultConverter {
     fn convert_completion_chunk_result(
         llm_response: &mistralrs::CompletionChunkResponse,
     ) -> LlmCompletionResult {
-        // Extract text from the first choice
         let (content, done) = if let Some(first_choice) = llm_response.choices.first() {
             let content = if !first_choice.text.is_empty() {
                 Some(CompletionMessageContent {
@@ -180,11 +173,9 @@ pub trait LLMResultConverter {
         }
     }
 
-    // Add conversion for non-streaming completion result
     fn convert_completion_result(
         llm_response: &mistralrs::CompletionResponse,
     ) -> LlmCompletionResult {
-        // Extract text from the first choice
         let (content, done) = if let Some(first_choice) = llm_response.choices.first() {
             let content = if !first_choice.text.is_empty() {
                 Some(CompletionMessageContent {
@@ -203,7 +194,6 @@ pub trait LLMResultConverter {
             (None, true)
         };
 
-        // Convert usage stats
         let usage = Some(CompletionUsage {
             model: llm_response.model.clone(),
             prompt_tokens: Some(llm_response.usage.prompt_tokens as u32),

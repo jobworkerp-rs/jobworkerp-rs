@@ -56,7 +56,6 @@ pub trait FunctionApp:
     ) -> Result<Vec<FunctionSpecs>> {
         let mut functions = Vec::new();
 
-        // Get runners if not excluded
         if !exclude_runner {
             let runners = self
                 .runner_app()
@@ -67,7 +66,6 @@ pub trait FunctionApp:
             }
         }
 
-        // Get workers if not excluded
         if !exclude_worker {
             let workers = self
                 .worker_app()
@@ -78,7 +76,6 @@ pub trait FunctionApp:
                     if let Some(data) = worker.data {
                         if let Some(runner_id) = data.runner_id {
                             if let Some(runner) = self.runner_app().find_runner(&runner_id).await? {
-                                // Check if the worker is associated with the runner
                                 if runner.id == Some(runner_id) {
                                     // warn only
                                     match Self::convert_worker_to_function_specs(wid, data, runner)
@@ -124,7 +121,6 @@ pub trait FunctionApp:
                 uniq_key,
                 streaming
             );
-            // Extract tool name from combined name if present (e.g., "server___tool")
             let (runner_name, tool_name_opt) =
                 if let Some((server_name, tool_name)) = Self::divide_names(name) {
                     (server_name, Some(tool_name))
@@ -168,10 +164,8 @@ pub trait FunctionApp:
                         let job_id = jid.value.to_string();
                         let started_at = chrono::Utc::now().timestamp_millis();
 
-                        // Use runner name directly since we have it
                         let runner_name = Some(runner_data.name.clone());
 
-                        // Use the common stream processing method
                         Ok(self.process_job_result_to_stream(
                             job_id,
                             started_at,
@@ -219,7 +213,6 @@ pub trait FunctionApp:
         Box::pin(stream! {
             tracing::info!("runner not found, run as worker: {:?}", &name);
 
-            // Extract using method name from combined name if present (e.g., "server___tool")
             let (worker_name, tool_name_opt) = if let Some((server_name, tool_name)) = Self::divide_names(name) {
                 (server_name, Some(tool_name))
             } else {
@@ -260,7 +253,6 @@ pub trait FunctionApp:
                         None
                     };
 
-                    // Use the common stream processing method
                     let stream = self.process_job_result_to_stream(
                         job_id,
                         started_at,
@@ -293,7 +285,7 @@ pub trait FunctionApp:
             futures::stream::BoxStream<'static, proto::jobworkerp::data::ResultOutputItem>,
         >,
         runner_name: Option<String>,
-        using: Option<String>, // Phase 6.6.7: Add using for method-specific decoding
+        using: Option<String>, // Method name for multi-method runners (MCP/Plugin)
     ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<FunctionResult>> + Send + 'a>> {
         use futures::StreamExt;
         use proto::jobworkerp::data::{result_output_item, ResultStatus};
@@ -532,7 +524,6 @@ pub trait FunctionApp:
     {
         use proto::jobworkerp::function::data::function_id;
 
-        // Return None if function_id is not set (will be skipped by caller)
         let function_id = match function_using.function_id.as_ref() {
             Some(id) => id,
             None => return Ok(None),
@@ -664,7 +655,6 @@ pub trait FunctionApp:
         // Find runner (name or id)
         let runner = self.find_runner(runner_name, runner_id).await?;
 
-        // Validate and serialize settings_json (use existing setup_runner_and_settings with descriptor cache)
         let runner_settings_value = settings_json
             .map(|json| {
                 serde_json::from_str::<serde_json::Value>(&json).map_err(|e| {
@@ -689,10 +679,8 @@ pub trait FunctionApp:
             worker_options,
         )?;
 
-        // Validate WorkerData (periodic/direct/channel etc.)
         self.validate_worker_options(&worker_data)?;
 
-        // Create Worker via WorkerApp
         let worker_id = self.worker_app().create(&worker_data).await?;
 
         Ok((worker_id, name))
@@ -707,7 +695,6 @@ pub trait FunctionApp:
         worker_options: Option<WorkerOptions>,
     ) -> Result<(WorkerId, String, Option<String>)> {
         // Load workflow definition (data or URL)
-        // Use WorkflowLoader via DI (UseWorkflowLoader trait)
         let workflow_schema = if let Some(data) = workflow_data {
             self.workflow_loader()
                 .load_workflow(None, Some(&data), true)
@@ -723,13 +710,11 @@ pub trait FunctionApp:
             .into());
         };
 
-        // Get workflow name (document.name)
         let workflow_name = workflow_schema.document.name.to_string();
 
         // Determine worker name (from name parameter or workflow definition)
         let worker_name = name.unwrap_or_else(|| workflow_name.clone());
 
-        // Create ReusableWorkflowRunnerSettings
         // Serialize workflow_schema to JSON string
         let workflow_json_str = serde_json::to_string(&workflow_schema).map_err(|e| {
             JobWorkerError::InvalidParameter(format!("Failed to serialize workflow schema: {}", e))
@@ -740,7 +725,6 @@ pub trait FunctionApp:
         };
         let runner_settings_bytes = ProstMessageCodec::serialize_message(&runner_settings)?;
 
-        // Get REUSABLE_WORKFLOW Runner ID (XXX same as db schema now)
         let runner_id = proto::jobworkerp::data::RunnerId {
             value: proto::jobworkerp::data::RunnerType::ReusableWorkflow as i64,
         };
@@ -756,10 +740,8 @@ pub trait FunctionApp:
             worker_options,
         )?;
 
-        // Validate WorkerData (periodic/direct/channel etc.)
         self.validate_worker_options(&worker_data)?;
 
-        // Create Worker via WorkerApp
         let worker_id = self.worker_app().create(&worker_data).await?;
 
         Ok((worker_id, worker_name, Some(workflow_name)))
@@ -795,7 +777,7 @@ pub trait FunctionApp:
                 // Standard runner processing
                 let arguments = self.transform_function_arguments(rdata.runner_type(), arguments);
                 tracing::debug!("call_function_for_llm: {}: {arguments:#?}", rid.value);
-                // Phase 6.7: Re-create runner object for standard handling
+                // Re-create runner object with schema for standard handling
                 let runner = RunnerWithSchema {
                     id: Some(rid),
                     data: Some(rdata),

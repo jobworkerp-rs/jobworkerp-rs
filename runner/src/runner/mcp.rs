@@ -80,7 +80,6 @@ impl McpServerRunnerImpl {
         for tool in tools {
             let tool_name = tool.name.into_owned();
 
-            // Validate tool name
             if let Err(e) = schema_converter::validate_using_name(&tool_name) {
                 tracing::warn!(
                     "Skipping tool '{}' in MCP server '{}': {}",
@@ -91,10 +90,8 @@ impl McpServerRunnerImpl {
                 continue;
             }
 
-            // Convert Arc<JsonObject> to serde_json::Value::Object
             let input_schema_value = serde_json::Value::Object(tool.input_schema.as_ref().clone());
 
-            // Generate Protobuf schema from JSON Schema
             let proto_schema = match schema_converter::json_schema_to_protobuf(
                 &input_schema_value,
                 server_name,
@@ -166,7 +163,6 @@ impl McpServerRunnerImpl {
         self.available_tools.get(tool_name)
     }
 
-    // Phase 6.7: Removed tools() method
     // McpTool type no longer exists - use method_proto_map() from RunnerSpec trait instead
 
     /// Resolve using to actual tool name
@@ -212,8 +208,6 @@ impl RunnerSpec for McpServerRunnerImpl {
         "".to_string()
     }
 
-    // Phase 6.6.4: method_proto_map is required for all runners
-    // Return tool-specific Protobuf definitions
     fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
         self.available_tools
             .iter()
@@ -224,14 +218,13 @@ impl RunnerSpec for McpServerRunnerImpl {
                         args_proto: info.args_proto_schema.clone(),
                         result_proto: info.result_proto_schema.clone(),
                         description: info.description.clone(),
-                        output_type: StreamingOutputType::Both as i32, // Phase 6.6: MCP tools support both streaming and non-streaming
+                        output_type: StreamingOutputType::Both as i32,
                     },
                 )
             })
             .collect()
     }
 
-    // Phase 6.7: Explicit implementation of method_json_schema_map for MCP Server
     // Uses existing JSON Schema from available_tools
     fn method_json_schema_map(&self) -> HashMap<String, crate::runner::MethodJsonSchema> {
         self.available_tools
@@ -259,7 +252,6 @@ impl RunnerSpec for McpServerRunnerImpl {
         "{}".to_string() // Empty JSON object (no settings required)
     }
 
-    // Phase 6.7: arguments_schema() and output_schema() are deprecated
     // Default implementation in RunnerSpec trait uses method_json_schema_map()
 }
 
@@ -308,7 +300,6 @@ impl McpServerRunnerImpl {
         let cancellation_token = self.get_cancellation_token().await;
 
         let result = async {
-            // Check for cancellation before starting
             if cancellation_token.is_cancelled() {
                 return Err(anyhow!("MCP tool call was cancelled before execution"));
             }
@@ -324,7 +315,6 @@ impl McpServerRunnerImpl {
             // ref
             let span = cx.span();
 
-            // Parse args as JSON string (tool-specific arguments)
             let arg_json = String::from_utf8(args.to_vec())?;
 
             span.set_attribute(opentelemetry::KeyValue::new(
@@ -490,15 +480,12 @@ impl McpServerRunnerImpl {
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let cancellation_token = self.get_cancellation_token().await;
 
-        // Check for cancellation before starting
         if cancellation_token.is_cancelled() {
             return Err(anyhow!("MCP stream request was cancelled before execution"));
         }
 
-        // Parse args as JSON string (tool-specific arguments)
         let arg_json = String::from_utf8(arg.to_vec())?;
 
-        // Extract needed data from self to avoid lifetime issues
         let mcp_transport = self.mcp_server.transport.clone();
         let tool_name_owned = tool_name.to_string();
 

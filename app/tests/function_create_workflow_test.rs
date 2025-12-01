@@ -5,7 +5,6 @@ use infra_utils::infra::test::TEST_RUNTIME;
 
 // Test helper to set up AppModule
 async fn setup_test_app_module() -> Result<AppModule> {
-    // Use the test helper from app module
     app::module::test::create_hybrid_test_app().await
 }
 
@@ -57,7 +56,6 @@ fn test_create_workflow_from_data() -> Result<()> {
         assert_eq!(worker_name, "test-workflow");
         assert_eq!(workflow_name, Some("test-workflow".to_string()));
 
-        // Verify worker exists
         let worker = app
             .worker_app
             .find(&worker_id)
@@ -161,7 +159,6 @@ fn test_create_workflow_with_duplicate_name() -> Result<()> {
         }"#
         .to_string();
 
-        // Create first workflow
         let (worker_id, _, _) = app
             .function_app
             .create_workflow_from_definition(Some(workflow_data.clone()), None, None, None)
@@ -278,7 +275,6 @@ fn test_create_workflow_with_worker_options() -> Result<()> {
         }"#
         .to_string();
 
-        // Create worker options
         let worker_options = proto::jobworkerp::function::data::WorkerOptions {
             retry_policy: Some(proto::jobworkerp::data::RetryPolicy {
                 r#type: proto::jobworkerp::data::RetryType::Constant as i32,
@@ -302,7 +298,6 @@ fn test_create_workflow_with_worker_options() -> Result<()> {
         assert!(result.is_ok(), "Failed to create workflow: {:?}", result);
         let (worker_id, _, _) = result.unwrap();
 
-        // Verify worker options applied
         let worker = app
             .worker_app
             .find(&worker_id)

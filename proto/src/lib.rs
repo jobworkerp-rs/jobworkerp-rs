@@ -17,7 +17,7 @@ pub mod jobworkerp {
 // for test runner
 tonic::include_proto!("_");
 
-/// Default method name for single-method runners in Phase 6.6.4+ architecture
+/// Default method name for single-method runners
 ///
 /// All single-method runners (COMMAND, HTTP_REQUEST, PYTHON_COMMAND, etc.) use this
 /// as the sole method name in their method_proto_map. Multi-method runners (MCP, Plugin)
@@ -39,7 +39,6 @@ pub trait ProtobufHelper {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("method_proto_map is required"))?;
 
-        // Get method schema by name
         let method_schema = method_proto_map.schemas.get(method_name).ok_or_else(|| {
             anyhow::anyhow!(
                 "Method '{}' not found in method_proto_map (available methods: {:?})",
@@ -48,12 +47,10 @@ pub trait ProtobufHelper {
             )
         })?;
 
-        // Return Ok(None) if args_proto is empty (unstructured input)
         if method_schema.args_proto.is_empty() {
             return Ok(None);
         }
 
-        // Parse args_proto as Protobuf descriptor
         let descriptor = ProtobufDescriptor::new(&method_schema.args_proto).map_err(|e| {
             anyhow::anyhow!(
                 "Failed to parse args_proto for method '{}': {}",
@@ -62,7 +59,6 @@ pub trait ProtobufHelper {
             )
         })?;
 
-        // Get first message from descriptor
         let message_descriptor = descriptor.get_messages().first().cloned().ok_or_else(|| {
             anyhow::anyhow!(
                 "No message found in args_proto for method '{}': proto definition may be invalid",
@@ -86,18 +82,15 @@ pub trait ProtobufHelper {
                 .ok_or_else(|| anyhow::anyhow!("message not found"))
         }
     }
-    // Phase 6.6.4: result_output_proto deleted, use MethodSchema.result_proto instead
     fn parse_job_result_schema_descriptor(
         runner_data: &RunnerData,
         method_name: &str,
     ) -> Result<Option<MessageDescriptor>> {
-        // Get method_proto_map (required in Phase 6.6.4+)
         let method_proto_map = runner_data
             .method_proto_map
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("method_proto_map is required"))?;
 
-        // Get method schema by name
         let method_schema = method_proto_map.schemas.get(method_name).ok_or_else(|| {
             anyhow::anyhow!(
                 "Method '{}' not found in method_proto_map (available methods: {:?})",
@@ -106,12 +99,10 @@ pub trait ProtobufHelper {
             )
         })?;
 
-        // Return Ok(None) if result_proto is empty (unstructured output)
         if method_schema.result_proto.is_empty() {
             return Ok(None);
         }
 
-        // Parse result_proto as Protobuf descriptor
         let descriptor = ProtobufDescriptor::new(&method_schema.result_proto).map_err(|e| {
             anyhow::anyhow!(
                 "Failed to parse result_proto for method '{}': {}",
@@ -120,7 +111,6 @@ pub trait ProtobufHelper {
             )
         })?;
 
-        // Get first message from descriptor
         let message_descriptor = descriptor.get_messages().first().cloned().ok_or_else(|| {
             anyhow::anyhow!(
                 "No message found in result_proto for method '{}': proto definition may be invalid",

@@ -175,7 +175,6 @@ impl RunnerSpec for CommandRunnerImpl {
     fn runner_settings_proto(&self) -> String {
         "".to_string()
     }
-    // Phase 6.6: Unified method_proto_map for all runners
     fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(
@@ -195,7 +194,6 @@ impl RunnerSpec for CommandRunnerImpl {
         schema_to_json_string!(crate::jobworkerp::runner::Empty, "settings_schema")
     }
 
-    // Phase 6.7: arguments_schema() and output_schema() are deprecated
     // Default implementation in RunnerSpec trait uses method_json_schema_map()
 }
 
@@ -229,7 +227,6 @@ impl RunnerTrait for CommandRunnerImpl {
         let mut stdout_messages = Vec::<String>::new();
         let mut stderr_messages = Vec::<String>::new();
 
-        // Get current Unix time in milliseconds using SystemTime
         let started_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards")
@@ -250,7 +247,6 @@ impl RunnerTrait for CommandRunnerImpl {
             should_monitor_memory,
             started_at
         );
-        // Use tokio::select! to monitor cancellation during process spawn
         let spawn_result = tokio::select! {
             spawn_result = async {
                 command
@@ -273,7 +269,6 @@ impl RunnerTrait for CommandRunnerImpl {
 
                 // Memory monitoring task handle - initialize as None
                 let memory_monitor_handle = if should_monitor_memory {
-                    // Get process ID for memory monitoring
                     let pid = if let Some(c) = self.child() {
                         c.id().map(|id| id as usize)
                     } else {
@@ -283,7 +278,6 @@ impl RunnerTrait for CommandRunnerImpl {
                     // Set up memory monitoring if we have a valid PID
                     if let Some(process_pid) = pid {
                         let max_mem = Arc::clone(&max_memory);
-                        // Create a oneshot channel to signal the monitoring task to stop
                         let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
 
                         // Spawn a task to monitor memory usage
@@ -294,7 +288,6 @@ impl RunnerTrait for CommandRunnerImpl {
 
                                 // Poll every 100ms for memory usage
                                 loop {
-                                    // Check if stop signal received
                                     if rx.try_recv().is_ok() {
                                         tracing::debug!(
                                             "Memory monitoring task received stop signal"
@@ -363,7 +356,6 @@ impl RunnerTrait for CommandRunnerImpl {
                             }
                             _ = cancellation_token.cancelled() => {
                                 tracing::info!("Command execution cancelled during output reading");
-                                // Get child process and kill it
                                 if let Some(mut child) = self.consume_child() {
                                     Self::graceful_kill_process(&mut child).await;
                                 }
@@ -378,7 +370,6 @@ impl RunnerTrait for CommandRunnerImpl {
                     // Signal the monitoring task to stop
                     let _ = stop_tx.send(());
 
-                    // Create a clone of the handle for aborting if timeout occurs
                     let handle_clone = handle.abort_handle();
 
                     // Give it a little time to finish but don't wait forever
@@ -391,7 +382,6 @@ impl RunnerTrait for CommandRunnerImpl {
                     }
                 }
 
-                // Get the maximum memory usage - default to 0 if not monitored
                 let max_memory_usage = if should_monitor_memory {
                     *max_memory.lock().await
                 } else {
@@ -401,7 +391,6 @@ impl RunnerTrait for CommandRunnerImpl {
                 // Calculate execution time in milliseconds
                 let execution_time_ms = start_time.elapsed().as_millis() as u64;
 
-                // Get the exit code from the child process with cancellation monitoring
                 let exit_code = match self.consume_child() {
                     Some(mut child) => {
                         // Monitor cancellation during process execution
@@ -498,10 +487,8 @@ impl RunnerTrait for CommandRunnerImpl {
 
         // Note: Cancellation manager lifecycle is now handled by DI Helper system
 
-        // Create mutable command here
         let mut command = Command::new(command_str.as_str());
 
-        // Get current Unix time in milliseconds using SystemTime
         let started_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards")
@@ -532,7 +519,6 @@ impl RunnerTrait for CommandRunnerImpl {
 
         // Stream_process_pid already cloned above
 
-        // Create the stream - use stream! instead of try_stream! to handle errors internally
         let stream = stream! {
             match command
                 .args(&args_vec)  // Use the cloned args vector
@@ -557,7 +543,6 @@ impl RunnerTrait for CommandRunnerImpl {
                         let process_pid = process_id.unwrap() as usize;
                         let max_mem = Arc::clone(&max_memory);
 
-                        // Create a oneshot channel to signal the monitoring task to stop
                         let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
 
                         // Spawn a task to monitor memory usage
@@ -567,7 +552,6 @@ impl RunnerTrait for CommandRunnerImpl {
 
                             // Poll every 100ms for memory usage
                             loop {
-                                // Check if stop signal received
                                 if rx.try_recv().is_ok() {
                                     tracing::debug!("Memory monitoring task in stream mode received stop signal");
                                     break;
@@ -648,7 +632,6 @@ impl RunnerTrait for CommandRunnerImpl {
                         }
                     };
 
-                    // Create buffers for reading
                     let mut stdout_buf = Vec::with_capacity(1024);
                     let mut stderr_buf = Vec::with_capacity(1024);
 
@@ -660,7 +643,6 @@ impl RunnerTrait for CommandRunnerImpl {
                     let mut stdout_bytes = Vec::new();
                     let mut stderr_bytes = Vec::new();
 
-                    // Create mutable handles to track progress
                     let mut child = child;
 
                     // Stream processing loop
@@ -698,14 +680,12 @@ impl RunnerTrait for CommandRunnerImpl {
                                         let new_bytes = stdout_buf.split_off(stdout_buf.len() - n);
                                         stdout_bytes.extend_from_slice(&new_bytes);
 
-                                        // Create lines of output
                                         let mut start = 0;
                                         for (i, &b) in stdout_bytes.iter().enumerate() {
                                             if b == b'\n' {
                                                 if i > start {
                                                     let line = &stdout_bytes[start..i];
 
-                                                    // Create CommandResult with stdout data
                                                     let result = CommandResult {
                                                         exit_code: None, // Not finished yet
                                                         stdout: Some(String::from_utf8_lossy(line).to_string()),
@@ -753,14 +733,12 @@ impl RunnerTrait for CommandRunnerImpl {
                                         let new_bytes = stderr_buf.split_off(stderr_buf.len() - n);
                                         stderr_bytes.extend_from_slice(&new_bytes);
 
-                                        // Create lines of output
                                         let mut start = 0;
                                         for (i, &b) in stderr_bytes.iter().enumerate() {
                                             if b == b'\n' {
                                                 if i > start {
                                                     let line = &stderr_bytes[start..i];
 
-                                                    // Create CommandResult with stderr data
                                                     let result = CommandResult {
                                                         exit_code: None, // Not finished yet
                                                         stdout: None,
@@ -797,7 +775,6 @@ impl RunnerTrait for CommandRunnerImpl {
                                     }
                                 }
                             },
-                            // Check if process exited, but continue reading output
                             exit_result = child.wait() => {
                                 match exit_result {
                                     Ok(status) => {
@@ -840,7 +817,6 @@ impl RunnerTrait for CommandRunnerImpl {
                         // Signal the monitoring task to stop
                         let _ = stop_tx.send(());
 
-                        // Create a clone of the handle for aborting if timeout occurs
                         let handle_clone = handle.abort_handle();
 
                         // Give it a little time to finish but don't wait forever
@@ -853,7 +829,6 @@ impl RunnerTrait for CommandRunnerImpl {
                         }
                     }
 
-                    // Get the maximum memory usage
                     let max_memory_usage = if should_monitor_memory {
                         *max_memory.lock().await
                     } else {
@@ -863,7 +838,6 @@ impl RunnerTrait for CommandRunnerImpl {
                     // Calculate execution time
                     let execution_time_ms = start_time.elapsed().as_millis() as u64;
 
-                    // Create the final result
                     tracing::info!(
                         "command_stream completed: {}, exit_code: {:?}, execution_time: {}ms, peak_memory: {}KB",
                         &data.command,
@@ -872,7 +846,6 @@ impl RunnerTrait for CommandRunnerImpl {
                         max_memory_usage/1024
                     );
 
-                    // Create final CommandResult with execution results (no stdout/stderr)
                     let final_result = CommandResult {
                         exit_code,
                         stdout: None,
@@ -916,7 +889,6 @@ impl RunnerTrait for CommandRunnerImpl {
                         &e
                     );
 
-                    // Create an error CommandResult
                     let error_result = CommandResult {
                         exit_code: Some(-1), // Conventional error code
                         stdout: None,
@@ -1025,7 +997,6 @@ impl CancelMonitoring for CommandRunnerImpl {
                     tracing::debug!("Sent SIGTERM to stream process {}", stream_pid);
                     // Give it a moment for graceful shutdown
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    // Check if still running and force kill if needed
                     if kill(Pid::from_raw(stream_pid as i32), None).is_ok() {
                         tracing::warn!(
                             "Stream process {} still running, sending SIGKILL",
@@ -1051,7 +1022,6 @@ impl CancelMonitoring for CommandRunnerImpl {
     /// Complete state reset for pool recycling
     /// Resets CommandRunner-specific state (stream_process_pid etc.) to prevent state contamination for next job
     async fn reset_for_pooling(&mut self) -> Result<()> {
-        // Check if streaming process is still running
         let has_active_stream_process = {
             let pid_guard = self.stream_process_pid.read().await;
             pid_guard.is_some()
@@ -1098,8 +1068,6 @@ mod tests {
     use futures::StreamExt;
     use tokio::time::{sleep, Duration};
 
-    // Use common mock from test_common module
-
     #[tokio::test]
     async fn test_run() {
         let mut runner = CommandRunnerImpl::new();
@@ -1122,21 +1090,16 @@ mod tests {
         let result =
             ProstMessageCodec::deserialize_message::<CommandResult>(&result_bytes).unwrap();
 
-        // Check that the output contains the expected string
         let binding = result.stdout.unwrap_or_default();
         let stdout = &binding;
         assert!(stdout.contains("Hello, World!"));
 
-        // Verify execution time is present
         assert!(result.execution_time_ms.is_some());
 
-        // Verify started_at is present
         assert!(result.started_at.is_some());
 
-        // Verify memory monitoring data
         assert!(result.max_memory_usage_kb.is_some());
 
-        // Verify exit code is 0 (success)
         assert_eq!(result.exit_code, Some(0));
     }
 
@@ -1230,7 +1193,6 @@ mod tests {
                         result.execution_time_ms
                     );
 
-                    // Check if this is a stdout data packet or the final result
                     if let Some(stdout) = result.stdout {
                         // This is an intermediate output, should contain our test string
                         let stdout_str = &stdout;
@@ -1250,7 +1212,6 @@ mod tests {
             }
         }
 
-        // Verify we received both data and the end marker
         assert!(
             found_stdout_data,
             "Stream should produce CommandResult with stdout data"
@@ -1267,7 +1228,6 @@ mod tests {
         use std::io::{self, Write};
 
         let mut runner = CommandRunnerImpl::new();
-        // Use a command that outputs multiple lines with sleep to demonstrate real-time streaming
         let arg = CommandArgs {
             command: "/bin/bash".to_string(),
             args: vec![
@@ -1279,7 +1239,6 @@ mod tests {
 
         eprintln!("\n=== Starting stream test with multiple lines ===");
 
-        // Get the stream
         let stream_result = runner
             .run_stream(
                 &ProstMessageCodec::serialize_message(&arg).unwrap(),
@@ -1291,7 +1250,6 @@ mod tests {
         assert!(stream_result.is_ok());
         let stream = stream_result.unwrap();
 
-        // Create channels for communicating test results
         let (tx, mut rx) = tokio::sync::mpsc::channel::<(bool, bool, usize)>(10);
 
         // Spawn a task to process the stream so we can see real-time output
@@ -1320,7 +1278,6 @@ mod tests {
 
                         let result = result.unwrap();
 
-                        // Check if this is a stdout/stderr data packet or the final result
                         if let Some(stdout) = result.stdout {
                             // This is an intermediate output line
                             let stdout_str = &stdout;
@@ -1378,7 +1335,6 @@ mod tests {
 
         // Wait for the stream processing to complete and get results
         if let Some((found_final_result, found_end, line_count)) = rx.recv().await {
-            // Verify results
             assert!(
                 line_count >= 3,
                 "Stream should capture at least 3 lines of output"
@@ -1405,7 +1361,6 @@ mod tests {
         let mut runner1 = CommandRunnerImpl::new();
         let mut runner2 = CommandRunnerImpl::new();
 
-        // Use a long-running command
         let arg = CommandArgs {
             command: "/bin/sleep".to_string(),
             args: vec!["2".to_string()], // Sleep for 2 seconds
@@ -1424,7 +1379,6 @@ mod tests {
 
         // Wait a moment, then test cancel on the second runner (which has no active process)
         sleep(Duration::from_millis(100)).await;
-        // Use new cancellation API
         use crate::runner::cancellation::CancelMonitoring;
         runner2.request_cancellation().await.unwrap(); // This should not panic
         eprintln!("Cancel on runner2 (no active process) completed successfully");

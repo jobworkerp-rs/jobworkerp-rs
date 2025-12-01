@@ -96,7 +96,6 @@ impl PluginRunner for TestPlugin {
         include_str!("../../../proto/protobuf/test_runner.proto").to_string()
     }
 
-    // Phase 6.6.4: Implement method_proto_map for new unified API
     fn method_proto_map(
         &self,
     ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {

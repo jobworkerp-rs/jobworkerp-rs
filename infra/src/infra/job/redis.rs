@@ -37,7 +37,6 @@ where
 
         let mut conn = self.redis_pool().get().await?;
 
-        // Use SET with EX option for individual key TTL
         let result: Result<String> = conn
             .set_ex(&job_key, serialized_job, ttl.as_secs())
             .await
@@ -55,7 +54,6 @@ where
 
         let mut conn = self.redis_pool().get().await?;
 
-        // Use SET with EX option for individual key TTL (always upsert)
         let result: Result<String> = conn
             .set_ex(&job_key, serialized_job, ttl.as_secs())
             .await

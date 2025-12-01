@@ -139,7 +139,6 @@ impl OllamaService {
             .await
             .map_err(|e| anyhow!("Stream generation error: {}", e))?;
 
-        // Convert the Ollama stream into our own BoxStream
         let extract_reasoning = args
             .options
             .as_ref()
@@ -493,7 +492,6 @@ We want to verify that all chunks are properly received and processed.
         // Make sure we got some responses
         assert!(!responses.is_empty(), "No streaming responses received");
 
-        // Check that at least one chunk contains text content
         let has_content = responses.iter().any(|res| {
             res.content.as_ref().is_some_and(|c| {
                 c.content.as_ref().is_some_and(|content| match content {
@@ -503,7 +501,6 @@ We want to verify that all chunks are properly received and processed.
         });
         assert!(has_content, "No text content found in streaming responses");
 
-        // Check that the last chunk has the done flag set to true
         let last_response = responses.last().expect("No responses received");
         assert!(last_response.done, "Final chunk doesn't have done=true");
         let mut reasoning_text = String::new();

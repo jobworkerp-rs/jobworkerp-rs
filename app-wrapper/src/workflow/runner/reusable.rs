@@ -162,7 +162,6 @@ impl RunnerTrait for ReusableWorkflowRunner {
                 )
                 .await?;
 
-                // Get the stream of workflow context updates
                 let workflow_stream = executor.execute_workflow(Arc::new(cx));
 
                 pin_mut!(workflow_stream);
@@ -185,7 +184,6 @@ impl RunnerTrait for ReusableWorkflowRunner {
                     }
                 }
 
-                // Return the final workflow context or an error if none was received
                 let res = final_context
                     .ok_or_else(|| anyhow::anyhow!("No workflow context was returned"))?;
 

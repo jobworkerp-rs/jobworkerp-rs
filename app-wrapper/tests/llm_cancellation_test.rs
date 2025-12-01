@@ -133,12 +133,10 @@ async fn test_llm_chat_with_cancellation_helper() -> Result<()> {
     command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
     let app_module = create_hybrid_test_app().await?;
 
-    // Create external cancellation token (simulating pubsub cancellation)
     let external_cancel_token = CancellationToken::new();
     let mock_manager = MockCancellationManager::new_with_token(external_cancel_token.clone());
     let cancel_helper = CancelMonitoringHelper::new(Box::new(mock_manager));
 
-    // Create LLM Chat runner with cancellation helper
     let mut runner = app_wrapper::llm::chat::LLMChatRunnerImpl::new_with_cancel_monitoring(
         Arc::new(app_module),
         cancel_helper,
@@ -161,7 +159,6 @@ async fn test_llm_chat_with_cancellation_helper() -> Result<()> {
     let serialized_settings = prost::Message::encode_to_vec(&settings);
     runner.load(serialized_settings).await?;
 
-    // Use long running args for cancellation test
     let args = create_long_running_chat_args();
     let serialized_args = prost::Message::encode_to_vec(&args);
     let metadata = HashMap::new();
@@ -184,7 +181,6 @@ async fn test_llm_chat_with_cancellation_helper() -> Result<()> {
 
     println!("LLM chat execution completed in {:?}", elapsed);
 
-    // Verify cancellation behavior
     let (result, _) = result;
     match result {
         Ok(_) => {
@@ -219,12 +215,10 @@ async fn test_llm_chat_with_cancellation_helper() -> Result<()> {
 async fn test_llm_completion_with_cancellation_helper() -> Result<()> {
     command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
-    // Create external cancellation token
     let external_cancel_token = CancellationToken::new();
     let mock_manager = MockCancellationManager::new_with_token(external_cancel_token.clone());
     let cancel_helper = CancelMonitoringHelper::new(Box::new(mock_manager));
 
-    // Create LLM Completion runner with cancellation helper
     let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
     let mut runner =
         app_wrapper::llm::completion::LLMCompletionRunnerImpl::new_with_cancel_monitoring(
@@ -249,7 +243,6 @@ async fn test_llm_completion_with_cancellation_helper() -> Result<()> {
     let serialized_settings = prost::Message::encode_to_vec(&settings);
     runner.load(serialized_settings).await?;
 
-    // Use long running args for cancellation test
     let args = create_long_running_completion_args();
     let serialized_args = prost::Message::encode_to_vec(&args);
     let metadata = HashMap::new();
@@ -272,7 +265,6 @@ async fn test_llm_completion_with_cancellation_helper() -> Result<()> {
 
     println!("LLM completion execution completed in {:?}", elapsed);
 
-    // Verify cancellation behavior
     let (result, _) = result;
     match result {
         Ok(_) => {
@@ -308,14 +300,12 @@ async fn test_llm_chat_pre_cancellation() -> Result<()> {
     command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
     let app_module = create_hybrid_test_app().await?;
 
-    // Create pre-cancelled token
     let external_cancel_token = CancellationToken::new();
     external_cancel_token.cancel(); // Pre-cancel
 
     let mock_manager = MockCancellationManager::new_with_token(external_cancel_token);
     let cancel_helper = CancelMonitoringHelper::new(Box::new(mock_manager));
 
-    // Create LLM Chat runner with pre-cancelled helper
     let mut runner = app_wrapper::llm::chat::LLMChatRunnerImpl::new_with_cancel_monitoring(
         Arc::new(app_module),
         cancel_helper,
@@ -377,14 +367,12 @@ async fn test_llm_chat_pre_cancellation() -> Result<()> {
 async fn test_llm_completion_pre_cancellation() -> Result<()> {
     command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
-    // Create pre-cancelled token
     let external_cancel_token = CancellationToken::new();
     external_cancel_token.cancel(); // Pre-cancel
 
     let mock_manager = MockCancellationManager::new_with_token(external_cancel_token);
     let cancel_helper = CancelMonitoringHelper::new(Box::new(mock_manager));
 
-    // Create LLM Completion runner with pre-cancelled helper
     let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
     let mut runner =
         app_wrapper::llm::completion::LLMCompletionRunnerImpl::new_with_cancel_monitoring(
@@ -444,7 +432,6 @@ async fn test_llm_chat_without_cancellation_helper() -> Result<()> {
     command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
     let app_module = create_hybrid_test_app().await?;
 
-    // Create LLM Chat runner WITHOUT cancellation helper (legacy mode)
     let mut runner = app_wrapper::llm::chat::LLMChatRunnerImpl::new(Arc::new(app_module));
 
     // Load settings

@@ -109,18 +109,15 @@ pub trait GenericLLMTracingHelper {
                     anyhow::anyhow!("Action failed: {}", e)
                 })?;
 
-                // Add response output to main span attributes
                 let response_output = result.to_json();
                 span_attributes.data.output = Some(response_output);
 
-                // Use parser that returns None to prevent overwriting our response data
                 let response_parser = |_: &R| -> Option<OtelSpanAttributes> {
                     None // Return None to skip default output processing
                 };
 
                 let current_context = parent_context.clone();
 
-                // Create a dummy action that just returns the result
                 let dummy_action = async move { Ok::<R, JobWorkerError>(result) };
 
                 let final_result = client

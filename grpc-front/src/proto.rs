@@ -13,7 +13,6 @@ pub mod jobworkerp {
             pub type FunctionSetDetail = data::FunctionSetDetail;
             pub type FunctionSetDetailData = data::FunctionSetDetailData;
             pub type FunctionSpecs = data::FunctionSpecs;
-            // Phase 6.7: FunctionSchema, McpToolList, McpTool deleted (replaced by MethodSchemaMap)
             pub type WorkerOptions = data::WorkerOptions;
             pub type FunctionCallOptions = data::FunctionCallOptions;
             pub type FunctionExecutionInfo = data::FunctionExecutionInfo;

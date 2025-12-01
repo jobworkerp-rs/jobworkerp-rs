@@ -91,7 +91,6 @@ impl TaskTrait for ForTask {
     }
 
     fn timeout(&self) -> ::std::option::Option<&TaskTimeout> {
-        // Convert TaskTimeout to CallTaskAsyncApiTimeout if needed
         self.timeout.as_ref()
     }
     fn task_type(&self) -> &'static str {
@@ -128,7 +127,6 @@ impl TaskTrait for ForkTask {
     }
 
     fn timeout(&self) -> ::std::option::Option<&TaskTimeout> {
-        // Convert TaskTimeout to CallTaskAsyncApiTimeout if needed
         self.timeout.as_ref()
     }
     fn task_type(&self) -> &'static str {
@@ -165,7 +163,6 @@ impl TaskTrait for RaiseTask {
     }
 
     fn timeout(&self) -> ::std::option::Option<&TaskTimeout> {
-        // Convert TaskTimeout to CallTaskAsyncApiTimeout if needed
         self.timeout.as_ref()
     }
     fn task_type(&self) -> &'static str {
@@ -202,7 +199,6 @@ impl TaskTrait for RunTask {
     }
 
     fn timeout(&self) -> ::std::option::Option<&TaskTimeout> {
-        // Convert TaskTimeout to CallTaskAsyncApiTimeout if needed
         self.timeout.as_ref()
     }
     fn task_type(&self) -> &'static str {
@@ -238,7 +234,6 @@ impl TaskTrait for SetTask {
     }
 
     fn timeout(&self) -> ::std::option::Option<&TaskTimeout> {
-        // Convert TaskTimeout to CallTaskAsyncApiTimeout if needed
         self.timeout.as_ref()
     }
     fn task_type(&self) -> &'static str {

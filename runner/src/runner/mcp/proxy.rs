@@ -64,7 +64,6 @@ impl McpServerProxy {
         let client = tokio::time::timeout(timeout_config.mcp_transport_start, async {
             let result: Result<RunningService<RoleClient, ()>> = match config {
                 McpServerTransportConfig::Sse { url, headers } => {
-                    // Create reqwest client with custom headers
                     let mut header_map = reqwest::header::HeaderMap::new();
                     for (key, value) in headers {
                         let header_name = reqwest::header::HeaderName::from_bytes(key.as_bytes())

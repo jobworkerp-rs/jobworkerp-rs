@@ -53,7 +53,6 @@ pub trait LLMRequestConverter: UseFunctionApp + UseFunctionSetApp {
                         Some(message_content::Content::ToolCalls(tool_calls)) => {
                             // Handle tool calls in assistant messages
                             if matches!(role, TextMessageRole::Assistant) {
-                                // Add assistant message with tool calls - MistralRS expects empty content for tool-calling messages
                                 builder = builder.add_message(role, "");
                                 tracing::debug!(
                                     "Added assistant message with {} tool calls",
@@ -210,7 +209,6 @@ pub trait LLMRequestConverter: UseFunctionApp + UseFunctionSetApp {
     ) -> impl std::future::Future<Output = Result<Vec<Tool>>> + Send {
         let function_opts = function_opts.clone();
         async move {
-            // Get function list based on options
             let functions = if let Some(set_name) = &function_opts.function_set_name {
                 tracing::debug!("Loading functions from set: {set_name}");
                 match function_set_app.find_functions_by_set(set_name).await {
@@ -241,7 +239,6 @@ pub trait LLMRequestConverter: UseFunctionApp + UseFunctionSetApp {
                     .await?
             };
 
-            // Convert FunctionSpecs to mistralrs Tools
             let tools = Self::convert_functions_to_tools_static(&functions)?;
             tracing::debug!("Created {} tools for mistralrs", tools.len());
             Ok(tools)
@@ -269,14 +266,12 @@ pub trait LLMRequestConverter: UseFunctionApp + UseFunctionSetApp {
             tracing::debug!("Function: {} ({})", func.name, func.description);
         }
 
-        // Convert to ToolInfo format first (reuse existing logic from ollama)
         let tool_infos =
             super::super::chat::conversion::ToolConverter::convert_functions_to_mcp_tools(
                 functions.to_vec(),
             )?;
         tracing::debug!("Converted to {} tool infos", tool_infos.tools.len());
 
-        // Convert ToolInfo to mistralrs Tool format
         let tools: Vec<Tool> = tool_infos
             .tools
             .iter()

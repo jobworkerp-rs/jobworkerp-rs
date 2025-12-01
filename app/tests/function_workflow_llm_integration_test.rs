@@ -83,7 +83,6 @@ fn test_create_workflow_via_llm_function_call() -> Result<()> {
                 println!("✅ CREATE_WORKFLOW LLM Function call successful");
                 println!("Response: {}", serde_json::to_string_pretty(&response)?);
 
-                // Validate response
                 assert!(
                     response.get("workerId").is_some(),
                     "worker_id should be present"
@@ -196,7 +195,6 @@ fn test_reusable_workflow_via_llm_function_call() -> Result<()> {
 
         let meta = Arc::new(HashMap::new());
 
-        // Create worker
         let create_result = app
             .function_app
             .call_function_for_llm(
@@ -334,12 +332,10 @@ fn test_workflow_function_discovery_via_find_functions() -> Result<()> {
         // Initialize AppModule
         let app = Arc::new(create_hybrid_test_app().await?);
 
-        // Get available functions
         let functions = app.function_app.find_functions(false, false).await?;
 
         println!("✅ Number of functions detected: {:?}", functions.len());
 
-        // Verify that CREATE_WORKFLOW runner not exist (use find_functions_all(include_full==true) to see all)
         let create_workflow_not_found = functions.iter().any(|f| f.name == "CREATE_WORKFLOW");
 
         assert!(
@@ -348,7 +344,6 @@ fn test_workflow_function_discovery_via_find_functions() -> Result<()> {
         );
         println!("✅ CREATE_WORKFLOW function detected");
 
-        // Verify that REUSABLE_WORKFLOW runner exists
         let reusable_workflow_found = functions.iter().any(|f| f.name == "REUSABLE_WORKFLOW");
 
         assert!(
@@ -357,7 +352,7 @@ fn test_workflow_function_discovery_via_find_functions() -> Result<()> {
         );
         println!("✅ REUSABLE_WORKFLOW function detected");
 
-        // Display function details (Phase 6.7: Updated to use methods instead of schema)
+        // Display function details
         for func in functions
             .iter()
             .filter(|f| f.name == "CREATE_WORKFLOW" || f.name == "REUSABLE_WORKFLOW")

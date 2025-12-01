@@ -127,7 +127,6 @@ pub mod test {
 
         let result = timeout(TEST_TIMEOUT, service.request_chat(args, context, metadata)).await??;
 
-        // Verify the response
         assert!(result.done, "Chat should be completed");
 
         if let Some(content) = result.content {
@@ -171,7 +170,6 @@ pub mod test {
 
         let result = timeout(TEST_TIMEOUT, service.request_chat(args, context, metadata)).await??;
 
-        // Verify the response
         assert!(result.done, "Chat should be completed");
 
         if let Some(content) = result.content {
@@ -210,7 +208,6 @@ pub mod test {
 
         let result = timeout(TEST_TIMEOUT, service.request_chat(args, context, metadata)).await??;
 
-        // Verify the response
         assert!(result.done, "Chat should be completed");
 
         if let Some(content) = result.content {
@@ -251,7 +248,6 @@ pub mod test {
         )
         .await??;
 
-        // Verify the response
         assert!(result.done, "Chat should be completed");
 
         if let Some(content) = result.content {
@@ -285,7 +281,6 @@ pub mod test {
     async fn test_ollama_without_tools() -> Result<()> {
         let service = create_ollama_service().await?;
 
-        // Create args without function calling
         let args = LlmChatArgs {
         messages: vec![llm_chat_args::ChatMessage {
             role: ChatRole::User as i32,
@@ -316,7 +311,6 @@ pub mod test {
 
         let result = timeout(TEST_TIMEOUT, service.request_chat(args, context, metadata)).await??;
 
-        // Verify the response
         assert!(result.done, "Chat should be completed");
 
         if let Some(content) = result.content {
@@ -354,7 +348,6 @@ pub mod test {
 
         let result = timeout(TEST_TIMEOUT, service.request_chat(args, context, metadata)).await??;
 
-        // Verify the response - should handle the error gracefully
         assert!(result.done, "Chat should be completed");
 
         if let Some(content) = result.content {

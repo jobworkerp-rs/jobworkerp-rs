@@ -117,14 +117,11 @@ mod tests {
         assert!(retrieved.is_some());
         let retrieved_checkpoint = retrieved.unwrap();
 
-        // Verify workflow context
         assert_eq!(checkpoint.workflow.name, retrieved_checkpoint.workflow.name);
-        // Verify task context
         assert_eq!(
             checkpoint.task.flow_directive,
             retrieved_checkpoint.task.flow_directive
         );
-        // Verify position
         assert_eq!(
             checkpoint.position.path.len(),
             retrieved_checkpoint.position.path.len()
@@ -133,7 +130,6 @@ mod tests {
         // Test: Delete checkpoint
         repo.delete_checkpoint(key).await?;
 
-        // Verify checkpoint is deleted
         let deleted_result = repo.get_checkpoint(key).await?;
         assert!(deleted_result.is_none());
 
@@ -192,16 +188,13 @@ mod tests {
 
         let key = "test_checkpoint_update";
 
-        // Create and save first checkpoint
         let checkpoint1 = create_test_checkpoint_context();
         repo.save_checkpoint(key, &checkpoint1).await?;
 
-        // Create second checkpoint with different workflow ID
         let mut checkpoint2 = create_test_checkpoint_context();
         checkpoint2.workflow.name = Uuid::new_v4().to_string();
         repo.save_checkpoint(key, &checkpoint2).await?;
 
-        // Verify the checkpoint was updated (overwritten)
         let retrieved = repo.get_checkpoint(key).await?;
         assert!(retrieved.is_some());
         let retrieved_checkpoint = retrieved.unwrap();
@@ -238,17 +231,14 @@ mod tests {
         repo.save_checkpoint(key1, &checkpoint1).await?;
         repo.save_checkpoint(key2, &checkpoint2).await?;
 
-        // Verify both checkpoints exist independently
         let retrieved1 = repo.get_checkpoint(key1).await?;
         let retrieved2 = repo.get_checkpoint(key2).await?;
 
         assert!(retrieved1.is_some());
         assert!(retrieved2.is_some());
 
-        // Delete one checkpoint
         repo.delete_checkpoint(key1).await?;
 
-        // Verify only one is deleted
         let deleted_result1 = repo.get_checkpoint(key1).await?;
         let still_exists_result2 = repo.get_checkpoint(key2).await?;
 
@@ -279,14 +269,12 @@ mod tests {
         repo.save_checkpoint(key1, &checkpoint1).await?;
         repo.save_checkpoint(key2, &checkpoint2).await?;
 
-        // Verify both checkpoints exist
         assert!(repo.get_checkpoint(key1).await?.is_some());
         assert!(repo.get_checkpoint(key2).await?.is_some());
 
         // Clear all checkpoints
         repo.clear().await;
 
-        // Verify all checkpoints are cleared
         assert!(repo.get_checkpoint(key1).await?.is_none());
         assert!(repo.get_checkpoint(key2).await?.is_none());
 
@@ -303,14 +291,12 @@ mod tests {
                 .collect::<serde_json::Map<String, serde_json::Value>>(),
         );
 
-        // Create WorkflowCheckPointContext directly with minimal fields
         let workflow_checkpoint = WorkflowCheckPointContext {
             name: workflow_id.to_string(),
             input: input.clone(),
             context_variables: context_variables.clone(),
         };
 
-        // Create TaskCheckPointContext directly
         let task_checkpoint = TaskCheckPointContext {
             input: input.clone(),
             output: Arc::new(serde_json::json!({"processed": "output"})),
@@ -318,7 +304,6 @@ mod tests {
             flow_directive: "continue".to_string(),
         };
 
-        // Create WorkflowPosition directly
         let position = WorkflowPosition {
             path: StackWithHistory::new(),
         };

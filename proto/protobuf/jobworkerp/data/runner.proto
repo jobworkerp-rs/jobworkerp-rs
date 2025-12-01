@@ -27,7 +27,7 @@ message RunnerData {
   // # Runner Settings Definition
   // Proto file definition for runner configuration
   string runner_settings_proto = 4;
-  // Phase 6.6.4: Fields 5-7 deleted, reserved to prevent reuse
+  // Fields 5-7 reserved to prevent reuse
   reserved 5, 6, 7;
   reserved "job_args_proto", "result_output_proto", "output_type";
   // # definition
@@ -35,7 +35,7 @@ message RunnerData {
   // mcp: mcp_server toml
   // plugin: plugin filepath
   string definition = 8;
-  // # Method Proto Map (REQUIRED in Phase 6.6.4+)
+  // # Method Proto Map (REQUIRED)
   // All runners must provide method-level schema definitions
   // - Single-method runners: use default method name "run"
   // - MCP/Plugin runners: use tool-specific method names
@@ -84,7 +84,7 @@ message MethodSchema {
   // - Example: "Fetches HTML content from a URL"
   optional string description = 3;
 
-  // # Output Type Configuration (Phase 6.6)
+  // # Output Type Configuration
   // Specifies the streaming capability of this specific method
   // Allows different methods within the same runner to have different streaming support
   // - NON_STREAMING: Method only supports non-streaming output
@@ -93,7 +93,7 @@ message MethodSchema {
   StreamingOutputType output_type = 4;
 }
 
-// # Method JSON Schema Map (Phase 6.7)
+// # Method JSON Schema Map
 // Mapping of method names to their JSON Schema definitions
 // This is generated from MethodProtoMap and cached in RunnerWithSchema
 // to avoid repeated Protobuf → JSON Schema conversions
@@ -104,7 +104,7 @@ message MethodJsonSchemaMap {
   map<string, MethodJsonSchema> schemas = 1;
 }
 
-// # Method JSON Schema (Phase 6.7)
+// # Method JSON Schema
 // JSON Schema definition for a single method/tool
 // Replaces the deprecated arguments_schema/output_schema/tools fields in RunnerWithSchema
 //
