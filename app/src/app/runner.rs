@@ -105,7 +105,7 @@ pub trait UseRunnerParserWithCache: Send + Sync {
         async { self.descriptor_cache().clear().await }
     }
 
-    /// Phase 6.6.4: Validate that method_proto_map is present (now required for all runners)
+    /// Validate that method_proto_map is present (required for all runners)
     fn validate_runner_data_has_method_proto_map(runner_data: &RunnerData) -> Result<()> {
         if runner_data.method_proto_map.is_none() {
             return Err(JobWorkerError::InvalidParameter(
@@ -118,12 +118,10 @@ pub trait UseRunnerParserWithCache: Send + Sync {
 
     /// Parse proto schemas from RunnerData and generate Protobuf descriptors
     ///
-    /// Phase 6.6.7: Complete implementation - generates descriptors for all methods
+    /// Generates protobuf descriptors for all methods
     fn parse_proto_schemas(&self, runner_data: RunnerData) -> Result<RunnerDataWithDescriptor> {
-        // Phase 6.6.4: Validate that method_proto_map is present (required)
         Self::validate_runner_data_has_method_proto_map(&runner_data)?;
 
-        // Parse runner_settings_proto
         let ope_d = if runner_data.runner_settings_proto.is_empty() {
             None
         } else {
@@ -141,12 +139,10 @@ pub trait UseRunnerParserWithCache: Send + Sync {
             Some(ope_d)
         };
 
-        // Phase 6.6.7: Parse method_proto_map and generate descriptors for each method
         let mut method_descriptors = HashMap::new();
 
         if let Some(method_proto_map) = &runner_data.method_proto_map {
             for (method_name, method_schema) in &method_proto_map.schemas {
-                // Parse args_proto
                 let args_desc = if !method_schema.args_proto.is_empty() {
                     Some(
                         ProtobufDescriptor::new(&method_schema.args_proto).map_err(|e| {
@@ -160,7 +156,6 @@ pub trait UseRunnerParserWithCache: Send + Sync {
                     None
                 };
 
-                // Parse result_proto (may be empty for unstructured output)
                 let result_desc = if !method_schema.result_proto.is_empty() {
                     Some(
                         ProtobufDescriptor::new(&method_schema.result_proto).map_err(|e| {
@@ -286,13 +281,13 @@ pub struct MethodDescriptors {
 
 /// Runner data with cached protobuf descriptors
 ///
-/// Phase 6.6.7: Extended to support method-level descriptors for multi-method runners (MCP/Plugin)
+/// Extended to support method-level descriptors for multi-method runners (MCP/Plugin)
 #[derive(Debug, Clone)]
 pub struct RunnerDataWithDescriptor {
     pub runner_data: RunnerData,
     pub runner_settings_descriptor: Option<ProtobufDescriptor>,
 
-    // Phase 6.6.7: Method-level descriptor cache
+    // Method-level descriptor cache
     // - Key: method name (e.g., "run", "fetch_html", "get_current_time")
     // - Value: MethodDescriptors (args_descriptor, result_descriptor)
     // - For single-method runners: contains one entry with key "run"
@@ -307,11 +302,10 @@ pub struct RunnerDataWithDescriptor {
 impl RunnerDataWithDescriptor {
     /// Parse proto schemas from RunnerData (public static method for testing)
     ///
-    /// Phase 6.6.7.7: Public method for unit testing without trait requirement
+    /// Public method for unit testing without trait requirement
     pub fn parse_proto_schemas_from_runner_data(
         runner_data: RunnerData,
     ) -> Result<RunnerDataWithDescriptor> {
-        // Phase 6.6.4: Validate that method_proto_map is present (required)
         if runner_data.method_proto_map.is_none() {
             return Err(JobWorkerError::InvalidParameter(
                 "method_proto_map is required for all runners".to_string(),
@@ -319,7 +313,6 @@ impl RunnerDataWithDescriptor {
             .into());
         }
 
-        // Parse runner_settings_proto
         let ope_d = if runner_data.runner_settings_proto.is_empty() {
             None
         } else {
@@ -337,12 +330,10 @@ impl RunnerDataWithDescriptor {
             Some(ope_d)
         };
 
-        // Phase 6.6.7: Parse method_proto_map and generate descriptors for each method
         let mut method_descriptors = HashMap::new();
 
         if let Some(method_proto_map) = &runner_data.method_proto_map {
             for (method_name, method_schema) in &method_proto_map.schemas {
-                // Parse args_proto
                 let args_desc = if !method_schema.args_proto.is_empty() {
                     Some(
                         ProtobufDescriptor::new(&method_schema.args_proto).map_err(|e| {
@@ -356,7 +347,6 @@ impl RunnerDataWithDescriptor {
                     None
                 };
 
-                // Parse result_proto (may be empty for unstructured output)
                 let result_desc = if !method_schema.result_proto.is_empty() {
                     Some(
                         ProtobufDescriptor::new(&method_schema.result_proto).map_err(|e| {
@@ -459,7 +449,7 @@ impl RunnerDataWithDescriptor {
         }
     }
 
-    // Phase 6.6.7: Method-level descriptor access APIs
+    // Method-level descriptor access APIs
 
     /// Get args descriptor for a specific method (using)
     ///
@@ -599,7 +589,6 @@ pub mod test {
     use proto::DEFAULT_METHOD_NAME;
 
     pub fn test_runner_data(name: &str) -> RunnerData {
-        // Phase 6.6.4: Use method_proto_map (required for all runners)
         let mut schemas = std::collections::HashMap::new();
         schemas.insert(
             DEFAULT_METHOD_NAME.to_string(),
@@ -626,7 +615,6 @@ pub mod test {
             id: Some(*id),
             data: Some(test_runner_data(name)),
             settings_schema: "settings_schema".to_string(),
-            // Phase 6.7: Use method_json_schema_map instead of deprecated fields
             method_json_schema_map: Some(proto::jobworkerp::data::MethodJsonSchemaMap {
                 schemas: {
                     let mut map = std::collections::HashMap::new();
@@ -647,7 +635,6 @@ pub mod test {
     pub fn test_runner_with_descriptor(name: &str) -> RunnerDataWithDescriptor {
         let runner_data = test_runner_data(name);
 
-        // Phase 6.6.7: Use new method_descriptors HashMap
         let mut method_descriptors = std::collections::HashMap::new();
 
         if let Some(method_proto_map) = &runner_data.method_proto_map {
@@ -697,7 +684,7 @@ pub mod test {
         }
     }
 
-    // Phase 6.6.7.7: Helper functions for multi-method runner testing
+    // Helper functions for multi-method runner testing
     pub fn test_multi_method_runner_data(name: &str) -> RunnerData {
         // MCP Server with 5 methods
         let mut schemas = std::collections::HashMap::new();
@@ -827,33 +814,28 @@ mod tests {
 
         let parsed = result.unwrap();
 
-        // Verify method_descriptors has exactly 1 entry
         assert_eq!(
             parsed.method_descriptors.len(),
             1,
             "Should have exactly 1 method descriptor"
         );
 
-        // Verify "run" method exists
         assert!(
             parsed.method_descriptors.contains_key(DEFAULT_METHOD_NAME),
             "Should have 'run' method"
         );
 
-        // Verify "run" method has args_descriptor (not empty proto)
         let run_desc = parsed.method_descriptors.get("run").unwrap();
         assert!(
             run_desc.args_descriptor.is_some(),
             "args_descriptor should be Some for non-empty proto"
         );
 
-        // Verify "run" method has no result_descriptor (empty proto)
         assert!(
             run_desc.result_descriptor.is_none(),
             "result_descriptor should be None for empty result_proto"
         );
 
-        // Verify legacy fields are populated from "run" method
         assert!(
             parsed.args_descriptor.is_some(),
             "Legacy args_descriptor should be populated"
@@ -874,14 +856,12 @@ mod tests {
 
         let parsed = result.unwrap();
 
-        // Verify method_descriptors has exactly 5 entries
         assert_eq!(
             parsed.method_descriptors.len(),
             5,
             "Should have exactly 5 method descriptors"
         );
 
-        // Verify all 5 methods exist
         assert!(
             parsed.method_descriptors.contains_key(DEFAULT_METHOD_NAME),
             "Should have 'run' method"
@@ -903,7 +883,6 @@ mod tests {
             "Should have 'delete_file' method"
         );
 
-        // Verify each method has correct descriptors
         let run_desc = parsed.method_descriptors.get("run").unwrap();
         assert!(
             run_desc.args_descriptor.is_some(),
@@ -955,7 +934,6 @@ mod tests {
             "delete_file: result_descriptor should be None for empty result_proto"
         );
 
-        // Verify legacy fields are populated from "run" method
         assert!(
             parsed.args_descriptor.is_some(),
             "Legacy args_descriptor should be populated from 'run' method"

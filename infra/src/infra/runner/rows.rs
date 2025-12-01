@@ -15,13 +15,13 @@ pub struct RunnerRow {
 impl RunnerRow {
     /// Convert RunnerRow to RunnerWithSchema with cached JSON Schema generation
     ///
-    /// Phase 6.7: This method generates both Protobuf and JSON Schema maps from the runner,
+    /// This method generates both Protobuf and JSON Schema maps from the runner,
     /// and caches them in RunnerWithSchema for efficient reuse.
     ///
     /// **Performance**: JSON Schema conversion happens only once during this call.
     /// All subsequent usage (FunctionSpecs conversion, etc.) reuses the cached data.
     ///
-    /// Phase 6.7 Final: Unified schema loading for all runners (MCP/Plugin/Normal).
+    /// Unified schema loading for all runners (MCP/Plugin/Normal).
     /// - MCP Server: Instant (from in-memory available_tools)
     /// - Plugin: Synchronous FFI call (timeout handled at plugin initialization)
     /// - Normal Runners: Instant (hardcoded schemas)
@@ -36,7 +36,6 @@ impl RunnerRow {
             schemas: proto_map.clone(),
         });
 
-        // Phase 6.7: Use RunnerSpec::method_json_schema_map() to respect custom schemas
         // CRITICAL: Call runner.method_json_schema_map() instead of auto-converting
         // Reason: Runners like InlineWorkflowRunnerSpec provide hand-crafted JSON Schema
         //         with oneOf constraints that would be lost in auto-conversion
@@ -64,13 +63,13 @@ impl RunnerRow {
     }
 }
 
-/// Runner with cached schema information (Phase 6.7)
+/// Runner with cached schema information
 ///
 /// This structure caches both Protobuf and JSON Schema definitions
 /// to avoid repeated conversions. The conversion happens once during
 /// RunnerRow::to_runner_with_schema() and is reused everywhere.
 ///
-/// # Phase 6.7 Changes
+/// # Schema Changes
 /// - Removed: arguments_schema (tag 4), output_schema (tag 5), tools (tag 6)
 /// - Added: method_json_schema_map (tag 7)
 /// - All method-level schemas (including MCP tools) are unified in method_json_schema_map
@@ -82,11 +81,11 @@ pub struct RunnerWithSchema {
     pub data: Option<RunnerData>,
     #[prost(string, tag = "3")]
     pub settings_schema: String,
-    // Phase 6.7: Reserved tags for deleted fields (prevent reuse)
+    // Reserved tags for deleted fields (prevent reuse)
     // tag 4: arguments_schema (deprecated, use method_json_schema_map)
     // tag 5: output_schema (deprecated, use method_json_schema_map)
     // tag 6: tools (deprecated, use method_json_schema_map)
-    /// Phase 6.7: Unified JSON Schema map (replaces arguments_schema, output_schema, tools)
+    /// Unified JSON Schema map (replaces arguments_schema, output_schema, tools)
     /// Generated once from method_proto_map during to_runner_with_schema()
     #[prost(message, tag = "7")]
     pub method_json_schema_map: Option<proto::jobworkerp::data::MethodJsonSchemaMap>,

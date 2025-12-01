@@ -545,8 +545,7 @@ pub trait UseJobExecutor:
     }
 
     /// Transform job arguments from JSON to Protobuf binary
-    ///
-    /// Phase 6.6.7: Now supports using parameter for method-specific schema resolution
+    /// Transform job arguments using protobuf schema, supporting method-specific schema resolution
     fn transform_job_args(
         &self,
         rid: &RunnerId,
@@ -557,7 +556,6 @@ pub trait UseJobExecutor:
         async move {
             let descriptors = self.parse_proto_with_cache(rid, rdata).await?;
 
-            // Phase 6.6.7: Get method-specific args descriptor
             let mut args_descriptor =
                 descriptors
                     .get_job_args_message_for_method(using)
@@ -621,8 +619,7 @@ pub trait UseJobExecutor:
     }
 
     /// Transform raw job result output from Protobuf binary to JSON
-    ///
-    /// Phase 6.6.7: Now supports using parameter for method-specific schema resolution
+    /// Transform job result using protobuf schema, supporting method-specific schema resolution
     #[inline]
     fn transform_raw_output(
         &self,
@@ -635,7 +632,6 @@ pub trait UseJobExecutor:
             // with cache
             let descriptors = self.parse_proto_with_cache(rid, rdata).await?;
 
-            // Phase 6.6.7: Get method-specific result descriptor
             let mut result_descriptor = descriptors
                 .get_job_result_message_descriptor_for_method(using)
                 .map_err(|e| {
@@ -685,7 +681,6 @@ pub trait UseJobExecutor:
             .as_ref()
             .and_then(|r| r.output.as_ref().map(|o| &o.items));
         if let Some(output) = output {
-            // Phase 6.6.4: Use default method name DEFAULT_METHOD_NAME ("run") for single-method runners
             let result_descriptor =
                 Self::parse_job_result_schema_descriptor(runner_data, DEFAULT_METHOD_NAME)?;
             if let Some(desc) = result_descriptor {

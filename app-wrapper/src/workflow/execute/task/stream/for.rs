@@ -82,7 +82,6 @@ impl ForTaskStreamExecutor {
             task_context.clone()
         };
 
-        // Add the current item to the context
         task_context
             .add_context_value(item_name.to_string(), item.clone())
             .await;
@@ -307,7 +306,6 @@ impl ForTaskStreamExecutor {
 
                 tracing::debug!("[PARALLEL] Task {} starting at t=0ms", &task_name_formatted);
 
-                // Create executor for this task
                 let do_stream_executor = DoTaskStreamExecutor::new(
                     workflow_context.clone(),
                     default_timeout,
@@ -328,7 +326,6 @@ impl ForTaskStreamExecutor {
                 let mut result_count = 0;
                 loop {
                     tokio::select! {
-                        // Check for cancellation
                         _ = cancel_rx_clone.changed() => {
                             tracing::info!("Task {} cancelled due to error in sibling task", task_name_formatted);
                             break;
@@ -347,7 +344,6 @@ impl ForTaskStreamExecutor {
                                         elapsed_ms
                                     );
 
-                                    // Check if this is an error and handle based on on_error setting
                                     let is_error = result.is_err();
                                     if is_error && on_error == ForOnError::Break {
                                         // Signal all other tasks to cancel
@@ -390,7 +386,6 @@ impl ForTaskStreamExecutor {
         }
         drop(tx);
 
-        // Convert the receiver into a stream
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
         let join_set = Arc::new(Mutex::new(join_set));
         let item_name = item_name.to_string();
@@ -482,7 +477,6 @@ impl ForTaskStreamExecutor {
                         );
                         let item_cx = Arc::new(opentelemetry::Context::current_with_span(span));
 
-                        // Create and execute do task executor for this item immediately
                         let task_name_formatted = Arc::new(format!("{task_name}_{i}"));
                         let do_stream_executor = DoTaskStreamExecutor::new(
                             self.workflow_context.clone(),
@@ -598,12 +592,10 @@ impl StreamTaskExecutorTrait<'_> for ForTaskStreamExecutor {
                         final_ctx.set_raw_output(serde_json::Value::Array(vec![]));
                         final_ctx.remove_position().await;
 
-                        // Return the single result and exit
                         yield Ok(final_ctx);
                         return;
                     }
 
-                    // Extract parameters from task
                     let workflow::ForTask {
                         for_,
                         while_,
@@ -622,7 +614,6 @@ impl StreamTaskExecutorTrait<'_> for ForTaskStreamExecutor {
                         &for_.at
                     };
 
-                    // Get items from the transformed input
                     let items = transformed_in_items.as_array().unwrap().clone();
 
                     // Process based on execution mode
@@ -706,7 +697,6 @@ mod tests {
 
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
-            // Create a complete workflow that includes ForTask with error handling
             let workflow_json = serde_json::json!({
                 "document": {
                     "dsl": "1.0.0",
@@ -782,7 +772,6 @@ mod tests {
 
             println!("Creating workflow from JSON: {}", serde_json::to_string_pretty(&workflow_json).unwrap());
 
-            // Parse workflow
             let workflow = Arc::new(
                 serde_json::from_value::<WorkflowSchema>(workflow_json).unwrap()
             );
@@ -800,7 +789,6 @@ mod tests {
                 None,
             )));
 
-            // Create WorkflowExecutor
             let executor = WorkflowExecutor {
                 default_task_timeout_sec: 30,
                 job_executors: Arc::new(JobExecutorWrapper::new(app_module)),
@@ -831,7 +819,6 @@ mod tests {
                         Ok(wc) => {
                             println!("Success result: status={:?}, output keys={:?}", wc.status,
                 wc.output.as_ref().map(|v| v.as_object().map(|o| o.keys().collect::<Vec<_>>())));
-                            // Check if this contains processed item data
                             if let Some(output) = wc.output.as_ref() {
                                 if let Some(obj) = output.as_object() {
                                     if obj.contains_key("processed_item") && obj.contains_key("processed_index") {
@@ -895,7 +882,6 @@ mod tests {
             // Should have successful completions (item0, item2, item3 process correctly, but workflow may be faulted due to error)
             assert!(success_count >= 2, "Expected at least 2 successes (item0,item2,item3 processing), got {}", success_count);
 
-            // Verify the behavior matches continue mode expectations
             println!("CONTINUE MODE VERIFICATION:");
             println!("- All 4 items were processed (item0: success, item1: error, item2&3: success)");
             println!("- Error was yielded but processing continued to remaining items");
@@ -916,7 +902,6 @@ mod tests {
 
             let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
 
-            // Create complete workflow with ForTask that uses onError: break
             let workflow_json = serde_json::json!({
                 "document": {
                     "dsl": "1.0.0",
@@ -1037,7 +1022,6 @@ mod tests {
                         Ok(wc) => {
                             println!("Success result: status={:?}, output keys={:?}", wc.status,
                 wc.output.as_ref().map(|v| v.as_object().map(|o| o.keys().collect::<Vec<_>>())));
-                            // Check if this contains processed item data
                             if let Some(output) = wc.output.as_ref() {
                                 if let Some(obj) = output.as_object() {
                                     if obj.contains_key("processed_item") && obj.contains_key("processed_index") {

@@ -189,7 +189,6 @@ impl PluginRunner for HelloPlugin {
         include_str!("../protobuf/hello_runner.proto").to_string()
     }
 
-    // Phase 6.6.4: Implement method_proto_map for new unified API
     fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(

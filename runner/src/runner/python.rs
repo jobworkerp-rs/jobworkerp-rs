@@ -166,7 +166,6 @@ impl RunnerSpec for PythonCommandRunner {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/python_command_runner.proto").to_string()
     }
-    // Phase 6.6: Unified method_proto_map for all runners
     fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(
@@ -187,7 +186,6 @@ impl RunnerSpec for PythonCommandRunner {
         schemas
     }
 
-    // Phase 6.7: Override method_json_schema_map() to use hand-crafted JSON Schema
     // Reason: Protobuf oneof fields require oneOf constraints in JSON Schema for mutual exclusivity
     fn method_json_schema_map(&self) -> HashMap<String, super::MethodJsonSchema> {
         let mut schemas = HashMap::new();
@@ -397,7 +395,6 @@ impl RunnerTrait for PythonCommandRunner {
                 command.env(key, value);
             }
 
-            // Check cancellation before spawning process
             if cancellation_token.is_cancelled() {
                 tracing::info!("Python command execution was cancelled before spawn");
                 return Err(anyhow::anyhow!("Python command execution was cancelled before spawn"));
@@ -513,7 +510,6 @@ impl CancelMonitoring for PythonCommandRunner {
     }
 
     async fn reset_for_pooling(&mut self) -> Result<()> {
-        // Check for active processes to determine cleanup strategy
         let has_active_process = {
             let process_id = self.current_process_id.lock().await;
             process_id.is_some()
@@ -656,7 +652,6 @@ print(f"Requests version: {requests.__version__}")
                 .await
                 .unwrap();
 
-            // Create a long-running Python script
             let job_args = PythonCommandArgs {
                 script: Some(python_command_args::Script::ScriptContent(
                     r#"

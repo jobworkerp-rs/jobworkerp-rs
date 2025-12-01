@@ -162,7 +162,6 @@ impl RdbChanJobAppImpl {
             job_id.value
         );
 
-        // Use JobQueueCancellationRepository to broadcast cancellation
         self.job_queue_cancellation_repository
             .broadcast_job_cancellation(job_id)
             .await?;
@@ -697,7 +696,6 @@ impl JobApp for RdbChanJobAppImpl {
                 let res = res_chan.or(res_db);
                 match res {
                     Ok(_updated) => {
-                        // Remove job from cache to ensure consistency
                         let cache_key = Arc::new(Self::find_cache_key(jid));
                         let _ = self.delete_cache(&cache_key).await.inspect_err(|e| {
                             tracing::warn!("Failed to delete job cache for {}: {:?}", jid.value, e)
@@ -975,7 +973,6 @@ impl JobApp for RdbChanJobAppImpl {
     ) -> Result<(u64, i64)> {
         use jobworkerp_base::JOB_STATUS_CONFIG;
 
-        // Get index repository
         let index_repo = self.job_status_index_repository.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "RDB JobProcessingStatus index repository not available. \
@@ -1336,7 +1333,6 @@ mod tests {
         });
         let subscrber = repositories.chan_job_result_pubsub_repository.clone();
 
-        // Create JobQueueCancellationRepository for test (use Chan implementation)
         let job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository> =
             Arc::new(repositories.chan_job_queue_repository.clone());
 

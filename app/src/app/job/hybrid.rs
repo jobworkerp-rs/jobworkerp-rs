@@ -520,7 +520,6 @@ impl HybridJobAppImpl {
         if let Err(e) = &db_deletion_result {
             tracing::warn!("Failed to delete job {} from RDB: {:?}", id.value, e);
         } else {
-            // Delete cache only if RDB deletion succeeded
             let _ = self
                 .memory_cache
                 .delete_cache(&Arc::new(Self::find_cache_key(id)))
@@ -550,7 +549,6 @@ impl HybridJobAppImpl {
             job_id.value
         );
 
-        // Use JobQueueCancellationRepository to broadcast cancellation
         self.job_queue_cancellation_repository
             .broadcast_job_cancellation(job_id)
             .await?;
@@ -951,7 +949,6 @@ impl JobApp for HybridJobAppImpl {
 
             // Cache in Redis with appropriate TTL for future lookups
             if let Some(job_data) = &job.data {
-                // Use default TTL of 1 hour for RDB-retrieved jobs
                 let ttl = Duration::from_secs(3600);
                 if let Err(e) = self
                     .redis_job_repository()
@@ -1122,7 +1119,6 @@ impl JobApp for HybridJobAppImpl {
         use command_utils::util::datetime;
         use jobworkerp_base::JOB_STATUS_CONFIG;
 
-        // Get index repository
         let index_repo = self.job_status_index_repository.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "RDB JobProcessingStatus index repository not available. \
@@ -1385,7 +1381,6 @@ pub mod tests {
             job_queue_config,
             runner_factory: Arc::new(runner_factory),
         });
-        // Create JobQueueCancellationRepository for test (use Redis implementation)
         let job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository> =
             Arc::new(repositories.redis_job_queue_repository().clone());
 

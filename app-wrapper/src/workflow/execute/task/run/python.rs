@@ -83,7 +83,6 @@ impl PythonTaskExecutor {
     ) -> Result<PythonCommandArgs> {
         let mut script_code = String::new();
 
-        // Extract fields from enum variants
         let (arguments, environment, code_or_source) = match script_config {
             workflow::ScriptConfiguration::Variant0 {
                 code,
@@ -194,13 +193,11 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
     ) -> Result<TaskContext, Box<workflow::Error>> {
         let script_config = &self.task.script;
 
-        // Extract language from enum variant
         let language_str = match script_config {
             workflow::ScriptConfiguration::Variant0 { language, .. } => language,
             workflow::ScriptConfiguration::Variant1 { language, .. } => language,
         };
 
-        // Validate language support
         let language = match ValidatedLanguage::from_str(language_str) {
             Ok(lang) => lang,
             Err(e) => {
@@ -220,7 +217,7 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
                 return Err(workflow::errors::ErrorFactory::new().not_implemented(
                     "JavaScript script execution".to_string(),
                     Some(pos.as_error_instance()),
-                    Some("JavaScript support will be added in Phase 2".to_string()),
+                    Some("JavaScript support is not yet implemented".to_string()),
                 ));
             }
         }
@@ -240,7 +237,6 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
             }
         };
 
-        // Extract Python-specific settings from metadata
         let python_settings = bail_with_position!(
             task_context,
             PythonScriptSettings::from_metadata(&self.metadata),
@@ -248,7 +244,6 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
             "Failed to parse Python settings from metadata"
         );
 
-        // Convert to PYTHON_COMMAND arguments (with runtime expression evaluation)
         let args = bail_with_position!(
             task_context,
             self.to_python_command_args(script_config, &task_context, &expression)
@@ -257,7 +252,6 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
             "Failed to prepare script arguments"
         );
 
-        // Convert to PYTHON_COMMAND settings
         let settings = bail_with_position!(
             task_context,
             self.to_python_runner_settings(&python_settings),
@@ -322,14 +316,12 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
             "Failed to encode script arguments to protobuf"
         );
 
-        // Extract language-agnostic use_static setting from metadata
         let use_static = self
             .metadata
             .get("script.use_static")
             .and_then(|v| v.parse::<bool>().ok())
             .unwrap_or(false);
 
-        // Create temporary worker for script execution
         let worker_data = WorkerData {
             name: format!("python_{}", task_name),
             description: format!("Script task: {}", task_name),
@@ -380,7 +372,6 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
             "Failed to enqueue script execution job"
         );
 
-        // Extract job result output
         let output_bytes = bail_with_position!(
             task_context,
             job_result
@@ -398,7 +389,6 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
             "Failed to decode script result"
         );
 
-        // Check exit code
         if result.exit_code != 0 {
             let error_detail = format!(
                 "Script exited with code {}\nstdout: {}\nstderr: {}",
@@ -414,7 +404,6 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
             ));
         }
 
-        // Parse script output as JSON
         let script_output: serde_json::Value = serde_json::from_str(&result.output)
             .unwrap_or_else(|_| serde_json::Value::String(result.output.clone()));
 

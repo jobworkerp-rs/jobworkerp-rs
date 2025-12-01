@@ -45,7 +45,6 @@ pub struct FunctionSetTargetRow {
 }
 
 impl FunctionSetTargetRow {
-    // Convert DB row to FunctionUsing
     pub fn to_function_using(&self) -> FunctionUsing {
         let function_id = match self.target_type {
             RUNNER_TYPE => Some(FunctionId {
@@ -74,7 +73,6 @@ impl FunctionSetTargetRow {
         }
     }
 
-    // Convert FunctionUsing to DB columns (target_id, target_type, using)
     pub fn from_function_using(
         set_id: i64,
         function_using: &FunctionUsing,

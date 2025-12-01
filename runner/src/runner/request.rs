@@ -97,7 +97,6 @@ impl RunnerSpec for RequestRunner {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/http_request_runner.proto").to_string()
     }
-    // Phase 6.6: Unified method_proto_map for all runners
     fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(
@@ -138,7 +137,6 @@ impl RunnerTrait for RequestRunner {
         let cancellation_token = self.get_cancellation_token().await;
 
         let result = async {
-            // Check for cancellation before starting
             if cancellation_token.is_cancelled() {
                 return Err(anyhow!("HTTP request was cancelled before execution"));
             }
@@ -248,7 +246,6 @@ impl RunnerTrait for RequestRunner {
 
             match (method, url_result) {
                 (Ok(met), Ok(u)) => {
-                    // Create request
                     let mut req = client.request(met, u);
 
                     // Set body
@@ -313,7 +310,6 @@ impl RunnerTrait for RequestRunner {
                             let h = res.headers().clone();
                             let s = res.status().as_u16();
 
-                            // Get response as bytes stream for streaming support
                             let mut bytes_stream = res.bytes_stream();
                             let mut content_bytes = Vec::new();
 
@@ -465,8 +461,6 @@ impl CancelMonitoring for RequestRunner {
 pub mod tests {
     use super::*;
 
-    // Use common mock from test_common module
-
     #[tokio::test]
     async fn run_request() {
         use crate::jobworkerp::runner::{http_request_args::KeyValue, HttpRequestArgs};
@@ -510,13 +504,11 @@ pub mod tests {
         use crate::runner::cancellation_helper::CancelMonitoringHelper;
         use crate::runner::test_common::mock::MockCancellationManager;
 
-        // Create cancellation helper with pre-cancelled token
         let cancel_token = CancellationToken::new();
         cancel_token.cancel(); // Pre-cancel to test cancellation behavior
         let mock_manager = MockCancellationManager::new_with_token(cancel_token);
         let cancel_helper = CancelMonitoringHelper::new(Box::new(mock_manager));
 
-        // Create runner with cancellation helper
         let mut runner = RequestRunner::new_with_cancel_monitoring(cancel_helper);
 
         use crate::jobworkerp::runner::HttpRequestArgs;

@@ -255,7 +255,6 @@ pub trait RedisJobDispatcher:
                 &sid
             )))
         }?;
-        // Check JobProcessingStatus before job execution (detect cancellation request)
         if let Some(cancelled_result) = self
             .check_cancellation_status(&jid, &wid, &wdat, meta.clone(), &jdat)
             .await?

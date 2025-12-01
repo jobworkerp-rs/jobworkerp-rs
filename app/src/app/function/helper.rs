@@ -127,19 +127,17 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         worker_params: Option<serde_json::Value>,
         unique_key: Option<String>,
         timeout_sec: u32,
-        streaming: bool, // TODO if true, use streaming job
+        streaming: bool,
     ) -> impl Future<Output = Result<Value>> + Send + '_ {
         async move {
             tracing::debug!("found runner: {:?}, tool: {:?}", &runner, &tool_name_opt);
 
-            // Phase 6.7: Validate MCP tool name if present using method_json_schema_map
             if let Some(ref tool_name) = tool_name_opt {
                 if runner
                     .data
                     .as_ref()
                     .is_some_and(|d| d.runner_type() == RunnerType::McpServer)
                 {
-                    // Check if tool exists in the MCP server's method_json_schema_map
                     let tool_exists = runner
                         .method_json_schema_map
                         .as_ref()
@@ -171,7 +169,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
             let (settings, arguments) = Self::prepare_runner_call_arguments(
                 arguments.unwrap_or_default(),
                 &runner,
-                tool_name_opt.clone(), // Clone because we use it again below
+                tool_name_opt.clone(),
             )
             .await?;
             if let RunnerWithSchema {
@@ -192,7 +190,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                     unique_key,
                     timeout_sec,
                     streaming,
-                    tool_name_opt, // Pass using parameter for MCP/Plugin runners
+                    tool_name_opt,
                 )
                 .await
             } else {
@@ -209,7 +207,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         name: &'a str,
         arguments: Option<Map<String, Value>>,
         unique_key: Option<String>,
-        streaming: bool, // TODO if true, use streaming job
+        streaming: bool,
     ) -> impl Future<Output = Result<Value>> + Send + 'a {
         async move {
             tracing::info!("runner not found, run as worker: {:?}", &name);
@@ -221,17 +219,15 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                     tracing::error!("Failed to find worker: {}", e);
                 })?
                 .ok_or_else(|| {
-                    JobWorkerError::WorkerNotFound(format!("worker or mcp tool not found: {name}"))
+                    JobWorkerError::WorkerNotFound(format!("worker or method not found: {name}"))
                 })?;
-            // Phase 6.8: Arguments are now passed directly without MCP-specific correction
-            // tool_name is passed via 'using' parameter to enqueue_temp_worker_with_json
             self.enqueue_temp_worker_with_json(
                 meta,
                 &worker_data,
                 Value::Object(request_args),
                 unique_key,
                 streaming,
-                tool_name_opt, // Pass using parameter for MCP worker tools
+                tool_name_opt,
             )
             .await
             .map(|r| r.unwrap_or_default())
@@ -280,7 +276,6 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                     ..
                 }) = runner
                 {
-                    // Phase 6.6.7: Parse runner proto schemas with cache and use method-specific descriptor
                     let runner_with_descriptor = self.parse_proto_with_cache(&rid, &rdata).await?;
                     let args_descriptor = runner_with_descriptor
                         .get_job_args_message_for_method(using.as_deref())
@@ -506,7 +501,6 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         })
     }
 
-    // Validate worker options (reusing existing validation logic from grpc-front/src/service/worker.rs)
     fn validate_worker_options(&self, worker_data: &WorkerData) -> Result<()> {
         // 1. Periodic + Direct禁止
         if worker_data.periodic_interval != 0
@@ -564,7 +558,6 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         Ok(())
     }
 
-    // Validate channel existence
     fn validate_channel(&self, channel: &str) -> Result<()> {
         if channel.is_empty() {
             return Err(JobWorkerError::InvalidParameter(
@@ -640,7 +633,6 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         if let Some(output) = output {
             let method_name = using.unwrap_or(DEFAULT_METHOD_NAME);
 
-            // Use cached result descriptor for the specified method
             let result_descriptor = runner_with_descriptor
                 .get_job_result_message_descriptor_for_method(Some(method_name))
                 .map_err(|e| {

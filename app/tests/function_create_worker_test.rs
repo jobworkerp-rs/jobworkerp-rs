@@ -27,7 +27,6 @@ fn test_create_worker_from_command_runner() -> Result<()> {
         let (worker_id, worker_name) = result.unwrap();
         assert_eq!(worker_name, "test_worker");
 
-        // Verify worker exists
         let worker = app
             .worker_app
             .find(&worker_id)
@@ -77,7 +76,6 @@ fn test_create_worker_with_duplicate_name() -> Result<()> {
     TEST_RUNTIME.block_on(async {
         let app = setup_test_app_module().await?;
 
-        // Create first worker (COMMAND runner has no settings)
         let (worker_id, _) = app
             .function_app
             .create_worker_from_runner(
@@ -239,6 +237,5 @@ fn test_create_worker_with_nonexistent_runner() -> Result<()> {
 
 // Helper function to setup test AppModule
 async fn setup_test_app_module() -> Result<AppModule> {
-    // Use the test helper from app module
     app::module::test::create_hybrid_test_app().await
 }

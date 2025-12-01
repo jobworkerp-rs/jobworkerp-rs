@@ -124,7 +124,6 @@ pub trait MistralTracingHelper: GenericLLMTracingHelper {
                     "content": m.content
                 });
 
-                // Add tool_calls if present
                 if let Some(tool_calls) = &m.tool_calls {
                     if !tool_calls.is_empty() {
                         msg_json["tool_calls"] = serde_json::json!(tool_calls
@@ -140,7 +139,6 @@ pub trait MistralTracingHelper: GenericLLMTracingHelper {
                     }
                 }
 
-                // Add tool_call_id if present
                 if let Some(tool_call_id) = &m.tool_call_id {
                     msg_json["tool_call_id"] = serde_json::json!(tool_call_id);
                 }
@@ -264,7 +262,6 @@ pub trait MistralTracingHelper: GenericLLMTracingHelper {
         tool_results: &SerializableToolResults,
         content: Option<&str>,
     ) -> impl std::future::Future<Output = Result<()>> + Send + 'static {
-        // Convert SerializableToolResults to an owned struct to avoid lifetime issues
         #[derive(Clone)]
         struct OwnedToolResultsUsage {
             execution_count: usize,
@@ -456,7 +453,6 @@ impl LLMResponseData for mistralrs::ChatCompletionResponse {
             return serde_json::json!("");
         }
 
-        // Check if there are tool calls
         let has_tool_calls = first_choice
             .and_then(|choice| choice.message.tool_calls.as_ref())
             .map(|calls| !calls.is_empty())
@@ -482,7 +478,6 @@ impl LLMResponseData for mistralrs::ChatCompletionResponse {
                 })
                 .unwrap_or_default();
 
-            // Return tool calls as JSON structure
             serde_json::json!({
                 "role": "assistant",
                 "tool_calls": tool_calls,

@@ -350,7 +350,6 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
             // Note: cancellation_token is NOT reset here because stream is still active
             Ok(output_stream)
         } else if let Some(genai) = self.genai.as_mut() {
-            // Get streaming responses from genai service with cancellation check
             let stream = tokio::select! {
                 result = genai.request_chat_stream(args, metadata) => result?,
                 _ = cancellation_token.cancelled() => {
@@ -359,7 +358,6 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                 }
             };
 
-            // Add cancellation support to GenAI stream
             let cancel_token = cancellation_token.clone();
             let cancellable_stream = stream! {
                 tokio::pin!(stream);

@@ -38,7 +38,6 @@ pub trait FunctionRequestValidator {
         &self,
         req: &FunctionCallRequest,
     ) -> Result<(), tonic::Status> {
-        // Validate that name is specified
         if req.name.is_none() {
             return Err(tonic::Status::invalid_argument("name must be specified"));
         }
@@ -81,7 +80,6 @@ pub trait FunctionRequestValidator {
             .as_ref()
             .ok_or_else(|| tonic::Status::invalid_argument("function_id must be specified"))?;
 
-        // Validate function_id (reuse existing validation logic)
         match &function_id.id {
             Some(function_id::Id::RunnerId(runner_id)) => {
                 if runner_id.value <= 0 {
@@ -100,7 +98,6 @@ pub trait FunctionRequestValidator {
             None => return Err(tonic::Status::invalid_argument("id must be specified")),
         }
 
-        // Validate using if present
         if let Some(using) = &function_using.using {
             if using.is_empty() {
                 return Err(tonic::Status::invalid_argument(
@@ -152,14 +149,12 @@ pub trait FunctionRequestValidator {
     ) -> Result<(), tonic::Status> {
         use crate::proto::jobworkerp::function::service::create_worker_request;
 
-        // Validate that runner is specified
         if req.runner.is_none() {
             return Err(tonic::Status::invalid_argument(
                 "either runner_name or runner_id must be specified",
             ));
         }
 
-        // Validate runner_id if specified
         if let Some(create_worker_request::Runner::RunnerId(runner_id)) = &req.runner {
             if runner_id.value <= 0 {
                 return Err(tonic::Status::invalid_argument(
@@ -168,7 +163,6 @@ pub trait FunctionRequestValidator {
             }
         }
 
-        // Validate runner_name if specified
         if let Some(create_worker_request::Runner::RunnerName(runner_name)) = &req.runner {
             if runner_name.is_empty() {
                 return Err(tonic::Status::invalid_argument(
@@ -182,7 +176,6 @@ pub trait FunctionRequestValidator {
             }
         }
 
-        // Validate worker name
         if req.name.is_empty() {
             return Err(tonic::Status::invalid_argument("name cannot be empty"));
         }
@@ -208,14 +201,12 @@ pub trait FunctionRequestValidator {
     ) -> Result<(), tonic::Status> {
         use crate::proto::jobworkerp::function::service::create_workflow_request;
 
-        // Validate that workflow_source is specified
         if req.workflow_source.is_none() {
             return Err(tonic::Status::invalid_argument(
                 "either workflow_data or workflow_url must be specified",
             ));
         }
 
-        // Validate workflow_data if specified
         if let Some(create_workflow_request::WorkflowSource::WorkflowData(data)) =
             &req.workflow_source
         {
@@ -226,7 +217,6 @@ pub trait FunctionRequestValidator {
             }
         }
 
-        // Validate workflow_url if specified
         if let Some(create_workflow_request::WorkflowSource::WorkflowUrl(url)) =
             &req.workflow_source
         {
@@ -237,7 +227,6 @@ pub trait FunctionRequestValidator {
             }
         }
 
-        // Validate worker name if specified
         if let Some(name) = &req.name {
             if name.is_empty() {
                 return Err(tonic::Status::invalid_argument("name cannot be empty"));
@@ -274,7 +263,6 @@ impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync 
         let _s = Self::trace_request("function", "find_list", &request);
         let req = request.into_inner();
 
-        // Use the FunctionApp to get the list of functions
         let functions = match self
             .function_app()
             .find_functions(req.exclude_runner, req.exclude_worker)
@@ -284,7 +272,6 @@ impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync 
             Err(e) => return Err(handle_error(&e)),
         };
 
-        // Return stream of functions
         Ok(Response::new(Box::pin(stream! {
             for function in functions {
                 yield Ok(function);
@@ -304,7 +291,6 @@ impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync 
         let _s = Self::trace_request("function", "find_list_by_set", &request);
         let req = request.into_inner();
 
-        // Use FunctionSetApp to get the list of functions by set
         let functions = match self
             .function_set_app()
             .find_functions_by_set(&req.name)
@@ -314,7 +300,6 @@ impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync 
             Err(e) => return Err(handle_error(&e)),
         };
 
-        // Return stream of functions
         Ok(Response::new(Box::pin(stream! {
             for function in functions {
                 yield Ok(function);
@@ -330,7 +315,6 @@ impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync 
     ) -> std::result::Result<tonic::Response<Self::CallStream>, tonic::Status> {
         let _s = Self::trace_request("function", "call", &request);
         let req = request.into_inner();
-        // Validate request
         self.validate_function_call_request(&req)?;
 
         let options = req.options;
@@ -363,7 +347,6 @@ impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync 
 
         let uniq_key = req.uniq_key;
 
-        // Extract parameters from request and create the stream
         let stream = match req.name {
             Some(crate::proto::jobworkerp::function::service::function_call_request::Name::RunnerName(name)) => {
                 let (runner_settings, worker_options) = if let Some(params) = req.runner_parameters{
@@ -435,10 +418,8 @@ impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync 
         let _s = Self::trace_request("function", "find", &request);
         let function_using = request.into_inner();
 
-        // Validate request
         self.validate_function_using(&function_using)?;
 
-        // Use find_function_by_using for unified handling
         match self
             .function_app()
             .find_function_by_using(&function_using)
@@ -460,7 +441,6 @@ impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync 
         let _s = Self::trace_request("function", "find_by_name", &request);
         let req = request.into_inner();
 
-        // Validate request
         self.validate_find_by_name_request(&req)?;
 
         match req.name {
@@ -494,10 +474,8 @@ impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync 
         let _s = Self::trace_request("function", "create_worker", &request);
         let req = request.into_inner();
 
-        // Validate request
         self.validate_create_worker_request(&req)?;
 
-        // Extract runner information
         use crate::proto::jobworkerp::function::service::create_worker_request;
         let (runner_name, runner_id) = match req.runner {
             Some(create_worker_request::Runner::RunnerName(name)) => (Some(name), None),
@@ -538,10 +516,8 @@ impl<T: FunctionGrpc + FunctionRequestValidator + Tracing + Send + Debug + Sync 
         let _s = Self::trace_request("function", "create_workflow", &request);
         let req = request.into_inner();
 
-        // Validate request
         self.validate_create_workflow_request(&req)?;
 
-        // Extract workflow source
         use crate::proto::jobworkerp::function::service::create_workflow_request;
         let (workflow_data, workflow_url) = match req.workflow_source {
             Some(create_workflow_request::WorkflowSource::WorkflowData(data)) => (Some(data), None),

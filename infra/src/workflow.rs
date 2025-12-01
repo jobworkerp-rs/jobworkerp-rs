@@ -108,7 +108,6 @@ impl WorkflowLoader {
     /// Lightweight structural validation for workflow
     /// Checks essential fields without full JSON Schema validation
     fn validate_lightweight(wf: &definition::workflow::WorkflowSchema) -> Result<()> {
-        // Check document namespace and name are not empty
         if wf.document.namespace.is_empty() {
             return Err(anyhow!("Workflow document.namespace must not be empty"));
         }
@@ -116,7 +115,6 @@ impl WorkflowLoader {
             return Err(anyhow!("Workflow document.name must not be empty"));
         }
 
-        // Check do_ tasks exist
         if wf.do_.0.is_empty() {
             return Err(anyhow!(
                 "Workflow must have at least one task in 'do' section"
@@ -139,7 +137,6 @@ impl WorkflowLoader {
 
     /// Full JSON Schema validation (expensive, disabled by default)
     async fn validate_schema(&self, instance: &serde_json::Value) -> Result<()> {
-        // Check if full validation is enabled
         if !*ENABLE_FULL_SCHEMA_VALIDATION {
             tracing::debug!(
                 "Full JSON Schema validation is disabled. \
@@ -313,7 +310,6 @@ mod test {
     #[ignore]
     async fn test_parse_example_switch_yaml() -> Result<(), Box<dyn std::error::Error>> {
         // command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
-        // Use local-only loader for local file testing (no net-utils dependency needed)
         let loader = super::WorkflowLoader::new_local_only();
         let flow = loader
             .load_workflow(Some("test-files/switch.yaml"), None, true)
@@ -338,7 +334,6 @@ mod test {
     #[ignore]
     async fn test_parse_example_flow_yaml() -> Result<(), Box<dyn std::error::Error>> {
         // command_utils::util::tracing::tracing_init_test(Level::DEBUG);
-        // Use local-only loader for local file testing (no net-utils dependency needed)
         let loader = super::WorkflowLoader::new_local_only();
         let flow = loader
             .load_workflow(Some("test-files/ls-test.yaml"), None, true)

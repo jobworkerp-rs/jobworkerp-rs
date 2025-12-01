@@ -101,7 +101,6 @@ impl RunnerPluginLoader {
             .find(|p| p.0.as_str() == name)
             .map(|(_, _, path)| path.clone())?;
 
-        // Get from cache (should be already loaded)
         let lib = Self::get_or_load_library(&path).await.ok()?;
 
         // Instantiate with timeout
@@ -112,7 +111,6 @@ impl RunnerPluginLoader {
             tokio::task::spawn_blocking(move || unsafe {
                 let load_plugin: Symbol<LoaderFunc> = lib.get(b"load_plugin\0").ok()?;
                 let plugin = load_plugin();
-                // Use tokio::sync::RwLock for PluginRunnerWrapperImpl
                 Some(PluginRunnerWrapperImpl::new(Arc::new(TokioRwLock::new(
                     plugin,
                 ))))

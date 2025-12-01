@@ -66,7 +66,6 @@ pub trait FunctionSetRepository: UseRdbPool + UseIdGenerator + Sync + Send {
             return Ok(0);
         }
 
-        // Convert FunctionUsing to (target_id, target_type, using) tuples
         let target_tuples: Vec<(i64, i32, Option<String>)> = targets
             .iter()
             .filter_map(|fusing| FunctionSetTargetRow::from_function_using(set_id.value, fusing))
@@ -76,7 +75,6 @@ pub trait FunctionSetRepository: UseRdbPool + UseIdGenerator + Sync + Send {
             return Ok(0);
         }
 
-        // Create query with the appropriate number of VALUE quadruplets (set_id, target_id, target_type, using)
         let values_placeholder = "(?, ?, ?, ?)".to_string();
         let values: Vec<String> =
             std::iter::repeat_n(values_placeholder, target_tuples.len()).collect();
@@ -136,7 +134,6 @@ pub trait FunctionSetRepository: UseRdbPool + UseIdGenerator + Sync + Send {
         .map_err(JobWorkerError::DBError)
         .context(format!("error in update function_set: id = {}", id.value))?;
 
-        // Delete existing targets for this function set
         sqlx::query("DELETE FROM `function_set_target` WHERE `set_id` = ?;")
             .bind(id.value)
             .execute(&mut **tx)
@@ -147,7 +144,6 @@ pub trait FunctionSetRepository: UseRdbPool + UseIdGenerator + Sync + Send {
                 id.value
             ))?;
 
-        // Create new targets if there are any
         if !function_set.targets.is_empty() {
             self.create_targets(&mut *tx, id, function_set.targets.clone())
                 .await?;

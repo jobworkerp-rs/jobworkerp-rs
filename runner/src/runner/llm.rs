@@ -24,7 +24,6 @@ pub trait LLMCompletionRunnerSpec {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/llm/runner.proto").to_string()
     }
-    // Phase 6.6: Unified method_proto_map for all runners
     fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
         let mut schemas = HashMap::new();
         schemas.insert(
@@ -45,7 +44,6 @@ pub trait LLMCompletionRunnerSpec {
         schemas
     }
 
-    // Phase 6.7: Override method_json_schema_map() to use hand-crafted JSON Schema
     // Reason: Protobuf oneof fields in GenerationContext require oneOf constraints
     fn method_json_schema_map(&self) -> HashMap<String, super::MethodJsonSchema> {
         let mut schemas = HashMap::new();

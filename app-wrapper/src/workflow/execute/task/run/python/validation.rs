@@ -103,7 +103,6 @@ pub fn is_valid_python_identifier(s: &str) -> bool {
 /// This approach provides complete protection against code injection attacks, making
 /// content-based validation unnecessary and preventing false positives on legitimate data.
 pub fn sanitize_python_variable(key: &str, value: &serde_json::Value) -> Result<()> {
-    // Validate variable name (required for Python syntax)
     if !is_valid_python_identifier(key) {
         return Err(anyhow!(
             "Invalid Python variable name: '{}'. Must be alphanumeric with underscores only.",
@@ -131,7 +130,6 @@ fn validate_keys_recursive(value: &serde_json::Value, depth: usize) -> Result<()
     match value {
         serde_json::Value::Object(obj) => {
             for (k, v) in obj {
-                // Validate nested keys as potential Python identifiers
                 if !is_valid_python_identifier(k) {
                     return Err(anyhow!(
                         "Invalid Python identifier in nested object key: '{}'",
@@ -175,7 +173,6 @@ pub fn validate_value_recursive(value: &serde_json::Value, depth: usize) -> Resu
         }
         serde_json::Value::Object(obj) => {
             for (k, v) in obj {
-                // Validate nested keys as potential Python identifiers
                 if !is_valid_python_identifier(k) {
                     return Err(anyhow!(
                         "Invalid Python identifier in nested object key: '{}'",
@@ -526,7 +523,6 @@ Never use os.system() or subprocess without proper validation.
 
     #[test]
     fn test_validate_keys_recursive_max_depth_exceeded() {
-        // Create deeply nested JSON
         let mut value = serde_json::json!("deep");
         for _ in 0..MAX_RECURSIVE_DEPTH + 1 {
             value = serde_json::json!([value]);
@@ -536,7 +532,6 @@ Never use os.system() or subprocess without proper validation.
 
     #[test]
     fn test_validate_keys_recursive_max_depth_exact_limit() {
-        // Create nested JSON exactly at the limit
         let mut value = serde_json::json!("deep");
         for _ in 0..MAX_RECURSIVE_DEPTH {
             value = serde_json::json!([value]);

@@ -186,17 +186,14 @@ do:
         .await;
     let elapsed_time = start_time.elapsed();
 
-    // Verify successful execution
     assert!(result.data.is_some());
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32);
 
-    // Verify actual workflow execution result
     assert!(data.output.is_some());
     let workflow_result: WorkflowResult =
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
-    // Verify workflow execution ID and output
     assert!(!workflow_result.id.is_empty());
     assert!(workflow_result
         .output
@@ -263,15 +260,12 @@ do:
         .run_job(&runner_data, &worker_id, &worker_data, job)
         .await;
 
-    // Verify successful execution
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32);
 
-    // Verify all steps executed
     let workflow_result: WorkflowResult =
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
-    // Verify sequential execution through output
     let output = &workflow_result.output;
     assert!(output.contains("Step 1: Starting workflow"));
     assert!(output.contains("Step 2: Middle of workflow"));
@@ -335,11 +329,9 @@ do:
         .run_job(&runner_data, &worker_id, &worker_data, job)
         .await;
 
-    // Verify successful execution
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32);
 
-    // Verify data transformation occurred
     let workflow_result: WorkflowResult =
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
@@ -410,11 +402,9 @@ do:
         .await;
     let elapsed_time = start_time.elapsed();
 
-    // Verify successful execution
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32);
 
-    // Verify all parallel tasks executed
     let workflow_result: WorkflowResult =
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
@@ -467,7 +457,6 @@ do:
         .await;
     let elapsed_time = start_time.elapsed();
 
-    // Verify timeout occurred
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::MaxRetry as i32);
 
@@ -525,11 +514,9 @@ do:
         .run_job(&runner_data, &worker_id, &worker_data, job)
         .await;
 
-    // Verify execution completed (workflow runner successful)
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32); // Workflow runner completed
 
-    // Verify error was captured in workflow result
     let workflow_result: WorkflowResult =
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
@@ -652,7 +639,6 @@ do:
     let data3 = result3.data.unwrap();
     assert_eq!(data3.status, ResultStatus::Success as i32);
 
-    // Verify computation result
     let workflow_result: WorkflowResult =
         ProstMessageCodec::deserialize_message(&data3.output.unwrap().items)?;
     assert!(workflow_result.output.contains("84")); // 42 * 2

@@ -102,7 +102,6 @@ impl HybridWorkerAppImpl {
             key.push('0');
         }
         key.push(':');
-        // Add new filter parameters to cache key
         if let Some(nf) = name_filter {
             key.push_str(nf);
         }
@@ -681,7 +680,6 @@ mod tests {
                 ..Default::default()
             };
 
-            // Create temporary worker
             let id = app.create_temp(temp_worker, true).await?;
             assert!(id.value > 0);
 
@@ -691,18 +689,15 @@ mod tests {
             let worker_data = found.and_then(|w| w.data);
             assert!(worker_data.is_some());
 
-            // Verify the name has the original name as a prefix
             assert!(worker_data
                 .as_ref()
                 .unwrap()
                 .name
                 .starts_with("temp_worker"));
 
-            // Delete the worker
             let deleted = app.delete(&id).await?;
             assert!(deleted);
 
-            // Verify it's gone
             let not_found = app.find(&id).await?;
             assert!(not_found.is_none());
 

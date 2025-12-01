@@ -44,7 +44,6 @@ mod tests {
         TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
 
-            // Create test worker for pending job cancellation
             let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
@@ -93,7 +92,6 @@ mod tests {
             assert!(job_id.value > 0);
             assert!(res.is_none());
 
-            // Verify job is pending
             let status = app
                 .job_processing_status_repository()
                 .find_status(&job_id)
@@ -115,7 +113,6 @@ mod tests {
         TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
 
-            // Create test worker
             let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
@@ -167,7 +164,6 @@ mod tests {
             // Small delay to ensure async job status setting is complete
             tokio::time::sleep(Duration::from_millis(50)).await;
 
-            // Verify job is pending
             let status = app
                 .job_processing_status_repository()
                 .find_status(&job_id)
@@ -203,7 +199,6 @@ mod tests {
             let cancelled = app.delete_job(&job_id).await?;
             assert!(cancelled);
 
-            // Verify status changed to Cancelling (based on implementation specs)
             let status = app
                 .job_processing_status_repository()
                 .find_status(&job_id)
@@ -267,7 +262,6 @@ mod tests {
         TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
 
-            // Create test worker
             let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
@@ -319,7 +313,6 @@ mod tests {
             // Small delay to ensure status is set
             tokio::time::sleep(Duration::from_millis(50)).await;
 
-            // Verify job is in PENDING status
             let status = app
                 .job_processing_status_repository()
                 .find_status(&job_id)
@@ -331,11 +324,9 @@ mod tests {
                 "Job should be in PENDING status"
             );
 
-            // Delete PENDING job
             let result = app.delete_job(&job_id).await?;
             assert!(result, "PENDING job deletion should succeed");
 
-            // Verify status is deleted (implementation behavior: status is deleted after cancellation)
             let status = app
                 .job_processing_status_repository()
                 .find_status(&job_id)
@@ -361,7 +352,6 @@ mod tests {
         TEST_RUNTIME.block_on(async {
             let (app, _) = create_test_app(true).await?;
 
-            // Create test worker
             let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "sleep".to_string(),
@@ -415,7 +405,6 @@ mod tests {
                 .upsert_status(&job_id, &JobProcessingStatus::Running)
                 .await?;
 
-            // Verify job is RUNNING
             let status = app
                 .job_processing_status_repository()
                 .find_status(&job_id)
@@ -431,7 +420,6 @@ mod tests {
             let result = app.delete_job(&job_id).await?;
             assert!(result, "RUNNING job cancellation should succeed");
 
-            // Verify status is deleted (implementation behavior: status is deleted after cancellation)
             let status = app
                 .job_processing_status_repository()
                 .find_status(&job_id)
@@ -465,7 +453,6 @@ mod tests {
                 .upsert_status(&job_id, &JobProcessingStatus::WaitResult)
                 .await?;
 
-            // Verify job is in WAIT_RESULT status
             let status = app
                 .job_processing_status_repository()
                 .find_status(&job_id)
@@ -484,7 +471,6 @@ mod tests {
                 "WAIT_RESULT job cancellation should fail (return false)"
             );
 
-            // Verify status remains WAIT_RESULT (implementation preserves status on cancellation failure)
             // This is the expected behavior after fix: status should be preserved
             let status = app
                 .job_processing_status_repository()

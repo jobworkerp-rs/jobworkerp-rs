@@ -303,16 +303,12 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
         validate_filter_enums(&req.statuses, "statuses")?;
         validate_filter_enums(&req.priorities, "priorities")?;
 
-        // Convert WorkerIds to i64
         let worker_ids: Vec<i64> = req.worker_ids.iter().map(|w| w.value).collect();
 
-        // Convert ResultStatus to i32
         let statuses: Vec<i32> = req.statuses.to_vec();
 
-        // Convert Priority to i32
         let priorities: Vec<i32> = req.priorities.to_vec();
 
-        // Convert sort_by to JobResultSortField enum
         let sort_by = req
             .sort_by
             .and_then(|s| JobResultSortField::try_from(s).ok());
@@ -360,13 +356,10 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
         validate_filter_enums(&req.statuses, "statuses")?;
         validate_filter_enums(&req.priorities, "priorities")?;
 
-        // Convert WorkerIds to i64
         let worker_ids: Vec<i64> = req.worker_ids.iter().map(|w| w.value).collect();
 
-        // Convert ResultStatus to i32
         let statuses: Vec<i32> = req.statuses.to_vec();
 
-        // Convert Priority to i32
         let priorities: Vec<i32> = req.priorities.to_vec();
 
         // Call App layer
@@ -414,10 +407,8 @@ impl<T: JobResultGrpc + Tracing + Send + Debug + Sync + 'static> JobResultServic
         validate_filter_enums(&req.statuses, "statuses")?;
         validate_filter_ids(&req.worker_ids, "worker_ids")?;
 
-        // Convert ResultStatus to i32
         let statuses: Vec<i32> = req.statuses.to_vec();
 
-        // Convert WorkerIds to i64
         let worker_ids: Vec<i64> = req.worker_ids.iter().map(|w| w.value).collect();
 
         // Call App layer

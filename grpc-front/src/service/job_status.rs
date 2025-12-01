@@ -79,7 +79,6 @@ impl<T: JobProcessingStatusGrpc + Tracing + Send + Debug + Sync + 'static>
         }
         let req = request.get_ref();
 
-        // Convert Option<i32> to Option<JobProcessingStatus>
         let status = req
             .status
             .and_then(|s| proto::jobworkerp::data::JobProcessingStatus::try_from(s).ok());
@@ -99,7 +98,6 @@ impl<T: JobProcessingStatusGrpc + Tracing + Send + Debug + Sync + 'static>
         {
             Ok(list) => Ok(Response::new(Box::pin(stream! {
                 for detail in list {
-                    // Convert infra::JobProcessingStatusDetail to proto::JobProcessingStatusDetailResponse
                     let proto_response = crate::proto::jobworkerp::service::JobProcessingStatusDetailResponse {
                         id: Some(detail.job_id),
                         status: detail.status.into(),
@@ -132,7 +130,6 @@ impl<T: JobProcessingStatusGrpc + Tracing + Send + Debug + Sync + 'static>
         // Authentication check (explicit call to process_metadata)
         crate::service::process_metadata(request.metadata().clone())?;
 
-        // Check if RDB indexing is enabled
         if !JOB_STATUS_CONFIG.rdb_indexing_enabled {
             return Err(tonic::Status::failed_precondition(
                 "Job processing status RDB indexing is disabled. \
@@ -140,7 +137,6 @@ impl<T: JobProcessingStatusGrpc + Tracing + Send + Debug + Sync + 'static>
             ));
         }
 
-        // Get retention hours override
         let retention_hours_override = request.get_ref().retention_hours_override;
 
         // Execute cleanup via JobApp

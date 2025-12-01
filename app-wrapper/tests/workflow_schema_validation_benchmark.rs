@@ -32,7 +32,6 @@ fn benchmark_workflow_schema_validator_initialization() {
         validator_init_duration
     );
 
-    // Verify validator was created successfully
     assert!(
         validator_result.is_ok(),
         "Validator initialization should succeed"

@@ -1,6 +1,6 @@
 //! Unit tests for ProtobufHelper trait methods
 //!
-//! Phase 6.6: Tests for method_proto_map-based schema parsing
+//! Tests for method_proto_map-based schema parsing
 
 use crate::jobworkerp::data::{MethodProtoMap, MethodSchema, RunnerData, StreamingOutputType};
 use crate::ProtobufHelper;
