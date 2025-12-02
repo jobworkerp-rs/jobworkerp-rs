@@ -407,6 +407,13 @@ $defs:
             type: string
             title: WorkerName
             description: The name of the worker that executes this job (user-defined).
+          using:
+            type: string
+            title: Using
+            description: |
+              Selects which method to use for multi-method runners.
+
+              For single-method runners, this field is optional (auto-selected if omitted).
           arguments:
             type: object
             title: FunctionArguments
@@ -461,6 +468,13 @@ $defs:
               workerName:
                 type: string
                 description: The name of the worker that executes job
+              using:
+                type: string
+                title: Using
+                description: |
+                  Selects which method to use for multi-method runners.
+
+                  For single-method runners, this field is optional (auto-selected if omitted).
               arguments:
                 type: object
                 description: A key/value mapping of arguments JSON to use when running the function. Runtime expressions are supported for value transformation.
