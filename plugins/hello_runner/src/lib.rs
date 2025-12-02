@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use futures::{stream::BoxStream, StreamExt};
 use hello::{HelloArgs, HelloRunnerResult, HelloRunnerSettings};
-use jobworkerp_runner::runner::plugins::PluginRunner;
+use jobworkerp_runner::runner::plugins::MultiMethodPluginRunner;
 use prost::Message;
 use std::{alloc::System, collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, Mutex};
@@ -15,21 +15,16 @@ pub mod hello {
 #[global_allocator]
 static ALLOCATOR: System = System;
 
-// suppress warn improper_ctypes_definitions
+// Multi-method plugin FFI symbols
 #[allow(improper_ctypes_definitions)]
 #[unsafe(no_mangle)]
-pub extern "C" fn load_plugin() -> Box<dyn PluginRunner + Send + Sync> {
+pub extern "C" fn load_multi_method_plugin() -> Box<dyn MultiMethodPluginRunner + Send + Sync> {
     Box::new(HelloPlugin::new())
 }
-/// # Safety
-///
-/// This function is unsafe because it dereferences a raw pointer. The caller
-/// must ensure that the pointer is valid and that it was created by the
-/// `load_plugin` function. The caller must also ensure that the `Box` created
-/// by `Box::from_raw` is not used after it has been dropped.
+
 #[unsafe(no_mangle)]
 #[allow(improper_ctypes_definitions)]
-pub extern "C" fn free_plugin(ptr: Box<dyn PluginRunner + Send + Sync>) {
+pub extern "C" fn free_multi_method_plugin(ptr: Box<dyn MultiMethodPluginRunner + Send + Sync>) {
     drop(ptr);
 }
 
@@ -115,7 +110,7 @@ impl HelloPlugin {
 }
 
 #[async_trait]
-impl PluginRunner for HelloPlugin {
+impl MultiMethodPluginRunner for HelloPlugin {
     fn name(&self) -> String {
         // specify as same string as worker.runner_settings
         String::from("HelloPlugin")
@@ -202,15 +197,13 @@ impl PluginRunner for HelloPlugin {
         );
         schemas
     }
+
     fn settings_schema(&self) -> String {
         let schema = schemars::schema_for!(HelloRunnerSettings);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
+        serde_json::to_string(&schema).unwrap_or_else(|e| {
+            tracing::error!("error in settings_schema: {:?}", e);
+            "{}".to_string()
+        })
     }
 }
 

@@ -1,8 +1,10 @@
 use crate::runner::mcp::config::{McpServerConfig, McpServerTransportConfig};
-use crate::runner::RunnerSpec;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+#[cfg(test)]
+use crate::runner::RunnerSpec;
 
 fn get_mcp_server_path(server_name: &str) -> PathBuf {
     let base_path = PathBuf::from("../modules/mcp-servers/src");

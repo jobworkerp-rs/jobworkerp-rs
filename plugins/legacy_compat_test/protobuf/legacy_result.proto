@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package legacy;
+
+message LegacyResult {
+  string result_message = 1;
+  bool success = 2;
+}

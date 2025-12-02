@@ -1,5 +1,7 @@
 use super::PluginLoader;
-use crate::runner::plugins::{impls::PluginRunnerWrapperImpl, PluginRunner};
+use crate::runner::plugins::{
+    impls::PluginRunnerWrapperImpl, MultiMethodPluginRunner, PluginRunner, PluginRunnerVariant,
+};
 use crate::runner::timeout_config::RunnerTimeoutConfig;
 use anyhow::Result;
 use jobworkerp_base::error::JobWorkerError;
@@ -11,6 +13,10 @@ use tokio::sync::RwLock as TokioRwLock;
 
 #[allow(improper_ctypes_definitions)]
 type LoaderFunc<'a> = Symbol<'a, extern "C" fn() -> Box<dyn PluginRunner + Send + Sync>>;
+
+#[allow(improper_ctypes_definitions)]
+type MultiMethodLoaderFunc<'a> =
+    Symbol<'a, extern "C" fn() -> Box<dyn MultiMethodPluginRunner + Send + Sync>>;
 
 // Global library cache for plugin libraries (physical memory management)
 static PLUGIN_LIBRARY_CACHE: OnceLock<TokioRwLock<HashMap<PathBuf, &'static Library>>> =
@@ -109,11 +115,25 @@ impl RunnerPluginLoader {
         tokio::time::timeout(
             timeout_config.plugin_instantiate,
             tokio::task::spawn_blocking(move || unsafe {
-                let load_plugin: Symbol<LoaderFunc> = lib.get(b"load_plugin\0").ok()?;
-                let plugin = load_plugin();
-                Some(PluginRunnerWrapperImpl::new(Arc::new(TokioRwLock::new(
-                    plugin,
-                ))))
+                // Try multi-method plugin first
+                if let Ok(load_multi) =
+                    lib.get::<MultiMethodLoaderFunc>(b"load_multi_method_plugin\0")
+                {
+                    let plugin = load_multi();
+                    let variant = PluginRunnerVariant::MultiMethod(plugin);
+                    Some(PluginRunnerWrapperImpl::new(Arc::new(TokioRwLock::new(
+                        variant,
+                    ))))
+                } else if let Ok(load_legacy) = lib.get::<LoaderFunc>(b"load_plugin\0") {
+                    // Fall back to legacy plugin
+                    let plugin = load_legacy();
+                    let variant = PluginRunnerVariant::Legacy(plugin);
+                    Some(PluginRunnerWrapperImpl::new(Arc::new(TokioRwLock::new(
+                        variant,
+                    ))))
+                } else {
+                    None
+                }
             }),
         )
         .await
@@ -175,9 +195,23 @@ impl PluginLoader for RunnerPluginLoader {
         let (plugin_name, description) = tokio::time::timeout(
             timeout_config.plugin_instantiate,
             tokio::task::spawn_blocking(move || unsafe {
-                let load_plugin: Symbol<LoaderFunc> = lib.get(b"load_plugin\0")?;
-                let plugin = load_plugin();
-                Ok::<_, anyhow::Error>((plugin.name(), plugin.description()))
+                // Try multi-method plugin first
+                if let Ok(load_multi) =
+                    lib.get::<MultiMethodLoaderFunc>(b"load_multi_method_plugin\0")
+                {
+                    let plugin = load_multi();
+                    return Ok::<_, anyhow::Error>((plugin.name(), plugin.description()));
+                }
+
+                // Fall back to legacy plugin
+                if let Ok(load_legacy) = lib.get::<LoaderFunc>(b"load_plugin\0") {
+                    let plugin = load_legacy();
+                    return Ok::<_, anyhow::Error>((plugin.name(), plugin.description()));
+                }
+
+                Err(anyhow::anyhow!(
+                    "Plugin missing both FFI symbols (load_plugin and load_multi_method_plugin)"
+                ))
             }),
         )
         .await
