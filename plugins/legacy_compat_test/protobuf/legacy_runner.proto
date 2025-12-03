@@ -3,5 +3,5 @@ syntax = "proto3";
 package legacy;
 
 message LegacyRunnerSettings {
-  string setting_value = 1;
+  optional string setting_value = 1;
 }

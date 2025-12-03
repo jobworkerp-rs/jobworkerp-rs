@@ -3,8 +3,6 @@ use async_trait::async_trait;
 use jobworkerp_runner::runner::plugins::PluginRunner;
 use prost::Message;
 use proto::jobworkerp::data::StreamingOutputType;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use std::{alloc::System, collections::HashMap};
 use tracing::Level;
 
@@ -76,25 +74,9 @@ impl LegacyCompatPlugin {
     }
 }
 
-/// JSON Schema compatible structs for workflow integration
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-struct LegacyArgsSchema {
-    test_input: String,
-    #[serde(default)]
-    test_number: i32,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-struct LegacyResultSchema {
-    result_message: String,
-    success: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-struct LegacySettingsSchema {
-    #[serde(default)]
-    setting_value: String,
-}
+// Note: LegacyArgs, LegacyResult, and LegacyRunnerSettings already implement
+// JsonSchema via build.rs configuration (line 12: type_attribute with schemars::JsonSchema).
+// No need for separate schema structs - Proto types can be used directly.
 
 // Implement origin/main PluginRunner trait
 #[async_trait]
@@ -162,7 +144,7 @@ impl PluginRunner for LegacyCompatPlugin {
     }
 
     fn settings_schema(&self) -> String {
-        let schema = schemars::schema_for!(LegacySettingsSchema);
+        let schema = schemars::schema_for!(LegacyRunnerSettings);
         serde_json::to_string(&schema).unwrap_or_else(|e| {
             tracing::error!("Failed to serialize settings schema: {:?}", e);
             "{}".to_string()
@@ -170,7 +152,7 @@ impl PluginRunner for LegacyCompatPlugin {
     }
 
     fn arguments_schema(&self) -> String {
-        let schema = schemars::schema_for!(LegacyArgsSchema);
+        let schema = schemars::schema_for!(LegacyArgs);
         serde_json::to_string(&schema).unwrap_or_else(|e| {
             tracing::error!("Failed to serialize arguments schema: {:?}", e);
             "{}".to_string()
@@ -178,7 +160,7 @@ impl PluginRunner for LegacyCompatPlugin {
     }
 
     fn output_json_schema(&self) -> Option<String> {
-        let schema = schemars::schema_for!(LegacyResultSchema);
+        let schema = schemars::schema_for!(LegacyResult);
         Some(serde_json::to_string(&schema).unwrap_or_else(|e| {
             tracing::error!("Failed to serialize output schema: {:?}", e);
             "{}".to_string()

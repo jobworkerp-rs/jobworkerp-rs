@@ -325,7 +325,7 @@ $defs:
             type: string
             title: Using
             description: |
-              Selects which implementation to use for MCP/Plugin runners with multiple tools.
+              Selects which implementation to use for runners with multiple tools.
 
               - **Required**: For runners with multiple tools (e.g., fetch server with "fetch" and "fetch_html")
               - **Optional**: For single-tool runners (auto-selected)
@@ -444,7 +444,7 @@ $defs:
               using:
                 type: string
                 description: |
-                  Selects which implementation to use for MCP/Plugin runners with multiple tools.
+                  Selects which implementation to use for runners with multiple tools.
 
                   - **Required**: For runners with multiple tools
                   - **Optional**: For single-tool runners (auto-selected)

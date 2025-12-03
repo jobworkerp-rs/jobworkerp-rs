@@ -11,6 +11,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".",
             "#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]",
         )
+        .field_attribute(
+            "LegacyRunnerSettings.setting_value",
+            "#[serde(default)]"
+        )
         .compile_protos(
             &[
                 "protobuf/legacy_runner.proto",
