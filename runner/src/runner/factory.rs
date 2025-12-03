@@ -233,7 +233,7 @@ mod test {
                 .await
                 .active_plugin_info()
                 .len(),
-            3 // Test, Hello, LegacyCompat
+            4 // Test, Hello, LegacyCompat, MistralLocalLLM
         );
         // from builtins
         assert_eq!(
