@@ -69,13 +69,19 @@ impl MultiMethodPluginRunner for TestPlugin {
         &mut self,
         arg: Vec<u8>,
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let arg_clone = arg.clone();
         tokio::runtime::Runtime::new()
             .unwrap()
             .block_on(async move { (self.test(arg_clone.as_slice()).await, metadata) })
     }
-    fn begin_stream(&mut self, arg: Vec<u8>, _metadata: HashMap<String, String>) -> Result<()> {
+    fn begin_stream(
+        &mut self,
+        arg: Vec<u8>,
+        _metadata: HashMap<String, String>,
+        _using: Option<&str>,
+    ) -> Result<()> {
         // default implementation (return empty)
         let _ = arg;
         Err(anyhow::anyhow!("not implemented"))

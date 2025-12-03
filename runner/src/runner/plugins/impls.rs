@@ -184,7 +184,7 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
 
         let (r, meta) = match &mut *guard {
             super::PluginRunnerVariant::Legacy(plugin) => plugin.run(arg1, metadata),
-            super::PluginRunnerVariant::MultiMethod(plugin) => plugin.run(arg1, metadata),
+            super::PluginRunnerVariant::MultiMethod(plugin) => plugin.run(arg1, metadata, using),
         };
         (
             r.map_err(|e| {
@@ -238,7 +238,7 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
                     plugin.begin_stream(arg1, metadata.clone())
                 }
                 super::PluginRunnerVariant::MultiMethod(plugin) => {
-                    plugin.begin_stream(arg1, metadata.clone())
+                    plugin.begin_stream(arg1, metadata.clone(), using)
                 }
             };
             result.map_err(|e| {

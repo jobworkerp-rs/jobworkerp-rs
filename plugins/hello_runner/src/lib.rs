@@ -130,12 +130,18 @@ impl MultiMethodPluginRunner for HelloPlugin {
         &mut self,
         arg: Vec<u8>,
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let arg_clone = arg.clone();
         self.rt
             .block_on(async { (self.hello(arg_clone.as_slice()).await, metadata) })
     }
-    fn begin_stream(&mut self, arg: Vec<u8>, _metadata: HashMap<String, String>) -> Result<()> {
+    fn begin_stream(
+        &mut self,
+        arg: Vec<u8>,
+        _metadata: HashMap<String, String>,
+        _using: Option<&str>,
+    ) -> Result<()> {
         // decode the arguments
         self.args = HelloArgs::decode(arg.as_slice())?;
         // process the arguments (dummy)
