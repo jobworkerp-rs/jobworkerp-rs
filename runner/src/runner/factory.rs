@@ -233,7 +233,7 @@ mod test {
                 .await
                 .active_plugin_info()
                 .len(),
-            2 // Test, Hello
+            3 // Test, Hello, LegacyCompat
         );
         // from builtins
         assert_eq!(

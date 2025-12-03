@@ -325,7 +325,7 @@ $defs:
             type: string
             title: Using
             description: |
-              Selects which implementation to use for MCP/Plugin runners with multiple tools.
+              Selects which implementation to use for runners with multiple tools.
 
               - **Required**: For runners with multiple tools (e.g., fetch server with "fetch" and "fetch_html")
               - **Optional**: For single-tool runners (auto-selected)
@@ -407,6 +407,13 @@ $defs:
             type: string
             title: WorkerName
             description: The name of the worker that executes this job (user-defined).
+          using:
+            type: string
+            title: Using
+            description: |
+              Selects which method to use for multi-method runners.
+
+              For single-method runners, this field is optional (auto-selected if omitted).
           arguments:
             type: object
             title: FunctionArguments
@@ -437,7 +444,7 @@ $defs:
               using:
                 type: string
                 description: |
-                  Selects which implementation to use for MCP/Plugin runners with multiple tools.
+                  Selects which implementation to use for runners with multiple tools.
 
                   - **Required**: For runners with multiple tools
                   - **Optional**: For single-tool runners (auto-selected)
@@ -461,6 +468,13 @@ $defs:
               workerName:
                 type: string
                 description: The name of the worker that executes job
+              using:
+                type: string
+                title: Using
+                description: |
+                  Selects which method to use for multi-method runners.
+
+                  For single-method runners, this field is optional (auto-selected if omitted).
               arguments:
                 type: object
                 description: A key/value mapping of arguments JSON to use when running the function. Runtime expressions are supported for value transformation.

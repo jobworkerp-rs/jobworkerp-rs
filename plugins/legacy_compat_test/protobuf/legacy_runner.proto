@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package legacy;
+
+message LegacyRunnerSettings {
+  optional string setting_value = 1;
+}

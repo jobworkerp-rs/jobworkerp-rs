@@ -460,7 +460,7 @@
             "using": {
               "type": "string",
               "title": "Using",
-              "description": "Selects which implementation to use for MCP/Plugin runners with multiple tools.\n\n- **Required**: For MCP/Plugin runners with multiple tools (e.g., fetch server with \"fetch\" and \"fetch_html\")\n- **Optional**: For single-tool MCP runners (auto-selected)\n- **Ignored**: For normal runners (COMMAND, HTTP_REQUEST, etc.)\n\nExamples:\n- MCP fetch server: using: \"fetch_html\"\n- MCP time server (single tool): can be omitted\n- COMMAND runner: not needed\n"
+              "description": "Selects which implementation to use for MCP/Plugin runners with multiple tools.\n\n- **Required**: For runners with multiple tools (e.g., fetch server with \"fetch\" and \"fetch_html\")\n- **Optional**: For single-tool runners (auto-selected)\n\nExamples:\n- MCP fetch server: using: \"fetch_html\"\n- MCP time server (single tool): can be omitted\n- COMMAND runner: not needed\n"
             },
             "settings": {
               "type": "object",
@@ -560,6 +560,11 @@
               "title": "WorkerName",
               "description": "The name of the worker that executes this job (user-defined)."
             },
+            "using": {
+              "type": "string",
+              "title": "Using",
+              "description": "Selects which method to use for multi-method runners.\n\nFor single-method runners, this field is optional (auto-selected if omitted).\n"
+            },
             "arguments": {
               "type": "object",
               "title": "FunctionArguments",
@@ -600,7 +605,7 @@
                 },
                 "using": {
                   "type": "string",
-                  "description": "Selects which implementation to use for MCP/Plugin runners with multiple tools.\n\n- **Required**: For MCP/Plugin runners with multiple tools\n- **Optional**: For single-tool MCP runners (auto-selected)\n- **Ignored**: For normal runners (COMMAND, HTTP_REQUEST, etc.)\n"
+                  "description": "Selects which implementation to use for MCP/Plugin runners with multiple tools.\n\n- **Required**: For runners with multiple tools\n- **Optional**: For single-tool runners (auto-selected)\n"
                 },
                 "settings": {
                   "type": "object",
@@ -629,6 +634,11 @@
                 "workerName": {
                   "type": "string",
                   "description": "The name of the worker that executes job"
+                },
+                "using": {
+                  "type": "string",
+                  "title": "Using",
+                  "description": "Selects which method to use for multi-method runners.\n\nFor single-method runners, this field is optional (auto-selected if omitted).\n"
                 },
                 "arguments": {
                   "type": "object",

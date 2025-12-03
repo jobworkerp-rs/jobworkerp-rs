@@ -56,10 +56,10 @@ message JobData {
   bool request_streaming = 10;
 
   // # Using
-  // Runner implementation to use for MCP/Plugin runners
-  // - Optional: For normal runners (will be ignored)
-  // - Required: For multi-tool MCP runners
-  // - Auto-selected: When omitted for single-tool MCP runners
+  // Selects which method to use for multi-method runners
+  // - Required: For multi-method runners
+  // - Auto-selected: When omitted for single-method runners
+  // - Ignored: For single-method runners
   optional string using = 11;
 }
 
