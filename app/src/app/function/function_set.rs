@@ -138,14 +138,12 @@ pub trait FunctionSetApp: // XXX 1 impl
     }
 
     async fn find_functions_by_set(&self, set_name: &str) -> Result<Vec<FunctionSpecs>> {
-        // Get function set by name
         let function_set = self.find_function_set_by_name(set_name).await?;
 
         if let Some(set) = function_set {
             if let Some(data) = set.data {
-                // Use FunctionApp to convert FunctionIds to FunctionSpecs
                 self.function_app()
-                    .convert_function_ids_to_specs(&data.targets, set_name)
+                    .convert_function_usings_to_specs(&data.targets, set_name)
                     .await
             } else {
                 Ok(Vec::new())

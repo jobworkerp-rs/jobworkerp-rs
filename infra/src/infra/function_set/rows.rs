@@ -1,6 +1,6 @@
 use proto::jobworkerp::data::{RunnerId, WorkerId};
 use proto::jobworkerp::function::data::{
-    function_id, FunctionId, FunctionSet, FunctionSetData, FunctionSetId,
+    function_id, FunctionId, FunctionSet, FunctionSetData, FunctionSetId, FunctionUsing,
 };
 
 // Constants for target_type values
@@ -27,7 +27,7 @@ impl FunctionSetRow {
                 targets: targets
                     .into_iter()
                     .filter(|t| t.set_id == self.id)
-                    .map(|t| t.to_function_id())
+                    .map(|t| t.to_function_using())
                     .collect(),
             }),
         }
@@ -41,18 +41,22 @@ pub struct FunctionSetTargetRow {
     pub set_id: i64,
     pub target_id: i64,
     pub target_type: i32,
+    pub using: Option<String>,
 }
 
 impl FunctionSetTargetRow {
-    // Convert DB row to FunctionId
-    pub fn to_function_id(&self) -> FunctionId {
-        let id = match self.target_type {
-            RUNNER_TYPE => Some(function_id::Id::RunnerId(RunnerId {
-                value: self.target_id,
-            })),
-            WORKER_TYPE => Some(function_id::Id::WorkerId(WorkerId {
-                value: self.target_id,
-            })),
+    pub fn to_function_using(&self) -> FunctionUsing {
+        let function_id = match self.target_type {
+            RUNNER_TYPE => Some(FunctionId {
+                id: Some(function_id::Id::RunnerId(RunnerId {
+                    value: self.target_id,
+                })),
+            }),
+            WORKER_TYPE => Some(FunctionId {
+                id: Some(function_id::Id::WorkerId(WorkerId {
+                    value: self.target_id,
+                })),
+            }),
             _ => {
                 tracing::warn!(
                     "Unknown target_type: {} for target_id: {}. Treating as None.",
@@ -62,14 +66,26 @@ impl FunctionSetTargetRow {
                 None
             }
         };
-        FunctionId { id }
+
+        FunctionUsing {
+            function_id,
+            using: self.using.clone(),
+        }
     }
 
-    // Convert FunctionId to DB columns (target_id, target_type)
-    pub fn from_function_id(set_id: i64, function_id: &FunctionId) -> Option<(i64, i32)> {
+    pub fn from_function_using(
+        set_id: i64,
+        function_using: &FunctionUsing,
+    ) -> Option<(i64, i32, Option<String>)> {
+        let function_id = function_using.function_id.as_ref()?;
+
         match &function_id.id {
-            Some(function_id::Id::RunnerId(runner_id)) => Some((runner_id.value, RUNNER_TYPE)),
-            Some(function_id::Id::WorkerId(worker_id)) => Some((worker_id.value, WORKER_TYPE)),
+            Some(function_id::Id::RunnerId(runner_id)) => {
+                Some((runner_id.value, RUNNER_TYPE, function_using.using.clone()))
+            }
+            Some(function_id::Id::WorkerId(worker_id)) => {
+                Some((worker_id.value, WORKER_TYPE, function_using.using.clone()))
+            }
             None => {
                 tracing::warn!(
                     "FunctionId has no id set for set_id: {}. Skipping target.",

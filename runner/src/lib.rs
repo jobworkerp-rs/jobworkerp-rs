@@ -15,12 +15,11 @@ pub mod jobworkerp {
     pub mod runner {
         tonic::include_proto!("jobworkerp.runner");
         impl ReusableWorkflowRunnerSettings {
-            pub fn input_schema(&self) -> Option<serde_json::Value> {
+            pub fn schema(&self) -> Option<serde_json::Map<String, serde_json::Value>> {
                 serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
                     self.json_data.as_str(),
                 )
                 .ok()
-                .and_then(|json_data| json_data.get("input").cloned())
             }
         }
         pub mod llm {

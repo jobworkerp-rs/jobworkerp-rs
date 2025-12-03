@@ -3,7 +3,7 @@ use crate::runner::RunnerTrait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::PluginRunner;
+use super::PluginRunnerVariant;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::executor::block_on;
@@ -11,7 +11,6 @@ use futures::stream::BoxStream;
 use futures::stream::StreamExt;
 use proto::jobworkerp::data::result_output_item;
 use proto::jobworkerp::data::ResultOutputItem;
-use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::data::Trailer;
 use tokio::sync::RwLock;
 
@@ -25,26 +24,26 @@ use proto::jobworkerp::data::{JobData, JobId, JobResult};
  */
 #[derive(Clone)]
 pub struct PluginRunnerWrapperImpl {
-    #[allow(clippy::borrowed_box)]
-    plugin_runner: Arc<RwLock<Box<dyn PluginRunner + Send + Sync>>>,
+    variant: Arc<RwLock<PluginRunnerVariant>>,
     cancel_helper: Option<CancelMonitoringHelper>,
 }
 
 impl PluginRunnerWrapperImpl {
-    // #[allow(clippy::borrowed_box)]
-    pub fn new(plugin_runner: Arc<RwLock<Box<dyn PluginRunner + Send + Sync>>>) -> Self {
+    pub fn new(variant: Arc<RwLock<PluginRunnerVariant>>) -> Self {
         Self {
-            plugin_runner,
+            variant,
             cancel_helper: None,
         }
     }
     async fn create(&self, settings: Vec<u8>) -> Result<()> {
-        let plugin_runner = Arc::clone(&self.plugin_runner);
+        let variant = Arc::clone(&self.variant);
         #[allow(unstable_name_collisions)]
         tokio::task::spawn_blocking(|| async move {
-            plugin_runner.write().await.load(settings)
-            // .map_err(|e| anyhow!("plugin runner lock error: {:?}", e))
-            // .and_then(|mut r| r.load(settings))
+            let mut guard = variant.write().await;
+            match &mut *guard {
+                super::PluginRunnerVariant::Legacy(plugin) => plugin.load(settings),
+                super::PluginRunnerVariant::MultiMethod(plugin) => plugin.load(settings),
+            }
         })
         .await
         .map_err(|e| anyhow!("plugin runner lock error: {:?}", e))?
@@ -55,35 +54,84 @@ impl PluginRunnerWrapperImpl {
 
 impl RunnerSpec for PluginRunnerWrapperImpl {
     fn name(&self) -> String {
-        let plugin_runner = Arc::clone(&self.plugin_runner);
-        let n = block_on(plugin_runner.read()).name();
-        // .map(|p| p.name())
-        // .unwrap_or_else(|e| format!("Error occurred: {:}", e));
-        n
+        let guard = block_on(self.variant.read());
+        match &*guard {
+            super::PluginRunnerVariant::Legacy(plugin) => plugin.name(),
+            super::PluginRunnerVariant::MultiMethod(plugin) => plugin.name(),
+        }
     }
     fn runner_settings_proto(&self) -> String {
-        // let plugin_runner = Arc::clone(&self.plugin_runner);
-        block_on(self.plugin_runner.read()).runner_settings_proto()
-        // .map(|p| p.runner_settings_proto())
-        // .unwrap_or_else(|e| format!("Error occurred: {:}", e))
+        let guard = block_on(self.variant.read());
+        match &*guard {
+            super::PluginRunnerVariant::Legacy(plugin) => plugin.runner_settings_proto(),
+            super::PluginRunnerVariant::MultiMethod(plugin) => plugin.runner_settings_proto(),
+        }
     }
-    fn job_args_proto(&self) -> String {
-        block_on(self.plugin_runner.read()).job_args_proto()
+    fn method_proto_map(
+        &self,
+    ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        let guard = block_on(self.variant.read());
+        match &*guard {
+            super::PluginRunnerVariant::Legacy(plugin) => {
+                // Auto-convert from legacy methods
+                let mut map = HashMap::new();
+                map.insert(
+                    proto::DEFAULT_METHOD_NAME.to_string(),
+                    proto::jobworkerp::data::MethodSchema {
+                        args_proto: plugin.job_args_proto(),
+                        result_proto: plugin.result_output_proto().unwrap_or_default(),
+                        description: Some(plugin.description()),
+                        output_type: plugin.output_type() as i32,
+                    },
+                );
+                tracing::debug!(
+                    "Auto-converted legacy plugin '{}' to method_proto_map with '{}' method",
+                    plugin.name(),
+                    proto::DEFAULT_METHOD_NAME
+                );
+                map
+            }
+            super::PluginRunnerVariant::MultiMethod(plugin) => plugin.method_proto_map(),
+        }
     }
-    fn result_output_proto(&self) -> Option<String> {
-        block_on(self.plugin_runner.read()).result_output_proto()
+
+    fn method_json_schema_map(&self) -> HashMap<String, crate::runner::MethodJsonSchema> {
+        let guard = block_on(self.variant.read());
+        match &*guard {
+            super::PluginRunnerVariant::Legacy(plugin) => {
+                // This is a legacy plugin - use arguments_schema() and output_json_schema()
+                let mut map = HashMap::new();
+                map.insert(
+                    proto::DEFAULT_METHOD_NAME.to_string(),
+                    crate::runner::MethodJsonSchema {
+                        args_schema: plugin.arguments_schema(),
+                        result_schema: plugin.output_json_schema(),
+                    },
+                );
+                tracing::debug!(
+                    "Auto-converted legacy plugin '{}' JSON schemas with '{}' method",
+                    plugin.name(),
+                    proto::DEFAULT_METHOD_NAME
+                );
+                map
+            }
+            super::PluginRunnerVariant::MultiMethod(plugin) => {
+                if let Some(custom_schemas) = plugin.method_json_schema_map() {
+                    custom_schemas
+                } else {
+                    // Fall back to automatic Protobuf→JSON Schema conversion
+                    crate::runner::MethodJsonSchema::from_proto_map(self.method_proto_map())
+                }
+            }
+        }
     }
-    fn output_type(&self) -> StreamingOutputType {
-        block_on(self.plugin_runner.read()).output_type()
-    }
+
     fn settings_schema(&self) -> String {
-        block_on(self.plugin_runner.read()).settings_schema()
-    }
-    fn arguments_schema(&self) -> String {
-        block_on(self.plugin_runner.read()).arguments_schema()
-    }
-    fn output_schema(&self) -> Option<String> {
-        block_on(self.plugin_runner.read()).output_json_schema()
+        let guard = block_on(self.variant.read());
+        match &*guard {
+            super::PluginRunnerVariant::Legacy(plugin) => plugin.settings_schema(),
+            super::PluginRunnerVariant::MultiMethod(plugin) => plugin.settings_schema(),
+        }
     }
 }
 #[async_trait]
@@ -98,30 +146,49 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         &mut self,
         arg: &[u8],
         metadata: HashMap<String, String>,
+        using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
-        // XXX clone
-        // let plugin_runner = Arc::clone(&self.plugin_runner);
-        // let arg1 = arg.to_vec();
+        // 1. Get method map for legacy plugin detection
+        let method_map = self.method_proto_map();
 
-        // tokio::task::spawn_blocking(move || {
-        //     let mut runner = futures::executor::block_on(plugin_runner.write());
-        //     runner.run(arg1).map_err(|e| {
-        //         tracing::warn!("in running pluginRunner: {:?}", e);
-        //         e
-        //     })
-        // })
-        // .await?
-        // .map_err(|e| anyhow!("Join error: {:?}", e))
+        // 2. Legacy plugin detection: single method named DEFAULT_METHOD_NAME
+        let is_legacy =
+            method_map.len() == 1 && method_map.contains_key(proto::DEFAULT_METHOD_NAME);
 
-        let plugin_runner = self.plugin_runner.clone();
+        // 3. Handle 'using' parameter
+        if let Some(u) = using {
+            if is_legacy {
+                tracing::warn!(
+                    "Plugin '{}' is legacy (single method '{}'), ignoring 'using' parameter: {}",
+                    self.name(),
+                    proto::DEFAULT_METHOD_NAME,
+                    u
+                );
+            } else if !method_map.contains_key(u) {
+                return (
+                    Err(anyhow!(
+                        "Unknown method '{}' for plugin '{}'. Available methods: {:?}",
+                        u,
+                        self.name(),
+                        method_map.keys().collect::<Vec<_>>()
+                    )),
+                    metadata,
+                );
+            }
+        }
+
+        // 4. Execute plugin
+        let variant = self.variant.clone();
         let arg1 = arg.to_vec();
-        let mut runner = plugin_runner.write().await;
+        let mut guard = variant.write().await;
 
-        let (r, meta) = runner.run(arg1, metadata);
+        let (r, meta) = match &mut *guard {
+            super::PluginRunnerVariant::Legacy(plugin) => plugin.run(arg1, metadata),
+            super::PluginRunnerVariant::MultiMethod(plugin) => plugin.run(arg1, metadata, using),
+        };
         (
             r.map_err(|e| {
                 tracing::warn!("in running pluginRunner: {:?}", e);
-                // anyhow!("in running pluginRunner: {:?}", e)
                 e
             }),
             meta,
@@ -132,21 +199,55 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         &mut self,
         arg: &[u8],
         metadata: HashMap<String, String>,
+        using: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
-        // XXX clone
-        let plugin_runner = self.plugin_runner.clone();
-        let arg1 = arg.to_vec();
-        let mut runner = plugin_runner.write().await;
-        // .map_err(|e| anyhow!("plugin runner lock error: {:?}", e))?;
-        let r1 = runner.as_mut();
-        // begin stream (set argument and setup stream)
-        r1.begin_stream(arg1, metadata.clone()).map_err(|e| {
-            tracing::warn!("in running pluginRunner: {:?}", e);
-            anyhow!("in running pluginRunner: {:?}", e)
-        })?;
-        let plugin_runner = self.plugin_runner.clone();
+        // 1. Get method map for legacy plugin detection
+        let method_map = self.method_proto_map();
 
-        // Get cancellation token if available
+        // 2. Legacy plugin detection: single method named DEFAULT_METHOD_NAME
+        let is_legacy =
+            method_map.len() == 1 && method_map.contains_key(proto::DEFAULT_METHOD_NAME);
+
+        // 3. Handle 'using' parameter
+        if let Some(u) = using {
+            if is_legacy {
+                tracing::warn!(
+                    "Plugin '{}' is legacy (single method '{}'), ignoring 'using' parameter: {}",
+                    self.name(),
+                    proto::DEFAULT_METHOD_NAME,
+                    u
+                );
+            } else if !method_map.contains_key(u) {
+                return Err(anyhow!(
+                    "Unknown method '{}' for plugin '{}'. Available methods: {:?}",
+                    u,
+                    self.name(),
+                    method_map.keys().collect::<Vec<_>>()
+                ));
+            }
+        }
+
+        // 4. Begin stream
+        let variant = self.variant.clone();
+        let arg1 = arg.to_vec();
+        {
+            let mut guard = variant.write().await;
+            // begin stream (set argument and setup stream)
+            let result = match &mut *guard {
+                super::PluginRunnerVariant::Legacy(plugin) => {
+                    plugin.begin_stream(arg1, metadata.clone())
+                }
+                super::PluginRunnerVariant::MultiMethod(plugin) => {
+                    plugin.begin_stream(arg1, metadata.clone(), using)
+                }
+            };
+            result.map_err(|e| {
+                tracing::warn!("in running pluginRunner: {:?}", e);
+                anyhow!("in running pluginRunner: {:?}", e)
+            })?;
+        }
+        let variant_clone = self.variant.clone();
+
         let cancel_token = if let Some(helper) = &self.cancel_helper {
             Some(helper.get_cancellation_token().await)
         } else {
@@ -154,10 +255,14 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         };
 
         let st = async_stream::stream! {
-            let mut runner = plugin_runner.write().await;
             loop {
+                let mut guard = variant_clone.write().await;
+
                 let receive_future = async {
-                    runner.receive_stream()
+                    match &mut *guard {
+                        super::PluginRunnerVariant::Legacy(plugin) => plugin.receive_stream(),
+                        super::PluginRunnerVariant::MultiMethod(plugin) => plugin.receive_stream(),
+                    }
                 };
 
                 let maybe_v = if let Some(ref token) = cancel_token {
@@ -170,6 +275,11 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
                     }
                 } else {
                     receive_future.await
+                };
+
+                let is_cancelled = match &*guard {
+                    super::PluginRunnerVariant::Legacy(plugin) => plugin.is_canceled(),
+                    super::PluginRunnerVariant::MultiMethod(plugin) => plugin.is_canceled(),
                 };
 
                 match maybe_v {
@@ -188,7 +298,7 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
                         break
                     },
                 }
-                if runner.is_canceled() {
+                if is_cancelled {
                     break;
                 }
             }

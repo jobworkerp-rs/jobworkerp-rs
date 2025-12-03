@@ -108,6 +108,7 @@ fn create_command_job(command: &str, args: Vec<String>, timeout_ms: u64) -> Job 
             run_after_time: command_utils::util::datetime::now_millis(),
             grabbed_until_time: None,
             request_streaming: false,
+            using: None,
         }),
         ..Default::default()
     }
@@ -149,12 +150,10 @@ async fn test_real_command_basic_execution() -> Result<()> {
         .await;
     let elapsed_time = start_time.elapsed();
 
-    // Verify successful execution
     assert!(result.data.is_some());
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32);
 
-    // Verify actual command output
     assert!(data.output.is_some());
     let command_result: CommandResult =
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
@@ -166,7 +165,6 @@ async fn test_real_command_basic_execution() -> Result<()> {
         .unwrap()
         .contains("Hello Real E2E Test"));
 
-    // Verify memory monitoring was enabled (value may be 0 for very fast commands)
     assert!(command_result.max_memory_usage_kb.is_some());
 
     // Should complete quickly
@@ -181,7 +179,6 @@ async fn test_real_command_basic_execution() -> Result<()> {
 async fn test_real_command_filesystem_operations() -> Result<()> {
     let job_runner = get_real_job_runner().await;
 
-    // Create a temp file and verify its contents
     let temp_file = format!("/tmp/jobworkerp_test_{}", std::process::id());
     let test_content = "Real E2E Test Content";
 
@@ -203,11 +200,9 @@ async fn test_real_command_filesystem_operations() -> Result<()> {
         .run_job(&runner_data, &worker_id, &worker_data, job)
         .await;
 
-    // Verify successful execution
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32);
 
-    // Verify actual file operations worked
     let command_result: CommandResult =
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
@@ -249,11 +244,9 @@ async fn test_real_command_environment_variables() -> Result<()> {
         .run_job(&runner_data, &worker_id, &worker_data, job)
         .await;
 
-    // Verify successful execution
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32);
 
-    // Verify environment variable was set and read
     let command_result: CommandResult =
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
@@ -284,11 +277,9 @@ async fn test_real_command_timeout_with_real_process() -> Result<()> {
         .await;
     let elapsed_time = start_time.elapsed();
 
-    // Verify timeout occurred
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::MaxRetry as i32);
 
-    // Verify timeout message
     assert!(String::from_utf8_lossy(&data.output.unwrap().items).contains("timeout"));
 
     // Should timeout around 2 seconds, not wait full 5 seconds
@@ -317,11 +308,9 @@ async fn test_real_command_error_handling() -> Result<()> {
         .run_job(&runner_data, &worker_id, &worker_data, job)
         .await;
 
-    // Verify failed execution
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32); // Command runner completed successfully
 
-    // Verify command itself failed
     let command_result: CommandResult =
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
@@ -360,11 +349,9 @@ async fn test_real_command_complex_shell_operations() -> Result<()> {
         .run_job(&runner_data, &worker_id, &worker_data, job)
         .await;
 
-    // Verify successful execution
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32);
 
-    // Verify complex operations worked
     let command_result: CommandResult =
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
@@ -372,13 +359,11 @@ async fn test_real_command_complex_shell_operations() -> Result<()> {
     let stdout = command_result.stdout.as_ref().unwrap();
 
     tracing::debug!("Command output: {}", stdout);
-    // Verify various outputs from the complex script
     assert!(stdout.contains("Starting complex operations"));
     assert!(stdout.contains("3")); // wc -l output
     assert!(stdout.contains("14")); // 2 + 3 * 4 = 14
     assert!(stdout.contains("Complex operations completed"));
 
-    // Verify date format (YYYY-MM-DD)
     assert!(stdout.chars().filter(|&c| c == '-').count() >= 2);
 
     println!("✓ Real COMMAND complex shell operations test passed");

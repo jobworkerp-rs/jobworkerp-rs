@@ -85,7 +85,7 @@ fn test_create_workflow_runner_db_integration() -> Result<()> {
 
         // Execute CREATE_WORKFLOW
         let metadata = HashMap::new();
-        let (result, _returned_metadata) = runner.run(&serialized_args, metadata).await;
+        let (result, _returned_metadata) = runner.run(&serialized_args, metadata, None).await;
 
         match result {
             Ok(output_bytes) => {
@@ -95,7 +95,6 @@ fn test_create_workflow_runner_db_integration() -> Result<()> {
                 let create_result: CreateWorkflowResult =
                     ProstMessageCodec::deserialize_message(&output_bytes)?;
 
-                // Validate WorkerID
                 assert!(
                     create_result.worker_id.is_some(),
                     "WorkerId should be present"
@@ -105,7 +104,6 @@ fn test_create_workflow_runner_db_integration() -> Result<()> {
 
                 println!("✅ WorkerID generated: {}", worker_id.value);
 
-                // Verify that the worker was created in the DB
                 let found_worker = app.worker_app.find_by_name(worker_name).await?;
                 assert!(found_worker.is_some(), "Created worker not found in DB");
 
@@ -123,7 +121,6 @@ fn test_create_workflow_runner_db_integration() -> Result<()> {
                 );
                 println!("   - Channel: {:?}", worker_data.channel);
 
-                // Verify worker details
                 assert_eq!(worker_data.name, worker_name);
                 assert_eq!(found_worker.id.as_ref().unwrap().value, worker_id.value);
                 assert!(worker_data.runner_id.as_ref().unwrap().value > 0);
@@ -210,7 +207,7 @@ fn test_create_workflow_url_db_integration() -> Result<()> {
 
         // Execute CREATE_WORKFLOW
         let metadata = HashMap::new();
-        let (result, _returned_metadata) = runner.run(&serialized_args, metadata).await;
+        let (result, _returned_metadata) = runner.run(&serialized_args, metadata, None).await;
 
         match result {
             Ok(output_bytes) => {
@@ -220,13 +217,11 @@ fn test_create_workflow_url_db_integration() -> Result<()> {
                 let create_result: CreateWorkflowResult =
                     ProstMessageCodec::deserialize_message(&output_bytes)?;
 
-                // Verify WorkerID
                 assert!(create_result.worker_id.is_some());
                 let worker_id = create_result.worker_id.unwrap();
 
                 println!("✅ URL-based WorkerID generation: {}", worker_id.value);
 
-                // Verify that worker was created in DB
                 let found_worker = app.worker_app.find_by_name(worker_name).await?;
                 assert!(
                     found_worker.is_some(),
@@ -244,11 +239,9 @@ fn test_create_workflow_url_db_integration() -> Result<()> {
                 );
                 println!("   - Channel: {:?}", worker_data.channel);
 
-                // Verify options
                 assert_eq!(worker_data.name, worker_name);
                 assert_eq!(worker_data.channel.as_deref(), Some("url-db-test-channel"));
                 assert_eq!(worker_data.response_type, ResponseType::NoResult as i32);
-                // Verify with_backup via queue_type
                 assert_eq!(
                     worker_data.queue_type,
                     proto::jobworkerp::data::QueueType::WithBackup as i32
@@ -296,7 +289,7 @@ fn test_create_workflow_error_cases_db_integration() -> Result<()> {
         };
 
         let serialized = ProstMessageCodec::serialize_message(&empty_name_args)?;
-        let (result, _) = runner.run(&serialized, HashMap::new()).await;
+        let (result, _) = runner.run(&serialized, HashMap::new(), None).await;
         assert!(result.is_err(), "Empty name should cause validation error");
         println!("✅ Empty name rejection: OK");
 
@@ -310,7 +303,7 @@ fn test_create_workflow_error_cases_db_integration() -> Result<()> {
         };
 
         let serialized = ProstMessageCodec::serialize_message(&invalid_json_args)?;
-        let (result, _) = runner.run(&serialized, HashMap::new()).await;
+        let (result, _) = runner.run(&serialized, HashMap::new(), None).await;
         assert!(result.is_err(), "Invalid JSON should cause parsing error");
         println!("✅ Invalid JSON rejection: OK");
 
@@ -322,7 +315,7 @@ fn test_create_workflow_error_cases_db_integration() -> Result<()> {
         };
 
         let serialized = ProstMessageCodec::serialize_message(&no_source_args)?;
-        let (result, _) = runner.run(&serialized, HashMap::new()).await;
+        let (result, _) = runner.run(&serialized, HashMap::new(), None).await;
         assert!(
             result.is_err(),
             "Missing workflow_source should cause validation error"

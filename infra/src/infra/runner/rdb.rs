@@ -723,17 +723,29 @@ mod test {
                 "../../../../plugins/hello_runner/protobuf/hello_runner.proto"
             )
             .to_string(),
-            job_args_proto: include_str!(
-                "../../../../plugins/hello_runner/protobuf/hello_job_args.proto"
-            )
-            .to_string(),
-            result_output_proto: Some(
-                include_str!("../../../../plugins/hello_runner/protobuf/hello_result.proto")
-                    .to_string(),
-            ),
             runner_type: 0,
-            output_type: StreamingOutputType::Both as i32, // hello
             definition: "./target/debug/libplugin_runner_hello.dylib".to_string(),
+            method_proto_map: Some(proto::jobworkerp::data::MethodProtoMap {
+                schemas: {
+                    let mut map = std::collections::HashMap::new();
+                    map.insert(
+                        "run".to_string(),
+                        proto::jobworkerp::data::MethodSchema {
+                            args_proto: include_str!(
+                                "../../../../plugins/hello_runner/protobuf/hello_job_args.proto"
+                            )
+                            .to_string(),
+                            result_proto: include_str!(
+                                "../../../../plugins/hello_runner/protobuf/hello_result.proto"
+                            )
+                            .to_string(),
+                            description: Some("Hello runner test".to_string()),
+                            output_type: StreamingOutputType::Both as i32,
+                        },
+                    );
+                    map
+                },
+            }),
         };
         let plugin = p
             .create_runner_spec_by_name(&data.name, false)
@@ -780,12 +792,22 @@ mod test {
             data: Some(RunnerData {
                 name: row.name.clone(),
                 description: row.description.clone(),
-                ..data
+                runner_type: data.runner_type,
+                runner_settings_proto: data.runner_settings_proto.clone(),
+                definition: data.definition.clone(),
+                // method_proto_map comes from plugin.method_proto_map()
+                method_proto_map: Some(proto::jobworkerp::data::MethodProtoMap {
+                    schemas: plugin.method_proto_map(),
+                }),
             }),
             settings_schema: plugin.settings_schema(),
-            arguments_schema: plugin.arguments_schema(),
-            output_schema: plugin.output_schema(),
-            tools: Vec::default(),
+            method_json_schema_map: {
+                use crate::infra::runner::schema_converter::MethodJsonSchemaConverter;
+                let proto_map = plugin.method_proto_map();
+                Some(proto::jobworkerp::data::MethodJsonSchemaMap {
+                    schemas: RunnerRow::convert_method_proto_map_to_json_schema_map(&proto_map),
+                })
+            },
         };
 
         // find
@@ -1250,7 +1272,6 @@ mod test {
             "Should find 3 runners with specified types"
         );
 
-        // Verify all results have the expected types
         for runner in &results {
             let runner_type = runner.data.as_ref().unwrap().runner_type;
             assert!(
@@ -1307,7 +1328,6 @@ mod test {
             )
             .await?;
 
-        // Verify ascending order
         for i in 1..results.len() {
             let prev_name = &results[i - 1].data.as_ref().unwrap().name;
             let curr_name = &results[i].data.as_ref().unwrap().name;
@@ -1331,7 +1351,6 @@ mod test {
             )
             .await?;
 
-        // Verify descending order
         for i in 1..results.len() {
             let prev_name = &results[i - 1].data.as_ref().unwrap().name;
             let curr_name = &results[i].data.as_ref().unwrap().name;
@@ -1355,7 +1374,6 @@ mod test {
             )
             .await?;
 
-        // Verify ascending order by type
         for i in 1..results.len() {
             let prev_type = results[i - 1].data.as_ref().unwrap().runner_type;
             let curr_type = results[i].data.as_ref().unwrap().runner_type;
@@ -1372,7 +1390,6 @@ mod test {
             .find_list_by(vec![], None, None, None, None, None)
             .await?;
 
-        // Verify descending order by id (default behavior)
         for i in 1..results.len() {
             let prev_id = results[i - 1].id.as_ref().unwrap().value;
             let curr_id = results[i].id.as_ref().unwrap().value;
@@ -1442,7 +1459,6 @@ mod test {
         let id_generator = Arc::new(crate::infra::IdGeneratorWrapper::new());
         let repository = RdbRunnerRepositoryImpl::new(pool, p.clone(), id_generator);
 
-        // Get total count
         let total_count = repository.count_by(vec![], None).await?;
 
         // Test 1: limit = 2, offset = 0
@@ -1457,7 +1473,6 @@ mod test {
             .await?;
         assert_eq!(results_page2.len(), 2, "Should return 2 runners");
 
-        // Verify different results
         let first_id = results[0].id.as_ref().unwrap().value;
         let second_page_first_id = results_page2[0].id.as_ref().unwrap().value;
         assert_ne!(

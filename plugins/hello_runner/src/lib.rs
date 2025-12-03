@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use futures::{stream::BoxStream, StreamExt};
 use hello::{HelloArgs, HelloRunnerResult, HelloRunnerSettings};
-use jobworkerp_runner::runner::plugins::PluginRunner;
+use jobworkerp_runner::runner::plugins::MultiMethodPluginRunner;
 use prost::Message;
 use std::{alloc::System, collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, Mutex};
@@ -15,21 +15,16 @@ pub mod hello {
 #[global_allocator]
 static ALLOCATOR: System = System;
 
-// suppress warn improper_ctypes_definitions
+// Multi-method plugin FFI symbols
 #[allow(improper_ctypes_definitions)]
 #[unsafe(no_mangle)]
-pub extern "C" fn load_plugin() -> Box<dyn PluginRunner + Send + Sync> {
+pub extern "C" fn load_multi_method_plugin() -> Box<dyn MultiMethodPluginRunner + Send + Sync> {
     Box::new(HelloPlugin::new())
 }
-/// # Safety
-///
-/// This function is unsafe because it dereferences a raw pointer. The caller
-/// must ensure that the pointer is valid and that it was created by the
-/// `load_plugin` function. The caller must also ensure that the `Box` created
-/// by `Box::from_raw` is not used after it has been dropped.
+
 #[unsafe(no_mangle)]
 #[allow(improper_ctypes_definitions)]
-pub extern "C" fn free_plugin(ptr: Box<dyn PluginRunner + Send + Sync>) {
+pub extern "C" fn free_multi_method_plugin(ptr: Box<dyn MultiMethodPluginRunner + Send + Sync>) {
     drop(ptr);
 }
 
@@ -115,7 +110,7 @@ impl HelloPlugin {
 }
 
 #[async_trait]
-impl PluginRunner for HelloPlugin {
+impl MultiMethodPluginRunner for HelloPlugin {
     fn name(&self) -> String {
         // specify as same string as worker.runner_settings
         String::from("HelloPlugin")
@@ -135,12 +130,18 @@ impl PluginRunner for HelloPlugin {
         &mut self,
         arg: Vec<u8>,
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let arg_clone = arg.clone();
         self.rt
             .block_on(async { (self.hello(arg_clone.as_slice()).await, metadata) })
     }
-    fn begin_stream(&mut self, arg: Vec<u8>, _metadata: HashMap<String, String>) -> Result<()> {
+    fn begin_stream(
+        &mut self,
+        arg: Vec<u8>,
+        _metadata: HashMap<String, String>,
+        _using: Option<&str>,
+    ) -> Result<()> {
         // decode the arguments
         self.args = HelloArgs::decode(arg.as_slice())?;
         // process the arguments (dummy)
@@ -188,45 +189,27 @@ impl PluginRunner for HelloPlugin {
     fn runner_settings_proto(&self) -> String {
         include_str!("../protobuf/hello_runner.proto").to_string()
     }
-    fn job_args_proto(&self) -> String {
-        include_str!("../protobuf/hello_job_args.proto").to_string()
+
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            "run".to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!("../protobuf/hello_job_args.proto").to_string(),
+                result_proto: include_str!("../protobuf/hello_result.proto").to_string(),
+                description: Some("Hello world plugin execution".to_string()),
+                output_type: proto::jobworkerp::data::StreamingOutputType::Both as i32,
+            },
+        );
+        schemas
     }
-    fn result_output_proto(&self) -> Option<String> {
-        Some(include_str!("../protobuf/hello_result.proto").to_string())
-    }
-    // use run_stream() if true, else use run()
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        proto::jobworkerp::data::StreamingOutputType::Both
-    }
+
     fn settings_schema(&self) -> String {
         let schema = schemars::schema_for!(HelloRunnerSettings);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
-    }
-    fn arguments_schema(&self) -> String {
-        let schema = schemars::schema_for!(HelloArgs);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
-    }
-    fn output_json_schema(&self) -> Option<String> {
-        let schema = schemars::schema_for!(HelloRunnerResult);
-        match serde_json::to_string(&schema) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                None
-            }
-        }
+        serde_json::to_string(&schema).unwrap_or_else(|e| {
+            tracing::error!("error in settings_schema: {:?}", e);
+            "{}".to_string()
+        })
     }
 }
 

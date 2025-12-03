@@ -154,12 +154,10 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
                 let mut all_errors = Vec::new();
                 let mut streams = Vec::new();
 
-                // Convert all stream futures into actual streams
                 for stream_fut in tasks {
                     streams.push(stream_fut.await);
                 }
 
-                // Create a StreamMap to manage all streams
                 let mut stream_map = StreamMap::new();
                 for (i, stream) in streams.into_iter().enumerate() {
                     stream_map.insert(i, stream);
@@ -201,7 +199,6 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
                 // Normal mode: collect results from all tasks
                 let streams_futures = future::join_all(tasks).await;
 
-                // Get all results from the streams
                 let mut output = Vec::new();
 
                 for stream in streams_futures {

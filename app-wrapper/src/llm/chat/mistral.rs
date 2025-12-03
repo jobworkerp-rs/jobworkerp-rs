@@ -165,7 +165,6 @@ impl MistralRSService {
     ) -> Result<futures::stream::BoxStream<'static, LlmChatResult>> {
         use futures::stream::{self, StreamExt};
 
-        // Check if tool calling is needed
         let has_tools = args
             .function_options
             .as_ref()
@@ -203,11 +202,9 @@ impl MistralRSService {
         use async_stream::stream;
         use futures::stream::StreamExt;
 
-        // Convert protocol messages
         let messages = self.convert_proto_messages(&args)?;
         let request_builder = self.build_request_from_messages(&messages, &[]).await?;
 
-        // Use MistralCoreService's stream_chat
         let mistral_stream: futures::stream::BoxStream<'static, mistralrs::Response> =
             self.core_service.stream_chat(request_builder).await?;
 
@@ -245,7 +242,6 @@ impl MistralRSService {
         metadata: Arc<HashMap<String, String>>,
         config: ToolCallingConfig,
     ) -> MistralRSMessage {
-        // Parse arguments
         let arguments_obj = serde_json::from_str(&call.arguments).map_err(|e| {
             ToolExecutionError::InvalidArguments {
                 reason: format!("JSON parse error: {e}"),
@@ -359,11 +355,9 @@ impl MistralRSService {
         use mistralrs::{TextMessageRole as MistralTextRole, ToolChoice};
         let mut builder = RequestBuilder::new();
 
-        // Convert MistralRSMessage to MistralRS RequestBuilder
         for msg in messages {
             match msg.role {
                 TextMessageRole::Tool => {
-                    // Add tool message as result
                     if let Some(tool_call_id) = &msg.tool_call_id {
                         tracing::debug!(
                             "Adding tool message: '{}' with call_id: {}",
@@ -415,7 +409,6 @@ impl MistralRSService {
             }
         }
 
-        // Add tools
         if !tools.is_empty() {
             tracing::debug!("Adding {} tools to MistralRS request", tools.len());
             for (i, tool) in tools.iter().enumerate() {
@@ -598,7 +591,6 @@ impl MistralRSService {
 
         let current_context = parent_context.unwrap_or_else(Context::current);
 
-        // Use unified span for parallel execution with tracing
         if let Some(_client) = LLMTracingHelper::get_otel_client(self) {
             self.execute_parallel_tools_with_unified_span(tool_calls, metadata, current_context)
                 .await
@@ -617,7 +609,6 @@ impl MistralRSService {
     ) -> Result<Vec<crate::llm::mistral::MistralRSMessage>> {
         use command_utils::trace::attr::{OtelSpanBuilder, OtelSpanType};
 
-        // Create unified span attributes
         let span_name = "mistralrs.tool_calls.parallel";
         let mut span_builder = OtelSpanBuilder::new(span_name)
             .span_type(OtelSpanType::Event)
@@ -632,7 +623,6 @@ impl MistralRSService {
                 }).collect::<Vec<_>>()
             }));
 
-        // Add metadata
         if let Some(session_id) = metadata.get("session_id") {
             span_builder = span_builder.session_id(session_id.clone());
         }
@@ -806,7 +796,6 @@ impl MistralRSService {
         metadata: &Arc<HashMap<String, String>>,
         parent_context: Context,
     ) -> Result<(crate::llm::mistral::MistralRSMessage, Context)> {
-        // Create span attributes using MistralTracingHelper
         let tool_attributes = self.create_tool_call_span_from_mistral_call(
             &call.function_name,
             &call.arguments,
@@ -824,7 +813,6 @@ impl MistralRSService {
                 Self::execute_tool_call_core(call_clone, function_app, metadata_clone, config)
                     .await;
 
-            // Return tool execution result in JSON format
             Ok::<serde_json::Value, jobworkerp_base::error::JobWorkerError>(serde_json::json!({
                 "content": message.content,
                 "tool_call_id": message.tool_call_id,
@@ -832,7 +820,6 @@ impl MistralRSService {
             }))
         };
 
-        // Use MistralTracingHelper's detailed span tracing
         let (tool_result, updated_context) = MistralTracingHelper::with_tool_response_tracing(
             self,
             metadata,
@@ -844,7 +831,6 @@ impl MistralRSService {
         )
         .await?;
 
-        // Convert result to MistralRSMessage
         let message = crate::llm::mistral::MistralRSMessage {
             role: jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatRole::Tool,
             content: tool_result

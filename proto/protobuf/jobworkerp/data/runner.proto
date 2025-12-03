@@ -27,22 +27,102 @@ message RunnerData {
   // # Runner Settings Definition
   // Proto file definition for runner configuration
   string runner_settings_proto = 4;
-  // # Job Arguments Definition
-  // Proto file definition for job arguments
-  string job_args_proto = 5;
-  // # Result Output Definition
-  // Proto file definition for job execution results
-  // If empty, UTF-8 string will be used as bytes array for result output
-  optional string result_output_proto = 6;
-  // # Output Type Configuration
-  // Specifies the streaming capability of this runner
-  // This determines how job results can be retrieved from this runner
-  StreamingOutputType output_type = 7;
+  // Fields 5-7 reserved to prevent reuse
+  reserved 5, 6, 7;
+  reserved "job_args_proto", "result_output_proto", "output_type";
   // # definition
   // runner definition
   // mcp: mcp_server toml
   // plugin: plugin filepath
   string definition = 8;
+  // # Method Proto Map (REQUIRED)
+  // All runners must provide method-level schema definitions
+  // - Single-method runners: use default method name "run"
+  // - Multi-method runners: use method-specific names (e.g., "fetch_html", "exec")
+  // Maps method name to its input/output protobuf schema definitions
+  MethodProtoMap method_proto_map = 10;
+}
+
+// # Method Proto Map
+// Mapping of method names to their Protobuf schema definitions
+message MethodProtoMap {
+  // # Schemas Map
+  // Key: using name (e.g., "fetch_html", "fetch")
+  // Value: MethodSchema containing input and optional output schemas
+  //
+  // When schemas has only one entry, using can be omitted in job execution
+  // (auto-selected to the single available method)
+  map<string, MethodSchema> schemas = 1;
+}
+
+// # Method Schema
+// Input and output Protobuf schema definitions for a single method
+message MethodSchema {
+  // # Input Arguments Schema
+  // Protobuf schema definition for method arguments
+  // - Message name follows convention: {ServerName}{ToolName}Args
+  // - Example for fetch server's fetch_html tool:
+  //   "syntax = \"proto3\";\nmessage FetchFetchHtmlArgs { string url = 1; optional int32 timeout_ms = 2; }"
+  string args_proto = 1;
+
+  // # Output Result Schema (REQUIRED - proto3 constraint)
+  // Protobuf schema definition for method result
+  //
+  // - **REQUIRED**: This field MUST always be set by application layer
+  // - **Proto3 limitation**: Cannot use `required` keyword (proto3 spec)
+  // - **Empty string ALLOWED**: For unstructured/binary output
+  //
+  // Details: See docs/runner-proto-unification-spec.md Section 7.1
+  string result_proto = 2;
+
+  // # Method Description (Optional)
+  // Human-readable description of what this method does
+  // - Used by LLM for tool selection
+  // - Example: "Fetches HTML content from a URL"
+  optional string description = 3;
+
+  // # Output Type Configuration
+  // Specifies the streaming capability of this specific method
+  // Allows different methods within the same runner to have different streaming support
+  // - NON_STREAMING: Method only supports non-streaming output
+  // - STREAMING: Method only supports streaming output
+  // - BOTH: Method supports both streaming and non-streaming outputs
+  StreamingOutputType output_type = 4;
+}
+
+// # Method JSON Schema Map
+// Mapping of method names to their JSON Schema definitions
+// This is generated from MethodProtoMap and cached in RunnerWithSchema
+// to avoid repeated Protobuf → JSON Schema conversions
+message MethodJsonSchemaMap {
+  // # Schemas Map
+  // Key: method name (e.g., "run", "fetch_html", "get_current_time")
+  // Value: MethodJsonSchema containing input/output JSON schemas
+  map<string, MethodJsonSchema> schemas = 1;
+}
+
+// # Method JSON Schema
+// JSON Schema definition for a single method
+// Replaces the deprecated arguments_schema/output_schema/tools fields in RunnerWithSchema
+//
+// NOTE: description is NOT cached here - retrieve from MethodSchema.description instead
+// Reason: description is not converted (just copied), so caching it is redundant
+message MethodJsonSchema {
+  // # Arguments JSON Schema (REQUIRED)
+  // JSON Schema for method arguments
+  // - Generated from MethodSchema.args_proto
+  // - Example: {"type": "object", "properties": {"url": {"type": "string"}}}
+  string args_schema = 1;
+
+  // # Result JSON Schema (Optional)
+  // JSON Schema for method result
+  // - Generated from MethodSchema.result_proto
+  // - None for unstructured output (empty result_proto)
+  optional string result_schema = 2;
+
+  // Field 3 reserved (was description, removed as redundant)
+  reserved 3;
+  reserved "description";
 }
 
 message RunnerId { int64 value = 1; }

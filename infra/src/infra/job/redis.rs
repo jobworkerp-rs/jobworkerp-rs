@@ -37,7 +37,6 @@ where
 
         let mut conn = self.redis_pool().get().await?;
 
-        // Use SET with EX option for individual key TTL
         let result: Result<String> = conn
             .set_ex(&job_key, serialized_job, ttl.as_secs())
             .await
@@ -55,7 +54,6 @@ where
 
         let mut conn = self.redis_pool().get().await?;
 
-        // Use SET with EX option for individual key TTL (always upsert)
         let result: Result<String> = conn
             .set_ex(&job_key, serialized_job, ttl.as_secs())
             .await
@@ -226,6 +224,7 @@ async fn redis_test() -> Result<()> {
         priority: 9,
         timeout: 1000,
         request_streaming: true,
+        using: None,
     };
     // clear first
     repo.delete(&id).await?;
@@ -302,6 +301,7 @@ async fn redis_individual_ttl_test() -> Result<()> {
         priority: 9,
         timeout: 5000, // 5 seconds
         request_streaming: false,
+        using: None,
     };
 
     // Test create_with_expire and find

@@ -252,7 +252,6 @@ impl OllamaChatService {
         let model = args.model.clone().unwrap_or_else(|| self.model.clone());
         let mut messages = Self::convert_messages(&args);
 
-        // Add system prompt if exists
         if let Some(system_prompt) = self.system_prompt.clone() {
             messages.retain(|m| m.role != MessageRole::System);
             messages.insert(0, ChatMessage::new(MessageRole::System, system_prompt));
@@ -261,7 +260,6 @@ impl OllamaChatService {
         let tools = Arc::new(self.function_list(&args).await?);
         let messages = Arc::new(Mutex::new(messages));
 
-        // Use internal method with tool call support
         let res = Self::request_chat_internal_with_tracing(
             Arc::new(self.clone()),
             model,
@@ -274,7 +272,6 @@ impl OllamaChatService {
         )
         .await?;
 
-        // Convert response to LlmChatResult
         let text = res.message.content.clone();
         let (prompt, think) = Self::divide_think_tag(text);
 
@@ -352,7 +349,6 @@ impl OllamaChatService {
                     "Unknown Ollama API error"
                 };
 
-                // Add context information to error
                 let schema_info = if let Some(ref schema_str) = json_schema_clone {
                     format!("schema_size: {}", schema_str.len())
                 } else {
@@ -387,7 +383,6 @@ impl OllamaChatService {
 
         // Execute chat API call using generic_tracing_helper approach
         let (res, current_context) = if GenericLLMTracingHelper::get_otel_client(&*self).is_some() {
-            // Create span attributes using generic helper
             let messages_locked = messages.lock().await;
             let input_messages = Self::convert_messages_to_input_ollama(&messages_locked);
             let model_parameters = Self::convert_model_options_to_parameters_ollama(&options);
@@ -400,7 +395,6 @@ impl OllamaChatService {
                 &metadata,
             );
 
-            // Use provided parent_context or current context as parent for the span
             let parent_ctx = parent_context.unwrap_or_else(opentelemetry::Context::current);
 
             // Execute chat API call with generic tracing
@@ -414,7 +408,6 @@ impl OllamaChatService {
             .await?
         } else {
             let result = chat_api_action.await?;
-            // Use provided parent_context or current context
             let context = parent_context.unwrap_or_else(opentelemetry::Context::current);
             (result, context)
         };
@@ -513,12 +506,9 @@ impl OllamaChatService {
 
                 let tool_result = match result {
                     Ok(success_result) => success_result,
-                    Err(error) => {
-                        // Return error as tool result for LLM to process
-                        serde_json::Value::String(format!(
-                            "Error executing tool '{function_name}': {error}"
-                        ))
-                    }
+                    Err(error) => serde_json::Value::String(format!(
+                        "Error executing tool '{function_name}': {error}"
+                    )),
                 };
 
                 Ok(tool_result) // Always return Ok so processing continues
@@ -597,7 +587,6 @@ impl OllamaChatService {
                         call.function.name,
                         error
                     );
-                    // Return error as tool result for LLM to process
                     serde_json::Value::String(format!(
                         "Error executing tool '{}': {}",
                         call.function.name, error

@@ -2590,6 +2590,10 @@ impl RetryPolicy {
 #[doc = "            \"settings\": {"]
 #[doc = "              \"description\": \"The initialization settings JSON, if any. (ref. jobworkerp.data.RunnerData.runner_settings_proto schema) Runtime expression can be used to transform each value (not keys, no mixed plain text).\","]
 #[doc = "              \"type\": \"object\""]
+#[doc = "            },"]
+#[doc = "            \"using\": {"]
+#[doc = "              \"description\": \"Selects which implementation to use for MCP/Plugin runners with multiple tools.\\n\\n- **Required**: For runners with multiple tools\\n- **Optional**: For single-tool runners (auto-selected)\\n\","]
+#[doc = "              \"type\": \"string\""]
 #[doc = "            }"]
 #[doc = "          },"]
 #[doc = "          \"additionalProperties\": false"]
@@ -2607,6 +2611,11 @@ impl RetryPolicy {
 #[doc = "              \"description\": \"A key/value mapping of arguments JSON to use when running the function. Runtime expressions are supported for value transformation.\","]
 #[doc = "              \"type\": \"object\","]
 #[doc = "              \"additionalProperties\": true"]
+#[doc = "            },"]
+#[doc = "            \"using\": {"]
+#[doc = "              \"title\": \"Using\","]
+#[doc = "              \"description\": \"Selects which method to use for multi-method runners.\\n\\nFor single-method runners, this field is optional (auto-selected if omitted).\\n\","]
+#[doc = "              \"type\": \"string\""]
 #[doc = "            },"]
 #[doc = "            \"workerName\": {"]
 #[doc = "              \"description\": \"The name of the worker that executes job\","]
@@ -2673,6 +2682,10 @@ impl RunFunction {
 #[doc = "        \"settings\": {"]
 #[doc = "          \"description\": \"The initialization settings JSON, if any. (ref. jobworkerp.data.RunnerData.runner_settings_proto schema) Runtime expression can be used to transform each value (not keys, no mixed plain text).\","]
 #[doc = "          \"type\": \"object\""]
+#[doc = "        },"]
+#[doc = "        \"using\": {"]
+#[doc = "          \"description\": \"Selects which implementation to use for MCP/Plugin runners with multiple tools.\\n\\n- **Required**: For runners with multiple tools\\n- **Optional**: For single-tool runners (auto-selected)\\n\","]
+#[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      },"]
 #[doc = "      \"additionalProperties\": false"]
@@ -2690,6 +2703,11 @@ impl RunFunction {
 #[doc = "          \"description\": \"A key/value mapping of arguments JSON to use when running the function. Runtime expressions are supported for value transformation.\","]
 #[doc = "          \"type\": \"object\","]
 #[doc = "          \"additionalProperties\": true"]
+#[doc = "        },"]
+#[doc = "        \"using\": {"]
+#[doc = "          \"title\": \"Using\","]
+#[doc = "          \"description\": \"Selects which method to use for multi-method runners.\\n\\nFor single-method runners, this field is optional (auto-selected if omitted).\\n\","]
+#[doc = "          \"type\": \"string\""]
 #[doc = "        },"]
 #[doc = "        \"workerName\": {"]
 #[doc = "          \"description\": \"The name of the worker that executes job\","]
@@ -2717,10 +2735,16 @@ pub enum RunJobFunction {
         #[doc = "The initialization settings JSON, if any. (ref. jobworkerp.data.RunnerData.runner_settings_proto schema) Runtime expression can be used to transform each value (not keys, no mixed plain text)."]
         #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
         settings: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+        #[doc = "Selects which implementation to use for MCP/Plugin runners with multiple tools.\n\n- **Required**: For runners with multiple tools\n- **Optional**: For single-tool runners (auto-selected)\n"]
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        using: ::std::option::Option<::std::string::String>,
     },
     WorkerFunction {
         #[doc = "A key/value mapping of arguments JSON to use when running the function. Runtime expressions are supported for value transformation."]
         arguments: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+        #[doc = "Selects which method to use for multi-method runners.\n\nFor single-method runners, this field is optional (auto-selected if omitted).\n"]
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        using: ::std::option::Option<::std::string::String>,
         #[doc = "The name of the worker that executes job"]
         #[serde(rename = "workerName")]
         worker_name: ::std::string::String,
@@ -2763,6 +2787,11 @@ impl ::std::convert::From<&Self> for RunJobFunction {
 #[doc = "      \"title\": \"InitializeSettings\","]
 #[doc = "      \"description\": \"The initialization settings, if any. Runtime expressions can be used to transform each value (not keys, no mixed plain text).\","]
 #[doc = "      \"type\": \"object\""]
+#[doc = "    },"]
+#[doc = "    \"using\": {"]
+#[doc = "      \"title\": \"Using\","]
+#[doc = "      \"description\": \"Selects which implementation to use for MCP/Plugin runners with multiple tools.\\n\\n- **Required**: For runners with multiple tools (e.g., fetch server with \\\"fetch\\\" and \\\"fetch_html\\\")\\n- **Optional**: For single-tool runners (auto-selected)\\n\\nExamples:\\n- MCP fetch server: using: \\\"fetch_html\\\"\\n- MCP time server (single tool): can be omitted\\n- COMMAND runner: not needed\\n\","]
+#[doc = "      \"type\": \"string\""]
 #[doc = "    }"]
 #[doc = "  },"]
 #[doc = "  \"unevaluatedProperties\": false"]
@@ -2780,6 +2809,9 @@ pub struct RunJobRunner {
     #[doc = "The initialization settings, if any. Runtime expressions can be used to transform each value (not keys, no mixed plain text)."]
     #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
     pub settings: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+    #[doc = "Selects which implementation to use for MCP/Plugin runners with multiple tools.\n\n- **Required**: For runners with multiple tools (e.g., fetch server with \"fetch\" and \"fetch_html\")\n- **Optional**: For single-tool runners (auto-selected)\n\nExamples:\n- MCP fetch server: using: \"fetch_html\"\n- MCP time server (single tool): can be omitted\n- COMMAND runner: not needed\n"]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub using: ::std::option::Option<::std::string::String>,
 }
 impl ::std::convert::From<&RunJobRunner> for RunJobRunner {
     fn from(value: &RunJobRunner) -> Self {
@@ -2815,6 +2847,11 @@ impl RunJobRunner {
 #[doc = "      \"title\": \"WorkerName\","]
 #[doc = "      \"description\": \"The name of the worker that executes this job (user-defined).\","]
 #[doc = "      \"type\": \"string\""]
+#[doc = "    },"]
+#[doc = "    \"using\": {"]
+#[doc = "      \"title\": \"Using\","]
+#[doc = "      \"description\": \"Selects which method to use for multi-method runners.\\n\\nFor single-method runners, this field is optional (auto-selected if omitted).\\n\","]
+#[doc = "      \"type\": \"string\""]
 #[doc = "    }"]
 #[doc = "  },"]
 #[doc = "  \"unevaluatedProperties\": false"]
@@ -2827,6 +2864,9 @@ pub struct RunJobWorker {
     pub arguments: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
     #[doc = "The name of the worker that executes this job (user-defined)."]
     pub name: ::std::string::String,
+    #[doc = "Selects which method to use for multi-method runners.\n\nFor single-method runners, this field is optional (auto-selected if omitted).\n"]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub using: ::std::option::Option<::std::string::String>,
 }
 impl ::std::convert::From<&RunJobWorker> for RunJobWorker {
     fn from(value: &RunJobWorker) -> Self {
@@ -2878,6 +2918,11 @@ impl RunJobWorker {
 #[doc = "          \"title\": \"InitializeSettings\","]
 #[doc = "          \"description\": \"The initialization settings, if any. Runtime expressions can be used to transform each value (not keys, no mixed plain text).\","]
 #[doc = "          \"type\": \"object\""]
+#[doc = "        },"]
+#[doc = "        \"using\": {"]
+#[doc = "          \"title\": \"Using\","]
+#[doc = "          \"description\": \"Selects which implementation to use for MCP/Plugin runners with multiple tools.\\n\\n- **Required**: For runners with multiple tools (e.g., fetch server with \\\"fetch\\\" and \\\"fetch_html\\\")\\n- **Optional**: For single-tool runners (auto-selected)\\n\\nExamples:\\n- MCP fetch server: using: \\\"fetch_html\\\"\\n- MCP time server (single tool): can be omitted\\n- COMMAND runner: not needed\\n\","]
+#[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      },"]
 #[doc = "      \"unevaluatedProperties\": false"]
@@ -3248,6 +3293,11 @@ impl ::std::convert::From<RunScript> for RunTaskConfiguration {
 #[doc = "        \"name\": {"]
 #[doc = "          \"title\": \"WorkerName\","]
 #[doc = "          \"description\": \"The name of the worker that executes this job (user-defined).\","]
+#[doc = "          \"type\": \"string\""]
+#[doc = "        },"]
+#[doc = "        \"using\": {"]
+#[doc = "          \"title\": \"Using\","]
+#[doc = "          \"description\": \"Selects which method to use for multi-method runners.\\n\\nFor single-method runners, this field is optional (auto-selected if omitted).\\n\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      },"]
@@ -7038,6 +7088,10 @@ pub mod builder {
             ::serde_json::Map<::std::string::String, ::serde_json::Value>,
             ::std::string::String,
         >,
+        using: ::std::result::Result<
+            ::std::option::Option<::std::string::String>,
+            ::std::string::String,
+        >,
     }
     impl ::std::default::Default for RunJobRunner {
         fn default() -> Self {
@@ -7046,6 +7100,7 @@ pub mod builder {
                 name: Err("no value supplied for name".to_string()),
                 options: Ok(Default::default()),
                 settings: Ok(Default::default()),
+                using: Ok(Default::default()),
             }
         }
     }
@@ -7094,6 +7149,16 @@ pub mod builder {
                 .map_err(|e| format!("error converting supplied value for settings: {}", e));
             self
         }
+        pub fn using<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.using = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for using: {}", e));
+            self
+        }
     }
     impl ::std::convert::TryFrom<RunJobRunner> for super::RunJobRunner {
         type Error = super::error::ConversionError;
@@ -7105,6 +7170,7 @@ pub mod builder {
                 name: value.name?,
                 options: value.options?,
                 settings: value.settings?,
+                using: value.using?,
             })
         }
     }
@@ -7115,6 +7181,7 @@ pub mod builder {
                 name: Ok(value.name),
                 options: Ok(value.options),
                 settings: Ok(value.settings),
+                using: Ok(value.using),
             }
         }
     }
@@ -7125,12 +7192,17 @@ pub mod builder {
             ::std::string::String,
         >,
         name: ::std::result::Result<::std::string::String, ::std::string::String>,
+        using: ::std::result::Result<
+            ::std::option::Option<::std::string::String>,
+            ::std::string::String,
+        >,
     }
     impl ::std::default::Default for RunJobWorker {
         fn default() -> Self {
             Self {
                 arguments: Err("no value supplied for arguments".to_string()),
                 name: Err("no value supplied for name".to_string()),
+                using: Ok(Default::default()),
             }
         }
     }
@@ -7157,6 +7229,16 @@ pub mod builder {
                 .map_err(|e| format!("error converting supplied value for name: {}", e));
             self
         }
+        pub fn using<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.using = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for using: {}", e));
+            self
+        }
     }
     impl ::std::convert::TryFrom<RunJobWorker> for super::RunJobWorker {
         type Error = super::error::ConversionError;
@@ -7166,6 +7248,7 @@ pub mod builder {
             Ok(Self {
                 arguments: value.arguments?,
                 name: value.name?,
+                using: value.using?,
             })
         }
     }
@@ -7174,6 +7257,7 @@ pub mod builder {
             Self {
                 arguments: Ok(value.arguments),
                 name: Ok(value.name),
+                using: Ok(value.using),
             }
         }
     }

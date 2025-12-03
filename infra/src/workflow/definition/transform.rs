@@ -143,7 +143,6 @@ pub trait UseJqAndTemplateTransformer {
                         globals.extend(liquid::to_object(&map)?);
                     }
                     _ => {
-                        // Convert serde_json::Value to liquid::model::Value
                         globals.extend(liquid::to_object(
                             &serde_json::json!({"raw_input":(*raw_in).clone()}),
                         )?);
@@ -734,7 +733,6 @@ mod test {
             "Result '{result_text}' doesn't match the expected format"
         );
 
-        // Extract and verify year and month are valid numbers
         if let Some(captures) = re.captures(&result_text) {
             let year = captures.get(1).unwrap().as_str();
             let month = captures.get(2).unwrap().as_str();

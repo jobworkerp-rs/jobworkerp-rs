@@ -85,6 +85,11 @@ message JobResultData {
   // # Store Failure Flag
   // from worker.data.store_failure
   bool store_failure = 19;
+
+  // # Using
+  // Runner implementation used for MCP/Plugin runners
+  // Preserved for retry and periodic job re-execution
+  optional string using = 20;
 }
 
 // # Job Result ID

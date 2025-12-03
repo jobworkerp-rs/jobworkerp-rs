@@ -180,7 +180,6 @@ impl AppModule {
                     repositories.clone(),
                     worker_app.clone(),
                 ));
-                // Create JobQueueCancellationRepository for RdbChanJobAppImpl (Memory environment)
                 let job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository> =
                     Arc::new(repositories.chan_job_queue_repository.clone());
 
@@ -302,7 +301,6 @@ impl AppModule {
                     descriptor_cache.clone(),
                     runner_app.clone(),
                 ));
-                // Create JobQueueCancellationRepository for HybridJobAppImpl
                 let job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository> =
                     Arc::new(repositories.redis_job_queue_repository().clone());
 
@@ -545,7 +543,6 @@ pub mod test {
             ttl: Some(Duration::from_secs(5)),
         });
 
-        // Create JobQueueCancellationRepository for HybridJobAppImpl
         let job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository> =
             Arc::new(repositories.redis_job_queue_repository().clone());
 

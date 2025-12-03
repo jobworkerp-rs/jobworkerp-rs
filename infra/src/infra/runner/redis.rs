@@ -211,20 +211,32 @@ async fn redis_test() -> Result<()> {
         description: "hoge2".to_string(),
         runner_type: 1,
         runner_settings_proto: "hoge3".to_string(),
-        job_args_proto: "hoge5".to_string(),
-        result_output_proto: Some("hoge7".to_string()),
-        output_type: StreamingOutputType::NonStreaming as i32,
         definition: "test".to_string(),
+        method_proto_map: Some(proto::jobworkerp::data::MethodProtoMap {
+            schemas: {
+                let mut map = std::collections::HashMap::new();
+                map.insert(
+                    "run".to_string(),
+                    proto::jobworkerp::data::MethodSchema {
+                        args_proto: "hoge5".to_string(),
+                        result_proto: "hoge7".to_string(),
+                        description: Some("test method".to_string()),
+                        output_type: StreamingOutputType::NonStreaming as i32,
+                    },
+                );
+                map
+            },
+        }),
     };
     // clear first
     repo.delete(&id).await?;
     let runner_with_schema = RunnerWithSchema {
         id: Some(id),
         data: Some(runner_data.clone()),
-        settings_schema: "hoge4".to_string(),
-        arguments_schema: "hoge6".to_string(),
-        output_schema: Some("hoge8".to_string()),
-        tools: Vec::default(),
+        settings_schema: "hoge14".to_string(),
+        method_json_schema_map: Some(proto::jobworkerp::data::MethodJsonSchemaMap {
+            schemas: std::collections::HashMap::new(),
+        }),
     };
 
     // create and find
@@ -235,14 +247,28 @@ async fn redis_test() -> Result<()> {
 
     let mut runner_data2 = runner_data.clone();
     runner_data2.name = "fuga1".to_string();
-    runner_data2.job_args_proto = "fuga5".to_string();
+    runner_data2.method_proto_map = Some(proto::jobworkerp::data::MethodProtoMap {
+        schemas: {
+            let mut map = std::collections::HashMap::new();
+            map.insert(
+                "run".to_string(),
+                proto::jobworkerp::data::MethodSchema {
+                    args_proto: "fuga5".to_string(),
+                    result_proto: "hoge7".to_string(),
+                    description: Some("test method".to_string()),
+                    output_type: StreamingOutputType::NonStreaming as i32,
+                },
+            );
+            map
+        },
+    });
     let runner_with_schema2 = RunnerWithSchema {
         id: Some(id),
         data: Some(runner_data2.clone()),
-        settings_schema: "fuga4".to_string(),
-        arguments_schema: "fuga6".to_string(),
-        output_schema: Some("fuga8".to_string()),
-        tools: vec![],
+        settings_schema: "fuga14".to_string(),
+        method_json_schema_map: Some(proto::jobworkerp::data::MethodJsonSchemaMap {
+            schemas: std::collections::HashMap::new(),
+        }),
     };
     // update and find
     assert!(!repo.upsert(&id, &runner_with_schema2).await?);

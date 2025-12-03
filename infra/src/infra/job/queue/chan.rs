@@ -447,7 +447,6 @@ impl JobQueueCancellationRepository for ChanJobQueueRepositoryImpl {
             use futures::StreamExt;
             use tokio_stream::wrappers::BroadcastStream;
 
-            // Get initial receiver and stream
             let receiver = broadcast_chan.receiver().await;
             let mut stream = BroadcastStream::new(receiver);
 
@@ -613,6 +612,7 @@ mod test {
     //             priority: Priority::High as i32,
     //             timeout: 1000,
     //             request_streaming: false,
+    //             using: None,
     //         }),
     //         metadata: HashMap::new(),
     //     };
@@ -733,6 +733,7 @@ mod test {
                 priority: Priority::Low as i32,
                 timeout: 1000,
                 request_streaming: false,
+                using: None,
             }),
             metadata: HashMap::new(),
         };
@@ -749,6 +750,7 @@ mod test {
                 priority: Priority::High as i32,
                 timeout: 1000,
                 request_streaming: false,
+                using: None,
             }),
             metadata: HashMap::new(),
         };
@@ -830,7 +832,6 @@ mod test {
         // Wait for message to be processed
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-        // Verify the message was received and correctly deserialized
         let received = received_job_ids.lock().await;
         assert_eq!(received.len(), 1);
         assert_eq!(received[0].value, test_job_id.value);

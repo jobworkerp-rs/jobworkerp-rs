@@ -65,7 +65,6 @@ async fn execute_script_workflow(
     println!("{}", workflow_yaml);
     println!("================================\n");
 
-    // Use local-only loader for loading workflow from YAML string (no network access needed)
     let loader = WorkflowLoader::new_local_only();
     let workflow = loader
         .load_workflow(None, Some(&workflow_yaml), false)
@@ -173,21 +172,17 @@ print(json.dumps({
             "count": 42
         });
 
-        let workflow = create_script_workflow(
-            "base64-args-test",
-            script_code,
-            arguments,
-            Some(json!({
-                "python.version": "3.12"
-            })),
-        );
+        let metadata = json!({
+            "python.version": "3.12"
+        });
+        let workflow =
+            create_script_workflow("base64-args-test", script_code, arguments, Some(metadata));
 
         let result = execute_script_workflow(app, workflow, json!({"testInput": {}})).await?;
 
         println!("✅ Test 1 execution completed");
         println!("   - Output: {}", serde_json::to_string_pretty(&result)?);
 
-        // Validate output structure
         assert_eq!(result["message"], "Hello from Python!");
         assert_eq!(result["count"], 42);
         assert_eq!(result["doubled"], 84);
@@ -240,7 +235,6 @@ Code example: print('hello')
         println!("✅ Test 2 execution completed");
         println!("   - Output: {}", serde_json::to_string_pretty(&result)?);
 
-        // Verify the payload was received as string data with triple quotes intact
         assert_eq!(result["execution_safe"], true);
         assert_eq!(result["has_triple_quotes"], true);
         assert!(result["payload_received"].as_str().unwrap().contains("'''"));
@@ -619,7 +613,6 @@ fn test_max_nesting_depth_limit() -> Result<()> {
     TEST_RUNTIME.block_on(async {
         let app = Arc::new(create_hybrid_test_app().await?);
 
-        // Create deeply nested structure (depth > MAX_RECURSIVE_DEPTH)
         let mut deeply_nested = json!({"level_0": "value"});
         for i in 1..(MAX_RECURSIVE_DEPTH + 1) {
             deeply_nested = json!({
@@ -781,7 +774,6 @@ result = worker_id * 2
 print(json.dumps({"worker_id": worker_id, "result": result}))
 "#;
 
-        // Create multiple workflows with different worker IDs
         let mut tasks = Vec::new();
         for i in 1..=5 {
             let app_clone = app.clone();
@@ -800,7 +792,6 @@ print(json.dumps({"worker_id": worker_id, "result": result}))
         // Wait for all tasks to complete
         let results = futures::future::join_all(tasks).await;
 
-        // Verify all executions succeeded
         for (i, result) in results.iter().enumerate() {
             let worker_id = (i + 1) as i64;
             match result {

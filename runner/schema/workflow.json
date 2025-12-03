@@ -457,6 +457,11 @@
               "title": "RunnerName",
               "description": "The name of the runner (runtime environment) that executes the job (e.g., COMMAND, HTTP, GRPC, PYTHON_COMMAND, LLM_CHAT, MCP server names, plugin names, etc.)"
             },
+            "using": {
+              "type": "string",
+              "title": "Using",
+              "description": "Selects which implementation to use for MCP/Plugin runners with multiple tools.\n\n- **Required**: For runners with multiple tools (e.g., fetch server with \"fetch\" and \"fetch_html\")\n- **Optional**: For single-tool runners (auto-selected)\n\nExamples:\n- MCP fetch server: using: \"fetch_html\"\n- MCP time server (single tool): can be omitted\n- COMMAND runner: not needed\n"
+            },
             "settings": {
               "type": "object",
               "title": "InitializeSettings",
@@ -555,6 +560,11 @@
               "title": "WorkerName",
               "description": "The name of the worker that executes this job (user-defined)."
             },
+            "using": {
+              "type": "string",
+              "title": "Using",
+              "description": "Selects which method to use for multi-method runners.\n\nFor single-method runners, this field is optional (auto-selected if omitted).\n"
+            },
             "arguments": {
               "type": "object",
               "title": "FunctionArguments",
@@ -593,6 +603,10 @@
                   "type": "string",
                   "description": "The name of the runner that executes job"
                 },
+                "using": {
+                  "type": "string",
+                  "description": "Selects which implementation to use for MCP/Plugin runners with multiple tools.\n\n- **Required**: For runners with multiple tools\n- **Optional**: For single-tool runners (auto-selected)\n"
+                },
                 "settings": {
                   "type": "object",
                   "description": "The initialization settings JSON, if any. (ref. jobworkerp.data.RunnerData.runner_settings_proto schema) Runtime expression can be used to transform each value (not keys, no mixed plain text)."
@@ -620,6 +634,11 @@
                 "workerName": {
                   "type": "string",
                   "description": "The name of the worker that executes job"
+                },
+                "using": {
+                  "type": "string",
+                  "title": "Using",
+                  "description": "Selects which method to use for multi-method runners.\n\nFor single-method runners, this field is optional (auto-selected if omitted).\n"
                 },
                 "arguments": {
                   "type": "object",

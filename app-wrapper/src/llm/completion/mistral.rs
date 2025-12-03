@@ -38,17 +38,14 @@ impl MistralCompletionService {
         _cx: Context,
         _metadata: HashMap<String, String>,
     ) -> Result<LlmCompletionResult> {
-        // Convert args to request builder using service's converter
         let request_builder = self.build_completion_request(&args, false).await?;
 
         // Send request to model (using chat API for completion)
         let response = self.service.request_chat(request_builder).await?;
 
-        // Convert response to LlmCompletionResult
         // For now, we use the chat completion response and extract text content
         let chat_result = DefaultLLMResultConverter::convert_chat_completion_result(&response);
 
-        // Convert chat result to completion result
         let completion_result = LlmCompletionResult {
             content: chat_result.content.map(|c| match c.content {
                 Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) => {
@@ -83,13 +80,10 @@ impl MistralCompletionService {
         &self,
         args: LlmCompletionArgs,
     ) -> Result<BoxStream<'static, LlmCompletionResult>> {
-        // Convert args to request builder for streaming using service's converter
         let request_builder = self.build_completion_request(&args, true).await?;
 
-        // Get the underlying model for streaming
         let model = self.service.model.clone();
 
-        // Create channel for streaming results
         let (tx, rx) = futures::channel::mpsc::unbounded();
 
         // Spawn task to handle MistralRS streaming
@@ -100,13 +94,10 @@ impl MistralCompletionService {
                 while let Some(chunk) = mistral_stream.next().await {
                     let llm_result = match chunk {
                         mistralrs::Response::CompletionChunk(completion_chunk) => {
-                            // Convert completion chunk to LlmCompletionResult using existing converter
                             DefaultLLMResultConverter::convert_completion_chunk_result(&completion_chunk)
                         }
                         mistralrs::Response::Chunk(chunk_response) => {
-                            // Convert chat chunk to completion result (fallback case)
                             let chat_result = DefaultLLMResultConverter::convert_chat_completion_chunk_result(&chunk_response);
-                            // Convert chat result to completion result
                             LlmCompletionResult {
                                 content: chat_result.content.map(|c| match c.content {
                                     Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) => {
@@ -162,7 +153,6 @@ impl MistralCompletionService {
             }
         });
 
-        // Convert receiver to BoxStream
         Ok(rx.boxed())
     }
 }

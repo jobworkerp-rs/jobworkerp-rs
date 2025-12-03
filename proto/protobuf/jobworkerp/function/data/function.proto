@@ -8,11 +8,39 @@ import "jobworkerp/data/worker.proto";
 
 // # Function ID
 // Unified identifier for either a Runner or Worker
+// Symmetric design: both runner and worker are at the same level
 message FunctionId {
   oneof id {
     jobworkerp.data.RunnerId runner_id = 1;
     jobworkerp.data.WorkerId worker_id = 2;
   }
+}
+
+// # Function Using
+// Function identifier with optional using specification
+// Used in Function layer to specify:
+// - Which function to execute (function_id)
+// - Which implementation to use (using, for MCP/Plugin runners)
+//
+// Examples:
+// 1. Normal runner: FunctionUsing { function_id: RunnerId(1), using: None }
+// 2. MCP runner (all tools): FunctionUsing { function_id: RunnerId(100), using: None }
+// 3. MCP runner (specific tool): FunctionUsing { function_id: RunnerId(100), using: Some("fetch_html") }
+// 4. Worker: FunctionUsing { function_id: WorkerId(200), using: None }
+message FunctionUsing {
+  // # Function ID
+  // Reference to the runner or worker
+  FunctionId function_id = 1;
+
+  // # Using
+  // Optional: specifies a particular tool/method within the runner
+  // - For normal runners: ignored (no sub-methods)
+  // - For MCP/Plugin runners:
+  //   - If specified: Only this specific tool is selected
+  //   - If omitted and only 1 tool: auto-selected
+  //   - If omitted and multiple tools: entire runner is selected
+  // - For workers: ignored (workers don't have sub-methods)
+  optional string using = 2;
 }
 
 // # Function Specs
@@ -33,58 +61,74 @@ message FunctionSpecs {
   // # Function Name
   // Unique identifier for the function (e.g. "command", "image-processor")
   string name = 4;
+
   // # Function Description
   // Human-readable explanation of what the function does
   string description = 5;
-  // # Stream Output Type
-  // When STREAMING or BOTH, the function supports streaming output mode
-  // (Enables JobService/EnqueueForStream and JobResultService/ListenStream)
-  // Default: NON_STREAMING
-  jobworkerp.data.StreamingOutputType output_type = 6;
 
-  // # Function Input/Output Definition
-  // JSON schema defining the function's input, output parameters
-  oneof schema {
-    // # normal function spec
-    FunctionSchema single_schema = 7;
-    // # mcp function spec (multiple tools in a Mcp server)
-    McpToolList mcp_tools = 8;
-  }
+  // # Function Settings Definition (REQUIRED)
+  // JSON schema for function-level settings (e.g., API keys, base URLs)
+  // - For runners without settings: empty string ""
+  // - For workers: empty string "" (workers use WorkerOptions instead)
+  // - Example: "{\"type\": \"object\", \"properties\": {\"api_key\": {\"type\": \"string\"}}}"
+  string settings_schema = 6;
+
+  // # Method Schemas (REQUIRED)
+  // Map of method name to method schema
+  // - Key: method name (e.g., "run", "fetch_html", "get_current_time")
+  // - Value: MethodSchema (input/output schemas, output_type)
+  // - Single-method runners: contains 1 entry (key = "run")
+  // - MCP/Plugin runners: contains multiple entries (keys = tool names)
+  MethodSchemaMap methods = 7;
 }
 
-message FunctionSchema {
-  // # Function Settings Definition
-  // JSON schema for function setting parameters
-  // If empty, the function requires no settings
-  // (Always empty when this spec is for a worker)
-  optional string settings = 1;
-  // # Job Arguments Definition
-  // JSON schema defining the parameters required for job execution
-  string arguments = 2;
-  // # Result Output Definition
-  // JSON schema defining the structure of job execution results
-  optional string result_output_schema = 3;
+// # Method Schema Map
+// Container for all method schemas in a function
+// Uses map for O(1) access and consistency with RunnerData.method_proto_map
+message MethodSchemaMap {
+  // # Schemas Map
+  // Key: method name (e.g., "run", "fetch_html", "get_current_time")
+  // Value: MethodSchema (input/output schemas, streaming capability)
+  //
+  // Design rationale for map (not repeated):
+  // - Consistency: Matches RunnerData.method_proto_map structure
+  // - Efficiency: O(1) method lookup by name
+  // - Uniqueness: Protobuf map enforces unique keys
+  map<string, MethodSchema> schemas = 1;
 }
 
-message McpToolList {
-  // # Tool List
-  // A list of tools that can be used by the model.
-  repeated McpTool list = 1;
-}
+// # Method Schema
+// JSON Schema definition for a single method/tool
+message MethodSchema {
+  // NOTE: method name is stored in map key, not here
 
-// # mcp tool
-// A tool that can be used by a model.
-message McpTool {
-  // # Tool Name
-  string name = 1;
-  // # Tool Description
-  // A description of what the tool does
-  optional string description = 2;
-  // # Input schema
-  // A JSON Schema object defining the expected parameters for the tool
-  string input_schema = 3;
-  // # Additional tool information.
-  optional ToolAnnotations annotations = 4;
+  // # Method Description (Optional)
+  // Human-readable explanation of what this method does
+  // Used by LLM for tool selection
+  optional string description = 1;
+
+  // # Arguments JSON Schema (REQUIRED)
+  // JSON Schema defining the input parameters for this method
+  // Example: {"type": "object", "properties": {"url": {"type": "string"}}}
+  string arguments_schema = 2;
+
+  // # Result JSON Schema (Optional)
+  // JSON Schema defining the output structure for this method
+  // None for unstructured/binary output
+  optional string result_schema = 3;
+
+  // # Output Type (REQUIRED)
+  // Streaming capability of this specific method
+  // - NON_STREAMING: Method only supports synchronous execution
+  // - STREAMING: Method only supports streaming output
+  // - BOTH: Method supports both modes
+  jobworkerp.data.StreamingOutputType output_type = 4;
+
+  // # Tool Annotations (Optional)
+  // MCP-specific metadata for tool behavior hints
+  // Only populated for MCP server tools
+  // NOTE: all properties are **hints** and should not be trusted
+  optional ToolAnnotations annotations = 5;
 }
 
 // # Additional properties describing a Tool to clients.

@@ -134,6 +134,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
                         None,
                         false,
+                        req.using,
                     )
                     .await
             }
@@ -150,6 +151,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
                         None,
                         false,
+                        req.using,
                     )
                     .await
             }
@@ -222,6 +224,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
                         None,
                         true,
+                        req.using,
                     )
                     .await
             }
@@ -238,6 +241,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
                         None,
                         true,
+                        req.using,
                     )
                     .await
             }
@@ -268,7 +272,6 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                     loop {
                         match st.next().await {
                             Some(output_item) => {
-                                // Check if this is an end item
                                 match &output_item.item {
                                     Some(result_output_item::Item::End(_)) => {
                                         tracing::debug!(
@@ -324,7 +327,6 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                                 id.value, result_data.status
                             );
 
-                            // Use external function for proper error code mapping with trailers
                             let status = JobGrpcImpl::create_job_error_status(&id, result_data);
 
                             return Err(status);
@@ -335,7 +337,6 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                 let res_header = res.map(|r| r.encode_to_vec());
                 let job_id_header = id.encode_to_vec();
 
-                // Create properly terminated empty stream for cases where no stream data is available
                 // Using stream::iter with empty iterator to ensure proper gRPC stream termination
                 let st = futures::stream::iter(std::iter::empty::<
                     Result<ResultOutputItem, tonic::Status>,
@@ -462,7 +463,6 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
         // Validation for DoS protection
         self.validate_find_list_with_processing_status(req)?;
 
-        // Validate and convert status
         let status = JobProcessingStatus::try_from(req.status)
             .map_err(|_| tonic::Status::invalid_argument("Invalid job status"))?;
 
@@ -527,7 +527,6 @@ impl JobGrpcImpl {
         use prost::Message;
         use proto::jobworkerp::data::ResultStatus;
 
-        // Create JobResult for error details
         let job_result = proto::jobworkerp::data::JobResult {
             id: Some(proto::jobworkerp::data::JobResultId { value: 0 }), // dummy id for error response
             data: Some(result_data.clone()),
@@ -579,11 +578,9 @@ impl JobGrpcImpl {
             ),
         };
 
-        // Create base status with job_id in message
         let enhanced_message = format!("job_id={}, {message}", job_id.value);
         let mut status = tonic::Status::new(code, enhanced_message);
 
-        // Add JobResult as protobuf in trailers for standard decoding
         let job_result_bytes = job_result.encode_to_vec();
         let metadata_value =
             tonic::metadata::MetadataValue::from_bytes(job_result_bytes.as_slice());

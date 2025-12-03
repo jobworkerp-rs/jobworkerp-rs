@@ -4,8 +4,10 @@ use command_utils::{protobuf::ProtobufDescriptor, util::datetime};
 use infra::infra::runner::rows::RunnerWithSchema;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
-    Priority, QueueType, ResponseType, RetryPolicy, RetryType, RunnerId, RunnerType, WorkerData,
+    JobResult, Priority, QueueType, ResponseType, RetryPolicy, RetryType, RunnerId, RunnerType,
+    WorkerData,
 };
+use proto::DEFAULT_METHOD_NAME;
 use serde_json::{Map, Value};
 use std::{
     collections::HashMap,
@@ -125,14 +127,49 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         worker_params: Option<serde_json::Value>,
         unique_key: Option<String>,
         timeout_sec: u32,
-        streaming: bool, // TODO if true, use streaming job
+        streaming: bool,
     ) -> impl Future<Output = Result<Value>> + Send + '_ {
         async move {
             tracing::debug!("found runner: {:?}, tool: {:?}", &runner, &tool_name_opt);
+
+            if let Some(ref tool_name) = tool_name_opt {
+                if runner
+                    .data
+                    .as_ref()
+                    .is_some_and(|d| d.runner_type() == RunnerType::McpServer)
+                {
+                    let tool_exists = runner
+                        .method_json_schema_map
+                        .as_ref()
+                        .map(|m| m.schemas.contains_key(tool_name))
+                        .unwrap_or(false);
+
+                    if !tool_exists {
+                        let available_tools: Vec<_> = runner
+                            .method_json_schema_map
+                            .as_ref()
+                            .map(|m| m.schemas.keys().collect())
+                            .unwrap_or_default();
+
+                        return Err(JobWorkerError::InvalidParameter(format!(
+                            "Tool '{}' not found in MCP server '{}'. Available tools: {:?}",
+                            tool_name,
+                            runner
+                                .data
+                                .as_ref()
+                                .map(|d| &d.name)
+                                .unwrap_or(&"unknown".to_string()),
+                            available_tools
+                        ))
+                        .into());
+                    }
+                }
+            }
+
             let (settings, arguments) = Self::prepare_runner_call_arguments(
                 arguments.unwrap_or_default(),
                 &runner,
-                tool_name_opt,
+                tool_name_opt.clone(),
             )
             .await?;
             if let RunnerWithSchema {
@@ -153,6 +190,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                     unique_key,
                     timeout_sec,
                     streaming,
+                    tool_name_opt,
                 )
                 .await
             } else {
@@ -169,7 +207,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         name: &'a str,
         arguments: Option<Map<String, Value>>,
         unique_key: Option<String>,
-        streaming: bool, // TODO if true, use streaming job
+        streaming: bool,
     ) -> impl Future<Output = Result<Value>> + Send + 'a {
         async move {
             tracing::info!("runner not found, run as worker: {:?}", &name);
@@ -181,19 +219,15 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                     tracing::error!("Failed to find worker: {}", e);
                 })?
                 .ok_or_else(|| {
-                    JobWorkerError::WorkerNotFound(format!("worker or mcp tool not found: {name}"))
+                    JobWorkerError::WorkerNotFound(format!("worker or method not found: {name}"))
                 })?;
-            let args = if let Some(tool_name) = tool_name_opt {
-                Self::correct_mcp_worker_args(tool_name, request_args.clone())?
-            } else {
-                request_args
-            };
             self.enqueue_temp_worker_with_json(
                 meta,
                 &worker_data,
-                Value::Object(args),
+                Value::Object(request_args),
                 unique_key,
                 streaming,
+                tool_name_opt,
             )
             .await
             .map(|r| r.unwrap_or_default())
@@ -230,22 +264,30 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         temp_worker_data: &'a WorkerData,
         arguments: Value,
         uniq_key: Option<String>,
-        _streaming: bool, // TODO if true, use streaming job
+        _streaming: bool,      // TODO if true, use streaming job
+        using: Option<String>, // Pass using parameter for MCP/Plugin workers
     ) -> impl Future<Output = Result<Option<Value>>> + Send + 'a {
         async move {
-            let runner = if let Some(runner_id) = temp_worker_data.runner_id.as_ref() {
-                self.runner_app().find_runner(runner_id).await?
-            } else {
-                None
-            };
-            if let Some(runner) = runner {
-                if let Some(rdata) = runner.data.as_ref() {
-                    let args_descriptor =
-                        Self::parse_job_args_schema_descriptor(rdata).map_err(|e| {
-                            anyhow::anyhow!("Failed to parse job_args schema descriptor: {:#?}", e)
+            if let Some(runner_id) = temp_worker_data.runner_id.as_ref() {
+                let runner = self.runner_app().find_runner(runner_id).await?;
+                if let Some(RunnerWithSchema {
+                    id: Some(rid),
+                    data: Some(rdata),
+                    ..
+                }) = runner
+                {
+                    let runner_with_descriptor = self.parse_proto_with_cache(&rid, &rdata).await?;
+                    let args_descriptor = runner_with_descriptor
+                        .get_job_args_message_for_method(using.as_deref())
+                        .map_err(|e| {
+                            anyhow::anyhow!(
+                                "Failed to get args descriptor for method '{}': {:#?}",
+                                using.as_deref().unwrap_or(DEFAULT_METHOD_NAME),
+                                e
+                            )
                         })?;
-                    tracing::debug!("job args: {:#?}", &arguments);
-                    let job_args = if let Some(desc) = args_descriptor.clone() {
+                    tracing::debug!("job args (using: {:?}): {:#?}", using, &arguments);
+                    let job_args = if let Some(desc) = args_descriptor {
                         ProtobufDescriptor::json_value_to_message(desc, &arguments, true).map_err(
                             |e| anyhow::anyhow!("Failed to parse job_args schema: {:#?}", e),
                         )?
@@ -255,6 +297,8 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                             .as_bytes()
                             .to_vec()
                     };
+                    // Clone using to keep a copy for result parsing after move
+                    let using_for_result = using.clone();
                     let res = self
                         .job_app()
                         .enqueue_job_with_temp_worker(
@@ -268,6 +312,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                             None,
                             false,
                             !temp_worker_data.use_static,
+                            using, // Pass using parameter to job execution (moved here)
                         )
                         .await
                         .map(|res| {
@@ -275,7 +320,12 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                             res.1
                         })?;
                     if let Some(r) = res {
-                        Self::parse_job_result(r, rdata)
+                        // Reuse cached runner_with_descriptor for result parsing
+                        Self::parse_job_result_with_descriptor(
+                            r,
+                            &runner_with_descriptor,
+                            using_for_result.as_deref(),
+                        )
                     } else {
                         Ok(None)
                     }
@@ -283,38 +333,8 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                     Err(JobWorkerError::NotFound("Runner data not found".to_string()).into())
                 }
             } else {
-                Err(JobWorkerError::NotFound("Runner not found".to_string()).into())
+                Err(JobWorkerError::NotFound("Runner ID not found".to_string()).into())
             }
-        }
-    }
-
-    fn correct_mcp_worker_args(
-        tool_name: String,
-        arguments: Map<String, Value>,
-    ) -> Result<Map<String, Value>> {
-        if arguments.contains_key("tool_name") {
-            if let Some(Value::String(s)) = arguments.get("tool_name") {
-                if s == &tool_name {
-                    return Ok(arguments);
-                }
-            }
-            tracing::warn!(
-                "tool_name is not matched: {} != {}",
-                tool_name,
-                arguments["tool_name"]
-            );
-            Err(JobWorkerError::InvalidParameter(format!(
-                "tool_name is not matched: {} != {}",
-                tool_name, arguments["tool_name"]
-            ))
-            .into())
-        } else {
-            // correct mcp worker args
-            tracing::warn!("tool_name is not found. insert: {}", tool_name);
-            let mut new_arguments = Map::new();
-            new_arguments.insert("tool_name".to_string(), Value::String(tool_name));
-            new_arguments.insert("arg_json".to_string(), Value::Object(arguments));
-            Ok(new_arguments)
         }
     }
 
@@ -404,42 +424,20 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
 
     fn prepare_runner_call_arguments(
         mut request_args: Map<String, Value>,
-        runner: &RunnerWithSchema,
-        tool_name_opt: Option<String>,
+        _runner: &RunnerWithSchema, // Reserved for future validation logic
+        _tool_name_opt: Option<String>, // tool_name now passed via 'using' parameter
     ) -> impl Future<Output = Result<(Option<Value>, Value)>> + Send + '_ {
         async move {
             let settings = request_args.remove("settings");
-            let arguments = if runner
-                .data
-                .as_ref()
-                .is_some_and(|r| r.runner_type() == RunnerType::McpServer)
-            {
-                let mut obj_map = Map::new();
-                obj_map.insert(
-                    "tool_name".to_string(),
-                    serde_json::to_value(tool_name_opt).map_err(|e| {
-                        JobWorkerError::InvalidParameter(format!(
-                            "Failed to parse tool_name: {e:?}"
-                        ))
-                    })?,
-                );
-                obj_map.insert(
-                    "arg_json".to_string(),
-                    Value::String(serde_json::to_string(&request_args).map_err(|e| {
-                        JobWorkerError::InvalidParameter(format!(
-                            "Failed to parse settings as json: {e:?}"
-                        ))
-                    })?),
-                );
-                Value::Object(obj_map)
-            } else {
-                request_args.get("arguments").cloned().ok_or_else(|| {
-                    JobWorkerError::InvalidParameter(format!(
-                        "Failed to find 'arguments' in request_args: {:#?}",
-                        &request_args
-                    ))
-                })?
-            };
+
+            // All runners now use unified 'arguments' field
+            // tool_name is passed separately via 'using' parameter to worker layer
+            let arguments = request_args.get("arguments").cloned().ok_or_else(|| {
+                JobWorkerError::InvalidParameter(format!(
+                    "Failed to find 'arguments' in request_args: {:#?}",
+                    &request_args
+                ))
+            })?;
 
             tracing::debug!(
                 "runner settings: {:#?}, arguments: {:#?}",
@@ -448,33 +446,6 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
             );
 
             Ok((settings, arguments))
-        }
-    }
-
-    fn prepare_worker_call_arguments(
-        request_args: Map<String, Value>,
-        worker_data: &WorkerData,
-        tool_name_opt: Option<String>,
-    ) -> Value {
-        let args = request_args
-            .get("arguments")
-            .cloned()
-            .unwrap_or(Value::Null);
-
-        if worker_data.runner_id.is_some_and(|id| id.value < 0) {
-            tracing::info!("worker is reusable workflow");
-            serde_json::json!({
-                "input": args.to_string(),
-            })
-        } else if let Some(tool_name) = tool_name_opt {
-            serde_json::json!(
-                {
-                    "tool_name": tool_name,
-                    "arg_json": args
-                }
-            )
-        } else {
-            args
         }
     }
 
@@ -530,7 +501,6 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         })
     }
 
-    // Validate worker options (reusing existing validation logic from grpc-front/src/service/worker.rs)
     fn validate_worker_options(&self, worker_data: &WorkerData) -> Result<()> {
         // 1. Periodic + Direct禁止
         if worker_data.periodic_interval != 0
@@ -588,7 +558,6 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
         Ok(())
     }
 
-    // Validate channel existence
     fn validate_channel(&self, channel: &str) -> Result<()> {
         if channel.is_empty() {
             return Err(JobWorkerError::InvalidParameter(
@@ -640,172 +609,74 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
             }
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use memory_utils::cache::moka::{MokaCacheConfig, MokaCacheImpl};
-    use proto::ProtobufHelper;
+    /// Parse job result using pre-cached runner descriptor
+    ///
+    /// This method reuses the already-parsed RunnerDataWithDescriptor to avoid
+    /// redundant Proto schema parsing. This is more efficient than parse_job_result()
+    /// when the descriptor is already available.
+    ///
+    /// # Arguments
+    /// * `job_result` - The job result to parse
+    /// * `runner_with_descriptor` - Pre-cached runner descriptor with method schemas
+    /// * `using` - Optional method name for MCP/Plugin runners
+    fn parse_job_result_with_descriptor(
+        job_result: JobResult,
+        runner_with_descriptor: &crate::app::runner::RunnerDataWithDescriptor,
+        using: Option<&str>,
+    ) -> Result<Option<serde_json::Value>> {
+        let output = job_result
+            .data
+            .as_ref()
+            .and_then(|r| r.output.as_ref().map(|o| &o.items));
 
-    use super::*;
-    use crate::{
-        app::{
-            job::UseJobApp,
-            job_result::UseJobResultApp,
-            runner::{RunnerDataWithDescriptor, UseRunnerApp, UseRunnerParserWithCache},
-            worker::UseWorkerApp,
-        },
-        module::test::create_hybrid_test_app,
-    };
-    use std::{sync::Arc, time::Duration};
+        if let Some(output) = output {
+            let method_name = using.unwrap_or(DEFAULT_METHOD_NAME);
 
-    // Create a test implementation of FunctionCallHelper using the app
-    struct TestFunctionCallHelper {
-        app: crate::module::AppModule,
-        descriptor_cache: MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>,
-    }
+            let result_descriptor = runner_with_descriptor
+                .get_job_result_message_descriptor_for_method(Some(method_name))
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to get result descriptor for method '{}': {:#?}",
+                        method_name,
+                        e
+                    )
+                })?;
 
-    // Implement required traits
-    impl UseJobApp for TestFunctionCallHelper {
-        fn job_app(&self) -> &Arc<dyn crate::app::job::JobApp + 'static> {
-            &self.app.job_app
-        }
-    }
-
-    impl UseRunnerApp for TestFunctionCallHelper {
-        fn runner_app(&self) -> Arc<dyn crate::app::runner::RunnerApp> {
-            self.app.runner_app.clone()
-        }
-    }
-
-    impl UseWorkerApp for TestFunctionCallHelper {
-        fn worker_app(&self) -> &Arc<dyn crate::app::worker::WorkerApp + 'static> {
-            &self.app.worker_app
-        }
-    }
-
-    impl UseJobResultApp for TestFunctionCallHelper {
-        fn job_result_app(&self) -> &Arc<dyn crate::app::job_result::JobResultApp + 'static> {
-            &self.app.job_result_app
-        }
-    }
-    impl UseJobExecutor for TestFunctionCallHelper {}
-    impl UseRunnerParserWithCache for TestFunctionCallHelper {
-        fn descriptor_cache(&self) -> &MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor> {
-            &self.descriptor_cache
-        }
-    }
-
-    impl ProtobufHelper for TestFunctionCallHelper {}
-
-    impl McpNameConverter for TestFunctionCallHelper {}
-
-    impl FunctionCallHelper for TestFunctionCallHelper {
-        fn timeout_sec(&self) -> u32 {
-            30 // Default timeout for tests
-        }
-
-        fn job_queue_config(&self) -> &infra::infra::JobQueueConfig {
-            &self.app.config_module.job_queue_config
-        }
-
-        fn worker_config(&self) -> &WorkerConfig {
-            &self.app.config_module.worker_config
-        }
-    }
-
-    #[test]
-    fn test_function_call_helper_correct_mcp_worker_args_with_tool_name() {
-        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
-            // tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-            // Get test app instance
-            let app = create_hybrid_test_app().await.unwrap();
-            let descriptor_cache = MokaCacheImpl::new(&MokaCacheConfig {
-                num_counters: 10000,
-                ttl: Some(Duration::from_secs(60)), // 1 minute TTL for test
-            });
-            let _helper = TestFunctionCallHelper {
-                app,
-                descriptor_cache,
-            };
-
-            // Case 1: tool_name already exists and matches the value
-            let tool_name = "test_tool".to_string();
-            let mut arguments = Map::new();
-            arguments.insert(
-                "tool_name".to_string(),
-                Value::String("test_tool".to_string()),
-            );
-            arguments.insert("arg_json".to_string(), Value::String("value1".to_string()));
-
-            // Using FunctionCallHelper's static method through the struct
-            let result =
-                TestFunctionCallHelper::correct_mcp_worker_args(tool_name, arguments.clone());
-            assert!(result.is_ok());
-            let result_args = result.unwrap();
-            assert_eq!(result_args.len(), 2);
-            assert_eq!(
-                result_args["tool_name"],
-                Value::String("test_tool".to_string())
-            );
-            assert_eq!(result_args["arg_json"], Value::String("value1".to_string()));
-
-            // Case 2: tool_name exists but with different value
-            let tool_name = "different_tool".to_string();
-            let result = TestFunctionCallHelper::correct_mcp_worker_args(tool_name, arguments);
-            assert!(result.is_err());
-            if let Err(err) = result {
-                let err_string = err.to_string();
-                assert!(err_string.contains("tool_name is not matched"));
-            }
-        })
-    }
-
-    #[test]
-    fn test_function_call_helper_correct_mcp_worker_args_without_tool_name() {
-        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
-            // tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-            // Get test app instance
-            let app = create_hybrid_test_app().await.unwrap();
-            let descriptor_cache = MokaCacheImpl::new(&MokaCacheConfig {
-                num_counters: 10000,
-                ttl: Some(Duration::from_secs(60)), // 1 minute TTL for test
-            });
-            let _helper = TestFunctionCallHelper {
-                app,
-                descriptor_cache,
-            };
-
-            // Case 3: tool_name doesn't exist
-            let tool_name = "new_tool".to_string();
-            let mut arguments = Map::new();
-            arguments.insert("param1".to_string(), Value::String("value1".to_string()));
-            arguments.insert(
-                "param2".to_string(),
-                Value::Number(serde_json::Number::from(42)),
-            );
-
-            // Using FunctionCallHelper's static method through the struct
-            let result =
-                TestFunctionCallHelper::correct_mcp_worker_args(tool_name.clone(), arguments);
-            assert!(result.is_ok());
-            let result_args = result.unwrap();
-
-            // Verify the new arguments object is constructed correctly
-            assert_eq!(result_args.len(), 2);
-            assert_eq!(result_args["tool_name"], Value::String(tool_name));
-
-            // Verify that the original arguments map is stored in arg_json field
-            if let Value::Object(arg_json_map) = &result_args["arg_json"] {
-                assert_eq!(arg_json_map.len(), 2);
-                assert_eq!(arg_json_map["param1"], Value::String("value1".to_string()));
-                assert_eq!(
-                    arg_json_map["param2"],
-                    Value::Number(serde_json::Number::from(42))
-                );
+            if let Some(desc) = result_descriptor {
+                match ProtobufDescriptor::get_message_from_bytes(desc, output) {
+                    Ok(m) => {
+                        let j = ProtobufDescriptor::message_to_json_value(&m)?;
+                        tracing::debug!(
+                            "Result schema exists (method: {}). decode message with proto: {:#?}",
+                            method_name,
+                            j
+                        );
+                        Ok(Some(j))
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to parse result schema for method '{}': {:#?}",
+                            method_name,
+                            e
+                        );
+                        Err(JobWorkerError::RuntimeError(format!(
+                            "Failed to parse result schema for method '{}': {e:#?}",
+                            method_name
+                        )))
+                    }
+                }
             } else {
-                panic!("arg_json is not an object");
+                let text = String::from_utf8_lossy(output);
+                tracing::debug!("No result schema for method '{}': {}", method_name, text);
+                Ok(Some(serde_json::Value::String(text.to_string())))
             }
-        })
+            .map_err(|e| {
+                JobWorkerError::RuntimeError(format!("Failed to parse output: {e:#?}")).into()
+            })
+        } else {
+            tracing::warn!("No output found");
+            Ok(None)
+        }
     }
 }

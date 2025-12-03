@@ -1,13 +1,12 @@
 use crate::jobworkerp::runner::mcp_server_result;
 use crate::jobworkerp::runner::mcp_server_result::BlobResourceContents;
 use crate::jobworkerp::runner::mcp_server_result::TextResourceContents;
-use crate::jobworkerp::runner::McpServerArgs;
 use crate::jobworkerp::runner::McpServerResult;
 use crate::runner::cancellation::CancelMonitoring;
 use crate::runner::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
 use crate::runner::RunnerSpec;
 use crate::runner::RunnerTrait;
-use crate::{schema_to_json_string, schema_to_json_string_option};
+use crate::schema_to_json_string_option;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use command_utils::trace::Tracing;
@@ -20,8 +19,6 @@ use opentelemetry::Context;
 use proto::jobworkerp::data::ResultOutputItem;
 use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::data::{JobData, JobId, JobResult};
-use proto::jobworkerp::function::data::McpTool;
-use proto::jobworkerp::function::data::ToolAnnotations;
 use proxy::McpServerProxy;
 use rmcp::model::CallToolRequestParam;
 use std::collections::HashMap;
@@ -32,36 +29,119 @@ pub mod config;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod integration_tests;
 pub mod proxy;
+pub mod schema_converter;
+
+/// Tool information for using support
+#[derive(Debug, Clone)]
+pub struct ToolInfo {
+    /// Tool name (using name)
+    pub name: String,
+    /// Tool description
+    pub description: Option<String>,
+    /// JSON Schema for the tool's input
+    pub input_schema: serde_json::Value,
+    /// Generated Protobuf schema string for arguments
+    pub args_proto_schema: String,
+    /// Generated Protobuf schema string for result
+    /// For MCP servers, this contains the common output schema (duplicated across tools)
+    /// For Plugins, this can contain method-specific output schema
+    pub result_proto_schema: String,
+}
 
 /**
- * PluginRunner wrapper
- * (for self mutability (run(), cancel()))
+ * MCP Server Runner implementation with using support
+ *
+ * Each MCP tool is exposed as a separate "using" value.
+ * Tool-specific Protobuf schemas are generated from MCP tool JSON schemas.
  */
 #[derive(Debug)]
 pub struct McpServerRunnerImpl {
     mcp_server: McpServerProxy,
     // Helper for dependency injection integration (optional for backward compatibility)
     cancel_helper: Option<CancelMonitoringHelper>,
+    /// Available tools with their schemas
+    /// Key: tool name (using), Value: ToolInfo
+    available_tools: HashMap<String, ToolInfo>,
 }
 
 impl McpServerRunnerImpl {
-    /// Constructor without cancellation monitoring (for backward compatibility)
-    pub fn new(server: McpServerProxy) -> Self {
-        Self {
-            mcp_server: server,
-            cancel_helper: None,
-        }
-    }
-
-    /// Constructor with cancellation monitoring (DI integration version)
-    pub fn new_with_cancel_monitoring(
+    /// Constructor for MCP server runner (async required for tool loading)
+    ///
+    /// This async constructor creates a runner and initializes it with tools from the MCP server.
+    /// Each tool has its own Protobuf schema generated from its JSON Schema.
+    pub async fn new(
         server: McpServerProxy,
-        cancel_helper: CancelMonitoringHelper,
-    ) -> Self {
-        Self {
-            mcp_server: server,
-            cancel_helper: Some(cancel_helper),
+        cancel_helper: Option<CancelMonitoringHelper>,
+    ) -> Result<Self> {
+        let tools = server.load_tools().await?;
+        let server_name = &server.name;
+
+        let mut available_tools = HashMap::new();
+        for tool in tools {
+            let tool_name = tool.name.into_owned();
+
+            if let Err(e) = schema_converter::validate_using_name(&tool_name) {
+                tracing::warn!(
+                    "Skipping tool '{}' in MCP server '{}': {}",
+                    tool_name,
+                    server_name,
+                    e
+                );
+                continue;
+            }
+
+            let input_schema_value = serde_json::Value::Object(tool.input_schema.as_ref().clone());
+
+            let proto_schema = match schema_converter::json_schema_to_protobuf(
+                &input_schema_value,
+                server_name,
+                &tool_name,
+            ) {
+                Ok(schema) => schema,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to generate Protobuf schema for tool '{}': {}",
+                        tool_name,
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            available_tools.insert(
+                tool_name.clone(),
+                ToolInfo {
+                    name: tool_name,
+                    description: tool.description.map(|d| d.into_owned()),
+                    input_schema: input_schema_value,
+                    args_proto_schema: proto_schema,
+                    // MCP servers use common output schema (duplicated for each tool for type safety)
+                    result_proto_schema: include_str!(
+                        "../../protobuf/jobworkerp/runner/mcp_server_result.proto"
+                    )
+                    .to_string(),
+                },
+            );
         }
+
+        if available_tools.is_empty() {
+            return Err(anyhow!(
+                "No valid tools found in MCP server '{}'",
+                server_name
+            ));
+        }
+
+        tracing::info!(
+            "MCP runner '{}' initialized with {} tools",
+            server_name,
+            available_tools.len()
+        );
+
+        Ok(Self {
+            mcp_server: server,
+            cancel_helper,
+            available_tools,
+        })
     }
 
     /// Unified cancellation token retrieval
@@ -72,27 +152,50 @@ impl McpServerRunnerImpl {
             CancellationToken::new()
         }
     }
-    pub async fn tools(&self) -> Result<Vec<McpTool>> {
-        self.mcp_server.load_tools().await.map(|list| {
-            list.into_iter()
-                .map(|tool| McpTool {
-                    name: tool.name.into_owned(),
-                    description: tool.description.map(|r| r.into_owned()),
-                    input_schema: serde_json::to_string(&tool.input_schema)
-                        .inspect_err(|e| {
-                            tracing::error!("Failed to serialize tool input schema: {}", e)
-                        })
-                        .unwrap_or_default(),
-                    annotations: tool.annotations.map(|an| ToolAnnotations {
-                        title: an.title,
-                        read_only_hint: an.read_only_hint,
-                        destructive_hint: an.destructive_hint,
-                        idempotent_hint: an.idempotent_hint,
-                        open_world_hint: an.open_world_hint,
-                    }),
-                })
-                .collect()
-        })
+
+    /// Get available tool names (usings)
+    pub fn available_tool_names(&self) -> Vec<String> {
+        self.available_tools.keys().cloned().collect()
+    }
+
+    /// Get tool info by name
+    pub fn get_tool_info(&self, tool_name: &str) -> Option<&ToolInfo> {
+        self.available_tools.get(tool_name)
+    }
+
+    // McpTool type no longer exists - use method_proto_map() from RunnerSpec trait instead
+
+    /// Resolve using to actual tool name
+    ///
+    /// - If using is specified: validate and return it
+    /// - If using is None and only 1 tool: auto-select
+    /// - If using is None and multiple tools: error
+    fn resolve_using(&self, using: Option<&str>) -> Result<String> {
+        match using {
+            Some(name) => {
+                if self.available_tools.contains_key(name) {
+                    Ok(name.to_string())
+                } else {
+                    Err(anyhow!(
+                        "Unknown tool '{}' in MCP server '{}'. Available: {:?}",
+                        name,
+                        self.mcp_server.name,
+                        self.available_tools.keys().collect::<Vec<_>>()
+                    ))
+                }
+            }
+            None => {
+                if self.available_tools.len() == 1 {
+                    Ok(self.available_tools.keys().next().unwrap().clone())
+                } else {
+                    Err(anyhow!(
+                        "using is required for MCP server '{}'. Available tools: {:?}",
+                        self.mcp_server.name,
+                        self.available_tools.keys().collect::<Vec<_>>()
+                    ))
+                }
+            }
+        }
     }
 }
 
@@ -100,27 +203,56 @@ impl RunnerSpec for McpServerRunnerImpl {
     fn name(&self) -> String {
         self.mcp_server.name.clone()
     }
+
     fn runner_settings_proto(&self) -> String {
         "".to_string()
     }
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/mcp_server_args.proto").to_string()
+
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        self.available_tools
+            .iter()
+            .map(|(name, info)| {
+                (
+                    name.clone(),
+                    proto::jobworkerp::data::MethodSchema {
+                        args_proto: info.args_proto_schema.clone(),
+                        result_proto: info.result_proto_schema.clone(),
+                        description: info.description.clone(),
+                        output_type: StreamingOutputType::Both as i32,
+                    },
+                )
+            })
+            .collect()
     }
-    fn result_output_proto(&self) -> Option<String> {
-        Some(include_str!("../../protobuf/jobworkerp/runner/mcp_server_result.proto").to_string())
+
+    // Uses existing JSON Schema from available_tools
+    fn method_json_schema_map(&self) -> HashMap<String, crate::runner::MethodJsonSchema> {
+        self.available_tools
+            .iter()
+            .map(|(name, info)| {
+                (
+                    name.clone(),
+                    crate::runner::MethodJsonSchema {
+                        // MCP tool's JSON Schema (already available)
+                        args_schema: serde_json::to_string(&info.input_schema)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                        // Common output schema for all MCP tools
+                        result_schema: schema_to_json_string_option!(
+                            McpServerResult,
+                            "mcp_server_output_schema"
+                        ),
+                        // Note: description is not cached - retrieve from method_proto_map instead
+                    },
+                )
+            })
+            .collect()
     }
-    fn output_type(&self) -> StreamingOutputType {
-        StreamingOutputType::Both
-    }
+
     fn settings_schema(&self) -> String {
-        schema_to_json_string!(crate::jobworkerp::runner::Empty, "settings_schema")
+        "{}".to_string() // Empty JSON object (no settings required)
     }
-    fn arguments_schema(&self) -> String {
-        schema_to_json_string!(McpServerArgs, "arguments_schema")
-    }
-    fn output_schema(&self) -> Option<String> {
-        schema_to_json_string_option!(McpServerResult, "output_schema")
-    }
+
+    // Default implementation in RunnerSpec trait uses method_json_schema_map()
 }
 
 impl Tracing for McpServerRunnerImpl {}
@@ -130,15 +262,44 @@ impl RunnerTrait for McpServerRunnerImpl {
     async fn load(&mut self, _settings: Vec<u8>) -> Result<()> {
         Ok(())
     }
+
     async fn run(
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        using: Option<&str>,
+    ) -> (Result<Vec<u8>>, HashMap<String, String>) {
+        // Resolve tool name and execute
+        let tool_name = match self.resolve_using(using) {
+            Ok(name) => name,
+            Err(e) => return (Err(e), metadata),
+        };
+        self.run_using(args, metadata, &tool_name).await
+    }
+
+    async fn run_stream(
+        &mut self,
+        arg: &[u8],
+        metadata: HashMap<String, String>,
+        using: Option<&str>,
+    ) -> Result<BoxStream<'static, ResultOutputItem>> {
+        // Resolve tool name and execute
+        let tool_name = self.resolve_using(using)?;
+        self.run_stream_using(arg, metadata, &tool_name).await
+    }
+}
+
+impl McpServerRunnerImpl {
+    /// Execute MCP tool call (internal implementation)
+    async fn run_using(
+        &mut self,
+        args: &[u8],
+        metadata: HashMap<String, String>,
+        tool_name: &str,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let cancellation_token = self.get_cancellation_token().await;
 
         let result = async {
-            // Check for cancellation before starting
             if cancellation_token.is_cancelled() {
                 return Err(anyhow!("MCP tool call was cancelled before execution"));
             }
@@ -146,7 +307,7 @@ impl RunnerTrait for McpServerRunnerImpl {
             let span = Self::otel_span_from_metadata(
                 &metadata,
                 APP_WORKER_NAME,
-                "McpServerRunnerImpl::run",
+                "McpServerRunnerImpl::run_using",
             );
             let cx = Context::current_with_span(span);
             let mut metadata = metadata.clone();
@@ -154,45 +315,42 @@ impl RunnerTrait for McpServerRunnerImpl {
             // ref
             let span = cx.span();
 
-            let arg = ProstMessageCodec::deserialize_message::<McpServerArgs>(args)?;
+            let arg_json = String::from_utf8(args.to_vec())?;
+
             span.set_attribute(opentelemetry::KeyValue::new(
                 "input.tool_name",
-                arg.tool_name.clone(),
+                tool_name.to_string(),
             ));
             span.set_attribute(opentelemetry::KeyValue::new(
                 "input.arg_json",
-                arg.arg_json.clone(), // XXX clone
+                arg_json.clone(),
             ));
 
-            tracing::debug!(
-                "Calling MCP tool '{}' with args: {}",
-                arg.tool_name,
-                arg.arg_json
-            );
+            tracing::debug!("Calling MCP tool '{}' with args: {}", tool_name, arg_json);
 
             // Call MCP tool with cancellation support
             // Timeout is managed at the job level
             let res = tokio::select! {
                 call_result = self.mcp_server.transport.call_tool(CallToolRequestParam {
-                    name: std::borrow::Cow::Owned(arg.tool_name.clone()),
-                    arguments: serde_json::from_str(arg.arg_json.as_str())
+                    name: std::borrow::Cow::Owned(tool_name.to_string()),
+                    arguments: serde_json::from_str(arg_json.as_str())
                         .inspect_err(|e| {
                             tracing::error!("Failed to parse arguments: {}", e);
                         })
                         .ok(),
                 }) => {
                     call_result.map_err(|e| {
-                        tracing::error!("MCP call_tool failed for tool '{}': {}", arg.tool_name, e);
-                        anyhow!("MCP tool '{}' failed: {}", arg.tool_name, e)
+                        tracing::error!("MCP call_tool failed for tool '{}': {}", tool_name, e);
+                        anyhow!("MCP tool '{}' failed: {}", tool_name, e)
                     })?
                 },
                 _ = cancellation_token.cancelled() => {
-                    tracing::info!("MCP tool call was cancelled for tool '{}'", arg.tool_name);
+                    tracing::info!("MCP tool call was cancelled for tool '{}'", tool_name);
                     return Err(anyhow!("MCP tool call was cancelled"));
                 }
             };
 
-            tracing::debug!("MCP tool '{}' call completed", arg.tool_name);
+            tracing::debug!("MCP tool '{}' call completed", tool_name);
 
             if res.is_error.unwrap_or_default() {
                 let error = anyhow!("Tool call failed: {}", serde_json::json!(res.content));
@@ -313,24 +471,23 @@ impl RunnerTrait for McpServerRunnerImpl {
         (result, metadata)
     }
 
-    async fn run_stream(
+    /// Execute MCP tool call with streaming (internal implementation)
+    async fn run_stream_using(
         &mut self,
         arg: &[u8],
         metadata: HashMap<String, String>,
+        tool_name: &str,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let cancellation_token = self.get_cancellation_token().await;
 
-        // Check for cancellation before starting
         if cancellation_token.is_cancelled() {
             return Err(anyhow!("MCP stream request was cancelled before execution"));
         }
 
-        let arg = ProstMessageCodec::deserialize_message::<McpServerArgs>(arg)?;
+        let arg_json = String::from_utf8(arg.to_vec())?;
 
-        // Extract needed data from self to avoid lifetime issues
         let mcp_transport = self.mcp_server.transport.clone();
-        let tool_name = arg.tool_name.clone();
-        let arg_json = arg.arg_json.clone();
+        let tool_name_owned = tool_name.to_string();
 
         use async_stream::stream;
         use proto::jobworkerp::data::{result_output_item::Item, Trailer};
@@ -343,7 +500,7 @@ impl RunnerTrait for McpServerRunnerImpl {
             // Call MCP tool with cancellation support
             let call_result = tokio::select! {
                 result = mcp_transport.call_tool(CallToolRequestParam {
-                    name: std::borrow::Cow::Owned(tool_name.clone()),
+                    name: std::borrow::Cow::Owned(tool_name_owned.clone()),
                     arguments: serde_json::from_str(arg_json.as_str())
                         .inspect_err(|e| {
                             tracing::error!("Failed to parse arguments: {}", e);
@@ -353,8 +510,8 @@ impl RunnerTrait for McpServerRunnerImpl {
                     match result {
                         Ok(res) => Ok(res),
                         Err(e) => {
-                            tracing::error!("MCP call_tool failed for tool '{}': {}", tool_name, e);
-                            Err(anyhow!("MCP tool '{}' failed: {}", tool_name, e))
+                            tracing::error!("MCP call_tool failed for tool '{}': {}", tool_name_owned, e);
+                            Err(anyhow!("MCP tool '{}' failed: {}", tool_name_owned, e))
                         }
                     }
                 },

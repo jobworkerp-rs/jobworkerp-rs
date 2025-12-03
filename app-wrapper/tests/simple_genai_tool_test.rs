@@ -15,7 +15,7 @@ use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::{
 use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::GenaiRunnerSettings;
 use jobworkerp_runner::jobworkerp::runner::llm::LlmChatArgs;
 use proto::jobworkerp::data::RunnerId;
-use proto::jobworkerp::function::data::{function_id, FunctionId, FunctionSetData};
+use proto::jobworkerp::function::data::{function_id, FunctionId, FunctionSetData, FunctionUsing};
 use std::collections::HashMap;
 use tokio::time::{timeout, Duration};
 
@@ -42,7 +42,6 @@ async fn create_test_service() -> Result<GenaiChatService> {
     // Try to delete existing function set if it exists to avoid unique constraint error
     // Note: delete_function_set requires FunctionSetId, so we'll handle the error if it already exists
 
-    // Create function set with only COMMAND runner (id=1)
     // If it already exists, ignore the error and continue
     let _result = app_module
         .function_set_app
@@ -50,8 +49,11 @@ async fn create_test_service() -> Result<GenaiChatService> {
             name: "genai_tool_test".to_string(),
             description: "Test set for GenAI tool calls - COMMAND runner only".to_string(),
             category: 0,
-            targets: vec![FunctionId {
-                id: Some(function_id::Id::RunnerId(RunnerId { value: 1 })),
+            targets: vec![FunctionUsing {
+                function_id: Some(FunctionId {
+                    id: Some(function_id::Id::RunnerId(RunnerId { value: 1 })),
+                }),
+                using: None,
             }],
         })
         .await;

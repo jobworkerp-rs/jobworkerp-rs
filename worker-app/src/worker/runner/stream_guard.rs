@@ -153,13 +153,10 @@ mod tests {
             let pool = create_test_pool().await?;
             let pool_object = pool.get().await?;
 
-            // Create dummy stream for testing
             let test_stream = Box::pin(stream::iter(vec![1, 2, 3]));
 
-            // Create StreamWithPoolGuard
             let guard_stream = StreamWithPoolGuard::new(test_stream, pool_object);
 
-            // Get stream elements
             let items: Vec<i32> = guard_stream.collect().await;
             assert_eq!(items, vec![1, 2, 3]);
 
@@ -174,16 +171,13 @@ mod tests {
             let pool = create_test_pool().await?;
             let pool_object = pool.get().await?;
 
-            // Create dummy stream for testing
             let test_stream = Box::pin(stream::iter(vec![1, 2, 3]));
 
-            // Create StreamWithPoolGuard
             let guard_stream = StreamWithPoolGuard::new(test_stream, pool_object);
 
             // Drop midway
             drop(guard_stream);
 
-            // Verify pool object was released
             // (Actually verified through log output and pool reuse)
             let pool_object2 = pool.get().await?;
             assert!(!pool_object2.lock().await.name().is_empty());
@@ -199,10 +193,8 @@ mod tests {
             let pool = create_test_pool().await?;
             let pool_object = pool.get().await?;
 
-            // Create dummy stream for testing
             let test_stream = Box::pin(stream::iter(vec![1, 2, 3]));
 
-            // Create StreamWithPoolGuard
             let mut guard_stream = StreamWithPoolGuard::new(test_stream, pool_object);
 
             // Manually get stream elements sequentially
@@ -212,7 +204,6 @@ mod tests {
             assert_eq!(guard_stream.next().await, Some(3));
             assert_eq!(guard_stream.next().await, None); // Pool Guard released here
 
-            // Verify pool object was released
             let pool_object2 = pool.get().await?;
             assert!(!pool_object2.lock().await.name().is_empty());
 
@@ -226,7 +217,6 @@ mod tests {
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             let pool = create_test_pool().await?;
 
-            // Create and consume multiple Stream + Pool Guards
             for i in 0..3 {
                 let pool_object = pool.get().await?;
                 let test_stream = Box::pin(stream::iter(vec![i, i + 10]));
@@ -238,7 +228,6 @@ mod tests {
                 tracing::debug!("Completed stream guard cycle {}", i);
             }
 
-            // Verify pool is functioning correctly
             let final_pool_object = pool.get().await?;
             assert!(!final_pool_object.lock().await.name().is_empty());
 

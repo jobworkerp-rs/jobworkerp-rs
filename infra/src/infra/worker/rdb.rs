@@ -53,7 +53,6 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
     ) -> Result<WorkerId> {
         use command_utils::util::datetime;
 
-        // Validate created_at timestamp before insertion (prevention of DEFAULT 0 issue)
         let created_at = datetime::now_millis();
         if created_at == 0 {
             return Err(JobWorkerError::InvalidParameter(
@@ -396,8 +395,6 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
         let mut conditions = Vec::new();
         let mut bindings = Vec::new();
 
-        // Add runner_types condition if not empty (for backward compatibility)
-        // Use EXISTS subquery for better performance with large datasets:
         // - Utilizes primary key index (runner.id) for fast lookups
         // - Short-circuits on first match (SELECT 1)
         // - NULL-safe comparison
@@ -414,20 +411,17 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
             bindings.extend(runner_types.iter().copied().map(WorkerFilterBinding::I32));
         }
 
-        // Add runner_ids condition if not empty (new filter)
         if !runner_ids.is_empty() {
             let placeholders = runner_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             conditions.push(format!("runner_id IN ({placeholders})"));
             bindings.extend(runner_ids.iter().copied().map(WorkerFilterBinding::I64));
         }
 
-        // Add channel condition if specified
         if let Some(ch) = channel {
             conditions.push("channel = ?".to_string());
             bindings.push(WorkerFilterBinding::String(ch.clone()));
         }
 
-        // Add name_filter condition if specified (prefix match)
         if let Some(name) = name_filter {
             conditions.push("name LIKE ?".to_string());
             use infra_utils::infra::rdb::escape::escape_like_pattern;
@@ -435,7 +429,6 @@ pub trait RdbWorkerRepository: UseRdbPool + UseJobqueueAndCodec + Sync + Send {
             bindings.push(WorkerFilterBinding::String(format!("{escaped}%")));
         }
 
-        // Add is_periodic condition if specified
         if let Some(periodic) = is_periodic {
             if periodic {
                 conditions.push("periodic_interval > 0".to_string());
@@ -634,7 +627,6 @@ mod test {
         let repository = RdbWorkerRepositoryImpl::new(pool);
         let db = repository.db_pool();
 
-        // Create test data with different runner_types and channels
         let test_data = vec![
             WorkerData {
                 name: "worker1".to_string(),
@@ -1121,7 +1113,6 @@ mod test {
             )
             .await?;
 
-        // Verify that find_list and count_by return consistent results
         assert_eq!(
             command_workers.len() as i64,
             command_count,
@@ -1164,7 +1155,6 @@ mod test {
             "Multiple runner_types should work correctly with EXISTS subquery"
         );
 
-        // Verify that the count matches the sum of individual counts
         assert!(
             multi_type_count >= command_count && multi_type_count >= http_count,
             "Multiple runner_types count should be >= individual counts"
@@ -1184,7 +1174,6 @@ mod test {
             .await
             .context("error in cleanup")?;
 
-        // Create test workers with different name patterns
         let test_data = vec![
             WorkerData {
                 name: "testprefix_alpha".to_string(),
@@ -1314,7 +1303,6 @@ mod test {
             .await
             .context("error in cleanup")?;
 
-        // Create test workers: 2 periodic, 1 non-periodic
         let test_data = vec![
             WorkerData {
                 name: "periodic_worker_1".to_string(),
@@ -1464,7 +1452,6 @@ mod test {
             .await
             .context("error in cleanup")?;
 
-        // Create test workers with different runner_ids
         let test_data = vec![
             WorkerData {
                 name: "worker_runner_1".to_string(),
@@ -1610,7 +1597,6 @@ mod test {
             .await
             .context("error in cleanup")?;
 
-        // Create test workers with different names and periodic_intervals
         let test_data = vec![
             WorkerData {
                 name: "charlie".to_string(),
@@ -1787,7 +1773,6 @@ mod test {
             .await
             .context("error in cleanup")?;
 
-        // Create test workers with various combinations
         let test_data = vec![
             WorkerData {
                 name: "testprefix_periodic_100".to_string(),
@@ -1961,7 +1946,6 @@ mod test {
             .await
             .context("error in cleanup")?;
 
-        // Create test workers in different channels
         let test_data = vec![
             WorkerData {
                 name: "worker_channel1_a".to_string(),

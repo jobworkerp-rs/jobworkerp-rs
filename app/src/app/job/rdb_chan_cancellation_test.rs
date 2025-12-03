@@ -30,7 +30,6 @@ mod rdb_chan_cancellation_tests {
                 .memory_job_processing_status_repository
                 .as_ref();
 
-            // Create test worker
             let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
@@ -72,13 +71,13 @@ mod rdb_chan_cancellation_tests {
                     0,
                     None,
                     false,
+                    None, // using
                 )
                 .await?;
 
             assert!(job_id.value > 0);
             assert!(res.is_none());
 
-            // Verify job is pending
             assert_eq!(
                 status_repo.find_status(&job_id).await.unwrap(),
                 Some(JobProcessingStatus::Pending)
@@ -88,7 +87,6 @@ mod rdb_chan_cancellation_tests {
             let cancelled = app.delete_job(&job_id).await?;
             assert!(cancelled);
 
-            // Verify job is cancelled
             let status = status_repo.find_status(&job_id).await.unwrap();
             assert_eq!(status, None);
 
@@ -142,7 +140,6 @@ mod rdb_chan_cancellation_tests {
             let cancelled = app.delete_job(&job_id).await?;
             assert!(cancelled);
 
-            // Verify status changed to Cancelling
             let status = status_repo.find_status(&job_id).await.unwrap();
             assert_eq!(status, None);
 
@@ -176,7 +173,6 @@ mod rdb_chan_cancellation_tests {
             let cancelled = app.delete_job(&job_id).await?;
             assert!(cancelled);
 
-            // Verify status changed to Cancelling
             let status = status_repo.find_status(&job_id).await.unwrap();
             assert_eq!(status, None);
 
@@ -234,7 +230,6 @@ mod rdb_chan_cancellation_tests {
                 "WAIT_RESULT state job should not be cancellable"
             );
 
-            // Verify status is preserved (implementation fixed)
             let status = status_repo.find_status(&job_id).await.unwrap();
 
             assert_eq!(
@@ -266,7 +261,6 @@ mod rdb_chan_cancellation_tests {
                 .memory_job_processing_status_repository
                 .as_ref();
 
-            // Create test worker
             let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
@@ -308,23 +302,21 @@ mod rdb_chan_cancellation_tests {
                     0,
                     None,
                     false,
+                    None, // using
                 )
                 .await?;
 
             assert!(job_id.value > 0);
             assert!(res.is_none());
 
-            // Verify job is PENDING
             assert_eq!(
                 status_repo.find_status(&job_id).await.unwrap(),
                 Some(JobProcessingStatus::Pending)
             );
 
-            // Delete the PENDING job
             let cancelled = app.delete_job(&job_id).await?;
             assert!(cancelled, "PENDING job deletion should succeed");
 
-            // Verify job status is removed (deleted)
             let status = status_repo.find_status(&job_id).await.unwrap();
             assert_eq!(status, None, "Job status should be deleted");
 
@@ -368,7 +360,6 @@ mod rdb_chan_cancellation_tests {
                 .upsert_status(&job_id, &JobProcessingStatus::Running)
                 .await?;
 
-            // Verify initial state
             assert_eq!(
                 status_repo.find_status(&job_id).await.unwrap(),
                 Some(JobProcessingStatus::Running),
@@ -449,7 +440,6 @@ mod rdb_chan_cancellation_tests {
                 !result,
                 "WAIT_RESULT job cancellation should fail (to prevent data inconsistency)"
             );
-            // Verify status is preserved (implementation fixed)
             assert_eq!(
                 status_repo.find_status(&wait_result_job_id).await.unwrap(),
                 Some(JobProcessingStatus::WaitResult),
@@ -517,7 +507,6 @@ mod rdb_chan_cancellation_tests {
                 // Call cleanup_job() directly (this is internal method)
                 app.cleanup_job(&job_id).await?;
 
-                // Verify status is deleted (unconditional)
                 let remaining_status = status_repo.find_status(&job_id).await.unwrap();
 
                 assert_eq!(
@@ -630,7 +619,6 @@ mod rdb_chan_cancellation_tests {
                 .upsert_status(&job_id, &JobProcessingStatus::WaitResult)
                 .await?;
 
-            // Create a fake JobResult
             let job_result_id = proto::jobworkerp::data::JobResultId { value: 97001 };
             let job_result_data = proto::jobworkerp::data::JobResultData {
                 job_id: Some(job_id),
@@ -654,6 +642,7 @@ mod rdb_chan_cancellation_tests {
                 store_success: false,
                 store_failure: false,
                 worker_name: "test_worker".to_string(),
+                using: None,
             };
 
             // Call complete_job() (which should call cleanup_job internally)
@@ -661,7 +650,6 @@ mod rdb_chan_cancellation_tests {
                 .complete_job(&job_result_id, &job_result_data, None)
                 .await;
 
-            // Verify status is deleted (unconditional cleanup)
             let remaining_status = status_repo.find_status(&job_id).await.unwrap();
 
             assert_eq!(

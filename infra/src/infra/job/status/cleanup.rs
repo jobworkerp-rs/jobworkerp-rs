@@ -143,7 +143,6 @@ mod tests {
 
             let task = JobStatusCleanupTask::new(repo, 24);
 
-            // Create shutdown channel
             let (shutdown_send, shutdown_recv) = tokio::sync::watch::channel(false);
 
             // Spawn cleanup task

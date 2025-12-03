@@ -141,7 +141,6 @@ async fn create_test_completion_service() -> Result<MistralCompletionService> {
 #[ignore = "need to run with mistralrs model server"]
 #[tokio::test]
 async fn test_simple_chat_with_textmodel() -> Result<()> {
-    // Use TextModelSettings instead of GgufModelSettings
     let settings = create_custom_model_settings(
         &get_test_model_id(),
         true,  // with_logging: true
@@ -218,7 +217,6 @@ async fn test_simple_chat_without_schema() -> Result<()> {
 #[ignore = "need to run with mistralrs model server"]
 #[tokio::test]
 async fn test_chat_with_json_schema_large_stack() -> Result<()> {
-    // Use std::thread with larger stack size to avoid stack overflow in tests
     let result = std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024) // 8MB stack
         .spawn(|| {
@@ -462,7 +460,6 @@ async fn test_completion_stream_with_json_schema() -> Result<()> {
     // Make sure we got some responses
     assert!(!responses.is_empty(), "No streaming responses received");
 
-    // Combine all text chunks
     let combined_text = responses
         .iter()
         .filter_map(|res| {
@@ -475,7 +472,6 @@ async fn test_completion_stream_with_json_schema() -> Result<()> {
         .collect::<Vec<_>>()
         .join("");
 
-    // Verify the combined response is valid JSON matching the schema
     if !combined_text.trim().is_empty() {
         let parsed: serde_json::Value = serde_json::from_str(&combined_text)?;
         assert!(parsed.get("count").is_some());
@@ -501,7 +497,6 @@ async fn test_workflow_8level_schema_with_mistral_chat() -> Result<()> {
     let schema = std::fs::read_to_string(schema_path)
         .map_err(|e| anyhow::anyhow!("Failed to read schema file at {}: {}", schema_path, e))?;
 
-    // Verify the schema is valid JSON
     let _parsed_schema: serde_json::Value = serde_json::from_str(&schema)?;
     tracing::info!("Schema loaded successfully, size: {} bytes", schema.len());
 
@@ -534,15 +529,12 @@ async fn test_workflow_8level_schema_with_mistral_chat() -> Result<()> {
         if let Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) = content.content {
             tracing::info!("Generated workflow response: {}", text);
 
-            // Verify the response is valid JSON
             let parsed: serde_json::Value = serde_json::from_str(&text)?;
 
-            // Verify required workflow fields are present
             assert!(parsed.get("document").is_some(), "Missing 'document' field");
             assert!(parsed.get("input").is_some(), "Missing 'input' field");
             assert!(parsed.get("do").is_some(), "Missing 'do' field");
 
-            // Verify document structure
             if let Some(document) = parsed.get("document") {
                 assert!(document.get("dsl").is_some(), "Missing 'document.dsl' field");
                 assert!(document.get("namespace").is_some(), "Missing 'document.namespace' field");
@@ -550,12 +542,10 @@ async fn test_workflow_8level_schema_with_mistral_chat() -> Result<()> {
                 assert!(document.get("version").is_some(), "Missing 'document.version' field");
             }
 
-            // Verify do array structure
             if let Some(do_array) = parsed.get("do").and_then(|v| v.as_array()) {
                 assert!(!do_array.is_empty(), "Empty 'do' array");
                 tracing::info!("Workflow has {} top-level tasks", do_array.len());
 
-                // Check first task structure - be more flexible about task format
                 if let Some(first_task) = do_array.first().and_then(|v| v.as_object()) {
                     tracing::info!("First task structure has {} keys: {:?}", first_task.len(), first_task.keys().collect::<Vec<_>>());
 
@@ -590,7 +580,6 @@ async fn test_workflow_8level_schema_with_mistral_chat() -> Result<()> {
 async fn test_complex_nested_workflow_with_mistral_chat() -> Result<()> {
     command_utils::util::tracing::tracing_init_test(tracing::Level::DEBUG);
 
-    // Use custom settings with verbose logging for complex workflow test
     // let custom_settings = create_custom_model_settings(
     //     &get_test_model_id(),
     //     true,  // with_logging: true for debugging
@@ -634,7 +623,6 @@ async fn test_complex_nested_workflow_with_mistral_chat() -> Result<()> {
         if let Some(jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::message_content::Content::Text(text)) = content.content {
             tracing::info!("Generated complex workflow response: {}", text);
 
-            // Verify the response is valid JSON
             let parsed: serde_json::Value = serde_json::from_str(&text)?;
 
             // Basic structure validation
@@ -660,7 +648,6 @@ async fn test_complex_nested_workflow_with_mistral_chat() -> Result<()> {
             if fork_count == 0 && for_count == 0 && try_count == 0 && switch_count == 0 {
                 tracing::warn!("No standard complex task types found, but verifying workflow structure");
 
-                // Check if the workflow has reasonable structure even if not using expected task types
                 let has_reasonable_structure = do_tasks.len() > 1 &&
                     do_tasks.iter().any(|task| {
                         if let Some(obj) = task.as_object() {

@@ -15,15 +15,14 @@ use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::ReusableWorkflowRunnerSettings;
 use memory_utils::cache::moka::{MokaCacheImpl, UseMokaCache};
-use proto::jobworkerp::data::{RunnerType, StreamingOutputType, WorkerData, WorkerId};
-use proto::jobworkerp::function::data::{
-    function_specs, FunctionResult, FunctionSchema, FunctionSpecs, McpToolList, WorkerOptions,
-};
+use proto::jobworkerp::data::{RunnerType, WorkerId};
+use proto::jobworkerp::function::data::{FunctionResult, FunctionSpecs, WorkerOptions};
 use proto::ProtobufHelper;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+pub mod converter;
 pub mod function_set;
 pub mod helper;
 
@@ -32,7 +31,7 @@ pub trait FunctionApp:
     UseWorkerApp
     + UseRunnerApp
     + UseMokaCache<Arc<String>, Vec<FunctionSpecs>>
-    + FunctionSpecConverter
+    + converter::FunctionSpecConverter
     + FunctionCallHelper
     + infra::workflow::UseWorkflowLoader
     + fmt::Debug
@@ -57,7 +56,6 @@ pub trait FunctionApp:
     ) -> Result<Vec<FunctionSpecs>> {
         let mut functions = Vec::new();
 
-        // Get runners if not excluded
         if !exclude_runner {
             let runners = self
                 .runner_app()
@@ -68,7 +66,6 @@ pub trait FunctionApp:
             }
         }
 
-        // Get workers if not excluded
         if !exclude_worker {
             let workers = self
                 .worker_app()
@@ -79,7 +76,6 @@ pub trait FunctionApp:
                     if let Some(data) = worker.data {
                         if let Some(runner_id) = data.runner_id {
                             if let Some(runner) = self.runner_app().find_runner(&runner_id).await? {
-                                // Check if the worker is associated with the runner
                                 if runner.id == Some(runner_id) {
                                     // warn only
                                     match Self::convert_worker_to_function_specs(wid, data, runner)
@@ -108,7 +104,7 @@ pub trait FunctionApp:
     fn handle_runner_for_front<'a>(
         &'a self,
         metadata: Arc<HashMap<String, String>>,
-        runner_name: &'a str,
+        name: &'a str,
         runner_settings: Option<serde_json::Value>,
         worker_options: Option<WorkerOptions>,
         arg_json: serde_json::Value,
@@ -121,14 +117,19 @@ pub trait FunctionApp:
         let future = async move {
             tracing::debug!(
                 "handle_runner_for_front: runner_name: {:?}, uniq_key: {:?}, streaming: {}",
-                runner_name,
+                name,
                 uniq_key,
                 streaming
             );
-
+            let (runner_name, tool_name_opt) =
+                if let Some((server_name, tool_name)) = Self::divide_names(name) {
+                    (server_name, Some(tool_name))
+                } else {
+                    (name.to_string(), None)
+                };
             let runner = self
                 .runner_app()
-                .find_runner_by_name(runner_name)
+                .find_runner_by_name(&runner_name)
                 .await?
                 .ok_or(JobWorkerError::NotFound(format!(
                     "Runner with name '{runner_name}' not found"
@@ -155,6 +156,7 @@ pub trait FunctionApp:
                         uniq_key,
                         timeout_sec,
                         streaming,
+                        tool_name_opt.clone(),
                     )
                     .await
                 {
@@ -162,16 +164,15 @@ pub trait FunctionApp:
                         let job_id = jid.value.to_string();
                         let started_at = chrono::Utc::now().timestamp_millis();
 
-                        // Use runner name directly since we have it
                         let runner_name = Some(runner_data.name.clone());
 
-                        // Use the common stream processing method
                         Ok(self.process_job_result_to_stream(
                             job_id,
                             started_at,
                             jres,
                             stream_opt,
                             runner_name,
+                            tool_name_opt,
                         ))
                     }
                     Err(e) => {
@@ -212,14 +213,21 @@ pub trait FunctionApp:
         Box::pin(stream! {
             tracing::info!("runner not found, run as worker: {:?}", &name);
 
+            let (worker_name, tool_name_opt) = if let Some((server_name, tool_name)) = Self::divide_names(name) {
+                (server_name, Some(tool_name))
+            } else {
+                (name.to_string(), None)
+            };
+
             let result = self
                 .enqueue_with_worker_name(
                     meta.clone(),
-                    name,
+                    &worker_name,
                     &arguments,
                     unique_key,
                     job_timeout_sec,
                     streaming,
+                    tool_name_opt.clone(), // Pass using parameter for worker tools
                 )
                 .await;
 
@@ -229,7 +237,7 @@ pub trait FunctionApp:
                     let started_at = chrono::Utc::now().timestamp_millis();
 
                     // Find worker to get runner information for decoding
-                    let worker_opt = self.worker_app().find_by_name(name).await.ok().flatten();
+                    let worker_opt = self.worker_app().find_by_name(&worker_name).await.ok().flatten();
                     let runner_name = if let Some(worker) = &worker_opt {
                         if let Some(worker_data) = &worker.data {
                             if let Some(runner_id) = &worker_data.runner_id {
@@ -245,13 +253,13 @@ pub trait FunctionApp:
                         None
                     };
 
-                    // Use the common stream processing method
                     let stream = self.process_job_result_to_stream(
                         job_id,
                         started_at,
                         jres,
                         stream_opt,
                         runner_name,
+                        tool_name_opt,
                     );
 
                     // Yield all results from the stream
@@ -277,6 +285,7 @@ pub trait FunctionApp:
             futures::stream::BoxStream<'static, proto::jobworkerp::data::ResultOutputItem>,
         >,
         runner_name: Option<String>,
+        using: Option<String>, // Method name for multi-method runners (MCP/Plugin)
     ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<FunctionResult>> + Send + 'a>> {
         use futures::StreamExt;
         use proto::jobworkerp::data::{result_output_item, ResultStatus};
@@ -290,7 +299,7 @@ pub trait FunctionApp:
                         Some(result_output_item::Item::Data(data)) => {
                             // Decode the data using runner information
                             let decoded_output = if let Some(ref rname) = runner_name {
-                                self.decode_job_result_output(None, Some(rname), &data).await?
+                                self.decode_job_result_output(None, Some(rname), &data, using.as_deref()).await?
                             } else {
                                 Err(JobWorkerError::NotFound(
                                     "Runner name not found for decoding".to_string(),
@@ -344,7 +353,7 @@ pub trait FunctionApp:
 
                     // Decode the output using runner information
                     let decoded_output = if let Some(ref rname) = runner_name {
-                        match self.decode_job_result_output(None, Some(rname), &raw_output).await {
+                        match self.decode_job_result_output(None, Some(rname), &raw_output, using.as_deref()).await {
                             Ok(decoded) => decoded.to_string(),
                             Err(_) => String::from_utf8_lossy(&raw_output).to_string(),
                         }
@@ -438,6 +447,7 @@ pub trait FunctionApp:
     async fn find_function_by_worker_id(
         &self,
         worker_id: &proto::jobworkerp::data::WorkerId,
+        using: Option<&str>,
     ) -> Result<Option<FunctionSpecs>>
     where
         Self: Send + 'static,
@@ -449,8 +459,16 @@ pub trait FunctionApp:
             }) if data.runner_id.is_some() => {
                 let runner_id = data.runner_id.unwrap();
                 if let Some(runner) = self.runner_app().find_runner(&runner_id).await? {
-                    let specs = Self::convert_worker_to_function_specs(wid, data, runner)?;
-                    Ok(Some(specs))
+                    // If using is specified, use convert_worker_using_to_function_specs
+                    if let Some(using_str) = using {
+                        let specs = Self::convert_worker_using_to_function_specs(
+                            wid, data, runner, using_str,
+                        )?;
+                        Ok(Some(specs))
+                    } else {
+                        let specs = Self::convert_worker_to_function_specs(wid, data, runner)?;
+                        Ok(Some(specs))
+                    }
                 } else {
                     Ok(None)
                 }
@@ -492,22 +510,43 @@ pub trait FunctionApp:
         }
     }
 
-    /// Find a single function by FunctionId
-    async fn find_function_by_id(
+    /// Find a single function by FunctionUsing
+    ///
+    /// When FunctionUsing contains using specified,
+    /// returns FunctionSpecs for that specific using only.
+    /// When using is None, returns the full Runner's FunctionSpecs.
+    async fn find_function_by_using(
         &self,
-        function_id: &proto::jobworkerp::function::data::FunctionId,
+        function_using: &proto::jobworkerp::function::data::FunctionUsing,
     ) -> Result<Option<FunctionSpecs>>
     where
         Self: Send + 'static,
     {
         use proto::jobworkerp::function::data::function_id;
 
+        let function_id = match function_using.function_id.as_ref() {
+            Some(id) => id,
+            None => return Ok(None),
+        };
+
         match &function_id.id {
             Some(function_id::Id::RunnerId(runner_id)) => {
-                self.find_function_by_runner_id(runner_id).await
+                if let Some(using) = &function_using.using {
+                    // Specific using requested - return single tool FunctionSpecs
+                    self.find_function_by_runner_using(runner_id, using).await
+                } else {
+                    // No using - return full Runner FunctionSpecs
+                    self.find_function_by_runner_id(runner_id).await
+                }
             }
             Some(function_id::Id::WorkerId(worker_id)) => {
-                self.find_function_by_worker_id(worker_id).await
+                // Pass using to find_function_by_worker_id
+                if let Some(using) = &function_using.using {
+                    self.find_function_by_worker_id(worker_id, Some(using.as_str()))
+                        .await
+                } else {
+                    self.find_function_by_worker_id(worker_id, None).await
+                }
             }
             None => {
                 tracing::warn!("FunctionId has no id set. Returning None.");
@@ -516,10 +555,31 @@ pub trait FunctionApp:
         }
     }
 
-    /// Convert multiple FunctionIds to FunctionSpecs
-    async fn convert_function_ids_to_specs(
+    /// Find a single function for a specific Runner using
+    ///
+    /// Returns FunctionSpecs with single tool schema for MCP/Plugin runners,
+    /// or error if the runner doesn't support usings.
+    async fn find_function_by_runner_using(
         &self,
-        function_ids: &[proto::jobworkerp::function::data::FunctionId],
+        runner_id: &proto::jobworkerp::data::RunnerId,
+        using: &str,
+    ) -> Result<Option<FunctionSpecs>>
+    where
+        Self: Send + 'static,
+    {
+        match self.runner_app().find_runner(runner_id).await? {
+            Some(runner) => {
+                let specs = Self::convert_runner_using_to_function_specs(runner, using)?;
+                Ok(Some(specs))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Convert multiple FunctionUsings to FunctionSpecs
+    async fn convert_function_usings_to_specs(
+        &self,
+        function_usings: &[proto::jobworkerp::function::data::FunctionUsing],
         context_name: &str,
     ) -> Result<Vec<FunctionSpecs>>
     where
@@ -528,32 +588,39 @@ pub trait FunctionApp:
         let mut functions = Vec::new();
         let mut skipped_count = 0u64;
 
-        for function_id in function_ids {
-            match self.find_function_by_id(function_id).await? {
+        for function_using in function_usings {
+            match self.find_function_by_using(function_using).await? {
                 Some(specs) => functions.push(specs),
                 None => {
                     skipped_count += 1;
-                    if let Some(id) = &function_id.id {
-                        use proto::jobworkerp::function::data::function_id;
-                        match id {
-                            function_id::Id::RunnerId(runner_id) => {
-                                tracing::warn!(
-                                    "Runner not found for id: {} in context: {}. Skipping.",
-                                    runner_id.value,
-                                    context_name
-                                );
+                    if let Some(function_id) = &function_using.function_id {
+                        if let Some(id) = &function_id.id {
+                            use proto::jobworkerp::function::data::function_id;
+                            match id {
+                                function_id::Id::RunnerId(runner_id) => {
+                                    tracing::warn!(
+                                        "Runner not found for id: {} in context: {}. Skipping.",
+                                        runner_id.value,
+                                        context_name
+                                    );
+                                }
+                                function_id::Id::WorkerId(worker_id) => {
+                                    tracing::warn!(
+                                        "Worker not found for id: {} in context: {}. Skipping.",
+                                        worker_id.value,
+                                        context_name
+                                    );
+                                }
                             }
-                            function_id::Id::WorkerId(worker_id) => {
-                                tracing::warn!(
-                                    "Worker not found for id: {} in context: {}. Skipping.",
-                                    worker_id.value,
-                                    context_name
-                                );
-                            }
+                        } else {
+                            tracing::warn!(
+                                "FunctionId has no id set in context: {}. Skipping this target.",
+                                context_name
+                            );
                         }
                     } else {
                         tracing::warn!(
-                            "FunctionId has no id set in context: {}. Skipping this target.",
+                            "FunctionUsing has no function_id in context: {}. Skipping this target.",
                             context_name
                         );
                     }
@@ -567,8 +634,8 @@ pub trait FunctionApp:
                 target: "metrics",
                 skipped_targets = skipped_count,
                 context = context_name,
-                total_targets = function_ids.len(),
-                "Skipped targets during FunctionId to FunctionSpecs conversion"
+                total_targets = function_usings.len(),
+                "Skipped targets during FunctionUsing to FunctionSpecs conversion"
             );
         }
 
@@ -588,7 +655,6 @@ pub trait FunctionApp:
         // Find runner (name or id)
         let runner = self.find_runner(runner_name, runner_id).await?;
 
-        // Validate and serialize settings_json (use existing setup_runner_and_settings with descriptor cache)
         let runner_settings_value = settings_json
             .map(|json| {
                 serde_json::from_str::<serde_json::Value>(&json).map_err(|e| {
@@ -613,10 +679,8 @@ pub trait FunctionApp:
             worker_options,
         )?;
 
-        // Validate WorkerData (periodic/direct/channel etc.)
         self.validate_worker_options(&worker_data)?;
 
-        // Create Worker via WorkerApp
         let worker_id = self.worker_app().create(&worker_data).await?;
 
         Ok((worker_id, name))
@@ -631,7 +695,6 @@ pub trait FunctionApp:
         worker_options: Option<WorkerOptions>,
     ) -> Result<(WorkerId, String, Option<String>)> {
         // Load workflow definition (data or URL)
-        // Use WorkflowLoader via DI (UseWorkflowLoader trait)
         let workflow_schema = if let Some(data) = workflow_data {
             self.workflow_loader()
                 .load_workflow(None, Some(&data), true)
@@ -647,13 +710,11 @@ pub trait FunctionApp:
             .into());
         };
 
-        // Get workflow name (document.name)
         let workflow_name = workflow_schema.document.name.to_string();
 
         // Determine worker name (from name parameter or workflow definition)
         let worker_name = name.unwrap_or_else(|| workflow_name.clone());
 
-        // Create ReusableWorkflowRunnerSettings
         // Serialize workflow_schema to JSON string
         let workflow_json_str = serde_json::to_string(&workflow_schema).map_err(|e| {
             JobWorkerError::InvalidParameter(format!("Failed to serialize workflow schema: {}", e))
@@ -664,7 +725,6 @@ pub trait FunctionApp:
         };
         let runner_settings_bytes = ProstMessageCodec::serialize_message(&runner_settings)?;
 
-        // Get REUSABLE_WORKFLOW Runner ID (XXX same as db schema now)
         let runner_id = proto::jobworkerp::data::RunnerId {
             value: proto::jobworkerp::data::RunnerType::ReusableWorkflow as i64,
         };
@@ -680,10 +740,8 @@ pub trait FunctionApp:
             worker_options,
         )?;
 
-        // Validate WorkerData (periodic/direct/channel etc.)
         self.validate_worker_options(&worker_data)?;
 
-        // Create Worker via WorkerApp
         let worker_id = self.worker_app().create(&worker_data).await?;
 
         Ok((worker_id, worker_name, Some(workflow_name)))
@@ -719,14 +777,14 @@ pub trait FunctionApp:
                 // Standard runner processing
                 let arguments = self.transform_function_arguments(rdata.runner_type(), arguments);
                 tracing::debug!("call_function_for_llm: {}: {arguments:#?}", rid.value);
-                // Re-create runner object for standard handling
+                // Re-create runner object with schema for standard handling
                 let runner = RunnerWithSchema {
                     id: Some(rid),
                     data: Some(rdata),
                     settings_schema: String::new(),
-                    arguments_schema: String::new(),
-                    output_schema: None,
-                    tools: Vec::new(),
+                    method_json_schema_map: Some(proto::jobworkerp::data::MethodJsonSchemaMap {
+                        schemas: std::collections::HashMap::new(),
+                    }),
                 };
                 self.handle_runner_call_from_llm(
                     meta,
@@ -839,7 +897,7 @@ impl UseMokaCache<Arc<String>, Vec<FunctionSpecs>> for FunctionAppImpl {
         self.function_cache.cache()
     }
 }
-impl FunctionSpecConverter for FunctionAppImpl {}
+impl converter::FunctionSpecConverter for FunctionAppImpl {}
 impl ProtobufHelper for FunctionAppImpl {}
 impl McpNameConverter for FunctionAppImpl {}
 impl UseRunnerParserWithCache for FunctionAppImpl {
@@ -882,185 +940,4 @@ impl infra::workflow::UseWorkflowLoader for FunctionAppImpl {
 
 pub trait UseFunctionApp {
     fn function_app(&self) -> &FunctionAppImpl;
-}
-
-pub trait FunctionSpecConverter {
-    // Helper function to convert Runner to FunctionSpecs
-    fn convert_runner_to_function_specs(runner: RunnerWithSchema) -> FunctionSpecs {
-        if runner
-            .data
-            .as_ref()
-            .is_some_and(|r| r.runner_type == RunnerType::McpServer as i32)
-        {
-            FunctionSpecs {
-                runner_type: RunnerType::McpServer as i32,
-                runner_id: runner.id,
-                worker_id: None,
-                name: runner
-                    .data
-                    .as_ref()
-                    .map_or(String::new(), |data| data.name.clone()),
-                description: runner
-                    .data
-                    .as_ref()
-                    .map_or(String::new(), |data| data.description.clone()),
-                schema: Some(function_specs::Schema::McpTools(McpToolList {
-                    list: runner.tools,
-                })),
-                output_type: runner
-                    .data
-                    .as_ref()
-                    .map(|data| data.output_type)
-                    .unwrap_or(StreamingOutputType::NonStreaming as i32),
-            }
-        } else {
-            FunctionSpecs {
-                runner_type: runner
-                    .data
-                    .as_ref()
-                    .map(|data| data.runner_type)
-                    .unwrap_or(RunnerType::Plugin as i32),
-                runner_id: runner.id,
-                worker_id: None,
-                name: runner
-                    .data
-                    .as_ref()
-                    .map_or(String::new(), |data| data.name.clone()),
-                description: runner
-                    .data
-                    .as_ref()
-                    .map_or(String::new(), |data| data.description.clone()),
-                schema: Some(function_specs::Schema::SingleSchema(FunctionSchema {
-                    settings: Some(runner.settings_schema),
-                    arguments: runner.arguments_schema,
-                    result_output_schema: runner.output_schema,
-                })),
-                output_type: runner
-                    .data
-                    .as_ref()
-                    .map(|data| data.output_type)
-                    .unwrap_or(StreamingOutputType::NonStreaming as i32),
-            }
-        }
-    }
-
-    // Helper function to convert Worker to FunctionSpecs
-    fn convert_worker_to_function_specs(
-        id: WorkerId,
-        data: WorkerData,
-        runner: RunnerWithSchema,
-    ) -> Result<FunctionSpecs> {
-        // change input schema to the input of saved workflow
-        if runner
-            .data
-            .as_ref()
-            .is_some_and(|d| d.runner_type == RunnerType::ReusableWorkflow as i32)
-        {
-            let settings = ProstMessageCodec::deserialize_message::<ReusableWorkflowRunnerSettings>(
-                data.runner_settings.as_slice(),
-            )?;
-            let input_schema = settings
-                .input_schema()
-                .map(|s| Self::parse_as_json_with_key_or_noop("schema", s));
-            let input_schema =
-                input_schema.map(|s| Self::parse_as_json_with_key_or_noop("document", s));
-            Ok(FunctionSpecs {
-                runner_type: RunnerType::ReusableWorkflow as i32,
-                runner_id: runner.id,
-                worker_id: Some(id),
-                name: data.name,
-                description: data.description,
-                schema: Some(function_specs::Schema::SingleSchema(FunctionSchema {
-                    settings: None, // Workers don't have config (already set)
-                    arguments: input_schema.map(|s| s.to_string()).unwrap_or_default(),
-                    result_output_schema: runner.output_schema,
-                })),
-                output_type: runner
-                    .data
-                    .as_ref()
-                    .map(|data| data.output_type)
-                    .unwrap_or(StreamingOutputType::NonStreaming as i32),
-            })
-        } else if runner
-            .data
-            .as_ref()
-            .is_some_and(|r| r.runner_type == RunnerType::McpServer as i32)
-        {
-            Ok(FunctionSpecs {
-                runner_type: RunnerType::McpServer as i32,
-                runner_id: runner.id,
-                worker_id: Some(id),
-                name: data.name,
-                description: data.description,
-                // TODO divide and extract settings for each tool
-                schema: Some(function_specs::Schema::McpTools(McpToolList {
-                    list: runner.tools,
-                })),
-                output_type: runner
-                    .data
-                    .as_ref()
-                    .map(|data| data.output_type)
-                    .unwrap_or(StreamingOutputType::NonStreaming as i32),
-            })
-        } else {
-            Ok(FunctionSpecs {
-                runner_type: runner
-                    .data
-                    .as_ref()
-                    .map(|data| data.runner_type)
-                    .unwrap_or(RunnerType::Plugin as i32),
-                runner_id: runner.id,
-                worker_id: Some(id),
-                name: data.name,
-                description: data.description,
-                schema: Some(function_specs::Schema::SingleSchema(FunctionSchema {
-                    settings: None, // Workers don't have config (already set)
-                    arguments: runner.arguments_schema,
-                    result_output_schema: runner.output_schema,
-                })),
-                output_type: runner
-                    .data
-                    .as_ref()
-                    .map(|data| data.output_type)
-                    .unwrap_or(StreamingOutputType::NonStreaming as i32),
-            })
-        }
-    }
-
-    // Parse JSON value with key extraction
-    #[allow(clippy::if_same_then_else)]
-    fn parse_as_json_with_key_or_noop(key: &str, value: serde_json::Value) -> serde_json::Value {
-        match value {
-            serde_json::Value::Object(mut value_map) => {
-                if let Some(candidate_value) = value_map.remove(key) {
-                    // Try to remove key or noop
-                    // Check if not empty object
-                    if candidate_value.is_object()
-                        && candidate_value.as_object().is_some_and(|o| !o.is_empty())
-                    {
-                        candidate_value
-                    } else if candidate_value.is_string()
-                        && candidate_value.as_str().is_some_and(|s| !s.is_empty())
-                    {
-                        candidate_value
-                    } else {
-                        tracing::warn!(
-                            "data key:{} is not a valid json or string: {:#?}",
-                            key,
-                            &candidate_value
-                        );
-                        // Original value
-                        value_map.insert(key.to_string(), candidate_value.clone());
-                        serde_json::Value::Object(value_map)
-                    }
-                } else {
-                    serde_json::Value::Object(value_map)
-                }
-            }
-            _ => {
-                tracing::warn!("value is not json object: {:#?}", &value);
-                value
-            }
-        }
-    }
 }

@@ -88,7 +88,6 @@ impl CreateWorkflowRunnerImpl {
     async fn load_workflow_from_url(&self, url: &str) -> Result<serde_json::Value> {
         tracing::info!("Loading workflow from URL: {}", url);
 
-        // Use WorkflowLoader from AppModule (handles URL validation, HTTP fetching, and JSON/YAML parsing)
         let workflow_schema = self
             .app
             .workflow_loader
@@ -96,7 +95,6 @@ impl CreateWorkflowRunnerImpl {
             .await
             .context("Failed to load workflow from URL")?;
 
-        // Convert WorkflowSchema to serde_json::Value for compatibility with existing code
         let workflow_json = serde_json::to_value(&workflow_schema)
             .context("Failed to serialize WorkflowSchema to JSON")?;
 
@@ -116,7 +114,6 @@ impl CreateWorkflowRunnerImpl {
         let worker_data =
             self.build_worker_data(worker_name.clone(), workflow_def, worker_options)?;
 
-        // Create worker using WorkerApp API
         let worker = self
             .app
             .worker_app
@@ -126,7 +123,6 @@ impl CreateWorkflowRunnerImpl {
 
         tracing::info!("CREATE_WORKFLOW Worker created: {:?}", worker);
 
-        // Convert WorkerId to CreateWorkflowWorkerId and return
         let create_workflow_worker_id = CreateWorkflowWorkerId {
             value: worker.value,
         };
@@ -142,7 +138,6 @@ impl CreateWorkflowRunnerImpl {
         use prost::Message;
         use proto::jobworkerp::data::{ResponseType, RunnerId, RunnerType};
 
-        // Extract description from workflow definition
         let document = workflow_def.get("document");
         let workflow_description = document
             .and_then(|d| d.get("summary"))
@@ -213,28 +208,14 @@ impl RunnerSpec for CreateWorkflowRunnerImpl {
         CreateWorkflowRunnerSpec::runner_settings_proto(self)
     }
 
-    fn job_args_proto(&self) -> String {
-        CreateWorkflowRunnerSpec::job_args_proto(self)
-    }
-
-    fn result_output_proto(&self) -> Option<String> {
-        CreateWorkflowRunnerSpec::result_output_proto(self)
-    }
-
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        CreateWorkflowRunnerSpec::output_type(self)
+    fn method_proto_map(
+        &self,
+    ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        CreateWorkflowRunnerSpec::method_proto_map(self)
     }
 
     fn settings_schema(&self) -> String {
         CreateWorkflowRunnerSpec::settings_schema(self)
-    }
-
-    fn arguments_schema(&self) -> String {
-        CreateWorkflowRunnerSpec::arguments_schema(self)
-    }
-
-    fn output_schema(&self) -> Option<String> {
-        CreateWorkflowRunnerSpec::output_schema(self)
     }
 }
 
@@ -249,6 +230,7 @@ impl RunnerTrait for CreateWorkflowRunnerImpl {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         tracing::info!("Starting CREATE_WORKFLOW execution");
 
@@ -320,6 +302,7 @@ impl RunnerTrait for CreateWorkflowRunnerImpl {
         &mut self,
         _args: &[u8],
         _metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> Result<
         std::pin::Pin<
             Box<

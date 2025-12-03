@@ -20,6 +20,7 @@ pub struct JobRow {
     pub priority: i32,
     pub timeout: i64,
     pub request_streaming: bool,
+    pub using: Option<String>,
 }
 
 impl JobRow {
@@ -39,6 +40,7 @@ impl JobRow {
                 priority: self.priority,
                 timeout: self.timeout as u64,
                 request_streaming: self.request_streaming,
+                using: self.using.clone(),
             }),
             ..Default::default()
         }
@@ -177,6 +179,7 @@ mod tests {
                 priority: 0,
                 timeout: 1000,
                 request_streaming: false,
+                using: None,
             }),
             metadata: HashMap::new(),
         };
@@ -217,6 +220,7 @@ mod tests {
             response_type: ResponseType::Direct as i32,
             store_success: true,
             store_failure: true,
+            using: None,
         };
         struct JobQueueImpl {}
         impl UseProstCodec for JobQueueImpl {}

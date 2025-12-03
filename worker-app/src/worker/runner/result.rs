@@ -363,6 +363,7 @@ mod tests {
                 enqueue_time: 0,
                 run_after_time: 0,
                 grabbed_until_time: None,
+                using: None,
             }),
             metadata: HashMap::new(),
         };

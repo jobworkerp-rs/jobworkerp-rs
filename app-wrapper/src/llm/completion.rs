@@ -91,28 +91,14 @@ impl RunnerSpec for LLMCompletionRunnerImpl {
         LLMCompletionRunnerSpec::runner_settings_proto(self)
     }
 
-    fn job_args_proto(&self) -> String {
-        LLMCompletionRunnerSpec::job_args_proto(self)
-    }
-
-    fn result_output_proto(&self) -> Option<String> {
-        LLMCompletionRunnerSpec::result_output_proto(self)
-    }
-
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        LLMCompletionRunnerSpec::output_type(self)
+    fn method_proto_map(
+        &self,
+    ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        LLMCompletionRunnerSpec::method_proto_map(self)
     }
 
     fn settings_schema(&self) -> String {
         LLMCompletionRunnerSpec::settings_schema(self)
-    }
-
-    fn arguments_schema(&self) -> String {
-        LLMCompletionRunnerSpec::arguments_schema(self)
-    }
-
-    fn output_schema(&self) -> Option<String> {
-        LLMCompletionRunnerSpec::output_schema(self)
     }
 }
 
@@ -175,6 +161,7 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         &mut self,
         arg: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let cancellation_token = self.get_cancellation_token().await;
 
@@ -274,6 +261,7 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let cancellation_token = self.get_cancellation_token().await;
 
@@ -362,7 +350,6 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
             // Note: cancellation_token is NOT reset here because stream is still active
             Ok(output_stream)
         } else if let Some(genai) = self.genai.as_mut() {
-            // Get streaming responses from genai service with cancellation check
             let stream = tokio::select! {
                 result = genai.request_chat_stream(args, metadata) => result?,
                 _ = cancellation_token.cancelled() => {
@@ -371,7 +358,6 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
                 }
             };
 
-            // Add cancellation support to GenAI stream
             let cancel_token = cancellation_token.clone();
             let cancellable_stream = stream! {
                 tokio::pin!(stream);

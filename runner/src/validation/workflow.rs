@@ -41,7 +41,8 @@ impl WorkflowValidator for StandardWorkflowValidator {
             for error in validator.iter_errors(definition) {
                 error_details.push(format!(
                     "Path: {}, Message: {:#?}",
-                    error.instance_path, error
+                    error.instance_path(),
+                    error
                 ));
             }
             if !error_details.is_empty() {

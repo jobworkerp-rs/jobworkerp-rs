@@ -268,7 +268,6 @@ impl WorkflowExecutor {
                 lock.input.clone()
             };
 
-            // Validate input schema and apply defaults
             let input_with_defaults = if let Some(schema) = workflow.input.schema.as_ref() {
                 if let Some(schema_doc) = schema.json_schema() {
                     // First, validate the input
@@ -589,7 +588,6 @@ impl WorkflowExecutor {
             other => return Ok(other),
         };
 
-        // Get properties from schema
         let properties = match schema.get("properties").and_then(|p| p.as_object()) {
             Some(props) => props,
             None => return Ok(serde_json::Value::Object(input_obj)),
@@ -808,7 +806,6 @@ pub trait WorkflowTracing {
             workflow.do_.0.len() as i64,
         ));
 
-        // Add service-related attributes for better organization in Jaeger
         span.set_attribute(opentelemetry::KeyValue::new(
             "service.operation",
             "workflow_execution",
@@ -1160,7 +1157,6 @@ mod tests {
             drop(second_execution_wfc);
             tracing::debug!("====== Second execution output: {:#?}", second_output);
 
-            // Verify that outputs are identical due to checkpoint restoration
             assert_eq!(
                 first_output, second_output,
                 "Outputs should be identical when restored from checkpoint"
@@ -1216,7 +1212,6 @@ mod tests {
             assert!(!first_execution_results.is_empty());
             let first_final_output = first_execution_results.last().unwrap();
 
-            // Get checkpoint from the middle of the workflow execution
             let checkpoint_repo = executor.checkpoint_repository.as_ref().unwrap();
             let checkpoint_key = format!(
                 "{}:{}:{}",
@@ -1267,7 +1262,6 @@ mod tests {
                 assert!(!second_execution_results.is_empty());
                 let second_final_output = second_execution_results.last().unwrap();
 
-                // Verify that checkpoint restoration preserves random state
                 if let (Some(first_random), Some(second_random)) = (
                     first_final_output.get("random_value"),
                     second_final_output.get("random_value"),
@@ -1426,7 +1420,6 @@ mod tests {
                     Task::SetTask(SetTask {
                         set: {
                             let mut set_map = serde_json::Map::new();
-                            // Use previous random value as new seed
                             set_map.insert(
                                 "next_seed".to_string(),
                                 serde_json::json!("${.random_value}"),
@@ -1513,7 +1506,6 @@ mod tests {
         }
     }
     async fn load_test_workflow_from_yaml(yaml_path: &str) -> WorkflowSchema {
-        // Use local-only loader for loading local test files (no network access needed)
         let loader = WorkflowLoader::new_local_only();
         loader
             .load_workflow(Some(yaml_path), None, false)
@@ -1573,7 +1565,6 @@ mod tests {
             assert_eq!(first_execution_wfc.status, WorkflowStatus::Completed);
             let first_output = first_execution_wfc.output.as_ref().unwrap().clone();
 
-            // Get checkpoint from inside the for loop
             let checkpoint_repo = executor.checkpoint_repository.as_ref().unwrap();
             let checkpoint_key = format!(
                 "{}:{}:{}",
@@ -1628,7 +1619,6 @@ mod tests {
             assert_eq!(second_execution_wfc.status, WorkflowStatus::Completed);
             let second_output = second_execution_wfc.output.as_ref().unwrap().clone();
 
-            // Verify that outputs match when restored from checkpoint inside for loop
             assert_eq!(
                 first_output, second_output,
                 "Outputs should be identical when restored from checkpoint inside for loop"
@@ -1689,7 +1679,6 @@ mod tests {
             let first_output = first_execution_wfc.output.as_ref().unwrap().clone();
             drop(first_execution_wfc);
 
-            // Get checkpoint from inside the try block
             let checkpoint_repo = executor.checkpoint_repository.as_ref().unwrap();
             let checkpoint_key = format!(
                 "{}:{}:{}",
@@ -1744,7 +1733,6 @@ mod tests {
             assert_eq!(second_execution_wfc.status, WorkflowStatus::Completed);
             let second_output = second_execution_wfc.output.as_ref().unwrap().clone();
 
-            // Verify that outputs match when restored from checkpoint inside try block
             assert_eq!(
                 first_output, second_output,
                 "Outputs should be identical when restored from checkpoint inside try block"
@@ -1804,7 +1792,6 @@ mod tests {
             assert_eq!(first_execution_wfc.status, WorkflowStatus::Completed);
             let first_output = first_execution_wfc.output.as_ref().unwrap().clone();
 
-            // Get checkpoint from deep nested structure
             let checkpoint_repo = executor.checkpoint_repository.as_ref().unwrap();
             let checkpoint_key = format!(
                 "{}:{}:{}",
@@ -1859,7 +1846,6 @@ mod tests {
             assert_eq!(second_execution_wfc.status, WorkflowStatus::Completed);
             let second_output = second_execution_wfc.output.as_ref().unwrap().clone();
 
-            // Verify that outputs match when restored from deep nested checkpoint
             assert_eq!(
                 first_output, second_output,
                 "Outputs should be identical when restored from deep nested checkpoint"
