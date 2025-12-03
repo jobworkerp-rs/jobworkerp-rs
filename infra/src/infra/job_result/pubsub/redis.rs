@@ -199,7 +199,6 @@ impl JobResultSubscriber for RedisJobResultPubSubRepositoryImpl {
                                     "subscribe_result_stream_received: unsubscribed: {}",
                                     cn2.as_str()
                                 );
-                                // Return the end marker to the client instead of None
                                 Some(result)
                             }
                             Some(res) => {

@@ -1,9 +1,5 @@
-use jobworkerp_runner::runner::{
-    mcp::McpServerRunnerImpl, timeout_config::RunnerTimeoutConfig, RunnerSpec,
-};
+use jobworkerp_runner::runner::RunnerSpec;
 use proto::jobworkerp::data::{Runner, RunnerData, RunnerId};
-use proto::jobworkerp::function::data::McpTool;
-use std::any::Any;
 
 // db row definitions
 #[derive(sqlx::FromRow, Debug, Clone, PartialEq)]
@@ -17,165 +13,66 @@ pub struct RunnerRow {
 }
 
 impl RunnerRow {
+    /// Convert RunnerRow to RunnerWithSchema with cached JSON Schema generation
+    ///
+    /// This method generates both Protobuf and JSON Schema maps from the runner,
+    /// and caches them in RunnerWithSchema for efficient reuse.
+    ///
+    /// **Performance**: JSON Schema conversion happens only once during this call.
+    /// All subsequent usage (FunctionSpecs conversion, etc.) reuses the cached data.
+    ///
+    /// Unified schema loading for all runners (MCP/Plugin/Normal).
+    /// - MCP Server: Instant (from in-memory available_tools)
+    /// - Plugin: Synchronous FFI call (timeout handled at plugin initialization)
+    /// - Normal Runners: Instant (hardcoded schemas)
     pub async fn to_runner_with_schema(
         &self,
         runner: Box<dyn RunnerSpec + Send + Sync>,
     ) -> RunnerWithSchema {
-        if let Some(mcp_runner) =
-            (runner.as_ref() as &dyn Any).downcast_ref::<McpServerRunnerImpl>()
-        {
-            // Load tools with timeout to prevent hanging on unresponsive MCP servers
-            let timeout_config = RunnerTimeoutConfig::global();
-            let tools = tokio::time::timeout(timeout_config.mcp_tools_load, mcp_runner.tools())
-                .await
-                .unwrap_or_else(|_| {
-                    tracing::warn!(
-                        "MCP runner '{}' tools loading timed out after {:?}",
-                        self.name,
-                        timeout_config.mcp_tools_load
-                    );
-                    Ok(Vec::default())
-                })
-                .unwrap_or_else(|e| {
-                    tracing::error!("MCP runner '{}' tools loading failed: {:?}", self.name, e);
-                    Vec::default()
-                });
+        let runner_settings_proto = runner.runner_settings_proto();
 
-            RunnerWithSchema {
-                id: Some(RunnerId { value: self.id }),
-                data: Some(RunnerData {
-                    name: self.name.clone(),
-                    description: self.description.clone(),
-                    runner_type: self.r#type,
-                    runner_settings_proto: runner.runner_settings_proto(),
-                    job_args_proto: runner.job_args_proto(),
-                    result_output_proto: runner.result_output_proto(),
-                    output_type: runner.output_type() as i32,
-                    definition: self.definition.clone(),
-                }),
-                settings_schema: runner.settings_schema(),
-                arguments_schema: runner.arguments_schema(),
-                output_schema: runner.output_schema(),
-                tools,
-            }
-        } else {
-            // Plugin schema methods are synchronous and may block, so we need to run them in spawn_blocking
-            // to allow timeout to work properly
-            let timeout_config = RunnerTimeoutConfig::global();
-            let id = self.id;
-            let description = self.description.clone();
-            let r#type = self.r#type;
-            let definition = self.definition.clone();
+        let proto_map = runner.method_proto_map();
+        let method_proto_map = Some(proto::jobworkerp::data::MethodProtoMap {
+            schemas: proto_map.clone(),
+        });
 
-            let schema_result = tokio::time::timeout(
-                timeout_config.plugin_schema_load,
-                tokio::task::spawn_blocking(move || {
-                    let runner_settings_proto = runner.runner_settings_proto();
-                    let job_args_proto = runner.job_args_proto();
-                    let result_output_proto = runner.result_output_proto();
-                    let settings_schema = runner.settings_schema();
-                    let arguments_schema = runner.arguments_schema();
-                    let output_schema = runner.output_schema();
-                    let output_type = runner.output_type() as i32;
+        // CRITICAL: Call runner.method_json_schema_map() instead of auto-converting
+        // Reason: Runners like InlineWorkflowRunnerSpec provide hand-crafted JSON Schema
+        //         with oneOf constraints that would be lost in auto-conversion
+        use jobworkerp_runner::runner::MethodJsonSchema;
+        let json_schema_map = MethodJsonSchema::map_to_proto(runner.method_json_schema_map());
+        let method_json_schema_map = Some(proto::jobworkerp::data::MethodJsonSchemaMap {
+            schemas: json_schema_map,
+        });
 
-                    (
-                        runner_settings_proto,
-                        job_args_proto,
-                        result_output_proto,
-                        settings_schema,
-                        arguments_schema,
-                        output_schema,
-                        output_type,
-                    )
-                }),
-            )
-            .await;
+        let settings_schema = runner.settings_schema();
 
-            match schema_result {
-                Ok(Ok((
-                    runner_settings_proto,
-                    job_args_proto,
-                    result_output_proto,
-                    settings_schema,
-                    arguments_schema,
-                    output_schema,
-                    output_type,
-                ))) => RunnerWithSchema {
-                    id: Some(RunnerId { value: id }),
-                    data: Some(RunnerData {
-                        name: self.name.clone(),
-                        description,
-                        runner_type: r#type,
-                        runner_settings_proto,
-                        job_args_proto,
-                        result_output_proto,
-                        output_type,
-                        definition,
-                    }),
-                    settings_schema,
-                    arguments_schema,
-                    output_schema,
-                    tools: Vec::default(),
-                },
-                Ok(Err(e)) => {
-                    tracing::error!(
-                        "Plugin runner '{}' (id={}, definition='{}') schema loading failed: {:?}",
-                        self.name,
-                        id,
-                        self.definition,
-                        e
-                    );
-                    // Return minimal schema on error
-                    RunnerWithSchema {
-                        id: Some(RunnerId { value: id }),
-                        data: Some(RunnerData {
-                            name: self.name.clone(),
-                            description,
-                            runner_type: r#type,
-                            runner_settings_proto: String::new(),
-                            job_args_proto: String::new(),
-                            result_output_proto: None,
-                            output_type: 0,
-                            definition,
-                        }),
-                        settings_schema: String::new(),
-                        arguments_schema: String::new(),
-                        output_schema: None,
-                        tools: Vec::default(),
-                    }
-                }
-                Err(_) => {
-                    tracing::error!(
-                        "Plugin runner '{}' (id={}, definition='{}') schema loading timed out after {:?}",
-                        self.name,
-                        id,
-                        self.definition,
-                        timeout_config.plugin_schema_load
-                    );
-                    // Return minimal schema on timeout
-                    RunnerWithSchema {
-                        id: Some(RunnerId { value: id }),
-                        data: Some(RunnerData {
-                            name: self.name.clone(),
-                            description,
-                            runner_type: r#type,
-                            runner_settings_proto: String::new(),
-                            job_args_proto: String::new(),
-                            result_output_proto: None,
-                            output_type: 0,
-                            definition,
-                        }),
-                        settings_schema: String::new(),
-                        arguments_schema: String::new(),
-                        output_schema: None,
-                        tools: Vec::default(),
-                    }
-                }
-            }
+        RunnerWithSchema {
+            id: Some(RunnerId { value: self.id }),
+            data: Some(RunnerData {
+                name: self.name.clone(),
+                description: self.description.clone(),
+                runner_type: self.r#type,
+                runner_settings_proto,
+                definition: self.definition.clone(),
+                method_proto_map,
+            }),
+            settings_schema,
+            method_json_schema_map, // ✅ Cached JSON Schema
         }
     }
 }
 
+/// Runner with cached schema information
+///
+/// This structure caches both Protobuf and JSON Schema definitions
+/// to avoid repeated conversions. The conversion happens once during
+/// RunnerRow::to_runner_with_schema() and is reused everywhere.
+///
+/// # Schema Changes
+/// - Removed: arguments_schema (tag 4), output_schema (tag 5), tools (tag 6)
+/// - Added: method_json_schema_map (tag 7)
+/// - All method-level schemas (including MCP tools) are unified in method_json_schema_map
 #[derive(Clone, serde::Serialize, serde::Deserialize, PartialEq, ::prost::Message)]
 pub struct RunnerWithSchema {
     #[prost(message, tag = "1")]
@@ -184,12 +81,14 @@ pub struct RunnerWithSchema {
     pub data: Option<RunnerData>,
     #[prost(string, tag = "3")]
     pub settings_schema: String,
-    #[prost(string, tag = "4")]
-    pub arguments_schema: String,
-    #[prost(string, optional, tag = "5")]
-    pub output_schema: Option<String>,
-    #[prost(message, repeated, tag = "6")]
-    pub tools: Vec<McpTool>,
+    // Reserved tags for deleted fields (prevent reuse)
+    // tag 4: arguments_schema (deprecated, use method_json_schema_map)
+    // tag 5: output_schema (deprecated, use method_json_schema_map)
+    // tag 6: tools (deprecated, use method_json_schema_map)
+    /// Unified JSON Schema map (replaces arguments_schema, output_schema, tools)
+    /// Generated once from method_proto_map during to_runner_with_schema()
+    #[prost(message, tag = "7")]
+    pub method_json_schema_map: Option<proto::jobworkerp::data::MethodJsonSchemaMap>,
 }
 
 impl RunnerWithSchema {

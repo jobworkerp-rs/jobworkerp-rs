@@ -42,7 +42,6 @@ mod hybrid_indexing_integration_tests {
                 .expect("RDB indexing should be enabled");
             let _pool = rdb_module.job_repository.db_pool();
 
-            // Get status repository from redis module for Hybrid mode
             let redis_module = repositories
                 .redis_module
                 .as_ref()
@@ -52,7 +51,6 @@ mod hybrid_indexing_integration_tests {
                 .redis_job_processing_status_repository
                 .as_ref();
 
-            // Create test worker
             let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
@@ -95,13 +93,13 @@ mod hybrid_indexing_integration_tests {
                     0,
                     None,
                     false,
+                    None, // using
                 )
                 .await?;
 
             assert!(job_id.value > 0);
             assert!(res.is_none());
 
-            // Verify Redis status is PENDING
             assert_eq!(
                 status_repo.find_status(&job_id).await.unwrap(),
                 Some(JobProcessingStatus::Pending)
@@ -110,7 +108,6 @@ mod hybrid_indexing_integration_tests {
             // Wait for async indexing to complete (PENDING)
             tokio::time::sleep(Duration::from_millis(100)).await;
 
-            // Verify RDB index has PENDING status
             let rdb_pool = index_repo.db_pool();
             let query =
                 "SELECT status FROM job_processing_status WHERE job_id = ? AND deleted_at IS NULL";
@@ -130,7 +127,6 @@ mod hybrid_indexing_integration_tests {
             let deleted = app.delete_job(&job_id).await?;
             assert!(deleted);
 
-            // Verify Redis status is deleted
             assert_eq!(status_repo.find_status(&job_id).await.unwrap(), None);
 
             // Step 3: Verify RDB index status (should be logically deleted)
@@ -204,7 +200,6 @@ mod hybrid_indexing_integration_tests {
                 .expect("RDB indexing should be enabled");
             let _pool = rdb_module.job_repository.db_pool();
 
-            // Get status repository from redis module for Hybrid mode
             let redis_module = repositories
                 .redis_module
                 .as_ref()
@@ -214,7 +209,6 @@ mod hybrid_indexing_integration_tests {
                 .redis_job_processing_status_repository
                 .as_ref();
 
-            // Create test worker
             let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "sleep".to_string(),
@@ -256,6 +250,7 @@ mod hybrid_indexing_integration_tests {
                     0,
                     None,
                     false,
+                    None, // using
                 )
                 .await?;
 
@@ -274,7 +269,6 @@ mod hybrid_indexing_integration_tests {
             // in RedisJobDispatcherImpl (worker-app/src/worker/dispatcher/redis.rs).
             // For this test, we manually verify the CANCELLING transition only.
 
-            // Verify job is RUNNING
             let status = status_repo.find_status(&job_id).await.unwrap();
             assert_eq!(
                 status,
@@ -286,14 +280,12 @@ mod hybrid_indexing_integration_tests {
             let result = app.delete_job(&job_id).await?;
             assert!(result, "RUNNING job cancellation should succeed");
 
-            // Verify Redis status is deleted
             assert_eq!(
                 status_repo.find_status(&job_id).await.unwrap(),
                 None,
                 "RUNNING job status should be deleted after cancellation"
             );
 
-            // Verify RDB index status (should be logically deleted)
             // Wait and retry for async indexing to complete (deletion)
             // MySQL may have more latency than SQLite
             let rdb_pool = index_repo.db_pool();
@@ -354,7 +346,6 @@ mod hybrid_indexing_integration_tests {
             let app_module = create_hybrid_test_app_with_indexing(true).await?;
             let app = &app_module.job_app;
 
-            // Create test worker
             let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
@@ -399,6 +390,7 @@ mod hybrid_indexing_integration_tests {
                         0,
                         None,
                         false,
+                        None, // using
                     )
                     .await?;
                 job_ids.push(job_id);
@@ -450,7 +442,6 @@ mod hybrid_indexing_integration_tests {
             let app = &app_module.job_app;
             let repositories = &app_module.repositories;
 
-            // Verify RDB indexing is disabled
             let rdb_module = repositories
                 .rdb_module
                 .as_ref()
@@ -462,7 +453,6 @@ mod hybrid_indexing_integration_tests {
                 "RDB indexing should be disabled when enable_rdb_indexing=false"
             );
 
-            // Create test worker
             let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
@@ -504,6 +494,7 @@ mod hybrid_indexing_integration_tests {
                     0,
                     None,
                     false,
+                    None, // using
                 )
                 .await?;
 

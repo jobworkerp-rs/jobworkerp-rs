@@ -1,12 +1,11 @@
+use proto::DEFAULT_METHOD_NAME;
 pub mod client;
 pub mod repository;
 
 use self::repository::SlackRepository;
-use crate::jobworkerp::runner::{
-    SlackChatPostMessageArgs, SlackChatPostMessageResult, SlackRunnerSettings,
-};
+use crate::jobworkerp::runner::{SlackChatPostMessageArgs, SlackRunnerSettings};
 use crate::runner::RunnerTrait;
-use crate::{schema_to_json_string, schema_to_json_string_option};
+use crate::schema_to_json_string;
 use anyhow::{anyhow, Result};
 use futures::stream::BoxStream;
 use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
@@ -78,23 +77,23 @@ impl RunnerSpec for SlackPostMessageRunner {
         include_str!("../../protobuf/jobworkerp/runner/slack_runner.proto").to_string()
     }
     // use JobResult as job_args
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/slack_args.proto").to_string()
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        Some(include_str!("../../protobuf/jobworkerp/runner/slack_result.proto").to_string())
-    }
-    fn output_type(&self) -> StreamingOutputType {
-        StreamingOutputType::NonStreaming
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            DEFAULT_METHOD_NAME.to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!("../../protobuf/jobworkerp/runner/slack_args.proto")
+                    .to_string(),
+                result_proto: include_str!("../../protobuf/jobworkerp/runner/slack_result.proto")
+                    .to_string(),
+                description: Some("Post message to Slack channel".to_string()),
+                output_type: StreamingOutputType::NonStreaming as i32,
+            },
+        );
+        schemas
     }
     fn settings_schema(&self) -> String {
         schema_to_json_string!(SlackRunnerSettings, "settings_schema")
-    }
-    fn arguments_schema(&self) -> String {
-        schema_to_json_string!(SlackChatPostMessageArgs, "arguments_schema")
-    }
-    fn output_schema(&self) -> Option<String> {
-        schema_to_json_string_option!(SlackChatPostMessageResult, "output_schema")
     }
 }
 #[async_trait]
@@ -108,6 +107,7 @@ impl RunnerTrait for SlackPostMessageRunner {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let cancellation_token = self.get_cancellation_token().await;
 
@@ -164,6 +164,7 @@ impl RunnerTrait for SlackPostMessageRunner {
         &mut self,
         arg: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let cancellation_token = self.get_cancellation_token().await;
 
@@ -319,7 +320,6 @@ mod tests {
         // runner.set_cancellation_token(cancellation_token.clone());
         cancellation_token.cancel();
 
-        // Create valid Slack message args
         let slack_args = SlackChatPostMessageArgs {
             channel: "#test".to_string(),
             text: Some("Test message for cancellation".to_string()),
@@ -342,7 +342,7 @@ mod tests {
 
         // Execute with pre-cancelled token
         let start_time = std::time::Instant::now();
-        let (result, _) = runner.run(&arg_bytes, metadata).await;
+        let (result, _) = runner.run(&arg_bytes, metadata, None).await;
         let elapsed = start_time.elapsed();
 
         // Should fail immediately due to pre-execution cancellation
@@ -361,10 +361,8 @@ mod tests {
         use std::time::{Duration, Instant};
         use tokio::sync::Mutex;
 
-        // Use Arc<tokio::sync::Mutex<>> to share runner between tasks (similar to LLM pattern)
         let runner = Arc::new(Mutex::new(SlackPostMessageRunner::new()));
 
-        // Create test arguments
         use crate::jobworkerp::runner::SlackChatPostMessageArgs;
         let arg = SlackChatPostMessageArgs {
             channel: "#test".to_string(),
@@ -383,7 +381,6 @@ mod tests {
             attachments: vec![],
         };
 
-        // Create cancellation token and set it on the runner
         let cancellation_token = tokio_util::sync::CancellationToken::new();
         {
             let _runner_guard = runner.lock().await;
@@ -400,7 +397,7 @@ mod tests {
         let execution_task = tokio::spawn(async move {
             let mut runner_guard = runner_clone.lock().await;
             let stream_result = runner_guard
-                .run_stream(&serialized_args, HashMap::new())
+                .run_stream(&serialized_args, HashMap::new(), None)
                 .await;
 
             match stream_result {
@@ -430,29 +427,25 @@ mod tests {
         eprintln!("Slack stream execution completed in {elapsed:?}");
 
         match execution_result {
-            Ok(stream_processing_result) => {
-                match stream_processing_result {
-                    Ok(_item_count) => {
-                        eprintln!("WARNING: Slack stream should be unimplemented");
-                    }
-                    Err(e) => {
-                        eprintln!("✓ Slack stream processing was cancelled as expected: {e}");
-                        // Check if it's a cancellation error or unimplemented error
-                        if e.to_string().contains("cancelled") {
-                            eprintln!("✓ Cancellation was properly detected");
-                        } else if e.to_string().contains("not implemented") {
-                            eprintln!("✓ Stream is unimplemented but cancellation check worked");
-                        }
+            Ok(stream_processing_result) => match stream_processing_result {
+                Ok(_item_count) => {
+                    eprintln!("WARNING: Slack stream should be unimplemented");
+                }
+                Err(e) => {
+                    eprintln!("✓ Slack stream processing was cancelled as expected: {e}");
+                    if e.to_string().contains("cancelled") {
+                        eprintln!("✓ Cancellation was properly detected");
+                    } else if e.to_string().contains("not implemented") {
+                        eprintln!("✓ Stream is unimplemented but cancellation check worked");
                     }
                 }
-            }
+            },
             Err(e) => {
                 eprintln!("Slack stream execution task failed: {e}");
                 panic!("Task failed: {e}");
             }
         }
 
-        // Verify that cancellation happened very quickly (since stream is unimplemented)
         if elapsed > Duration::from_secs(1) {
             panic!(
                 "Stream processing took too long ({elapsed:?}), should be immediate for unimplemented stream"

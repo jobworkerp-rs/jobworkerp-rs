@@ -61,7 +61,6 @@ pub async fn execute(
         None,
     )
     .await?;
-    // Get the stream of workflow context updates
     let workflow_stream = workflow_executor.execute_workflow(Arc::new(cx));
     pin_mut!(workflow_stream);
 
@@ -80,6 +79,5 @@ pub async fn execute(
         }
     }
 
-    // Return the final workflow context or an error if none was received
     final_context.ok_or_else(|| anyhow::anyhow!("No workflow context was returned"))
 }

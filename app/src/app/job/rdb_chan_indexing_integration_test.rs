@@ -45,7 +45,6 @@ mod rdb_chan_indexing_integration_tests {
                 .expect("RDB indexing should be enabled");
             let _pool = repositories.job_repository.db_pool();
 
-            // Create test worker
             let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
@@ -88,18 +87,17 @@ mod rdb_chan_indexing_integration_tests {
                     0,
                     None,
                     false,
+                    None, // using
                 )
                 .await?;
 
             assert!(job_id.value > 0);
             assert!(res.is_none());
 
-            // Get status repository from rdb module for Standalone mode
             let status_repo = repositories
                 .memory_job_processing_status_repository
                 .as_ref();
 
-            // Verify Memory status is PENDING
             assert_eq!(
                 status_repo.find_status(&job_id).await.unwrap(),
                 Some(JobProcessingStatus::Pending)
@@ -142,7 +140,6 @@ mod rdb_chan_indexing_integration_tests {
             let deleted = app.delete_job(&job_id).await?;
             assert!(deleted);
 
-            // Verify Memory status is deleted
             assert_eq!(status_repo.find_status(&job_id).await.unwrap(), None);
 
             // Step 4: Verify RDB index status (should be logically deleted)
@@ -184,7 +181,6 @@ mod rdb_chan_indexing_integration_tests {
             let app_module = create_rdb_chan_test_app(false, true).await?;
             let app = &app_module.job_app;
 
-            // Create test worker
             let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
@@ -229,6 +225,7 @@ mod rdb_chan_indexing_integration_tests {
                         0,
                         None,
                         false,
+                        None, // using
                     )
                     .await?;
                 job_ids.push(job_id);
@@ -283,7 +280,6 @@ mod rdb_chan_indexing_integration_tests {
                 .as_ref()
                 .expect("RDB module should exist");
 
-            // Verify that RDB indexing repository is None
             assert!(
                 repositories
                     .rdb_job_processing_status_index_repository
@@ -316,7 +312,6 @@ mod rdb_chan_indexing_integration_tests {
                 .memory_job_processing_status_repository
                 .as_ref();
 
-            // Create test worker with NoResult response type
             let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "sleep".to_string(),
@@ -359,10 +354,10 @@ mod rdb_chan_indexing_integration_tests {
                     0,
                     None,
                     false,
+                    None, // using
                 )
                 .await?;
 
-            // Verify Memory status is PENDING
             assert_eq!(
                 status_repo.find_status(&job_id).await?,
                 Some(JobProcessingStatus::Pending)
@@ -376,13 +371,11 @@ mod rdb_chan_indexing_integration_tests {
             let cancelled = app.delete_job(&job_id).await?;
             assert!(cancelled, "Job cancellation should succeed");
 
-            // Verify Memory status is deleted
             assert_eq!(status_repo.find_status(&job_id).await?, None);
 
             // Wait for async cancellation indexing
             tokio::time::sleep(Duration::from_millis(100)).await;
 
-            // Verify RDB index shows CANCELLING status before deletion
             let rdb_pool = index_repo.db_pool();
             let query = "SELECT status, deleted_at FROM job_processing_status WHERE job_id = ?";
 
@@ -441,7 +434,6 @@ mod rdb_chan_indexing_integration_tests {
                 .memory_job_processing_status_repository
                 .as_ref();
 
-            // Create test worker
             let runner_settings = infra::infra::job::rows::JobqueueAndCodec::serialize_message(
                 &proto::TestRunnerSettings {
                     name: "ls".to_string(),
@@ -484,13 +476,13 @@ mod rdb_chan_indexing_integration_tests {
                     0,
                     None,
                     false,
+                    None, // using
                 )
                 .await?;
 
             // Wait for async PENDING indexing
             tokio::time::sleep(Duration::from_millis(100)).await;
 
-            // Verify PENDING state has pending_time but no start_time
             let rdb_pool = index_repo.db_pool();
             let query = "SELECT status, start_time, pending_time, priority, channel FROM job_processing_status WHERE job_id = ?";
             #[allow(clippy::type_complexity)]
@@ -556,7 +548,6 @@ mod rdb_chan_indexing_integration_tests {
             // Wait for async indexing
             tokio::time::sleep(Duration::from_millis(100)).await;
 
-            // Verify RUNNING state has start_time set
             let row: Option<(i32, Option<i64>, Option<i64>)> = sqlx::query_as(
                 "SELECT status, start_time, pending_time FROM job_processing_status WHERE job_id = ?",
             )

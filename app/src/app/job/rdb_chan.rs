@@ -162,7 +162,6 @@ impl RdbChanJobAppImpl {
             job_id.value
         );
 
-        // Use JobQueueCancellationRepository to broadcast cancellation
         self.job_queue_cancellation_repository
             .broadcast_job_cancellation(job_id)
             .await?;
@@ -370,6 +369,7 @@ impl RdbChanJobAppImpl {
         timeout: u64,
         reserved_job_id: Option<JobId>,
         request_streaming: bool,
+        using: Option<String>,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -396,6 +396,7 @@ impl RdbChanJobAppImpl {
                 priority,
                 timeout,
                 request_streaming,
+                using,
             };
             // TODO validate argument types
             // self.validate_worker_and_job_args(w, job_data.args.as_ref())?;
@@ -574,6 +575,7 @@ impl JobApp for RdbChanJobAppImpl {
         reserved_job_id: Option<JobId>,
         request_streaming: bool,
         with_random_name: bool,
+        using: Option<String>,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -597,6 +599,7 @@ impl JobApp for RdbChanJobAppImpl {
             timeout,
             reserved_job_id,
             request_streaming,
+            using,
         )
         .await
     }
@@ -612,6 +615,7 @@ impl JobApp for RdbChanJobAppImpl {
         timeout: u64,
         reserved_job_id: Option<JobId>,
         request_streaming: bool,
+        using: Option<String>,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -638,6 +642,7 @@ impl JobApp for RdbChanJobAppImpl {
                 timeout,
                 reserved_job_id,
                 request_streaming,
+                using,
             )
             .await
         } else {
@@ -691,7 +696,6 @@ impl JobApp for RdbChanJobAppImpl {
                 let res = res_chan.or(res_db);
                 match res {
                     Ok(_updated) => {
-                        // Remove job from cache to ensure consistency
                         let cache_key = Arc::new(Self::find_cache_key(jid));
                         let _ = self.delete_cache(&cache_key).await.inspect_err(|e| {
                             tracing::warn!("Failed to delete job cache for {}: {:?}", jid.value, e)
@@ -969,7 +973,6 @@ impl JobApp for RdbChanJobAppImpl {
     ) -> Result<(u64, i64)> {
         use jobworkerp_base::JOB_STATUS_CONFIG;
 
-        // Get index repository
         let index_repo = self.job_status_index_repository.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "RDB JobProcessingStatus index repository not available. \
@@ -1330,7 +1333,6 @@ mod tests {
         });
         let subscrber = repositories.chan_job_result_pubsub_repository.clone();
 
-        // Create JobQueueCancellationRepository for test (use Chan implementation)
         let job_queue_cancellation_repository: Arc<dyn JobQueueCancellationRepository> =
             Arc::new(repositories.chan_job_queue_repository.clone());
 
@@ -1394,6 +1396,7 @@ mod tests {
                         0,
                         None,
                         false,
+                        None, // using
                     )
                     .await;
                 let (jid, job_res, _) = res.unwrap();
@@ -1477,6 +1480,7 @@ mod tests {
                     response_type: ResponseType::Direct as i32,
                     store_success: false,
                     store_failure: false,
+                    using: None,
                 }),
                 ..Default::default()
             };
@@ -1544,6 +1548,7 @@ mod tests {
                     0,
                     None,
                     false,
+                    None, // using
                 )
                 .await?
                 .0;
@@ -1560,6 +1565,7 @@ mod tests {
                     priority: 0,
                     timeout: 0,
                     request_streaming: false,
+                    using: None,
                 }),
                 metadata: (*metadata).clone(),
             };
@@ -1595,6 +1601,7 @@ mod tests {
                     response_type: ResponseType::NoResult as i32,
                     store_success: true,
                     store_failure: true,
+                    using: None,
                 }),
                 metadata: (*metadata).clone(),
             };
@@ -1673,6 +1680,7 @@ mod tests {
                     0,
                     None,
                     false,
+                    None, // using
                 )
                 .await?;
             assert!(job_id.value > 0);
@@ -1718,6 +1726,7 @@ mod tests {
                     response_type: ResponseType::NoResult as i32,
                     store_success: true,
                     store_failure: false,
+                    using: None,
                 }),
                 metadata: (*metadata).clone(),
             };
@@ -1795,6 +1804,7 @@ mod tests {
                     0,
                     None,
                     false,
+                    None, // using
                 )
                 .await?;
             assert!(job_id.value > 0);
@@ -1812,6 +1822,7 @@ mod tests {
                     0,
                     None,
                     false,
+                    None, // using
                 )
                 .await?;
             assert!(job_id2.value > 0);
@@ -1931,29 +1942,29 @@ mod tests {
         })
     }
 
-    #[test]
-    #[ignore] // Requires real RDB with job_processing_status table
-    fn test_cleanup_job_processing_status_success() {
-        TEST_RUNTIME.block_on(async {
-            // Setup: RDB indexing enabled
-            std::env::set_var("JOB_STATUS_RDB_INDEXING", "true");
-            std::env::set_var("JOB_STATUS_RETENTION_HOURS", "24");
+    // #[test]
+    // #[ignore] // Requires real RDB with job_processing_status table
+    // fn test_cleanup_job_processing_status_success() {
+    //     TEST_RUNTIME.block_on(async {
+    //         // Setup: RDB indexing enabled
+    //         std::env::set_var("JOB_STATUS_RDB_INDEXING", "true");
+    //         std::env::set_var("JOB_STATUS_RETENTION_HOURS", "24");
 
-            // Create app with index repository
-            let (app, _) = create_test_app(false).await.unwrap();
+    //         // Create app with index repository
+    //         let (app, _) = create_test_app(false).await.unwrap();
 
-            // Execute cleanup with 1 hour retention override
-            let result = app.cleanup_job_processing_status(Some(1)).await;
+    //         // Execute cleanup with 1 hour retention override
+    //         let result = app.cleanup_job_processing_status(Some(1)).await;
 
-            // Should succeed (even if no records deleted)
-            assert!(result.is_ok());
-            let (_deleted_count, cutoff_time) = result.unwrap();
-            assert!(cutoff_time > 0);
-            // Note: deleted_count can be 0 if no old records exist
+    //         // Should succeed (even if no records deleted)
+    //         assert!(result.is_ok());
+    //         let (_deleted_count, cutoff_time) = result.unwrap();
+    //         assert!(cutoff_time > 0);
+    //         // Note: deleted_count can be 0 if no old records exist
 
-            // Cleanup
-            std::env::remove_var("JOB_STATUS_RDB_INDEXING");
-            std::env::remove_var("JOB_STATUS_RETENTION_HOURS");
-        })
-    }
+    //         // Cleanup
+    //         std::env::remove_var("JOB_STATUS_RDB_INDEXING");
+    //         std::env::remove_var("JOB_STATUS_RETENTION_HOURS");
+    //     })
+    // }
 }

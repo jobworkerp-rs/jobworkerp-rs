@@ -14,6 +14,7 @@ use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use prost::Message;
 use proto::jobworkerp::data::{JobData, JobId, JobResult};
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType, StreamingOutputType};
+use proto::DEFAULT_METHOD_NAME;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
@@ -165,26 +166,41 @@ impl RunnerSpec for PythonCommandRunner {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/python_command_runner.proto").to_string()
     }
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/python_command_args.proto").to_string()
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        Some(
-            include_str!("../../protobuf/jobworkerp/runner/python_command_result.proto")
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            DEFAULT_METHOD_NAME.to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!(
+                    "../../protobuf/jobworkerp/runner/python_command_args.proto"
+                )
                 .to_string(),
-        )
+                result_proto: include_str!(
+                    "../../protobuf/jobworkerp/runner/python_command_result.proto"
+                )
+                .to_string(),
+                description: Some("Execute Python script via uv".to_string()),
+                output_type: StreamingOutputType::NonStreaming as i32,
+            },
+        );
+        schemas
     }
-    fn output_type(&self) -> StreamingOutputType {
-        StreamingOutputType::NonStreaming
+
+    // Reason: Protobuf oneof fields require oneOf constraints in JSON Schema for mutual exclusivity
+    fn method_json_schema_map(&self) -> HashMap<String, super::MethodJsonSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            DEFAULT_METHOD_NAME.to_string(),
+            super::MethodJsonSchema {
+                args_schema: include_str!("../../schema/PythonCommandArgs.json").to_string(),
+                result_schema: schema_to_json_string_option!(PythonCommandResult, "output_schema"),
+            },
+        );
+        schemas
     }
+
     fn settings_schema(&self) -> String {
         include_str!("../../schema/PythonCommandRunnerSettings.json").to_string()
-    }
-    fn arguments_schema(&self) -> String {
-        include_str!("../../schema/PythonCommandArgs.json").to_string()
-    }
-    fn output_schema(&self) -> Option<String> {
-        schema_to_json_string_option!(PythonCommandResult, "output_schema")
     }
 }
 
@@ -283,6 +299,7 @@ impl RunnerTrait for PythonCommandRunner {
         &mut self,
         arg: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let cancellation_token = self.get_cancellation_token().await;
 
@@ -378,7 +395,6 @@ impl RunnerTrait for PythonCommandRunner {
                 command.env(key, value);
             }
 
-            // Check cancellation before spawning process
             if cancellation_token.is_cancelled() {
                 tracing::info!("Python command execution was cancelled before spawn");
                 return Err(anyhow::anyhow!("Python command execution was cancelled before spawn"));
@@ -429,6 +445,7 @@ impl RunnerTrait for PythonCommandRunner {
         &mut self,
         _arg: &[u8],
         _metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let _cancellation_token = self.get_cancellation_token().await;
 
@@ -493,7 +510,6 @@ impl CancelMonitoring for PythonCommandRunner {
     }
 
     async fn reset_for_pooling(&mut self) -> Result<()> {
-        // Check for active processes to determine cleanup strategy
         let has_active_process = {
             let process_id = self.current_process_id.lock().await;
             process_id.is_some()
@@ -585,7 +601,7 @@ print(f"Requests version: {requests.__version__}")
             let mut args_bytes = Vec::new();
             job_args.encode(&mut args_bytes).unwrap();
 
-            let run_result = runner.run(&args_bytes, HashMap::new()).await;
+            let run_result = runner.run(&args_bytes, HashMap::new(), None).await;
             assert!(
                 run_result.0.is_ok(),
                 "Failed to run: {:?}",
@@ -636,7 +652,6 @@ print(f"Requests version: {requests.__version__}")
                 .await
                 .unwrap();
 
-            // Create a long-running Python script
             let job_args = PythonCommandArgs {
                 script: Some(python_command_args::Script::ScriptContent(
                     r#"
@@ -671,7 +686,7 @@ except KeyboardInterrupt:
             // Start Python execution and cancel it after 1 second
             let start_time = std::time::Instant::now();
             let execution_task =
-                tokio::spawn(async move { runner.run(&arg_bytes, metadata).await });
+                tokio::spawn(async move { runner.run(&arg_bytes, metadata, None).await });
 
             // Wait for script to start, then cancel the runner
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;

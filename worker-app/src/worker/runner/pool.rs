@@ -37,7 +37,6 @@ impl RunnerPoolManagerImpl {
     async fn reset_for_pooling_if_supported(
         runner_impl: &mut Box<dyn CancellableRunner + Send + Sync>,
     ) {
-        // Use the CancellableRunner trait directly to access CancelMonitoring
         tracing::trace!(
             "Resetting cancellation monitoring for pooling: {}",
             runner_impl.name()
@@ -96,7 +95,6 @@ impl Manager for RunnerPoolManagerImpl {
         tracing::debug!("runner recycled");
         let mut r = runner.lock().await;
 
-        // Use unified cancellation architecture
         r.as_cancel_monitoring()
             .request_cancellation()
             .await
@@ -313,6 +311,7 @@ mod tests {
                     priority: 0,
                     timeout: 30,
                     request_streaming: false,
+                    using: None,
                 },
             )
         }
@@ -323,7 +322,6 @@ mod tests {
                 let factory = create_test_factory().await?;
                 let (job_id, job_data) = create_test_job_data();
 
-                // Get runner from pool
                 let runner_obj = factory.get().await?;
 
                 {
@@ -339,10 +337,8 @@ mod tests {
                     // but we can verify reset_for_pooling() completes without error
                 }
 
-                // Return runner to pool (triggers recycle with reset_for_pooling)
                 drop(runner_obj);
 
-                // Get runner again to verify pool remains functional
                 let runner_obj2 = factory.get().await?;
                 {
                     let runner = runner_obj2.lock().await;
@@ -372,6 +368,7 @@ mod tests {
                         priority: 0,
                         timeout: 30,
                         request_streaming: false,
+                        using: None,
                     },
                 );
 
@@ -460,6 +457,7 @@ mod tests {
                             priority: 0,
                             timeout: 30,
                             request_streaming: false,
+                            using: None,
                         },
                     );
 
@@ -476,7 +474,6 @@ mod tests {
                             .ok();
                     }
 
-                    // Return to pool (triggers reset)
                     drop(runner_obj);
 
                     // Brief pause to allow pool recycling
@@ -485,7 +482,6 @@ mod tests {
                     tracing::debug!("Pool cycle {} completed", i + 1);
                 }
 
-                // Verify pool is still functional after multiple cycles
                 let runner_obj = factory.get().await?;
                 {
                     let runner = runner_obj.lock().await;
@@ -516,7 +512,6 @@ mod tests {
                         .ok();
                 }
 
-                // Return to pool - should handle any reset issues gracefully
                 drop(runner_obj);
 
                 // Pool should still be functional
@@ -554,7 +549,6 @@ mod tests {
                 // Wait for concurrent task
                 concurrent_task.await?;
 
-                // Verify pool is still functional
                 let runner_obj2 = factory.timeout_get(&Timeouts::wait_millis(1000)).await?;
                 {
                     let runner = runner_obj2.lock().await;

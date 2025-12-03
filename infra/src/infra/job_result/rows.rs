@@ -24,6 +24,7 @@ pub struct JobResultRow {
     pub run_after_time: i64,
     pub start_time: i64,
     pub end_time: i64,
+    pub using: Option<String>, // sub-method name for MCP/Plugin runners
 }
 
 impl JobResultRow {
@@ -55,6 +56,7 @@ impl JobResultRow {
                 response_type: 0,
                 store_success: false,
                 store_failure: false,
+                using: self.using.clone(),
             }),
             ..Default::default()
         }

@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS `job` (
     `retried` INT NOT NULL,
     `priority` INT NOT NULL,
     `timeout` BIGINT NOT NULL,
-    `request_streaming` BOOLEAN NOT NULL
+    `request_streaming` BOOLEAN NOT NULL,
+    `using` TEXT
 );
 
 CREATE TABLE IF NOT EXISTS `job_result` (
@@ -53,7 +54,8 @@ CREATE TABLE IF NOT EXISTS `job_result` (
     `start_time` BIGINT NOT NULL,
     `end_time` BIGINT NOT NULL,
     `timeout` BIGINT NOT NULL DEFAULT 0,
-    `request_streaming` BOOLEAN NOT NULL
+    `request_streaming` BOOLEAN NOT NULL,
+    `using` TEXT
 );
 
 CREATE TABLE IF NOT EXISTS `runner` (
@@ -127,10 +129,11 @@ CREATE TABLE IF NOT EXISTS `function_set_target` (
   `id` INTEGER PRIMARY KEY AUTOINCREMENT,
   `set_id` BIGINT NOT NULL, -- function set id
   `target_id` BIGINT NOT NULL, -- function set target id(worker or runner)
-  `target_type` INTEGER NOT NULL DEFAULT 0 -- function set target type (runner: 0 or worker: 1)
+  `target_type` INTEGER NOT NULL DEFAULT 0, -- function set target type (runner: 0 or worker: 1)
+  `using` TEXT -- optional using parameter for runner sub-methods
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS `set_target` ON function_set_target(`set_id`, `target_id`, `target_type`);
+CREATE UNIQUE INDEX IF NOT EXISTS `set_target` ON function_set_target(`set_id`, `target_id`, `target_type`, `using`);
 
 -- Indexes for admin UI filtering and sorting
 CREATE INDEX IF NOT EXISTS idx_runner_type ON runner(type);

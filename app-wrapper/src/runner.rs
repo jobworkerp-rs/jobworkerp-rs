@@ -153,11 +153,15 @@ impl RunnerFactory {
             }
             _ => {
                 if let Ok(server) = self.mcp_clients.connect_server(name).await {
-                    Some(Box::new(McpServerRunnerImpl::new_with_cancel_monitoring(
-                        server,
-                        create_cancel_helper(),
-                    ))
-                        as Box<dyn CancellableRunner + Send + Sync>)
+                    match McpServerRunnerImpl::new(server, Some(create_cancel_helper())).await {
+                        Ok(mcp_runner) => {
+                            Some(Box::new(mcp_runner) as Box<dyn CancellableRunner + Send + Sync>)
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to initialize MCP runner '{}': {}", name, e);
+                            None
+                        }
+                    }
                 } else {
                     // TODO: Add cancellation monitoring support to Plugin Runners
                     self.plugins

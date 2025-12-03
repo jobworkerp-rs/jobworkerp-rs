@@ -152,7 +152,6 @@ impl TaskExecutor {
         execution_id: &Option<Arc<ExecutionId>>,
         current_position: &RwLock<WorkflowPosition>,
     ) -> Option<bool> {
-        // Check if the task should be skipped based on the `from_position`
         if let Some(cp_position) = &self.workflow_context.read().await.checkpoint_position {
             let rel_path = cp_position.relative_path(current_position.read().await.full());
             if rel_path.as_ref().is_some_and(|rp| rp.is_empty()) && execution_id.is_some() {
@@ -178,7 +177,6 @@ impl TaskExecutor {
         }
     }
     async fn can_execute_next(&self, current_position: &RwLock<WorkflowPosition>) -> bool {
-        // Check if the task should be skipped based on the `from_position`
         // (should check checkpoint recovery or not before this)
         if let Some(cp_position) = &self.workflow_context.read().await.checkpoint_position {
             // lock workflow context
@@ -401,7 +399,6 @@ impl TaskExecutor {
         mut task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
         // XXX invalid by input transformation? (transform argument inner each task)
-        // Validate input schema
         if let Some(schema) = self.task.input().and_then(|i| i.schema.as_ref()) {
             if let Some(schema) = schema.json_schema() {
                 if let Err(e) = jsonschema::validate(schema, &task_context.input.clone()) {

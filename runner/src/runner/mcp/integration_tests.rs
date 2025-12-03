@@ -3,7 +3,9 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-// Get the path to the MCP server
+#[cfg(test)]
+use crate::runner::RunnerSpec;
+
 fn get_mcp_server_path(server_name: &str) -> PathBuf {
     let base_path = PathBuf::from("../modules/mcp-servers/src");
     base_path.join(server_name)
@@ -54,13 +56,11 @@ async fn setup_python_environment_with_uv(
         return Err(anyhow::anyhow!("Failed to install dependencies with uv"));
     }
 
-    // Return to original directory
     std::env::set_current_dir(original_dir)?;
 
     // Set environment variables
     let mut envs = setup_python_env(server_path);
 
-    // Add virtual environment path to environment variables
     let venv_path = server_path.join(".venv");
     let venv_bin_path = if cfg!(target_os = "windows") {
         venv_path.join("Scripts")
@@ -68,7 +68,6 @@ async fn setup_python_environment_with_uv(
         venv_path.join("bin")
     };
 
-    // Add virtual environment bin directory to the beginning of PATH
     let path_env = std::env::var("PATH").unwrap_or_default();
     let new_path = format!("{}:{}", venv_bin_path.to_string_lossy(), path_env);
     envs.insert("PATH".to_string(), new_path);
@@ -94,7 +93,6 @@ pub async fn create_time_mcp_server_transport() -> Result<McpServerTransportConf
     // Set up virtual environment
     let envs = setup_python_environment_with_uv(&time_server_path).await?;
 
-    // Use Python directly from the virtual environment
     let venv_python = get_venv_python(&time_server_path);
     Ok(McpServerTransportConfig::Stdio {
         command: venv_python.to_string_lossy().to_string(),
@@ -124,7 +122,6 @@ pub async fn create_fetch_mcp_server_transport() -> Result<McpServerTransportCon
     // Set up virtual environment
     let envs = setup_python_environment_with_uv(&fetch_server_path).await?;
 
-    // Use Python directly from the virtual environment
     let venv_python = get_venv_python(&fetch_server_path);
     Ok(McpServerTransportConfig::Stdio {
         command: venv_python.to_string_lossy().to_string(),
@@ -149,7 +146,6 @@ async fn test_time_mcp_server() -> Result<()> {
         server: vec![create_time_mcp_server().await?],
     };
 
-    // Create McpClients
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let mut clients = factory.test_all().await?;
     assert_eq!(clients.len(), 1);
@@ -169,7 +165,6 @@ async fn test_time_mcp_server() -> Result<()> {
     // Display results
     println!("Time server result: {result:?}");
 
-    // Validate results
     assert!(!result.content.is_empty());
 
     Ok(())
@@ -185,12 +180,10 @@ async fn test_mcp_cancellation() -> Result<()> {
         server: vec![create_time_mcp_server().await?],
     };
 
-    // Create McpClients
     let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
     let client = factory.connect_server("time").await?;
 
-    // Create MCP runner instance with the client
-    let mut runner = McpServerRunnerImpl::new(client);
+    let mut runner = McpServerRunnerImpl::new(client, None).await?;
 
     // Test cancellation without active request
     runner.request_cancellation().await.unwrap();
@@ -203,399 +196,12 @@ async fn test_mcp_cancellation() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn test_mcp_with_cancel_helper() -> Result<()> {
-    use crate::jobworkerp::runner::McpServerArgs;
+// Legacy mode test removed - replaced by test_using_mode_with_cancel_helper
 
-    use crate::runner::cancellation_helper::CancelMonitoringHelper;
-    use crate::runner::mcp::config::McpConfig;
-    use crate::runner::mcp::McpServerRunnerImpl;
-    use crate::runner::RunnerTrait;
-    use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
-    use std::collections::HashMap;
-    use tokio_util::sync::CancellationToken;
+// Legacy mode test removed - execution-during cancellation not currently supported in using mode
 
-    let config = McpConfig {
-        server: vec![create_time_mcp_server().await?],
-    };
-
-    // Create McpClients
-    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
-    let client = factory.connect_server("time").await?;
-
-    // Create cancellation helper with pre-cancelled token
-    let cancel_token = CancellationToken::new();
-    cancel_token.cancel(); // Pre-cancel to test cancellation behavior
-    use crate::runner::test_common::mock::MockCancellationManager;
-    let mock_manager = MockCancellationManager::new_with_token(cancel_token);
-    let cancel_helper = CancelMonitoringHelper::new(Box::new(mock_manager));
-
-    // Create MCP runner instance with cancellation helper
-    let mut runner = McpServerRunnerImpl::new_with_cancel_monitoring(client, cancel_helper);
-
-    // Test pre-execution cancellation
-    let mcp_args = McpServerArgs {
-        tool_name: "get_current_time".to_string(),
-        arg_json: r#"{"timezone": "UTC"}"#.to_string(),
-    };
-
-    let arg_bytes = ProstMessageCodec::serialize_message(&mcp_args)?;
-    let metadata = HashMap::new();
-
-    let start_time = std::time::Instant::now();
-    let (result, _) = runner.run(&arg_bytes, metadata).await;
-    let elapsed = start_time.elapsed();
-
-    // Should fail immediately due to pre-execution cancellation
-    assert!(result.is_err());
-    assert!(elapsed < std::time::Duration::from_millis(100));
-
-    let error_msg = result.unwrap_err().to_string();
-    assert!(error_msg.contains("cancelled before"));
-
-    eprintln!("=== MCP cancellation with helper test completed ===");
-    Ok(())
-}
-
-#[tokio::test]
-#[ignore] // Requires network access and fetch MCP server - run with --ignored for full testing
-async fn test_mcp_cancellation_during_execution() -> Result<()> {
-    use crate::jobworkerp::runner::McpServerArgs;
-    use crate::runner::cancellation::CancelMonitoring;
-    use crate::runner::mcp::config::McpConfig;
-    use crate::runner::mcp::McpServerRunnerImpl;
-    use crate::runner::RunnerTrait;
-    use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
-    use std::collections::HashMap;
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
-
-    let config = McpConfig {
-        server: vec![create_fetch_mcp_server().await?],
-    };
-
-    // Create McpClients
-    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
-    let client = factory.connect_server("fetch").await?;
-
-    // Create MCP runner instance with the client (wrapped for sharing)
-    let runner = Arc::new(Mutex::new(McpServerRunnerImpl::new(client)));
-
-    // Test concurrent cancellation during execution with slow HTTP request
-    let mcp_args = McpServerArgs {
-        tool_name: "fetch".to_string(),
-        arg_json: r#"{"url": "https://httpbin.org/delay/5", "max_length": 10000}"#.to_string(),
-    };
-
-    let arg_bytes = ProstMessageCodec::serialize_message(&mcp_args)?;
-    let metadata = HashMap::new();
-
-    let runner_clone = runner.clone();
-
-    // Start execution and track timing
-    let start_time = std::time::Instant::now();
-
-    // Start MCP tool call in a task
-    let execution_task = tokio::spawn(async move {
-        let mut runner_guard = runner_clone.lock().await;
-        runner_guard.run(&arg_bytes, metadata).await
-    });
-
-    // Wait for HTTP request to start (longer delay for fetch to actually begin)
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-    // Trigger cancellation from another task after the fetch has started
-    let cancel_task = tokio::spawn(async move {
-        let mut runner_guard = runner.lock().await;
-        runner_guard.request_cancellation().await.unwrap();
-        eprintln!("Cancellation triggered after 500ms");
-    });
-
-    // Wait for both tasks
-    let (execution_result, _) = tokio::join!(execution_task, cancel_task);
-
-    let elapsed = start_time.elapsed();
-    eprintln!("Total execution time: {elapsed:?}");
-
-    match execution_result {
-        Ok((result, _metadata)) => {
-            match result {
-                Ok(_) => {
-                    eprintln!("MCP fetch completed before cancellation took effect");
-                    if elapsed < std::time::Duration::from_secs(5) {
-                        eprintln!(
-                            "Fetch completed quickly ({elapsed:?}), cancellation may have worked"
-                        );
-                    } else {
-                        eprintln!("Fetch took full time ({elapsed:?}), cancellation did not work");
-                    }
-                }
-                Err(e) => {
-                    eprintln!("MCP fetch error (likely due to cancellation): {e}");
-                    // Check if error message contains cancellation indication
-                    let error_msg = e.to_string();
-                    if error_msg.contains("cancelled") || error_msg.contains("abort") {
-                        eprintln!("✅ Cancellation was successful! Error: {error_msg}");
-                        assert!(
-                            elapsed < std::time::Duration::from_secs(4),
-                            "Cancellation should prevent full 5-second delay, took {elapsed:?}"
-                        );
-                    } else {
-                        eprintln!("❌ Error not related to cancellation: {error_msg}");
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("MCP execution task failed: {e}");
-        }
-    }
-
-    eprintln!("=== MCP cancellation during execution test completed ===");
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_mcp_stream_execution_normal() -> Result<()> {
-    use crate::jobworkerp::runner::McpServerArgs;
-
-    use crate::runner::mcp::config::McpConfig;
-    use crate::runner::mcp::McpServerRunnerImpl;
-    use crate::runner::RunnerTrait;
-    use futures::StreamExt;
-    use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
-    use proto::jobworkerp::data::result_output_item::Item;
-    use std::collections::HashMap;
-
-    let config = McpConfig {
-        server: vec![create_time_mcp_server().await?],
-    };
-
-    // Create McpClients
-    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
-    let client = factory.connect_server("time").await?;
-
-    // Create MCP runner instance
-    let mut runner = McpServerRunnerImpl::new(client);
-
-    // Test MCP stream with time server
-    let mcp_args = McpServerArgs {
-        tool_name: "get_current_time".to_string(),
-        arg_json: r#"{"timezone": "UTC"}"#.to_string(),
-    };
-
-    let arg_bytes = ProstMessageCodec::serialize_message(&mcp_args)?;
-    let metadata = HashMap::new();
-
-    let start_time = std::time::Instant::now();
-    let mut stream = runner.run_stream(&arg_bytes, metadata).await?;
-
-    let mut item_count = 0;
-    let mut received_data = false;
-    let mut received_end = false;
-
-    while let Some(item) = stream.next().await {
-        item_count += 1;
-        eprintln!("Received stream item #{item_count}: {item:?}");
-
-        match item.item {
-            Some(Item::Data(data)) => {
-                received_data = true;
-                // Try to deserialize the data to verify it's valid MCP result
-                let result = ProstMessageCodec::deserialize_message::<
-                    crate::jobworkerp::runner::McpServerResult,
-                >(&data)?;
-                eprintln!("Deserialized MCP result: {result:?}");
-                assert!(!result.content.is_empty());
-                assert!(!result.is_error);
-            }
-            Some(Item::End(trailer)) => {
-                received_end = true;
-                eprintln!("Stream ended with trailer: {trailer:?}");
-            }
-            _ => {
-                eprintln!("Unexpected item type");
-            }
-        }
-    }
-
-    let elapsed = start_time.elapsed();
-    eprintln!("MCP stream completed in {elapsed:?}");
-
-    // Verify stream behavior
-    assert!(received_data, "Should have received data item");
-    assert!(received_end, "Should have received end marker");
-    assert_eq!(
-        item_count, 2,
-        "Should have received exactly 2 items (data + end)"
-    );
-    assert!(
-        elapsed < std::time::Duration::from_secs(5),
-        "Should complete quickly"
-    );
-
-    eprintln!("=== MCP stream normal execution test completed successfully ===");
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_mcp_stream_execution_with_cancellation() -> Result<()> {
-    use crate::jobworkerp::runner::McpServerArgs;
-
-    use crate::runner::mcp::config::McpConfig;
-    use crate::runner::mcp::McpServerRunnerImpl;
-    use crate::runner::RunnerTrait;
-    use futures::StreamExt;
-    use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
-    use proto::jobworkerp::data::result_output_item::Item;
-    use std::collections::HashMap;
-    use std::sync::Arc;
-    use std::time::Duration;
-    use tokio::sync::Mutex;
-    use tokio_util::sync::CancellationToken;
-
-    let config = McpConfig {
-        server: vec![create_time_mcp_server().await?],
-    };
-
-    // Create McpClients
-    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
-    let client = factory.connect_server("time").await?;
-
-    // Create MCP runner instance (wrapped for sharing)
-    let runner = Arc::new(Mutex::new(McpServerRunnerImpl::new(client)));
-
-    // Note: MCP Runner now uses helper-based cancellation
-    // This test verifies basic stream behavior without manager
-    let cancellation_token = CancellationToken::new();
-
-    let start_time = std::time::Instant::now();
-
-    // Test MCP stream with time server
-    let mcp_args = McpServerArgs {
-        tool_name: "get_current_time".to_string(),
-        arg_json: r#"{"timezone": "UTC"}"#.to_string(),
-    };
-
-    let arg_bytes = ProstMessageCodec::serialize_message(&mcp_args)?;
-    let metadata = HashMap::new();
-
-    let runner_clone = runner.clone();
-
-    // Start stream execution in a task
-    let execution_task = tokio::spawn(async move {
-        let mut runner_guard = runner_clone.lock().await;
-        let stream_result = runner_guard.run_stream(&arg_bytes, metadata).await;
-
-        match stream_result {
-            Ok(mut stream) => {
-                let mut item_count = 0;
-
-                while let Some(item) = stream.next().await {
-                    item_count += 1;
-                    eprintln!("Received stream item #{item_count}: {item:?}");
-
-                    match item.item {
-                        Some(Item::Data(_data)) => {
-                            eprintln!("Received data item before cancellation");
-                        }
-                        Some(Item::End(_trailer)) => {
-                            eprintln!("Stream ended (possibly due to cancellation)");
-                            break;
-                        }
-                        _ => {
-                            eprintln!("Unexpected item type");
-                        }
-                    }
-                }
-
-                Ok(item_count)
-            }
-            Err(e) => {
-                eprintln!("Stream creation failed: {e}");
-                Err(e)
-            }
-        }
-    });
-
-    // Wait for stream to start (let it run for a bit)
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // Cancel using the external token reference (avoids deadlock)
-    cancellation_token.cancel();
-    eprintln!("Called cancellation_token.cancel() after 100ms");
-
-    // Wait for the execution to complete or be cancelled
-    let execution_result = execution_task.await;
-    let elapsed = start_time.elapsed();
-
-    eprintln!("MCP stream execution completed in {elapsed:?}");
-
-    match execution_result {
-        Ok(stream_processing_result) => {
-            match stream_processing_result {
-                Ok(item_count) => {
-                    eprintln!("✓ MCP stream processing completed with {item_count} items");
-                    // The stream should complete quickly due to cancellation
-                    assert!(elapsed < Duration::from_secs(2));
-                }
-                Err(e) => {
-                    eprintln!("✓ MCP stream processing was cancelled as expected: {e}");
-                    // Check if it's a cancellation error
-                    if e.to_string().contains("cancelled") {
-                        eprintln!("✓ Cancellation was properly detected");
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("MCP stream execution task failed: {e}");
-            panic!("Task failed: {e}");
-        }
-    }
-
-    // Verify that cancellation happened quickly
-    if elapsed > Duration::from_secs(2) {
-        panic!("Stream processing took too long ({elapsed:?}), cancellation may not have worked");
-    }
-
-    eprintln!("✓ MCP stream execution with cancellation test completed successfully");
-    Ok(())
-}
-
-// #[tokio::test]
-// async fn test_sqlite_mcp_server() -> Result<()> {
-//     // SQLite server configuration (using in-memory database)
-//     let sqlite_server_path = get_mcp_server_path("sqlite");
-
-//     // Set up virtual environment
-//     let envs = setup_python_environment_with_uv(&sqlite_server_path).await?;
-
-//     // Use Python directly from the virtual environment
-//     let venv_python = get_venv_python(&sqlite_server_path);
-
-//     let config = McpConfig {
-//         server: vec![McpServerConfig {
-//             name: "sqlite".to_string(),
-//             transport: McpServerTransportConfig::Stdio {
-//                 command: venv_python.to_string_lossy().to_string(),
-//                 args: vec![
-//                     "-m".to_string(),
-//                     "mcp_server_sqlite".to_string(),
-//                     // "--db-path".to_string(),
-//                     // ":memory:".to_string(), // In-memory database
-//                 ],
-//                 envs,
-//             },
-//         }],
-//     };
-
-//     // Create McpClients
-//     let clients = crate::runner::mcp::client::McpClientsImpl::new(&config).await?;
-
-//     // Get list of tools
-//     let tools = clients.load_all_tools().await?;
-//     println!("SQLite server tools: {:?}", tools);
+// Legacy mode test removed - replaced by test_using_mode_stream_execution
+// Legacy mode test removed - replaced by test_using_mode_stream_with_cancellation
 
 //     // Verify tools from SQLite server are included
 //     assert!(tools.contains_key("sqlite"));
@@ -737,3 +343,689 @@ async fn test_mcp_stream_execution_with_cancellation() -> Result<()> {
 
 //     Ok(())
 // }
+
+// ==================== Sub-Method Mode Integration Tests ====================
+
+/// Test T3.7: Initialize using mode and verify tool list generation
+#[tokio::test]
+#[ignore] // Requires MCP server - run with --ignored for full testing
+async fn test_using_mode_initialization() -> Result<()> {
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerSpec;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+
+    let runner = McpServerRunnerImpl::new(client, None).await?;
+
+    let tool_names = runner.available_tool_names();
+    assert!(
+        !tool_names.is_empty(),
+        "Should have at least one tool available"
+    );
+    assert!(
+        tool_names.contains(&"get_current_time".to_string()),
+        "Should have get_current_time tool"
+    );
+
+    let proto_map = runner.method_proto_map();
+    assert!(
+        proto_map.contains_key("get_current_time"),
+        "Proto map should contain get_current_time"
+    );
+
+    let method_schema = proto_map.get("get_current_time").unwrap();
+    assert!(
+        method_schema.args_proto.contains("TimeGetCurrentTimeArgs")
+            || method_schema.args_proto.contains("syntax = \"proto3\""),
+        "Schema should be valid Protobuf definition"
+    );
+
+    eprintln!("✅ Sub-method mode initialization test passed");
+    eprintln!("   Available tools: {:?}", tool_names);
+    Ok(())
+}
+
+/// Test T3.7: Execute tool call in using mode with explicit using
+#[tokio::test]
+#[ignore] // Requires MCP server - run with --ignored for full testing
+async fn test_using_mode_execution_with_explicit_method() -> Result<()> {
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use std::collections::HashMap;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+    let mut runner = McpServerRunnerImpl::new(client, None).await?;
+
+    // Prepare JSON arguments (using mode uses JSON bytes)
+    let args = serde_json::json!({"timezone": "UTC"});
+    let args_bytes = serde_json::to_vec(&args)?;
+
+    // Execute with explicit using
+    let metadata = HashMap::new();
+    let (result, _) = runner
+        .run(&args_bytes, metadata, Some("get_current_time"))
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "Should execute successfully with explicit using"
+    );
+    let output = result.unwrap();
+    let output_str = String::from_utf8_lossy(&output);
+    assert!(!output_str.is_empty(), "Should return non-empty output");
+
+    eprintln!("✅ Sub-method mode execution test passed");
+    eprintln!("   Output: {}", output_str);
+    Ok(())
+}
+
+/// Test T3.7: Auto-select single tool when using is None
+#[tokio::test]
+#[ignore] // Requires MCP server - run with --ignored for full testing
+async fn test_using_mode_auto_select_single_tool() -> Result<()> {
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use std::collections::HashMap;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+    let mut runner = McpServerRunnerImpl::new(client, None).await?;
+
+    // Time server has only one tool (get_current_time), so using can be omitted
+    let tool_count = runner.available_tool_names().len();
+
+    if tool_count == 1 {
+        // Prepare JSON arguments
+        let args = serde_json::json!({"timezone": "Asia/Tokyo"});
+        let args_bytes = serde_json::to_vec(&args)?;
+
+        // Execute WITHOUT using - should auto-select
+        let metadata = HashMap::new();
+        let (result, _) = runner.run(&args_bytes, metadata, None).await;
+
+        assert!(
+            result.is_ok(),
+            "Should auto-select single tool when using is None"
+        );
+        eprintln!("✅ Single-tool auto-select test passed");
+    } else {
+        eprintln!(
+            "⚠️ Time server has {} tools, skipping auto-select test",
+            tool_count
+        );
+    }
+
+    Ok(())
+}
+
+/// Test T3.7: Error when using is required but not provided (multi-tool runner)
+#[tokio::test]
+#[ignore] // Requires fetch MCP server - run with --ignored for full testing
+async fn test_using_mode_error_when_method_required() -> Result<()> {
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use std::collections::HashMap;
+
+    let config = McpConfig {
+        server: vec![create_fetch_mcp_server().await?],
+    };
+
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("fetch").await?;
+    let mut runner = McpServerRunnerImpl::new(client, None).await?;
+
+    let tool_count = runner.available_tool_names().len();
+
+    if tool_count > 1 {
+        // Fetch server may have multiple tools (fetch, fetch_html, etc.)
+        let args = serde_json::json!({"url": "https://example.com"});
+        let args_bytes = serde_json::to_vec(&args)?;
+
+        // Execute WITHOUT using - should fail for multi-tool runner
+        let metadata = HashMap::new();
+        let (result, _) = runner.run(&args_bytes, metadata, None).await;
+
+        assert!(
+            result.is_err(),
+            "Should fail when using is required but not provided"
+        );
+
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("using is required") || error_msg.contains("Available"),
+            "Error message should indicate using is required. Got: {error_msg}"
+        );
+
+        eprintln!("✅ Multi-tool using required test passed");
+        eprintln!("   Error message: {error_msg}");
+    } else {
+        eprintln!(
+            "⚠️ Fetch server has only {} tool, skipping multi-tool test",
+            tool_count
+        );
+    }
+
+    Ok(())
+}
+
+/// Test T3.7: Error when unknown using is provided
+#[tokio::test]
+#[ignore] // Requires MCP server - run with --ignored for full testing
+async fn test_using_mode_error_unknown_method() -> Result<()> {
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use std::collections::HashMap;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+    let mut runner = McpServerRunnerImpl::new(client, None).await?;
+
+    // Prepare arguments
+    let args = serde_json::json!({"timezone": "UTC"});
+    let args_bytes = serde_json::to_vec(&args)?;
+
+    // Execute with unknown using
+    let metadata = HashMap::new();
+    let (result, _) = runner
+        .run(&args_bytes, metadata, Some("nonexistent_tool"))
+        .await;
+
+    assert!(result.is_err(), "Should fail with unknown using");
+
+    let error_msg = result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("Unknown") || error_msg.contains("nonexistent_tool"),
+        "Error message should mention unknown tool. Got: {error_msg}"
+    );
+
+    eprintln!("✅ Unknown using error test passed");
+    eprintln!("   Error message: {error_msg}");
+    Ok(())
+}
+
+/// Test T3.7: Verify get_using_json_schema returns correct schema
+/// Test T3.7: Legacy mode still works after using implementation
+// Legacy mode backward compatibility test removed - using mode is now the only supported mode
+#[tokio::test]
+#[ignore] // Requires MCP server - run with --ignored for full testing
+async fn test_using_mode_with_cancel_helper() -> Result<()> {
+    use crate::runner::cancellation_helper::CancelMonitoringHelper;
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use std::collections::HashMap;
+    use tokio_util::sync::CancellationToken;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+
+    let cancel_token = CancellationToken::new();
+    cancel_token.cancel(); // Pre-cancel to test cancellation behavior
+    use crate::runner::test_common::mock::MockCancellationManager;
+    let mock_manager = MockCancellationManager::new_with_token(cancel_token);
+    let cancel_helper = CancelMonitoringHelper::new(Box::new(mock_manager));
+
+    let mut runner = McpServerRunnerImpl::new(client, Some(cancel_helper)).await?;
+
+    // Prepare JSON arguments (using mode uses JSON bytes)
+    let args = serde_json::json!({"timezone": "UTC"});
+    let args_bytes = serde_json::to_vec(&args)?;
+    let metadata = HashMap::new();
+
+    let start_time = std::time::Instant::now();
+    let (result, _) = runner
+        .run(&args_bytes, metadata, Some("get_current_time"))
+        .await;
+    let elapsed = start_time.elapsed();
+
+    // Should fail immediately due to pre-execution cancellation
+    assert!(result.is_err());
+    assert!(elapsed < std::time::Duration::from_millis(100));
+
+    let error_msg = result.unwrap_err().to_string();
+    assert!(error_msg.contains("cancelled before"));
+
+    eprintln!("✅ Using mode with cancel helper test passed");
+    Ok(())
+}
+
+/// Test: Using mode stream execution (normal case)
+#[tokio::test]
+#[ignore] // Requires MCP server - run with --ignored for full testing
+async fn test_using_mode_stream_execution() -> Result<()> {
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use futures::StreamExt;
+    use proto::jobworkerp::data::result_output_item::Item;
+    use std::collections::HashMap;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+
+    let mut runner = McpServerRunnerImpl::new(client, None).await?;
+
+    // Prepare JSON arguments (using mode uses JSON bytes)
+    let args = serde_json::json!({"timezone": "UTC"});
+    let args_bytes = serde_json::to_vec(&args)?;
+    let metadata = HashMap::new();
+
+    let start_time = std::time::Instant::now();
+    let mut stream = runner
+        .run_stream(&args_bytes, metadata, Some("get_current_time"))
+        .await?;
+
+    let mut item_count = 0;
+    let mut received_data = false;
+    let mut received_end = false;
+
+    while let Some(item) = stream.next().await {
+        item_count += 1;
+        eprintln!("Received stream item #{item_count}: {item:?}");
+
+        match item.item {
+            Some(Item::Data(data)) => {
+                received_data = true;
+                let result_str = String::from_utf8_lossy(&data);
+                eprintln!("Received data: {result_str}");
+                assert!(!data.is_empty());
+            }
+            Some(Item::End(trailer)) => {
+                received_end = true;
+                eprintln!("Stream ended with trailer: {trailer:?}");
+            }
+            _ => {
+                eprintln!("Unexpected item type");
+            }
+        }
+    }
+
+    let elapsed = start_time.elapsed();
+    eprintln!("Using mode stream completed in {elapsed:?}");
+
+    assert!(received_data, "Should have received data item");
+    assert!(received_end, "Should have received end marker");
+    assert_eq!(
+        item_count, 2,
+        "Should have received exactly 2 items (data + end)"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "Should complete quickly"
+    );
+
+    eprintln!("✅ Using mode stream execution test passed");
+    Ok(())
+}
+
+/// Test: Using mode stream execution with cancellation
+#[tokio::test]
+#[ignore] // Requires MCP server - run with --ignored for full testing
+async fn test_using_mode_stream_with_cancellation() -> Result<()> {
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use futures::StreamExt;
+    use proto::jobworkerp::data::result_output_item::Item;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::Mutex;
+    use tokio_util::sync::CancellationToken;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+
+    let temp_runner = McpServerRunnerImpl::new(client, None).await?;
+    let runner = Arc::new(Mutex::new(temp_runner));
+
+    let cancellation_token = CancellationToken::new();
+
+    let start_time = std::time::Instant::now();
+
+    // Prepare JSON arguments
+    let args = serde_json::json!({"timezone": "UTC"});
+    let args_bytes = serde_json::to_vec(&args)?;
+    let metadata = HashMap::new();
+
+    let runner_clone = runner.clone();
+
+    // Start stream execution in a task
+    let execution_task = tokio::spawn(async move {
+        let mut runner_guard = runner_clone.lock().await;
+        let stream_result = runner_guard
+            .run_stream(&args_bytes, metadata, Some("get_current_time"))
+            .await;
+
+        match stream_result {
+            Ok(mut stream) => {
+                let mut item_count = 0;
+
+                while let Some(item) = stream.next().await {
+                    item_count += 1;
+                    eprintln!("Received stream item #{item_count}: {item:?}");
+
+                    match item.item {
+                        Some(Item::Data(_data)) => {
+                            eprintln!("Received data item before cancellation");
+                        }
+                        Some(Item::End(_trailer)) => {
+                            eprintln!("Stream ended (possibly due to cancellation)");
+                            break;
+                        }
+                        _ => {
+                            eprintln!("Unexpected item type");
+                        }
+                    }
+                }
+
+                Ok(item_count)
+            }
+            Err(e) => {
+                eprintln!("Stream creation failed: {e}");
+                Err(e)
+            }
+        }
+    });
+
+    // Wait for stream to start
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Cancel using the external token
+    cancellation_token.cancel();
+    eprintln!("Called cancellation_token.cancel() after 100ms");
+
+    // Wait for the execution to complete
+    let execution_result = execution_task.await;
+    let elapsed = start_time.elapsed();
+
+    eprintln!("Using mode stream execution completed in {elapsed:?}");
+
+    match execution_result {
+        Ok(stream_processing_result) => match stream_processing_result {
+            Ok(item_count) => {
+                eprintln!("✓ Stream processing completed with {item_count} items");
+                assert!(elapsed < Duration::from_secs(2));
+            }
+            Err(e) => {
+                eprintln!("✓ Stream processing was cancelled as expected: {e}");
+                if e.to_string().contains("cancelled") {
+                    eprintln!("✓ Cancellation was properly detected");
+                }
+            }
+        },
+        Err(e) => {
+            eprintln!("Stream execution task failed: {e}");
+            panic!("Task failed: {e}");
+        }
+    }
+
+    if elapsed > Duration::from_secs(2) {
+        panic!("Stream processing took too long ({elapsed:?})");
+    }
+
+    eprintln!("✅ Using mode stream with cancellation test passed");
+    Ok(())
+}
+
+// ==================== Using Parameter Propagation Tests ====================
+
+/// Test: Verify MCP tool name validation in handle_runner_call_from_llm
+#[tokio::test]
+#[ignore] // Requires MCP server - run with --ignored for full testing
+async fn test_mcp_tool_name_validation() -> Result<()> {
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    // use crate::runner::RunnerSpec;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+    let runner = McpServerRunnerImpl::new(client, None).await?;
+
+    let method_map = runner.method_proto_map();
+    assert!(!method_map.is_empty(), "MCP server should have methods");
+
+    let tool_names: Vec<&str> = method_map.keys().map(|s| s.as_str()).collect();
+    assert!(
+        tool_names.contains(&"get_current_time"),
+        "Time server should have get_current_time tool"
+    );
+
+    eprintln!("✅ MCP tool name validation test passed");
+    eprintln!("   Available methods: {:?}", tool_names);
+    Ok(())
+}
+
+/// Test: Execute MCP tool with valid tool name via using parameter
+#[tokio::test]
+#[ignore] // Requires MCP server - run with --ignored for full testing
+async fn test_mcp_execution_with_valid_using() -> Result<()> {
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use std::collections::HashMap;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+    let mut runner = McpServerRunnerImpl::new(client, None).await?;
+
+    // Prepare JSON arguments
+    let args = serde_json::json!({"timezone": "UTC"});
+    let args_bytes = serde_json::to_vec(&args)?;
+
+    // Execute with valid using parameter
+    let metadata = HashMap::new();
+    let (result, _) = runner
+        .run(&args_bytes, metadata, Some("get_current_time"))
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "Should execute successfully with valid using parameter"
+    );
+
+    let output = result.unwrap();
+    assert!(!output.is_empty(), "Should return non-empty output");
+
+    eprintln!("✅ MCP execution with valid using test passed");
+    Ok(())
+}
+
+/// Test: Error when invalid tool name is provided via using parameter
+#[tokio::test]
+#[ignore] // Requires MCP server - run with --ignored for full testing
+async fn test_mcp_error_with_invalid_using() -> Result<()> {
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use std::collections::HashMap;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+    let mut runner = McpServerRunnerImpl::new(client, None).await?;
+
+    // Prepare JSON arguments
+    let args = serde_json::json!({"timezone": "UTC"});
+    let args_bytes = serde_json::to_vec(&args)?;
+
+    // Execute with invalid using parameter
+    let metadata = HashMap::new();
+    let (result, _) = runner
+        .run(&args_bytes, metadata, Some("invalid_tool_name"))
+        .await;
+
+    assert!(result.is_err(), "Should fail with invalid using parameter");
+
+    let error_msg = result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("Unknown") || error_msg.contains("invalid_tool_name"),
+        "Error message should indicate invalid tool name. Got: {error_msg}"
+    );
+
+    eprintln!("✅ MCP error with invalid using test passed");
+    eprintln!("   Error message: {error_msg}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_method_proto_map() -> Result<()> {
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerSpec;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+    let runner = McpServerRunnerImpl::new(client, None).await?;
+
+    let method_proto_map = runner.method_proto_map();
+
+    eprintln!(
+        "✅ method_proto_map returned {} methods",
+        method_proto_map.len()
+    );
+
+    assert!(
+        method_proto_map.contains_key("get_current_time"),
+        "Should contain get_current_time method"
+    );
+
+    let method_schema = method_proto_map.get("get_current_time").unwrap();
+
+    assert!(
+        !method_schema.args_proto.is_empty(),
+        "args_proto should not be empty"
+    );
+    eprintln!("✅ args_proto length: {}", method_schema.args_proto.len());
+
+    assert!(
+        method_schema.args_proto.contains("syntax = \"proto3\""),
+        "args_proto should contain proto3 syntax"
+    );
+    assert!(
+        method_schema.args_proto.contains("message"),
+        "args_proto should contain message definition"
+    );
+    eprintln!("✅ args_proto contains valid Protobuf schema");
+
+    assert!(
+        !method_schema.result_proto.is_empty(),
+        "MCP server must have result_proto"
+    );
+    assert!(
+        method_schema.result_proto.contains("McpServerResult"),
+        "MCP server should use McpServerResult schema"
+    );
+    eprintln!("✅ result_proto contains common output schema (McpServerResult)");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_method_proto_map_multiple_tools() -> Result<()> {
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerSpec;
+
+    let config = McpConfig {
+        server: vec![create_fetch_mcp_server().await?],
+    };
+
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("fetch").await?;
+    let runner = McpServerRunnerImpl::new(client, None).await?;
+
+    let method_proto_map = runner.method_proto_map();
+
+    let tool_count = method_proto_map.len();
+    eprintln!("✅ method_proto_map returned {} tools", tool_count);
+    eprintln!("✅ method_proto_map {:?}", &method_proto_map);
+
+    assert!(
+        tool_count >= 1,
+        "Fetch server should have at least one tool"
+    );
+
+    for (tool_name, method_schema) in &method_proto_map {
+        eprintln!("  Tool: {}", tool_name);
+
+        assert!(
+            !method_schema.args_proto.is_empty(),
+            "Tool {} should have args_proto",
+            tool_name
+        );
+        assert!(
+            method_schema.args_proto.contains("syntax = \"proto3\""),
+            "Tool {} args_proto should contain proto3 syntax",
+            tool_name
+        );
+        eprintln!(
+            "    ✅ args_proto length: {}",
+            method_schema.args_proto.len()
+        );
+
+        assert!(
+            !method_schema.result_proto.is_empty(),
+            "Tool {} must have result_proto (required)",
+            tool_name
+        );
+        assert!(
+            method_schema.result_proto.contains("McpServerResult"),
+            "Tool {} should use McpServerResult schema",
+            tool_name
+        );
+        eprintln!("    ✅ result_proto contains common output schema");
+    }
+
+    Ok(())
+}

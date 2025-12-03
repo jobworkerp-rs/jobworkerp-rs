@@ -86,7 +86,6 @@ impl DoTaskStreamExecutor {
             );
             let relative_path = pos.relative_path(parent_task_context.position.read().await.full());
             if let Some(rpath) = relative_path {
-                // Check if the relative path is valid
                 if rpath.len() < 2 {
                     tracing::warn!(
                         "Invalid checkpoint position: {:?}, ignore checkpoint",
@@ -247,7 +246,6 @@ impl DoTaskStreamExecutor {
                     task_name = %name,
                     "Task execution completed"
                 );
-                // Remove the index added by add_position_index(pos) at line 186.
                 // The task name added by TaskExecutor (task.rs:210) is already removed by task.rs:390.
                 result.remove_position().await;
 

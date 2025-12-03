@@ -1,13 +1,11 @@
-use crate::{
-    jobworkerp::runner::create_workflow_args::WorkerOptions, schema_to_json_string,
-    schema_to_json_string_option,
-};
+use crate::{jobworkerp::runner::create_workflow_args::WorkerOptions, schema_to_json_string};
 use proto::jobworkerp::data::RunnerType;
+use proto::DEFAULT_METHOD_NAME;
+use std::collections::HashMap;
 
 use super::RunnerSpec;
 
 // Proto-generated types
-use crate::jobworkerp::runner::CreateWorkflowResult;
 
 pub struct CreateWorkflowRunnerSpecImpl {}
 
@@ -31,34 +29,29 @@ pub trait CreateWorkflowRunnerSpec {
     fn runner_settings_proto(&self) -> String {
         "".to_string()
     }
-
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/create_workflow_args.proto").to_string()
-    }
-
-    fn result_output_proto(&self) -> Option<String> {
-        Some(
-            include_str!("../../protobuf/jobworkerp/runner/create_workflow_result.proto")
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            DEFAULT_METHOD_NAME.to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!(
+                    "../../protobuf/jobworkerp/runner/create_workflow_args.proto"
+                )
                 .to_string(),
-        )
-    }
-
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        proto::jobworkerp::data::StreamingOutputType::NonStreaming
+                result_proto: include_str!(
+                    "../../protobuf/jobworkerp/runner/create_workflow_result.proto"
+                )
+                .to_string(),
+                description: Some("Create and register new workflow definition".to_string()),
+                output_type: proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32,
+            },
+        );
+        schemas
     }
 
     fn settings_schema(&self) -> String {
         // XXX WORKFLOW settings: WorkerOptions (not runner_settings though)
         schema_to_json_string!(WorkerOptions, "settings_schema")
-    }
-
-    fn arguments_schema(&self) -> String {
-        // XXX WORKFLOW JSON schema
-        include_str!("../../schema/workflow.json").to_string()
-    }
-
-    fn output_schema(&self) -> Option<String> {
-        schema_to_json_string_option!(CreateWorkflowResult, "output_schema")
     }
 }
 
@@ -73,27 +66,13 @@ impl RunnerSpec for CreateWorkflowRunnerSpecImpl {
         CreateWorkflowRunnerSpec::runner_settings_proto(self)
     }
 
-    fn job_args_proto(&self) -> String {
-        CreateWorkflowRunnerSpec::job_args_proto(self)
-    }
-
-    fn result_output_proto(&self) -> Option<String> {
-        CreateWorkflowRunnerSpec::result_output_proto(self)
-    }
-
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        CreateWorkflowRunnerSpec::output_type(self)
+    fn method_proto_map(
+        &self,
+    ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        CreateWorkflowRunnerSpec::method_proto_map(self)
     }
 
     fn settings_schema(&self) -> String {
         CreateWorkflowRunnerSpec::settings_schema(self)
-    }
-
-    fn arguments_schema(&self) -> String {
-        CreateWorkflowRunnerSpec::arguments_schema(self)
-    }
-
-    fn output_schema(&self) -> Option<String> {
-        CreateWorkflowRunnerSpec::output_schema(self)
     }
 }

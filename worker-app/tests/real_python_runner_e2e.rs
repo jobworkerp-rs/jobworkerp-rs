@@ -114,6 +114,7 @@ fn create_python_job(script: &str, timeout_ms: u64) -> Job {
             run_after_time: command_utils::util::datetime::now_millis(),
             grabbed_until_time: None,
             request_streaming: false,
+            using: None,
         }),
         ..Default::default()
     }
@@ -161,12 +162,10 @@ print("Python version check successful")
         .await;
     let elapsed_time = start_time.elapsed();
 
-    // Verify successful execution
     assert!(result.data.is_some());
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32);
 
-    // Verify actual Python output
     assert!(data.output.is_some());
     let command_result: PythonCommandResult =
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
@@ -217,11 +216,9 @@ print("All mathematical computations verified successfully")
         .run_job(&runner_data, &worker_id, &worker_data, job)
         .await;
 
-    // Verify successful execution
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32);
 
-    // Verify actual computational results
     let command_result: PythonCommandResult =
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
@@ -229,7 +226,6 @@ print("All mathematical computations verified successfully")
     let stdout = command_result.output;
 
     println!("Command stdout:\n{stdout}");
-    // Verify computational outputs
     assert!(stdout.contains("Sum result: 499500"));
     assert!(stdout.contains("Pi calculation: 314.15927"));
     assert!(stdout.contains("Power calculation: 1048576"));
@@ -289,11 +285,9 @@ print("File system operations completed successfully")
         .run_job(&runner_data, &worker_id, &worker_data, job)
         .await;
 
-    // Verify successful execution
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32);
 
-    // Verify file operations worked
     let command_result: PythonCommandResult =
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
@@ -377,11 +371,9 @@ print("Data processing with packages completed successfully")
         .run_job(&runner_data, &worker_id, &worker_data, job)
         .await;
 
-    // Verify successful execution
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32);
 
-    // Verify package imports and data processing worked
     let command_result: PythonCommandResult =
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
@@ -443,11 +435,9 @@ raise ValueError("Intentional error for E2E testing")
         .run_job(&runner_data, &worker_id, &worker_data, job)
         .await;
 
-    // Verify execution completed (even with error)
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::Success as i32); // Runner completed successfully
 
-    // Verify Python script itself failed
     let command_result: PythonCommandResult =
         ProstMessageCodec::deserialize_message(&data.output.unwrap().items)?;
 
@@ -456,14 +446,12 @@ raise ValueError("Intentional error for E2E testing")
     let stdout = &command_result.output;
     let stderr = command_result.output_stderr.as_ref().unwrap();
 
-    // Verify error handling worked before the unhandled error
     assert!(stdout.contains("Starting error test"));
     assert!(stdout.contains("Caught expected error: division by zero"));
     assert!(stdout.contains("Caught expected file error:"));
     assert!(stdout.contains("Caught expected index error:"));
     assert!(stdout.contains("Error handling test completed successfully"));
 
-    // Verify unhandled error was captured
     assert!(stderr.contains("ValueError: Intentional error for E2E testing"));
 
     println!("✓ Real PYTHON_COMMAND error handling test passed");
@@ -499,11 +487,9 @@ print("This should not be reached due to timeout")
         .await;
     let elapsed_time = start_time.elapsed();
 
-    // Verify timeout occurred
     let data = result.data.unwrap();
     assert_eq!(data.status, ResultStatus::MaxRetry as i32);
 
-    // Verify timeout message
     assert!(String::from_utf8_lossy(&data.output.unwrap().items).contains("timeout"));
 
     // Should timeout around 3 seconds, not wait full 10 seconds

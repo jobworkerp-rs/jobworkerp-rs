@@ -22,7 +22,6 @@ use jobworkerp_runner::runner::workflow::ReusableWorkflowRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use opentelemetry::trace::TraceContextExt;
 use prost::Message;
-use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -73,6 +72,7 @@ impl ReusableWorkflowRunner {
         self.cancel_helper = Some(helper);
     }
 }
+
 impl ReusableWorkflowRunnerSpec for ReusableWorkflowRunner {}
 
 impl RunnerSpec for ReusableWorkflowRunner {
@@ -84,40 +84,14 @@ impl RunnerSpec for ReusableWorkflowRunner {
         ReusableWorkflowRunnerSpec::runner_settings_proto(self)
     }
 
-    fn job_args_proto(&self) -> String {
-        ReusableWorkflowRunnerSpec::job_args_proto(self)
+    fn method_proto_map(
+        &self,
+    ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        ReusableWorkflowRunnerSpec::method_proto_map(self)
     }
 
-    fn result_output_proto(&self) -> Option<String> {
-        ReusableWorkflowRunnerSpec::result_output_proto(self)
-    }
-
-    fn output_type(&self) -> StreamingOutputType {
-        ReusableWorkflowRunnerSpec::output_type(self)
-    }
     fn settings_schema(&self) -> String {
-        include_str!("../../../../runner/schema/workflow.json").to_string()
-    }
-    fn arguments_schema(&self) -> String {
-        let schema = schemars::schema_for!(ReusableWorkflowArgs);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
-    }
-    fn output_schema(&self) -> Option<String> {
-        // plain string with title
-        let schema = schemars::schema_for!(WorkflowResult);
-        match serde_json::to_string(&schema) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::error!("error in output_json_schema: {:?}", e);
-                None
-            }
-        }
+        ReusableWorkflowRunnerSpec::settings_schema(self)
     }
 }
 
@@ -141,6 +115,7 @@ impl RunnerTrait for ReusableWorkflowRunner {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let result = async {
             let span = Self::otel_span_from_metadata(&metadata, APP_NAME, "reusable_workflow.run");
@@ -187,7 +162,6 @@ impl RunnerTrait for ReusableWorkflowRunner {
                 )
                 .await?;
 
-                // Get the stream of workflow context updates
                 let workflow_stream = executor.execute_workflow(Arc::new(cx));
 
                 pin_mut!(workflow_stream);
@@ -210,7 +184,6 @@ impl RunnerTrait for ReusableWorkflowRunner {
                     }
                 }
 
-                // Return the final workflow context or an error if none was received
                 let res = final_context
                     .ok_or_else(|| anyhow::anyhow!("No workflow context was returned"))?;
 
@@ -242,6 +215,7 @@ impl RunnerTrait for ReusableWorkflowRunner {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let cx = Self::create_context(&metadata);
         let arg = ProstMessageCodec::deserialize_message::<ReusableWorkflowArgs>(args)?;

@@ -152,7 +152,7 @@ pub trait UseRedisFunctionSetRepository {
 async fn redis_test() -> Result<()> {
     use proto::jobworkerp::data::{RunnerId, WorkerId};
     use proto::jobworkerp::function::data::{
-        function_id, FunctionId, FunctionSetData, FunctionSetId,
+        function_id, FunctionId, FunctionSetData, FunctionSetId, FunctionUsing,
     };
 
     let pool = infra_utils::infra::test::setup_test_redis_pool().await;
@@ -164,11 +164,17 @@ async fn redis_test() -> Result<()> {
         description: "hoge2".to_string(),
         category: 4,
         targets: vec![
-            FunctionId {
-                id: Some(function_id::Id::RunnerId(RunnerId { value: 10 })),
+            FunctionUsing {
+                function_id: Some(FunctionId {
+                    id: Some(function_id::Id::RunnerId(RunnerId { value: 10 })),
+                }),
+                using: None,
             },
-            FunctionId {
-                id: Some(function_id::Id::WorkerId(WorkerId { value: 20 })),
+            FunctionUsing {
+                function_id: Some(FunctionId {
+                    id: Some(function_id::Id::WorkerId(WorkerId { value: 20 })),
+                }),
+                using: None,
             },
         ],
     };
@@ -185,11 +191,17 @@ async fn redis_test() -> Result<()> {
     function_set2.name = "fuga1".to_string();
     function_set2.description = "fuga2".to_string();
     function_set2.category = 5;
-    function_set2.targets[0] = FunctionId {
-        id: Some(function_id::Id::RunnerId(RunnerId { value: 30 })),
+    function_set2.targets[0] = FunctionUsing {
+        function_id: Some(FunctionId {
+            id: Some(function_id::Id::RunnerId(RunnerId { value: 30 })),
+        }),
+        using: None,
     };
-    function_set2.targets[1] = FunctionId {
-        id: Some(function_id::Id::WorkerId(WorkerId { value: 40 })),
+    function_set2.targets[1] = FunctionUsing {
+        function_id: Some(FunctionId {
+            id: Some(function_id::Id::WorkerId(WorkerId { value: 40 })),
+        }),
+        using: None,
     };
     // update and find
     assert!(!repo.upsert(&id, &function_set2).await?);

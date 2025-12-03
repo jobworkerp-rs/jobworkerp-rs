@@ -151,20 +151,16 @@ impl<T: RunnerGrpc + Tracing + Send + Debug + Sync + 'static> RunnerService for 
         let _s = Self::trace_request("runner", "find_list_by", &request);
         let req = request.into_inner();
 
-        // Validate request parameters
         super::validation::validate_limit(req.limit)?;
         super::validation::validate_offset(req.offset)?;
         super::validation::validate_name_filter(req.name_filter.as_ref())?;
         super::validation::validate_filter_enums(&req.runner_types, "runner_types")?;
 
-        // Extract runner types from repeated field
         let runner_types: Vec<i32> = req.runner_types.clone();
 
-        // Extract parameters
         let name_filter = req.name_filter.clone();
         let limit = req.limit;
         let offset = req.offset;
-        // Convert i32 to RunnerSortField enum
         let sort_by = req
             .sort_by
             .and_then(|val| proto::jobworkerp::data::RunnerSortField::try_from(val).ok());
@@ -192,11 +188,9 @@ impl<T: RunnerGrpc + Tracing + Send + Debug + Sync + 'static> RunnerService for 
         let _s = Self::trace_request("runner", "count_by", &request);
         let req = request.into_inner();
 
-        // Validate request parameters
         super::validation::validate_name_filter(req.name_filter.as_ref())?;
         super::validation::validate_filter_enums(&req.runner_types, "runner_types")?;
 
-        // Extract runner types
         let runner_types: Vec<i32> = req.runner_types.clone();
         let name_filter = req.name_filter.clone();
 

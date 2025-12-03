@@ -1,10 +1,9 @@
-use crate::{
-    jobworkerp::runner::llm::{LlmChatArgs, LlmChatResult, LlmRunnerSettings},
-    schema_to_json_string, schema_to_json_string_option,
-};
+use crate::{jobworkerp::runner::llm::LlmRunnerSettings, schema_to_json_string};
+use proto::DEFAULT_METHOD_NAME;
 
 use super::RunnerSpec;
 use proto::jobworkerp::data::RunnerType;
+use std::collections::HashMap;
 
 pub struct LLMChatRunnerSpecImpl {}
 
@@ -27,25 +26,28 @@ pub trait LLMChatRunnerSpec {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../protobuf/jobworkerp/runner/llm/runner.proto").to_string()
     }
-    fn job_args_proto(&self) -> String {
-        include_str!("../../protobuf/jobworkerp/runner/llm/chat_args.proto").to_string()
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        Some(include_str!("../../protobuf/jobworkerp/runner/llm/chat_result.proto").to_string())
-    }
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        proto::jobworkerp::data::StreamingOutputType::Both
+    fn method_proto_map(&self) -> HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            DEFAULT_METHOD_NAME.to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!("../../protobuf/jobworkerp/runner/llm/chat_args.proto")
+                    .to_string(),
+                result_proto: include_str!(
+                    "../../protobuf/jobworkerp/runner/llm/chat_result.proto"
+                )
+                .to_string(),
+                description: Some(
+                    "Generate chat response using LLM with conversation history".to_string(),
+                ),
+                output_type: proto::jobworkerp::data::StreamingOutputType::Both as i32,
+            },
+        );
+        schemas
     }
     fn settings_schema(&self) -> String {
         // include_str!("../../schema/llm/LLMRunnerSettings.json").to_string()
         schema_to_json_string!(LlmRunnerSettings, "settings_schema")
-    }
-    fn arguments_schema(&self) -> String {
-        // include_str!("../../schema/llm/LLMCompletionArgs.json").to_string()
-        schema_to_json_string!(LlmChatArgs, "arguments_schema")
-    }
-    fn output_schema(&self) -> Option<String> {
-        schema_to_json_string_option!(LlmChatResult, "output_schema")
     }
 }
 
@@ -60,24 +62,13 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
         LLMChatRunnerSpec::runner_settings_proto(self)
     }
 
-    fn job_args_proto(&self) -> String {
-        LLMChatRunnerSpec::job_args_proto(self)
+    fn method_proto_map(
+        &self,
+    ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        LLMChatRunnerSpec::method_proto_map(self)
     }
 
-    fn result_output_proto(&self) -> Option<String> {
-        LLMChatRunnerSpec::result_output_proto(self)
-    }
-
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        LLMChatRunnerSpec::output_type(self)
-    }
     fn settings_schema(&self) -> String {
         LLMChatRunnerSpec::settings_schema(self)
-    }
-    fn arguments_schema(&self) -> String {
-        LLMChatRunnerSpec::arguments_schema(self)
-    }
-    fn output_schema(&self) -> Option<String> {
-        LLMChatRunnerSpec::output_schema(self)
     }
 }

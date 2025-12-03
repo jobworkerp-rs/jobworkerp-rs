@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use jobworkerp_runner::runner::plugins::PluginRunner;
+use jobworkerp_runner::runner::plugins::MultiMethodPluginRunner;
 use prost::Message;
 use std::{alloc::System, collections::HashMap};
 use test::{TestArgs, TestRunnerSettings};
@@ -13,16 +13,16 @@ pub mod test {
 #[global_allocator]
 static ALLOCATOR: System = System;
 
-// suppress warn improper_ctypes_definitions
+// Multi-method plugin FFI symbols
 #[allow(improper_ctypes_definitions)]
 #[unsafe(no_mangle)]
-pub extern "C" fn load_plugin() -> Box<dyn PluginRunner + Send + Sync> {
+pub extern "C" fn load_multi_method_plugin() -> Box<dyn MultiMethodPluginRunner + Send + Sync> {
     Box::new(TestPlugin::new())
 }
 
 #[unsafe(no_mangle)]
 #[allow(improper_ctypes_definitions)]
-pub extern "C" fn free_plugin(ptr: Box<dyn PluginRunner + Send + Sync>) {
+pub extern "C" fn free_multi_method_plugin(ptr: Box<dyn MultiMethodPluginRunner + Send + Sync>) {
     drop(ptr);
 }
 
@@ -50,7 +50,7 @@ impl TestPlugin {
 }
 
 #[async_trait]
-impl PluginRunner for TestPlugin {
+impl MultiMethodPluginRunner for TestPlugin {
     fn name(&self) -> String {
         // specify as same string as worker.runner
         String::from("Test")
@@ -69,13 +69,19 @@ impl PluginRunner for TestPlugin {
         &mut self,
         arg: Vec<u8>,
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let arg_clone = arg.clone();
         tokio::runtime::Runtime::new()
             .unwrap()
             .block_on(async move { (self.test(arg_clone.as_slice()).await, metadata) })
     }
-    fn begin_stream(&mut self, arg: Vec<u8>, _metadata: HashMap<String, String>) -> Result<()> {
+    fn begin_stream(
+        &mut self,
+        arg: Vec<u8>,
+        _metadata: HashMap<String, String>,
+        _using: Option<&str>,
+    ) -> Result<()> {
         // default implementation (return empty)
         let _ = arg;
         Err(anyhow::anyhow!("not implemented"))
@@ -95,13 +101,20 @@ impl PluginRunner for TestPlugin {
     fn runner_settings_proto(&self) -> String {
         include_str!("../../../proto/protobuf/test_runner.proto").to_string()
     }
-    fn job_args_proto(&self) -> String {
-        include_str!("../../../proto/protobuf/test_args.proto").to_string()
-    }
-    fn result_output_proto(&self) -> Option<String> {
-        None
-    }
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        proto::jobworkerp::data::StreamingOutputType::NonStreaming
+
+    fn method_proto_map(
+        &self,
+    ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        let mut schemas = std::collections::HashMap::new();
+        schemas.insert(
+            "run".to_string(),
+            proto::jobworkerp::data::MethodSchema {
+                args_proto: include_str!("../../../proto/protobuf/test_args.proto").to_string(),
+                result_proto: String::new(), // No result proto for this runner
+                description: Some("Test plugin for runner testing".to_string()),
+                output_type: proto::jobworkerp::data::StreamingOutputType::NonStreaming as i32,
+            },
+        );
+        schemas
     }
 }

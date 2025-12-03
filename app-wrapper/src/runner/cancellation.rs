@@ -114,7 +114,6 @@ impl RunnerCancellationManager {
         job_id: &JobId,
         job_timeout_ms: u64,
     ) -> Result<CancellationSetupResult> {
-        // Check if repository is configured
         if self.cancellation_repository.is_none() {
             tracing::warn!("RunnerCancellationManager has no repository set, skipping monitoring");
             return Ok(CancellationSetupResult::MonitoringStarted); // Changed from AlreadyCancelled
@@ -122,7 +121,6 @@ impl RunnerCancellationManager {
 
         self.job_id = Some(*job_id);
 
-        // Use internal token management
         let execution_token = match self.setup_token().await {
             Ok(token) => token,
             Err(_) => {

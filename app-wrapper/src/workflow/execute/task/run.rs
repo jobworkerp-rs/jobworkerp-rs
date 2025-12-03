@@ -79,14 +79,12 @@ impl RunTaskExecutor {
                 store_failure: options.store_failure.unwrap_or(false),
                 store_success: options.store_success.unwrap_or(false),
                 use_static: options.use_static.unwrap_or(false),
-                // Use queue_type from WorkerOptions (default: NORMAL)
                 queue_type: options
                     .queue_type
                     .map(Self::convert_queue_type)
                     .unwrap_or(QueueType::Normal as i32),
                 channel: options.channel,
                 retry_policy: options.retry.map(|r| r.to_jobworkerp()),
-                // Use response_type from WorkerOptions (default: DIRECT)
                 response_type: options
                     .response_type
                     .map(Self::convert_response_type)
@@ -98,6 +96,7 @@ impl RunTaskExecutor {
             None
         }
     }
+    #[allow(clippy::too_many_arguments)]
     async fn execute_by_jobworkerp(
         &self,
         cx: Arc<opentelemetry::Context>,
@@ -106,6 +105,7 @@ impl RunTaskExecutor {
         options: Option<workflow::WorkerOptions>,
         job_args: serde_json::Value,
         worker_name: &str,
+        using: Option<String>,
     ) -> Result<serde_json::Value> {
         let runner = self
             .job_executor_wrapper
@@ -150,6 +150,7 @@ impl RunTaskExecutor {
                 None, // XXX no uniq_key,
                 self.default_task_timeout.as_secs() as u32,
                 false, // no streaming
+                using,
             )
             .await
     }
@@ -220,6 +221,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                     RunJobWorker {
                         arguments,
                         name: worker_name,
+                        using,
                     },
             }) => {
                 task_context.add_position_name("worker".to_string()).await;
@@ -251,6 +253,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         None,
                         timeout_sec,
                         false,
+                        using.clone(),
                     )
                     .await
                 {
@@ -280,6 +283,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         name: runner_name,
                         options,
                         settings,
+                        using,
                     },
             }) => {
                 task_context.add_position_name("runner".to_string()).await;
@@ -326,6 +330,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         options.clone(),
                         args,
                         task_name,
+                        using.clone(),
                     )
                     .await
                 {
@@ -352,6 +357,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                 function:
                     workflow::RunJobFunction::WorkerFunction {
                         arguments,
+                        using,
                         worker_name,
                     },
             }) => {
@@ -384,6 +390,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         None,
                         timeout_sec,
                         false,
+                        using.clone(),
                     )
                     .await
                 {
@@ -413,6 +420,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         options,
                         runner_name,
                         settings,
+                        using,
                     },
             }) => {
                 task_context.add_position_name("function".to_string()).await;
@@ -460,6 +468,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         options.clone(),
                         args,
                         task_name,
+                        using.clone(),
                     )
                     .await
                 {

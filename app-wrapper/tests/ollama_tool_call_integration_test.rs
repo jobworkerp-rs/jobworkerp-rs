@@ -19,14 +19,17 @@ pub mod test {
     use jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::OllamaRunnerSettings;
     use jobworkerp_runner::jobworkerp::runner::llm::{llm_chat_args::LlmOptions, LlmChatArgs};
     use proto::jobworkerp::data::RunnerId;
-    use proto::jobworkerp::function::data::{function_id, FunctionId, FunctionSetData};
+    use proto::jobworkerp::function::data::{
+        function_id, FunctionId, FunctionSetData, FunctionUsing,
+    };
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::time::{timeout, Duration};
 
     /// Test configuration
     const OLLAMA_HOST: &str = "http://ollama.ollama.svc.cluster.local:11434";
-    const TEST_MODEL: &str = "qwen3:30b"; // Use qwen3:30b model
+    // const TEST_MODEL: &str = "qwen3:30b"; // Use qwen3:30b model
+    const TEST_MODEL: &str = "gpt-oss:20b";
     const TEST_TIMEOUT: Duration = Duration::from_secs(180);
 
     /// Setup function app with COMMAND runner for tool calls using test infrastructure
@@ -38,8 +41,11 @@ pub mod test {
                 name: "ollama_tool_test".to_string(),
                 description: "Test set for Ollama tool calls - COMMAND runner only".to_string(),
                 category: 0,
-                targets: vec![FunctionId {
-                    id: Some(function_id::Id::RunnerId(RunnerId { value: 1 })),
+                targets: vec![FunctionUsing {
+                    function_id: Some(FunctionId {
+                        id: Some(function_id::Id::RunnerId(RunnerId { value: 1 })),
+                    }),
+                    using: None,
                 }],
             })
             .await;
@@ -113,7 +119,7 @@ pub mod test {
 
         // Test with a simple echo command
         let args = create_test_chat_args_with_tools(
-            "Please run the command 'echo Hello, World!' and show me the output.",
+            "Please run the command 'echo' with arguments 'Hello, World!' and show me the output.",
         );
 
         let context = opentelemetry::Context::current();
@@ -121,7 +127,6 @@ pub mod test {
 
         let result = timeout(TEST_TIMEOUT, service.request_chat(args, context, metadata)).await??;
 
-        // Verify the response
         assert!(result.done, "Chat should be completed");
 
         if let Some(content) = result.content {
@@ -165,7 +170,6 @@ pub mod test {
 
         let result = timeout(TEST_TIMEOUT, service.request_chat(args, context, metadata)).await??;
 
-        // Verify the response
         assert!(result.done, "Chat should be completed");
 
         if let Some(content) = result.content {
@@ -204,7 +208,6 @@ pub mod test {
 
         let result = timeout(TEST_TIMEOUT, service.request_chat(args, context, metadata)).await??;
 
-        // Verify the response
         assert!(result.done, "Chat should be completed");
 
         if let Some(content) = result.content {
@@ -245,7 +248,6 @@ pub mod test {
         )
         .await??;
 
-        // Verify the response
         assert!(result.done, "Chat should be completed");
 
         if let Some(content) = result.content {
@@ -279,7 +281,6 @@ pub mod test {
     async fn test_ollama_without_tools() -> Result<()> {
         let service = create_ollama_service().await?;
 
-        // Create args without function calling
         let args = LlmChatArgs {
         messages: vec![llm_chat_args::ChatMessage {
             role: ChatRole::User as i32,
@@ -310,7 +311,6 @@ pub mod test {
 
         let result = timeout(TEST_TIMEOUT, service.request_chat(args, context, metadata)).await??;
 
-        // Verify the response
         assert!(result.done, "Chat should be completed");
 
         if let Some(content) = result.content {
@@ -348,7 +348,6 @@ pub mod test {
 
         let result = timeout(TEST_TIMEOUT, service.request_chat(args, context, metadata)).await??;
 
-        // Verify the response - should handle the error gracefully
         assert!(result.done, "Chat should be completed");
 
         if let Some(content) = result.content {

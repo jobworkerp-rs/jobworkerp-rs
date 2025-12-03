@@ -10,7 +10,7 @@ use futures::{pin_mut, StreamExt};
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_base::APP_NAME;
 use jobworkerp_runner::jobworkerp::runner::workflow_result::WorkflowStatus;
-use jobworkerp_runner::jobworkerp::runner::{Empty, InlineWorkflowArgs, WorkflowResult};
+use jobworkerp_runner::jobworkerp::runner::{InlineWorkflowArgs, WorkflowResult};
 use jobworkerp_runner::runner::cancellation_helper::{
     CancelMonitoringHelper, UseCancelMonitoringHelper,
 };
@@ -18,9 +18,7 @@ use jobworkerp_runner::runner::workflow::InlineWorkflowRunnerSpec;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use opentelemetry::trace::TraceContextExt;
 use prost::Message;
-use proto::jobworkerp::data::StreamingOutputType;
 use proto::jobworkerp::data::{ResultOutputItem, RunnerType};
-use schemars::JsonSchema;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -68,12 +66,8 @@ impl InlineWorkflowRunner {
         self.cancel_helper = Some(helper);
     }
 }
-impl InlineWorkflowRunnerSpec for InlineWorkflowRunner {}
 
-#[derive(Debug, JsonSchema, serde::Deserialize, serde::Serialize)]
-struct WorkflowRunnerInputSchema {
-    args: InlineWorkflowArgs,
-}
+impl InlineWorkflowRunnerSpec for InlineWorkflowRunner {}
 
 impl RunnerSpec for InlineWorkflowRunner {
     fn name(&self) -> String {
@@ -84,48 +78,14 @@ impl RunnerSpec for InlineWorkflowRunner {
         InlineWorkflowRunnerSpec::runner_settings_proto(self)
     }
 
-    fn job_args_proto(&self) -> String {
-        InlineWorkflowRunnerSpec::job_args_proto(self)
+    fn method_proto_map(
+        &self,
+    ) -> std::collections::HashMap<String, proto::jobworkerp::data::MethodSchema> {
+        InlineWorkflowRunnerSpec::method_proto_map(self)
     }
 
-    fn result_output_proto(&self) -> Option<String> {
-        InlineWorkflowRunnerSpec::result_output_proto(self)
-    }
-
-    fn output_type(&self) -> StreamingOutputType {
-        InlineWorkflowRunnerSpec::output_type(self)
-    }
     fn settings_schema(&self) -> String {
-        // plain string with title
-        let schema = schemars::schema_for!(Empty);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in settings_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
-    }
-    fn arguments_schema(&self) -> String {
-        let schema = schemars::schema_for!(WorkflowRunnerInputSchema);
-        match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("error in input_json_schema: {:?}", e);
-                "".to_string()
-            }
-        }
-    }
-    fn output_schema(&self) -> Option<String> {
-        // plain string with title
-        let schema = schemars::schema_for!(WorkflowResult);
-        match serde_json::to_string(&schema) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::error!("error in output_json_schema: {:?}", e);
-                None
-            }
-        }
+        InlineWorkflowRunnerSpec::settings_schema(self)
     }
 }
 
@@ -138,6 +98,7 @@ impl RunnerTrait for InlineWorkflowRunner {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> (Result<Vec<u8>>, HashMap<String, String>) {
         let result = async {
             // let span = Self::tracing_span_from_metadata(&metadata, APP_NAME, "inline_workflow.run");
@@ -183,7 +144,6 @@ impl RunnerTrait for InlineWorkflowRunner {
                 anyhow::anyhow!("workflow_source is required in workflow args")
             })?;
             tracing::debug!("workflow source: {:?}", source);
-            // Use WorkflowLoader from AppModule (no http_client dependency needed)
             let workflow = self
                 .app_module
                 .workflow_loader
@@ -207,7 +167,6 @@ impl RunnerTrait for InlineWorkflowRunner {
                 chpoint,
             )
             .await?;
-            // Get the stjream of workflow context updates
             let workflow_stream = executor.execute_workflow(Arc::new(cx));
             pin_mut!(workflow_stream);
 
@@ -240,7 +199,6 @@ impl RunnerTrait for InlineWorkflowRunner {
                 }
             }
 
-            // Return the final workflow context or an error if none was received
             let res =
                 final_context.ok_or_else(|| anyhow::anyhow!("No workflow context was returned"))?;
 
@@ -269,6 +227,7 @@ impl RunnerTrait for InlineWorkflowRunner {
         &mut self,
         args: &[u8],
         metadata: HashMap<String, String>,
+        _using: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>> {
         let cx = Self::create_context(&metadata);
 
@@ -313,7 +272,6 @@ impl RunnerTrait for InlineWorkflowRunner {
         tracing::debug!("workflow source: {:?}", source);
         let app_module = self.app_module.clone();
 
-        // Use WorkflowLoader from AppModule (no http_client dependency needed)
         let workflow = app_module
             .workflow_loader
             .load_workflow_source(source)
@@ -355,7 +313,6 @@ impl RunnerTrait for InlineWorkflowRunner {
             .then(|result| async move {
                 match result {
                     Ok(context) => {
-                        // Create a WorkflowResult from the context
                         let workflow_result = WorkflowResult {
                             id: context.id.to_string(),
                             output: serde_json::to_string(&context.output).unwrap_or_default(),
@@ -402,7 +359,6 @@ impl RunnerTrait for InlineWorkflowRunner {
                 }
             })
             .chain(futures::stream::once(async move {
-                // Add an End item at the end of the stream
                 tracing::debug!(
                     "Workflow execution completed, sending end of stream: {metadata:#?}"
                 );

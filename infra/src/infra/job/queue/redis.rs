@@ -154,7 +154,6 @@ where
 
         match pop_result {
             Ok(r) => {
-                // Check if job result indicates error status - in that case, don't return stream
                 // even if streaming was requested, to prevent HTTP/2 protocol errors
                 let should_disable_stream = if let Some(ref data) = r.data {
                     use proto::jobworkerp::data::ResultStatus;
@@ -371,7 +370,6 @@ impl JobQueueCancellationRepository for RedisJobQueueRepositoryImpl {
         // Job timeout + 30 seconds margin for pubsub timeout setting
         let pubsub_timeout = std::time::Duration::from_millis(job_timeout_ms + 30_000);
 
-        // Create pubsub connection with timeout setting using redis client
         let mut pubsub = self
             .job_result_pubsub_repository
             .redis_client()
@@ -530,6 +528,7 @@ mod test {
                 priority: 1,
                 timeout: 1000,
                 request_streaming: false,
+                using: None,
             }),
             metadata: HashMap::new(),
         };
@@ -651,7 +650,6 @@ mod test {
         // Wait for message to be processed
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
-        // Verify the message was received and correctly deserialized
         let received = received_job_ids.lock().await;
         assert_eq!(received.len(), 1);
         assert_eq!(received[0].value, test_job_id.value);

@@ -31,7 +31,6 @@ mod security_tests {
         // The dangerous string should NOT appear in raw form in the generated code
         let json_str = serde_json::to_string(&args).unwrap();
 
-        // Verify the payload is serialized as JSON (will be Base64 encoded)
         assert!(json_str.contains("payload"));
         // JSON escaping will change the string, so we check for the key pattern
         assert!(json_str.contains(r"\n"));
@@ -179,7 +178,6 @@ mod security_tests {
             ]
         });
 
-        // Validate that dangerous patterns are detected in nested structures
         let json_str = serde_json::to_string_pretty(&nested_dangerous).unwrap();
 
         // These patterns should be detected by recursive validation
@@ -194,7 +192,6 @@ mod security_tests {
     /// Test maximum nesting depth protection
     #[test]
     fn test_max_nesting_depth() {
-        // Create deeply nested JSON (depth > 10)
         let mut deeply_nested = json!({"level_0": "value"});
 
         for i in 1..15 {

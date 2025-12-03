@@ -70,7 +70,6 @@ pub trait JobRunner:
                 .await;
             match p {
                 Ok(Some(runner)) => {
-                    // Check job.data first for streaming determination
                     let is_streaming = job.data.as_ref().is_some_and(|data| data.request_streaming);
 
                     if is_streaming {
@@ -284,6 +283,7 @@ pub trait JobRunner:
             response_type: worker_data.response_type,
             store_success: false,
             store_failure: true,
+            using: data.using,
         };
 
         JobResult {
@@ -403,10 +403,11 @@ pub trait JobRunner:
         let data = job.data.as_ref().unwrap(); // XXX unwrap
         let args = &data.args; // XXX unwrap, clone
         let name = runner_impl.name();
+        let using = data.using.as_deref();
         if data.timeout > 0 {
             tokio::select! {
                 r = AssertUnwindSafe(
-                    runner_impl.run_stream(args, metadata),
+                    runner_impl.run_stream(args, metadata, using),
                 ).catch_unwind() => {
                     r.map_err(|e| {
                         let msg = format!("Caught panic from runner {name}: {e:?}");
@@ -421,7 +422,7 @@ pub trait JobRunner:
                 }
             }
         } else {
-            AssertUnwindSafe(runner_impl.run_stream(args, metadata))
+            AssertUnwindSafe(runner_impl.run_stream(args, metadata, using))
                 .catch_unwind()
                 .await
                 .map_err(|e| {
@@ -441,11 +442,21 @@ pub trait JobRunner:
         let metadata = job.metadata.clone();
         let args = &data.args; // XXX unwrap, clone
         let name = runner_impl.name();
+        let using = data.using.as_deref();
+
+        if using.is_some() {
+            tracing::debug!(
+                "Executing job with using '{}' for runner '{}'",
+                using.unwrap_or(""),
+                name
+            );
+        }
+
+        let run_future = runner_impl.run(args, metadata.clone(), using);
+
         if data.timeout > 0 {
             tokio::select! {
-                r = AssertUnwindSafe(
-                    runner_impl.run(args, metadata)
-                ).catch_unwind() => {
+                r = AssertUnwindSafe(run_future).catch_unwind() => {
                     r.map_err(|e| {
                         let msg = format!("Caught panic from runner {name}: {e:?}");
                         tracing::error!(msg);
@@ -459,7 +470,7 @@ pub trait JobRunner:
                 }
             }
         } else {
-            AssertUnwindSafe(runner_impl.run(args, metadata))
+            AssertUnwindSafe(run_future)
                 .catch_unwind()
                 .await
                 .map_err(|e| {
@@ -508,6 +519,7 @@ pub trait JobRunner:
             response_type: worker.response_type,
             store_success: worker.store_success,
             store_failure: worker.store_failure,
+            using: dat.using,
         };
         JobResult {
             id: Some(JobResultId {
@@ -620,6 +632,7 @@ pub(crate) mod tests {
                     run_after_time: run_after,
                     grabbed_until_time: None,
                     request_streaming: false,
+                    using: None,
                 }),
                 ..Default::default()
             };
