@@ -1,8 +1,6 @@
 pub mod chat;
 pub mod completion;
 pub mod generic_tracing_helper;
-#[cfg(feature = "local_llm")]
-pub mod mistral;
 pub mod tracing;
 
 pub trait ThinkTagHelper {

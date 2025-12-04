@@ -1,6 +1,9 @@
-use super::client::{ChatPostMessageResponse, SlackMessageClientImpl};
+use super::client::{
+    Attachment, AttachmentField, ChatPostMessageRequest, ChatPostMessageResponse,
+    SlackMessageClientImpl,
+};
 use crate::jobworkerp::runner::{SlackChatPostMessageArgs, SlackRunnerSettings};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Deserialize;
 
 #[derive(Clone, Deserialize, Debug, Default)] // for test only
@@ -24,25 +27,111 @@ pub struct SlackRepository {
 }
 
 impl SlackRepository {
-    //const TEXT_LEN: usize = 40000;
     pub fn new(config: SlackConfig) -> Self {
         Self {
             config,
             client: SlackMessageClientImpl::new(),
         }
     }
+
     pub async fn send_message(
         &self,
         req: &SlackChatPostMessageArgs,
     ) -> Result<ChatPostMessageResponse> {
-        let response = self.send_json(&serde_json::to_value(req)?).await;
-        serde_json::from_str(&response?)
+        let request = Self::convert_to_request(req)?;
+        let response = self
+            .client
+            .post_message(&self.config.bot_token, &request)
+            .await?;
+        serde_json::from_str(&response)
             .map_err(|e| anyhow::anyhow!("failed to parse slack response: {:?}", e))
     }
+
     pub async fn send_json(&self, req: &serde_json::Value) -> Result<String> {
         let response = self.client.post_json(&self.config.bot_token, req).await;
         tracing::debug!("slack response: {:?}", &response);
         response
+    }
+
+    fn convert_to_request(args: &SlackChatPostMessageArgs) -> Result<ChatPostMessageRequest> {
+        // Convert blocks: parse each JSON string to serde_json::Value
+        let blocks = if args.blocks.is_empty() {
+            None
+        } else {
+            let parsed_blocks: Result<Vec<serde_json::Value>, _> = args
+                .blocks
+                .iter()
+                .enumerate()
+                .map(|(i, block_str)| {
+                    serde_json::from_str(block_str.trim())
+                        .with_context(|| format!("failed to parse block[{i}] as JSON: {block_str}"))
+                })
+                .collect();
+            Some(parsed_blocks?)
+        };
+
+        // Convert attachments: map proto Attachment to client Attachment
+        let attachments = if args.attachments.is_empty() {
+            None
+        } else {
+            let converted: Vec<Attachment> = args
+                .attachments
+                .iter()
+                .map(|a| Attachment {
+                    color: a.color.clone(),
+                    author_icon: a.author_icon.clone(),
+                    author_link: a.author_link.clone(),
+                    author_name: a.author_name.clone(),
+                    fallback: a.fallback.clone(),
+                    fields: if a.fields.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            a.fields
+                                .iter()
+                                .map(|f| AttachmentField {
+                                    title: f.title.clone(),
+                                    value: f.value.clone(),
+                                    short: f.short,
+                                })
+                                .collect(),
+                        )
+                    },
+                    footer: a.footer.clone(),
+                    footer_icon: a.footer_icon.clone(),
+                    image_url: a.image_url.clone(),
+                    mrkdwn_in: if a.mrkdwn_in.is_empty() {
+                        None
+                    } else {
+                        Some(a.mrkdwn_in.clone())
+                    },
+                    pretext: a.pretext.clone(),
+                    text: a.text.clone(),
+                    title: a.title.clone(),
+                    title_link: a.title_link.clone(),
+                    thumb_url: a.thumb_url.clone(),
+                    ts: a.ts,
+                })
+                .collect();
+            Some(converted)
+        };
+
+        Ok(ChatPostMessageRequest {
+            channel: args.channel.clone(),
+            attachments,
+            blocks,
+            text: args.text.clone(),
+            icon_emoji: args.icon_emoji.clone(),
+            icon_url: args.icon_url.clone(),
+            link_names: args.link_names,
+            mrkdwn: args.mrkdwn,
+            parse: args.parse.clone(),
+            reply_broadcast: args.reply_broadcast,
+            thread_ts: args.thread_ts.clone(),
+            unfurl_links: args.unfurl_links,
+            unfurl_media: args.unfurl_media,
+            username: args.username.clone(),
+        })
     }
 }
 
