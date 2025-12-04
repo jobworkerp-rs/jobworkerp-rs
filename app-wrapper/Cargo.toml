@@ -87,7 +87,6 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 regex = { workspace = true }
-mockall = { workspace = true }
 app = { path = "../app", features = ["test-utils"] }
 infra = { path = "../infra", features = ["test-utils"] }
 jobworkerp-runner = { path = "../runner", features = ["test-utils"] }
