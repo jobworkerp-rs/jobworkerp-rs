@@ -64,8 +64,8 @@ message SlackChatPostMessageArgs {
   repeated Attachment attachments = 2;
   
   // # Blocks
-  // JSON array of structured message blocks (currently not functioning)
-  // TODO not working now 
+  // JSON strings representing Block Kit blocks. Each string should be a valid JSON object.
+  // Example: '{"type": "section", "text": {"type": "mrkdwn", "text": "*Hello*"}}'
   repeated string blocks = 3;
   
   // # Text
