@@ -53,7 +53,7 @@ impl MistralPlugin {
             .build()
             .expect("Failed to create tokio runtime for MistralPlugin");
 
-        tracing::info!("MistralPlugin created");
+        tracing::debug!("MistralPlugin created");
 
         Self {
             runtime,
@@ -349,6 +349,6 @@ impl MultiMethodPluginRunner for MistralPlugin {
 
 impl Drop for MistralPlugin {
     fn drop(&mut self) {
-        tracing::info!("MistralPlugin dropped");
+        tracing::debug!("MistralPlugin dropped");
     }
 }
