@@ -1,0 +1,54 @@
+[package]
+name = "plugin_runner_mistral"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "MistralRS local LLM runner plugin for jobworkerp"
+
+[lib]
+# dylib for plugin loading, rlib for testing
+crate-type = ["dylib", "rlib"]
+
+[dependencies]
+# Workspace dependencies
+proto = { path = "../../proto" }
+jobworkerp-runner = { path = "../../runner" }
+command-utils = { path = "../../modules/command-utils" }
+
+# MistralRS
+mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs.git" }
+
+# Core dependencies
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+prost = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+
+# OpenTelemetry
+opentelemetry = { workspace = true }
+
+[build-dependencies]
+tonic-prost-build = { workspace = true }
+
+[features]
+default = []
+cuda = ["mistralrs/cuda"]
+flash-attn = ["mistralrs/flash-attn"]
+cudnn = ["mistralrs/cudnn"]
+metal = ["mistralrs/metal"]
+mkl = ["mistralrs/mkl"]
+accelerate = ["mistralrs/accelerate"]
+nccl = ["mistralrs/nccl"]

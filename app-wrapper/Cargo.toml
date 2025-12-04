@@ -47,7 +47,6 @@ jsonschema = "0.33"
 #kube-client = "0.86"
 libloading = { workspace = true }
 liquid = "0.26"
-mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs.git", optional = true }
 nix = { workspace = true, features = ["signal"] }
 ollama-rs = { version = "0.3", features = ["stream"] }
 once_cell = { workspace = true }
@@ -96,11 +95,3 @@ jobworkerp-runner = { path = "../runner", features = ["test-utils"] }
 [features]
 default = []
 test-utils = ["app/test-utils", "infra/test-utils"]
-local_llm = ["dep:mistralrs"]
-cuda = ["local_llm", "mistralrs?/cuda"]
-cudnn = ["local_llm", "mistralrs?/cudnn"]
-metal = ["local_llm", "mistralrs?/metal"]
-flash-attn = ["cuda", "mistralrs?/flash-attn"]
-accelerate = ["local_llm", "mistralrs?/accelerate"]
-mkl = ["local_llm", "mistralrs?/mkl"]
-nccl = ["local_llm", "mistralrs?/nccl"]
