@@ -9,7 +9,10 @@ use crate::tracing_helper::{extract_parent_context, messages_to_json, MistralOte
 use anyhow::Result;
 use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_args::ChatRole as TextMessageRole;
 use jobworkerp_runner::jobworkerp::runner::llm::{LlmChatArgs, LlmChatResult};
-use mistralrs::{RequestBuilder, TextMessageRole as MistralTextMessageRole, Tool, ToolChoice};
+use mistralrs::{
+    CalledFunction, RequestBuilder, TextMessageRole as MistralTextMessageRole, Tool,
+    ToolCallResponse, ToolCallType, ToolChoice,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -246,6 +249,11 @@ impl MistralChatService {
     }
 
     /// Build request with messages and tools
+    ///
+    /// Uses appropriate MistralRS API for each message type:
+    /// - Tool messages: add_tool_message with tool_call_id
+    /// - Assistant messages with tool_calls: add_message_with_tool_call
+    /// - Other messages: add_message
     fn build_request_with_messages(
         &self,
         messages: &[MistralRSMessage],
@@ -254,17 +262,56 @@ impl MistralChatService {
     ) -> Result<RequestBuilder> {
         let mut builder = RequestBuilder::new();
 
-        // Add messages
+        // Add messages with proper handling for tool-related messages
         for msg in messages {
-            let role = match msg.role {
-                TextMessageRole::User => MistralTextMessageRole::User,
-                TextMessageRole::Assistant => MistralTextMessageRole::Assistant,
-                TextMessageRole::System => MistralTextMessageRole::System,
-                TextMessageRole::Tool => MistralTextMessageRole::Tool,
-                _ => MistralTextMessageRole::User,
-            };
-
-            builder = builder.add_message(role, &msg.content);
+            match msg.role {
+                TextMessageRole::Tool => {
+                    // Tool response messages require tool_call_id
+                    let tool_id = msg.tool_call_id.as_deref().unwrap_or("");
+                    builder = builder.add_tool_message(&msg.content, tool_id);
+                }
+                TextMessageRole::Assistant => {
+                    // Assistant messages may contain tool calls
+                    if let Some(tool_calls) = &msg.tool_calls {
+                        if !tool_calls.is_empty() {
+                            let mistral_tool_calls: Vec<ToolCallResponse> = tool_calls
+                                .iter()
+                                .enumerate()
+                                .map(|(index, tc)| ToolCallResponse {
+                                    index,
+                                    id: tc.id.clone(),
+                                    tp: ToolCallType::Function,
+                                    function: CalledFunction {
+                                        name: tc.function_name.clone(),
+                                        arguments: tc.arguments.clone(),
+                                    },
+                                })
+                                .collect();
+                            builder = builder.add_message_with_tool_call(
+                                MistralTextMessageRole::Assistant,
+                                &msg.content,
+                                mistral_tool_calls,
+                            );
+                        } else {
+                            builder = builder
+                                .add_message(MistralTextMessageRole::Assistant, &msg.content);
+                        }
+                    } else {
+                        builder =
+                            builder.add_message(MistralTextMessageRole::Assistant, &msg.content);
+                    }
+                }
+                TextMessageRole::User => {
+                    builder = builder.add_message(MistralTextMessageRole::User, &msg.content);
+                }
+                TextMessageRole::System => {
+                    builder = builder.add_message(MistralTextMessageRole::System, &msg.content);
+                }
+                _ => {
+                    // Default to User for unknown roles
+                    builder = builder.add_message(MistralTextMessageRole::User, &msg.content);
+                }
+            }
         }
 
         // Apply options
