@@ -132,13 +132,6 @@ impl RunnerTrait for LLMChatRunnerImpl {
                 self.genai = Some(genai);
                 Ok(())
             }
-            Some(
-                jobworkerp_runner::jobworkerp::runner::llm::llm_runner_settings::Settings::Local(
-                    _settings,
-                ),
-            ) => Err(anyhow!(
-                "Local LLM is now provided via plugin. Please use plugin_runner_mistral instead."
-            )),
             _ => Err(anyhow!("model_settings is not set")),
         }
     }
