@@ -6,7 +6,7 @@ on:
       features:
         description: "GPU features to include"
         required: true
-        default: "mysql,cuda,flash-attn,local_llm"
+        default: "mysql"
         type: string
       github_registry_owner:
         description: "GitHub registry owner (username or org)"
@@ -24,7 +24,7 @@ jobs:
   build-and-push-gpu-image:
     runs-on: ubuntu-latest
     container:
-      image: nvcr.io/nvidia/cuda:12.8.1-devel-ubuntu24.04
+      image: nvcr.io/nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04
       options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
     steps:
       - name: Install dependencies
@@ -137,7 +137,7 @@ jobs:
   build-and-push-all-in-one-gpu-image:
     runs-on: ubuntu-latest
     container:
-      image: nvcr.io/nvidia/cuda:12.8.1-devel-ubuntu24.04
+      image: nvcr.io/nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04
       options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
     steps:
       - name: Install dependencies

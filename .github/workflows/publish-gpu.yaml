@@ -6,7 +6,7 @@ on:
       features:
         description: 'GPU features to include'
         required: true
-        default: 'mysql,cuda,flash-attn'
+        default: mysql
         type: string
       tag_suffix:
         description: 'Tag suffix for Docker images'
@@ -24,7 +24,7 @@ jobs:
   build-and-push-gpu-image:
     runs-on: ubuntu-latest
     container:
-      image: nvcr.io/nvidia/cuda:12.8.1-devel-ubuntu24.04
+      image: nvcr.io/nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04
       options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
     # Sets the permissions granted to the `GITHUB_TOKEN` for the actions in this job.
     permissions:
@@ -61,7 +61,7 @@ jobs:
         run: |
           echo "Building with features: ${{ github.event.inputs.features }}"
           echo "Tag suffix: ${{ github.event.inputs.tag_suffix }}"
-          # CUDA環境の確認
+          # confirm CUDA
           nvidia-smi || echo "nvidia-smi not available (expected in CI)"
           nvcc --version || echo "nvcc not available"
       # build with GPU features
@@ -100,7 +100,7 @@ jobs:
   build-and-push-all-in-one-gpu-image:
     runs-on: ubuntu-latest
     container:
-      image: nvcr.io/nvidia/cuda:12.8.1-devel-ubuntu24.04
+      image: nvcr.io/nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04
       options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
     # Sets the permissions granted to the `GITHUB_TOKEN` for the actions in this job.
     permissions:
@@ -137,7 +137,7 @@ jobs:
         run: |
           echo "Building with features: ${{ github.event.inputs.features }}"
           echo "Tag suffix: ${{ github.event.inputs.tag_suffix }}"
-          # CUDA環境の確認
+          # confirm CUDA
           nvidia-smi || echo "nvidia-smi not available (expected in CI)"
           nvcc --version || echo "nvcc not available"
       # build with GPU features
