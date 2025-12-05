@@ -33,7 +33,7 @@ jobs:
           echo "Removing Android SDK..."
           sudo rm -rf /usr/local/lib/android || true
 
-          echo "Removing GHC / Haskell...k
+          echo "Removing GHC / Haskell..."
           sudo rm -rf /opt/ghc || true
           sudo rm -rf /usr/local/.ghcup || true
 
