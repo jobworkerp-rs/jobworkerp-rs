@@ -372,6 +372,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b098575ebe77cb6d14fc7f32749631a6e44edbef6b796f89b020e99ba20d425"
 dependencies = [
  "axum-core 0.5.5",
+ "axum-macros",
  "bytes",
  "form_urlencoded",
  "futures-util",
@@ -435,6 +436,17 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
+]
+
+[[package]]
+name = "axum-macros"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "604fde5e028fea851ce1d8570bbdc034bec850d157f7569d10f347d06808c05c"
+dependencies = [
+ "proc-macro2",
+ "quote 1.0.42",
+ "syn 2.0.111",
 ]
 
 [[package]]
@@ -2336,6 +2348,7 @@ dependencies = [
  "infra-utils",
  "jobworkerp-base",
  "jobworkerp-runner",
+ "mcp-server",
  "proto",
  "tokio",
  "tracing",
@@ -2690,6 +2703,30 @@ name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
+
+[[package]]
+name = "mcp-server"
+version = "0.18.1"
+dependencies = [
+ "anyhow",
+ "app",
+ "app-wrapper",
+ "axum 0.8.7",
+ "command-utils 0.1.0",
+ "dotenvy",
+ "futures",
+ "infra",
+ "jobworkerp-base",
+ "jobworkerp-runner",
+ "proto",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-test",
+ "tokio-util",
+ "tracing",
+]
 
 [[package]]
 name = "md-5"
@@ -3357,6 +3394,12 @@ name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "pastey"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57d6c094ee800037dff99e02cab0eaf3142826586742a270ab3d7a62656bd27a"
 
 [[package]]
 name = "pem-rfc7468"
@@ -4391,17 +4434,22 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "0.8.5"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5947688160b56fb6c827e3c20a72c90392a1d7e9dec74749197aa1780ac42ca"
+checksum = "38b18323edc657390a6ed4d7a9110b0dec2dc3ed128eb2a123edfbafabdbddc5"
 dependencies = [
+ "async-trait",
  "base64",
+ "bytes",
  "chrono",
  "futures",
  "http",
- "paste",
+ "http-body",
+ "http-body-util",
+ "pastey",
  "pin-project-lite",
  "process-wrap",
+ "rand 0.9.2",
  "reqwest",
  "rmcp-macros",
  "schemars 1.1.0",
@@ -4412,14 +4460,16 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
+ "tower-service",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
 name = "rmcp-macros"
-version = "0.8.5"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01263441d3f8635c628e33856c468b96ebbce1af2d3699ea712ca71432d4ee7a"
+checksum = "c75d0a62676bf8c8003c4e3c348e2ceb6a7b3e48323681aaf177fdccdac2ce50"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -5602,6 +5652,19 @@ dependencies = [
  "pin-project-lite",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "tokio-test"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2468baabc3311435b55dd935f702f42cd1b8abb7e754fb7dfb16bd36aa88f9f7"
+dependencies = [
+ "async-stream",
+ "bytes",
+ "futures-core",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]

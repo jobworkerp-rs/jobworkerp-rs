@@ -821,6 +821,125 @@ pub trait FunctionApp:
             }
         }
     }
+
+    /// Streaming version of call_function_for_llm.
+    ///
+    /// Returns a stream of FunctionResult items for progressive output.
+    /// Used by MCP Server for streaming tool execution results.
+    fn call_function_for_llm_streaming<'a>(
+        &'a self,
+        meta: Arc<HashMap<String, String>>,
+        name: &'a str,
+        arguments: Option<serde_json::Map<String, serde_json::Value>>,
+        timeout_sec: u32,
+    ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<FunctionResult>> + Send + 'a>> {
+        use futures::StreamExt;
+
+        Box::pin(async_stream::stream! {
+            tracing::debug!("call_function_for_llm_streaming: {}: {:?}", name, &arguments);
+
+            match self.find_runner_by_name_with_mcp(name).await {
+                Ok(Some((
+                    RunnerWithSchema {
+                        id: Some(rid),
+                        data: Some(rdata),
+                        ..
+                    },
+                    tool_name_opt,
+                ))) => {
+                    let arguments = self.transform_function_arguments(rdata.runner_type(), arguments);
+                    let runner = RunnerWithSchema {
+                        id: Some(rid),
+                        data: Some(rdata.clone()),
+                        settings_schema: String::new(),
+                        method_json_schema_map: None,
+                    };
+                    let (settings, args) = match Self::prepare_runner_call_arguments(
+                        arguments.unwrap_or_default(),
+                        &runner,
+                        tool_name_opt.clone(),
+                    ).await {
+                        Ok((s, a)) => (s, a),
+                        Err(e) => {
+                            yield Err(e);
+                            return;
+                        }
+                    };
+
+                    let stream = self.handle_runner_for_front(
+                        meta,
+                        &rdata.name,
+                        settings,
+                        None,
+                        args,
+                        None,
+                        timeout_sec,
+                        true, // streaming enabled
+                    );
+
+                    let mut stream = std::pin::pin!(stream);
+                    while let Some(result) = stream.next().await {
+                        yield result;
+                    }
+                }
+                Ok(Some((runner, tool_name_opt))) => {
+                    if let Some(rdata) = &runner.data {
+                        let arguments = self.transform_function_arguments(rdata.runner_type(), arguments);
+                        let (settings, args) = match Self::prepare_runner_call_arguments(
+                            arguments.unwrap_or_default(),
+                            &runner,
+                            tool_name_opt.clone(),
+                        ).await {
+                            Ok((s, a)) => (s, a),
+                            Err(e) => {
+                                yield Err(e);
+                                return;
+                            }
+                        };
+
+                        let stream = self.handle_runner_for_front(
+                            meta,
+                            &rdata.name,
+                            settings,
+                            None,
+                            args,
+                            None,
+                            timeout_sec,
+                            true, // streaming enabled
+                        );
+
+                        let mut stream = std::pin::pin!(stream);
+                        while let Some(result) = stream.next().await {
+                            yield result;
+                        }
+                    } else {
+                        yield Err(JobWorkerError::NotFound("Runner data not found".to_string()).into());
+                    }
+                }
+                Ok(None) => {
+                    // Worker-based call with streaming
+                    let args = json!(arguments.unwrap_or_default());
+                    let stream = self.handle_worker_call_for_front(
+                        meta,
+                        name,
+                        args,
+                        None,
+                        timeout_sec,
+                        true, // streaming enabled
+                    );
+
+                    let mut stream = std::pin::pin!(stream);
+                    while let Some(result) = stream.next().await {
+                        yield result;
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("error: {:#?}", &e);
+                    yield Err(e);
+                }
+            }
+        })
+    }
 }
 
 #[derive(Debug)]
