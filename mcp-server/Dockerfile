@@ -1,0 +1,22 @@
+FROM nvcr.io/nvidia/cuda:13.0.2-cudnn-runtime-ubuntu24.04
+
+RUN apt-get update && apt-get -y dist-upgrade && apt-get install -y libssl3 libcurl4 protobuf-compiler libgomp1 docker.io docker-compose \
+    && apt-get clean -y && rm -rf /var/lib/apt/lists/*
+
+RUN adduser --system jobworkerp
+
+RUN mkdir -p /home/jobworkerp && chown jobworkerp:daemon /home/jobworkerp
+RUN mkdir -p /home/jobworkerp/plugins && chown jobworkerp:daemon /home/jobworkerp/plugins
+ENV LD_LIBRARY_PATH=/home/jobworkerp/plugins:/home/jobworkerp/data/plugin/runner:/home/jobworkerp/data/plugin/cuda_runner:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+RUN /sbin/ldconfig
+
+WORKDIR /home/jobworkerp
+
+COPY --chown=jobworkerp:daemon ./target/release/mcp-http .
+
+USER jobworkerp
+
+# Default MCP server port
+EXPOSE 8000
+
+CMD ["./mcp-http"]

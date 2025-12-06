@@ -116,7 +116,15 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/worker:latest
             ghcr.io/${{ github.repository_owner }}/worker:${{ github.ref_name }}
-  #        labels: ${{ steps.meta.outputs.labels }}
+      - name: Build and push mcp-http Docker image
+        uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
+        with:
+          context: .
+          file: mcp-server/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/mcp-http:latest
+            ghcr.io/${{ github.repository_owner }}/mcp-http:${{ github.ref_name }}
   build-and-push-all-in-one-image:
     runs-on: ubuntu-latest
     container:
