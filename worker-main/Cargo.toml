@@ -24,6 +24,7 @@ app = { path = "../app" }
 app-wrapper = { path = "../app-wrapper" }
 worker-app = { path = "../worker-app" }
 grpc-front = { path = "../grpc-front" }
+mcp-server = { path = "../mcp-server" }
 
 anyhow = { workspace = true }
 dotenvy = { workspace = true }

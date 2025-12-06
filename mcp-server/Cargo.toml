@@ -1,0 +1,50 @@
+[package]
+name = "mcp-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "MCP Server integration for jobworkerp-rs"
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mcp-http"
+path = "src/bin/mcp_http.rs"
+
+[[bin]]
+name = "mcp-stdio"
+path = "src/bin/mcp_stdio.rs"
+
+[dependencies]
+app = { path = "../app" }
+app-wrapper = { path = "../app-wrapper" }
+proto = { path = "../proto" }
+infra = { path = "../infra" }
+command-utils = { path = "../modules/command-utils" }
+jobworkerp-base = { path = "../base" }
+
+rmcp = { workspace = true, features = [
+    "server",
+    "transport-io",
+    "transport-streamable-http-server",
+] }
+
+anyhow = { workspace = true }
+axum = { version = "0.8", features = ["macros"] }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+futures = { workspace = true }
+dotenvy = { workspace = true }
+jobworkerp-runner = { path = "../runner" }
+
+[dev-dependencies]
+tokio-test = "0.4"
+app = { path = "../app", features = ["test-utils"] }
+
+[features]
+default = []

@@ -39,10 +39,12 @@ impl SlackRepository {
         req: &SlackChatPostMessageArgs,
     ) -> Result<ChatPostMessageResponse> {
         let request = Self::convert_to_request(req)?;
+        tracing::debug!("slack request: {:?}", serde_json::to_string(&request));
         let response = self
             .client
             .post_message(&self.config.bot_token, &request)
             .await?;
+        tracing::debug!("slack response: {:?}", &response);
         serde_json::from_str(&response)
             .map_err(|e| anyhow::anyhow!("failed to parse slack response: {:?}", e))
     }
