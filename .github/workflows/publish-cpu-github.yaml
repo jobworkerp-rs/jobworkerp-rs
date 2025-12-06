@@ -70,6 +70,19 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Build and push mcp-http CPU Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: mcp-server/Dockerfile.cpu
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.event.inputs.github_registry_owner }}/mcp-http:cpu-latest
+            ${{ env.REGISTRY }}/${{ github.event.inputs.github_registry_owner }}/mcp-http:cpu-${{ steps.timestamp.outputs.TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   build-and-push-all-in-one-cpu-image:
     runs-on: ubuntu-latest
     permissions:
