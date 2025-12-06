@@ -21,5 +21,15 @@ async fn main() -> Result<()> {
     };
     command_utils::util::tracing::tracing_init(conf).await?;
 
-    jobworkerp_main::boot_all_in_one().await
+    // Switch between gRPC and MCP based on MCP_ENABLED environment variable
+    if std::env::var("MCP_ENABLED")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false)
+    {
+        tracing::info!("Starting in MCP Server mode");
+        jobworkerp_main::boot_all_in_one_mcp().await
+    } else {
+        tracing::info!("Starting in gRPC Server mode");
+        jobworkerp_main::boot_all_in_one().await
+    }
 }
