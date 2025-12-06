@@ -84,18 +84,19 @@ impl HelloPlugin {
         tokio::spawn(async move {
             let start = chrono::Utc::now().to_rfc3339();
             let id = uuid::Uuid::new_v4();
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
             println!(
                 "========== [{}] HelloPlugin run_stream: Hello! {}: {} ==========",
                 start, &hello_name, id
             );
-            for c in hello_name.chars() {
+            let result = format!("Hello {}!", hello_name);
+            for c in result.chars() {
                 let c = HelloRunnerResult {
                     data: c.to_string(),
                 }
                 .encode_to_vec();
                 let _ = tx.send(c).await;
-                tokio::time::sleep(Duration::from_millis(1000)).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
             drop(tx);
             println!(
