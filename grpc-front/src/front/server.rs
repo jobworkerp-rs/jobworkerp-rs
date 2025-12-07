@@ -34,13 +34,6 @@ pub async fn start_server(
     use_web: bool,
     max_frame_size: Option<u32>,
 ) -> Result<()> {
-    let (mut _health_reporter, health_service) = tonic_health::server::health_reporter();
-    // reflection
-    let reflection = tonic_reflection::server::Builder::configure()
-        .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
-        .build_v1()
-        .unwrap();
-
     let (tx, rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
         match tokio::signal::ctrl_c().await {
@@ -54,16 +47,31 @@ pub async fn start_server(
         }
     });
 
+    let result = start_server_with_shutdown(app_module, addr, use_web, max_frame_size, rx).await;
+    lock.unlock();
+    result
+}
+
+/// Start gRPC server with external shutdown receiver.
+/// Used when shutdown signal is managed by the caller (e.g., boot_all_in_one_mcp).
+pub async fn start_server_with_shutdown(
+    app_module: Arc<AppModule>,
+    addr: SocketAddr,
+    use_web: bool,
+    max_frame_size: Option<u32>,
+    shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+) -> Result<()> {
+    let (mut _health_reporter, health_service) = tonic_health::server::health_reporter();
+    // reflection
+    let reflection = tonic_reflection::server::Builder::configure()
+        .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
+        .build_v1()
+        .unwrap();
+
     if use_web {
         Server::builder()
             .accept_http1(true) // for gRPC-web
-            .max_frame_size(max_frame_size) // 16MB
-            // .layer(GrpcWebLayer::new()) // for grpc-web // server type is changed if this line is added
-            // .layer(
-            //     ServiceBuilder::new()
-            //         .layer(server::OtelGrpcLayer::default().filter(filters::reject_healthcheck))
-            //         .map_err(|err| Box::new(err) as Box<dyn std::error::Error + Send + Sync>),
-            // )
+            .max_frame_size(max_frame_size)
             .add_service(enable_grpc_web(RunnerServiceServer::new(
                 RunnerGrpcImpl::new(app_module.clone()),
             )))
@@ -90,21 +98,14 @@ pub async fn start_server(
             )))
             .add_service(reflection)
             .add_service(health_service)
-            // serve. shutdown if tokio::signal::ctrl_c() is called
             .serve_with_shutdown(addr, async {
-                rx.await.ok();
+                shutdown_rx.await.ok();
             })
             .await
             .map_err(|e| anyhow!("grpc web server error: {:?}", e))?;
     } else {
         Server::builder()
-            .max_frame_size(max_frame_size) // 16MB
-            // .layer(
-            //     ServiceBuilder::new()
-            //         .layer(server::OtelGrpcLayer::default().filter(filters::reject_healthcheck))
-            //         // .map_request(|req| req)
-            //         .map_err(|err| Box::new(err) as Box<dyn std::error::Error + Send + Sync>),
-            // )
+            .max_frame_size(max_frame_size)
             .add_service(RunnerServiceServer::new(RunnerGrpcImpl::new(
                 app_module.clone(),
             )))
@@ -129,13 +130,11 @@ pub async fn start_server(
             )))
             .add_service(reflection)
             .add_service(health_service)
-            // serve. shutdown if tokio::signal::ctrl_c() is called
             .serve_with_shutdown(addr, async {
-                rx.await.ok();
+                shutdown_rx.await.ok();
             })
             .await
-            .map_err(|e| anyhow!("grpc web server error: {:?}", e))?;
+            .map_err(|e| anyhow!("grpc server error: {:?}", e))?;
     }
-    lock.unlock();
     Ok(())
 }
