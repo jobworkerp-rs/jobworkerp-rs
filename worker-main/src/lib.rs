@@ -13,6 +13,8 @@ use tokio::sync::OnceCell;
 use worker_app::worker::dispatcher::JobDispatcher;
 use worker_app::WorkerModules;
 
+const MCP_DEFAULT_ADDR: &str = "127.0.0.1:8000";
+
 pub async fn start_worker(
     app_module: Arc<AppModule>,
     runner_factory: Arc<RunnerFactory>,
@@ -122,11 +124,10 @@ pub async fn boot_all_in_one() -> Result<()> {
     Ok(())
 }
 
-/// Boot all-in-one with MCP Server instead of gRPC Front.
+/// Boot all-in-one with MCP Server in addition to gRPC Front.
 ///
-/// This function starts the Worker and MCP Server together in a single process,
-/// allowing MCP clients (like Claude Desktop) to directly interact with jobworkerp
-/// without going through gRPC.
+/// This function starts the Worker, gRPC Server, and MCP Server together in a single process,
+/// allowing both gRPC clients and MCP clients (like Claude Desktop) to interact with jobworkerp.
 pub async fn boot_all_in_one_mcp() -> Result<()> {
     let (lock, mut wait) = shutdown::create_lock_and_wait();
 
@@ -172,15 +173,46 @@ pub async fn boot_all_in_one_mcp() -> Result<()> {
     let function_set_app = app_module.function_set_app.clone();
     let mcp_config = McpServerConfig::from_env();
 
-    tracing::info!("start worker and MCP server");
+    tracing::info!("start worker, gRPC server, and MCP server");
+
+    // Worker future
     let worker_lock = lock.clone();
-    let mcp_lock = lock; // Move original lock to MCP server (no clone needed)
     let worker_future = start_worker(app_module.clone(), runner_factory, worker_lock);
 
-    // MCP Server (instead of gRPC Front)
+    // gRPC Front Server future
+    let grpc_lock = lock.clone();
+    let grpc_app_module = app_module.clone();
+    let mut grpc_shutdown_recv = shutdown_recv.clone();
+    let grpc_future = async move {
+        let addr = *jobworkerp_base::GRPC_ADDR;
+        let use_web = *jobworkerp_base::USE_WEB;
+        let max_frame_size = *jobworkerp_base::MAX_FRAME_SIZE;
+
+        // Create shutdown receiver for gRPC server
+        let (grpc_tx, grpc_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let _ = grpc_shutdown_recv.changed().await;
+            tracing::info!("gRPC server received shutdown signal");
+            let _ = grpc_tx.send(());
+        });
+
+        let result = grpc_front::front::server::start_server_with_shutdown(
+            grpc_app_module,
+            addr,
+            use_web,
+            max_frame_size,
+            grpc_rx,
+        )
+        .await;
+        grpc_lock.unlock();
+        result
+    };
+
+    // MCP Server future
+    let mcp_lock = lock;
     let mut mcp_shutdown_recv = shutdown_recv.clone();
     let mcp_future = async move {
-        let bind_addr = std::env::var("MCP_ADDR").unwrap_or_else(|_| "127.0.0.1:8000".to_string());
+        let bind_addr = std::env::var("MCP_ADDR").unwrap_or_else(|_| MCP_DEFAULT_ADDR.to_string());
         let handler_factory = move || {
             Ok(McpHandler::new(
                 function_app.clone(),
@@ -203,7 +235,7 @@ pub async fn boot_all_in_one_mcp() -> Result<()> {
         .await
     };
 
-    // Spawn ctrl_c handler that broadcasts shutdown to MCP server
+    // Spawn ctrl_c handler that broadcasts shutdown to all servers
     let ctrl_c_shutdown_send = shutdown_send.clone();
     tokio::spawn(async move {
         match tokio::signal::ctrl_c().await {
@@ -215,21 +247,23 @@ pub async fn boot_all_in_one_mcp() -> Result<()> {
         }
     });
 
-    // Run both futures concurrently and wait for both to complete
-    let (worker_result, mcp_result) = tokio::join!(worker_future, mcp_future);
+    // Run all three futures concurrently
+    let (worker_result, grpc_result, mcp_result) =
+        tokio::join!(worker_future, grpc_future, mcp_future);
 
     tracing::debug!("worker completed: {:?}", worker_result);
+    tracing::debug!("grpc server completed: {:?}", grpc_result);
     tracing::debug!("mcp server completed: {:?}", mcp_result);
 
     // Handle results
     worker_result?;
+    grpc_result?;
     mcp_result?;
 
     // Send shutdown signal to cleanup task (in case not already sent)
     let _ = shutdown_send.send(true);
 
     // Wait for all locks to be released with timeout
-    // Worker tasks should release their locks after receiving ctrl_c
     tracing::info!("waiting shutdown signal (with timeout)");
     tokio::select! {
         _ = wait.wait() => {
