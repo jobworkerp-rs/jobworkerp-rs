@@ -395,6 +395,12 @@
       ],
       "unevaluatedProperties": false,
       "properties": {
+        "useStreaming": {
+          "type": "boolean",
+          "default": false,
+          "title": "UseStreamingExecution",
+          "description": "Whether to use streaming execution mode.\nWhen true:\n- Job is executed with streaming enabled\n- Intermediate results are broadcast via JobResultService/ListenStream\n- Final result is collected using collect_stream and stored in raw_output\nUseful for LLM runners or other long-running processes where progress monitoring is needed.\n"
+        },
         "run": {
           "type": "object",
           "title": "RunTaskConfiguration",
@@ -460,7 +466,7 @@
             "using": {
               "type": "string",
               "title": "Using",
-              "description": "Selects which implementation to use for MCP/Plugin runners with multiple tools.\n\n- **Required**: For runners with multiple tools (e.g., fetch server with \"fetch\" and \"fetch_html\")\n- **Optional**: For single-tool runners (auto-selected)\n\nExamples:\n- MCP fetch server: using: \"fetch_html\"\n- MCP time server (single tool): can be omitted\n- COMMAND runner: not needed\n"
+              "description": "Selects which implementation to use for runners with multiple tools.\n\n- **Required**: For runners with multiple tools (e.g., fetch server with \"fetch\" and \"fetch_html\")\n- **Optional**: For single-tool runners (auto-selected)\n\nExamples:\n- MCP fetch server: using: \"fetch_html\"\n- MCP time server (single tool): can be omitted\n- COMMAND runner: not needed\n"
             },
             "settings": {
               "type": "object",
@@ -605,7 +611,7 @@
                 },
                 "using": {
                   "type": "string",
-                  "description": "Selects which implementation to use for MCP/Plugin runners with multiple tools.\n\n- **Required**: For runners with multiple tools\n- **Optional**: For single-tool runners (auto-selected)\n"
+                  "description": "Selects which implementation to use for runners with multiple tools.\n\n- **Required**: For runners with multiple tools\n- **Optional**: For single-tool runners (auto-selected)\n"
                 },
                 "settings": {
                   "type": "object",

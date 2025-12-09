@@ -222,7 +222,7 @@ impl JobResultApp for HybridJobResultAppImpl {
                         job_id,
                         timeout.as_ref(),
                         v.data
-                            .map(|r| r.request_streaming)
+                            .map(|r| r.streaming_type != 0)
                             .unwrap_or(request_streaming),
                     )
                     .await
@@ -468,7 +468,7 @@ pub mod tests {
             max_retry: 0,
             priority: proto::jobworkerp::data::Priority::High as i32,
             timeout: 0,
-            request_streaming: false,
+            streaming_type: 0,
             enqueue_time: datetime::now_millis(),
             run_after_time: 0,
             response_type: proto::jobworkerp::data::ResponseType::NoResult as i32,
@@ -599,7 +599,7 @@ pub mod tests {
                 max_retry: worker_data.retry_policy.map(|p| p.max_retry).unwrap_or(0),
                 priority: proto::jobworkerp::data::Priority::High as i32,
                 timeout: 0,
-                request_streaming: false,
+                streaming_type: 0,
                 enqueue_time: datetime::now_millis(),
                 run_after_time: 0,
                 response_type: worker_data.response_type,

@@ -54,9 +54,13 @@ message JobResultData {
   // from enqueue arguments
   uint64 timeout = 11;
 
-  // # Request Streaming
-  // from enqueue arguments
-  bool request_streaming = 12;
+  // Reserved field number 12 (was request_streaming, replaced by streaming_type)
+  reserved 12;
+
+  // # Streaming Type
+  // Defines how streaming is handled for this job result
+  // Values: 0=None, 1=Response (client streaming), 2=Internal (worker-side collection)
+  jobworkerp.data.StreamingType streaming_type = 21;
 
   // # Enqueue Time
   // Timestamp when the job was registered in the queue (Unix time in milliseconds)

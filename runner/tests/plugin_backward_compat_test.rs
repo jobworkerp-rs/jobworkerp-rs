@@ -1,7 +1,10 @@
 use anyhow::Result;
+use futures::StreamExt;
 use jobworkerp_runner::runner::plugins::Plugins;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use jsonschema::Validator;
+use prost::Message;
+use proto::jobworkerp::data::{result_output_item, ResultOutputItem, Trailer};
 use std::collections::HashMap;
 
 const TEST_PLUGIN_DIR: &str = "./target/debug,../target/debug,../target/release,./target/release";
@@ -338,6 +341,118 @@ async fn test_multi_method_plugin_settings_schema() -> Result<()> {
     assert!(
         settings_validator.is_valid(&sample_settings),
         "settings_schema should validate valid settings"
+    );
+
+    Ok(())
+}
+
+// ============================================================================
+// collect_stream tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_legacy_plugin_collect_stream_uses_last_chunk() -> Result<()> {
+    let plugins = Plugins::new();
+    plugins.load_plugin_files(TEST_PLUGIN_DIR).await;
+
+    let runner_loader = plugins.runner_plugins();
+    let loader = runner_loader.read().await;
+
+    let plugin_wrapper = loader
+        .find_plugin_runner_by_name("LegacyCompat")
+        .await
+        .expect("LegacyCompat plugin should be found");
+
+    // Create a mock stream with multiple data chunks
+    let chunk1 = ResultOutputItem {
+        item: Some(result_output_item::Item::Data(b"chunk1".to_vec())),
+    };
+    let chunk2 = ResultOutputItem {
+        item: Some(result_output_item::Item::Data(b"chunk2".to_vec())),
+    };
+    let chunk3 = ResultOutputItem {
+        item: Some(result_output_item::Item::Data(b"chunk3_final".to_vec())),
+    };
+    let end = ResultOutputItem {
+        item: Some(result_output_item::Item::End(Trailer {
+            metadata: HashMap::from([("key".to_string(), "value".to_string())]),
+        })),
+    };
+
+    let stream = futures::stream::iter(vec![chunk1, chunk2, chunk3, end]).boxed();
+
+    // Collect stream - Legacy plugin should keep only last chunk
+    let (collected_data, metadata) = plugin_wrapper.collect_stream(stream).await?;
+
+    // Should be the last chunk's data only (not concatenated)
+    assert_eq!(
+        collected_data, b"chunk3_final",
+        "Legacy plugin should keep only last chunk"
+    );
+    assert_eq!(metadata.get("key"), Some(&"value".to_string()));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_hello_plugin_collect_stream_merges_chunks() -> Result<()> {
+    let plugins = Plugins::new();
+    plugins.load_plugin_files(TEST_PLUGIN_DIR).await;
+
+    let runner_loader = plugins.runner_plugins();
+    let loader = runner_loader.read().await;
+
+    let mut plugin_wrapper = loader
+        .find_plugin_runner_by_name("HelloPlugin")
+        .await
+        .expect("HelloPlugin should be found");
+
+    // Load plugin
+    plugin_wrapper.load(vec![]).await?;
+
+    // HelloPlugin has custom collect_stream that merges HelloRunnerResult.data fields
+    // Create mock HelloRunnerResult chunks
+    #[derive(prost::Message, Clone)]
+    pub struct HelloRunnerResult {
+        #[prost(string, tag = "1")]
+        pub data: String,
+    }
+
+    let result1 = HelloRunnerResult {
+        data: "Hello".to_string(),
+    };
+    let result2 = HelloRunnerResult {
+        data: " ".to_string(),
+    };
+    let result3 = HelloRunnerResult {
+        data: "World!".to_string(),
+    };
+
+    let chunk1 = ResultOutputItem {
+        item: Some(result_output_item::Item::Data(result1.encode_to_vec())),
+    };
+    let chunk2 = ResultOutputItem {
+        item: Some(result_output_item::Item::Data(result2.encode_to_vec())),
+    };
+    let chunk3 = ResultOutputItem {
+        item: Some(result_output_item::Item::Data(result3.encode_to_vec())),
+    };
+    let end = ResultOutputItem {
+        item: Some(result_output_item::Item::End(Trailer {
+            metadata: HashMap::new(),
+        })),
+    };
+
+    let stream = futures::stream::iter(vec![chunk1, chunk2, chunk3, end]).boxed();
+
+    // Collect stream - HelloPlugin should merge data fields
+    let (collected_data, _metadata) = plugin_wrapper.collect_stream(stream).await?;
+
+    // Decode and verify merged result
+    let merged_result = HelloRunnerResult::decode(collected_data.as_slice())?;
+    assert_eq!(
+        merged_result.data, "Hello World!",
+        "HelloPlugin should merge data fields from all chunks"
     );
 
     Ok(())

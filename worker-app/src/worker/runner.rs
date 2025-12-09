@@ -24,7 +24,7 @@ use proto::jobworkerp::data::JobResult;
 use proto::jobworkerp::data::JobResultId;
 use proto::jobworkerp::data::ResultOutputItem;
 use proto::jobworkerp::data::{
-    Job, JobResultData, ResultOutput, ResultStatus, RunnerData, WorkerData, WorkerId,
+    Job, JobResultData, ResultOutput, ResultStatus, RunnerData, StreamingType, WorkerData, WorkerId,
 };
 use result::ResultOutputEnum;
 use std::collections::HashMap;
@@ -70,7 +70,10 @@ pub trait JobRunner:
                 .await;
             match p {
                 Ok(Some(runner)) => {
-                    let is_streaming = job.data.as_ref().is_some_and(|data| data.request_streaming);
+                    let is_streaming = job
+                        .data
+                        .as_ref()
+                        .is_some_and(|data| data.streaming_type != 0);
 
                     if is_streaming {
                         // Streaming: Keep Pool Object for later return
@@ -108,7 +111,10 @@ pub trait JobRunner:
                     tracing::debug!("non-static runner found: {:?}", runner.name());
 
                     // Streaming determination
-                    let is_streaming = job.data.as_ref().is_some_and(|data| data.request_streaming);
+                    let is_streaming = job
+                        .data
+                        .as_ref()
+                        .is_some_and(|data| data.streaming_type != 0);
 
                     if is_streaming {
                         // Streaming: Clone CancelHelper using type-safe access
@@ -261,6 +267,7 @@ pub trait JobRunner:
         let data = job.data.unwrap_or_default();
         let metadata = HashMap::new();
 
+        #[allow(deprecated)]
         let job_result_data = JobResultData {
             job_id: job.id,
             worker_id: data.worker_id,
@@ -275,7 +282,7 @@ pub trait JobRunner:
             max_retry: 0, // No retry on cancellation
             priority: data.priority,
             timeout: data.timeout,
-            request_streaming: data.request_streaming,
+            streaming_type: data.streaming_type,
             enqueue_time: data.enqueue_time,
             run_after_time: data.run_after_time,
             start_time: datetime::now_millis(),
@@ -329,68 +336,133 @@ pub trait JobRunner:
         let start = datetime::now_millis();
 
         let name = runner_impl.name();
-        if data.request_streaming {
-            tracing::debug!("start runner(stream): {}", &name);
-            let res = self
-                .run_and_stream(&job, runner_impl)
-                .await
-                .map(ResultOutputEnum::Stream);
-            let end = datetime::now_millis();
-            tracing::debug!(
-                "end runner(stream: {}): {}, duration:{}(ms)",
-                if res.is_ok() { "success" } else { "error" },
-                &name,
-                end - start,
-            );
-            let (status, mes) = self.job_result_status(&worker_data.retry_policy, data, res);
+        let streaming_type =
+            StreamingType::try_from(data.streaming_type).unwrap_or(StreamingType::None);
 
-            // For streaming jobs, DO NOT cleanup cancellation monitoring immediately
-            // The process continues running and needs to receive cancellation signals
-            // Cancellation monitoring will timeout automatically after job_timeout + 30 seconds
-            tracing::debug!(
-                "Streaming job {} keeping cancellation monitoring active for process lifetime",
-                job_id.value
-            );
+        match streaming_type {
+            StreamingType::Response => {
+                // Response streaming: run_stream and return stream to client
+                tracing::debug!("start runner(stream response): {}", &name);
+                let res = self
+                    .run_and_stream(&job, runner_impl)
+                    .await
+                    .map(ResultOutputEnum::Stream);
+                let end = datetime::now_millis();
+                tracing::debug!(
+                    "end runner(stream response: {}): {}, duration:{}(ms)",
+                    if res.is_ok() { "success" } else { "error" },
+                    &name,
+                    end - start,
+                );
+                let (status, mes) = self.job_result_status(&worker_data.retry_policy, data, res);
 
-            (
-                self.job_result_data(
-                    job,
-                    worker_data,
-                    status,
-                    mes.result_output(),
-                    start,
-                    end,
-                    mes.metadata().cloned(),
-                ),
-                mes.stream(),
-            )
-        } else {
-            tracing::debug!("start runner: {}", &name);
-            let res = self
-                .run_and_result(&job, runner_impl)
-                .await
-                .map(|(a, b)| ResultOutputEnum::Normal(a, b));
-            let end = datetime::now_millis();
-            tracing::debug!("end runner: {}, duration:{}(ms)", &name, end - start);
-            // TODO
-            let (status, mes) = self.job_result_status(&worker_data.retry_policy, data, res);
+                // For streaming jobs, DO NOT cleanup cancellation monitoring immediately
+                // The process continues running and needs to receive cancellation signals
+                // Cancellation monitoring will timeout automatically after job_timeout + 30 seconds
+                tracing::debug!(
+                    "Streaming job {} keeping cancellation monitoring active for process lifetime",
+                    job_id.value
+                );
 
-            // Cleanup cancellation monitoring
-            self.cleanup_cancellation_monitoring_if_supported(job_id, runner_impl)
-                .await;
+                (
+                    self.job_result_data(
+                        job,
+                        worker_data,
+                        status,
+                        mes.result_output(),
+                        start,
+                        end,
+                        mes.metadata().cloned(),
+                    ),
+                    mes.stream(),
+                )
+            }
+            StreamingType::Internal => {
+                // Internal streaming: run_stream, collect via collect_stream, return as single result
+                tracing::debug!("start runner(stream internal): {}", &name);
+                let stream_res = self.run_and_stream(&job, runner_impl).await;
+                let end = datetime::now_millis();
 
-            (
-                self.job_result_data(
-                    job,
-                    worker_data,
-                    status,
-                    mes.result_output(),
-                    start,
-                    end,
-                    mes.metadata().cloned(),
-                ),
-                None,
-            )
+                let res = match stream_res {
+                    Ok(stream) => {
+                        // Collect stream using runner's collect_stream method
+                        tracing::debug!(
+                            "collecting stream for internal streaming job {}",
+                            job_id.value
+                        );
+                        match runner_impl.collect_stream(stream).await {
+                            Ok((collected_bytes, metadata)) => {
+                                tracing::debug!(
+                                    "stream collected: {} bytes, {} metadata entries",
+                                    collected_bytes.len(),
+                                    metadata.len()
+                                );
+                                Ok(ResultOutputEnum::Normal(Ok(collected_bytes), metadata))
+                            }
+                            Err(e) => {
+                                tracing::error!("failed to collect stream: {:?}", e);
+                                Err(e)
+                            }
+                        }
+                    }
+                    Err(e) => Err(e),
+                };
+
+                tracing::debug!(
+                    "end runner(stream internal: {}): {}, duration:{}(ms)",
+                    if res.is_ok() { "success" } else { "error" },
+                    &name,
+                    end - start,
+                );
+
+                let (status, mes) = self.job_result_status(&worker_data.retry_policy, data, res);
+
+                // Cleanup cancellation monitoring for internal streaming
+                self.cleanup_cancellation_monitoring_if_supported(job_id, runner_impl)
+                    .await;
+
+                (
+                    self.job_result_data(
+                        job,
+                        worker_data,
+                        status,
+                        mes.result_output(),
+                        start,
+                        end,
+                        mes.metadata().cloned(),
+                    ),
+                    None, // No stream returned to client for Internal type
+                )
+            }
+            StreamingType::None => {
+                // Non-streaming: run and return single result
+                tracing::debug!("start runner: {}", &name);
+                let res = self
+                    .run_and_result(&job, runner_impl)
+                    .await
+                    .map(|(a, b)| ResultOutputEnum::Normal(a, b));
+                let end = datetime::now_millis();
+                tracing::debug!("end runner: {}, duration:{}(ms)", &name, end - start);
+
+                let (status, mes) = self.job_result_status(&worker_data.retry_policy, data, res);
+
+                // Cleanup cancellation monitoring
+                self.cleanup_cancellation_monitoring_if_supported(job_id, runner_impl)
+                    .await;
+
+                (
+                    self.job_result_data(
+                        job,
+                        worker_data,
+                        status,
+                        mes.result_output(),
+                        start,
+                        end,
+                        mes.metadata().cloned(),
+                    ),
+                    None,
+                )
+            }
         }
     }
 
@@ -495,6 +567,7 @@ pub trait JobRunner:
         metadata: Option<HashMap<String, String>>,
     ) -> JobResult {
         let dat = job.data.unwrap_or_default(); // XXX unwrap or default
+        #[allow(deprecated)]
         let data = JobResultData {
             job_id: job.id,
             worker_id: dat.worker_id,
@@ -511,7 +584,7 @@ pub trait JobRunner:
                 .max_retry,
             priority: dat.priority,
             timeout: dat.timeout,
-            request_streaming: dat.request_streaming,
+            streaming_type: dat.streaming_type,
             enqueue_time: dat.enqueue_time,
             run_after_time: dat.run_after_time,
             start_time: start_msec,
@@ -631,7 +704,7 @@ pub(crate) mod tests {
                     enqueue_time: 0,
                     run_after_time: run_after,
                     grabbed_until_time: None,
-                    request_streaming: false,
+                    streaming_type: 0,
                     using: None,
                 }),
                 ..Default::default()
@@ -710,6 +783,255 @@ pub(crate) mod tests {
             assert!(res.end_time > 0);
             assert!(res.end_time - res.start_time >= 1000); // wait timeout 1sec
             assert!(res.end_time - res.start_time < 2000); // timeout 1sec
+        });
+        Ok(())
+    }
+
+    /// Test StreamingType::Response returns stream
+    #[test]
+    fn test_run_job_streaming_response() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            static JOB_RUNNER: OnceCell<Box<MockJobRunner>> = OnceCell::const_new();
+            JOB_RUNNER
+                .get_or_init(|| async { Box::new(MockJobRunner::new().await) })
+                .await;
+
+            let jargs = ProstMessageCodec::serialize_message(&CommandArgs {
+                command: "echo".to_string(),
+                args: vec!["streaming_response_test".to_string()],
+                with_memory_monitoring: false,
+            })
+            .unwrap();
+
+            let job = Job {
+                id: Some(JobId { value: 100 }),
+                data: Some(JobData {
+                    worker_id: Some(WorkerId { value: 1 }),
+                    args: jargs,
+                    uniq_key: Some("streaming_response_test".to_string()),
+                    retried: 0,
+                    priority: 0,
+                    timeout: 5000,
+                    enqueue_time: 0,
+                    run_after_time: 0,
+                    grabbed_until_time: None,
+                    streaming_type: StreamingType::Response as i32, // Response streaming
+                    using: None,
+                }),
+                ..Default::default()
+            };
+            let worker_id = WorkerId { value: 1 };
+            let worker = WorkerData {
+                name: "streaming_test".to_string(),
+                runner_settings: vec![],
+                retry_policy: None,
+                channel: Some("test".to_string()),
+                response_type: ResponseType::Direct as i32,
+                store_success: false,
+                store_failure: false,
+                ..Default::default()
+            };
+            let runner_data = RunnerData {
+                name: RunnerType::Command.as_str_name().to_string(),
+                ..Default::default()
+            };
+
+            let (result, stream) = JOB_RUNNER
+                .get()
+                .unwrap()
+                .run_job(&runner_data, &worker_id, &worker, job.clone())
+                .await;
+
+            // Response streaming should return a stream
+            assert!(
+                stream.is_some(),
+                "StreamingType::Response should return a stream"
+            );
+
+            let res_data = result.data.unwrap();
+            assert_eq!(
+                res_data.streaming_type,
+                StreamingType::Response as i32,
+                "Result should preserve streaming_type"
+            );
+
+            tracing::info!("✅ StreamingType::Response test passed");
+        });
+        Ok(())
+    }
+
+    /// Test StreamingType::Internal calls collect_stream and returns no stream
+    #[test]
+    fn test_run_job_streaming_internal() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            static JOB_RUNNER: OnceCell<Box<MockJobRunner>> = OnceCell::const_new();
+            JOB_RUNNER
+                .get_or_init(|| async { Box::new(MockJobRunner::new().await) })
+                .await;
+
+            let jargs = ProstMessageCodec::serialize_message(&CommandArgs {
+                command: "echo".to_string(),
+                args: vec!["internal_streaming_test".to_string()],
+                with_memory_monitoring: false,
+            })
+            .unwrap();
+
+            let job = Job {
+                id: Some(JobId { value: 101 }),
+                data: Some(JobData {
+                    worker_id: Some(WorkerId { value: 1 }),
+                    args: jargs,
+                    uniq_key: Some("internal_streaming_test".to_string()),
+                    retried: 0,
+                    priority: 0,
+                    timeout: 5000,
+                    enqueue_time: 0,
+                    run_after_time: 0,
+                    grabbed_until_time: None,
+                    streaming_type: StreamingType::Internal as i32, // Internal streaming
+                    using: None,
+                }),
+                ..Default::default()
+            };
+            let worker_id = WorkerId { value: 1 };
+            let worker = WorkerData {
+                name: "internal_test".to_string(),
+                runner_settings: vec![],
+                retry_policy: None,
+                channel: Some("test".to_string()),
+                response_type: ResponseType::Direct as i32,
+                store_success: false,
+                store_failure: false,
+                ..Default::default()
+            };
+            let runner_data = RunnerData {
+                name: RunnerType::Command.as_str_name().to_string(),
+                ..Default::default()
+            };
+
+            let (result, stream) = JOB_RUNNER
+                .get()
+                .unwrap()
+                .run_job(&runner_data, &worker_id, &worker, job.clone())
+                .await;
+
+            // Internal streaming should NOT return a stream (collect_stream merges it)
+            assert!(
+                stream.is_none(),
+                "StreamingType::Internal should NOT return a stream (collected internally)"
+            );
+
+            let res_data = result.data.unwrap();
+            assert_eq!(res_data.status, ResultStatus::Success as i32);
+            assert_eq!(
+                res_data.streaming_type,
+                StreamingType::Internal as i32,
+                "Result should preserve streaming_type"
+            );
+
+            // Verify output contains collected result
+            let output = res_data
+                .output
+                .expect("Internal streaming should produce collected output");
+            let cmd_result =
+                ProstMessageCodec::deserialize_message::<CommandResult>(&output.items).unwrap();
+            assert!(
+                cmd_result
+                    .stdout
+                    .as_ref()
+                    .is_some_and(|s| s.contains("internal_streaming_test")),
+                "Collected output should contain test string"
+            );
+
+            tracing::info!("✅ StreamingType::Internal test passed - stream collected internally");
+        });
+        Ok(())
+    }
+
+    /// Test StreamingType::None returns no stream (existing behavior)
+    #[test]
+    fn test_run_job_streaming_none() -> Result<()> {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            static JOB_RUNNER: OnceCell<Box<MockJobRunner>> = OnceCell::const_new();
+            JOB_RUNNER
+                .get_or_init(|| async { Box::new(MockJobRunner::new().await) })
+                .await;
+
+            let jargs = ProstMessageCodec::serialize_message(&CommandArgs {
+                command: "echo".to_string(),
+                args: vec!["non_streaming_test".to_string()],
+                with_memory_monitoring: false,
+            })
+            .unwrap();
+
+            let job = Job {
+                id: Some(JobId { value: 102 }),
+                data: Some(JobData {
+                    worker_id: Some(WorkerId { value: 1 }),
+                    args: jargs,
+                    uniq_key: Some("non_streaming_test".to_string()),
+                    retried: 0,
+                    priority: 0,
+                    timeout: 5000,
+                    enqueue_time: 0,
+                    run_after_time: 0,
+                    grabbed_until_time: None,
+                    streaming_type: StreamingType::None as i32, // Non-streaming
+                    using: None,
+                }),
+                ..Default::default()
+            };
+            let worker_id = WorkerId { value: 1 };
+            let worker = WorkerData {
+                name: "non_streaming_test".to_string(),
+                runner_settings: vec![],
+                retry_policy: None,
+                channel: Some("test".to_string()),
+                response_type: ResponseType::Direct as i32,
+                store_success: false,
+                store_failure: false,
+                ..Default::default()
+            };
+            let runner_data = RunnerData {
+                name: RunnerType::Command.as_str_name().to_string(),
+                ..Default::default()
+            };
+
+            let (result, stream) = JOB_RUNNER
+                .get()
+                .unwrap()
+                .run_job(&runner_data, &worker_id, &worker, job.clone())
+                .await;
+
+            // Non-streaming should NOT return a stream
+            assert!(
+                stream.is_none(),
+                "StreamingType::None should NOT return a stream"
+            );
+
+            let res_data = result.data.unwrap();
+            assert_eq!(res_data.status, ResultStatus::Success as i32);
+            assert_eq!(
+                res_data.streaming_type,
+                StreamingType::None as i32,
+                "Result should preserve streaming_type"
+            );
+
+            // Verify output
+            let output = res_data
+                .output
+                .expect("Non-streaming should produce output");
+            let cmd_result =
+                ProstMessageCodec::deserialize_message::<CommandResult>(&output.items).unwrap();
+            assert!(
+                cmd_result
+                    .stdout
+                    .as_ref()
+                    .is_some_and(|s| s.contains("non_streaming_test")),
+                "Output should contain test string"
+            );
+
+            tracing::info!("✅ StreamingType::None test passed");
         });
         Ok(())
     }

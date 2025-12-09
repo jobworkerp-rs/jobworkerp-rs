@@ -12,7 +12,7 @@ use jobworkerp_runner::runner::cancellation_helper::{
     CancelMonitoringHelper, UseCancelMonitoringHelper,
 };
 use jobworkerp_runner::runner::llm_chat::LLMChatRunnerSpec;
-use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
+use jobworkerp_runner::runner::{CollectStreamFuture, RunnerSpec, RunnerTrait};
 use ollama::OllamaChatService;
 use opentelemetry::trace::TraceContextExt;
 use opentelemetry::Context;
@@ -316,6 +316,103 @@ impl RunnerTrait for LLMChatRunnerImpl {
             Err(anyhow!("llm is not initialized"))
         }
     }
+
+    /// Collect streaming LLM chat results into a single LlmChatResult
+    ///
+    /// Strategy:
+    /// - Concatenates text content from all chunks
+    /// - Collects all tool_calls (tool_calls takes precedence over text in final result)
+    /// - Concatenates reasoning content from all chunks
+    /// - Uses usage from the final chunk (done=true)
+    fn collect_stream(&self, stream: BoxStream<'static, ResultOutputItem>) -> CollectStreamFuture {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::{
+            message_content, MessageContent, Usage,
+        };
+        use jobworkerp_runner::jobworkerp::runner::llm::LlmChatResult;
+
+        Box::pin(async move {
+            let mut combined_text = String::new();
+            let mut combined_reasoning = String::new();
+            let mut collected_tool_calls: Vec<message_content::ToolCall> = Vec::new();
+            let mut final_usage: Option<Usage> = None;
+            let mut metadata = HashMap::new();
+            let mut stream = stream;
+
+            while let Some(item) = stream.next().await {
+                match item.item {
+                    Some(result_output_item::Item::Data(data)) => {
+                        if let Ok(chunk) = LlmChatResult::decode(data.as_slice()) {
+                            // Handle content (text, image, or tool_calls)
+                            if let Some(content) = chunk.content {
+                                match content.content {
+                                    Some(message_content::Content::Text(text)) => {
+                                        combined_text.push_str(&text);
+                                    }
+                                    Some(message_content::Content::ToolCalls(tc)) => {
+                                        collected_tool_calls.extend(tc.calls);
+                                    }
+                                    Some(message_content::Content::Image(_)) => {
+                                        // TODO: Image content cannot be meaningfully merged
+                                        tracing::error!("not implemented: image streaming response")
+                                    }
+                                    None => {
+                                        tracing::error!("no response?")
+                                    }
+                                }
+                            }
+
+                            // Concatenate reasoning content
+                            if let Some(reasoning) = chunk.reasoning_content {
+                                combined_reasoning.push_str(&reasoning);
+                            }
+
+                            // Use final chunk's usage
+                            if chunk.done {
+                                final_usage = chunk.usage;
+                            }
+                        }
+                    }
+                    Some(result_output_item::Item::End(trailer)) => {
+                        metadata = trailer.metadata;
+                        break;
+                    }
+                    None => {}
+                }
+            }
+
+            // Determine final content type: tool_calls takes precedence if present
+            let final_content = if !collected_tool_calls.is_empty() {
+                Some(MessageContent {
+                    content: Some(message_content::Content::ToolCalls(
+                        message_content::ToolCalls {
+                            calls: collected_tool_calls,
+                        },
+                    )),
+                })
+            } else if !combined_text.is_empty() {
+                Some(MessageContent {
+                    content: Some(message_content::Content::Text(combined_text)),
+                })
+            } else {
+                None
+            };
+
+            // Build collected result
+            let result = LlmChatResult {
+                content: final_content,
+                reasoning_content: if combined_reasoning.is_empty() {
+                    None
+                } else {
+                    Some(combined_reasoning)
+                },
+                done: true,
+                usage: final_usage,
+            };
+
+            let bytes = result.encode_to_vec();
+            Ok((bytes, metadata))
+        })
+    }
 }
 
 #[async_trait]
@@ -368,5 +465,269 @@ impl jobworkerp_runner::runner::cancellation::CancelMonitoring for LLMChatRunner
 
         tracing::debug!("LLMChatRunnerImpl reset for pooling");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use app::module::test::create_hybrid_test_app;
+    use futures::stream::BoxStream;
+    use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::{
+        message_content, MessageContent, Usage,
+    };
+    use jobworkerp_runner::jobworkerp::runner::llm::LlmChatResult;
+    use proto::jobworkerp::data::result_output_item::Item;
+
+    /// Helper function to create a mock stream from LlmChatResult chunks
+    fn create_mock_chat_stream(
+        chunks: Vec<LlmChatResult>,
+        metadata: HashMap<String, String>,
+    ) -> BoxStream<'static, ResultOutputItem> {
+        let stream = async_stream::stream! {
+            for chunk in chunks {
+                yield ResultOutputItem {
+                    item: Some(Item::Data(chunk.encode_to_vec())),
+                };
+            }
+            yield ResultOutputItem {
+                item: Some(Item::End(proto::jobworkerp::data::Trailer { metadata })),
+            };
+        };
+        Box::pin(stream)
+    }
+
+    fn text_chunk(text: &str, done: bool) -> LlmChatResult {
+        LlmChatResult {
+            content: Some(MessageContent {
+                content: Some(message_content::Content::Text(text.to_string())),
+            }),
+            reasoning_content: None,
+            done,
+            usage: None,
+        }
+    }
+
+    #[test]
+    fn test_collect_stream_single_text_chunk() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app = Arc::new(create_hybrid_test_app().await.unwrap());
+            let runner = LLMChatRunnerImpl::new(app);
+
+            let chunk = LlmChatResult {
+                content: Some(MessageContent {
+                    content: Some(message_content::Content::Text("Hello, World!".to_string())),
+                }),
+                reasoning_content: Some("Thinking...".to_string()),
+                done: true,
+                usage: Some(Usage {
+                    model: "test-model".to_string(),
+                    prompt_tokens: Some(10),
+                    completion_tokens: Some(5),
+                    total_prompt_time_sec: None,
+                    total_completion_time_sec: None,
+                }),
+            };
+
+            let mut metadata = HashMap::new();
+            metadata.insert("model".to_string(), "test-chat".to_string());
+
+            let stream = create_mock_chat_stream(vec![chunk], metadata.clone());
+            let (result_bytes, result_metadata) = runner.collect_stream(stream).await.unwrap();
+
+            let result =
+                ProstMessageCodec::deserialize_message::<LlmChatResult>(&result_bytes).unwrap();
+
+            // Check text content
+            assert!(result.content.is_some());
+            if let Some(content) = result.content {
+                assert_eq!(
+                    content.content,
+                    Some(message_content::Content::Text("Hello, World!".to_string()))
+                );
+            }
+
+            // Check reasoning
+            assert_eq!(result.reasoning_content, Some("Thinking...".to_string()));
+
+            // Check done and usage
+            assert!(result.done);
+            assert!(result.usage.is_some());
+            if let Some(usage) = result.usage {
+                assert_eq!(usage.prompt_tokens, Some(10));
+                assert_eq!(usage.completion_tokens, Some(5));
+            }
+
+            assert_eq!(result_metadata.get("model"), Some(&"test-chat".to_string()));
+        })
+    }
+
+    #[test]
+    fn test_collect_stream_multiple_text_chunks_concatenates() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app = Arc::new(create_hybrid_test_app().await.unwrap());
+            let runner = LLMChatRunnerImpl::new(app);
+
+            let chunks = vec![
+                text_chunk("Hello, ", false),
+                text_chunk("World!", false),
+                LlmChatResult {
+                    content: Some(MessageContent {
+                        content: Some(message_content::Content::Text(" Done.".to_string())),
+                    }),
+                    reasoning_content: None,
+                    done: true,
+                    usage: Some(Usage {
+                        model: "test-model".to_string(),
+                        prompt_tokens: Some(20),
+                        completion_tokens: Some(10),
+                        total_prompt_time_sec: None,
+                        total_completion_time_sec: None,
+                    }),
+                },
+            ];
+
+            let stream = create_mock_chat_stream(chunks, HashMap::new());
+            let (result_bytes, _) = runner.collect_stream(stream).await.unwrap();
+
+            let result =
+                ProstMessageCodec::deserialize_message::<LlmChatResult>(&result_bytes).unwrap();
+
+            // Text should be concatenated
+            if let Some(content) = result.content {
+                assert_eq!(
+                    content.content,
+                    Some(message_content::Content::Text(
+                        "Hello, World! Done.".to_string()
+                    ))
+                );
+            }
+
+            // Should use final chunk's usage
+            assert!(result.usage.is_some());
+            if let Some(usage) = result.usage {
+                assert_eq!(usage.prompt_tokens, Some(20));
+                assert_eq!(usage.completion_tokens, Some(10));
+            }
+        })
+    }
+
+    #[test]
+    fn test_collect_stream_tool_calls() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app = Arc::new(create_hybrid_test_app().await.unwrap());
+            let runner = LLMChatRunnerImpl::new(app);
+
+            let chunks = vec![
+                LlmChatResult {
+                    content: Some(MessageContent {
+                        content: Some(message_content::Content::ToolCalls(
+                            message_content::ToolCalls {
+                                calls: vec![message_content::ToolCall {
+                                    call_id: "call_1".to_string(),
+                                    fn_name: "get_weather".to_string(),
+                                    fn_arguments: r#"{"city": "Tokyo"}"#.to_string(),
+                                }],
+                            },
+                        )),
+                    }),
+                    reasoning_content: None,
+                    done: false,
+                    usage: None,
+                },
+                LlmChatResult {
+                    content: Some(MessageContent {
+                        content: Some(message_content::Content::ToolCalls(
+                            message_content::ToolCalls {
+                                calls: vec![message_content::ToolCall {
+                                    call_id: "call_2".to_string(),
+                                    fn_name: "get_time".to_string(),
+                                    fn_arguments: r#"{"timezone": "JST"}"#.to_string(),
+                                }],
+                            },
+                        )),
+                    }),
+                    reasoning_content: None,
+                    done: true,
+                    usage: None,
+                },
+            ];
+
+            let stream = create_mock_chat_stream(chunks, HashMap::new());
+            let (result_bytes, _) = runner.collect_stream(stream).await.unwrap();
+
+            let result =
+                ProstMessageCodec::deserialize_message::<LlmChatResult>(&result_bytes).unwrap();
+
+            // Tool calls should be collected
+            if let Some(content) = result.content {
+                match content.content {
+                    Some(message_content::Content::ToolCalls(tc)) => {
+                        assert_eq!(tc.calls.len(), 2);
+                        assert_eq!(tc.calls[0].fn_name, "get_weather");
+                        assert_eq!(tc.calls[1].fn_name, "get_time");
+                    }
+                    _ => panic!("Expected ToolCalls content"),
+                }
+            } else {
+                panic!("Expected content");
+            }
+        })
+    }
+
+    #[test]
+    fn test_collect_stream_concatenates_reasoning() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app = Arc::new(create_hybrid_test_app().await.unwrap());
+            let runner = LLMChatRunnerImpl::new(app);
+
+            let chunks = vec![
+                LlmChatResult {
+                    content: Some(MessageContent {
+                        content: Some(message_content::Content::Text("Result: ".to_string())),
+                    }),
+                    reasoning_content: Some("First ".to_string()),
+                    done: false,
+                    usage: None,
+                },
+                LlmChatResult {
+                    content: Some(MessageContent {
+                        content: Some(message_content::Content::Text("42".to_string())),
+                    }),
+                    reasoning_content: Some("Second".to_string()),
+                    done: true,
+                    usage: None,
+                },
+            ];
+
+            let stream = create_mock_chat_stream(chunks, HashMap::new());
+            let (result_bytes, _) = runner.collect_stream(stream).await.unwrap();
+
+            let result =
+                ProstMessageCodec::deserialize_message::<LlmChatResult>(&result_bytes).unwrap();
+
+            // Reasoning should be concatenated
+            assert_eq!(result.reasoning_content, Some("First Second".to_string()));
+        })
+    }
+
+    #[test]
+    fn test_collect_stream_empty_chunks() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app = Arc::new(create_hybrid_test_app().await.unwrap());
+            let runner = LLMChatRunnerImpl::new(app);
+
+            let chunks: Vec<LlmChatResult> = vec![];
+
+            let stream = create_mock_chat_stream(chunks, HashMap::new());
+            let (result_bytes, _) = runner.collect_stream(stream).await.unwrap();
+
+            let result =
+                ProstMessageCodec::deserialize_message::<LlmChatResult>(&result_bytes).unwrap();
+
+            assert!(result.content.is_none());
+            assert!(result.reasoning_content.is_none());
+            assert!(result.done); // Always set to true after collection
+        })
     }
 }

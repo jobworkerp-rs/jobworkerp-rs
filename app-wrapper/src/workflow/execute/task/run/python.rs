@@ -24,7 +24,7 @@ use jobworkerp_runner::jobworkerp::runner::{
     python_command_args, python_command_runner_settings, PythonCommandArgs, PythonCommandResult,
     PythonCommandRunnerSettings,
 };
-use proto::jobworkerp::data::{QueueType, ResponseType, WorkerData};
+use proto::jobworkerp::data::{QueueType, ResponseType, StreamingType, WorkerData};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -364,8 +364,8 @@ impl TaskExecutorTrait<'_> for PythonTaskExecutor {
                     args_bytes, // Use protobuf binary directly, not JSON
                     None,       // No unique key
                     self.default_task_timeout.as_secs() as u32,
-                    false, // No streaming
-                    None,  // using not used for Python script execution
+                    StreamingType::None,
+                    None, // using not used for Python script execution
                 )
                 .await,
             service_unavailable,

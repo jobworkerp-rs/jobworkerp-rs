@@ -391,6 +391,70 @@ impl RunnerTrait for RequestRunner {
         // Note: The token will be cleared when cancel() is called
         Ok(Box::pin(stream))
     }
+
+    /// Collect streaming HttpResponseResult chunks into a single HttpResponseResult
+    ///
+    /// Strategy:
+    /// - Concatenate chunk bytes from all stream items
+    /// - Use the last chunk's status_code and headers
+    /// - Convert final bytes to content string
+    fn collect_stream(
+        &self,
+        stream: BoxStream<'static, ResultOutputItem>,
+    ) -> super::CollectStreamFuture {
+        use prost::Message;
+        use proto::jobworkerp::data::result_output_item;
+
+        Box::pin(async move {
+            let mut body_chunks: Vec<u8> = Vec::new();
+            let mut status_code: u32 = 0;
+            let mut headers: Vec<http_response_result::KeyValue> = Vec::new();
+            let mut metadata = HashMap::new();
+            let mut stream = stream;
+
+            while let Some(item) = stream.next().await {
+                match item.item {
+                    Some(result_output_item::Item::Data(data)) => {
+                        if let Ok(chunk) = HttpResponseResult::decode(data.as_slice()) {
+                            // Update status_code and headers from the latest chunk
+                            if chunk.status_code > 0 {
+                                status_code = chunk.status_code;
+                            }
+                            if !chunk.headers.is_empty() {
+                                headers = chunk.headers;
+                            }
+                            // Collect response data
+                            match chunk.response_data {
+                                Some(http_response_result::ResponseData::Chunk(bytes)) => {
+                                    body_chunks.extend(bytes);
+                                }
+                                Some(http_response_result::ResponseData::Content(text)) => {
+                                    body_chunks.extend(text.as_bytes());
+                                }
+                                None => {}
+                            }
+                        }
+                    }
+                    Some(result_output_item::Item::End(trailer)) => {
+                        metadata = trailer.metadata;
+                        break;
+                    }
+                    None => {}
+                }
+            }
+
+            // Convert collected bytes to string content
+            let content = String::from_utf8_lossy(&body_chunks).to_string();
+
+            let result = HttpResponseResult {
+                status_code,
+                headers,
+                response_data: Some(http_response_result::ResponseData::Content(content)),
+            };
+            let bytes = result.encode_to_vec();
+            Ok((bytes, metadata))
+        })
+    }
 }
 
 // DI trait implementation (with optional support)
@@ -540,4 +604,159 @@ pub mod tests {
 
     // Note: Complex cancellation tests moved to app-wrapper integration tests
     // runner crate level tests focus on basic functionality only
+
+    // ============================================================
+    // collect_stream tests
+    // ============================================================
+
+    /// Helper function to create a mock stream from HttpResponseResult chunks
+    fn create_mock_http_stream(
+        chunks: Vec<HttpResponseResult>,
+        metadata: HashMap<String, String>,
+    ) -> BoxStream<'static, ResultOutputItem> {
+        use prost::Message;
+        use proto::jobworkerp::data::result_output_item::Item;
+        let stream = async_stream::stream! {
+            for chunk in chunks {
+                yield ResultOutputItem {
+                    item: Some(Item::Data(chunk.encode_to_vec())),
+                };
+            }
+            yield ResultOutputItem {
+                item: Some(Item::End(proto::jobworkerp::data::Trailer { metadata })),
+            };
+        };
+        Box::pin(stream)
+    }
+
+    #[tokio::test]
+    async fn test_collect_stream_single_chunk_content() {
+        let runner = RequestRunner::new();
+        let chunk = HttpResponseResult {
+            status_code: 200,
+            headers: vec![http_response_result::KeyValue {
+                key: "Content-Type".to_string(),
+                value: "text/plain".to_string(),
+            }],
+            response_data: Some(http_response_result::ResponseData::Content(
+                "Hello, World!".to_string(),
+            )),
+        };
+
+        let mut metadata = HashMap::new();
+        metadata.insert("request_id".to_string(), "test-123".to_string());
+
+        let stream = create_mock_http_stream(vec![chunk], metadata.clone());
+        let (result_bytes, result_metadata) = runner.collect_stream(stream).await.unwrap();
+
+        let result =
+            ProstMessageCodec::deserialize_message::<HttpResponseResult>(&result_bytes).unwrap();
+        assert_eq!(result.status_code, 200);
+        assert_eq!(result.headers.len(), 1);
+        assert_eq!(result.headers[0].key, "Content-Type");
+        assert_eq!(
+            result.response_data,
+            Some(http_response_result::ResponseData::Content(
+                "Hello, World!".to_string()
+            ))
+        );
+        assert_eq!(
+            result_metadata.get("request_id"),
+            Some(&"test-123".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_collect_stream_multiple_chunks_concatenates_body() {
+        let runner = RequestRunner::new();
+        let chunks = vec![
+            HttpResponseResult {
+                status_code: 200,
+                headers: vec![],
+                response_data: Some(http_response_result::ResponseData::Chunk(
+                    b"Hello, ".to_vec(),
+                )),
+            },
+            HttpResponseResult {
+                status_code: 200,
+                headers: vec![http_response_result::KeyValue {
+                    key: "Content-Type".to_string(),
+                    value: "text/plain".to_string(),
+                }],
+                response_data: Some(http_response_result::ResponseData::Chunk(
+                    b"World!".to_vec(),
+                )),
+            },
+        ];
+
+        let stream = create_mock_http_stream(chunks, HashMap::new());
+        let (result_bytes, _) = runner.collect_stream(stream).await.unwrap();
+
+        let result =
+            ProstMessageCodec::deserialize_message::<HttpResponseResult>(&result_bytes).unwrap();
+        assert_eq!(result.status_code, 200);
+        assert_eq!(result.headers.len(), 1);
+        // Body should be concatenated from chunks
+        assert_eq!(
+            result.response_data,
+            Some(http_response_result::ResponseData::Content(
+                "Hello, World!".to_string()
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_collect_stream_uses_last_status_code_and_headers() {
+        let runner = RequestRunner::new();
+        let chunks = vec![
+            HttpResponseResult {
+                status_code: 100, // Continue
+                headers: vec![http_response_result::KeyValue {
+                    key: "X-Interim".to_string(),
+                    value: "true".to_string(),
+                }],
+                response_data: Some(http_response_result::ResponseData::Content(
+                    "partial".to_string(),
+                )),
+            },
+            HttpResponseResult {
+                status_code: 200, // OK
+                headers: vec![http_response_result::KeyValue {
+                    key: "Content-Type".to_string(),
+                    value: "application/json".to_string(),
+                }],
+                response_data: Some(http_response_result::ResponseData::Content(
+                    " response".to_string(),
+                )),
+            },
+        ];
+
+        let stream = create_mock_http_stream(chunks, HashMap::new());
+        let (result_bytes, _) = runner.collect_stream(stream).await.unwrap();
+
+        let result =
+            ProstMessageCodec::deserialize_message::<HttpResponseResult>(&result_bytes).unwrap();
+        assert_eq!(result.status_code, 200); // last status
+        assert_eq!(result.headers.len(), 1);
+        assert_eq!(result.headers[0].key, "Content-Type"); // last headers
+    }
+
+    #[tokio::test]
+    async fn test_collect_stream_empty_chunks() {
+        let runner = RequestRunner::new();
+        let chunks: Vec<HttpResponseResult> = vec![];
+
+        let stream = create_mock_http_stream(chunks, HashMap::new());
+        let (result_bytes, _) = runner.collect_stream(stream).await.unwrap();
+
+        let result =
+            ProstMessageCodec::deserialize_message::<HttpResponseResult>(&result_bytes).unwrap();
+        assert_eq!(result.status_code, 0);
+        assert!(result.headers.is_empty());
+        // Empty body becomes empty string
+        assert_eq!(
+            result.response_data,
+            Some(http_response_result::ResponseData::Content(String::new()))
+        );
+    }
 }

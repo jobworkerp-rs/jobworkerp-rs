@@ -13,7 +13,7 @@ mod hybrid_indexing_integration_tests {
     use infra_utils::infra::rdb::UseRdbPool;
     use infra_utils::infra::test::TEST_RUNTIME;
     use proto::jobworkerp::data::{
-        JobProcessingStatus, QueueType, ResponseType, RunnerId, WorkerData,
+        JobProcessingStatus, QueueType, ResponseType, RunnerId, StreamingType, WorkerData,
     };
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -92,7 +92,7 @@ mod hybrid_indexing_integration_tests {
                     0,
                     0,
                     None,
-                    false,
+                    StreamingType::None,
                     None, // using
                 )
                 .await?;
@@ -249,7 +249,7 @@ mod hybrid_indexing_integration_tests {
                     0,
                     0,
                     None,
-                    false,
+                    StreamingType::None,
                     None, // using
                 )
                 .await?;
@@ -389,7 +389,7 @@ mod hybrid_indexing_integration_tests {
                         i, // Different priorities
                         0,
                         None,
-                        false,
+                        StreamingType::None,
                         None, // using
                     )
                     .await?;
@@ -493,7 +493,7 @@ mod hybrid_indexing_integration_tests {
                     0,
                     0,
                     None,
-                    false,
+                    StreamingType::None,
                     None, // using
                 )
                 .await?;

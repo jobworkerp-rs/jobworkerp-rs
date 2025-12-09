@@ -50,10 +50,16 @@ message JobData {
   // Job will be terminated if it exceeds this duration
   uint64 timeout = 9;
 
-  // # Request Streaming
-  // Job that requests to return a response with streaming.
-  // (if not supported by runner, it will be ignored)
-  bool request_streaming = 10;
+  // Reserved field number 10 (was request_streaming, replaced by streaming_type)
+  reserved 10;
+
+  // # Streaming Type
+  // Defines how streaming is handled for this job execution.
+  // - STREAMING_TYPE_NONE (default): Non-streaming execution using run()
+  // - STREAMING_TYPE_INTERNAL: Uses run_stream() internally but collects
+  //   result with collect_stream() and returns as single JobResult
+  // - STREAMING_TYPE_RESPONSE: Full streaming, results streamed to client
+  jobworkerp.data.StreamingType streaming_type = 12;
 
   // # Using
   // Selects which method to use for multi-method runners

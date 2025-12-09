@@ -22,7 +22,7 @@ use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::JobResultData;
 use proto::jobworkerp::data::JobResultId;
 use proto::jobworkerp::data::ResultOutputItem;
-use proto::jobworkerp::data::{JobResult, WorkerData};
+use proto::jobworkerp::data::{JobResult, StreamingType, WorkerData};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing;
@@ -127,7 +127,7 @@ impl ResultProcessorImpl {
                         pj.priority,
                         pj.timeout,
                         dat.job_id, // use same job id for periodic job if possible
-                        pj.request_streaming,
+                        StreamingType::try_from(pj.streaming_type).unwrap_or(StreamingType::None),
                         pj.using, // preserve using for periodic re-execution
                     )
                     .await?;

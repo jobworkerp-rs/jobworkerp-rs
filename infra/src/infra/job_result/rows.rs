@@ -19,7 +19,10 @@ pub struct JobResultRow {
     pub retried: i64,    // u32
     pub priority: i32,
     pub timeout: i64,
-    pub request_streaming: bool,
+    // DB column name remains "request_streaming" for backward compatibility
+    // but stores StreamingType enum value (0=None, 1=Response, 2=Internal)
+    #[sqlx(rename = "request_streaming")]
+    pub streaming_type: i32,
     pub enqueue_time: i64,
     pub run_after_time: i64,
     pub start_time: i64,
@@ -29,6 +32,7 @@ pub struct JobResultRow {
 
 impl JobResultRow {
     //.XXX fill in without worker_name, max_retry, response_type, store_success, store_failure
+    #[allow(deprecated)]
     pub fn to_proto(&self) -> JobResult {
         JobResult {
             id: Some(JobResultId { value: self.id }),
@@ -48,7 +52,7 @@ impl JobResultRow {
                 retried: self.retried as u32,
                 priority: self.priority,
                 timeout: self.timeout as u64,
-                request_streaming: self.request_streaming,
+                streaming_type: self.streaming_type,
                 enqueue_time: self.enqueue_time,
                 run_after_time: self.run_after_time,
                 start_time: self.start_time,
@@ -71,5 +75,62 @@ impl JobResultRow {
     pub fn deserialize_result_output(buf: &Vec<u8>) -> Result<ResultOutput> {
         ResultOutput::decode(&mut Cursor::new(buf))
             .map_err(|e| JobWorkerError::CodecError(e).into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_job_result_row_to_proto_streaming_type() {
+        // Test JobResultRow.to_proto() correctly converts streaming_type for all values
+        let streaming_type_values = [0i32, 1i32, 2i32];
+
+        for streaming_type_value in streaming_type_values {
+            let output = ResultOutput {
+                items: b"test output".to_vec(),
+            };
+            let serialized_output = JobResultRow::serialize_result_output(&output);
+
+            let row = JobResultRow {
+                id: 1,
+                job_id: 2,
+                worker_id: 3,
+                args: vec![1, 2, 3],
+                uniq_key: Some("test".to_string()),
+                status: 1,
+                output: serialized_output,
+                retried: 0,
+                priority: 0,
+                timeout: 1000,
+                streaming_type: streaming_type_value,
+                enqueue_time: 100,
+                run_after_time: 0,
+                start_time: 100,
+                end_time: 200,
+                using: None,
+            };
+
+            let job_result = row.to_proto();
+            assert_eq!(
+                job_result.data.as_ref().unwrap().streaming_type,
+                streaming_type_value,
+                "JobResultRow.to_proto() should preserve streaming_type value {}",
+                streaming_type_value
+            );
+        }
+    }
+
+    #[test]
+    fn test_serialize_deserialize_result_output() {
+        let output = ResultOutput {
+            items: b"test output data".to_vec(),
+        };
+
+        let serialized = JobResultRow::serialize_result_output(&output);
+        let deserialized = JobResultRow::deserialize_result_output(&serialized).unwrap();
+
+        assert_eq!(output.items, deserialized.items);
     }
 }
