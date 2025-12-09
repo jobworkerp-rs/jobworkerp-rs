@@ -113,7 +113,7 @@ fn create_inline_workflow_job(workflow_yaml: &str, timeout_ms: u64) -> Job {
             enqueue_time: command_utils::util::datetime::now_millis(),
             run_after_time: command_utils::util::datetime::now_millis(),
             grabbed_until_time: None,
-            request_streaming: false,
+            streaming_type: 0,
             using: None,
         }),
         ..Default::default()

@@ -17,7 +17,7 @@ use app::app::{
     runner::UseRunnerApp,
 };
 use command_utils::trace::Tracing;
-use proto::jobworkerp::data::{QueueType, ResponseType, WorkerData};
+use proto::jobworkerp::data::{QueueType, ResponseType, StreamingType, WorkerData};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 
@@ -149,7 +149,7 @@ impl RunTaskExecutor {
                 job_args,
                 None, // XXX no uniq_key,
                 self.default_task_timeout.as_secs() as u32,
-                false, // no streaming
+                StreamingType::None,
                 using,
             )
             .await
@@ -252,7 +252,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         &args,
                         None,
                         timeout_sec,
-                        false,
+                        StreamingType::None,
                         using.clone(),
                     )
                     .await
@@ -389,7 +389,7 @@ impl TaskExecutorTrait<'_> for RunTaskExecutor {
                         &args,
                         None,
                         timeout_sec,
-                        false,
+                        StreamingType::None,
                         using.clone(),
                     )
                     .await

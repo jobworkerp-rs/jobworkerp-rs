@@ -14,7 +14,9 @@ use anyhow::Result;
 use app::app::job::execute::{JobExecutorWrapper, UseJobExecutor};
 use app::module::test::create_hybrid_test_app;
 use infra_utils::infra::test::TEST_RUNTIME;
-use proto::jobworkerp::data::{JobId, QueueType, ResponseType, RunnerId, WorkerData};
+use proto::jobworkerp::data::{
+    JobId, QueueType, ResponseType, RunnerId, StreamingType, WorkerData,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -168,7 +170,7 @@ fn test_listen_stream_receives_job_results() -> Result<()> {
                 &job_args,
                 None,
                 30,    // timeout
-                false, // streaming=false (use broadcast instead)
+                StreamingType::None, // streaming=false (use broadcast instead)
                 None,  // using
             )
             .await;
@@ -284,7 +286,7 @@ fn test_listen_stream_streaming_results() -> Result<()> {
                 &job_args,
                 None,
                 30,
-                true, // request_streaming
+                StreamingType::Response, // request_streaming
                 None,
             )
             .await?;

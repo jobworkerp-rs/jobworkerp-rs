@@ -249,7 +249,7 @@ pub trait ChanJobDispatcher:
                     let channel = wdat.channel.clone().unwrap_or_default();
                     let priority = jdat.priority;
                     let enqueue_time = jdat.enqueue_time;
-                    let is_streamable = jdat.request_streaming;
+                    let is_streamable = jdat.streaming_type != 0;
                     let broadcast_results = wdat.broadcast_results;
 
                     if let Err(e) = index_repo
@@ -292,7 +292,7 @@ pub trait ChanJobDispatcher:
                 let channel = wdat.channel.clone().unwrap_or_default();
                 let priority = jdat.priority;
                 let enqueue_time = jdat.enqueue_time;
-                let is_streamable = jdat.request_streaming;
+                let is_streamable = jdat.streaming_type != 0;
                 let broadcast_results = wdat.broadcast_results;
 
                 if let Err(e) = index_repo
@@ -321,7 +321,7 @@ pub trait ChanJobDispatcher:
         let channel_for_indexing = wdat.channel.clone().unwrap_or_default();
         let priority_for_indexing = jdat.priority;
         let enqueue_time_for_indexing = jdat.enqueue_time;
-        let is_streamable_for_indexing = jdat.request_streaming;
+        let is_streamable_for_indexing = jdat.streaming_type != 0;
         let broadcast_results_for_indexing = wdat.broadcast_results;
 
         // run job

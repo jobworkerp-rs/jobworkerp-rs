@@ -10,7 +10,7 @@ mod rdb_chan_cancellation_tests {
     use infra::infra::job::status::JobProcessingStatusRepository;
     use infra_utils::infra::test::TEST_RUNTIME;
     use proto::jobworkerp::data::{
-        JobId, JobProcessingStatus, QueueType, ResponseType, RunnerId, WorkerData,
+        JobId, JobProcessingStatus, QueueType, ResponseType, RunnerId, StreamingType, WorkerData,
     };
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -70,7 +70,7 @@ mod rdb_chan_cancellation_tests {
                     0,
                     0,
                     None,
-                    false,
+                    StreamingType::None,
                     None, // using
                 )
                 .await?;
@@ -301,7 +301,7 @@ mod rdb_chan_cancellation_tests {
                     0,
                     0,
                     None,
-                    false,
+                    StreamingType::None,
                     None, // using
                 )
                 .await?;
@@ -635,7 +635,7 @@ mod rdb_chan_cancellation_tests {
                 max_retry: 0,
                 priority: 0,
                 timeout: 1000,
-                request_streaming: false,
+                streaming_type: 0,
                 enqueue_time: 0,
                 run_after_time: 0,
                 response_type: proto::jobworkerp::data::ResponseType::NoResult as i32,

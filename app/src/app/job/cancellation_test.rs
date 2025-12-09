@@ -15,7 +15,7 @@ mod tests {
     use infra::infra::UseIdGenerator;
     use infra_utils::infra::test::TEST_RUNTIME;
     use proto::jobworkerp::data::{
-        JobId, JobProcessingStatus, QueueType, ResponseType, RunnerId, WorkerData,
+        JobId, JobProcessingStatus, QueueType, ResponseType, RunnerId, StreamingType, WorkerData,
     };
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -84,7 +84,7 @@ mod tests {
                     0,
                     0,
                     None,
-                    false,
+                    StreamingType::None,
                     None, // using
                 )
                 .await?;
@@ -153,7 +153,7 @@ mod tests {
                     0,
                     0,
                     None,
-                    false,
+                    StreamingType::None,
                     None, // using
                 )
                 .await?;
@@ -302,7 +302,7 @@ mod tests {
                     0,
                     0,
                     None,
-                    false,
+                    StreamingType::None,
                     None, // using
                 )
                 .await?;
@@ -392,7 +392,7 @@ mod tests {
                     0,
                     0,
                     None,
-                    false,
+                    StreamingType::None,
                     None, // using
                 )
                 .await?;

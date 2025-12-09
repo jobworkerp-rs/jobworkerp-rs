@@ -27,7 +27,7 @@ use memory_utils::cache::stretto::{self as memory, MemoryCacheConfig, UseMemoryC
 use memory_utils::lock::RwLockWithKey;
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, QueueType,
-    ResponseType, ResultOutputItem, Worker, WorkerData, WorkerId,
+    ResponseType, ResultOutputItem, StreamingType, Worker, WorkerData, WorkerId,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -368,7 +368,7 @@ impl RdbChanJobAppImpl {
         priority: i32,
         timeout: u64,
         reserved_job_id: Option<JobId>,
-        request_streaming: bool,
+        streaming_type: StreamingType,
         using: Option<String>,
     ) -> Result<(
         JobId,
@@ -381,6 +381,7 @@ impl RdbChanJobAppImpl {
         } = &worker
         {
             // check if worker supports streaming mode
+            let request_streaming = streaming_type != StreamingType::None;
             self.worker_app()
                 .check_worker_streaming(wid, request_streaming)
                 .await?;
@@ -395,7 +396,7 @@ impl RdbChanJobAppImpl {
                 retried: 0u32,
                 priority,
                 timeout,
-                request_streaming,
+                streaming_type: streaming_type as i32,
                 using,
             };
             // TODO validate argument types
@@ -573,7 +574,7 @@ impl JobApp for RdbChanJobAppImpl {
         priority: i32,
         timeout: u64,
         reserved_job_id: Option<JobId>,
-        request_streaming: bool,
+        streaming_type: StreamingType,
         with_random_name: bool,
         using: Option<String>,
     ) -> Result<(
@@ -598,7 +599,7 @@ impl JobApp for RdbChanJobAppImpl {
             priority,
             timeout,
             reserved_job_id,
-            request_streaming,
+            streaming_type,
             using,
         )
         .await
@@ -614,7 +615,7 @@ impl JobApp for RdbChanJobAppImpl {
         priority: i32,
         timeout: u64,
         reserved_job_id: Option<JobId>,
-        request_streaming: bool,
+        streaming_type: StreamingType,
         using: Option<String>,
     ) -> Result<(
         JobId,
@@ -641,7 +642,7 @@ impl JobApp for RdbChanJobAppImpl {
                 priority,
                 timeout,
                 reserved_job_id,
-                request_streaming,
+                streaming_type,
                 using,
             )
             .await
@@ -1195,7 +1196,7 @@ where
                                 Some(d.timeout)
                             }
                         }),
-                        job.data.as_ref().is_some_and(|j| j.request_streaming),
+                        job.data.as_ref().is_some_and(|j| j.streaming_type != 0),
                     )
                     .await
                     .map(|(r, st)| (job_id, Some(r), st))
@@ -1395,7 +1396,7 @@ mod tests {
                         0,
                         0,
                         None,
-                        false,
+                        StreamingType::None,
                         None, // using
                     )
                     .await;
@@ -1472,7 +1473,7 @@ mod tests {
                     max_retry: 0,
                     priority: 0,
                     timeout: 0,
-                    request_streaming: false,
+                    streaming_type: 0,
                     enqueue_time: datetime::now_millis(),
                     run_after_time: 0,
                     start_time: datetime::now_millis(),
@@ -1547,7 +1548,7 @@ mod tests {
                     0,
                     0,
                     None,
-                    false,
+                    StreamingType::None,
                     None, // using
                 )
                 .await?
@@ -1564,7 +1565,7 @@ mod tests {
                     retried: 0,
                     priority: 0,
                     timeout: 0,
-                    request_streaming: false,
+                    streaming_type: 0,
                     using: None,
                 }),
                 metadata: (*metadata).clone(),
@@ -1593,7 +1594,7 @@ mod tests {
                     max_retry: 0,
                     priority: 0,
                     timeout: 0,
-                    request_streaming: false,
+                    streaming_type: 0,
                     enqueue_time: job.data.as_ref().unwrap().enqueue_time,
                     run_after_time: job.data.as_ref().unwrap().run_after_time,
                     start_time: datetime::now_millis(),
@@ -1679,7 +1680,7 @@ mod tests {
                     0,
                     0,
                     None,
-                    false,
+                    StreamingType::None,
                     None, // using
                 )
                 .await?;
@@ -1718,7 +1719,7 @@ mod tests {
                     max_retry: 0,
                     priority: 0,
                     timeout: 0,
-                    request_streaming: false,
+                    streaming_type: 0,
                     enqueue_time: job.data.as_ref().unwrap().enqueue_time,
                     run_after_time: job.data.as_ref().unwrap().run_after_time,
                     start_time: datetime::now_millis(),
@@ -1803,7 +1804,7 @@ mod tests {
                     priority as i32,
                     0,
                     None,
-                    false,
+                    StreamingType::None,
                     None, // using
                 )
                 .await?;
@@ -1821,7 +1822,7 @@ mod tests {
                     priority as i32,
                     0,
                     None,
-                    false,
+                    StreamingType::None,
                     None, // using
                 )
                 .await?;

@@ -75,6 +75,7 @@ pub trait JobDispatcher:
 
                 // Directly create cancellation result
                 use command_utils::util::datetime;
+                #[allow(deprecated)]
                 let job_result_data = JobResultData {
                     job_id: Some(*job_id),
                     status: ResultStatus::Cancelled as i32,
@@ -90,7 +91,7 @@ pub trait JobDispatcher:
                     max_retry: 0, // No retry on cancellation
                     priority: job_data.priority,
                     timeout: job_data.timeout,
-                    request_streaming: job_data.request_streaming,
+                    streaming_type: job_data.streaming_type,
                     enqueue_time: job_data.enqueue_time,
                     run_after_time: job_data.run_after_time,
                     response_type: worker_data.response_type,

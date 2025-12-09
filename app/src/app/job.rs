@@ -29,7 +29,7 @@ use infra::infra::{
 };
 use proto::jobworkerp::data::{
     Job, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, QueueType,
-    ResponseType, ResultOutputItem, WorkerData, WorkerId,
+    ResponseType, ResultOutputItem, StreamingType, WorkerData, WorkerId,
 };
 use std::{collections::HashMap, fmt, sync::Arc, time::Duration};
 
@@ -66,7 +66,7 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         priority: i32,
         timeout: u64,
         reserved_job_id: Option<JobId>,
-        request_streaming: bool,
+        streaming_type: StreamingType,
         using: Option<String>,
     ) -> Result<(
         JobId,
@@ -85,7 +85,7 @@ pub trait JobApp: fmt::Debug + Send + Sync {
         priority: i32,
         timeout: u64,
         reserved_job_id: Option<JobId>,
-        request_streaming: bool,
+        streaming_type: StreamingType,
         with_random_name: bool,
         using: Option<String>,
     ) -> Result<(
@@ -215,14 +215,14 @@ where
     /// * `job_id` - The enqueued job ID
     /// * `job` - The job data
     /// * `worker` - The worker configuration
-    /// * `request_streaming` - Whether streaming was requested
+    /// * `streaming_type` - The streaming type for this job
     #[allow(unused_variables)]
     fn after_enqueue_to_redis_hook(
         &self,
         job_id: JobId,
         job: &Job,
         worker: &WorkerData,
-        request_streaming: bool,
+        streaming_type: StreamingType,
     ) {
         // Default: no-op
     }
@@ -231,7 +231,7 @@ where
         &self,
         job: &Job,
         worker: &WorkerData,
-        request_streaming: bool,
+        streaming_type: StreamingType,
     ) -> Result<(
         JobId,
         Option<JobResult>,
@@ -259,7 +259,7 @@ where
                     .await?;
 
                 // Call hook after PENDING status is set
-                self.after_enqueue_to_redis_hook(job_id, job, worker, request_streaming);
+                self.after_enqueue_to_redis_hook(job_id, job, worker, streaming_type);
 
                 // TTL prevents job orphaning when worker fails unexpectedly
                 if worker.queue_type == QueueType::Normal as i32 {
@@ -277,8 +277,11 @@ where
                     }
                 }
                 // Direct response requires blocking until job completion
+                // For STREAMING_TYPE_RESPONSE, we need to wait for stream
+                // For STREAMING_TYPE_INTERNAL, we wait for the collected result (no stream returned)
                 if worker.response_type == ResponseType::Direct as i32 {
                     // Connection kept open to maintain real-time response capability
+                    let request_streaming = streaming_type == StreamingType::Response;
                     self._wait_job_for_direct_response(
                         &job_id,
                         job.data.as_ref().map(|d| d.timeout),
