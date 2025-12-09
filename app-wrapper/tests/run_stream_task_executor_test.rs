@@ -309,10 +309,7 @@ fn test_listen_stream_streaming_results() -> Result<()> {
                 if let Some(data) = &initial_result.data {
                     eprintln!("   Status: {:?}", data.status);
                     if let Some(output) = &data.output {
-                        eprintln!(
-                            "   Output: {}",
-                            String::from_utf8_lossy(&output.items)
-                        );
+                        eprintln!("   Output: {}", String::from_utf8_lossy(&output.items));
                     }
                 }
 
@@ -323,11 +320,7 @@ fn test_listen_stream_streaming_results() -> Result<()> {
                         count += 1;
                         match &item.item {
                             Some(result_output_item::Item::Data(data)) => {
-                                eprintln!(
-                                    "   [{}] Data: {}",
-                                    count,
-                                    String::from_utf8_lossy(data)
-                                );
+                                eprintln!("   [{}] Data: {}", count, String::from_utf8_lossy(data));
                             }
                             Some(result_output_item::Item::End(trailer)) => {
                                 eprintln!("   [{}] End: {:?}", count, trailer.metadata);

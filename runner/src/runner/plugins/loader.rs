@@ -1,7 +1,6 @@
 use super::PluginLoader;
 use crate::runner::plugins::{
-    impls::PluginRunnerWrapperImpl, CollectablePluginRunner, MultiMethodPluginRunner, PluginRunner,
-    PluginRunnerVariant,
+    impls::PluginRunnerWrapperImpl, MultiMethodPluginRunner, PluginRunner, PluginRunnerVariant,
 };
 use crate::runner::timeout_config::RunnerTimeoutConfig;
 use anyhow::Result;
@@ -15,11 +14,6 @@ use tokio::sync::RwLock as TokioRwLock;
 /// FFI symbol for legacy plugins (origin/main compatible)
 #[allow(improper_ctypes_definitions)]
 type LoaderFunc<'a> = Symbol<'a, extern "C" fn() -> Box<dyn PluginRunner + Send + Sync>>;
-
-/// FFI symbol for collectable plugins (single-method with collect_stream)
-#[allow(improper_ctypes_definitions)]
-type CollectableLoaderFunc<'a> =
-    Symbol<'a, extern "C" fn() -> Box<dyn CollectablePluginRunner + Send + Sync>>;
 
 /// FFI symbol for multi-method plugins
 #[allow(improper_ctypes_definitions)]
@@ -110,8 +104,7 @@ impl RunnerPluginLoader {
     ///
     /// Priority order for FFI symbol detection:
     /// 1. `load_multi_method_plugin` - Multi-method plugins (newest, supports multiple methods + collect_stream)
-    /// 2. `load_collectable_plugin` - Single-method plugins with collect_stream support
-    /// 3. `load_plugin` - Legacy plugins (origin/main compatible, no collect_stream)
+    /// 2. `load_plugin` - Legacy plugins (origin/main compatible, no collect_stream)
     pub async fn find_plugin_runner_by_name(&self, name: &str) -> Option<PluginRunnerWrapperImpl> {
         // Search only in logically "available" plugins
         let path = self
@@ -134,17 +127,6 @@ impl RunnerPluginLoader {
                 {
                     let plugin = load_multi();
                     let variant = PluginRunnerVariant::MultiMethod(plugin);
-                    return Some(PluginRunnerWrapperImpl::new(Arc::new(TokioRwLock::new(
-                        variant,
-                    ))));
-                }
-
-                // Try collectable plugin next (single-method with collect_stream)
-                if let Ok(load_collectable) =
-                    lib.get::<CollectableLoaderFunc>(b"load_collectable_plugin\0")
-                {
-                    let plugin = load_collectable();
-                    let variant = PluginRunnerVariant::Collectable(plugin);
                     return Some(PluginRunnerWrapperImpl::new(Arc::new(TokioRwLock::new(
                         variant,
                     ))));
@@ -217,7 +199,7 @@ impl PluginLoader for RunnerPluginLoader {
         let lib = Self::get_or_load_library(path).await?;
 
         // 2. Get plugin info with timeout
-        // Priority: load_multi_method_plugin > load_collectable_plugin > load_plugin
+        // Priority: load_multi_method_plugin > load_plugin
         let timeout_config = RunnerTimeoutConfig::global();
         let (plugin_name, description) = tokio::time::timeout(
             timeout_config.plugin_instantiate,
@@ -230,14 +212,6 @@ impl PluginLoader for RunnerPluginLoader {
                     return Ok::<_, anyhow::Error>((plugin.name(), plugin.description()));
                 }
 
-                // Try collectable plugin next
-                if let Ok(load_collectable) =
-                    lib.get::<CollectableLoaderFunc>(b"load_collectable_plugin\0")
-                {
-                    let plugin = load_collectable();
-                    return Ok::<_, anyhow::Error>((plugin.name(), plugin.description()));
-                }
-
                 // Fall back to legacy plugin
                 if let Ok(load_legacy) = lib.get::<LoaderFunc>(b"load_plugin\0") {
                     let plugin = load_legacy();
@@ -245,7 +219,7 @@ impl PluginLoader for RunnerPluginLoader {
                 }
 
                 Err(anyhow::anyhow!(
-                    "Plugin missing all FFI symbols (load_plugin, load_collectable_plugin, load_multi_method_plugin)"
+                    "Plugin missing all FFI symbols (load_plugin, load_multi_method_plugin)"
                 ))
             }),
         )
