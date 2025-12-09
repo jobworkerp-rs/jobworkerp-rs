@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package collectable;
+
+message CollectableArgs {
+  string input = 1;
+  int32 chunk_count = 2;
+}

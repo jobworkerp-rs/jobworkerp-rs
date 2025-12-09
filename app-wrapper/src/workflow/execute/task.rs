@@ -21,7 +21,7 @@ use fork::ForkTaskExecutor;
 use futures::{pin_mut, StreamExt};
 use jobworkerp_base::APP_NAME;
 use opentelemetry::trace::TraceContextExt;
-use run::RunTaskExecutor;
+use run::{RunStreamTaskExecutor, RunTaskExecutor};
 use set::SetTaskExecutor;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -188,6 +188,7 @@ impl TaskExecutor {
             true
         }
     }
+
     // input is the output of the previous task
     // return the output of the task, and next task("continue", "exit", "end", or taskName)
     // TODO timeout implementation
@@ -711,38 +712,82 @@ impl TaskExecutor {
                 .boxed()
             }
             Task::RunTask(task) => {
-                let task_executor = RunTaskExecutor::new(
-                    workflow_context.clone(),
-                    default_task_timeout,
-                    job_executor_wrapper.clone(),
-                    task,
-                    self.metadata.clone(),
-                );
-                futures::stream::once(async move {
-                    match task_executor
-                        .execute(cx, task_name.as_str(), task_context.clone())
-                        .await
-                    {
-                        Ok(ctx) => {
-                            let mut expr = Self::expression(
-                                &*workflow_context.read().await,
-                                Arc::new(ctx.clone()),
-                            )
-                            .await?;
-                            Self::update_context_by_output(
-                                checkpoint_repository.clone(),
-                                execution_id.clone(),
-                                original_task.clone(),
-                                workflow_context.clone(),
-                                &mut expr,
-                                ctx,
-                            )
+                let use_streaming = task.use_streaming;
+
+                // Check if streaming execution should be used for the given RunTask
+                //
+                // Returns the value of `useStreaming` property from the RunTask.
+                // When true, the task will be executed using RunStreamTaskExecutor which:
+                // - Executes jobs with streaming enabled
+                // - Broadcasts intermediate results via JobResultService/ListenStream
+                // - Collects final result using collect_stream
+                if use_streaming {
+                    let task_executor = RunStreamTaskExecutor::new(
+                        workflow_context.clone(),
+                        default_task_timeout,
+                        job_executor_wrapper.clone(),
+                        task,
+                        self.metadata.clone(),
+                    );
+                    futures::stream::once(async move {
+                        match task_executor
+                            .execute(cx, task_name.as_str(), task_context.clone())
                             .await
+                        {
+                            Ok(ctx) => {
+                                let mut expr = Self::expression(
+                                    &*workflow_context.read().await,
+                                    Arc::new(ctx.clone()),
+                                )
+                                .await?;
+                                Self::update_context_by_output(
+                                    checkpoint_repository.clone(),
+                                    execution_id.clone(),
+                                    original_task.clone(),
+                                    workflow_context.clone(),
+                                    &mut expr,
+                                    ctx,
+                                )
+                                .await
+                            }
+                            Err(e) => Err(e),
                         }
-                        Err(e) => Err(e),
-                    }
-                })
-                .boxed()
+                    })
+                    .boxed()
+                } else {
+                    let task_executor = RunTaskExecutor::new(
+                        workflow_context.clone(),
+                        default_task_timeout,
+                        job_executor_wrapper.clone(),
+                        task,
+                        self.metadata.clone(),
+                    );
+                    futures::stream::once(async move {
+                        match task_executor
+                            .execute(cx, task_name.as_str(), task_context.clone())
+                            .await
+                        {
+                            Ok(ctx) => {
+                                let mut expr = Self::expression(
+                                    &*workflow_context.read().await,
+                                    Arc::new(ctx.clone()),
+                                )
+                                .await?;
+                                Self::update_context_by_output(
+                                    checkpoint_repository.clone(),
+                                    execution_id.clone(),
+                                    original_task.clone(),
+                                    workflow_context.clone(),
+                                    &mut expr,
+                                    ctx,
+                                )
+                                .await
+                            }
+                            Err(e) => Err(e),
+                        }
+                    })
+                    .boxed()
+                }
             }
             Task::SetTask(task) => {
                 let task_executor = SetTaskExecutor::new(workflow_context.clone(), task);

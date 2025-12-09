@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package collectable;
+
+message CollectableResult {
+  string message = 1;
+  int32 chunk_index = 2;
+  bool is_final = 3;
+}

@@ -705,6 +705,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "collectable_test"
+version = "0.18.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "futures",
+ "jobworkerp-runner",
+ "prost 0.14.1",
+ "proto",
+ "schemars 1.1.0",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tonic 0.14.2",
+ "tonic-prost-build",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -12,7 +12,7 @@ use jobworkerp_runner::runner::cancellation_helper::{
     CancelMonitoringHelper, UseCancelMonitoringHelper,
 };
 use jobworkerp_runner::runner::llm::LLMCompletionRunnerSpec;
-use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
+use jobworkerp_runner::runner::{CollectStreamFuture, RunnerSpec, RunnerTrait};
 use ollama::OllamaService;
 use opentelemetry::trace::TraceContextExt;
 use opentelemetry::Context;
@@ -333,6 +333,82 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
             Err(anyhow!("llm is not initialized"))
         }
     }
+
+    /// Collect streaming LLM completion results into a single LlmCompletionResult
+    ///
+    /// Strategy:
+    /// - Concatenates text content from all chunks
+    /// - Concatenates reasoning content from all chunks
+    /// - Uses context and usage from the final chunk (done=true)
+    fn collect_stream(&self, stream: BoxStream<'static, ResultOutputItem>) -> CollectStreamFuture {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_completion_result::{
+            message_content, GenerationContext, MessageContent, Usage,
+        };
+        use jobworkerp_runner::jobworkerp::runner::llm::LlmCompletionResult;
+
+        Box::pin(async move {
+            let mut combined_text = String::new();
+            let mut combined_reasoning = String::new();
+            let mut final_context: Option<GenerationContext> = None;
+            let mut final_usage: Option<Usage> = None;
+            let mut metadata = HashMap::new();
+            let mut stream = stream;
+
+            while let Some(item) = stream.next().await {
+                match item.item {
+                    Some(result_output_item::Item::Data(data)) => {
+                        if let Ok(chunk) = LlmCompletionResult::decode(data.as_slice()) {
+                            // Concatenate text content
+                            if let Some(content) = chunk.content {
+                                if let Some(message_content::Content::Text(text)) = content.content
+                                {
+                                    combined_text.push_str(&text);
+                                }
+                            }
+
+                            // Concatenate reasoning content
+                            if let Some(reasoning) = chunk.reasoning_content {
+                                combined_reasoning.push_str(&reasoning);
+                            }
+
+                            // Use final chunk's context and usage
+                            if chunk.done {
+                                final_context = chunk.context;
+                                final_usage = chunk.usage;
+                            }
+                        }
+                    }
+                    Some(result_output_item::Item::End(trailer)) => {
+                        metadata = trailer.metadata;
+                        break;
+                    }
+                    None => {}
+                }
+            }
+
+            // Build collected result
+            let result = LlmCompletionResult {
+                content: if combined_text.is_empty() {
+                    None
+                } else {
+                    Some(MessageContent {
+                        content: Some(message_content::Content::Text(combined_text)),
+                    })
+                },
+                reasoning_content: if combined_reasoning.is_empty() {
+                    None
+                } else {
+                    Some(combined_reasoning)
+                },
+                done: true,
+                context: final_context,
+                usage: final_usage,
+            };
+
+            let bytes = result.encode_to_vec();
+            Ok((bytes, metadata))
+        })
+    }
 }
 
 #[async_trait]
@@ -395,5 +471,217 @@ impl jobworkerp_runner::runner::cancellation::CancelMonitoring for LLMCompletion
 
 #[cfg(test)]
 mod tests {
-    // Tests for LLMCompletionRunnerImpl
+    use super::*;
+    use app::module::test::create_hybrid_test_app;
+    use futures::stream::BoxStream;
+    use jobworkerp_runner::jobworkerp::runner::llm::llm_completion_result::{
+        generation_context, message_content, GenerationContext, MessageContent, OllamaContext,
+        Usage,
+    };
+    use jobworkerp_runner::jobworkerp::runner::llm::LlmCompletionResult;
+    use proto::jobworkerp::data::result_output_item::Item;
+
+    /// Helper function to create a mock stream from LlmCompletionResult chunks
+    fn create_mock_llm_stream(
+        chunks: Vec<LlmCompletionResult>,
+        metadata: HashMap<String, String>,
+    ) -> BoxStream<'static, ResultOutputItem> {
+        let stream = async_stream::stream! {
+            for chunk in chunks {
+                yield ResultOutputItem {
+                    item: Some(Item::Data(chunk.encode_to_vec())),
+                };
+            }
+            yield ResultOutputItem {
+                item: Some(Item::End(proto::jobworkerp::data::Trailer { metadata })),
+            };
+        };
+        Box::pin(stream)
+    }
+
+    fn text_chunk(text: &str, done: bool) -> LlmCompletionResult {
+        LlmCompletionResult {
+            content: Some(MessageContent {
+                content: Some(message_content::Content::Text(text.to_string())),
+            }),
+            reasoning_content: None,
+            done,
+            context: None,
+            usage: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_collect_stream_single_chunk() {
+        let app = Arc::new(create_hybrid_test_app().await.unwrap());
+        let runner = LLMCompletionRunnerImpl::new(app);
+
+        let chunk = LlmCompletionResult {
+            content: Some(MessageContent {
+                content: Some(message_content::Content::Text("Hello, World!".to_string())),
+            }),
+            reasoning_content: Some("Thinking...".to_string()),
+            done: true,
+            context: Some(GenerationContext {
+                context: Some(generation_context::Context::Ollama(OllamaContext {
+                    data: vec![1, 2, 3],
+                })),
+            }),
+            usage: Some(Usage {
+                model: "test-model".to_string(),
+                prompt_tokens: Some(10),
+                completion_tokens: Some(5),
+                total_prompt_time_sec: None,
+                total_completion_time_sec: None,
+            }),
+        };
+
+        let mut metadata = HashMap::new();
+        metadata.insert("model".to_string(), "test-model".to_string());
+
+        let stream = create_mock_llm_stream(vec![chunk], metadata.clone());
+        let (result_bytes, result_metadata) = runner.collect_stream(stream).await.unwrap();
+
+        let result =
+            ProstMessageCodec::deserialize_message::<LlmCompletionResult>(&result_bytes).unwrap();
+
+        // Check text content
+        assert!(result.content.is_some());
+        if let Some(content) = result.content {
+            assert_eq!(
+                content.content,
+                Some(message_content::Content::Text("Hello, World!".to_string()))
+            );
+        }
+
+        // Check reasoning
+        assert_eq!(result.reasoning_content, Some("Thinking...".to_string()));
+
+        // Check done flag
+        assert!(result.done);
+
+        // Check context and usage
+        assert!(result.context.is_some());
+        assert!(result.usage.is_some());
+        if let Some(usage) = result.usage {
+            assert_eq!(usage.prompt_tokens, Some(10));
+            assert_eq!(usage.completion_tokens, Some(5));
+        }
+
+        assert_eq!(
+            result_metadata.get("model"),
+            Some(&"test-model".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_collect_stream_multiple_chunks_concatenates_text() {
+        let app = Arc::new(create_hybrid_test_app().await.unwrap());
+        let runner = LLMCompletionRunnerImpl::new(app);
+
+        let chunks = vec![
+            text_chunk("Hello, ", false),
+            text_chunk("World!", false),
+            LlmCompletionResult {
+                content: Some(MessageContent {
+                    content: Some(message_content::Content::Text(" Done.".to_string())),
+                }),
+                reasoning_content: None,
+                done: true,
+                context: Some(GenerationContext {
+                    context: Some(generation_context::Context::Ollama(OllamaContext {
+                        data: vec![4, 5, 6],
+                    })),
+                }),
+                usage: Some(Usage {
+                    model: "test-model".to_string(),
+                    prompt_tokens: Some(20),
+                    completion_tokens: Some(10),
+                    total_prompt_time_sec: None,
+                    total_completion_time_sec: None,
+                }),
+            },
+        ];
+
+        let stream = create_mock_llm_stream(chunks, HashMap::new());
+        let (result_bytes, _) = runner.collect_stream(stream).await.unwrap();
+
+        let result =
+            ProstMessageCodec::deserialize_message::<LlmCompletionResult>(&result_bytes).unwrap();
+
+        // Text should be concatenated
+        if let Some(content) = result.content {
+            assert_eq!(
+                content.content,
+                Some(message_content::Content::Text(
+                    "Hello, World! Done.".to_string()
+                ))
+            );
+        }
+
+        // Should use final chunk's context and usage
+        assert!(result.context.is_some());
+        assert!(result.usage.is_some());
+        if let Some(usage) = result.usage {
+            assert_eq!(usage.prompt_tokens, Some(20));
+            assert_eq!(usage.completion_tokens, Some(10));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_collect_stream_concatenates_reasoning() {
+        let app = Arc::new(create_hybrid_test_app().await.unwrap());
+        let runner = LLMCompletionRunnerImpl::new(app);
+
+        let chunks = vec![
+            LlmCompletionResult {
+                content: Some(MessageContent {
+                    content: Some(message_content::Content::Text("Answer: ".to_string())),
+                }),
+                reasoning_content: Some("Step 1: ".to_string()),
+                done: false,
+                context: None,
+                usage: None,
+            },
+            LlmCompletionResult {
+                content: Some(MessageContent {
+                    content: Some(message_content::Content::Text("42".to_string())),
+                }),
+                reasoning_content: Some("Calculate result".to_string()),
+                done: true,
+                context: None,
+                usage: None,
+            },
+        ];
+
+        let stream = create_mock_llm_stream(chunks, HashMap::new());
+        let (result_bytes, _) = runner.collect_stream(stream).await.unwrap();
+
+        let result =
+            ProstMessageCodec::deserialize_message::<LlmCompletionResult>(&result_bytes).unwrap();
+
+        // Reasoning should be concatenated
+        assert_eq!(
+            result.reasoning_content,
+            Some("Step 1: Calculate result".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_collect_stream_empty_chunks() {
+        let app = Arc::new(create_hybrid_test_app().await.unwrap());
+        let runner = LLMCompletionRunnerImpl::new(app);
+
+        let chunks: Vec<LlmCompletionResult> = vec![];
+
+        let stream = create_mock_llm_stream(chunks, HashMap::new());
+        let (result_bytes, _) = runner.collect_stream(stream).await.unwrap();
+
+        let result =
+            ProstMessageCodec::deserialize_message::<LlmCompletionResult>(&result_bytes).unwrap();
+
+        assert!(result.content.is_none());
+        assert!(result.reasoning_content.is_none());
+        assert!(result.done); // Always set to true after collection
+    }
 }

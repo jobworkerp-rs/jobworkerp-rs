@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
-use crate::runner::RunnerSpec;
+use crate::runner::{RunnerSpec, RunnerTrait};
 
 fn get_mcp_server_path(server_name: &str) -> PathBuf {
     let base_path = PathBuf::from("../modules/mcp-servers/src");
@@ -811,7 +811,7 @@ async fn test_using_mode_stream_with_cancellation() -> Result<()> {
 async fn test_mcp_tool_name_validation() -> Result<()> {
     use crate::runner::mcp::config::McpConfig;
     use crate::runner::mcp::McpServerRunnerImpl;
-    // use crate::runner::RunnerSpec;
+    use crate::runner::RunnerSpec;
 
     let config = McpConfig {
         server: vec![create_time_mcp_server().await?],
@@ -968,6 +968,231 @@ async fn test_method_proto_map() -> Result<()> {
     );
     eprintln!("✅ result_proto contains common output schema (McpServerResult)");
 
+    Ok(())
+}
+
+// ==================== collect_stream Tests ====================
+
+/// Test: collect_stream with single chunk
+#[tokio::test]
+async fn test_collect_stream_single_chunk() -> Result<()> {
+    use crate::jobworkerp::runner::mcp_server_result::content::RawContent;
+    use crate::jobworkerp::runner::mcp_server_result::{Content, TextContent};
+    use crate::jobworkerp::runner::McpServerResult;
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use prost::Message;
+    use proto::jobworkerp::data::result_output_item::Item;
+    use proto::jobworkerp::data::ResultOutputItem;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+    let runner = McpServerRunnerImpl::new(client, None).await?;
+
+    // Create a mock stream with a single chunk
+    let chunk = McpServerResult {
+        content: vec![Content {
+            raw_content: Some(RawContent::Text(TextContent {
+                text: "Hello from MCP!".to_string(),
+            })),
+        }],
+        is_error: false,
+    };
+
+    let mut metadata = HashMap::new();
+    metadata.insert("tool".to_string(), "test_tool".to_string());
+
+    let stream = async_stream::stream! {
+        yield ResultOutputItem {
+            item: Some(Item::Data(chunk.encode_to_vec())),
+        };
+        yield ResultOutputItem {
+            item: Some(Item::End(proto::jobworkerp::data::Trailer { metadata })),
+        };
+    };
+
+    let (result_bytes, result_metadata) = runner.collect_stream(Box::pin(stream)).await?;
+
+    let result = McpServerResult::decode(result_bytes.as_slice())?;
+    assert_eq!(result.content.len(), 1);
+    assert!(!result.is_error);
+    match &result.content[0].raw_content {
+        Some(RawContent::Text(tc)) => assert_eq!(tc.text, "Hello from MCP!"),
+        _ => panic!("Expected TextContent"),
+    }
+    assert_eq!(result_metadata.get("tool"), Some(&"test_tool".to_string()));
+
+    eprintln!("✅ collect_stream single chunk test passed");
+    Ok(())
+}
+
+/// Test: collect_stream merges multiple text chunks
+#[tokio::test]
+async fn test_collect_stream_multiple_chunks_merges_text() -> Result<()> {
+    use crate::jobworkerp::runner::mcp_server_result::content::RawContent;
+    use crate::jobworkerp::runner::mcp_server_result::{Content, TextContent};
+    use crate::jobworkerp::runner::McpServerResult;
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use prost::Message;
+    use proto::jobworkerp::data::result_output_item::Item;
+    use proto::jobworkerp::data::ResultOutputItem;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+    let runner = McpServerRunnerImpl::new(client, None).await?;
+
+    // Create chunks with text content
+    let chunk1 = McpServerResult {
+        content: vec![Content {
+            raw_content: Some(RawContent::Text(TextContent {
+                text: "Hello, ".to_string(),
+            })),
+        }],
+        is_error: false,
+    };
+    let chunk2 = McpServerResult {
+        content: vec![Content {
+            raw_content: Some(RawContent::Text(TextContent {
+                text: "World!".to_string(),
+            })),
+        }],
+        is_error: false,
+    };
+
+    let stream = async_stream::stream! {
+        yield ResultOutputItem {
+            item: Some(Item::Data(chunk1.encode_to_vec())),
+        };
+        yield ResultOutputItem {
+            item: Some(Item::Data(chunk2.encode_to_vec())),
+        };
+        yield ResultOutputItem {
+            item: Some(Item::End(proto::jobworkerp::data::Trailer { metadata: HashMap::new() })),
+        };
+    };
+
+    let (result_bytes, _) = runner.collect_stream(Box::pin(stream)).await?;
+
+    let result = McpServerResult::decode(result_bytes.as_slice())?;
+
+    // Text should be merged
+    assert_eq!(result.content.len(), 1);
+    match &result.content[0].raw_content {
+        Some(RawContent::Text(tc)) => assert_eq!(tc.text, "Hello, World!"),
+        _ => panic!("Expected merged TextContent"),
+    }
+
+    eprintln!("✅ collect_stream multiple chunks merge test passed");
+    Ok(())
+}
+
+/// Test: collect_stream propagates error flag
+#[tokio::test]
+async fn test_collect_stream_propagates_error_flag() -> Result<()> {
+    use crate::jobworkerp::runner::mcp_server_result::content::RawContent;
+    use crate::jobworkerp::runner::mcp_server_result::{Content, TextContent};
+    use crate::jobworkerp::runner::McpServerResult;
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use prost::Message;
+    use proto::jobworkerp::data::result_output_item::Item;
+    use proto::jobworkerp::data::ResultOutputItem;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+    let runner = McpServerRunnerImpl::new(client, None).await?;
+
+    // Create chunks - second one has error
+    let chunk1 = McpServerResult {
+        content: vec![Content {
+            raw_content: Some(RawContent::Text(TextContent {
+                text: "Success part".to_string(),
+            })),
+        }],
+        is_error: false,
+    };
+    let chunk2 = McpServerResult {
+        content: vec![Content {
+            raw_content: Some(RawContent::Text(TextContent {
+                text: " Error part".to_string(),
+            })),
+        }],
+        is_error: true, // error flag set
+    };
+
+    let stream = async_stream::stream! {
+        yield ResultOutputItem {
+            item: Some(Item::Data(chunk1.encode_to_vec())),
+        };
+        yield ResultOutputItem {
+            item: Some(Item::Data(chunk2.encode_to_vec())),
+        };
+        yield ResultOutputItem {
+            item: Some(Item::End(proto::jobworkerp::data::Trailer { metadata: HashMap::new() })),
+        };
+    };
+
+    let (result_bytes, _) = runner.collect_stream(Box::pin(stream)).await?;
+
+    let result = McpServerResult::decode(result_bytes.as_slice())?;
+
+    // Error flag should be propagated (true if any chunk had error)
+    assert!(result.is_error, "Error flag should be true");
+
+    eprintln!("✅ collect_stream error propagation test passed");
+    Ok(())
+}
+
+/// Test: collect_stream with empty chunks
+#[tokio::test]
+async fn test_collect_stream_empty_chunks() -> Result<()> {
+    use crate::jobworkerp::runner::McpServerResult;
+    use crate::runner::mcp::config::McpConfig;
+    use crate::runner::mcp::McpServerRunnerImpl;
+    use crate::runner::RunnerTrait;
+    use prost::Message;
+    use proto::jobworkerp::data::result_output_item::Item;
+    use proto::jobworkerp::data::ResultOutputItem;
+
+    let config = McpConfig {
+        server: vec![create_time_mcp_server().await?],
+    };
+
+    let factory = crate::runner::mcp::proxy::McpServerFactory::new(config);
+    let client = factory.connect_server("time").await?;
+    let runner = McpServerRunnerImpl::new(client, None).await?;
+
+    // Create stream with only end marker (no data chunks)
+    let stream = async_stream::stream! {
+        yield ResultOutputItem {
+            item: Some(Item::End(proto::jobworkerp::data::Trailer { metadata: HashMap::new() })),
+        };
+    };
+
+    let (result_bytes, _) = runner.collect_stream(Box::pin(stream)).await?;
+
+    let result = McpServerResult::decode(result_bytes.as_slice())?;
+
+    assert!(result.content.is_empty());
+    assert!(!result.is_error);
+
+    eprintln!("✅ collect_stream empty chunks test passed");
     Ok(())
 }
 

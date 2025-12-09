@@ -18,6 +18,14 @@ use super::super::cancellation::CancelMonitoring;
 use super::super::cancellation_helper::{CancelMonitoringHelper, UseCancelMonitoringHelper};
 use proto::jobworkerp::data::{JobData, JobId, JobResult};
 
+/// Variant type for lock-free collect_stream dispatch
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PluginVariantType {
+    Legacy,
+    Collectable,
+    MultiMethod,
+}
+
 /**
  * PluginRunner wrapper
  * (for self mutability (run(), cancel()))
@@ -25,13 +33,25 @@ use proto::jobworkerp::data::{JobData, JobId, JobResult};
 #[derive(Clone)]
 pub struct PluginRunnerWrapperImpl {
     variant: Arc<RwLock<PluginRunnerVariant>>,
+    /// Cached variant type for lock-free collect_stream dispatch
+    variant_type: PluginVariantType,
     cancel_helper: Option<CancelMonitoringHelper>,
 }
 
 impl PluginRunnerWrapperImpl {
     pub fn new(variant: Arc<RwLock<PluginRunnerVariant>>) -> Self {
+        // Determine variant type at construction time
+        let variant_type = {
+            let guard = block_on(variant.read());
+            match &*guard {
+                PluginRunnerVariant::Legacy(_) => PluginVariantType::Legacy,
+                PluginRunnerVariant::Collectable(_) => PluginVariantType::Collectable,
+                PluginRunnerVariant::MultiMethod(_) => PluginVariantType::MultiMethod,
+            }
+        };
         Self {
             variant,
+            variant_type,
             cancel_helper: None,
         }
     }
@@ -42,6 +62,7 @@ impl PluginRunnerWrapperImpl {
             let mut guard = variant.write().await;
             match &mut *guard {
                 super::PluginRunnerVariant::Legacy(plugin) => plugin.load(settings),
+                super::PluginRunnerVariant::Collectable(plugin) => plugin.load(settings),
                 super::PluginRunnerVariant::MultiMethod(plugin) => plugin.load(settings),
             }
         })
@@ -57,6 +78,7 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
         let guard = block_on(self.variant.read());
         match &*guard {
             super::PluginRunnerVariant::Legacy(plugin) => plugin.name(),
+            super::PluginRunnerVariant::Collectable(plugin) => plugin.name(),
             super::PluginRunnerVariant::MultiMethod(plugin) => plugin.name(),
         }
     }
@@ -64,6 +86,7 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
         let guard = block_on(self.variant.read());
         match &*guard {
             super::PluginRunnerVariant::Legacy(plugin) => plugin.runner_settings_proto(),
+            super::PluginRunnerVariant::Collectable(plugin) => plugin.runner_settings_proto(),
             super::PluginRunnerVariant::MultiMethod(plugin) => plugin.runner_settings_proto(),
         }
     }
@@ -86,6 +109,25 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
                 );
                 tracing::debug!(
                     "Auto-converted legacy plugin '{}' to method_proto_map with '{}' method",
+                    plugin.name(),
+                    proto::DEFAULT_METHOD_NAME
+                );
+                map
+            }
+            super::PluginRunnerVariant::Collectable(plugin) => {
+                // Auto-convert from collectable methods (same as legacy)
+                let mut map = HashMap::new();
+                map.insert(
+                    proto::DEFAULT_METHOD_NAME.to_string(),
+                    proto::jobworkerp::data::MethodSchema {
+                        args_proto: plugin.job_args_proto(),
+                        result_proto: plugin.result_output_proto().unwrap_or_default(),
+                        description: Some(plugin.description()),
+                        output_type: plugin.output_type() as i32,
+                    },
+                );
+                tracing::debug!(
+                    "Auto-converted collectable plugin '{}' to method_proto_map with '{}' method",
                     plugin.name(),
                     proto::DEFAULT_METHOD_NAME
                 );
@@ -115,6 +157,23 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
                 );
                 map
             }
+            super::PluginRunnerVariant::Collectable(plugin) => {
+                // This is a collectable plugin - use arguments_schema() and output_json_schema()
+                let mut map = HashMap::new();
+                map.insert(
+                    proto::DEFAULT_METHOD_NAME.to_string(),
+                    crate::runner::MethodJsonSchema {
+                        args_schema: plugin.arguments_schema(),
+                        result_schema: plugin.output_json_schema(),
+                    },
+                );
+                tracing::debug!(
+                    "Auto-converted collectable plugin '{}' JSON schemas with '{}' method",
+                    plugin.name(),
+                    proto::DEFAULT_METHOD_NAME
+                );
+                map
+            }
             super::PluginRunnerVariant::MultiMethod(plugin) => {
                 if let Some(custom_schemas) = plugin.method_json_schema_map() {
                     custom_schemas
@@ -130,6 +189,7 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
         let guard = block_on(self.variant.read());
         match &*guard {
             super::PluginRunnerVariant::Legacy(plugin) => plugin.settings_schema(),
+            super::PluginRunnerVariant::Collectable(plugin) => plugin.settings_schema(),
             super::PluginRunnerVariant::MultiMethod(plugin) => plugin.settings_schema(),
         }
     }
@@ -184,6 +244,7 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
 
         let (r, meta) = match &mut *guard {
             super::PluginRunnerVariant::Legacy(plugin) => plugin.run(arg1, metadata),
+            super::PluginRunnerVariant::Collectable(plugin) => plugin.run(arg1, metadata),
             super::PluginRunnerVariant::MultiMethod(plugin) => plugin.run(arg1, metadata, using),
         };
         (
@@ -237,6 +298,9 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
                 super::PluginRunnerVariant::Legacy(plugin) => {
                     plugin.begin_stream(arg1, metadata.clone())
                 }
+                super::PluginRunnerVariant::Collectable(plugin) => {
+                    plugin.begin_stream(arg1, metadata.clone())
+                }
                 super::PluginRunnerVariant::MultiMethod(plugin) => {
                     plugin.begin_stream(arg1, metadata.clone(), using)
                 }
@@ -261,6 +325,7 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
                 let receive_future = async {
                     match &mut *guard {
                         super::PluginRunnerVariant::Legacy(plugin) => plugin.receive_stream(),
+                        super::PluginRunnerVariant::Collectable(plugin) => plugin.receive_stream(),
                         super::PluginRunnerVariant::MultiMethod(plugin) => plugin.receive_stream(),
                     }
                 };
@@ -279,6 +344,7 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
 
                 let is_cancelled = match &*guard {
                     super::PluginRunnerVariant::Legacy(plugin) => plugin.is_canceled(),
+                    super::PluginRunnerVariant::Collectable(plugin) => plugin.is_canceled(),
                     super::PluginRunnerVariant::MultiMethod(plugin) => plugin.is_canceled(),
                 };
 
@@ -305,6 +371,76 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         }
         .boxed();
         Ok(st)
+    }
+
+    /// Collect streaming output for plugin runners
+    ///
+    /// For Collectable and MultiMethod plugins, delegates to the plugin's collect_stream.
+    /// For Legacy plugins, keeps only the last data chunk (protobuf binary concatenation is invalid).
+    ///
+    /// Note: Uses cached variant_type to dispatch without locking.
+    /// For Collectable/MultiMethod, we get the plugin's collect_stream future while briefly
+    /// holding the lock, then release the lock before awaiting. This allows the stream
+    /// (which needs write lock internally) to be processed without deadlock.
+    fn collect_stream(
+        &self,
+        stream: BoxStream<'static, ResultOutputItem>,
+    ) -> crate::runner::CollectStreamFuture {
+        let variant = self.variant.clone();
+        let variant_type = self.variant_type;
+
+        Box::pin(async move {
+            match variant_type {
+                PluginVariantType::Legacy => {
+                    // Legacy plugins: keep only the last chunk (no custom collect_stream)
+                    // Process stream without holding any lock
+                    let mut last_data: Option<Vec<u8>> = None;
+                    let mut metadata = HashMap::new();
+                    let mut stream = stream;
+
+                    while let Some(item) = stream.next().await {
+                        match item.item {
+                            Some(result_output_item::Item::Data(data)) => {
+                                last_data = Some(data);
+                            }
+                            Some(result_output_item::Item::End(trailer)) => {
+                                metadata = trailer.metadata;
+                                break;
+                            }
+                            None => {}
+                        }
+                    }
+                    Ok((last_data.unwrap_or_default(), metadata))
+                }
+                PluginVariantType::Collectable => {
+                    // Get the collect_stream future from plugin (brief lock)
+                    // The future itself doesn't hold the lock, only the plugin reference
+                    // is accessed briefly to create the future
+                    let future = {
+                        let guard = variant.read().await;
+                        if let super::PluginRunnerVariant::Collectable(plugin) = &*guard {
+                            plugin.collect_stream(stream)
+                        } else {
+                            unreachable!("variant_type mismatch")
+                        }
+                    };
+                    // Lock released, now await the future which processes the stream
+                    future.await
+                }
+                PluginVariantType::MultiMethod => {
+                    // Same pattern as Collectable
+                    let future = {
+                        let guard = variant.read().await;
+                        if let super::PluginRunnerVariant::MultiMethod(plugin) = &*guard {
+                            plugin.collect_stream(stream)
+                        } else {
+                            unreachable!("variant_type mismatch")
+                        }
+                    };
+                    future.await
+                }
+            }
+        })
     }
 }
 

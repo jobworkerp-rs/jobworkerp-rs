@@ -1,7 +1,10 @@
 use anyhow::Result;
+use futures::StreamExt;
 use jobworkerp_runner::runner::plugins::Plugins;
 use jobworkerp_runner::runner::{RunnerSpec, RunnerTrait};
 use jsonschema::Validator;
+use prost::Message;
+use proto::jobworkerp::data::{result_output_item, ResultOutputItem, Trailer};
 use std::collections::HashMap;
 
 const TEST_PLUGIN_DIR: &str = "./target/debug,../target/debug,../target/release,./target/release";
@@ -338,6 +341,264 @@ async fn test_multi_method_plugin_settings_schema() -> Result<()> {
     assert!(
         settings_validator.is_valid(&sample_settings),
         "settings_schema should validate valid settings"
+    );
+
+    Ok(())
+}
+
+// ============================================================================
+// CollectablePluginRunner tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_load_collectable_plugin() -> Result<()> {
+    let plugins = Plugins::new();
+    let loaded = plugins.load_plugin_files(TEST_PLUGIN_DIR).await;
+
+    // Find CollectableTest plugin
+    let collectable_plugin = loaded
+        .iter()
+        .find(|p| p.name == "CollectableTest")
+        .expect("CollectableTest plugin should be loaded");
+
+    assert_eq!(collectable_plugin.name, "CollectableTest");
+    assert!(collectable_plugin.description.contains("collect_stream"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_collectable_plugin_method_proto_map_conversion() -> Result<()> {
+    let plugins = Plugins::new();
+    plugins.load_plugin_files(TEST_PLUGIN_DIR).await;
+
+    let runner_loader = plugins.runner_plugins();
+    let loader = runner_loader.read().await;
+
+    let plugin_wrapper = loader
+        .find_plugin_runner_by_name("CollectableTest")
+        .await
+        .expect("CollectableTest plugin should be found");
+
+    // Verify method_proto_map() conversion (should have DEFAULT_METHOD_NAME)
+    let method_proto_map = plugin_wrapper.method_proto_map();
+
+    assert!(
+        method_proto_map.contains_key(proto::DEFAULT_METHOD_NAME),
+        "Collectable plugin should have '{}' method",
+        proto::DEFAULT_METHOD_NAME
+    );
+
+    let method_schema = method_proto_map
+        .get(proto::DEFAULT_METHOD_NAME)
+        .expect("Method schema should exist");
+
+    // Verify schema content
+    assert!(!method_schema.args_proto.is_empty());
+    assert!(!method_schema.result_proto.is_empty());
+    assert_eq!(
+        method_schema.output_type,
+        proto::jobworkerp::data::StreamingOutputType::Both as i32
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_collectable_plugin_streaming() -> Result<()> {
+    let plugins = Plugins::new();
+    plugins.load_plugin_files(TEST_PLUGIN_DIR).await;
+
+    let runner_loader = plugins.runner_plugins();
+    let loader = runner_loader.read().await;
+
+    let mut plugin_wrapper = loader
+        .find_plugin_runner_by_name("CollectableTest")
+        .await
+        .expect("CollectableTest plugin should be found");
+
+    // Load plugin
+    plugin_wrapper.load(vec![]).await?;
+
+    // Create test args with 3 chunks (using JSON for simplicity)
+    let test_input = br#"{"input": "streaming_test", "chunk_count": 3}"#;
+
+    // Run streaming
+    let stream = plugin_wrapper
+        .run_stream(test_input, HashMap::new(), None)
+        .await?;
+
+    // Collect all chunks
+    let chunks: Vec<ResultOutputItem> = stream.collect().await;
+
+    // Should have 3 data chunks + 1 end trailer
+    assert_eq!(chunks.len(), 4, "Should have 3 data chunks + 1 end trailer");
+
+    // Verify data chunks
+    for (i, chunk) in chunks.iter().take(3).enumerate() {
+        match &chunk.item {
+            Some(result_output_item::Item::Data(_data)) => {
+                // Data chunk received
+                println!("Chunk {}: received data", i);
+            }
+            _ => panic!("Expected data chunk at index {}", i),
+        }
+    }
+
+    // Verify end trailer
+    match &chunks[3].item {
+        Some(result_output_item::Item::End(_trailer)) => {
+            // End trailer received
+        }
+        _ => panic!("Expected end trailer"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_collectable_plugin_collect_stream() -> Result<()> {
+    let plugins = Plugins::new();
+    plugins.load_plugin_files(TEST_PLUGIN_DIR).await;
+
+    let runner_loader = plugins.runner_plugins();
+    let loader = runner_loader.read().await;
+
+    let mut plugin_wrapper = loader
+        .find_plugin_runner_by_name("CollectableTest")
+        .await
+        .expect("CollectableTest plugin should be found");
+
+    // Load plugin
+    plugin_wrapper.load(vec![]).await?;
+
+    // Create test args with 3 chunks
+    let test_input = br#"{"input": "collect_test", "chunk_count": 3}"#;
+
+    // Run streaming
+    let stream = plugin_wrapper
+        .run_stream(test_input, HashMap::new(), None)
+        .await?;
+
+    // Collect stream using collect_stream
+    let (collected_data, _metadata) = plugin_wrapper.collect_stream(stream).await?;
+
+    // Verify collected data is valid protobuf and contains merged messages
+    assert!(
+        !collected_data.is_empty(),
+        "Collected data should not be empty"
+    );
+
+    // The collected result should contain all chunks merged
+    let collected_str = String::from_utf8_lossy(&collected_data);
+    println!("Collected data: {}", collected_str);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_legacy_plugin_collect_stream_uses_last_chunk() -> Result<()> {
+    let plugins = Plugins::new();
+    plugins.load_plugin_files(TEST_PLUGIN_DIR).await;
+
+    let runner_loader = plugins.runner_plugins();
+    let loader = runner_loader.read().await;
+
+    let plugin_wrapper = loader
+        .find_plugin_runner_by_name("LegacyCompat")
+        .await
+        .expect("LegacyCompat plugin should be found");
+
+    // Create a mock stream with multiple data chunks
+    let chunk1 = ResultOutputItem {
+        item: Some(result_output_item::Item::Data(b"chunk1".to_vec())),
+    };
+    let chunk2 = ResultOutputItem {
+        item: Some(result_output_item::Item::Data(b"chunk2".to_vec())),
+    };
+    let chunk3 = ResultOutputItem {
+        item: Some(result_output_item::Item::Data(b"chunk3_final".to_vec())),
+    };
+    let end = ResultOutputItem {
+        item: Some(result_output_item::Item::End(Trailer {
+            metadata: HashMap::from([("key".to_string(), "value".to_string())]),
+        })),
+    };
+
+    let stream = futures::stream::iter(vec![chunk1, chunk2, chunk3, end]).boxed();
+
+    // Collect stream - Legacy plugin should keep only last chunk
+    let (collected_data, metadata) = plugin_wrapper.collect_stream(stream).await?;
+
+    // Should be the last chunk's data only (not concatenated)
+    assert_eq!(
+        collected_data, b"chunk3_final",
+        "Legacy plugin should keep only last chunk"
+    );
+    assert_eq!(metadata.get("key"), Some(&"value".to_string()));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_hello_plugin_collect_stream_merges_chunks() -> Result<()> {
+    let plugins = Plugins::new();
+    plugins.load_plugin_files(TEST_PLUGIN_DIR).await;
+
+    let runner_loader = plugins.runner_plugins();
+    let loader = runner_loader.read().await;
+
+    let mut plugin_wrapper = loader
+        .find_plugin_runner_by_name("HelloPlugin")
+        .await
+        .expect("HelloPlugin should be found");
+
+    // Load plugin
+    plugin_wrapper.load(vec![]).await?;
+
+    // HelloPlugin has custom collect_stream that merges HelloRunnerResult.data fields
+    // Create mock HelloRunnerResult chunks
+    #[derive(prost::Message, Clone)]
+    pub struct HelloRunnerResult {
+        #[prost(string, tag = "1")]
+        pub data: String,
+    }
+
+    let result1 = HelloRunnerResult {
+        data: "Hello".to_string(),
+    };
+    let result2 = HelloRunnerResult {
+        data: " ".to_string(),
+    };
+    let result3 = HelloRunnerResult {
+        data: "World!".to_string(),
+    };
+
+    let chunk1 = ResultOutputItem {
+        item: Some(result_output_item::Item::Data(result1.encode_to_vec())),
+    };
+    let chunk2 = ResultOutputItem {
+        item: Some(result_output_item::Item::Data(result2.encode_to_vec())),
+    };
+    let chunk3 = ResultOutputItem {
+        item: Some(result_output_item::Item::Data(result3.encode_to_vec())),
+    };
+    let end = ResultOutputItem {
+        item: Some(result_output_item::Item::End(Trailer {
+            metadata: HashMap::new(),
+        })),
+    };
+
+    let stream = futures::stream::iter(vec![chunk1, chunk2, chunk3, end]).boxed();
+
+    // Collect stream - HelloPlugin should merge data fields
+    let (collected_data, _metadata) = plugin_wrapper.collect_stream(stream).await?;
+
+    // Decode and verify merged result
+    let merged_result = HelloRunnerResult::decode(collected_data.as_slice())?;
+    assert_eq!(
+        merged_result.data, "Hello World!",
+        "HelloPlugin should merge data fields from all chunks"
     );
 
     Ok(())
