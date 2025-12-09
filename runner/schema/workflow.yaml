@@ -283,6 +283,17 @@ $defs:
     required: [run]
     unevaluatedProperties: false
     properties:
+      useStreaming:
+        type: boolean
+        default: false
+        title: UseStreamingExecution
+        description: |
+          Whether to use streaming execution mode.
+          When true:
+          - Job is executed with streaming enabled
+          - Intermediate results are broadcast via JobResultService/ListenStream
+          - Final result is collected using collect_stream and stored in raw_output
+          Useful for LLM runners or other long-running processes where progress monitoring is needed.
       run:
         type: object
         title: RunTaskConfiguration

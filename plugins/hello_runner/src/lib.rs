@@ -4,9 +4,10 @@ use futures::{stream::BoxStream, StreamExt};
 use hello::{HelloArgs, HelloRunnerResult, HelloRunnerSettings};
 use jobworkerp_runner::runner::plugins::MultiMethodPluginRunner;
 use prost::Message;
+use proto::jobworkerp::data::{result_output_item, ResultOutputItem};
 use std::{alloc::System, collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, Mutex};
-use tracing::Level; // Add this line to import the Message trait
+use tracing::Level;
 
 pub mod hello {
     tonic::include_proto!("hello");
@@ -210,6 +211,44 @@ impl MultiMethodPluginRunner for HelloPlugin {
         serde_json::to_string(&schema).unwrap_or_else(|e| {
             tracing::error!("error in settings_schema: {:?}", e);
             "{}".to_string()
+        })
+    }
+
+    /// Custom collect_stream implementation for HelloPlugin
+    ///
+    /// Merges multiple HelloRunnerResult chunks by concatenating the data field
+    fn collect_stream(
+        &self,
+        stream: BoxStream<'static, ResultOutputItem>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(Vec<u8>, HashMap<String, String>)>> + Send>,
+    > {
+        Box::pin(async move {
+            let mut collected_data = String::new();
+            let mut metadata = HashMap::new();
+            let mut stream = stream;
+
+            while let Some(item) = stream.next().await {
+                match item.item {
+                    Some(result_output_item::Item::Data(data)) => {
+                        // Each chunk is HelloRunnerResult, decode and merge data field
+                        if let Ok(result) = HelloRunnerResult::decode(data.as_slice()) {
+                            collected_data.push_str(&result.data);
+                        }
+                    }
+                    Some(result_output_item::Item::End(trailer)) => {
+                        metadata = trailer.metadata;
+                        break;
+                    }
+                    None => {}
+                }
+            }
+
+            // Re-encode as single HelloRunnerResult
+            let final_result = HelloRunnerResult {
+                data: collected_data,
+            };
+            Ok((final_result.encode_to_vec(), metadata))
         })
     }
 }

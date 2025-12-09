@@ -193,8 +193,6 @@ impl RunnerSpec for CommandRunnerImpl {
     fn settings_schema(&self) -> String {
         schema_to_json_string!(crate::jobworkerp::runner::Empty, "settings_schema")
     }
-
-    // Default implementation in RunnerSpec trait uses method_json_schema_map()
 }
 
 #[async_trait]
@@ -929,6 +927,82 @@ impl RunnerTrait for CommandRunnerImpl {
 
         Ok(Box::pin(stream))
     }
+
+    /// Collect streaming CommandResult chunks into a single CommandResult
+    ///
+    /// Strategy:
+    /// - Concatenate stdout strings from all chunks
+    /// - Concatenate stderr strings from all chunks
+    /// - Use the last chunk's exit_code, execution_time_ms, started_at, max_memory_usage_kb
+    fn collect_stream(
+        &self,
+        stream: BoxStream<'static, ResultOutputItem>,
+    ) -> super::CollectStreamFuture {
+        use prost::Message;
+        use proto::jobworkerp::data::result_output_item;
+
+        Box::pin(async move {
+            let mut stdout = String::new();
+            let mut stderr = String::new();
+            let mut exit_code: Option<i32> = None;
+            let mut execution_time_ms: Option<u64> = None;
+            let mut started_at: Option<u64> = None;
+            let mut max_memory_usage_kb: Option<u64> = None;
+            let mut metadata = HashMap::new();
+            let mut stream = stream;
+
+            while let Some(item) = futures::StreamExt::next(&mut stream).await {
+                match item.item {
+                    Some(result_output_item::Item::Data(data)) => {
+                        if let Ok(chunk) = CommandResult::decode(data.as_slice()) {
+                            if let Some(s) = chunk.stdout {
+                                stdout.push_str(&s);
+                            }
+                            if let Some(s) = chunk.stderr {
+                                stderr.push_str(&s);
+                            }
+                            if chunk.exit_code.is_some() {
+                                exit_code = chunk.exit_code;
+                            }
+                            if chunk.execution_time_ms.is_some() {
+                                execution_time_ms = chunk.execution_time_ms;
+                            }
+                            if chunk.started_at.is_some() {
+                                started_at = chunk.started_at;
+                            }
+                            if chunk.max_memory_usage_kb.is_some() {
+                                max_memory_usage_kb = chunk.max_memory_usage_kb;
+                            }
+                        }
+                    }
+                    Some(result_output_item::Item::End(trailer)) => {
+                        metadata = trailer.metadata;
+                        break;
+                    }
+                    None => {}
+                }
+            }
+
+            let result = CommandResult {
+                stdout: if stdout.is_empty() {
+                    None
+                } else {
+                    Some(stdout)
+                },
+                stderr: if stderr.is_empty() {
+                    None
+                } else {
+                    Some(stderr)
+                },
+                exit_code,
+                execution_time_ms,
+                started_at,
+                max_memory_usage_kb,
+            };
+            let bytes = result.encode_to_vec();
+            Ok((bytes, metadata))
+        })
+    }
 }
 
 // CancelMonitoring implementation for CommandRunnerImpl
@@ -1421,6 +1495,140 @@ mod tests {
 
     // Note: Complex cancellation tests moved to app-wrapper integration tests
     // runner crate level tests focus on basic functionality only
+
+    // ============================================================
+    // collect_stream tests
+    // ============================================================
+
+    /// Helper function to create a mock stream from CommandResult chunks
+    fn create_mock_command_stream(
+        chunks: Vec<CommandResult>,
+        metadata: HashMap<String, String>,
+    ) -> BoxStream<'static, ResultOutputItem> {
+        use prost::Message;
+        let stream = async_stream::stream! {
+            for chunk in chunks {
+                yield ResultOutputItem {
+                    item: Some(Item::Data(chunk.encode_to_vec())),
+                };
+            }
+            yield ResultOutputItem {
+                item: Some(Item::End(proto::jobworkerp::data::Trailer { metadata })),
+            };
+        };
+        Box::pin(stream)
+    }
+
+    #[tokio::test]
+    async fn test_collect_stream_single_chunk() {
+        let runner = CommandRunnerImpl::new();
+        let chunk = CommandResult {
+            stdout: Some("Hello, World!".to_string()),
+            stderr: None,
+            exit_code: Some(0),
+            execution_time_ms: Some(100),
+            started_at: Some(1234567890),
+            max_memory_usage_kb: Some(1024),
+        };
+
+        let mut metadata = HashMap::new();
+        metadata.insert("key".to_string(), "value".to_string());
+
+        let stream = create_mock_command_stream(vec![chunk], metadata.clone());
+        let (result_bytes, result_metadata) = runner.collect_stream(stream).await.unwrap();
+
+        let result =
+            ProstMessageCodec::deserialize_message::<CommandResult>(&result_bytes).unwrap();
+        assert_eq!(result.stdout, Some("Hello, World!".to_string()));
+        assert_eq!(result.stderr, None);
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(result.execution_time_ms, Some(100));
+        assert_eq!(result.started_at, Some(1234567890));
+        assert_eq!(result.max_memory_usage_kb, Some(1024));
+        assert_eq!(result_metadata.get("key"), Some(&"value".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_collect_stream_multiple_chunks_concatenates_stdout_stderr() {
+        let runner = CommandRunnerImpl::new();
+        let chunks = vec![
+            CommandResult {
+                stdout: Some("Hello, ".to_string()),
+                stderr: Some("Error1 ".to_string()),
+                exit_code: None,
+                execution_time_ms: None,
+                started_at: None,
+                max_memory_usage_kb: None,
+            },
+            CommandResult {
+                stdout: Some("World!".to_string()),
+                stderr: Some("Error2".to_string()),
+                exit_code: Some(0),
+                execution_time_ms: Some(200),
+                started_at: Some(1234567890),
+                max_memory_usage_kb: Some(2048),
+            },
+        ];
+
+        let stream = create_mock_command_stream(chunks, HashMap::new());
+        let (result_bytes, _) = runner.collect_stream(stream).await.unwrap();
+
+        let result =
+            ProstMessageCodec::deserialize_message::<CommandResult>(&result_bytes).unwrap();
+        assert_eq!(result.stdout, Some("Hello, World!".to_string()));
+        assert_eq!(result.stderr, Some("Error1 Error2".to_string()));
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(result.execution_time_ms, Some(200));
+    }
+
+    #[tokio::test]
+    async fn test_collect_stream_uses_last_exit_code() {
+        let runner = CommandRunnerImpl::new();
+        let chunks = vec![
+            CommandResult {
+                stdout: Some("part1".to_string()),
+                stderr: None,
+                exit_code: Some(1), // intermediate exit code
+                execution_time_ms: Some(50),
+                started_at: Some(100),
+                max_memory_usage_kb: Some(512),
+            },
+            CommandResult {
+                stdout: Some("part2".to_string()),
+                stderr: None,
+                exit_code: Some(0), // final exit code
+                execution_time_ms: Some(100),
+                started_at: Some(200),
+                max_memory_usage_kb: Some(1024),
+            },
+        ];
+
+        let stream = create_mock_command_stream(chunks, HashMap::new());
+        let (result_bytes, _) = runner.collect_stream(stream).await.unwrap();
+
+        let result =
+            ProstMessageCodec::deserialize_message::<CommandResult>(&result_bytes).unwrap();
+        assert_eq!(result.stdout, Some("part1part2".to_string()));
+        assert_eq!(result.exit_code, Some(0)); // last chunk's exit_code
+        assert_eq!(result.execution_time_ms, Some(100)); // last chunk's value
+        assert_eq!(result.started_at, Some(200)); // last chunk's value
+        assert_eq!(result.max_memory_usage_kb, Some(1024)); // last chunk's value
+    }
+
+    #[tokio::test]
+    async fn test_collect_stream_empty_chunks() {
+        let runner = CommandRunnerImpl::new();
+        let chunks: Vec<CommandResult> = vec![];
+
+        let stream = create_mock_command_stream(chunks, HashMap::new());
+        let (result_bytes, _) = runner.collect_stream(stream).await.unwrap();
+
+        let result =
+            ProstMessageCodec::deserialize_message::<CommandResult>(&result_bytes).unwrap();
+        assert_eq!(result.stdout, None);
+        assert_eq!(result.stderr, None);
+        assert_eq!(result.exit_code, None);
+    }
 }
 
 // CommandRunnerImpl uses the blanket implementation of CancellableRunner

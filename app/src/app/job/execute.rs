@@ -468,6 +468,116 @@ pub trait UseJobExecutor:
             }
         }
     }
+    /// Enqueue a job with streaming enabled and collect stream results.
+    ///
+    /// This method:
+    /// 1. Enqueues a job with `streaming=true` and `broadcast_results=true`
+    /// 2. Collects all stream results into a single binary output
+    /// 3. Transforms the binary output to JSON
+    ///
+    /// The stream collection uses a default strategy (concatenating all data chunks).
+    /// For runner-specific collection logic, use the Runner's `collect_stream` method.
+    #[allow(clippy::too_many_arguments)]
+    fn enqueue_with_worker_name_and_collect_stream(
+        &self,
+        metadata: Arc<HashMap<String, String>>, // metadata for job
+        worker_name: &str,                      // runner(runner) name
+        job_args: &serde_json::Value,           // enqueue job args
+        uniq_key: Option<String>, // unique key for job (if not exists, use default values)
+        job_timeout_sec: u32,     // job timeout in seconds
+        using: Option<String>,    // using parameter for MCP/Plugin runners
+    ) -> impl std::future::Future<Output = Result<serde_json::Value>> + Send {
+        use futures::StreamExt;
+        use proto::jobworkerp::data::result_output_item;
+
+        async move {
+            let worker = self
+                .worker_app()
+                .find_by_name(worker_name)
+                .await?
+                .ok_or_else(|| {
+                    JobWorkerError::WorkerNotFound(format!("Not found worker: {worker_name}"))
+                })?;
+            if let Worker {
+                id: Some(wid),
+                data: Some(worker_data),
+            } = worker
+            {
+                if let Some(RunnerWithSchema {
+                    id: Some(rid),
+                    data: Some(rdata),
+                    ..
+                }) =
+                    self.runner_app()
+                        .find_runner(worker_data.runner_id.as_ref().ok_or(
+                            JobWorkerError::NotFound(format!(
+                                "Not found runner for worker {}: {:?}",
+                                worker_name,
+                                worker_data.runner_id.as_ref()
+                            )),
+                        )?)
+                        .await?
+                {
+                    let job_args = self
+                        .transform_job_args(&rid, &rdata, job_args, using.as_deref())
+                        .await?;
+
+                    // Enqueue with streaming enabled
+                    let (job_id, job_result, stream) = self
+                        .enqueue_with_worker_or_temp(
+                            metadata,
+                            Some(wid),
+                            worker_data,
+                            job_args,
+                            uniq_key,
+                            job_timeout_sec,
+                            true, // streaming enabled
+                            using.clone(),
+                        )
+                        .await?;
+
+                    // If stream is available, collect it
+                    if let Some(mut stream) = stream {
+                        let mut collected_data = Vec::new();
+
+                        while let Some(item) = stream.next().await {
+                            match item.item {
+                                Some(result_output_item::Item::Data(data)) => {
+                                    collected_data.extend(data);
+                                }
+                                Some(result_output_item::Item::End(_trailer)) => {
+                                    break;
+                                }
+                                None => {}
+                            }
+                        }
+
+                        // Transform collected data to JSON
+                        self.transform_raw_output(&rid, &rdata, &collected_data, using.as_deref())
+                            .await
+                    } else if let Some(res) = job_result {
+                        // Fallback: use job result if no stream
+                        let output = self.extract_job_result_output(res)?;
+                        self.transform_raw_output(&rid, &rdata, output.as_slice(), using.as_deref())
+                            .await
+                    } else {
+                        Err(anyhow::anyhow!(
+                            "No stream or job result available for job {}",
+                            job_id.value
+                        ))
+                    }
+                } else {
+                    Err(anyhow::anyhow!(
+                        "Not found runner: {:?}",
+                        worker_data.runner_id.as_ref()
+                    ))
+                }
+            } else {
+                Err(anyhow::anyhow!("Not found worker: {}", worker_name))
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn enqueue_with_worker_name_and_output_json(
         &self,

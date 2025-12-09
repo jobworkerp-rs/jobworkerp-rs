@@ -2592,7 +2592,7 @@ impl RetryPolicy {
 #[doc = "              \"type\": \"object\""]
 #[doc = "            },"]
 #[doc = "            \"using\": {"]
-#[doc = "              \"description\": \"Selects which implementation to use for MCP/Plugin runners with multiple tools.\\n\\n- **Required**: For runners with multiple tools\\n- **Optional**: For single-tool runners (auto-selected)\\n\","]
+#[doc = "              \"description\": \"Selects which implementation to use for runners with multiple tools.\\n\\n- **Required**: For runners with multiple tools\\n- **Optional**: For single-tool runners (auto-selected)\\n\","]
 #[doc = "              \"type\": \"string\""]
 #[doc = "            }"]
 #[doc = "          },"]
@@ -2684,7 +2684,7 @@ impl RunFunction {
 #[doc = "          \"type\": \"object\""]
 #[doc = "        },"]
 #[doc = "        \"using\": {"]
-#[doc = "          \"description\": \"Selects which implementation to use for MCP/Plugin runners with multiple tools.\\n\\n- **Required**: For runners with multiple tools\\n- **Optional**: For single-tool runners (auto-selected)\\n\","]
+#[doc = "          \"description\": \"Selects which implementation to use for runners with multiple tools.\\n\\n- **Required**: For runners with multiple tools\\n- **Optional**: For single-tool runners (auto-selected)\\n\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      },"]
@@ -2735,7 +2735,7 @@ pub enum RunJobFunction {
         #[doc = "The initialization settings JSON, if any. (ref. jobworkerp.data.RunnerData.runner_settings_proto schema) Runtime expression can be used to transform each value (not keys, no mixed plain text)."]
         #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
         settings: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-        #[doc = "Selects which implementation to use for MCP/Plugin runners with multiple tools.\n\n- **Required**: For runners with multiple tools\n- **Optional**: For single-tool runners (auto-selected)\n"]
+        #[doc = "Selects which implementation to use for runners with multiple tools.\n\n- **Required**: For runners with multiple tools\n- **Optional**: For single-tool runners (auto-selected)\n"]
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         using: ::std::option::Option<::std::string::String>,
     },
@@ -2790,7 +2790,7 @@ impl ::std::convert::From<&Self> for RunJobFunction {
 #[doc = "    },"]
 #[doc = "    \"using\": {"]
 #[doc = "      \"title\": \"Using\","]
-#[doc = "      \"description\": \"Selects which implementation to use for MCP/Plugin runners with multiple tools.\\n\\n- **Required**: For runners with multiple tools (e.g., fetch server with \\\"fetch\\\" and \\\"fetch_html\\\")\\n- **Optional**: For single-tool runners (auto-selected)\\n\\nExamples:\\n- MCP fetch server: using: \\\"fetch_html\\\"\\n- MCP time server (single tool): can be omitted\\n- COMMAND runner: not needed\\n\","]
+#[doc = "      \"description\": \"Selects which implementation to use for runners with multiple tools.\\n\\n- **Required**: For runners with multiple tools (e.g., fetch server with \\\"fetch\\\" and \\\"fetch_html\\\")\\n- **Optional**: For single-tool runners (auto-selected)\\n\\nExamples:\\n- MCP fetch server: using: \\\"fetch_html\\\"\\n- MCP time server (single tool): can be omitted\\n- COMMAND runner: not needed\\n\","]
 #[doc = "      \"type\": \"string\""]
 #[doc = "    }"]
 #[doc = "  },"]
@@ -2809,7 +2809,7 @@ pub struct RunJobRunner {
     #[doc = "The initialization settings, if any. Runtime expressions can be used to transform each value (not keys, no mixed plain text)."]
     #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
     pub settings: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-    #[doc = "Selects which implementation to use for MCP/Plugin runners with multiple tools.\n\n- **Required**: For runners with multiple tools (e.g., fetch server with \"fetch\" and \"fetch_html\")\n- **Optional**: For single-tool runners (auto-selected)\n\nExamples:\n- MCP fetch server: using: \"fetch_html\"\n- MCP time server (single tool): can be omitted\n- COMMAND runner: not needed\n"]
+    #[doc = "Selects which implementation to use for runners with multiple tools.\n\n- **Required**: For runners with multiple tools (e.g., fetch server with \"fetch\" and \"fetch_html\")\n- **Optional**: For single-tool runners (auto-selected)\n\nExamples:\n- MCP fetch server: using: \"fetch_html\"\n- MCP time server (single tool): can be omitted\n- COMMAND runner: not needed\n"]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub using: ::std::option::Option<::std::string::String>,
 }
@@ -2921,7 +2921,7 @@ impl RunJobWorker {
 #[doc = "        },"]
 #[doc = "        \"using\": {"]
 #[doc = "          \"title\": \"Using\","]
-#[doc = "          \"description\": \"Selects which implementation to use for MCP/Plugin runners with multiple tools.\\n\\n- **Required**: For runners with multiple tools (e.g., fetch server with \\\"fetch\\\" and \\\"fetch_html\\\")\\n- **Optional**: For single-tool runners (auto-selected)\\n\\nExamples:\\n- MCP fetch server: using: \\\"fetch_html\\\"\\n- MCP time server (single tool): can be omitted\\n- COMMAND runner: not needed\\n\","]
+#[doc = "          \"description\": \"Selects which implementation to use for runners with multiple tools.\\n\\n- **Required**: For runners with multiple tools (e.g., fetch server with \\\"fetch\\\" and \\\"fetch_html\\\")\\n- **Optional**: For single-tool runners (auto-selected)\\n\\nExamples:\\n- MCP fetch server: using: \\\"fetch_html\\\"\\n- MCP time server (single tool): can be omitted\\n- COMMAND runner: not needed\\n\","]
 #[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      },"]
@@ -3135,6 +3135,12 @@ impl RunScript {
 #[doc = "          \"type\": \"string\""]
 #[doc = "        }"]
 #[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"useStreaming\": {"]
+#[doc = "      \"title\": \"UseStreamingExecution\","]
+#[doc = "      \"description\": \"Whether to use streaming execution mode.\\nWhen true:\\n- Job is executed with streaming enabled\\n- Intermediate results are broadcast via JobResultService/ListenStream\\n- Final result is collected using collect_stream and stored in raw_output\\nUseful for LLM runners or other long-running processes where progress monitoring is needed.\\n\","]
+#[doc = "      \"default\": false,"]
+#[doc = "      \"type\": \"boolean\""]
 #[doc = "    }"]
 #[doc = "  }"]
 #[doc = "}"]
@@ -3170,6 +3176,9 @@ pub struct RunTask {
     pub then: ::std::option::Option<FlowDirective>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub timeout: ::std::option::Option<TaskTimeout>,
+    #[doc = "Whether to use streaming execution mode.\nWhen true:\n- Job is executed with streaming enabled\n- Intermediate results are broadcast via JobResultService/ListenStream\n- Final result is collected using collect_stream and stored in raw_output\nUseful for LLM runners or other long-running processes where progress monitoring is needed.\n"]
+    #[serde(rename = "useStreaming", default)]
+    pub use_streaming: bool,
 }
 impl ::std::convert::From<&RunTask> for RunTask {
     fn from(value: &RunTask) -> Self {
@@ -7362,6 +7371,7 @@ pub mod builder {
         >,
         timeout:
             ::std::result::Result<::std::option::Option<super::TaskTimeout>, ::std::string::String>,
+        use_streaming: ::std::result::Result<bool, ::std::string::String>,
     }
     impl ::std::default::Default for RunTask {
         fn default() -> Self {
@@ -7375,6 +7385,7 @@ pub mod builder {
                 run: Err("no value supplied for run".to_string()),
                 then: Ok(Default::default()),
                 timeout: Ok(Default::default()),
+                use_streaming: Ok(Default::default()),
             }
         }
     }
@@ -7471,6 +7482,16 @@ pub mod builder {
                 .map_err(|e| format!("error converting supplied value for timeout: {}", e));
             self
         }
+        pub fn use_streaming<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<bool>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.use_streaming = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for use_streaming: {}", e));
+            self
+        }
     }
     impl ::std::convert::TryFrom<RunTask> for super::RunTask {
         type Error = super::error::ConversionError;
@@ -7485,6 +7506,7 @@ pub mod builder {
                 run: value.run?,
                 then: value.then?,
                 timeout: value.timeout?,
+                use_streaming: value.use_streaming?,
             })
         }
     }
@@ -7500,6 +7522,7 @@ pub mod builder {
                 run: Ok(value.run),
                 then: Ok(value.then),
                 timeout: Ok(value.timeout),
+                use_streaming: Ok(value.use_streaming),
             }
         }
     }
