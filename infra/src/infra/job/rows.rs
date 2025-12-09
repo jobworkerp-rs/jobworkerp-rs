@@ -19,11 +19,15 @@ pub struct JobRow {
     pub retried: i64, // u32
     pub priority: i32,
     pub timeout: i64,
-    pub request_streaming: bool,
+    // DB column name remains "request_streaming" for backward compatibility
+    // but stores StreamingType enum value (0=None, 1=Response, 2=Internal)
+    #[sqlx(rename = "request_streaming")]
+    pub streaming_type: i32,
     pub using: Option<String>,
 }
 
 impl JobRow {
+    #[allow(deprecated)]
     pub fn to_proto(&self) -> Job {
         Job {
             id: Some(JobId { value: self.id }),
@@ -39,7 +43,7 @@ impl JobRow {
                 retried: self.retried as u32,
                 priority: self.priority,
                 timeout: self.timeout as u64,
-                request_streaming: self.request_streaming,
+                streaming_type: self.streaming_type,
                 using: self.using.clone(),
             }),
             ..Default::default()
@@ -166,6 +170,7 @@ mod tests {
             args: ["test".to_string()].to_vec(),
         })
         .unwrap();
+        #[allow(deprecated)]
         let job = Job {
             id: Some(JobId { value: 1 }),
             data: Some(JobData {
@@ -178,7 +183,7 @@ mod tests {
                 retried: 0,
                 priority: 0,
                 timeout: 1000,
-                request_streaming: false,
+                streaming_type: 0, // StreamingType::None
                 using: None,
             }),
             metadata: HashMap::new(),
@@ -212,7 +217,7 @@ mod tests {
             retried: 8,
             priority: -1,
             timeout: 1000,
-            request_streaming: true,
+            streaming_type: 1, // StreamingType::Response
             enqueue_time: 9,
             run_after_time: 10,
             start_time: 11,

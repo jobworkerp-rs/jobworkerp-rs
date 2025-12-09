@@ -223,7 +223,7 @@ async fn redis_test() -> Result<()> {
         retried: 8,
         priority: 9,
         timeout: 1000,
-        request_streaming: true,
+        streaming_type: 1,
         using: None,
     };
     // clear first
@@ -247,7 +247,7 @@ async fn redis_test() -> Result<()> {
     job2.retried = 9;
     job2.priority = 10;
     job2.timeout = 2000;
-    job2.request_streaming = false;
+    job2.streaming_type = 0;
     // update and find
     assert!(repo.upsert(&id, &job2, ttl).await?);
     let res2 = repo.find(&id).await?;
@@ -300,7 +300,7 @@ async fn redis_individual_ttl_test() -> Result<()> {
         retried: 8,
         priority: 9,
         timeout: 5000, // 5 seconds
-        request_streaming: false,
+        streaming_type: 0,
         using: None,
     };
 

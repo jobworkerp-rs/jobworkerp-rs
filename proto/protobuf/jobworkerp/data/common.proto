@@ -240,6 +240,32 @@ enum QueueType {
   DB_ONLY = 2;
 }
 
+// # Streaming Type
+// Defines how streaming is handled for job execution
+// Note: Values are chosen for backward compatibility with request_streaming bool field:
+//   - 0 (false) = NONE, 1 (true) = RESPONSE
+enum StreamingType {
+  // # No Streaming
+  // Job execution is non-streaming. Runner's run() method is used.
+  // This is the default behavior.
+  // Compatible with request_streaming=false
+  STREAMING_TYPE_NONE = 0;
+
+  // # Response Streaming
+  // Full streaming mode. Runner uses run_stream() and results are
+  // streamed back to the client via pub/sub.
+  // Client receives ResultOutputItem stream.
+  // Compatible with request_streaming=true
+  STREAMING_TYPE_RESPONSE = 1;
+
+  // # Internal Streaming
+  // Runner internally uses streaming (run_stream()) but the result is
+  // collected using collect_stream() and returned as a single JobResult.
+  // Useful for workflow tasks that need the final result but want to use
+  // streaming-capable runners internally for better resource management.
+  STREAMING_TYPE_INTERNAL = 2;
+}
+
 // # Result Output Item
 // Individual item in a streaming result output
 message ResultOutputItem {

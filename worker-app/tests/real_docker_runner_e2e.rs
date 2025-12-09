@@ -116,7 +116,7 @@ fn create_docker_job(image: &str, command: Vec<String>, timeout_ms: u64) -> Job 
             enqueue_time: command_utils::util::datetime::now_millis(),
             run_after_time: command_utils::util::datetime::now_millis(),
             grabbed_until_time: None,
-            request_streaming: false,
+            streaming_type: 0,
             using: None,
         }),
         ..Default::default()

@@ -26,7 +26,7 @@ use jobworkerp_base::error::JobWorkerError;
 use memory_utils::cache::moka::{MokaCacheImpl, UseMokaCache};
 use proto::jobworkerp::data::{
     Job, JobData, JobId, JobProcessingStatus, JobResult, JobResultData, JobResultId, Priority,
-    QueueType, ResponseType, ResultOutputItem, Worker, WorkerData, WorkerId,
+    QueueType, ResponseType, ResultOutputItem, StreamingType, Worker, WorkerData, WorkerId,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -183,7 +183,7 @@ impl HybridJobAppImpl {
                     );
                 } else {
                     // need to store to redis
-                    self.enqueue_job_to_redis_with_wait_if_needed(job, &w, false)
+                    self.enqueue_job_to_redis_with_wait_if_needed(job, &w, StreamingType::None)
                         .await?;
                 }
             } else {
@@ -203,7 +203,7 @@ impl HybridJobAppImpl {
         priority: i32,
         timeout: u64,
         reserved_job_id: Option<JobId>,
-        request_streaming: bool,
+        streaming_type: StreamingType,
         using: Option<String>,
     ) -> Result<(
         JobId,
@@ -216,6 +216,7 @@ impl HybridJobAppImpl {
         } = worker
         {
             // check if worker supports streaming mode
+            let request_streaming = streaming_type != StreamingType::None;
             self.worker_app()
                 .check_worker_streaming(wid, request_streaming)
                 .await?;
@@ -230,7 +231,7 @@ impl HybridJobAppImpl {
                 retried: 0u32,
                 priority,
                 timeout,
-                request_streaming,
+                streaming_type: streaming_type as i32,
                 using,
             };
 
@@ -267,7 +268,7 @@ impl HybridJobAppImpl {
                     data: Some(data.to_owned()),
                     metadata: (*metadata).clone(),
                 };
-                self.enqueue_job_to_redis_with_wait_if_needed(&job, w, request_streaming)
+                self.enqueue_job_to_redis_with_wait_if_needed(&job, w, streaming_type)
                     .await
             } else if w.periodic_interval > 0 || self.is_run_after_job_data(&data) {
                 let job = Job {
@@ -310,12 +311,8 @@ impl HybridJobAppImpl {
                     // TODO store async to rdb (not necessary to wait)
                     match self.rdb_job_repository().create(&job).await {
                         Ok(_id) => {
-                            self.enqueue_job_to_redis_with_wait_if_needed(
-                                &job,
-                                w,
-                                request_streaming,
-                            )
-                            .await
+                            self.enqueue_job_to_redis_with_wait_if_needed(&job, w, streaming_type)
+                                .await
                         }
                         Err(e) => Err(e),
                     }
@@ -348,7 +345,7 @@ impl HybridJobAppImpl {
                     }
                 } else {
                     // instant job (enqueue to redis only)
-                    self.enqueue_job_to_redis_with_wait_if_needed(&job, w, request_streaming)
+                    self.enqueue_job_to_redis_with_wait_if_needed(&job, w, streaming_type)
                         .await
                 }
             }
@@ -573,7 +570,7 @@ impl JobApp for HybridJobAppImpl {
         priority: i32,
         timeout: u64,
         reserved_job_id: Option<JobId>,
-        request_streaming: bool,
+        streaming_type: StreamingType,
         with_random_name: bool,
         using: Option<String>,
     ) -> Result<(
@@ -598,7 +595,7 @@ impl JobApp for HybridJobAppImpl {
             priority,
             timeout,
             reserved_job_id,
-            request_streaming,
+            streaming_type,
             using,
         )
         .await
@@ -614,7 +611,7 @@ impl JobApp for HybridJobAppImpl {
         priority: i32,
         timeout: u64,
         reserved_job_id: Option<JobId>,
-        request_streaming: bool,
+        streaming_type: StreamingType,
         using: Option<String>,
     ) -> Result<(
         JobId,
@@ -637,6 +634,7 @@ impl JobApp for HybridJobAppImpl {
         }) = worker_res.as_ref()
         {
             // check if worker supports streaming mode
+            let request_streaming = streaming_type != StreamingType::None;
             let _ = self
                 .worker_app()
                 .check_worker_streaming(wid, request_streaming)
@@ -652,7 +650,7 @@ impl JobApp for HybridJobAppImpl {
                 retried: 0u32,
                 priority,
                 timeout,
-                request_streaming,
+                streaming_type: streaming_type as i32,
                 using,
             };
 
@@ -689,7 +687,7 @@ impl JobApp for HybridJobAppImpl {
                     data: Some(data.to_owned()),
                     metadata: (*meta).clone(),
                 };
-                self.enqueue_job_to_redis_with_wait_if_needed(&job, w, request_streaming)
+                self.enqueue_job_to_redis_with_wait_if_needed(&job, w, streaming_type)
                     .await
             } else if w.periodic_interval > 0 || self.is_run_after_job_data(&data) {
                 let job = Job {
@@ -721,12 +719,8 @@ impl JobApp for HybridJobAppImpl {
                     // TODO store async to rdb (not necessary to wait)
                     match self.rdb_job_repository().create(&job).await {
                         Ok(_id) => {
-                            self.enqueue_job_to_redis_with_wait_if_needed(
-                                &job,
-                                w,
-                                request_streaming,
-                            )
-                            .await
+                            self.enqueue_job_to_redis_with_wait_if_needed(&job, w, streaming_type)
+                                .await
                         }
                         Err(e) => Err(e),
                     }
@@ -748,7 +742,7 @@ impl JobApp for HybridJobAppImpl {
                     }
                 } else {
                     // instant job (enqueue to redis only)
-                    self.enqueue_job_to_redis_with_wait_if_needed(&job, w, request_streaming)
+                    self.enqueue_job_to_redis_with_wait_if_needed(&job, w, streaming_type)
                         .await
                 }
             }
@@ -802,7 +796,9 @@ impl JobApp for HybridJobAppImpl {
                 {
                     tracing::debug!("re-enqueue job to redis: {:?}, worker: {:?}", &job, &w.name);
                     // enqueue to redis for instant job
-                    self.enqueue_job_to_redis_with_wait_if_needed(job, &w, data.request_streaming)
+                    let streaming_type =
+                        StreamingType::try_from(data.streaming_type).unwrap_or(StreamingType::None);
+                    self.enqueue_job_to_redis_with_wait_if_needed(job, &w, streaming_type)
                         .await
                         .map(|_| true)
                 } else {
@@ -1262,11 +1258,12 @@ impl RedisJobAppHelper for HybridJobAppImpl {
         job_id: JobId,
         job: &Job,
         worker: &WorkerData,
-        request_streaming: bool,
+        streaming_type: StreamingType,
     ) {
         // Index PENDING status to RDB asynchronously
         if let Some(worker_id) = job.data.as_ref().and_then(|d| d.worker_id) {
             if let Some(job_data) = &job.data {
+                let request_streaming = streaming_type == StreamingType::Response;
                 self.index_job_status_async(
                     job_id,
                     JobProcessingStatus::Pending,
@@ -1456,7 +1453,7 @@ pub mod tests {
                         0,
                         0,
                         None,
-                        false,
+                        StreamingType::None,
                         None, // using
                     )
                     .await;
@@ -1484,7 +1481,7 @@ pub mod tests {
                 assert_eq!(job.data.as_ref().unwrap().retried, 0);
                 assert_eq!(job.data.as_ref().unwrap().priority, 0);
                 assert_eq!(job.data.as_ref().unwrap().timeout, 0);
-                assert!(!job.data.as_ref().unwrap().request_streaming);
+                assert_eq!(job.data.as_ref().unwrap().streaming_type, 0);
                 assert_eq!(
                     app1.job_processing_status_repository()
                         .find_status(&jid)
@@ -1515,7 +1512,7 @@ pub mod tests {
                     max_retry: 0,
                     priority: 0,
                     timeout: 0,
-                    request_streaming: false,
+                    streaming_type: 0,
                     enqueue_time: datetime::now_millis(),
                     run_after_time: 0,
                     start_time: datetime::now_millis(),
@@ -1591,8 +1588,8 @@ pub mod tests {
                     0,
                     0,
                     None,
-                    true, // STREAMING NOT SUPPORTED by runner -> error
-                    None, // using
+                    StreamingType::Response, // STREAMING NOT SUPPORTED by runner -> error
+                    None,                    // using
                 )
                 .await;
             assert!(res.is_err());
@@ -1643,7 +1640,7 @@ pub mod tests {
                     0,
                     0,
                     None,
-                    false,
+                    StreamingType::None,
                     None, // using
                 )
                 .await?
@@ -1660,7 +1657,7 @@ pub mod tests {
                     retried: 0,
                     priority: 0,
                     timeout: 0,
-                    request_streaming: true,
+                    streaming_type: 1,
                     using: None,
                 }),
                 ..Default::default()
@@ -1689,7 +1686,7 @@ pub mod tests {
                     max_retry: 0,
                     priority: 0,
                     timeout: 0,
-                    request_streaming: true,
+                    streaming_type: 1,
                     enqueue_time: job.data.as_ref().unwrap().enqueue_time,
                     run_after_time: job.data.as_ref().unwrap().run_after_time,
                     start_time: datetime::now_millis(),
@@ -1775,7 +1772,7 @@ pub mod tests {
                     0,
                     0,
                     None,
-                    false,
+                    StreamingType::None,
                     None, // using
                 )
                 .await?;
@@ -1814,7 +1811,7 @@ pub mod tests {
                     max_retry: 0,
                     priority: 0,
                     timeout: 0,
-                    request_streaming: false,
+                    streaming_type: 0,
                     enqueue_time: job.data.as_ref().unwrap().enqueue_time,
                     run_after_time: job.data.as_ref().unwrap().run_after_time,
                     start_time: datetime::now_millis(),
@@ -1900,7 +1897,7 @@ pub mod tests {
                     priority as i32,
                     0,
                     None,
-                    false,
+                    StreamingType::None,
                     None, // using
                 )
                 .await?;
@@ -1918,7 +1915,7 @@ pub mod tests {
                     priority as i32,
                     0,
                     None,
-                    false,
+                    StreamingType::None,
                     None, // using
                 )
                 .await?;

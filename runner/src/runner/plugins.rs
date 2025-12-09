@@ -307,11 +307,46 @@ pub trait MultiMethodPluginRunner: Send + Sync {
     fn settings_schema(&self) -> String {
         schema_to_json_string!(crate::jobworkerp::runner::Empty, "settings_schema")
     }
+
+    /// Collect streaming output into a single result
+    ///
+    /// Default implementation: keeps only the last data chunk
+    /// (protobuf binary concatenation produces invalid data)
+    /// Plugins should override this for custom collection logic (e.g., merging proto messages)
+    fn collect_stream(
+        &self,
+        stream: futures::stream::BoxStream<'static, proto::jobworkerp::data::ResultOutputItem>,
+    ) -> crate::runner::CollectStreamFuture {
+        use futures::StreamExt;
+        use proto::jobworkerp::data::result_output_item;
+
+        Box::pin(async move {
+            let mut last_data: Option<Vec<u8>> = None;
+            let mut metadata = HashMap::new();
+            let mut stream = stream;
+
+            while let Some(item) = stream.next().await {
+                match item.item {
+                    Some(result_output_item::Item::Data(data)) => {
+                        last_data = Some(data);
+                    }
+                    Some(result_output_item::Item::End(trailer)) => {
+                        metadata = trailer.metadata;
+                        break;
+                    }
+                    None => {}
+                }
+            }
+            Ok((last_data.unwrap_or_default(), metadata))
+        })
+    }
 }
 
-/// Enum to wrap both legacy and multi-method plugins
+/// Enum to wrap legacy and multi-method plugins
 pub enum PluginRunnerVariant {
+    /// Legacy plugins (origin/main compatible, no collect_stream)
     Legacy(Box<dyn PluginRunner + Send + Sync>),
+    /// Multi-method plugins (multiple methods with collect_stream support)
     MultiMethod(Box<dyn MultiMethodPluginRunner + Send + Sync>),
 }
 

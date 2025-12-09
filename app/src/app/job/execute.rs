@@ -15,7 +15,7 @@ use jobworkerp_base::error::JobWorkerError;
 use memory_utils::cache::moka::MokaCacheImpl;
 use proto::jobworkerp::data::{
     JobId, JobResult, Priority, QueueType, ResponseType, ResultOutputItem, ResultStatus,
-    RetryPolicy, RetryType, RunnerData, RunnerId, Worker, WorkerData, WorkerId,
+    RetryPolicy, RetryType, RunnerData, RunnerId, StreamingType, Worker, WorkerData, WorkerId,
 };
 use proto::{ProtobufHelper, DEFAULT_METHOD_NAME};
 use std::collections::HashMap;
@@ -210,7 +210,7 @@ pub trait UseJobExecutor:
         job_args: Vec<u8>,
         uniq_key: Option<String>,
         job_timeout_sec: u32,
-        streaming: bool,
+        streaming_type: StreamingType,
         using: Option<String>, // using for MCP/Plugin runners
     ) -> impl std::future::Future<
         Output = Result<(
@@ -233,7 +233,7 @@ pub trait UseJobExecutor:
                         Priority::Medium as i32,
                         job_timeout_sec as u64 * 1000,
                         None,
-                        streaming,
+                        streaming_type,
                         using,
                     )
                     .await
@@ -249,7 +249,7 @@ pub trait UseJobExecutor:
                         Priority::Medium as i32,
                         job_timeout_sec as u64 * 1000,
                         None,
-                        streaming,
+                        streaming_type,
                         true,
                         using,
                     )
@@ -299,9 +299,9 @@ pub trait UseJobExecutor:
         worker_data: WorkerData, // worker parameters (if not exists, use default values)
         job_args: serde_json::Value, // enqueue job args
         uniq_key: Option<String>,
-        job_timeout_sec: u32,  // job timeout in seconds
-        streaming: bool,       // TODO request streaming
-        using: Option<String>, // using parameter for MCP/Plugin runners
+        job_timeout_sec: u32,          // job timeout in seconds
+        streaming_type: StreamingType, // streaming type for job
+        using: Option<String>,         // using parameter for MCP/Plugin runners
     ) -> impl std::future::Future<
         Output = Result<(
             JobId,
@@ -333,7 +333,7 @@ pub trait UseJobExecutor:
                     job_args,
                     uniq_key,
                     job_timeout_sec,
-                    streaming,
+                    streaming_type,
                     using, // Pass using parameter for MCP/Plugin runners
                 )
                 .await
@@ -350,9 +350,9 @@ pub trait UseJobExecutor:
         worker_data: WorkerData, // worker parameters (if not exists, use default values)
         job_args: serde_json::Value, // enqueue job args
         uniq_key: Option<String>,
-        job_timeout_sec: u32,  // job timeout in seconds
-        _streaming: bool,      // TODO request streaming
-        using: Option<String>, // using for MCP/Plugin runners
+        job_timeout_sec: u32,           // job timeout in seconds
+        _streaming_type: StreamingType, // streaming type (ignored, always uses None)
+        using: Option<String>,          // using for MCP/Plugin runners
     ) -> impl std::future::Future<Output = Result<serde_json::Value>> + Send {
         async move {
             if let Some(RunnerWithSchema {
@@ -380,7 +380,7 @@ pub trait UseJobExecutor:
                         job_args,
                         uniq_key,
                         job_timeout_sec,
-                        false, // no streaming
+                        StreamingType::None, // no streaming
                         using.clone(),
                     )
                     .await?;
@@ -405,7 +405,7 @@ pub trait UseJobExecutor:
         job_args: &serde_json::Value,           // enqueue job args
         uniq_key: Option<String>, // unique key for job (if not exists, use default values)
         job_timeout_sec: u32,     // job timeout in seconds
-        streaming: bool,          // TODO request streaming
+        streaming_type: StreamingType, // streaming type for job
         using: Option<String>,    // using parameter for MCP/Plugin runners
     ) -> impl std::future::Future<
         Output = Result<(
@@ -453,7 +453,7 @@ pub trait UseJobExecutor:
                         job_args,
                         uniq_key,
                         job_timeout_sec,
-                        streaming,
+                        streaming_type,
                         using, // Pass using parameter for MCP/Plugin workers
                     )
                     .await
@@ -468,6 +468,103 @@ pub trait UseJobExecutor:
             }
         }
     }
+    /// Enqueue a job with streaming internally collected by worker.
+    ///
+    /// This method:
+    /// 1. Enqueues a job with `StreamingType::Internal`
+    /// 2. Worker layer runs runner's `run_stream()` and collects results via `collect_stream()`
+    /// 3. Returns the collected result as a single JobResult
+    ///
+    /// This uses the Runner's `collect_stream` method for proper protobuf message merging.
+    /// The worker layer handles the collection, not the client side.
+    #[allow(clippy::too_many_arguments)]
+    fn enqueue_with_worker_name_and_collect_stream(
+        &self,
+        metadata: Arc<HashMap<String, String>>, // metadata for job
+        worker_name: &str,                      // runner(runner) name
+        job_args: &serde_json::Value,           // enqueue job args
+        uniq_key: Option<String>, // unique key for job (if not exists, use default values)
+        job_timeout_sec: u32,     // job timeout in seconds
+        using: Option<String>,    // using parameter for MCP/Plugin runners
+    ) -> impl std::future::Future<Output = Result<serde_json::Value>> + Send {
+        async move {
+            let worker = self
+                .worker_app()
+                .find_by_name(worker_name)
+                .await?
+                .ok_or_else(|| {
+                    JobWorkerError::WorkerNotFound(format!("Not found worker: {worker_name}"))
+                })?;
+            if let Worker {
+                id: Some(wid),
+                data: Some(worker_data),
+            } = worker
+            {
+                if let Some(RunnerWithSchema {
+                    id: Some(rid),
+                    data: Some(rdata),
+                    ..
+                }) =
+                    self.runner_app()
+                        .find_runner(worker_data.runner_id.as_ref().ok_or(
+                            JobWorkerError::NotFound(format!(
+                                "Not found runner for worker {}: {:?}",
+                                worker_name,
+                                worker_data.runner_id.as_ref()
+                            )),
+                        )?)
+                        .await?
+                {
+                    let job_args = self
+                        .transform_job_args(&rid, &rdata, job_args, using.as_deref())
+                        .await?;
+
+                    // Enqueue with STREAMING_TYPE_INTERNAL
+                    // Worker layer will call run_stream() and collect_stream() to merge the results
+                    let (job_id, job_result, stream) = self
+                        .enqueue_with_worker_or_temp(
+                            metadata,
+                            Some(wid),
+                            worker_data,
+                            job_args,
+                            uniq_key,
+                            job_timeout_sec,
+                            StreamingType::Internal, // Internal streaming with collected result
+                            using.clone(),
+                        )
+                        .await?;
+
+                    // With STREAMING_TYPE_INTERNAL, the worker collects the stream
+                    // and returns the result in job_result (no stream returned to client)
+                    if let Some(res) = job_result {
+                        if stream.is_some() {
+                            tracing::warn!(
+                                "job result available for job {} with stream",
+                                job_id.value
+                            );
+                        }
+                        let output = self.extract_job_result_output(res)?;
+                        self.transform_raw_output(&rid, &rdata, output.as_slice(), using.as_deref())
+                            .await
+                    } else {
+                        tracing::error!("No job result available for job {}", job_id.value);
+                        Err(anyhow::anyhow!(
+                            "No job result available for job {} (STREAMING_TYPE_INTERNAL should return collected result)",
+                            job_id.value
+                        ))
+                    }
+                } else {
+                    Err(anyhow::anyhow!(
+                        "Not found runner: {:?}",
+                        worker_data.runner_id.as_ref()
+                    ))
+                }
+            } else {
+                Err(anyhow::anyhow!("Not found worker: {}", worker_name))
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn enqueue_with_worker_name_and_output_json(
         &self,
@@ -476,7 +573,7 @@ pub trait UseJobExecutor:
         job_args: &serde_json::Value,           // enqueue job args
         uniq_key: Option<String>, // unique key for job (if not exists, use default values)
         job_timeout_sec: u32,     // job timeout in seconds
-        streaming: bool,          // TODO request streaming
+        streaming_type: StreamingType, // streaming type for job
         using: Option<String>,    // using parameter for MCP/Plugin runners
     ) -> impl std::future::Future<Output = Result<serde_json::Value>> + Send {
         async move {
@@ -519,7 +616,7 @@ pub trait UseJobExecutor:
                             job_args,
                             uniq_key,
                             job_timeout_sec,
-                            streaming,
+                            streaming_type,
                             using.clone(), // Pass using parameter for MCP/Plugin workers
                         )
                         .await?;

@@ -58,7 +58,7 @@ pub trait RdbJobRepository:
             .bind(data.retried as i64)
             .bind(data.priority)
             .bind(data.timeout as i32)
-            .bind(data.request_streaming)
+            .bind(data.streaming_type) // DB column "request_streaming" stores StreamingType value
             .bind(&data.using)
             .execute(tx)
             .await
@@ -121,7 +121,7 @@ pub trait RdbJobRepository:
             .bind(job.retried as i64)
             .bind(job.priority)
             .bind(job.timeout as i64)
-            .bind(job.request_streaming)
+            .bind(job.streaming_type) // DB column "request_streaming" stores StreamingType value
             .bind(&job.using)
             .execute(tx)
             .await
@@ -159,7 +159,7 @@ pub trait RdbJobRepository:
             .bind(job.retried as i64)
             .bind(job.priority)
             .bind(job.timeout as i64)
-            .bind(job.request_streaming)
+            .bind(job.streaming_type) // DB column "request_streaming" stores StreamingType value
             .bind(&job.using)
             .execute(tx)
             .await
@@ -202,7 +202,7 @@ pub trait RdbJobRepository:
         .bind(job.retried as i64)
         .bind(job.priority)
         .bind(job.timeout as i64)
-        .bind(job.request_streaming)
+        .bind(job.streaming_type) // DB column "request_streaming" stores StreamingType value
         .bind(&job.using)
         .bind(id.value)
         .execute(tx)
@@ -466,7 +466,7 @@ mod test {
             retried: 8,
             priority: 2,
             timeout: 10000,
-            request_streaming: false,
+            streaming_type: 0,
             using: Some("hoge".to_string()),
         });
         let job = Job {
@@ -499,7 +499,7 @@ mod test {
             retried: 9,
             priority: 1,
             timeout: 10000,
-            request_streaming: true,
+            streaming_type: 1,
             using: Some("fuga".to_string()),
         };
         let updated = repository.upsert(&expect.id.unwrap(), &update).await?;
@@ -531,7 +531,7 @@ mod test {
             retried: 8,
             priority: 2,
             timeout: 10000,
-            request_streaming: false,
+            streaming_type: 0,
             using: None,
         });
         let job = Job {
@@ -555,7 +555,7 @@ mod test {
             retried: 8,
             priority: 2,
             timeout: 10000,
-            request_streaming: false,
+            streaming_type: 0,
             using: None,
         });
         let job = Job {
@@ -578,7 +578,7 @@ mod test {
             retried: 8,
             priority: 2,
             timeout: 10000,
-            request_streaming: false,
+            streaming_type: 0,
             using: None,
         });
         let job = Job {
@@ -597,6 +597,91 @@ mod test {
         Ok(())
     }
 
+    /// Test all streaming_type values (0=None, 1=Response, 2=Internal) are correctly
+    /// stored and retrieved from DB
+    async fn _test_streaming_type_all_values(pool: &'static RdbPool) -> Result<()> {
+        let repository = RdbChanJobRepositoryImpl::new(Arc::new(JobQueueConfig::default()), pool);
+
+        // Test each streaming_type value: None(0), Response(1), Internal(2)
+        let streaming_type_values = [(0i32, "None"), (1i32, "Response"), (2i32, "Internal")];
+
+        for (streaming_type_value, type_name) in streaming_type_values {
+            let job_id = JobId {
+                value: 100 + streaming_type_value as i64,
+            };
+            let args = RdbChanJobRepositoryImpl::serialize_message(&TestArgs {
+                args: vec![format!("streaming_type_{}", type_name)],
+            });
+
+            let job_data = JobData {
+                worker_id: Some(WorkerId { value: 1 }),
+                args,
+                uniq_key: Some(format!("streaming_test_{}", type_name)),
+                enqueue_time: 1000,
+                grabbed_until_time: None,
+                run_after_time: 0,
+                retried: 0,
+                priority: 0,
+                timeout: 5000,
+                streaming_type: streaming_type_value,
+                using: None,
+            };
+
+            let job = Job {
+                id: Some(job_id),
+                data: Some(job_data.clone()),
+                metadata: HashMap::new(),
+            };
+
+            // Create job
+            let created = repository.create(&job).await?;
+            assert!(
+                created,
+                "Failed to create job with streaming_type={}",
+                type_name
+            );
+
+            // Find and verify streaming_type is preserved
+            let found = repository.find(&job_id).await?;
+            assert!(
+                found.is_some(),
+                "Job not found for streaming_type={}",
+                type_name
+            );
+            let found_data = found.unwrap().data.unwrap();
+            assert_eq!(
+                found_data.streaming_type, streaming_type_value,
+                "streaming_type mismatch after create: expected {} ({}), got {}",
+                streaming_type_value, type_name, found_data.streaming_type
+            );
+
+            // Update to different streaming_type and verify
+            let new_streaming_type = (streaming_type_value + 1) % 3;
+            let updated_data = JobData {
+                streaming_type: new_streaming_type,
+                ..job_data.clone()
+            };
+            let updated = repository.upsert(&job_id, &updated_data).await?;
+            assert!(
+                updated,
+                "Failed to update job with streaming_type={}",
+                type_name
+            );
+
+            let found_after_update = repository.find(&job_id).await?;
+            assert_eq!(
+                found_after_update.unwrap().data.unwrap().streaming_type,
+                new_streaming_type,
+                "streaming_type mismatch after update"
+            );
+
+            // Cleanup
+            repository.delete(&job_id).await?;
+        }
+
+        Ok(())
+    }
+
     #[cfg(not(feature = "mysql"))]
     #[test]
     fn test_sqlite() -> Result<()> {
@@ -607,6 +692,18 @@ mod test {
             sqlx::query("DELETE FROM job;").execute(sqlite_pool).await?;
             _test_repository(sqlite_pool).await?;
             _test_find_id_set_in_instant(sqlite_pool).await
+        })
+    }
+
+    #[cfg(not(feature = "mysql"))]
+    #[test]
+    fn test_sqlite_streaming_type_values() -> Result<()> {
+        use infra_utils::infra::test::setup_test_rdb_from;
+        use infra_utils::infra::test::TEST_RUNTIME;
+        TEST_RUNTIME.block_on(async {
+            let sqlite_pool = setup_test_rdb_from("sql/sqlite").await;
+            sqlx::query("DELETE FROM job;").execute(sqlite_pool).await?;
+            _test_streaming_type_all_values(sqlite_pool).await
         })
     }
 
@@ -625,6 +722,20 @@ mod test {
                 .execute(mysql_pool)
                 .await?;
             _test_find_id_set_in_instant(mysql_pool).await
+        })
+    }
+
+    #[cfg(feature = "mysql")]
+    #[test]
+    fn test_mysql_streaming_type_values() -> Result<()> {
+        use infra_utils::infra::test::setup_test_rdb_from;
+        use infra_utils::infra::test::TEST_RUNTIME;
+        TEST_RUNTIME.block_on(async {
+            let mysql_pool = setup_test_rdb_from("sql/mysql").await;
+            sqlx::query("TRUNCATE TABLE job;")
+                .execute(mysql_pool)
+                .await?;
+            _test_streaming_type_all_values(mysql_pool).await
         })
     }
 }

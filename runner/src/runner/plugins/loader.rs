@@ -11,9 +11,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock as TokioRwLock;
 
+/// FFI symbol for legacy plugins (origin/main compatible)
 #[allow(improper_ctypes_definitions)]
 type LoaderFunc<'a> = Symbol<'a, extern "C" fn() -> Box<dyn PluginRunner + Send + Sync>>;
 
+/// FFI symbol for multi-method plugins
 #[allow(improper_ctypes_definitions)]
 type MultiMethodLoaderFunc<'a> =
     Symbol<'a, extern "C" fn() -> Box<dyn MultiMethodPluginRunner + Send + Sync>>;
@@ -98,7 +100,11 @@ impl RunnerPluginLoader {
         Ok(lib)
     }
 
-    // find plugin (not loaded. reference only. cannot run)
+    /// Find plugin by name and create wrapper instance
+    ///
+    /// Priority order for FFI symbol detection:
+    /// 1. `load_multi_method_plugin` - Multi-method plugins (newest, supports multiple methods + collect_stream)
+    /// 2. `load_plugin` - Legacy plugins (origin/main compatible, no collect_stream)
     pub async fn find_plugin_runner_by_name(&self, name: &str) -> Option<PluginRunnerWrapperImpl> {
         // Search only in logically "available" plugins
         let path = self
@@ -115,25 +121,27 @@ impl RunnerPluginLoader {
         tokio::time::timeout(
             timeout_config.plugin_instantiate,
             tokio::task::spawn_blocking(move || unsafe {
-                // Try multi-method plugin first
+                // Try multi-method plugin first (highest priority)
                 if let Ok(load_multi) =
                     lib.get::<MultiMethodLoaderFunc>(b"load_multi_method_plugin\0")
                 {
                     let plugin = load_multi();
                     let variant = PluginRunnerVariant::MultiMethod(plugin);
-                    Some(PluginRunnerWrapperImpl::new(Arc::new(TokioRwLock::new(
+                    return Some(PluginRunnerWrapperImpl::new(Arc::new(TokioRwLock::new(
                         variant,
-                    ))))
-                } else if let Ok(load_legacy) = lib.get::<LoaderFunc>(b"load_plugin\0") {
-                    // Fall back to legacy plugin
+                    ))));
+                }
+
+                // Fall back to legacy plugin
+                if let Ok(load_legacy) = lib.get::<LoaderFunc>(b"load_plugin\0") {
                     let plugin = load_legacy();
                     let variant = PluginRunnerVariant::Legacy(plugin);
-                    Some(PluginRunnerWrapperImpl::new(Arc::new(TokioRwLock::new(
+                    return Some(PluginRunnerWrapperImpl::new(Arc::new(TokioRwLock::new(
                         variant,
-                    ))))
-                } else {
-                    None
+                    ))));
                 }
+
+                None
             }),
         )
         .await
@@ -191,11 +199,12 @@ impl PluginLoader for RunnerPluginLoader {
         let lib = Self::get_or_load_library(path).await?;
 
         // 2. Get plugin info with timeout
+        // Priority: load_multi_method_plugin > load_plugin
         let timeout_config = RunnerTimeoutConfig::global();
         let (plugin_name, description) = tokio::time::timeout(
             timeout_config.plugin_instantiate,
             tokio::task::spawn_blocking(move || unsafe {
-                // Try multi-method plugin first
+                // Try multi-method plugin first (highest priority)
                 if let Ok(load_multi) =
                     lib.get::<MultiMethodLoaderFunc>(b"load_multi_method_plugin\0")
                 {
@@ -210,7 +219,7 @@ impl PluginLoader for RunnerPluginLoader {
                 }
 
                 Err(anyhow::anyhow!(
-                    "Plugin missing both FFI symbols (load_plugin and load_multi_method_plugin)"
+                    "Plugin missing all FFI symbols (load_plugin, load_multi_method_plugin)"
                 ))
             }),
         )

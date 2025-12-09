@@ -31,6 +31,70 @@ pub mod integration_tests;
 pub mod proxy;
 pub mod schema_converter;
 
+/// Merge TextContent items by concatenating their text
+///
+/// Strategy:
+/// - TextContent items are concatenated
+/// - TextResourceContents items with same uri are concatenated
+/// - Non-text content items (ImageContent, AudioContent, BlobResourceContents) are kept as-is
+/// - TODO: Proper handling for Image/Audio/Blob content types
+fn merge_text_contents(
+    contents: Vec<mcp_server_result::Content>,
+) -> Vec<mcp_server_result::Content> {
+    use mcp_server_result::content::RawContent;
+    use mcp_server_result::{Content, TextContent};
+
+    let mut merged = Vec::new();
+    let mut text_buffer = String::new();
+
+    for content in contents {
+        match &content.raw_content {
+            Some(RawContent::Text(tc)) => {
+                text_buffer.push_str(&tc.text);
+            }
+            Some(RawContent::Resource(resource)) => {
+                // Handle TextResourceContents - concatenate text
+                if let Some(mcp_server_result::embedded_resource::Resource::Text(text_res)) =
+                    &resource.resource
+                {
+                    text_buffer.push_str(&text_res.text);
+                } else {
+                    // BlobResourceContents - flush buffer and keep as-is
+                    if !text_buffer.is_empty() {
+                        merged.push(Content {
+                            raw_content: Some(RawContent::Text(TextContent {
+                                text: std::mem::take(&mut text_buffer),
+                            })),
+                        });
+                    }
+                    merged.push(content);
+                }
+            }
+            _ => {
+                // ImageContent, AudioContent, etc. - flush buffer and keep as-is
+                // TODO: Proper handling for these content types
+                if !text_buffer.is_empty() {
+                    merged.push(Content {
+                        raw_content: Some(RawContent::Text(TextContent {
+                            text: std::mem::take(&mut text_buffer),
+                        })),
+                    });
+                }
+                merged.push(content);
+            }
+        }
+    }
+
+    // Flush remaining text buffer
+    if !text_buffer.is_empty() {
+        merged.push(Content {
+            raw_content: Some(RawContent::Text(TextContent { text: text_buffer })),
+        });
+    }
+
+    merged
+}
+
 /// Tool information for using support
 #[derive(Debug, Clone)]
 pub struct ToolInfo {
@@ -251,8 +315,6 @@ impl RunnerSpec for McpServerRunnerImpl {
     fn settings_schema(&self) -> String {
         "{}".to_string() // Empty JSON object (no settings required)
     }
-
-    // Default implementation in RunnerSpec trait uses method_json_schema_map()
 }
 
 impl Tracing for McpServerRunnerImpl {}
@@ -286,6 +348,58 @@ impl RunnerTrait for McpServerRunnerImpl {
         // Resolve tool name and execute
         let tool_name = self.resolve_using(using)?;
         self.run_stream_using(arg, metadata, &tool_name).await
+    }
+
+    /// Collect streaming MCP results into a single McpServerResult
+    ///
+    /// Strategy:
+    /// - Collects all McpServerResult chunks from the stream
+    /// - Merges TextContent items by concatenating their text
+    /// - Merges TextResourceContents items by concatenating their text
+    /// - Non-text content items (ImageContent, AudioContent, BlobResourceContents) are kept as-is
+    /// - is_error is set to true if any chunk has is_error=true
+    fn collect_stream(
+        &self,
+        stream: BoxStream<'static, ResultOutputItem>,
+    ) -> super::CollectStreamFuture {
+        use futures::StreamExt;
+        use prost::Message;
+        use proto::jobworkerp::data::result_output_item;
+
+        Box::pin(async move {
+            let mut collected_contents: Vec<mcp_server_result::Content> = Vec::new();
+            let mut is_error = false;
+            let mut metadata = HashMap::new();
+            let mut stream = stream;
+
+            while let Some(item) = stream.next().await {
+                match item.item {
+                    Some(result_output_item::Item::Data(data)) => {
+                        if let Ok(chunk) = McpServerResult::decode(data.as_slice()) {
+                            is_error = is_error || chunk.is_error;
+                            for content in chunk.content {
+                                collected_contents.push(content);
+                            }
+                        }
+                    }
+                    Some(result_output_item::Item::End(trailer)) => {
+                        metadata = trailer.metadata;
+                        break;
+                    }
+                    None => {}
+                }
+            }
+
+            // Merge text contents
+            let merged_contents = merge_text_contents(collected_contents);
+
+            let result = McpServerResult {
+                content: merged_contents,
+                is_error,
+            };
+            let bytes = result.encode_to_vec();
+            Ok((bytes, metadata))
+        })
     }
 }
 
@@ -695,4 +809,89 @@ impl UseCancelMonitoringHelper for McpServerRunnerImpl {
     }
 }
 
-// MCP Runner tests are already implemented in integration_tests.rs
+// MCP Runner integration tests are in integration_tests.rs
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mcp_server_result::content::RawContent;
+    use mcp_server_result::{Content, TextContent};
+
+    fn text_content(text: &str) -> Content {
+        Content {
+            raw_content: Some(RawContent::Text(TextContent {
+                text: text.to_string(),
+            })),
+        }
+    }
+
+    #[test]
+    fn test_merge_text_contents_single_text() {
+        let contents = vec![text_content("Hello, World!")];
+        let merged = merge_text_contents(contents);
+
+        assert_eq!(merged.len(), 1);
+        match &merged[0].raw_content {
+            Some(RawContent::Text(tc)) => assert_eq!(tc.text, "Hello, World!"),
+            _ => panic!("Expected TextContent"),
+        }
+    }
+
+    #[test]
+    fn test_merge_text_contents_multiple_texts_concatenates() {
+        let contents = vec![
+            text_content("Hello, "),
+            text_content("World!"),
+            text_content(" How are you?"),
+        ];
+        let merged = merge_text_contents(contents);
+
+        assert_eq!(merged.len(), 1);
+        match &merged[0].raw_content {
+            Some(RawContent::Text(tc)) => assert_eq!(tc.text, "Hello, World! How are you?"),
+            _ => panic!("Expected TextContent"),
+        }
+    }
+
+    #[test]
+    fn test_merge_text_contents_empty() {
+        let contents: Vec<Content> = vec![];
+        let merged = merge_text_contents(contents);
+
+        assert!(merged.is_empty());
+    }
+
+    #[test]
+    fn test_merge_text_contents_with_non_text_interspersed() {
+        let contents = vec![
+            text_content("Part1 "),
+            Content {
+                raw_content: Some(RawContent::Image(mcp_server_result::ImageContent {
+                    data: "base64data".to_string(),
+                    mime_type: "image/png".to_string(),
+                })),
+            },
+            text_content("Part2"),
+        ];
+        let merged = merge_text_contents(contents);
+
+        // Should have: Text("Part1 "), Image, Text("Part2")
+        assert_eq!(merged.len(), 3);
+        match &merged[0].raw_content {
+            Some(RawContent::Text(tc)) => assert_eq!(tc.text, "Part1 "),
+            _ => panic!("Expected TextContent at index 0"),
+        }
+        match &merged[1].raw_content {
+            Some(RawContent::Image(_)) => {}
+            _ => panic!("Expected ImageContent at index 1"),
+        }
+        match &merged[2].raw_content {
+            Some(RawContent::Text(tc)) => assert_eq!(tc.text, "Part2"),
+            _ => panic!("Expected TextContent at index 2"),
+        }
+    }
+
+    // Note: collect_stream tests for MCP runner require a running MCP server connection.
+    // Integration tests for collect_stream are in integration_tests.rs module.
+    // The merge_text_contents function (which is the core logic) is tested above.
+}

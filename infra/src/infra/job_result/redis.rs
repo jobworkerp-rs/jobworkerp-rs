@@ -242,6 +242,7 @@ async fn redis_test() -> Result<()> {
     let jarg = proto::TestArgs {
         args: vec!["test".to_string(), "test".to_string()],
     };
+    #[allow(deprecated)]
     let job_result = &JobResultData {
         job_id: Some(JobId { value: 1 }),
         worker_id: Some(WorkerId { value: 2 }),
@@ -256,7 +257,7 @@ async fn redis_test() -> Result<()> {
         max_retry: 9,
         priority: 1,
         timeout: 1000,
-        request_streaming: true,
+        streaming_type: 1, // StreamingType::Response
         enqueue_time: 9,
         run_after_time: 10,
         start_time: 11,
@@ -290,7 +291,7 @@ async fn redis_test() -> Result<()> {
     job_result2.retried = 9;
     job_result2.priority = -1;
     job_result2.timeout = 2000;
-    job_result2.request_streaming = false;
+    job_result2.streaming_type = 0; // StreamingType::None
     job_result2.enqueue_time = 10;
     job_result2.run_after_time = 11;
     job_result2.start_time = 12;
