@@ -15,7 +15,7 @@ use jobworkerp_base::codec::{ProstMessageCodec, UseProstCodec};
 use jobworkerp_base::error::JobWorkerError;
 use jobworkerp_runner::jobworkerp::runner::ReusableWorkflowRunnerSettings;
 use memory_utils::cache::moka::{MokaCacheImpl, UseMokaCache};
-use proto::jobworkerp::data::{RunnerType, WorkerId};
+use proto::jobworkerp::data::{RunnerType, StreamingType, WorkerId};
 use proto::jobworkerp::function::data::{FunctionResult, FunctionSpecs, WorkerOptions};
 use proto::ProtobufHelper;
 use serde_json::json;
@@ -147,6 +147,11 @@ pub trait FunctionApp:
                 ..
             } = &runner
             {
+                let streaming_type = if streaming {
+                    StreamingType::Response
+                } else {
+                    StreamingType::None
+                };
                 match self
                     .setup_worker_and_enqueue_with_json_full_output(
                         metadata,
@@ -155,7 +160,7 @@ pub trait FunctionApp:
                         arg_json,
                         uniq_key,
                         timeout_sec,
-                        streaming,
+                        streaming_type,
                         tool_name_opt.clone(),
                     )
                     .await
@@ -219,6 +224,11 @@ pub trait FunctionApp:
                 (name.to_string(), None)
             };
 
+            let streaming_type = if streaming {
+                StreamingType::Response
+            } else {
+                StreamingType::None
+            };
             let result = self
                 .enqueue_with_worker_name(
                     meta.clone(),
@@ -226,7 +236,7 @@ pub trait FunctionApp:
                     &arguments,
                     unique_key,
                     job_timeout_sec,
-                    streaming,
+                    streaming_type,
                     tool_name_opt.clone(), // Pass using parameter for worker tools
                 )
                 .await;

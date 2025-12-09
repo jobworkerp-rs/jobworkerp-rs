@@ -291,7 +291,7 @@ pub trait RedisJobDispatcher:
                         let channel = wdat.channel.clone().unwrap_or_default();
                         let priority = jdat.priority;
                         let enqueue_time = jdat.enqueue_time;
-                        let is_streamable = jdat.request_streaming;
+                        let is_streamable = jdat.streaming_type != 0;
                         let broadcast_results = wdat.broadcast_results;
                         tokio::spawn(async move {
                             if let Err(e) = index_repo
@@ -343,7 +343,7 @@ pub trait RedisJobDispatcher:
                 let channel = wdat.channel.clone().unwrap_or_default();
                 let priority = jdat.priority;
                 let enqueue_time = jdat.enqueue_time;
-                let is_streamable = jdat.request_streaming;
+                let is_streamable = jdat.streaming_type != 0;
                 let broadcast_results = wdat.broadcast_results;
                 tokio::spawn(async move {
                     if let Err(e) = index_repo
@@ -372,7 +372,7 @@ pub trait RedisJobDispatcher:
         // Copy metadata needed for RDB indexing before moving jdat
         let jdat_priority = jdat.priority;
         let jdat_enqueue_time = jdat.enqueue_time;
-        let jdat_request_streaming = jdat.request_streaming;
+        let jdat_request_streaming = jdat.streaming_type != 0;
 
         // run job
         let mut r = self

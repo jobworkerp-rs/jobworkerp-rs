@@ -5,7 +5,7 @@ use infra::infra::runner::rows::RunnerWithSchema;
 use jobworkerp_base::error::JobWorkerError;
 use proto::jobworkerp::data::{
     JobResult, Priority, QueueType, ResponseType, RetryPolicy, RetryType, RunnerId, RunnerType,
-    WorkerData,
+    StreamingType, WorkerData,
 };
 use proto::DEFAULT_METHOD_NAME;
 use serde_json::{Map, Value};
@@ -182,6 +182,11 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                     .create_worker_data(&runner, settings, worker_params)
                     .await?;
 
+                let streaming_type = if streaming {
+                    StreamingType::Response
+                } else {
+                    StreamingType::None
+                };
                 self.setup_worker_and_enqueue_with_json(
                     meta,
                     runner_data.name.as_str(),
@@ -189,7 +194,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                     arguments,
                     unique_key,
                     timeout_sec,
-                    streaming,
+                    streaming_type,
                     tool_name_opt,
                 )
                 .await
@@ -310,7 +315,7 @@ pub trait FunctionCallHelper: UseJobExecutor + McpNameConverter + Send + Sync {
                             Priority::Medium as i32,
                             (self.timeout_sec() * 1000) as u64,
                             None,
-                            false,
+                            StreamingType::None,
                             !temp_worker_data.use_static,
                             using, // Pass using parameter to job execution (moved here)
                         )

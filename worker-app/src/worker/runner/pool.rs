@@ -310,7 +310,7 @@ mod tests {
                     retried: 0,
                     priority: 0,
                     timeout: 30,
-                    request_streaming: false,
+                    streaming_type: 0,
                     using: None,
                 },
             )
@@ -367,7 +367,7 @@ mod tests {
                         retried: 0,
                         priority: 0,
                         timeout: 30,
-                        request_streaming: false,
+                        streaming_type: 0,
                         using: None,
                     },
                 );
@@ -456,7 +456,7 @@ mod tests {
                             retried: 0,
                             priority: 0,
                             timeout: 30,
-                            request_streaming: false,
+                            streaming_type: 0,
                             using: None,
                         },
                     );

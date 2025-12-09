@@ -16,7 +16,7 @@ use futures::StreamExt;
 use jobworkerp_base::error::JobWorkerError;
 use prost::Message;
 use proto::jobworkerp::data::result_output_item;
-use proto::jobworkerp::data::{Job, JobId, JobProcessingStatus};
+use proto::jobworkerp::data::{Job, JobId, JobProcessingStatus, StreamingType};
 use std::fmt::Debug;
 use std::sync::Arc;
 use tonic::metadata::MetadataValue;
@@ -133,7 +133,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         req.priority.unwrap_or(Priority::Medium as i32),
                         req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
                         None,
-                        false,
+                        StreamingType::None,
                         req.using,
                     )
                     .await
@@ -150,7 +150,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         req.priority.unwrap_or(Priority::Medium as i32),
                         req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
                         None,
-                        false,
+                        StreamingType::None,
                         req.using,
                     )
                     .await
@@ -223,7 +223,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         req.priority.unwrap_or(Priority::Medium as i32),
                         req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
                         None,
-                        true,
+                        StreamingType::Response,
                         req.using,
                     )
                     .await
@@ -240,7 +240,7 @@ impl<T: JobGrpc + RequestValidator + Tracing + Send + Debug + Sync + 'static> Jo
                         req.priority.unwrap_or(Priority::Medium as i32),
                         req.timeout.unwrap_or(Self::DEFAULT_TIMEOUT),
                         None,
-                        true,
+                        StreamingType::Response,
                         req.using,
                     )
                     .await

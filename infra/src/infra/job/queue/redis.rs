@@ -527,7 +527,7 @@ mod test {
                 retried: 0,
                 priority: 1,
                 timeout: 1000,
-                request_streaming: false,
+                streaming_type: 0,
                 using: None,
             }),
             metadata: HashMap::new(),

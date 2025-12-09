@@ -139,6 +139,7 @@ pub trait JobBuilder {
             let run_after_time = next_interval_msec
                 .map(|n| dat.end_time + n as i64)
                 .unwrap_or(0);
+            #[allow(deprecated)]
             Some(Job {
                 id: dat.job_id,
                 data: Some(JobData {
@@ -151,7 +152,7 @@ pub trait JobBuilder {
                     run_after_time,
                     priority: dat.priority,
                     timeout: dat.timeout,
-                    request_streaming: dat.request_streaming,
+                    streaming_type: dat.streaming_type,
                     using: dat.using.clone(), // preserve using for retry
                 }),
                 metadata: metadata.clone(),
@@ -181,7 +182,7 @@ pub trait JobBuilder {
                 retried: dat.retried + 1,
                 priority: dat.priority,
                 timeout: dat.timeout,
-                request_streaming: dat.request_streaming,
+                streaming_type: dat.streaming_type,
                 using: dat.using.clone(), // preserve using for periodic re-execution
             })
         }
