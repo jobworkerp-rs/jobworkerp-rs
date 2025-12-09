@@ -1,7 +1,0 @@
-syntax = "proto3";
-
-package collectable;
-
-message CollectableRunnerSettings {
-  optional string setting_value = 1;
-}

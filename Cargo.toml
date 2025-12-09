@@ -9,7 +9,6 @@ members = [
     "plugins/test_runner",
     "plugins/hello_runner",
     "plugins/legacy_compat_test",
-    "plugins/collectable_test",
     "infra",
     "app",
     "app-wrapper",

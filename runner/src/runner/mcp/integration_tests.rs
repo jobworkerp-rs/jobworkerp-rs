@@ -3,9 +3,6 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-#[cfg(test)]
-use crate::runner::{RunnerSpec, RunnerTrait};
-
 fn get_mcp_server_path(server_name: &str) -> PathBuf {
     let base_path = PathBuf::from("../modules/mcp-servers/src");
     base_path.join(server_name)

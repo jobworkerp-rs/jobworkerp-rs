@@ -316,13 +316,7 @@ pub trait MultiMethodPluginRunner: Send + Sync {
     fn collect_stream(
         &self,
         stream: futures::stream::BoxStream<'static, proto::jobworkerp::data::ResultOutputItem>,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<(Vec<u8>, HashMap<String, String>)>>
-                + Send
-                + 'static,
-        >,
-    > {
+    ) -> crate::runner::CollectStreamFuture {
         use futures::StreamExt;
         use proto::jobworkerp::data::result_output_item;
 
@@ -348,93 +342,10 @@ pub trait MultiMethodPluginRunner: Send + Sync {
     }
 }
 
-/// CollectablePluginRunner trait (new plugins with collect_stream support)
-///
-/// This trait extends the legacy PluginRunner with collect_stream support.
-/// Use FFI symbol `load_collectable_plugin` to export plugins implementing this trait.
-///
-/// For new plugins that need custom stream collection logic, implement this trait
-/// instead of PluginRunner.
-pub trait CollectablePluginRunner: Send + Sync {
-    fn name(&self) -> String;
-    fn description(&self) -> String;
-    fn load(&mut self, settings: Vec<u8>) -> Result<()>;
-    fn run(
-        &mut self,
-        args: Vec<u8>,
-        metadata: HashMap<String, String>,
-    ) -> (Result<Vec<u8>>, HashMap<String, String>);
-    fn begin_stream(&mut self, arg: Vec<u8>, metadata: HashMap<String, String>) -> Result<()> {
-        let (_, _) = (arg, metadata);
-        Err(anyhow::anyhow!("not implemented"))
-    }
-    fn receive_stream(&mut self) -> Result<Option<Vec<u8>>> {
-        Err(anyhow::anyhow!("not implemented"))
-    }
-    fn cancel(&mut self) -> bool;
-    fn is_canceled(&self) -> bool;
-    fn runner_settings_proto(&self) -> String;
-    fn job_args_proto(&self) -> String;
-    fn result_output_proto(&self) -> Option<String>;
-    fn output_type(&self) -> proto::jobworkerp::data::StreamingOutputType {
-        proto::jobworkerp::data::StreamingOutputType::NonStreaming
-    }
-    fn settings_schema(&self) -> String {
-        schema_to_json_string!(crate::jobworkerp::runner::Empty, "settings_schema")
-    }
-    fn arguments_schema(&self) -> String {
-        schema_to_json_string!(crate::jobworkerp::runner::Empty, "arguments_schema")
-    }
-    fn output_json_schema(&self) -> Option<String> {
-        None
-    }
-
-    /// Collect streaming output into a single result
-    ///
-    /// Default implementation: keeps only the last data chunk
-    /// (protobuf binary concatenation produces invalid data)
-    /// Plugins should override this for custom collection logic
-    fn collect_stream(
-        &self,
-        stream: futures::stream::BoxStream<'static, proto::jobworkerp::data::ResultOutputItem>,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<(Vec<u8>, HashMap<String, String>)>>
-                + Send
-                + 'static,
-        >,
-    > {
-        use futures::StreamExt;
-        use proto::jobworkerp::data::result_output_item;
-
-        Box::pin(async move {
-            let mut last_data: Option<Vec<u8>> = None;
-            let mut metadata = HashMap::new();
-            let mut stream = stream;
-
-            while let Some(item) = stream.next().await {
-                match item.item {
-                    Some(result_output_item::Item::Data(data)) => {
-                        last_data = Some(data);
-                    }
-                    Some(result_output_item::Item::End(trailer)) => {
-                        metadata = trailer.metadata;
-                        break;
-                    }
-                    None => {}
-                }
-            }
-            Ok((last_data.unwrap_or_default(), metadata))
-        })
-    }
-}
-
-/// Enum to wrap legacy, collectable, and multi-method plugins
+/// Enum to wrap legacy and multi-method plugins
 pub enum PluginRunnerVariant {
     /// Legacy plugins (origin/main compatible, no collect_stream)
     Legacy(Box<dyn PluginRunner + Send + Sync>),
-    /// Collectable plugins (single-method with collect_stream support)
-    Collectable(Box<dyn CollectablePluginRunner + Send + Sync>),
     /// Multi-method plugins (multiple methods with collect_stream support)
     MultiMethod(Box<dyn MultiMethodPluginRunner + Send + Sync>),
 }
