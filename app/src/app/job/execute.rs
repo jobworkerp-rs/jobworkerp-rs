@@ -521,7 +521,7 @@ pub trait UseJobExecutor:
 
                     // Enqueue with STREAMING_TYPE_INTERNAL
                     // Worker layer will call run_stream() and collect_stream() to merge the results
-                    let (job_id, job_result, _stream) = self
+                    let (job_id, job_result, stream) = self
                         .enqueue_with_worker_or_temp(
                             metadata,
                             Some(wid),
@@ -537,10 +537,17 @@ pub trait UseJobExecutor:
                     // With STREAMING_TYPE_INTERNAL, the worker collects the stream
                     // and returns the result in job_result (no stream returned to client)
                     if let Some(res) = job_result {
+                        if stream.is_some() {
+                            tracing::warn!(
+                                "job result available for job {} with stream",
+                                job_id.value
+                            );
+                        }
                         let output = self.extract_job_result_output(res)?;
                         self.transform_raw_output(&rid, &rdata, output.as_slice(), using.as_deref())
                             .await
                     } else {
+                        tracing::error!("No job result available for job {}", job_id.value);
                         Err(anyhow::anyhow!(
                             "No job result available for job {} (STREAMING_TYPE_INTERNAL should return collected result)",
                             job_id.value
