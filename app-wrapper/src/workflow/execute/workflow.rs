@@ -507,7 +507,39 @@ impl WorkflowExecutor {
 
                 // Yield final workflow context
                 yield Ok(res);
+            } else if lock.status == WorkflowStatus::Waiting {
+                // HITL: Workflow suspended for user input
+                // Yield current workflow context with Waiting status
+                // Do NOT mark as completed, do NOT emit RUN_FINISHED
+                tracing::info!(
+                    "Workflow suspended for user input: id={}, doc={:?}",
+                    lock.id,
+                    lock.document.name
+                );
+
+                // Record output at suspension point
+                if let Some(output) = lock.output.as_ref() {
+                    Self::record_workflow_output(&span, output, &lock.status);
+                }
+
+                // hard copy
+                let res = Arc::new((*lock).clone());
+                drop(lock);
+
+                // Yield workflow context with Waiting status
+                yield Ok(res);
+
+                // Exit without further processing (no RUN_FINISHED)
+                tracing::debug!(
+                    "Workflow execution paused: {}, id={}",
+                    workflow.document.name.as_str(),
+                    initial_wfc.read().await.id.to_string()
+                );
+                return;
+            } else {
+                drop(lock);
             }
+
             tracing::debug!(
                 "Workflow execution completed: {}, id={}",
                 workflow.document.name.as_str(),
@@ -1851,5 +1883,450 @@ mod tests {
                 "Outputs should be identical when restored from deep nested checkpoint"
             );
         })
+    }
+
+    /// Test that workflow with 'then: wait' directive transitions to Waiting status
+    #[test]
+    fn test_workflow_wait_directive() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let workflow_json = serde_json::json!({
+                "document": {
+                    "dsl": "1.0.0",
+                    "namespace": "test",
+                    "name": "wait-test",
+                    "version": "1.0.0"
+                },
+                "input": {
+                    "schema": {
+                        "document": {
+                            "type": "object",
+                            "properties": {
+                                "data": { "type": "string" }
+                            }
+                        }
+                    }
+                },
+                "do": [
+                    {
+                        "process_data": {
+                            "set": {
+                                "processed": true,
+                                "need_review": true
+                            },
+                            "then": "wait"
+                        }
+                    },
+                    {
+                        "after_wait": {
+                            "set": {
+                                "completed": true
+                            }
+                        }
+                    }
+                ]
+            });
+
+            let workflow =
+                serde_json::from_value::<WorkflowSchema>(workflow_json).expect("Valid workflow");
+
+            let app_module = Arc::new(create_hybrid_test_app().await.expect("Test app"));
+
+            let input = Arc::new(serde_json::json!({"data": "test"}));
+            let context = Arc::new(serde_json::json!({}));
+
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                &workflow,
+                input.clone(),
+                context,
+                None,
+            )));
+
+            let executor = WorkflowExecutor {
+                default_task_timeout_sec: 30,
+                job_executors: Arc::new(app::app::job::execute::JobExecutorWrapper::new(
+                    app_module,
+                )),
+                workflow: Arc::new(workflow.clone()),
+                workflow_context: workflow_context.clone(),
+                execution_id: None,
+                metadata: Arc::new(HashMap::new()),
+                checkpoint_repository: None,
+            };
+
+            let workflow_stream =
+                executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+            pin_mut!(workflow_stream);
+
+            let mut final_status = None;
+            let mut final_output = None;
+
+            while let Some(result) = workflow_stream.next().await {
+                match result {
+                    Ok(wfc) => {
+                        final_status = Some(wfc.status.clone());
+                        final_output = wfc.output.clone();
+                    }
+                    Err(e) => {
+                        panic!("Unexpected error: {:?}", e);
+                    }
+                }
+            }
+
+            // Verify workflow transitioned to Waiting status
+            assert_eq!(
+                final_status,
+                Some(WorkflowStatus::Waiting),
+                "Workflow should be in Waiting status after 'then: wait'"
+            );
+
+            // Verify output contains processed data
+            let output = final_output.expect("Should have output");
+            assert_eq!(output.get("processed"), Some(&serde_json::json!(true)));
+            assert_eq!(output.get("need_review"), Some(&serde_json::json!(true)));
+
+            // Verify after_wait task was NOT executed
+            assert!(
+                output.get("completed").is_none(),
+                "after_wait task should not have executed"
+            );
+        });
+    }
+
+    /// Test that Then::Wait can be parsed from string
+    #[test]
+    fn test_then_wait_parsing() {
+        use crate::workflow::execute::context::Then;
+        use std::str::FromStr;
+
+        let wait = Then::from_str("wait").expect("Should parse 'wait'");
+        assert_eq!(wait, Then::Wait);
+
+        let display = format!("{}", Then::Wait);
+        assert_eq!(display, "wait");
+    }
+
+    /// Test wait directive with checkpoint - verifies checkpoint position points to next task
+    #[test]
+    fn test_workflow_wait_checkpoint_position() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let workflow_json = serde_json::json!({
+                "document": {
+                    "dsl": "1.0.0",
+                    "namespace": "test",
+                    "name": "wait-checkpoint-test",
+                    "version": "1.0.0"
+                },
+                "input": {
+                    "schema": {
+                        "document": {
+                            "type": "object",
+                            "properties": {
+                                "data": { "type": "string" }
+                            }
+                        }
+                    }
+                },
+                "checkpointing": {
+                    "enabled": true,
+                    "storage": "memory"
+                },
+                "do": [
+                    {
+                        "first_task": {
+                            "set": {
+                                "step": "first"
+                            }
+                        }
+                    },
+                    {
+                        "wait_task": {
+                            "set": {
+                                "step": "waiting"
+                            },
+                            "then": "wait"
+                        }
+                    },
+                    {
+                        "resume_task": {
+                            "set": {
+                                "step": "resumed"
+                            }
+                        }
+                    },
+                    {
+                        "final_task": {
+                            "set": {
+                                "step": "final"
+                            }
+                        }
+                    }
+                ]
+            });
+
+            let workflow = Arc::new(
+                serde_json::from_value::<WorkflowSchema>(workflow_json).expect("Valid workflow"),
+            );
+
+            let app_module = Arc::new(create_hybrid_test_app().await.expect("Test app"));
+            let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
+
+            let input = Arc::new(serde_json::json!({"data": "test"}));
+            let context = Arc::new(serde_json::json!({}));
+
+            let execution_id =
+                ExecutionId::new("test-wait-checkpoint-position".to_string()).unwrap();
+
+            let executor = WorkflowExecutor::init(
+                app_wrapper_module,
+                app_module,
+                workflow.clone(),
+                input,
+                Some(execution_id.clone()),
+                context,
+                Arc::new(HashMap::new()),
+                None,
+            )
+            .await
+            .unwrap();
+
+            let workflow_stream =
+                executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+            pin_mut!(workflow_stream);
+
+            let mut final_status = None;
+
+            while let Some(result) = workflow_stream.next().await {
+                match result {
+                    Ok(wfc) => {
+                        final_status = Some(wfc.status.clone());
+                    }
+                    Err(e) => {
+                        panic!("Unexpected error: {:?}", e);
+                    }
+                }
+            }
+
+            // Verify workflow is in Waiting status
+            assert_eq!(
+                final_status,
+                Some(WorkflowStatus::Waiting),
+                "Workflow should be in Waiting status"
+            );
+
+            // Verify checkpoint was saved at correct position
+            let checkpoint_repo = executor
+                .checkpoint_repository
+                .as_ref()
+                .expect("Checkpoint repo");
+
+            // The checkpoint should be saved with position pointing to resume_task (index 2)
+            // Key format: workflow_name:execution_id:position
+            let checkpoint_key = format!(
+                "{}:{}:{}",
+                workflow.document.name.as_str(),
+                execution_id.value,
+                "/ROOT/do/2/resume_task" // Expected: next task after wait
+            );
+
+            let saved_checkpoint = checkpoint_repo
+                .checkpoint_repository()
+                .get_checkpoint(&checkpoint_key)
+                .await
+                .expect("Checkpoint query should succeed");
+
+            assert!(
+                saved_checkpoint.is_some(),
+                "Checkpoint should be saved at next task position: {}. \
+                 This verifies that on resume, workflow will continue from resume_task.",
+                checkpoint_key
+            );
+
+            let checkpoint = saved_checkpoint.unwrap();
+            let pos_str = checkpoint.position.as_json_pointer();
+
+            // Verify position structure
+            assert!(
+                pos_str.contains("resume_task"),
+                "Position should contain 'resume_task', got: {}",
+                pos_str
+            );
+            assert!(
+                pos_str.contains("/2/"),
+                "Position should contain index 2 for resume_task, got: {}",
+                pos_str
+            );
+
+            // Verify checkpoint contains workflow state from wait_task
+            assert_eq!(
+                checkpoint.workflow.input.get("data"),
+                Some(&serde_json::json!("test")),
+                "Checkpoint should preserve original input"
+            );
+        });
+    }
+
+    /// Test wait at nested position (inside DoTask) - verifies correct position calculation
+    #[test]
+    fn test_workflow_wait_nested_position() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let workflow_json = serde_json::json!({
+                "document": {
+                    "dsl": "1.0.0",
+                    "namespace": "test",
+                    "name": "wait-nested-position-test",
+                    "version": "1.0.0"
+                },
+                "input": {
+                    "schema": {
+                        "document": {
+                            "type": "object"
+                        }
+                    }
+                },
+                "checkpointing": {
+                    "enabled": true,
+                    "storage": "memory"
+                },
+                "do": [
+                    {
+                        "outer_task": {
+                            "do": [
+                                {
+                                    "inner_first": {
+                                        "set": {
+                                            "inner_step": "first"
+                                        }
+                                    }
+                                },
+                                {
+                                    "inner_wait": {
+                                        "set": {
+                                            "inner_step": "waiting"
+                                        },
+                                        "then": "wait"
+                                    }
+                                },
+                                {
+                                    "inner_resume": {
+                                        "set": {
+                                            "inner_step": "resumed"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "after_outer": {
+                            "set": {
+                                "outer_step": "after"
+                            }
+                        }
+                    }
+                ]
+            });
+
+            let workflow = Arc::new(
+                serde_json::from_value::<WorkflowSchema>(workflow_json).expect("Valid workflow"),
+            );
+
+            let app_module = Arc::new(create_hybrid_test_app().await.expect("Test app"));
+            let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
+
+            let input = Arc::new(serde_json::json!({}));
+            let context = Arc::new(serde_json::json!({}));
+
+            let execution_id = ExecutionId::new("test-wait-nested-position".to_string()).unwrap();
+
+            let executor = WorkflowExecutor::init(
+                app_wrapper_module,
+                app_module,
+                workflow.clone(),
+                input,
+                Some(execution_id.clone()),
+                context,
+                Arc::new(HashMap::new()),
+                None,
+            )
+            .await
+            .unwrap();
+
+            let workflow_stream =
+                executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+            pin_mut!(workflow_stream);
+
+            let mut final_status = None;
+            let mut final_output: Option<Arc<serde_json::Value>> = None;
+
+            while let Some(result) = workflow_stream.next().await {
+                match result {
+                    Ok(wfc) => {
+                        final_status = Some(wfc.status.clone());
+                        final_output = wfc.output.clone();
+                    }
+                    Err(e) => {
+                        panic!("Unexpected error: {:?}", e);
+                    }
+                }
+            }
+
+            // Verify workflow is in Waiting status
+            assert_eq!(
+                final_status,
+                Some(WorkflowStatus::Waiting),
+                "Workflow should be in Waiting status"
+            );
+
+            // Verify output shows inner_step is "waiting" (not "resumed")
+            let output = final_output.expect("Should have output");
+            assert_eq!(
+                output.get("inner_step"),
+                Some(&serde_json::json!("waiting")),
+                "Should be at waiting step, not resumed"
+            );
+
+            // Verify after_outer task was NOT executed
+            assert!(
+                output.get("outer_step").is_none(),
+                "after_outer task should not have executed"
+            );
+
+            // Verify checkpoint position is for inner_resume (next task inside nested do)
+            let checkpoint_repo = executor
+                .checkpoint_repository
+                .as_ref()
+                .expect("Checkpoint repo");
+
+            // The checkpoint should point to inner_resume inside the nested do
+            // Key format: workflow_name:execution_id:position
+            let checkpoint_key = format!(
+                "{}:{}:{}",
+                workflow.document.name.as_str(),
+                execution_id.value,
+                "/ROOT/do/0/outer_task/do/2/inner_resume" // Nested path to next task
+            );
+
+            let saved_checkpoint = checkpoint_repo
+                .checkpoint_repository()
+                .get_checkpoint(&checkpoint_key)
+                .await
+                .expect("Checkpoint query should succeed");
+
+            assert!(
+                saved_checkpoint.is_some(),
+                "Checkpoint should be saved at nested next task position: {}",
+                checkpoint_key
+            );
+
+            let checkpoint = saved_checkpoint.unwrap();
+            let pos_str = checkpoint.position.as_json_pointer();
+
+            // Verify the full nested path
+            assert!(
+                pos_str.contains("outer_task") && pos_str.contains("inner_resume"),
+                "Position should contain full nested path, got: {}",
+                pos_str
+            );
+        });
     }
 }

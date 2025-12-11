@@ -20,6 +20,20 @@ impl CheckPointContext {
             position,
         }
     }
+
+    /// Create checkpoint with explicit position (for HITL wait)
+    /// Used when saving checkpoint with next task's position instead of current
+    pub async fn new_with_position(
+        workflow: &WorkflowContext,
+        task: &TaskContext,
+        position: WorkflowPosition,
+    ) -> Self {
+        Self {
+            workflow: WorkflowCheckPointContext::new(workflow).await,
+            task: TaskCheckPointContext::new(task).await,
+            position,
+        }
+    }
     pub fn from_inline(checkpoint: &inline_workflow_args::Checkpoint) -> Result<Self> {
         match checkpoint.data.as_ref() {
             Some(d) => Ok(CheckPointContext {
