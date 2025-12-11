@@ -273,45 +273,79 @@ impl DoTaskStreamExecutor {
                         // HITL: Workflow suspension requested
                         tracing::info!("Wait Task: {}, suspending workflow for user input", name);
 
-                        // Save checkpoint before suspension
+                        // Determine if this is a valid wait scenario
                         // NOTE: At this point, result.position is "/do" (both index and task_name removed)
-                        // We need to save the NEXT task's position for resume
-                        if let (Some(repo), Some(exec_id)) = (&self.checkpoint_repository, &self.execution_id) {
-                            let wf_ctx = self.workflow_context.read().await;
+                        let is_valid_wait = if next_pair.is_some() {
+                            // Next task exists - valid wait
+                            true
+                        } else {
+                            // No next task in this do-list
+                            let current_pos = result.position.read().await;
+                            let pos_len = current_pos.full().len();
+                            drop(current_pos);
 
-                            // Calculate next task's position for checkpoint
-                            let checkpoint_position = if let Some((next_name, (next_idx, _))) = next_pair.as_ref() {
-                                // Next task exists: build position for next task
-                                let mut pos = result.position.read().await.clone();
-                                pos.push_idx(*next_idx);       // Add next task's index
-                                pos.push(next_name.to_string());   // Add next task's name
-                                pos
-                            } else {
-                                // No next task: workflow will complete on resume
-                                result.position.read().await.clone()
-                            };
-
-                            let checkpoint = crate::workflow::execute::checkpoint::CheckPointContext::new_with_position(
-                                &wf_ctx,
-                                &result,
-                                checkpoint_position.clone(),
-                            ).await;
-
-                            if let Err(e) = repo
-                                .save_checkpoint_with_id(exec_id, &wf_ctx.document.name, &checkpoint)
-                                .await
-                            {
-                                tracing::error!("Failed to save checkpoint for wait: {:#?}", e);
-                            } else {
-                                tracing::info!(
-                                    "Checkpoint saved for wait, resume position: {}",
-                                    checkpoint_position.as_json_pointer()
+                            if pos_len <= 2 {
+                                // Root-level do (e.g., /ROOT/do) - workflow is essentially complete
+                                // Wait at the end of root do-list is meaningless
+                                tracing::warn!(
+                                    "Wait at the last task of root do-list is ineffective. \
+                                     Workflow will complete instead of waiting. \
+                                     Consider moving 'then: wait' to an earlier task or restructuring the workflow."
                                 );
+                                // Set status to Completed instead of Waiting
+                                self.workflow_context.write().await.status = WorkflowStatus::Completed;
+                                false
+                            } else {
+                                // Nested do - valid wait (will resume at parent task)
+                                true
                             }
-                        }
+                        };
 
-                        // Set status to Waiting
-                        self.workflow_context.write().await.status = WorkflowStatus::Waiting;
+                        // Save checkpoint if repository is available and wait is valid
+                        if is_valid_wait {
+                            if let (Some(repo), Some(exec_id)) = (&self.checkpoint_repository, &self.execution_id) {
+                                // Calculate checkpoint position for resume
+                                let checkpoint_position = if let Some((next_name, (next_idx, _))) = next_pair.as_ref() {
+                                    // Next task exists: build position for next task
+                                    let mut pos = result.position.read().await.clone();
+                                    pos.push_idx(*next_idx);       // Add next task's index
+                                    pos.push(next_name.to_string());   // Add next task's name
+                                    pos
+                                } else {
+                                    // Nested do: save parent task's position for resume
+                                    let current_pos = result.position.read().await;
+                                    let mut parent_pos = current_pos.clone();
+                                    drop(current_pos);
+                                    parent_pos.pop(); // Remove "do" to get parent task position
+                                    parent_pos
+                                };
+
+                                let wf_ctx = self.workflow_context.read().await;
+                                let checkpoint = crate::workflow::execute::checkpoint::CheckPointContext::new_with_position(
+                                    &wf_ctx,
+                                    &result,
+                                    checkpoint_position.clone(),
+                                ).await;
+
+                                if let Err(e) = repo
+                                    .save_checkpoint_with_id(exec_id, &wf_ctx.document.name, &checkpoint)
+                                    .await
+                                {
+                                    tracing::error!("Failed to save checkpoint for wait: {:#?}", e);
+                                } else {
+                                    tracing::info!(
+                                        "Checkpoint saved for wait, resume position: {}",
+                                        checkpoint_position.as_json_pointer()
+                                    );
+                                }
+                                drop(wf_ctx);
+                            }
+
+                            // Set status to Waiting
+                            self.workflow_context.write().await.status = WorkflowStatus::Waiting;
+                        }
+                        // If not valid wait, status was already set to Completed above
+
                         None  // Exit loop
                     }
                     Then::TaskName(ref tname) => {
@@ -1262,20 +1296,21 @@ mod tests {
                 }
             }
 
-            // Verify workflow status is Waiting
+            // When wait is at last task of root-level do, workflow should be Completed (not Waiting)
+            // because wait at the end of root do-list is ineffective
             assert_eq!(
                 workflow_context.read().await.status,
-                WorkflowStatus::Waiting,
-                "Workflow should be in Waiting status"
+                WorkflowStatus::Completed,
+                "Workflow should be Completed when wait is at last task of root do-list"
             );
 
-            // When wait is at last task, checkpoint position should be /ROOT/do (no next task)
-            // Key format: workflow_name:execution_id:position
+            // No checkpoint should be saved for root-level last task wait
+            // Try a few possible key patterns to verify no checkpoint exists
             let checkpoint_key = format!(
                 "{}:{}:{}",
                 workflow.document.name.as_str(),
                 execution_id.value,
-                "/ROOT/do" // Expected: current do position (no next task)
+                "/ROOT/do"
             );
             let saved_checkpoint = checkpoint_repo
                 .checkpoint_repository()
@@ -1284,18 +1319,8 @@ mod tests {
                 .expect("Checkpoint query should succeed");
 
             assert!(
-                saved_checkpoint.is_some(),
-                "Checkpoint should be saved at /ROOT/do when wait is at last task: {}",
-                checkpoint_key
-            );
-
-            let checkpoint = saved_checkpoint.unwrap();
-            let pos_str = checkpoint.position.as_json_pointer();
-            // Position should be /ROOT/do (not including any task index/name)
-            assert_eq!(
-                pos_str, "/ROOT/do",
-                "Checkpoint position should be /ROOT/do when no next task, got: {}",
-                pos_str
+                saved_checkpoint.is_none(),
+                "No checkpoint should be saved when wait is at last task of root do-list"
             );
         })
     }
