@@ -3,6 +3,41 @@
 version = 4
 
 [[package]]
+name = "ag-ui-front"
+version = "0.18.1"
+dependencies = [
+ "anyhow",
+ "app",
+ "app-wrapper",
+ "async-stream",
+ "async-trait",
+ "axum 0.8.7",
+ "chrono",
+ "command-utils 0.1.0",
+ "deadpool-redis",
+ "dotenvy",
+ "futures",
+ "infra",
+ "jobworkerp-base",
+ "jobworkerp-runner",
+ "json-patch",
+ "opentelemetry 0.31.0",
+ "pin-project-lite",
+ "proto",
+ "rand 0.9.2",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-stream",
+ "tokio-test",
+ "tokio-util",
+ "tower-http",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2422,6 +2457,28 @@ checksum = "464a3709c7f55f1f721e5389aa6ea4e3bc6aba669353300af094b29ffbdde1d8"
 dependencies = [
  "once_cell",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "json-patch"
+version = "3.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "863726d7afb6bc2590eeff7135d923545e5e964f004c2ccf8716c25e70a86f08"
+dependencies = [
+ "jsonptr",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "jsonptr"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5dea2b27dd239b2556ed7a25ba842fe47fd602e7fc7433c2a8d6106d4d9edd70"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
