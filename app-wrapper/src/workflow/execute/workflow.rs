@@ -2329,4 +2329,143 @@ mod tests {
             );
         });
     }
+
+    /// Test wait at last task of nested do - should save parent task position for resume
+    #[test]
+    fn test_workflow_wait_nested_last_task_position() {
+        use crate::modules::test::create_test_app_wrapper_module;
+        use crate::workflow::execute::context::WorkflowStatus;
+        use crate::workflow::execute::task::ExecutionId;
+        use futures_util::pin_mut;
+
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
+
+            // Create workflow: outer_task(inner_first -> inner_wait_last) -> after_outer
+            // Wait is at last task of nested do, so checkpoint should point to outer_task
+            let workflow_json = serde_json::json!({
+                "document": {
+                    "dsl": "1.0.0",
+                    "namespace": "test",
+                    "name": "nested-last-wait-test",
+                    "version": "1.0.0"
+                },
+                "input": {
+                    "schema": {
+                        "document": {
+                            "type": "object"
+                        }
+                    }
+                },
+                "checkpointing": {
+                    "enabled": true,
+                    "storage": "memory"
+                },
+                "do": [
+                    {
+                        "outer_task": {
+                            "do": [
+                                {
+                                    "inner_first": {
+                                        "set": {
+                                            "inner_step": "first"
+                                        }
+                                    }
+                                },
+                                {
+                                    "inner_wait_last": {
+                                        "set": {
+                                            "inner_step": "wait_last"
+                                        },
+                                        "then": "wait"
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "after_outer": {
+                            "set": {
+                                "after": true
+                            }
+                        }
+                    }
+                ]
+            });
+
+            let workflow = Arc::new(
+                serde_json::from_value::<crate::workflow::definition::workflow::WorkflowSchema>(
+                    workflow_json,
+                )
+                .unwrap(),
+            );
+
+            let input = Arc::new(serde_json::json!({}));
+            let context = Arc::new(serde_json::json!({}));
+            let execution_id = ExecutionId::new("test-nested-last-wait".to_string()).unwrap();
+
+            let executor = WorkflowExecutor::init(
+                app_wrapper_module,
+                app_module,
+                workflow.clone(),
+                input,
+                Some(execution_id.clone()),
+                context,
+                Arc::new(std::collections::HashMap::new()),
+                None,
+            )
+            .await
+            .unwrap();
+
+            let workflow_stream =
+                executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+            pin_mut!(workflow_stream);
+
+            let mut final_status = WorkflowStatus::Running;
+            while let Some(result) = workflow_stream.next().await {
+                match result {
+                    Ok(ctx) => {
+                        final_status = ctx.status.clone();
+                    }
+                    Err(e) => {
+                        panic!("Unexpected error: {:?}", e);
+                    }
+                }
+            }
+
+            // Workflow should be waiting
+            assert_eq!(
+                final_status,
+                WorkflowStatus::Waiting,
+                "Workflow should be in Waiting status"
+            );
+
+            // Checkpoint should point to outer_task (parent task position)
+            // The nested do's last wait saves position at /ROOT/do/0/outer_task
+            let checkpoint_repo = executor
+                .checkpoint_repository
+                .as_ref()
+                .expect("Checkpoint repository should exist");
+
+            let checkpoint_key = format!(
+                "{}:{}:{}",
+                workflow.document.name.as_str(),
+                execution_id.value,
+                "/ROOT/do/0/outer_task" // Parent task position after nested do completes
+            );
+
+            let saved_checkpoint = checkpoint_repo
+                .checkpoint_repository()
+                .get_checkpoint(&checkpoint_key)
+                .await
+                .expect("Checkpoint query should succeed");
+
+            assert!(
+                saved_checkpoint.is_some(),
+                "Checkpoint should be saved at parent task position: {}",
+                checkpoint_key
+            );
+        });
+    }
 }
