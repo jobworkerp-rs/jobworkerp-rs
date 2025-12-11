@@ -1,0 +1,62 @@
+[package]
+name = "ag-ui-front"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "AG-UI protocol implementation for jobworkerp-rs"
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ag-ui-http"
+path = "src/bin/ag_ui_http.rs"
+
+[dependencies]
+# Internal dependencies
+app = { path = "../app" }
+app-wrapper = { path = "../app-wrapper" }
+proto = { path = "../proto" }
+infra = { path = "../infra" }
+command-utils = { path = "../modules/command-utils" }
+jobworkerp-base = { path = "../base" }
+jobworkerp-runner = { path = "../runner" }
+
+# HTTP Server
+axum = { version = "0.8", features = ["macros"] }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tokio-stream = { workspace = true }
+tower-http = { version = "0.6", features = ["cors"] }
+
+# Async utilities
+async-stream = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+json-patch = "3"
+
+# Redis (for scalable deployment)
+deadpool-redis = { workspace = true }
+
+# Utilities
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+dotenvy = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+rand = { workspace = true }
+opentelemetry = { workspace = true }
+pin-project-lite = "0.2"
+
+[dev-dependencies]
+tokio-test = "0.4"
+app = { path = "../app", features = ["test-utils"] }
+
+[features]
+default = []

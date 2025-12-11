@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use app::module::AppConfigModule;
-use clap::{arg, command, Parser};
+use clap::Parser;
 use command_utils::util::tracing::LoggingConfig;
 use jobworkerp_runner::runner::{
     factory::RunnerSpecFactory,
