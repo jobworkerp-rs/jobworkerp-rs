@@ -16,6 +16,7 @@ members = [
     "grpc-front",
     "worker-main",
     "mcp-server",
+    "ag-ui-front",
 ]
 
 resolver = "2"

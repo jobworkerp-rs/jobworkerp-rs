@@ -537,8 +537,8 @@ impl RunnerTrait for CommandRunnerImpl {
                     }
 
                     // Set up memory monitoring if enabled
-                    let memory_monitor_handle = if should_monitor_memory && process_id.is_some() {
-                        let process_pid = process_id.unwrap() as usize;
+                    let memory_monitor_handle = if let Some(pid) = process_id.filter(|_| should_monitor_memory) {
+                        let process_pid = pid as usize;
                         let max_mem = Arc::clone(&max_memory);
 
                         let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
