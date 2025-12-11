@@ -887,7 +887,8 @@
           "enum": [
             "continue",
             "exit",
-            "end"
+            "end",
+            "wait"
           ],
           "default": "continue"
         },

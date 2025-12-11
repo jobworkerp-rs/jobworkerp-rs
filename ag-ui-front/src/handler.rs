@@ -557,6 +557,9 @@ where
                                 .collect::<HashMap<String, serde_json::Value>>()
                         };
 
+                        // Check for HITL Waiting status
+                        let is_waiting = context.status == app_wrapper::workflow::execute::context::WorkflowStatus::Waiting;
+
                         // Convert context to state snapshot event
                         let state = WorkflowState::new(&context.name)
                             .with_status(match context.status {
@@ -565,7 +568,7 @@ where
                                 app_wrapper::workflow::execute::context::WorkflowStatus::Completed => WorkflowStatus::Completed,
                                 app_wrapper::workflow::execute::context::WorkflowStatus::Faulted => WorkflowStatus::Faulted,
                                 app_wrapper::workflow::execute::context::WorkflowStatus::Cancelled => WorkflowStatus::Cancelled,
-                                app_wrapper::workflow::execute::context::WorkflowStatus::Waiting => WorkflowStatus::Running, // Waiting maps to Running for AG-UI (Phase 5)
+                                app_wrapper::workflow::execute::context::WorkflowStatus::Waiting => WorkflowStatus::Running, // Waiting maps to Running for AG-UI protocol
                             })
                             .with_context_variables(context_vars);
 
@@ -576,6 +579,43 @@ where
                         let event_id = Self::encode_event_with_logging(&encoder, &event);
                         event_store.store_event(&run_id, event_id, event.clone()).await;
                         yield (event_id, event);
+
+                        // HITL: If workflow is waiting for user input, emit TOOL_CALL events
+                        if is_waiting {
+                            tracing::info!("Workflow waiting for user input, emitting TOOL_CALL events");
+
+                            // Generate tool_call_id from run_id for consistency
+                            let tool_call_id = format!("wait_{}", run_id);
+
+                            // Emit TOOL_CALL_START event
+                            let tool_call_start = AgUiEvent::tool_call_start(
+                                tool_call_id.clone(),
+                                "user_input".to_string(),
+                            );
+                            let start_event_id = Self::encode_event_with_logging(&encoder, &tool_call_start);
+                            event_store.store_event(&run_id, start_event_id, tool_call_start.clone()).await;
+                            yield (start_event_id, tool_call_start);
+
+                            // Emit TOOL_CALL_ARGS event with current output
+                            let args = context.output
+                                .as_ref()
+                                .map(|o| serde_json::to_string(o.as_ref()).unwrap_or_default())
+                                .unwrap_or_else(|| "{}".to_string());
+                            let tool_call_args = AgUiEvent::tool_call_args(
+                                tool_call_id.clone(),
+                                args,
+                            );
+                            let args_event_id = Self::encode_event_with_logging(&encoder, &tool_call_args);
+                            event_store.store_event(&run_id, args_event_id, tool_call_args.clone()).await;
+                            yield (args_event_id, tool_call_args);
+
+                            // Update session state to Paused
+                            session_manager.set_session_state(&session_id, SessionState::Paused).await;
+
+                            // Exit stream without emitting RUN_FINISHED
+                            tracing::info!("Workflow paused for HITL, session {} is now Paused", session_id);
+                            return;
+                        }
                     }
                     Err(e) => {
                         // Emit STEP_FINISHED for current step before error
