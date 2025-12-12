@@ -6,7 +6,7 @@ pub mod redis_store;
 pub mod store;
 
 // Re-export main types
-pub use manager::{InMemorySessionManager, Session, SessionManager, SessionState};
+pub use manager::{HitlWaitingInfo, InMemorySessionManager, Session, SessionManager, SessionState};
 pub use redis_manager::RedisSessionManager;
 pub use redis_store::RedisEventStore;
 pub use store::{EventStore, InMemoryEventStore};
