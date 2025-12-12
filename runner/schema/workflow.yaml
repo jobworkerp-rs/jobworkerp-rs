@@ -649,7 +649,7 @@ $defs:
     oneOf:
       - title: FlowDirectiveEnum
         type: string
-        enum: [continue, exit, end]
+        enum: [continue, exit, end, wait]
         default: continue
       - type: string
         description: Runtime expression evaluating to target task name.
