@@ -5,7 +5,7 @@
 use crate::config::AgUiServerConfig;
 use crate::error::{AgUiError, Result};
 use crate::events::{shared_adapter, AgUiEvent, EventEncoder, SharedWorkflowEventAdapter};
-use crate::session::{EventStore, Session, SessionManager, SessionState};
+use crate::session::{EventStore, HitlWaitingInfo, Session, SessionManager, SessionState};
 use crate::types::{RunAgentInput, RunId, ThreadId, WorkflowState, WorkflowStatus};
 use app::module::AppModule;
 use app_wrapper::modules::AppWrapperModule;
@@ -119,6 +119,9 @@ where
         // Parse workflow from context
         let workflow = self.parse_workflow_from_input(&input).await?;
 
+        // Extract workflow name for HITL checkpoint tracking
+        let workflow_name = workflow.document.name.to_string();
+
         // Create adapter for event conversion
         let adapter = shared_adapter(run_id.clone(), thread_id.clone());
 
@@ -144,6 +147,8 @@ where
             session.session_id.clone(),
             executor_registry,
             run_id_for_cleanup,
+            workflow_name,
+            true, // emit_run_started: true for new workflow runs
         );
 
         Ok((session, Box::pin(stream)))
@@ -327,6 +332,209 @@ where
         Ok(WorkflowState::new("unknown").with_status(WorkflowStatus::Pending))
     }
 
+    /// Resume a paused HITL workflow with user input.
+    ///
+    /// This method:
+    /// 1. Validates session is in Paused state
+    /// 2. Validates tool_call_id matches
+    /// 3. Retrieves checkpoint from storage
+    /// 4. Injects user_input into checkpoint
+    /// 5. Restarts workflow execution from checkpoint
+    /// 6. Returns event stream for resumed execution
+    pub async fn resume_workflow(
+        &self,
+        run_id: &str,
+        tool_call_id: &str,
+        user_input: serde_json::Value,
+    ) -> Result<Pin<Box<dyn Stream<Item = (u64, AgUiEvent)> + Send>>> {
+        let run_id_typed = RunId::new(run_id);
+
+        // 1. Find session and validate state
+        let session = self
+            .session_manager
+            .get_session_by_run_id(&run_id_typed)
+            .await
+            .ok_or_else(|| AgUiError::SessionNotFound(run_id.to_string()))?;
+
+        if session.state != SessionState::Paused {
+            return Err(AgUiError::SessionNotPaused {
+                current_state: format!("{:?}", session.state),
+            });
+        }
+
+        // 2. Get HITL waiting info and validate tool_call_id
+        let hitl_info =
+            session
+                .hitl_waiting_info
+                .as_ref()
+                .ok_or_else(|| AgUiError::HitlInfoNotFound {
+                    session_id: session.session_id.clone(),
+                })?;
+
+        if hitl_info.tool_call_id != tool_call_id {
+            return Err(AgUiError::InvalidToolCallId {
+                expected: hitl_info.tool_call_id.clone(),
+                actual: tool_call_id.to_string(),
+            });
+        }
+
+        // 3. Get checkpoint from repository
+        let execution_id = run_id_typed
+            .to_execution_id()
+            .ok_or_else(|| AgUiError::InvalidInput("Invalid run_id for execution".to_string()))?;
+        let checkpoint_repo = self
+            .app_wrapper_module
+            .repositories
+            .redis_checkpoint_repository
+            .as_ref()
+            .map(|r| r.as_ref())
+            .unwrap_or(
+                self.app_wrapper_module
+                    .repositories
+                    .memory_checkpoint_repository
+                    .as_ref(),
+            );
+        let checkpoint = checkpoint_repo
+            .get_checkpoint_with_id(
+                &execution_id,
+                &hitl_info.workflow_name,
+                &hitl_info.checkpoint_position,
+            )
+            .await
+            .map_err(AgUiError::Internal)?
+            .ok_or_else(|| AgUiError::CheckpointNotFound {
+                workflow_name: hitl_info.workflow_name.clone(),
+                position: hitl_info.checkpoint_position.clone(),
+            })?;
+
+        // 4. Modify checkpoint with user_input
+        // Set user_input as task.output (becomes next task's input) and in context_variables
+        let mut ctx_vars = (*checkpoint.workflow.context_variables).clone();
+        ctx_vars.insert("user_input".to_string(), user_input.clone());
+
+        let modified_checkpoint = CheckPointContext {
+            task: app_wrapper::workflow::execute::checkpoint::TaskCheckPointContext {
+                output: Arc::new(user_input),
+                ..checkpoint.task.clone()
+            },
+            workflow: app_wrapper::workflow::execute::checkpoint::WorkflowCheckPointContext {
+                context_variables: Arc::new(ctx_vars),
+                ..checkpoint.workflow.clone()
+            },
+            ..checkpoint.clone()
+        };
+
+        // 5. Get workflow schema for re-execution
+        let workflow = self
+            .app_module
+            .worker_app
+            .find_by_name(&hitl_info.workflow_name)
+            .await
+            .map_err(|e| {
+                AgUiError::Internal(anyhow::anyhow!(
+                    "Failed to find workflow '{}': {}",
+                    hitl_info.workflow_name,
+                    e
+                ))
+            })?
+            .ok_or_else(|| AgUiError::WorkflowDefinitionNotFound {
+                name: hitl_info.workflow_name.clone(),
+            })?;
+
+        let worker_data = workflow.data.ok_or_else(|| {
+            AgUiError::InvalidInput(format!("Worker '{}' has no data", hitl_info.workflow_name))
+        })?;
+
+        let schema: WorkflowSchema =
+            serde_json::from_slice(&worker_data.runner_settings).map_err(|e| {
+                AgUiError::InvalidInput(format!(
+                    "Invalid workflow schema in worker '{}': {}",
+                    hitl_info.workflow_name, e
+                ))
+            })?;
+
+        // 6. Create adapter for event conversion
+        let adapter = shared_adapter(run_id_typed.clone(), session.thread_id.clone());
+
+        // 7. Initialize executor from checkpoint (before updating session state)
+        let executor = WorkflowExecutor::init(
+            self.app_wrapper_module.clone(),
+            self.app_module.clone(),
+            Arc::new(schema),
+            modified_checkpoint.workflow.input.clone(),
+            Some(execution_id.clone()),
+            Arc::new(serde_json::json!({})),
+            Arc::new(HashMap::new()),
+            Some(modified_checkpoint),
+        )
+        .await
+        .map_err(|e| AgUiError::WorkflowInitFailed(format!("{:?}", e)))?;
+
+        // 8. Atomically clear HITL info and set session state to Active
+        // This is done after executor init succeeds to avoid leaving session in
+        // an inconsistent state if initialization fails.
+        if !self
+            .session_manager
+            .resume_from_paused(&session.session_id, SessionState::Active)
+            .await
+        {
+            return Err(AgUiError::Internal(anyhow::anyhow!(
+                "Failed to update session state from Paused to Active for session {}",
+                session.session_id
+            )));
+        }
+
+        // 9. Emit TOOL_CALL_RESULT and TOOL_CALL_END events
+        let tool_call_result = AgUiEvent::tool_call_result(
+            tool_call_id.to_string(),
+            serde_json::json!({"status": "resumed"}),
+        );
+        let result_event_id = Self::encode_event_with_logging(&self.encoder, &tool_call_result);
+        self.event_store
+            .store_event(run_id, result_event_id, tool_call_result.clone())
+            .await;
+
+        let tool_call_end = AgUiEvent::tool_call_end(tool_call_id.to_string());
+        let end_event_id = Self::encode_event_with_logging(&self.encoder, &tool_call_end);
+        self.event_store
+            .store_event(run_id, end_event_id, tool_call_end.clone())
+            .await;
+
+        // 10. Register executor for cancellation support
+        let executor = Arc::new(executor);
+        {
+            let mut registry = self.executor_registry.write().await;
+            registry.insert(run_id.to_string(), executor.clone());
+        }
+
+        // 11. Create event stream (prepend TOOL_CALL events, then workflow events)
+        let executor_registry = self.executor_registry.clone();
+        let run_id_for_stream = run_id.to_string();
+        let run_id_for_cleanup = run_id.to_string();
+        let workflow_name_for_stream = hitl_info.workflow_name.clone();
+
+        let workflow_stream = self.create_event_stream(
+            executor,
+            adapter,
+            run_id_for_stream,
+            session.session_id.clone(),
+            executor_registry,
+            run_id_for_cleanup,
+            workflow_name_for_stream,
+            false, // emit_run_started: false for HITL resume (RUN_STARTED already emitted)
+        );
+
+        // Prepend the tool_call events to the workflow stream
+        let tool_events = futures::stream::iter(vec![
+            (result_event_id, tool_call_result),
+            (end_event_id, tool_call_end),
+        ]);
+
+        let combined_stream = tool_events.chain(workflow_stream);
+
+        Ok(Box::pin(combined_stream))
+    }
+
     /// Parse workflow schema from input context.
     async fn parse_workflow_from_input(
         &self,
@@ -482,6 +690,11 @@ where
     /// Create the event stream from workflow execution.
     ///
     /// Returns a stream of (event_id, AgUiEvent) tuples for consistent SSE ID handling.
+    ///
+    /// # Arguments
+    /// * `emit_run_started` - Whether to emit RUN_STARTED event. Set to false for HITL resume
+    ///   to avoid duplicate RUN_STARTED events for the same run.
+    #[allow(clippy::too_many_arguments)]
     fn create_event_stream(
         &self,
         executor: Arc<WorkflowExecutor>,
@@ -490,14 +703,16 @@ where
         session_id: String,
         executor_registry: ExecutorRegistry,
         run_id_for_cleanup: String,
+        workflow_name: String,
+        emit_run_started: bool,
     ) -> impl Stream<Item = (u64, AgUiEvent)> + Send + 'static {
         let event_store = self.event_store.clone();
         let encoder = self.encoder.clone();
         let session_manager = self.session_manager.clone();
 
         stream! {
-            // Emit RUN_STARTED
-            {
+            // Emit RUN_STARTED (skip for HITL resume to avoid duplicate)
+            if emit_run_started {
                 let adapter_lock = adapter.lock().await;
                 let event = adapter_lock.workflow_started("workflow", None);
                 let event_id = Self::encode_event_with_logging(&encoder, &event);
@@ -587,10 +802,13 @@ where
                             // Generate tool_call_id from run_id for consistency
                             let tool_call_id = format!("wait_{}", run_id);
 
-                            // Emit TOOL_CALL_START event
+                            // Get checkpoint position for later resume
+                            let checkpoint_position = context.position.as_json_pointer();
+
+                            // Emit TOOL_CALL_START event with canonical HUMAN_INPUT tool name
                             let tool_call_start = AgUiEvent::tool_call_start(
                                 tool_call_id.clone(),
-                                "user_input".to_string(),
+                                "HUMAN_INPUT".to_string(),
                             );
                             let start_event_id = Self::encode_event_with_logging(&encoder, &tool_call_start);
                             event_store.store_event(&run_id, start_event_id, tool_call_start.clone()).await;
@@ -609,8 +827,45 @@ where
                             event_store.store_event(&run_id, args_event_id, tool_call_args.clone()).await;
                             yield (args_event_id, tool_call_args);
 
-                            // Update session state to Paused
-                            session_manager.set_session_state(&session_id, SessionState::Paused).await;
+                            // Update session state to Paused with HITL info for later resume
+                            let hitl_info = HitlWaitingInfo {
+                                tool_call_id: tool_call_id.clone(),
+                                checkpoint_position,
+                                workflow_name: workflow_name.clone(),
+                            };
+                            if !session_manager.set_paused_with_hitl_info(&session_id, hitl_info).await {
+                                // Failed to persist HITL state - emit RUN_ERROR and set session to Error
+                                tracing::error!(
+                                    session_id = %session_id,
+                                    run_id = %run_id,
+                                    "Failed to persist HITL waiting info, emitting RUN_ERROR"
+                                );
+
+                                let adapter_lock = adapter.lock().await;
+                                let error_event = adapter_lock.workflow_error(
+                                    "Failed to persist HITL waiting state".to_string(),
+                                    "HITL_PERSISTENCE_ERROR",
+                                    None,
+                                );
+                                drop(adapter_lock);
+
+                                let error_event_id = Self::encode_event_with_logging(&encoder, &error_event);
+                                event_store.store_event(&run_id, error_event_id, error_event.clone()).await;
+                                yield (error_event_id, error_event);
+
+                                session_manager.set_session_state(&session_id, SessionState::Error).await;
+                                return;
+                            }
+
+                            // Remove executor from registry so /stream does not treat the run as active
+                            {
+                                let mut registry = executor_registry.write().await;
+                                registry.remove(&run_id_for_cleanup);
+                                tracing::debug!(
+                                    run_id = %run_id_for_cleanup,
+                                    "Removed executor from registry for paused HITL run"
+                                );
+                            }
 
                             // Exit stream without emitting RUN_FINISHED
                             tracing::info!("Workflow paused for HITL, session {} is now Paused", session_id);

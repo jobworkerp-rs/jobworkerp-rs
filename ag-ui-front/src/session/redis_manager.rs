@@ -3,7 +3,7 @@
 //! This module provides a Redis-based implementation of the SessionManager trait,
 //! enabling session persistence across multiple AG-UI server instances.
 
-use super::manager::{Session, SessionManager, SessionState};
+use super::manager::{HitlWaitingInfo, Session, SessionManager, SessionState};
 use crate::types::ids::{RunId, ThreadId};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -16,6 +16,34 @@ const SESSION_KEY_PREFIX: &str = "ag_ui:session:";
 /// Redis key prefix for run_id index
 const RUN_ID_INDEX_PREFIX: &str = "ag_ui:run_index:";
 
+/// Serializable HITL waiting info for Redis storage
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RedisHitlWaitingInfo {
+    tool_call_id: String,
+    checkpoint_position: String,
+    workflow_name: String,
+}
+
+impl From<&HitlWaitingInfo> for RedisHitlWaitingInfo {
+    fn from(info: &HitlWaitingInfo) -> Self {
+        Self {
+            tool_call_id: info.tool_call_id.clone(),
+            checkpoint_position: info.checkpoint_position.clone(),
+            workflow_name: info.workflow_name.clone(),
+        }
+    }
+}
+
+impl From<RedisHitlWaitingInfo> for HitlWaitingInfo {
+    fn from(data: RedisHitlWaitingInfo) -> Self {
+        Self {
+            tool_call_id: data.tool_call_id,
+            checkpoint_position: data.checkpoint_position,
+            workflow_name: data.workflow_name,
+        }
+    }
+}
+
 /// Serializable session data for Redis storage
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RedisSessionData {
@@ -25,6 +53,8 @@ struct RedisSessionData {
     created_at: DateTime<Utc>,
     last_event_id: u64,
     state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hitl_waiting_info: Option<RedisHitlWaitingInfo>,
 }
 
 impl From<&Session> for RedisSessionData {
@@ -42,6 +72,10 @@ impl From<&Session> for RedisSessionData {
                 SessionState::Cancelled => "cancelled".to_string(),
                 SessionState::Error => "error".to_string(),
             },
+            hitl_waiting_info: session
+                .hitl_waiting_info
+                .as_ref()
+                .map(RedisHitlWaitingInfo::from),
         }
     }
 }
@@ -62,6 +96,7 @@ impl From<RedisSessionData> for Session {
                 "error" => SessionState::Error,
                 _ => SessionState::Active,
             },
+            hitl_waiting_info: data.hitl_waiting_info.map(HitlWaitingInfo::from),
         }
     }
 }
@@ -217,15 +252,40 @@ impl SessionManager for RedisSessionManager {
 
     async fn update_last_event_id(&self, session_id: &str, event_id: u64) -> bool {
         if let Some(mut session) = self.get_session(session_id).await {
+            let run_id = session.run_id.to_string();
             session.last_event_id = event_id;
             let data = RedisSessionData::from(&session);
 
             if let Ok(mut conn) = self.pool.get().await {
                 if let Ok(json) = serde_json::to_string(&data) {
                     let session_key = Self::session_key(session_id);
-                    let result: Result<(), _> =
-                        conn.set_ex(&session_key, &json, self.ttl_sec).await;
-                    return result.is_ok();
+                    let run_id_key = Self::run_id_key(&run_id);
+                    if let Err(e) = conn
+                        .set_ex::<_, _, ()>(&session_key, &json, self.ttl_sec)
+                        .await
+                    {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            error = %e,
+                            "Failed to update session in Redis"
+                        );
+                        return false;
+                    }
+                    // Refresh run_id index TTL to keep it in sync with session TTL
+                    if let Err(e) = conn
+                        .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
+                        .await
+                    {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            run_id = %run_id,
+                            ttl_sec = self.ttl_sec,
+                            error = %e,
+                            "Failed to refresh run_id index TTL"
+                        );
+                        return false;
+                    }
+                    return true;
                 }
             }
         }
@@ -234,15 +294,184 @@ impl SessionManager for RedisSessionManager {
 
     async fn set_session_state(&self, session_id: &str, state: SessionState) -> bool {
         if let Some(mut session) = self.get_session(session_id).await {
+            let run_id = session.run_id.to_string();
             session.state = state;
             let data = RedisSessionData::from(&session);
 
             if let Ok(mut conn) = self.pool.get().await {
                 if let Ok(json) = serde_json::to_string(&data) {
                     let session_key = Self::session_key(session_id);
-                    let result: Result<(), _> =
-                        conn.set_ex(&session_key, &json, self.ttl_sec).await;
-                    return result.is_ok();
+                    let run_id_key = Self::run_id_key(&run_id);
+                    if let Err(e) = conn
+                        .set_ex::<_, _, ()>(&session_key, &json, self.ttl_sec)
+                        .await
+                    {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            error = %e,
+                            "Failed to set session state in Redis"
+                        );
+                        return false;
+                    }
+                    // Refresh run_id index TTL to keep it in sync with session TTL
+                    if let Err(e) = conn
+                        .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
+                        .await
+                    {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            run_id = %run_id,
+                            ttl_sec = self.ttl_sec,
+                            error = %e,
+                            "Failed to refresh run_id index TTL"
+                        );
+                        return false;
+                    }
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    async fn set_paused_with_hitl_info(
+        &self,
+        session_id: &str,
+        hitl_info: HitlWaitingInfo,
+    ) -> bool {
+        if let Some(mut session) = self.get_session(session_id).await {
+            // Only allow transition to Paused from Active state
+            if session.state != SessionState::Active {
+                return false;
+            }
+            let run_id = session.run_id.to_string();
+            session.state = SessionState::Paused;
+            session.hitl_waiting_info = Some(hitl_info);
+            let data = RedisSessionData::from(&session);
+
+            if let Ok(mut conn) = self.pool.get().await {
+                if let Ok(json) = serde_json::to_string(&data) {
+                    let session_key = Self::session_key(session_id);
+                    let run_id_key = Self::run_id_key(&run_id);
+                    if let Err(e) = conn
+                        .set_ex::<_, _, ()>(&session_key, &json, self.ttl_sec)
+                        .await
+                    {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            error = %e,
+                            "Failed to set paused state with HITL info in Redis"
+                        );
+                        return false;
+                    }
+                    // Refresh run_id index TTL to keep it in sync with session TTL
+                    if let Err(e) = conn
+                        .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
+                        .await
+                    {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            run_id = %run_id,
+                            ttl_sec = self.ttl_sec,
+                            error = %e,
+                            "Failed to refresh run_id index TTL"
+                        );
+                        return false;
+                    }
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    async fn clear_hitl_info(&self, session_id: &str) -> bool {
+        if let Some(mut session) = self.get_session(session_id).await {
+            // Only clear HITL info if session is in Paused state
+            if session.state != SessionState::Paused {
+                return false;
+            }
+            let run_id = session.run_id.to_string();
+            session.hitl_waiting_info = None;
+            let data = RedisSessionData::from(&session);
+
+            if let Ok(mut conn) = self.pool.get().await {
+                if let Ok(json) = serde_json::to_string(&data) {
+                    let session_key = Self::session_key(session_id);
+                    let run_id_key = Self::run_id_key(&run_id);
+                    if let Err(e) = conn
+                        .set_ex::<_, _, ()>(&session_key, &json, self.ttl_sec)
+                        .await
+                    {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            error = %e,
+                            "Failed to clear HITL info in Redis"
+                        );
+                        return false;
+                    }
+                    // Refresh run_id index TTL to keep it in sync with session TTL
+                    if let Err(e) = conn
+                        .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
+                        .await
+                    {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            run_id = %run_id,
+                            ttl_sec = self.ttl_sec,
+                            error = %e,
+                            "Failed to refresh run_id index TTL"
+                        );
+                        return false;
+                    }
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    async fn resume_from_paused(&self, session_id: &str, new_state: SessionState) -> bool {
+        if let Some(mut session) = self.get_session(session_id).await {
+            // Only resume if session is in Paused state
+            if session.state != SessionState::Paused {
+                return false;
+            }
+            let run_id = session.run_id.to_string();
+            session.hitl_waiting_info = None;
+            session.state = new_state;
+            let data = RedisSessionData::from(&session);
+
+            if let Ok(mut conn) = self.pool.get().await {
+                if let Ok(json) = serde_json::to_string(&data) {
+                    let session_key = Self::session_key(session_id);
+                    let run_id_key = Self::run_id_key(&run_id);
+                    if let Err(e) = conn
+                        .set_ex::<_, _, ()>(&session_key, &json, self.ttl_sec)
+                        .await
+                    {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            error = %e,
+                            "Failed to resume from paused state in Redis"
+                        );
+                        return false;
+                    }
+                    // Refresh run_id index TTL to keep it in sync with session TTL
+                    if let Err(e) = conn
+                        .set_ex::<_, _, ()>(&run_id_key, session_id, self.ttl_sec)
+                        .await
+                    {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            run_id = %run_id,
+                            ttl_sec = self.ttl_sec,
+                            error = %e,
+                            "Failed to refresh run_id index TTL"
+                        );
+                        return false;
+                    }
+                    return true;
                 }
             }
         }
