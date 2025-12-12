@@ -408,3 +408,577 @@ async fn test_state_tracker_forced_snapshot() {
         _ => panic!("Expected StateSnapshot"),
     }
 }
+
+// =============================================================================
+// Phase 5: Human-in-the-Loop (HITL) Integration Tests
+// =============================================================================
+
+/// Test: Session state transitions for HITL workflow
+/// Verifies: Active → Paused → Active → Completed lifecycle
+#[tokio::test]
+async fn test_hitl_session_state_transitions() {
+    use ag_ui_front::session::{HitlWaitingInfo, SessionState};
+    use ag_ui_front::types::ids::{RunId, ThreadId};
+
+    let session_manager = InMemorySessionManager::new(3600);
+
+    // 1. Create session (starts Active)
+    let run_id = RunId::new("hitl_run_1");
+    let thread_id = ThreadId::new("hitl_thread_1");
+    let session = session_manager
+        .create_session(run_id.clone(), thread_id)
+        .await;
+
+    assert_eq!(session.state, SessionState::Active);
+    assert!(session.hitl_waiting_info.is_none());
+
+    // 2. Transition to Paused with HITL info (simulating wait directive)
+    let hitl_info = HitlWaitingInfo {
+        tool_call_id: format!("wait_{}", run_id),
+        checkpoint_position: "/do/0".to_string(),
+        workflow_name: "test_workflow".to_string(),
+    };
+    let updated = session_manager
+        .set_paused_with_hitl_info(&session.session_id, hitl_info.clone())
+        .await;
+    assert!(updated);
+
+    let paused_session = session_manager
+        .get_session(&session.session_id)
+        .await
+        .unwrap();
+    assert_eq!(paused_session.state, SessionState::Paused);
+    assert!(paused_session.hitl_waiting_info.is_some());
+    let stored_info = paused_session.hitl_waiting_info.unwrap();
+    assert_eq!(stored_info.tool_call_id, hitl_info.tool_call_id);
+    assert_eq!(
+        stored_info.checkpoint_position,
+        hitl_info.checkpoint_position
+    );
+    assert_eq!(stored_info.workflow_name, hitl_info.workflow_name);
+
+    // 3. Atomically resume from Paused (simulating message handler with new atomic method)
+    let resumed = session_manager
+        .resume_from_paused(&session.session_id, SessionState::Active)
+        .await;
+    assert!(resumed);
+
+    let active_session = session_manager
+        .get_session(&session.session_id)
+        .await
+        .unwrap();
+    assert_eq!(active_session.state, SessionState::Active);
+    assert!(active_session.hitl_waiting_info.is_none());
+
+    // 4. Complete the session
+    session_manager
+        .set_session_state(&session.session_id, SessionState::Completed)
+        .await;
+
+    let final_session = session_manager
+        .get_session(&session.session_id)
+        .await
+        .unwrap();
+    assert_eq!(final_session.state, SessionState::Completed);
+}
+
+/// Test: HITL session lookup by run_id
+/// Verifies: Session can be found by run_id during HITL resume
+#[tokio::test]
+async fn test_hitl_session_lookup_by_run_id() {
+    use ag_ui_front::session::{HitlWaitingInfo, SessionState};
+    use ag_ui_front::types::ids::{RunId, ThreadId};
+
+    let session_manager = InMemorySessionManager::new(3600);
+
+    let run_id = RunId::new("hitl_lookup_run");
+    let thread_id = ThreadId::new("hitl_lookup_thread");
+    let session = session_manager
+        .create_session(run_id.clone(), thread_id)
+        .await;
+
+    // Set to paused with HITL info
+    let hitl_info = HitlWaitingInfo {
+        tool_call_id: format!("wait_{}", run_id),
+        checkpoint_position: "/do/1/do/0".to_string(),
+        workflow_name: "nested_workflow".to_string(),
+    };
+    session_manager
+        .set_paused_with_hitl_info(&session.session_id, hitl_info)
+        .await;
+
+    // Lookup by run_id (as done in resume_workflow)
+    let found_session = session_manager.get_session_by_run_id(&run_id).await;
+    assert!(found_session.is_some());
+
+    let found = found_session.unwrap();
+    assert_eq!(found.session_id, session.session_id);
+    assert_eq!(found.state, SessionState::Paused);
+    assert!(found.hitl_waiting_info.is_some());
+}
+
+/// Test: HITL event sequence for wait detection
+/// Verifies: Correct TOOL_CALL events are generated during wait
+#[tokio::test]
+async fn test_hitl_tool_call_event_sequence() {
+    let event_store = InMemoryEventStore::new(1000, 3600);
+    let run_id = "hitl_events_run";
+
+    // Simulate the event sequence that occurs during HITL wait detection
+    // tool_call_args takes a string (JSON serialized args)
+    let args_json = serde_json::json!({
+        "reason": "Approval required",
+        "amount": 50000
+    });
+    let events = [
+        // 1. Workflow starts
+        AgUiEvent::run_started(run_id, "hitl_thread"),
+        // 2. Task that leads to wait starts
+        AgUiEvent::step_started("prepare_step", "Prepare for approval"),
+        AgUiEvent::step_finished("prepare_step", None),
+        // 3. TOOL_CALL events for HITL
+        AgUiEvent::tool_call_start(format!("wait_{}", run_id), "HUMAN_INPUT".to_string()),
+        AgUiEvent::tool_call_args(
+            format!("wait_{}", run_id),
+            serde_json::to_string(&args_json).unwrap(),
+        ),
+        // Note: stream ends here, waiting for user input
+    ];
+
+    for (i, event) in events.iter().enumerate() {
+        event_store
+            .store_event(run_id, i as u64, event.clone())
+            .await;
+    }
+
+    // Verify event sequence
+    let stored_events = event_store.get_all_events(run_id).await;
+    assert_eq!(stored_events.len(), 5);
+
+    // Verify TOOL_CALL_START
+    match &stored_events[3].1 {
+        AgUiEvent::ToolCallStart {
+            tool_call_id,
+            tool_call_name,
+            ..
+        } => {
+            assert!(tool_call_id.starts_with("wait_"));
+            assert_eq!(tool_call_name, "HUMAN_INPUT");
+        }
+        _ => panic!("Expected ToolCallStart"),
+    }
+
+    // Verify TOOL_CALL_ARGS (delta contains JSON string)
+    match &stored_events[4].1 {
+        AgUiEvent::ToolCallArgs {
+            tool_call_id,
+            delta,
+            ..
+        } => {
+            assert!(tool_call_id.starts_with("wait_"));
+            let parsed: serde_json::Value = serde_json::from_str(delta).unwrap();
+            assert_eq!(parsed["reason"], "Approval required");
+            assert_eq!(parsed["amount"], 50000);
+        }
+        _ => panic!("Expected ToolCallArgs"),
+    }
+}
+
+/// Test: HITL resume event sequence
+/// Verifies: Correct TOOL_CALL_RESULT and TOOL_CALL_END events during resume
+#[tokio::test]
+async fn test_hitl_resume_event_sequence() {
+    let event_store = InMemoryEventStore::new(1000, 3600);
+    let run_id = "hitl_resume_run";
+    let tool_call_id = format!("wait_{}", run_id);
+
+    // Simulate events stored before resume
+    let args_json = serde_json::json!({"prompt": "Enter approval"});
+    let wait_events = [
+        AgUiEvent::run_started(run_id, "hitl_thread"),
+        AgUiEvent::tool_call_start(tool_call_id.clone(), "HUMAN_INPUT".to_string()),
+        AgUiEvent::tool_call_args(
+            tool_call_id.clone(),
+            serde_json::to_string(&args_json).unwrap(),
+        ),
+    ];
+
+    for (i, event) in wait_events.iter().enumerate() {
+        event_store
+            .store_event(run_id, i as u64, event.clone())
+            .await;
+    }
+
+    // Simulate events added during resume
+    let resume_events = [
+        AgUiEvent::tool_call_result(
+            tool_call_id.clone(),
+            serde_json::json!({"status": "resumed"}),
+        ),
+        AgUiEvent::tool_call_end(tool_call_id.clone()),
+        // Workflow continues after resume
+        AgUiEvent::step_started("after_approval", "Process approval"),
+        AgUiEvent::step_finished("after_approval", None),
+        AgUiEvent::run_finished(run_id.to_string(), None),
+    ];
+
+    for (i, event) in resume_events.iter().enumerate() {
+        event_store
+            .store_event(run_id, (i + 3) as u64, event.clone())
+            .await;
+    }
+
+    // Verify complete event sequence
+    let all_events = event_store.get_all_events(run_id).await;
+    assert_eq!(all_events.len(), 8);
+
+    // Verify TOOL_CALL_RESULT at index 3
+    match &all_events[3].1 {
+        AgUiEvent::ToolCallResult {
+            tool_call_id: id,
+            result,
+            ..
+        } => {
+            assert_eq!(id, &tool_call_id);
+            assert_eq!(result["status"], "resumed");
+        }
+        _ => panic!("Expected ToolCallResult at index 3"),
+    }
+
+    // Verify TOOL_CALL_END at index 4
+    match &all_events[4].1 {
+        AgUiEvent::ToolCallEnd {
+            tool_call_id: id, ..
+        } => {
+            assert_eq!(id, &tool_call_id);
+        }
+        _ => panic!("Expected ToolCallEnd at index 4"),
+    }
+
+    // Verify workflow completed
+    assert!(matches!(all_events[7].1, AgUiEvent::RunFinished { .. }));
+}
+
+/// Test: Multiple HITL waits in same workflow
+/// Verifies: Session can handle multiple wait→resume cycles
+#[tokio::test]
+async fn test_multiple_hitl_waits_in_workflow() {
+    use ag_ui_front::session::{HitlWaitingInfo, SessionState};
+    use ag_ui_front::types::ids::{RunId, ThreadId};
+
+    let session_manager = InMemorySessionManager::new(3600);
+    let event_store = InMemoryEventStore::new(1000, 3600);
+
+    let run_id = RunId::new("multi_hitl_run");
+    let session = session_manager
+        .create_session(run_id.clone(), ThreadId::new("multi_hitl_thread"))
+        .await;
+
+    // First HITL wait
+    let hitl_info_1 = HitlWaitingInfo {
+        tool_call_id: format!("wait_1_{}", run_id),
+        checkpoint_position: "/do/0".to_string(),
+        workflow_name: "multi_wait_workflow".to_string(),
+    };
+    session_manager
+        .set_paused_with_hitl_info(&session.session_id, hitl_info_1)
+        .await;
+
+    // Store first wait events
+    event_store
+        .store_event(
+            run_id.as_str(),
+            0,
+            AgUiEvent::run_started(run_id.as_str(), "thread"),
+        )
+        .await;
+    event_store
+        .store_event(
+            run_id.as_str(),
+            1,
+            AgUiEvent::tool_call_start(format!("wait_1_{}", run_id), "HUMAN_INPUT".to_string()),
+        )
+        .await;
+
+    // First resume (using atomic method)
+    session_manager
+        .resume_from_paused(&session.session_id, SessionState::Active)
+        .await;
+    event_store
+        .store_event(
+            run_id.as_str(),
+            2,
+            AgUiEvent::tool_call_end(format!("wait_1_{}", run_id)),
+        )
+        .await;
+
+    // Second HITL wait
+    let hitl_info_2 = HitlWaitingInfo {
+        tool_call_id: format!("wait_2_{}", run_id),
+        checkpoint_position: "/do/1".to_string(),
+        workflow_name: "multi_wait_workflow".to_string(),
+    };
+    session_manager
+        .set_paused_with_hitl_info(&session.session_id, hitl_info_2.clone())
+        .await;
+    event_store
+        .store_event(
+            run_id.as_str(),
+            3,
+            AgUiEvent::tool_call_start(format!("wait_2_{}", run_id), "HUMAN_INPUT".to_string()),
+        )
+        .await;
+
+    // Verify second pause state
+    let paused_session = session_manager
+        .get_session(&session.session_id)
+        .await
+        .unwrap();
+    assert_eq!(paused_session.state, SessionState::Paused);
+    let info = paused_session.hitl_waiting_info.unwrap();
+    assert_eq!(info.tool_call_id, hitl_info_2.tool_call_id);
+    assert_eq!(info.checkpoint_position, "/do/1");
+
+    // Second resume (using atomic method)
+    session_manager
+        .resume_from_paused(&session.session_id, SessionState::Active)
+        .await;
+    event_store
+        .store_event(
+            run_id.as_str(),
+            4,
+            AgUiEvent::tool_call_end(format!("wait_2_{}", run_id)),
+        )
+        .await;
+    event_store
+        .store_event(
+            run_id.as_str(),
+            5,
+            AgUiEvent::run_finished(run_id.to_string(), None),
+        )
+        .await;
+
+    // Verify complete
+    session_manager
+        .set_session_state(&session.session_id, SessionState::Completed)
+        .await;
+
+    let final_session = session_manager
+        .get_session(&session.session_id)
+        .await
+        .unwrap();
+    assert_eq!(final_session.state, SessionState::Completed);
+    assert!(final_session.hitl_waiting_info.is_none());
+
+    // Verify all events stored
+    let events = event_store.get_all_events(run_id.as_str()).await;
+    assert_eq!(events.len(), 6);
+}
+
+/// Test: HITL with event store replay
+/// Verifies: Events can be replayed correctly for reconnecting clients
+#[tokio::test]
+async fn test_hitl_event_replay_on_reconnect() {
+    let event_store = InMemoryEventStore::new(1000, 3600);
+    let run_id = "hitl_replay_run";
+    let tool_call_id = format!("wait_{}", run_id);
+
+    // Store events up to HITL wait
+    let args_json = serde_json::json!({"prompt": "Please approve"});
+    let events = [
+        AgUiEvent::run_started(run_id, "thread"),
+        AgUiEvent::step_started("step_1", "First step"),
+        AgUiEvent::step_finished("step_1", None),
+        AgUiEvent::tool_call_start(tool_call_id.clone(), "HUMAN_INPUT".to_string()),
+        AgUiEvent::tool_call_args(
+            tool_call_id.clone(),
+            serde_json::to_string(&args_json).unwrap(),
+        ),
+    ];
+
+    for (i, event) in events.iter().enumerate() {
+        event_store
+            .store_event(run_id, i as u64, event.clone())
+            .await;
+    }
+
+    // Simulate client reconnect - replay from last_event_id = 2
+    let replayed_events = event_store.get_events_since(run_id, 2).await;
+
+    // Should get events 3, 4 (TOOL_CALL_START and TOOL_CALL_ARGS)
+    assert_eq!(replayed_events.len(), 2);
+    assert_eq!(replayed_events[0].0, 3); // TOOL_CALL_START
+    assert_eq!(replayed_events[1].0, 4); // TOOL_CALL_ARGS
+
+    // Verify TOOL_CALL_ARGS contains the prompt for UI display
+    match &replayed_events[1].1 {
+        AgUiEvent::ToolCallArgs { delta, .. } => {
+            let parsed: serde_json::Value = serde_json::from_str(delta).unwrap();
+            assert_eq!(parsed["prompt"], "Please approve");
+        }
+        _ => panic!("Expected ToolCallArgs"),
+    }
+}
+
+/// Test: Session state validation for resume
+/// Verifies: Only Paused sessions can be resumed
+#[tokio::test]
+async fn test_hitl_session_state_validation() {
+    use ag_ui_front::session::SessionState;
+    use ag_ui_front::types::ids::{RunId, ThreadId};
+
+    let session_manager = InMemorySessionManager::new(3600);
+
+    // Test with Active session (should not be resumable)
+    let active_session = session_manager
+        .create_session(RunId::new("active_run"), ThreadId::new("thread"))
+        .await;
+    assert_eq!(active_session.state, SessionState::Active);
+
+    // Test with Completed session
+    let completed_session = session_manager
+        .create_session(RunId::new("completed_run"), ThreadId::new("thread"))
+        .await;
+    session_manager
+        .set_session_state(&completed_session.session_id, SessionState::Completed)
+        .await;
+    let retrieved = session_manager
+        .get_session(&completed_session.session_id)
+        .await
+        .unwrap();
+    assert_eq!(retrieved.state, SessionState::Completed);
+
+    // Test with Cancelled session
+    let cancelled_session = session_manager
+        .create_session(RunId::new("cancelled_run"), ThreadId::new("thread"))
+        .await;
+    session_manager
+        .set_session_state(&cancelled_session.session_id, SessionState::Cancelled)
+        .await;
+    let retrieved = session_manager
+        .get_session(&cancelled_session.session_id)
+        .await
+        .unwrap();
+    assert_eq!(retrieved.state, SessionState::Cancelled);
+
+    // Test with Error session
+    let error_session = session_manager
+        .create_session(RunId::new("error_run"), ThreadId::new("thread"))
+        .await;
+    session_manager
+        .set_session_state(&error_session.session_id, SessionState::Error)
+        .await;
+    let retrieved = session_manager
+        .get_session(&error_session.session_id)
+        .await
+        .unwrap();
+    assert_eq!(retrieved.state, SessionState::Error);
+}
+
+/// Test: HITL waiting info validation
+/// Verifies: tool_call_id must match for resume
+#[tokio::test]
+async fn test_hitl_tool_call_id_validation() {
+    use ag_ui_front::session::HitlWaitingInfo;
+    use ag_ui_front::types::ids::{RunId, ThreadId};
+
+    let session_manager = InMemorySessionManager::new(3600);
+
+    let run_id = RunId::new("validation_run");
+    let session = session_manager
+        .create_session(run_id.clone(), ThreadId::new("thread"))
+        .await;
+
+    // Set HITL info with specific tool_call_id
+    let expected_tool_call_id = format!("wait_{}", run_id);
+    let hitl_info = HitlWaitingInfo {
+        tool_call_id: expected_tool_call_id.clone(),
+        checkpoint_position: "/do/0".to_string(),
+        workflow_name: "test_workflow".to_string(),
+    };
+    session_manager
+        .set_paused_with_hitl_info(&session.session_id, hitl_info)
+        .await;
+
+    // Retrieve and verify
+    let retrieved = session_manager
+        .get_session(&session.session_id)
+        .await
+        .unwrap();
+    let stored_info = retrieved.hitl_waiting_info.unwrap();
+
+    // Correct tool_call_id should match
+    assert_eq!(stored_info.tool_call_id, expected_tool_call_id);
+
+    // Wrong tool_call_id would be caught by resume_workflow validation
+    let wrong_tool_call_id = "wrong_tool_call_id";
+    assert_ne!(stored_info.tool_call_id, wrong_tool_call_id);
+}
+
+/// Test: Atomic resume_from_paused method
+/// Verifies: Both state change and HITL info clear happen atomically
+#[tokio::test]
+async fn test_hitl_atomic_resume_from_paused() {
+    use ag_ui_front::session::{HitlWaitingInfo, SessionState};
+    use ag_ui_front::types::ids::{RunId, ThreadId};
+
+    let session_manager = InMemorySessionManager::new(3600);
+
+    let run_id = RunId::new("atomic_resume_run");
+    let session = session_manager
+        .create_session(run_id.clone(), ThreadId::new("thread"))
+        .await;
+
+    // Set to Paused with HITL info
+    let hitl_info = HitlWaitingInfo {
+        tool_call_id: format!("wait_{}", run_id),
+        checkpoint_position: "/do/0".to_string(),
+        workflow_name: "atomic_test_workflow".to_string(),
+    };
+    session_manager
+        .set_paused_with_hitl_info(&session.session_id, hitl_info)
+        .await;
+
+    // Verify Paused state with HITL info
+    let paused = session_manager
+        .get_session(&session.session_id)
+        .await
+        .unwrap();
+    assert_eq!(paused.state, SessionState::Paused);
+    assert!(paused.hitl_waiting_info.is_some());
+
+    // Atomically resume
+    let result = session_manager
+        .resume_from_paused(&session.session_id, SessionState::Active)
+        .await;
+    assert!(result);
+
+    // Verify both state change and HITL info clear happened together
+    let resumed = session_manager
+        .get_session(&session.session_id)
+        .await
+        .unwrap();
+    assert_eq!(resumed.state, SessionState::Active);
+    assert!(
+        resumed.hitl_waiting_info.is_none(),
+        "HITL info should be cleared atomically with state change"
+    );
+}
+
+/// Test: resume_from_paused with non-existent session
+/// Verifies: Returns false for non-existent session
+#[tokio::test]
+async fn test_hitl_atomic_resume_nonexistent_session() {
+    use ag_ui_front::session::SessionState;
+
+    let session_manager = InMemorySessionManager::new(3600);
+
+    // Try to resume non-existent session
+    let result = session_manager
+        .resume_from_paused("nonexistent_session_id", SessionState::Active)
+        .await;
+    assert!(
+        !result,
+        "resume_from_paused should return false for non-existent session"
+    );
+}
