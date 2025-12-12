@@ -373,6 +373,7 @@ pub enum Then {
     Continue,
     Exit,
     End,
+    Wait,
     TaskName(String),
 }
 
@@ -388,6 +389,7 @@ impl Then {
                 workflow::FlowDirectiveEnum::Continue => Ok(Then::Continue),
                 workflow::FlowDirectiveEnum::Exit => Ok(Then::Exit),
                 workflow::FlowDirectiveEnum::End => Ok(Then::End),
+                workflow::FlowDirectiveEnum::Wait => Ok(Then::Wait),
             },
             FlowDirective::Variant1(subtype_1) => {
                 match Self::execute_transform(output, subtype_1, expression)? {
@@ -412,6 +414,7 @@ impl FromStr for Then {
             "continue" => Ok(Then::Continue),
             "exit" => Ok(Then::Exit),
             "end" => Ok(Then::End),
+            "wait" => Ok(Then::Wait),
             _ => Ok(Then::TaskName(s.to_string())),
         }
     }
@@ -422,6 +425,7 @@ impl fmt::Display for Then {
             Then::Continue => write!(f, "continue"),
             Then::Exit => write!(f, "exit"),
             Then::End => write!(f, "end"),
+            Then::Wait => write!(f, "wait"),
             Then::TaskName(name) => write!(f, "{name}"),
         }
     }
@@ -431,7 +435,7 @@ impl fmt::Display for Then {
 pub enum WorkflowStatus {
     Pending,
     Running,
-    Waiting, // not implemented
+    Waiting, // HITL: waiting for user input (then: wait)
     Completed,
     Faulted,
     Cancelled,

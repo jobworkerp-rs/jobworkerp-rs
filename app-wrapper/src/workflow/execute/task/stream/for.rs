@@ -4,7 +4,7 @@ use crate::workflow::{
         workflow::{self, tasks::TaskTrait, ForOnError},
     },
     execute::{
-        context::{TaskContext, WorkflowContext},
+        context::{TaskContext, WorkflowContext, WorkflowStatus},
         expression::UseExpression,
         task::{
             stream::do_::DoTaskStreamExecutor, trace::TaskTracing, ExecutionId,
@@ -316,6 +316,9 @@ impl ForTaskStreamExecutor {
                     execution_id,
                 );
 
+                // Save position for potential Wait error reporting
+                let item_position = prepared_context.position.clone();
+
                 // Execute the stream and track results
                 let stream = do_stream_executor
                     .execute_stream(ccx, task_name_formatted.clone(), prepared_context)
@@ -344,6 +347,30 @@ impl ForTaskStreamExecutor {
                                         elapsed_ms
                                     );
 
+                                    // Check for unsupported Wait inside ForTask (parallel)
+                                    let result = if let Ok(ref ctx) = result {
+                                        let wf_status = workflow_context.read().await.status.clone();
+                                        if wf_status == WorkflowStatus::Waiting {
+                                            tracing::error!(
+                                                "Wait directive inside ForTask is not supported (parallel): task={}",
+                                                task_name_formatted
+                                            );
+                                            // Reset status to Running to allow error propagation
+                                            workflow_context.write().await.status = WorkflowStatus::Running;
+                                            let error = workflow::errors::ErrorFactory::new().bad_argument(
+                                                "Wait directive inside ForTask is not currently supported. \
+                                                 Move the 'then: wait' to a task outside of the for loop.".to_string(),
+                                                Some(ctx.position.read().await.as_error_instance()),
+                                                None,
+                                            );
+                                            Err(error)
+                                        } else {
+                                            result
+                                        }
+                                    } else {
+                                        result
+                                    };
+
                                     let is_error = result.is_err();
                                     if is_error && on_error == ForOnError::Break {
                                         // Signal all other tasks to cancel
@@ -367,7 +394,26 @@ impl ForTaskStreamExecutor {
                                     }
                                 }
                                 None => {
-                                    // Stream completed normally
+                                    // Stream completed - check for Wait state
+                                    let wf_status = workflow_context.read().await.status.clone();
+                                    if wf_status == WorkflowStatus::Waiting {
+                                        tracing::error!(
+                                            "Wait directive inside ForTask is not supported (parallel, detected after stream end): task={}",
+                                            task_name_formatted
+                                        );
+                                        // Reset status to Running to allow error propagation
+                                        workflow_context.write().await.status = WorkflowStatus::Running;
+                                        let error = workflow::errors::ErrorFactory::new().bad_argument(
+                                            "Wait directive inside ForTask is not currently supported. \
+                                             Move the 'then: wait' to a task outside of the for loop.".to_string(),
+                                            Some(item_position.read().await.as_error_instance()),
+                                            None,
+                                        );
+                                        if on_error == ForOnError::Break {
+                                            let _ = cancel_tx_clone.send(true);
+                                        }
+                                        let _ = tx.send(Err(error)).await;
+                                    }
                                     break;
                                 }
                             }
@@ -488,6 +534,9 @@ impl ForTaskStreamExecutor {
                             self.execution_id.clone(),
                         );
 
+                        // Save position for potential Wait error reporting
+                        let item_position = prepared_context.position.clone();
+
                         // Execute this item's stream completely before moving to next
                         let mut item_stream = do_stream_executor.execute_stream(
                             item_cx,
@@ -499,6 +548,24 @@ impl ForTaskStreamExecutor {
                         while let Some(result) = item_stream.next().await {
                             match result {
                                 Ok(ctx) => {
+                                    // Check for unsupported Wait inside ForTask
+                                    let wf_status = self.workflow_context.read().await.status.clone();
+                                    if wf_status == WorkflowStatus::Waiting {
+                                        tracing::error!(
+                                            "Wait directive inside ForTask is not supported: task={}",
+                                            task_name
+                                        );
+                                        // Reset status to Running to allow error propagation
+                                        self.workflow_context.write().await.status = WorkflowStatus::Running;
+                                        let error = workflow::errors::ErrorFactory::new().bad_argument(
+                                            "Wait directive inside ForTask is not currently supported. \
+                                             Move the 'then: wait' to a task outside of the for loop.".to_string(),
+                                            Some(ctx.position.read().await.as_error_instance()),
+                                            None,
+                                        );
+                                        yield Err(error);
+                                        return;
+                                    }
                                     yield Ok(ctx);
                                 }
                                 Err(e) => {
@@ -520,6 +587,25 @@ impl ForTaskStreamExecutor {
                                     }
                                 }
                             }
+                        }
+
+                        // Check for Wait after stream ended (DoTaskStreamExecutor ends stream on wait)
+                        let wf_status = self.workflow_context.read().await.status.clone();
+                        if wf_status == WorkflowStatus::Waiting {
+                            tracing::error!(
+                                "Wait directive inside ForTask is not supported (detected after stream end): task={}",
+                                task_name
+                            );
+                            // Reset status to Running to allow error propagation
+                            self.workflow_context.write().await.status = WorkflowStatus::Running;
+                            let error = workflow::errors::ErrorFactory::new().bad_argument(
+                                "Wait directive inside ForTask is not currently supported. \
+                                 Move the 'then: wait' to a task outside of the for loop.".to_string(),
+                                Some(item_position.read().await.as_error_instance()),
+                                None,
+                            );
+                            yield Err(error);
+                            return;
                         }
                     }
                     Err(e) => {
@@ -1097,6 +1183,352 @@ mod tests {
 
             // Should have stopped processing after error
             assert!(stopped_early, "Processing should have stopped early due to error in break mode");
+        });
+    }
+
+    /// Test that wait directive inside sequential ForTask returns an error
+    /// ForTask internal wait is not supported due to complexity of parallel iteration state management
+    #[test]
+    fn test_for_task_sequential_wait_not_supported() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            use crate::modules::test::create_test_app_wrapper_module;
+            use crate::workflow::execute::workflow::WorkflowExecutor;
+            use futures_util::pin_mut;
+
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
+
+            // Create workflow with wait inside sequential for loop
+            let workflow_json = serde_json::json!({
+                "document": {
+                    "dsl": "1.0.0",
+                    "namespace": "test",
+                    "name": "for-task-sequential-wait-test",
+                    "version": "1.0.0",
+                    "metadata": {}
+                },
+                "input": {
+                    "schema": {
+                        "document": {
+                            "type": "object",
+                            "properties": {
+                                "items": {
+                                    "type": "array",
+                                    "items": {"type": "string"}
+                                }
+                            }
+                        }
+                    }
+                },
+                "do": [
+                    {
+                        "process_items": {
+                            "for": {
+                                "in": "${.items}",
+                                "each": "item",
+                                "at": "index"
+                            },
+                            "do": [
+                                {
+                                    "process_item": {
+                                        "set": {
+                                            "processed_item": "${$item}"
+                                        },
+                                        "then": "wait"  // Wait inside for loop - not supported
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            });
+
+            let workflow =
+                Arc::new(serde_json::from_value::<WorkflowSchema>(workflow_json).unwrap());
+
+            let input = Arc::new(serde_json::json!({
+                "items": ["item0", "item1", "item2"]
+            }));
+            let context = Arc::new(serde_json::json!({}));
+
+            let executor = WorkflowExecutor::init(
+                app_wrapper_module,
+                app_module,
+                workflow,
+                input,
+                None,
+                context,
+                Arc::new(HashMap::new()),
+                None,
+            )
+            .await
+            .unwrap();
+
+            let workflow_stream =
+                executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+            pin_mut!(workflow_stream);
+
+            let mut found_error = false;
+            let mut error_message = String::new();
+
+            while let Some(result) = workflow_stream.next().await {
+                match result {
+                    Err(e) => {
+                        error_message = format!("{}", e);
+                        found_error = true;
+                        break;
+                    }
+                    Ok(_) => continue,
+                }
+            }
+
+            assert!(
+                found_error,
+                "Expected error when wait is used inside ForTask"
+            );
+            assert!(
+                error_message.contains("Wait directive inside ForTask is not currently supported"),
+                "Error message should indicate wait inside ForTask is not supported, got: {}",
+                error_message
+            );
+        });
+    }
+
+    /// Test that wait directive inside parallel ForTask returns an error
+    #[test]
+    fn test_for_task_parallel_wait_not_supported() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            use crate::modules::test::create_test_app_wrapper_module;
+            use crate::workflow::execute::workflow::WorkflowExecutor;
+            use futures_util::pin_mut;
+
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
+
+            // Create workflow with wait inside parallel for loop
+            let workflow_json = serde_json::json!({
+                "document": {
+                    "dsl": "1.0.0",
+                    "namespace": "test",
+                    "name": "for-task-parallel-wait-test",
+                    "version": "1.0.0",
+                    "metadata": {}
+                },
+                "input": {
+                    "schema": {
+                        "document": {
+                            "type": "object",
+                            "properties": {
+                                "items": {
+                                    "type": "array",
+                                    "items": {"type": "string"}
+                                }
+                            }
+                        }
+                    }
+                },
+                "do": [
+                    {
+                        "process_items": {
+                            "for": {
+                                "in": "${.items}",
+                                "each": "item",
+                                "at": "index"
+                            },
+                            "parallel": true,  // Parallel execution
+                            "do": [
+                                {
+                                    "process_item": {
+                                        "set": {
+                                            "processed_item": "${$item}"
+                                        },
+                                        "then": "wait"  // Wait inside parallel for loop - not supported
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            });
+
+            let workflow =
+                Arc::new(serde_json::from_value::<WorkflowSchema>(workflow_json).unwrap());
+
+            let input = Arc::new(serde_json::json!({
+                "items": ["item0", "item1", "item2"]
+            }));
+            let context = Arc::new(serde_json::json!({}));
+
+            let executor = WorkflowExecutor::init(
+                app_wrapper_module,
+                app_module,
+                workflow,
+                input,
+                None,
+                context,
+                Arc::new(HashMap::new()),
+                None,
+            )
+            .await
+            .unwrap();
+
+            let workflow_stream =
+                executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+            pin_mut!(workflow_stream);
+
+            let mut found_error = false;
+            let mut error_message = String::new();
+
+            while let Some(result) = workflow_stream.next().await {
+                match result {
+                    Err(e) => {
+                        error_message = format!("{}", e);
+                        found_error = true;
+                        break;
+                    }
+                    Ok(_) => continue,
+                }
+            }
+
+            assert!(
+                found_error,
+                "Expected error when wait is used inside parallel ForTask"
+            );
+            assert!(
+                error_message.contains("Wait directive inside ForTask is not currently supported"),
+                "Error message should indicate wait inside ForTask is not supported, got: {}",
+                error_message
+            );
+        });
+    }
+
+    /// Test that wait directive works correctly AFTER ForTask completes
+    #[test]
+    fn test_wait_after_for_task_works() {
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            use crate::modules::test::create_test_app_wrapper_module;
+            use crate::workflow::execute::context::WorkflowStatus;
+            use crate::workflow::execute::workflow::WorkflowExecutor;
+            use futures_util::pin_mut;
+
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+            let app_wrapper_module = Arc::new(create_test_app_wrapper_module(app_module.clone()));
+
+            // Create workflow: ForTask -> WaitTask (wait is OUTSIDE for loop)
+            let workflow_json = serde_json::json!({
+                "document": {
+                    "dsl": "1.0.0",
+                    "namespace": "test",
+                    "name": "wait-after-for-test",
+                    "version": "1.0.0",
+                    "metadata": {}
+                },
+                "input": {
+                    "schema": {
+                        "document": {
+                            "type": "object",
+                            "properties": {
+                                "items": {
+                                    "type": "array",
+                                    "items": {"type": "string"}
+                                }
+                            }
+                        }
+                    }
+                },
+                "do": [
+                    {
+                        "process_items": {
+                            "for": {
+                                "in": "${.items}",
+                                "each": "item",
+                                "at": "index"
+                            },
+                            "do": [
+                                {
+                                    "process_item": {
+                                        "set": {
+                                            "processed_item": "${$item}"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "wait_for_user": {
+                            "set": {
+                                "waiting": true
+                            },
+                            "then": "wait"  // Wait AFTER for loop - should work
+                        }
+                    },
+                    {
+                        "after_wait": {
+                            "set": {
+                                "completed": true
+                            }
+                        }
+                    }
+                ]
+            });
+
+            let workflow =
+                Arc::new(serde_json::from_value::<WorkflowSchema>(workflow_json).unwrap());
+
+            let input = Arc::new(serde_json::json!({
+                "items": ["item0", "item1"]
+            }));
+            let context = Arc::new(serde_json::json!({}));
+
+            let executor = WorkflowExecutor::init(
+                app_wrapper_module,
+                app_module,
+                workflow,
+                input,
+                None,
+                context,
+                Arc::new(HashMap::new()),
+                None,
+            )
+            .await
+            .unwrap();
+
+            let workflow_stream =
+                executor.execute_workflow(Arc::new(opentelemetry::Context::current()));
+            pin_mut!(workflow_stream);
+
+            let mut last_status = WorkflowStatus::Running;
+            let mut has_error = false;
+
+            while let Some(result) = workflow_stream.next().await {
+                match result {
+                    Err(e) => {
+                        println!("Unexpected error: {:?}", e);
+                        has_error = true;
+                        break;
+                    }
+                    Ok(wc) => {
+                        last_status = wc.status.clone();
+                        // Check if after_wait task executed (it shouldn't)
+                        if let Some(output) = wc.output.as_ref() {
+                            if let Some(obj) = output.as_object() {
+                                assert!(
+                                    !obj.contains_key("completed"),
+                                    "Task after wait should not execute"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            assert!(!has_error, "Should not have any errors");
+            assert_eq!(
+                last_status,
+                WorkflowStatus::Waiting,
+                "Workflow should be in Waiting status after wait directive"
+            );
         });
     }
 }

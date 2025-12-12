@@ -1006,6 +1006,8 @@ pub enum FlowDirectiveEnum {
     Exit,
     #[serde(rename = "end")]
     End,
+    #[serde(rename = "wait")]
+    Wait,
 }
 impl ::std::convert::From<&Self> for FlowDirectiveEnum {
     fn from(value: &FlowDirectiveEnum) -> Self {
@@ -1018,6 +1020,7 @@ impl ::std::fmt::Display for FlowDirectiveEnum {
             Self::Continue => write!(f, "continue"),
             Self::Exit => write!(f, "exit"),
             Self::End => write!(f, "end"),
+            Self::Wait => write!(f, "wait"),
         }
     }
 }
@@ -1028,6 +1031,7 @@ impl ::std::str::FromStr for FlowDirectiveEnum {
             "continue" => Ok(Self::Continue),
             "exit" => Ok(Self::Exit),
             "end" => Ok(Self::End),
+            "wait" => Ok(Self::Wait),
             _ => Err("invalid value".into()),
         }
     }

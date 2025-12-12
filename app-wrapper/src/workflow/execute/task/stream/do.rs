@@ -269,6 +269,85 @@ impl DoTaskStreamExecutor {
                         tracing::info!("Exit Task: {}", name);
                         None
                     }
+                    Then::Wait => {
+                        // HITL: Workflow suspension requested
+                        tracing::info!("Wait Task: {}, suspending workflow for user input", name);
+
+                        // Determine if this is a valid wait scenario
+                        // NOTE: At this point, result.position is "/do" (both index and task_name removed)
+                        let is_valid_wait = if next_pair.is_some() {
+                            // Next task exists - valid wait
+                            true
+                        } else {
+                            // No next task in this do-list
+                            let current_pos = result.position.read().await;
+                            let pos_len = current_pos.full().len();
+                            drop(current_pos);
+
+                            if pos_len <= 2 {
+                                // Root-level do (e.g., /ROOT/do) - workflow is essentially complete
+                                // Wait at the end of root do-list is meaningless
+                                tracing::warn!(
+                                    "Wait at the last task of root do-list is ineffective. \
+                                     Workflow will complete instead of waiting. \
+                                     Consider moving 'then: wait' to an earlier task or restructuring the workflow."
+                                );
+                                // Set status to Completed instead of Waiting
+                                self.workflow_context.write().await.status = WorkflowStatus::Completed;
+                                false
+                            } else {
+                                // Nested do - valid wait (will resume at parent task)
+                                true
+                            }
+                        };
+
+                        // Save checkpoint if repository is available and wait is valid
+                        if is_valid_wait {
+                            if let (Some(repo), Some(exec_id)) = (&self.checkpoint_repository, &self.execution_id) {
+                                // Calculate checkpoint position for resume
+                                let checkpoint_position = if let Some((next_name, (next_idx, _))) = next_pair.as_ref() {
+                                    // Next task exists: build position for next task
+                                    let mut pos = result.position.read().await.clone();
+                                    pos.push_idx(*next_idx);       // Add next task's index
+                                    pos.push(next_name.to_string());   // Add next task's name
+                                    pos
+                                } else {
+                                    // Nested do: save parent task's position for resume
+                                    let current_pos = result.position.read().await;
+                                    let mut parent_pos = current_pos.clone();
+                                    drop(current_pos);
+                                    parent_pos.pop(); // Remove "do" to get parent task position
+                                    parent_pos
+                                };
+
+                                let wf_ctx = self.workflow_context.read().await;
+                                let checkpoint = crate::workflow::execute::checkpoint::CheckPointContext::new_with_position(
+                                    &wf_ctx,
+                                    &result,
+                                    checkpoint_position.clone(),
+                                ).await;
+
+                                if let Err(e) = repo
+                                    .save_checkpoint_with_id(exec_id, &wf_ctx.document.name, &checkpoint)
+                                    .await
+                                {
+                                    tracing::error!("Failed to save checkpoint for wait: {:#?}", e);
+                                } else {
+                                    tracing::info!(
+                                        "Checkpoint saved for wait, resume position: {}",
+                                        checkpoint_position.as_json_pointer()
+                                    );
+                                }
+                                drop(wf_ctx);
+                            }
+
+                            // Set status to Waiting
+                            self.workflow_context.write().await.status = WorkflowStatus::Waiting;
+                        }
+                        // If not valid wait, status was already set to Completed above
+
+                        None  // Exit loop
+                    }
                     Then::TaskName(ref tname) => {
                         tracing::info!("Jump to task: {}", tname);
                         task_map
@@ -901,6 +980,347 @@ mod tests {
             assert_eq!(
                 workflow_context.read().await.status,
                 WorkflowStatus::Completed
+            );
+        })
+    }
+
+    /// Test wait directive in middle of task list - verifies next task position calculation
+    #[test]
+    fn test_wait_directive_middle_task_position() {
+        use crate::workflow::execute::checkpoint::repository::{
+            CheckPointRepositoryWithId, CheckPointRepositoryWithIdImpl,
+        };
+        use crate::workflow::execute::task::ExecutionId;
+        use memory_utils::cache::moka::MokaCacheConfig;
+
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+
+            // Create workflow: task1 -> task2(wait) -> task3
+            let task_map_list = {
+                let mut map1 = HashMap::new();
+                map1.insert(
+                    "task1".to_string(),
+                    Task::SetTask(SetTask {
+                        set: {
+                            let mut m = serde_json::Map::new();
+                            m.insert("step".to_string(), serde_json::json!("first"));
+                            m
+                        },
+                        export: None,
+                        if_: None,
+                        input: None,
+                        metadata: serde_json::Map::new(),
+                        output: None,
+                        then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Continue)),
+                        timeout: None,
+                        checkpoint: false,
+                    }),
+                );
+                let mut map2 = HashMap::new();
+                map2.insert(
+                    "task2_wait".to_string(),
+                    Task::SetTask(SetTask {
+                        set: {
+                            let mut m = serde_json::Map::new();
+                            m.insert("step".to_string(), serde_json::json!("waiting"));
+                            m
+                        },
+                        export: None,
+                        if_: None,
+                        input: None,
+                        metadata: serde_json::Map::new(),
+                        output: None,
+                        then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Wait)), // Wait here
+                        timeout: None,
+                        checkpoint: false,
+                    }),
+                );
+                let mut map3 = HashMap::new();
+                map3.insert(
+                    "task3_after".to_string(),
+                    Task::SetTask(SetTask {
+                        set: {
+                            let mut m = serde_json::Map::new();
+                            m.insert("step".to_string(), serde_json::json!("after_wait"));
+                            m
+                        },
+                        export: None,
+                        if_: None,
+                        input: None,
+                        metadata: serde_json::Map::new(),
+                        output: None,
+                        then: Some(FlowDirective::Variant0(FlowDirectiveEnum::End)),
+                        timeout: None,
+                        checkpoint: false,
+                    }),
+                );
+                vec![map1, map2, map3]
+            };
+            let task_list = TaskList(task_map_list);
+
+            let workflow = WorkflowSchema {
+                checkpointing: None,
+                document: Document {
+                    name: WorkflowName::from_str("wait-position-test").unwrap(),
+                    version: WorkflowVersion::from_str("1.0.0").unwrap(),
+                    metadata: serde_json::Map::new(),
+                    ..Default::default()
+                },
+                input: Input {
+                    schema: None,
+                    from: None,
+                },
+                output: Some(Output {
+                    as_: None,
+                    schema: None,
+                }),
+                do_: task_list,
+            };
+
+            let input = Arc::new(serde_json::json!({"test": "input"}));
+            let context = Arc::new(serde_json::json!({}));
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                &workflow,
+                input.clone(),
+                context,
+                None,
+            )));
+
+            // Setup checkpoint repository
+            let checkpoint_repo: Arc<dyn CheckPointRepositoryWithId> = Arc::new(
+                CheckPointRepositoryWithIdImpl::new_memory(&MokaCacheConfig::default()),
+            );
+            let execution_id =
+                Arc::new(ExecutionId::new("test-wait-position".to_string()).unwrap());
+
+            let do_task = workflow.create_do_task(Arc::new(HashMap::new()));
+            let executor = DoTaskStreamExecutor::new(
+                workflow_context.clone(),
+                Duration::from_secs(1200),
+                Arc::new(HashMap::new()),
+                do_task,
+                Arc::new(JobExecutorWrapper::new(app_module)),
+                Some(checkpoint_repo.clone()),
+                Some(execution_id.clone()),
+            );
+
+            let task_context = TaskContext::new(
+                None,
+                input.clone(),
+                Arc::new(Mutex::new(serde_json::Map::new())),
+            );
+
+            // Initialize position with ROOT (as WorkflowExecutor's TaskExecutor does)
+            task_context.add_position_name("ROOT".to_string()).await;
+
+            workflow_context.write().await.status = WorkflowStatus::Running;
+            let mut task_stream = executor.execute_stream(
+                Arc::new(opentelemetry::Context::current()),
+                Arc::new("test".to_string()),
+                task_context,
+            );
+
+            // Collect all results
+            while let Some(tc) = task_stream.next().await {
+                if tc.is_err() {
+                    panic!("Unexpected error: {:?}", tc);
+                }
+            }
+
+            // Verify workflow status is Waiting
+            assert_eq!(
+                workflow_context.read().await.status,
+                WorkflowStatus::Waiting,
+                "Workflow should be in Waiting status after wait directive"
+            );
+
+            // Verify checkpoint was saved with correct next task position
+            // Key format: workflow_name:execution_id:position
+            let checkpoint_key = format!(
+                "{}:{}:{}",
+                workflow.document.name.as_str(),
+                execution_id.value,
+                "/ROOT/do/2/task3_after" // Expected: next task position
+            );
+            let saved_checkpoint = checkpoint_repo
+                .checkpoint_repository()
+                .get_checkpoint(&checkpoint_key)
+                .await
+                .expect("Checkpoint query should succeed");
+
+            assert!(
+                saved_checkpoint.is_some(),
+                "Checkpoint should be saved at next task position: {}",
+                checkpoint_key
+            );
+
+            let checkpoint = saved_checkpoint.unwrap();
+            // Verify the position points to task3_after (index 2)
+            let pos_str = checkpoint.position.as_json_pointer();
+            assert!(
+                pos_str.contains("task3_after"),
+                "Checkpoint position should point to next task 'task3_after', got: {}",
+                pos_str
+            );
+            assert!(
+                pos_str.contains("/2/"),
+                "Checkpoint position should contain index 2 for task3_after, got: {}",
+                pos_str
+            );
+        })
+    }
+
+    /// Test wait directive at last task - verifies position when no next task exists
+    #[test]
+    fn test_wait_directive_last_task_position() {
+        use crate::workflow::execute::checkpoint::repository::{
+            CheckPointRepositoryWithId, CheckPointRepositoryWithIdImpl,
+        };
+        use crate::workflow::execute::task::ExecutionId;
+        use memory_utils::cache::moka::MokaCacheConfig;
+
+        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
+            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
+
+            // Create workflow: task1 -> task2(wait) - no task3
+            let task_map_list = {
+                let mut map1 = HashMap::new();
+                map1.insert(
+                    "task1".to_string(),
+                    Task::SetTask(SetTask {
+                        set: {
+                            let mut m = serde_json::Map::new();
+                            m.insert("step".to_string(), serde_json::json!("first"));
+                            m
+                        },
+                        export: None,
+                        if_: None,
+                        input: None,
+                        metadata: serde_json::Map::new(),
+                        output: None,
+                        then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Continue)),
+                        timeout: None,
+                        checkpoint: false,
+                    }),
+                );
+                let mut map2 = HashMap::new();
+                map2.insert(
+                    "task2_wait_last".to_string(),
+                    Task::SetTask(SetTask {
+                        set: {
+                            let mut m = serde_json::Map::new();
+                            m.insert("step".to_string(), serde_json::json!("waiting_last"));
+                            m
+                        },
+                        export: None,
+                        if_: None,
+                        input: None,
+                        metadata: serde_json::Map::new(),
+                        output: None,
+                        then: Some(FlowDirective::Variant0(FlowDirectiveEnum::Wait)), // Wait at last task
+                        timeout: None,
+                        checkpoint: false,
+                    }),
+                );
+                vec![map1, map2]
+            };
+            let task_list = TaskList(task_map_list);
+
+            let workflow = WorkflowSchema {
+                checkpointing: None,
+                document: Document {
+                    name: WorkflowName::from_str("wait-last-position-test").unwrap(),
+                    version: WorkflowVersion::from_str("1.0.0").unwrap(),
+                    metadata: serde_json::Map::new(),
+                    ..Default::default()
+                },
+                input: Input {
+                    schema: None,
+                    from: None,
+                },
+                output: Some(Output {
+                    as_: None,
+                    schema: None,
+                }),
+                do_: task_list,
+            };
+
+            let input = Arc::new(serde_json::json!({"test": "input"}));
+            let context = Arc::new(serde_json::json!({}));
+            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
+                &workflow,
+                input.clone(),
+                context,
+                None,
+            )));
+
+            // Setup checkpoint repository
+            let checkpoint_repo: Arc<dyn CheckPointRepositoryWithId> = Arc::new(
+                CheckPointRepositoryWithIdImpl::new_memory(&MokaCacheConfig::default()),
+            );
+            let execution_id =
+                Arc::new(ExecutionId::new("test-wait-last-position".to_string()).unwrap());
+
+            let do_task = workflow.create_do_task(Arc::new(HashMap::new()));
+            let executor = DoTaskStreamExecutor::new(
+                workflow_context.clone(),
+                Duration::from_secs(1200),
+                Arc::new(HashMap::new()),
+                do_task,
+                Arc::new(JobExecutorWrapper::new(app_module)),
+                Some(checkpoint_repo.clone()),
+                Some(execution_id.clone()),
+            );
+
+            let task_context = TaskContext::new(
+                None,
+                input.clone(),
+                Arc::new(Mutex::new(serde_json::Map::new())),
+            );
+
+            // Initialize position with ROOT (as WorkflowExecutor's TaskExecutor does)
+            task_context.add_position_name("ROOT".to_string()).await;
+
+            workflow_context.write().await.status = WorkflowStatus::Running;
+            let mut task_stream = executor.execute_stream(
+                Arc::new(opentelemetry::Context::current()),
+                Arc::new("test".to_string()),
+                task_context,
+            );
+
+            // Collect all results
+            while let Some(tc) = task_stream.next().await {
+                if tc.is_err() {
+                    panic!("Unexpected error: {:?}", tc);
+                }
+            }
+
+            // When wait is at last task of root-level do, workflow should be Completed (not Waiting)
+            // because wait at the end of root do-list is ineffective
+            assert_eq!(
+                workflow_context.read().await.status,
+                WorkflowStatus::Completed,
+                "Workflow should be Completed when wait is at last task of root do-list"
+            );
+
+            // No checkpoint should be saved for root-level last task wait
+            // Try a few possible key patterns to verify no checkpoint exists
+            let checkpoint_key = format!(
+                "{}:{}:{}",
+                workflow.document.name.as_str(),
+                execution_id.value,
+                "/ROOT/do"
+            );
+            let saved_checkpoint = checkpoint_repo
+                .checkpoint_repository()
+                .get_checkpoint(&checkpoint_key)
+                .await
+                .expect("Checkpoint query should succeed");
+
+            assert!(
+                saved_checkpoint.is_none(),
+                "No checkpoint should be saved when wait is at last task of root do-list"
             );
         })
     }
