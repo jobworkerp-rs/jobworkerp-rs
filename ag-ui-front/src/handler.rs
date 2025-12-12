@@ -116,8 +116,8 @@ where
             .create_session(run_id.clone(), thread_id.clone())
             .await;
 
-        // Parse workflow from context
-        let workflow = self.parse_workflow_from_input(&input).await?;
+        // Parse workflow from context (including optional workflow_context)
+        let (workflow, workflow_context) = self.parse_workflow_from_input(&input).await?;
 
         // Extract workflow name for HITL checkpoint tracking
         let workflow_name = workflow.document.name.to_string();
@@ -127,7 +127,7 @@ where
 
         // Initialize workflow executor with run_id for checkpoint tracking
         let executor = self
-            .init_workflow_executor(workflow, input, &run_id, adapter.clone())
+            .init_workflow_executor(workflow, input, &run_id, adapter.clone(), workflow_context)
             .await?;
 
         // Register executor for cancellation support
@@ -536,14 +536,18 @@ where
     }
 
     /// Parse workflow schema from input context.
+    /// Returns (workflow_schema, workflow_context) tuple.
     async fn parse_workflow_from_input(
         &self,
         input: &RunAgentInput,
-    ) -> Result<Arc<WorkflowSchema>> {
+    ) -> Result<(Arc<WorkflowSchema>, Option<serde_json::Value>)> {
         // Try to extract inline workflow first, then fall back to workflow by name
         for ctx in &input.context {
             match ctx {
-                crate::types::Context::WorkflowInline { workflow } => {
+                crate::types::Context::WorkflowInline {
+                    workflow,
+                    workflow_context,
+                } => {
                     let schema: WorkflowSchema =
                         serde_json::from_value(workflow.clone()).map_err(|e| {
                             AgUiError::InvalidInput(format!(
@@ -551,7 +555,7 @@ where
                                 e
                             ))
                         })?;
-                    return Ok(Arc::new(schema));
+                    return Ok((Arc::new(schema), workflow_context.clone()));
                 }
                 crate::types::Context::WorkflowDefinition { workflow_name, .. } => {
                     // Search for REUSABLE_WORKFLOW runner Worker by name
@@ -583,7 +587,8 @@ where
                                 workflow_name, e
                             ))
                         })?;
-                    return Ok(Arc::new(schema));
+                    // WorkflowDefinition doesn't support workflowContext
+                    return Ok((Arc::new(schema), None));
                 }
                 _ => continue,
             }
@@ -603,6 +608,7 @@ where
         input: RunAgentInput,
         run_id: &RunId,
         _adapter: SharedWorkflowEventAdapter,
+        workflow_context: Option<serde_json::Value>,
     ) -> Result<WorkflowExecutor> {
         let app_module = self.app_module.clone();
 
@@ -641,8 +647,29 @@ where
             "tools": input.tools,
         }));
 
-        // Extract context variables from forwarded_props (currently empty, can be extended)
-        let context_value = Arc::new(serde_json::json!({}));
+        // Parse workflow_context: can be a JSON string or an object
+        // If it's a string, try to parse it as JSON
+        let context_value = Arc::new(match workflow_context {
+            Some(serde_json::Value::String(s)) => {
+                // Try to parse string as JSON object
+                serde_json::from_str(&s).unwrap_or_else(|e| {
+                    tracing::warn!(
+                        "Failed to parse workflowContext string as JSON: {}, using as-is",
+                        e
+                    );
+                    serde_json::json!({ "raw": s })
+                })
+            }
+            Some(obj @ serde_json::Value::Object(_)) => obj,
+            Some(other) => {
+                tracing::warn!(
+                    "workflowContext is not a string or object: {:?}, wrapping in 'value' key",
+                    other
+                );
+                serde_json::json!({ "value": other })
+            }
+            None => serde_json::json!({}),
+        });
 
         // Build metadata
         let metadata = Arc::new(HashMap::new());
