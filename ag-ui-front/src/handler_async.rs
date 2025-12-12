@@ -121,12 +121,13 @@ where
             .create_session(run_id.clone(), thread_id.clone())
             .await;
 
-        // Parse workflow from context
-        let workflow = self.parse_workflow_from_input(&input).await?;
+        // Parse workflow from context (including optional workflow_context)
+        let (workflow, workflow_context) = self.parse_workflow_from_input(&input).await?;
         let workflow_name = workflow.document.name.to_string();
 
         // Build InlineWorkflowArgs
-        let args = self.build_inline_workflow_args(&input, &workflow, run_id.as_str())?;
+        let args =
+            self.build_inline_workflow_args(&input, &workflow, run_id.as_str(), workflow_context)?;
         let args_bytes = args.encode_to_vec();
 
         // Create adapter for event conversion
@@ -466,13 +467,17 @@ where
     }
 
     /// Parse workflow schema from input context.
+    /// Returns (workflow_schema, workflow_context) tuple.
     async fn parse_workflow_from_input(
         &self,
         input: &RunAgentInput,
-    ) -> Result<Arc<WorkflowSchema>> {
+    ) -> Result<(Arc<WorkflowSchema>, Option<serde_json::Value>)> {
         for ctx in &input.context {
             match ctx {
-                crate::types::Context::WorkflowInline { workflow } => {
+                crate::types::Context::WorkflowInline {
+                    workflow,
+                    workflow_context,
+                } => {
                     let schema: WorkflowSchema =
                         serde_json::from_value(workflow.clone()).map_err(|e| {
                             AgUiError::InvalidInput(format!(
@@ -480,7 +485,7 @@ where
                                 e
                             ))
                         })?;
-                    return Ok(Arc::new(schema));
+                    return Ok((Arc::new(schema), workflow_context.clone()));
                 }
                 crate::types::Context::WorkflowDefinition { workflow_name, .. } => {
                     let worker = self
@@ -510,7 +515,8 @@ where
                                 workflow_name, e
                             ))
                         })?;
-                    return Ok(Arc::new(schema));
+                    // WorkflowDefinition doesn't support workflowContext
+                    return Ok((Arc::new(schema), None));
                 }
                 _ => continue,
             }
@@ -527,6 +533,7 @@ where
         input: &RunAgentInput,
         workflow: &WorkflowSchema,
         run_id: &str,
+        workflow_context: Option<serde_json::Value>,
     ) -> Result<InlineWorkflowArgs> {
         use jobworkerp_runner::jobworkerp::runner::inline_workflow_args::WorkflowSource;
 
@@ -538,10 +545,34 @@ where
             "tools": input.tools,
         });
 
+        // Parse workflow_context: can be a JSON string or an object
+        // Convert to JSON string for protobuf field
+        let workflow_context_str = match workflow_context {
+            Some(serde_json::Value::String(s)) => {
+                // Already a string - use as-is (may be a JSON string that needs to stay as-is)
+                // But first try to parse it to validate it's valid JSON
+                match serde_json::from_str::<serde_json::Value>(&s) {
+                    Ok(_) => Some(s), // Valid JSON string, use as-is
+                    Err(e) => {
+                        tracing::warn!(
+                            "workflowContext string is not valid JSON: {}, wrapping in object",
+                            e
+                        );
+                        Some(serde_json::json!({ "raw": s }).to_string())
+                    }
+                }
+            }
+            Some(obj) => {
+                // Convert object/array/etc. to JSON string
+                Some(serde_json::to_string(&obj).unwrap_or_else(|_| "{}".to_string()))
+            }
+            None => None,
+        };
+
         Ok(InlineWorkflowArgs {
             workflow_source: Some(WorkflowSource::WorkflowData(workflow_json)),
             input: serde_json::to_string(&input_json).unwrap_or_else(|_| "{}".to_string()),
-            workflow_context: None,
+            workflow_context: workflow_context_str,
             execution_id: Some(run_id.to_string()),
             from_checkpoint: None,
         })
