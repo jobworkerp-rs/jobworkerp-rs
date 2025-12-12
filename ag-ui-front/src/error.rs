@@ -54,6 +54,26 @@ pub enum AgUiError {
         position: Option<String>,
     },
 
+    // HITL-specific errors
+    /// Session not in Paused state for HITL resume
+    #[error("Session not paused: current state is {current_state}")]
+    SessionNotPaused { current_state: String },
+
+    /// Invalid tool_call_id for HITL resume
+    #[error("Invalid tool_call_id: expected {expected}, got {actual}")]
+    InvalidToolCallId { expected: String, actual: String },
+
+    /// Checkpoint not found for HITL resume
+    #[error("Checkpoint not found: {workflow_name} at {position}")]
+    CheckpointNotFound {
+        workflow_name: String,
+        position: String,
+    },
+
+    /// HITL waiting info not found
+    #[error("HITL waiting info not found for session: {session_id}")]
+    HitlInfoNotFound { session_id: String },
+
     /// Internal error
     #[error("Internal error: {0}")]
     Internal(#[from] anyhow::Error),
@@ -94,6 +114,11 @@ impl AgUiError {
                     _ => "INTERNAL_ERROR",
                 }
             }
+            // HITL-specific error codes
+            AgUiError::SessionNotPaused { .. } => "INVALID_SESSION_STATE",
+            AgUiError::InvalidToolCallId { .. } => "INVALID_TOOL_CALL_ID",
+            AgUiError::CheckpointNotFound { .. } => "CHECKPOINT_NOT_FOUND",
+            AgUiError::HitlInfoNotFound { .. } => "HITL_INFO_NOT_FOUND",
             AgUiError::Internal(_) => "INTERNAL_ERROR",
             AgUiError::Serialization(_) => "SERIALIZATION_ERROR",
         }

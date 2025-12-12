@@ -23,6 +23,17 @@ pub enum SessionState {
     Error,
 }
 
+/// Information about HITL waiting state
+#[derive(Debug, Clone)]
+pub struct HitlWaitingInfo {
+    /// Tool call ID for the waiting state (format: wait_{run_id})
+    pub tool_call_id: String,
+    /// Checkpoint position (JSON Pointer format)
+    pub checkpoint_position: String,
+    /// Workflow name for checkpoint lookup
+    pub workflow_name: String,
+}
+
 /// Session information
 #[derive(Debug, Clone)]
 pub struct Session {
@@ -38,6 +49,8 @@ pub struct Session {
     pub last_event_id: u64,
     /// Current session state
     pub state: SessionState,
+    /// HITL waiting information (set when state is Paused)
+    pub hitl_waiting_info: Option<HitlWaitingInfo>,
 }
 
 impl Session {
@@ -50,6 +63,7 @@ impl Session {
             created_at: Utc::now(),
             last_event_id: 0,
             state: SessionState::Active,
+            hitl_waiting_info: None,
         }
     }
 }
@@ -71,6 +85,21 @@ pub trait SessionManager: Send + Sync {
 
     /// Set the session state
     async fn set_session_state(&self, session_id: &str, state: SessionState) -> bool;
+
+    /// Set session state to Paused with HITL waiting info
+    async fn set_paused_with_hitl_info(&self, session_id: &str, hitl_info: HitlWaitingInfo)
+        -> bool;
+
+    /// Clear HITL waiting info (when resuming)
+    async fn clear_hitl_info(&self, session_id: &str) -> bool;
+
+    /// Atomically resume from Paused state: clears HITL info and sets new state.
+    ///
+    /// This method ensures both operations happen under the same lock to prevent
+    /// transient invalid states (e.g., Paused with no hitl_info).
+    ///
+    /// Returns false if session not found.
+    async fn resume_from_paused(&self, session_id: &str, new_state: SessionState) -> bool;
 
     /// Delete a session
     async fn delete_session(&self, session_id: &str) -> bool;
@@ -243,6 +272,54 @@ impl SessionManager for InMemorySessionManager {
         let mut sessions = self.inner.sessions.write().await;
         if let Some(session) = sessions.get_mut(session_id) {
             session.state = state;
+            true
+        } else {
+            false
+        }
+    }
+
+    async fn set_paused_with_hitl_info(
+        &self,
+        session_id: &str,
+        hitl_info: HitlWaitingInfo,
+    ) -> bool {
+        let mut sessions = self.inner.sessions.write().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            // Only allow transition to Paused from Active state
+            if session.state != SessionState::Active {
+                return false;
+            }
+            session.state = SessionState::Paused;
+            session.hitl_waiting_info = Some(hitl_info);
+            true
+        } else {
+            false
+        }
+    }
+
+    async fn clear_hitl_info(&self, session_id: &str) -> bool {
+        let mut sessions = self.inner.sessions.write().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            // Only clear HITL info if session is in Paused state
+            if session.state != SessionState::Paused {
+                return false;
+            }
+            session.hitl_waiting_info = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    async fn resume_from_paused(&self, session_id: &str, new_state: SessionState) -> bool {
+        let mut sessions = self.inner.sessions.write().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            // Only resume if session is in Paused state
+            if session.state != SessionState::Paused {
+                return false;
+            }
+            session.hitl_waiting_info = None;
+            session.state = new_state;
             true
         } else {
             false

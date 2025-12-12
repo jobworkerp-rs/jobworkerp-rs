@@ -223,20 +223,87 @@ where
     Ok(Sse::new(sse_stream).keep_alive(KeepAlive::default()))
 }
 
+/// HITL message request body
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct HitlMessageRequest {
+    /// Run ID of the paused workflow
+    run_id: String,
+    /// Tool call results containing user input
+    tool_call_results: Vec<ToolCallResultInput>,
+}
+
+/// Single tool call result from client
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ToolCallResultInput {
+    /// Tool call ID (must match the one issued in TOOL_CALL_START)
+    tool_call_id: String,
+    /// User input result
+    result: serde_json::Value,
+}
+
 /// POST /ag-ui/message - Send message to running workflow (Human-in-the-Loop).
+///
+/// Resumes a paused HITL workflow with user input.
+/// Returns an SSE stream with resumed workflow events.
 async fn message_handler<SM, ES>(
-    State(_state): State<Arc<AppState<SM, ES>>>,
-    Json(_body): Json<serde_json::Value>,
-) -> Result<Json<serde_json::Value>, AppError>
+    State(state): State<Arc<AppState<SM, ES>>>,
+    Json(body): Json<HitlMessageRequest>,
+) -> Result<impl IntoResponse, AppError>
 where
     SM: SessionManager + Clone + Send + Sync + 'static,
     ES: EventStore + Clone + Send + Sync + 'static,
 {
-    // Human-in-the-Loop implementation placeholder (Phase 5)
-    Ok(Json(serde_json::json!({
-        "status": "not_implemented",
-        "message": "Human-in-the-Loop support is planned for Phase 5"
-    })))
+    let HitlMessageRequest {
+        run_id,
+        mut tool_call_results,
+    } = body;
+
+    // Validate input: exactly one tool_call_result required
+    if tool_call_results.len() != 1 {
+        return Err(AppError(AgUiError::InvalidInput(format!(
+            "tool_call_results must contain exactly 1 item, got {}",
+            tool_call_results.len()
+        ))));
+    }
+
+    // Extract the single tool call result
+    let tool_call_result = tool_call_results.remove(0);
+
+    // Resume the workflow with user input
+    let event_stream = state
+        .handler
+        .resume_workflow(
+            &run_id,
+            &tool_call_result.tool_call_id,
+            tool_call_result.result,
+        )
+        .await?;
+
+    // Convert to SSE stream
+    let sse_stream = event_stream.map(move |(event_id, event)| {
+        let event_type = event.event_type();
+        let data = match serde_json::to_string(&event) {
+            Ok(serialized) => serialized,
+            Err(e) => {
+                tracing::warn!(error = ?e, "Failed to serialize event for SSE");
+                "{}".to_string()
+            }
+        };
+        Ok::<_, Infallible>(
+            Event::default()
+                .event(event_type)
+                .data(data)
+                .id(event_id.to_string()),
+        )
+    });
+
+    let response = Sse::new(sse_stream)
+        .keep_alive(KeepAlive::default())
+        .into_response();
+
+    Ok(response)
 }
 
 /// DELETE /ag-ui/run/{run_id} - Cancel a running workflow.
@@ -312,6 +379,33 @@ impl IntoResponse for AppError {
                 StatusCode::GATEWAY_TIMEOUT,
                 "TIMEOUT",
                 format!("Timeout after {} seconds", timeout_sec),
+            ),
+            // HITL-specific errors
+            AgUiError::SessionNotPaused { current_state } => (
+                StatusCode::CONFLICT,
+                "INVALID_SESSION_STATE",
+                format!("Session not paused: current state is {}", current_state),
+            ),
+            AgUiError::InvalidToolCallId { expected, actual } => (
+                StatusCode::BAD_REQUEST,
+                "INVALID_TOOL_CALL_ID",
+                format!(
+                    "Invalid tool_call_id: expected {}, got {}",
+                    expected, actual
+                ),
+            ),
+            AgUiError::CheckpointNotFound {
+                workflow_name,
+                position,
+            } => (
+                StatusCode::NOT_FOUND,
+                "CHECKPOINT_NOT_FOUND",
+                format!("Checkpoint not found: {} at {}", workflow_name, position),
+            ),
+            AgUiError::HitlInfoNotFound { session_id } => (
+                StatusCode::NOT_FOUND,
+                "HITL_INFO_NOT_FOUND",
+                format!("HITL waiting info not found for session: {}", session_id),
             ),
             _ => (
                 StatusCode::INTERNAL_SERVER_ERROR,
