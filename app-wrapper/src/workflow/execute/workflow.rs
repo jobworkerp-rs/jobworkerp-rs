@@ -530,11 +530,7 @@ impl WorkflowExecutor {
                 yield Ok(res);
 
                 // Exit without further processing (no RUN_FINISHED)
-                tracing::debug!(
-                    "Workflow execution paused: {}, id={}",
-                    workflow.document.name.as_str(),
-                    initial_wfc.read().await.id.to_string()
-                );
+                tracing::debug!("Workflow execution paused, exiting early");
                 return;
             } else {
                 drop(lock);
@@ -572,10 +568,11 @@ impl WorkflowExecutor {
                 }
                 WorkflowStatus::Pending | WorkflowStatus::Waiting => {
                     tracing::warn!(
-                        "Workflow is ended in waiting yet: id={}, doc={:#?}",
+                        "Workflow ended in pending/waiting state: id={}, doc={:#?}",
                         lock.id,
                         lock.document
                     );
+
                 }
             }
         }
