@@ -612,7 +612,9 @@ impl RunStreamTaskExecutor {
     #[allow(clippy::too_many_arguments)]
     async fn execute_by_jobworkerp_streaming(
         &self,
-        cx: Arc<opentelemetry::Context>,
+        _cx: Arc<opentelemetry::Context>,
+        metadata: Arc<HashMap<String, String>>,
+        timeout_sec: u32,
         runner_name: &str,
         settings: Option<serde_json::Value>,
         options: Option<workflow::WorkerOptions>,
@@ -671,20 +673,16 @@ impl RunStreamTaskExecutor {
         worker_data.runner_id = runner.id;
         worker_data.runner_settings = settings;
 
-        // Inject metadata from opentelemetry context
-        let mut metadata = (*self.metadata).clone();
-        Self::inject_metadata_from_context(&mut metadata, &cx);
-
-        // Enqueue with STREAMING_TYPE_INTERNAL
+        // Enqueue with STREAMING_TYPE_INTERNAL using task-level metadata and timeout
         let (job_id, _job_result, stream) = self
             .job_executor_wrapper
             .setup_worker_and_enqueue_with_json_full_output(
-                Arc::new(metadata),
+                metadata,
                 runner_name,
                 worker_data,
                 job_args,
                 None,
-                self.default_task_timeout.as_secs() as u32,
+                timeout_sec,
                 StreamingType::Internal,
                 using.clone(),
             )
@@ -948,6 +946,8 @@ impl TaskExecutorTrait<'_> for RunStreamTaskExecutor {
                 let output = match self
                     .execute_by_jobworkerp_streaming(
                         cx.clone(),
+                        metadata.clone(),
+                        timeout_sec,
                         runner_name,
                         Some(transformed_settings),
                         options.clone(),
@@ -1022,6 +1022,8 @@ impl TaskExecutorTrait<'_> for RunStreamTaskExecutor {
                 let output = match self
                     .execute_by_jobworkerp_streaming(
                         cx.clone(),
+                        metadata.clone(),
+                        timeout_sec,
                         runner_name,
                         Some(transformed_settings),
                         options.clone(),
