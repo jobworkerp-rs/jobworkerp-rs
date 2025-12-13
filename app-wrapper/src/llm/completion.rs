@@ -92,6 +92,82 @@ impl RunnerSpec for LLMCompletionRunnerImpl {
     fn settings_schema(&self) -> String {
         LLMCompletionRunnerSpec::settings_schema(self)
     }
+
+    /// Collect streaming LLM completion results into a single LlmCompletionResult
+    ///
+    /// Strategy:
+    /// - Concatenates text content from all chunks
+    /// - Concatenates reasoning content from all chunks
+    /// - Uses context and usage from the final chunk (done=true)
+    fn collect_stream(&self, stream: BoxStream<'static, ResultOutputItem>) -> CollectStreamFuture {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_completion_result::{
+            message_content, GenerationContext, MessageContent, Usage,
+        };
+        use jobworkerp_runner::jobworkerp::runner::llm::LlmCompletionResult;
+
+        Box::pin(async move {
+            let mut combined_text = String::new();
+            let mut combined_reasoning = String::new();
+            let mut final_context: Option<GenerationContext> = None;
+            let mut final_usage: Option<Usage> = None;
+            let mut metadata = HashMap::new();
+            let mut stream = stream;
+
+            while let Some(item) = stream.next().await {
+                match item.item {
+                    Some(result_output_item::Item::Data(data)) => {
+                        if let Ok(chunk) = LlmCompletionResult::decode(data.as_slice()) {
+                            // Concatenate text content
+                            if let Some(content) = chunk.content {
+                                if let Some(message_content::Content::Text(text)) = content.content
+                                {
+                                    combined_text.push_str(&text);
+                                }
+                            }
+
+                            // Concatenate reasoning content
+                            if let Some(reasoning) = chunk.reasoning_content {
+                                combined_reasoning.push_str(&reasoning);
+                            }
+
+                            // Use final chunk's context and usage
+                            if chunk.done {
+                                final_context = chunk.context;
+                                final_usage = chunk.usage;
+                            }
+                        }
+                    }
+                    Some(result_output_item::Item::End(trailer)) => {
+                        metadata = trailer.metadata;
+                        break;
+                    }
+                    Some(result_output_item::Item::FinalCollected(_)) | None => {}
+                }
+            }
+
+            // Build collected result
+            let result = LlmCompletionResult {
+                content: if combined_text.is_empty() {
+                    None
+                } else {
+                    Some(MessageContent {
+                        content: Some(message_content::Content::Text(combined_text)),
+                    })
+                },
+                reasoning_content: if combined_reasoning.is_empty() {
+                    None
+                } else {
+                    Some(combined_reasoning)
+                },
+                done: true,
+                context: final_context,
+                usage: final_usage,
+            };
+
+            let bytes = result.encode_to_vec();
+            Ok((bytes, metadata))
+        })
+    }
 }
 
 #[async_trait]
@@ -332,82 +408,6 @@ impl RunnerTrait for LLMCompletionRunnerImpl {
         } else {
             Err(anyhow!("llm is not initialized"))
         }
-    }
-
-    /// Collect streaming LLM completion results into a single LlmCompletionResult
-    ///
-    /// Strategy:
-    /// - Concatenates text content from all chunks
-    /// - Concatenates reasoning content from all chunks
-    /// - Uses context and usage from the final chunk (done=true)
-    fn collect_stream(&self, stream: BoxStream<'static, ResultOutputItem>) -> CollectStreamFuture {
-        use jobworkerp_runner::jobworkerp::runner::llm::llm_completion_result::{
-            message_content, GenerationContext, MessageContent, Usage,
-        };
-        use jobworkerp_runner::jobworkerp::runner::llm::LlmCompletionResult;
-
-        Box::pin(async move {
-            let mut combined_text = String::new();
-            let mut combined_reasoning = String::new();
-            let mut final_context: Option<GenerationContext> = None;
-            let mut final_usage: Option<Usage> = None;
-            let mut metadata = HashMap::new();
-            let mut stream = stream;
-
-            while let Some(item) = stream.next().await {
-                match item.item {
-                    Some(result_output_item::Item::Data(data)) => {
-                        if let Ok(chunk) = LlmCompletionResult::decode(data.as_slice()) {
-                            // Concatenate text content
-                            if let Some(content) = chunk.content {
-                                if let Some(message_content::Content::Text(text)) = content.content
-                                {
-                                    combined_text.push_str(&text);
-                                }
-                            }
-
-                            // Concatenate reasoning content
-                            if let Some(reasoning) = chunk.reasoning_content {
-                                combined_reasoning.push_str(&reasoning);
-                            }
-
-                            // Use final chunk's context and usage
-                            if chunk.done {
-                                final_context = chunk.context;
-                                final_usage = chunk.usage;
-                            }
-                        }
-                    }
-                    Some(result_output_item::Item::End(trailer)) => {
-                        metadata = trailer.metadata;
-                        break;
-                    }
-                    None => {}
-                }
-            }
-
-            // Build collected result
-            let result = LlmCompletionResult {
-                content: if combined_text.is_empty() {
-                    None
-                } else {
-                    Some(MessageContent {
-                        content: Some(message_content::Content::Text(combined_text)),
-                    })
-                },
-                reasoning_content: if combined_reasoning.is_empty() {
-                    None
-                } else {
-                    Some(combined_reasoning)
-                },
-                done: true,
-                context: final_context,
-                usage: final_usage,
-            };
-
-            let bytes = result.encode_to_vec();
-            Ok((bytes, metadata))
-        })
     }
 }
 

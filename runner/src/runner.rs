@@ -258,42 +258,6 @@ pub trait RunnerSpec: Send + Sync + Any {
     /// - MCP Server: returns "{}" (schemas in tools field)
     /// - Plugin with using: returns "{}" (schemas in tools field)
     fn settings_schema(&self) -> String;
-}
-
-#[async_trait]
-pub trait RunnerTrait: RunnerSpec + Send + Sync {
-    async fn load(&mut self, settings: Vec<u8>) -> Result<()>;
-
-    /// Execute job with optional sub-method specification
-    ///
-    /// # Arguments
-    /// * `arg` - Protobuf binary arguments
-    /// * `metadata` - Job metadata
-    /// * `using` - Optional sub-method name for MCP/Plugin runners
-    ///   - For normal runners: None or ignored if Some
-    ///   - For MCP/Plugin: Required for multi-tool runners, auto-selected for single-tool
-    ///
-    /// # Returns
-    /// Tuple of (Result<output_bytes>, updated_metadata)
-    async fn run(
-        &mut self,
-        arg: &[u8],
-        metadata: HashMap<String, String>,
-        using: Option<&str>,
-    ) -> (Result<Vec<u8>>, HashMap<String, String>);
-
-    /// Execute job with streaming output
-    ///
-    /// # Arguments
-    /// * `arg` - Protobuf binary arguments
-    /// * `metadata` - Job metadata
-    /// * `using` - Optional sub-method name (same semantics as run())
-    async fn run_stream(
-        &mut self,
-        arg: &[u8],
-        metadata: HashMap<String, String>,
-        using: Option<&str>,
-    ) -> Result<BoxStream<'static, ResultOutputItem>>;
 
     /// Collect streaming output into a single result
     ///
@@ -330,12 +294,52 @@ pub trait RunnerTrait: RunnerSpec + Send + Sync {
                         metadata = trailer.metadata;
                         break;
                     }
+                    Some(result_output_item::Item::FinalCollected(data)) => {
+                        // FinalCollected already contains the collected data
+                        return Ok((data, metadata));
+                    }
                     None => {}
                 }
             }
             Ok((collected_data, metadata))
         })
     }
+}
+
+#[async_trait]
+pub trait RunnerTrait: RunnerSpec + Send + Sync {
+    async fn load(&mut self, settings: Vec<u8>) -> Result<()>;
+
+    /// Execute job with optional sub-method specification
+    ///
+    /// # Arguments
+    /// * `arg` - Protobuf binary arguments
+    /// * `metadata` - Job metadata
+    /// * `using` - Optional sub-method name for MCP/Plugin runners
+    ///   - For normal runners: None or ignored if Some
+    ///   - For MCP/Plugin: Required for multi-tool runners, auto-selected for single-tool
+    ///
+    /// # Returns
+    /// Tuple of (Result<output_bytes>, updated_metadata)
+    async fn run(
+        &mut self,
+        arg: &[u8],
+        metadata: HashMap<String, String>,
+        using: Option<&str>,
+    ) -> (Result<Vec<u8>>, HashMap<String, String>);
+
+    /// Execute job with streaming output
+    ///
+    /// # Arguments
+    /// * `arg` - Protobuf binary arguments
+    /// * `metadata` - Job metadata
+    /// * `using` - Optional sub-method name (same semantics as run())
+    async fn run_stream(
+        &mut self,
+        arg: &[u8],
+        metadata: HashMap<String, String>,
+        using: Option<&str>,
+    ) -> Result<BoxStream<'static, ResultOutputItem>>;
 }
 
 // NOTE: UsingRunner trait has been removed.

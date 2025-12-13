@@ -560,6 +560,176 @@ impl RunStreamTaskExecutor {
             metadata,
         }
     }
+
+    /// Convert workflow QueueType to proto QueueType (same as RunTaskExecutor)
+    fn convert_queue_type(qt: workflow::QueueType) -> i32 {
+        match qt {
+            workflow::QueueType::Normal => QueueType::Normal as i32,
+            workflow::QueueType::WithBackup => QueueType::WithBackup as i32,
+            workflow::QueueType::DbOnly => QueueType::DbOnly as i32,
+        }
+    }
+
+    /// Convert workflow ResponseType to proto ResponseType (same as RunTaskExecutor)
+    fn convert_response_type(rt: workflow::ResponseType) -> i32 {
+        match rt {
+            workflow::ResponseType::NoResult => ResponseType::NoResult as i32,
+            workflow::ResponseType::Direct => ResponseType::Direct as i32,
+        }
+    }
+
+    fn function_options_to_worker_data(
+        options: Option<workflow::WorkerOptions>,
+        name: &str,
+    ) -> Option<WorkerData> {
+        if let Some(options) = options {
+            let worker_data = WorkerData {
+                name: name.to_string(),
+                description: String::new(),
+                broadcast_results: options.broadcast_results.unwrap_or(false),
+                store_failure: options.store_failure.unwrap_or(false),
+                store_success: options.store_success.unwrap_or(false),
+                use_static: options.use_static.unwrap_or(false),
+                queue_type: options
+                    .queue_type
+                    .map(Self::convert_queue_type)
+                    .unwrap_or(QueueType::Normal as i32),
+                channel: options.channel,
+                retry_policy: options.retry.map(|r| r.to_jobworkerp()),
+                response_type: options
+                    .response_type
+                    .map(Self::convert_response_type)
+                    .unwrap_or(ResponseType::Direct as i32),
+                ..Default::default()
+            };
+            Some(worker_data)
+        } else {
+            None
+        }
+    }
+
+    /// Execute job via runner with streaming support (STREAMING_TYPE_INTERNAL)
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_by_jobworkerp_streaming(
+        &self,
+        cx: Arc<opentelemetry::Context>,
+        runner_name: &str,
+        settings: Option<serde_json::Value>,
+        options: Option<workflow::WorkerOptions>,
+        job_args: serde_json::Value,
+        worker_name: &str,
+        using: Option<String>,
+    ) -> Result<serde_json::Value> {
+        use app::app::runner::UseRunnerApp;
+        use infra::infra::runner::rows::RunnerWithSchema;
+
+        let runner = self
+            .job_executor_wrapper
+            .runner_app()
+            .find_runner_by_name(runner_name)
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to find runner by name '{}': {:#?}", runner_name, e)
+            })?
+            .ok_or(anyhow::anyhow!("Runner '{}' not found", runner_name))?;
+
+        let (rid, rdata) = match &runner {
+            RunnerWithSchema {
+                id: Some(rid),
+                data: Some(rdata),
+                ..
+            } => (*rid, rdata.clone()),
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Runner '{}' has no id or data",
+                    runner_name
+                ))
+            }
+        };
+
+        let settings = self
+            .job_executor_wrapper
+            .setup_runner_and_settings(&runner, settings)
+            .await?;
+
+        let mut worker_data = Self::function_options_to_worker_data(options, worker_name)
+            .unwrap_or(WorkerData {
+                name: worker_name.to_string(),
+                description: "".to_string(),
+                runner_id: None,
+                runner_settings: vec![],
+                periodic_interval: 0,
+                channel: None,
+                queue_type: QueueType::Normal as i32,
+                response_type: ResponseType::Direct as i32,
+                store_success: false,
+                store_failure: true,
+                use_static: false,
+                retry_policy: None,
+                broadcast_results: true,
+            });
+        worker_data.runner_id = runner.id;
+        worker_data.runner_settings = settings;
+
+        // Inject metadata from opentelemetry context
+        let mut metadata = (*self.metadata).clone();
+        Self::inject_metadata_from_context(&mut metadata, &cx);
+
+        // Enqueue with STREAMING_TYPE_INTERNAL
+        let (job_id, _job_result, stream) = self
+            .job_executor_wrapper
+            .setup_worker_and_enqueue_with_json_full_output(
+                Arc::new(metadata),
+                runner_name,
+                worker_data,
+                job_args,
+                None,
+                self.default_task_timeout.as_secs() as u32,
+                StreamingType::Internal,
+                using.clone(),
+            )
+            .await?;
+
+        // Consume stream using RunnerSpec::collect_stream
+        if let Some(stream) = stream {
+            use app::app::job::execute::UseRunnerSpecFactory;
+
+            tracing::debug!(
+                "Collecting stream using RunnerSpec::collect_stream for job {}",
+                job_id.value
+            );
+
+            let runner_spec = self
+                .job_executor_wrapper
+                .runner_spec_factory()
+                .create_runner_spec_by_name(runner_name, false)
+                .await
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Failed to create RunnerSpec for '{}' to collect stream",
+                        runner_name
+                    )
+                })?;
+
+            let (collected_bytes, _metadata) = runner_spec.collect_stream(stream).await?;
+
+            tracing::debug!(
+                "Collected {} bytes from stream for job {}",
+                collected_bytes.len(),
+                job_id.value
+            );
+
+            return self
+                .job_executor_wrapper
+                .transform_raw_output(&rid, &rdata, collected_bytes.as_slice(), using.as_deref())
+                .await;
+        }
+
+        Err(anyhow::anyhow!(
+            "No stream available for streaming job {}",
+            job_id.value
+        ))
+    }
 }
 
 impl TaskExecutorTrait<'_> for RunStreamTaskExecutor {
@@ -731,19 +901,162 @@ impl TaskExecutorTrait<'_> for RunStreamTaskExecutor {
 
                 Ok(task_context)
             }
-            // For Runner and Script configurations, fall back to non-streaming behavior
-            // since they may require additional setup that doesn't support streaming well
-            _ => {
+            workflow::RunTaskConfiguration::Runner(workflow::RunRunner {
+                runner:
+                    RunJobRunner {
+                        arguments,
+                        name: runner_name,
+                        options,
+                        settings,
+                        using,
+                    },
+            }) => {
+                task_context.add_position_name("runner".to_string()).await;
+
+                tracing::debug!("raw arguments: {:#?}", arguments);
+                let args = match Self::transform_map(
+                    task_context.input.clone(),
+                    arguments.clone(),
+                    &expression,
+                ) {
+                    Ok(args) => args,
+                    Err(mut e) => {
+                        let pos = task_context.position.clone();
+                        let mut pos = pos.write().await;
+                        pos.push("arguments".to_string());
+                        e.position(&pos);
+                        return Err(e);
+                    }
+                };
+                tracing::debug!("transformed arguments: {:#?}", args);
+
+                let transformed_settings = match Self::transform_map(
+                    task_context.input.clone(),
+                    settings.clone(),
+                    &expression,
+                ) {
+                    Ok(settings) => settings,
+                    Err(mut e) => {
+                        let pos = task_context.position.clone();
+                        let mut pos = pos.write().await;
+                        pos.push("settings".to_string());
+                        e.position(&pos);
+                        return Err(e);
+                    }
+                };
+
+                let output = match self
+                    .execute_by_jobworkerp_streaming(
+                        cx.clone(),
+                        runner_name,
+                        Some(transformed_settings),
+                        options.clone(),
+                        args,
+                        _task_name,
+                        using.clone(),
+                    )
+                    .await
+                {
+                    Ok(output) => Ok(output),
+                    Err(e) => {
+                        let pos = task_context.position.clone();
+                        let pos = pos.read().await.as_error_instance();
+                        Err(workflow::errors::ErrorFactory::new().service_unavailable(
+                            "Failed to execute streaming runner job by jobworkerp".to_string(),
+                            Some(pos),
+                            Some(format!("{e:?}")),
+                        ))
+                    }
+                }?;
+                task_context.set_raw_output(output);
+
+                task_context.remove_position().await;
+                task_context.remove_position().await;
+
+                Ok(task_context)
+            }
+            workflow::RunTaskConfiguration::Function(workflow::RunFunction {
+                function:
+                    workflow::RunJobFunction::RunnerFunction {
+                        arguments,
+                        options,
+                        runner_name,
+                        settings,
+                        using,
+                    },
+            }) => {
+                task_context.add_position_name("function".to_string()).await;
+
+                tracing::debug!("raw arguments: {:#?}", arguments);
+                let args = match Self::transform_map(
+                    task_context.input.clone(),
+                    arguments.clone(),
+                    &expression,
+                ) {
+                    Ok(args) => args,
+                    Err(mut e) => {
+                        let pos = task_context.position.clone();
+                        let mut pos = pos.write().await;
+                        pos.push("arguments".to_string());
+                        e.position(&pos);
+                        return Err(e);
+                    }
+                };
+                tracing::debug!("transformed arguments: {:#?}", args);
+
+                let transformed_settings = match Self::transform_map(
+                    task_context.input.clone(),
+                    settings.clone(),
+                    &expression,
+                ) {
+                    Ok(settings) => settings,
+                    Err(mut e) => {
+                        let pos = task_context.position.clone();
+                        let mut pos = pos.write().await;
+                        pos.push("settings".to_string());
+                        e.position(&pos);
+                        return Err(e);
+                    }
+                };
+
+                let output = match self
+                    .execute_by_jobworkerp_streaming(
+                        cx.clone(),
+                        runner_name,
+                        Some(transformed_settings),
+                        options.clone(),
+                        args,
+                        _task_name,
+                        using.clone(),
+                    )
+                    .await
+                {
+                    Ok(output) => Ok(output),
+                    Err(e) => {
+                        let pos = task_context.position.clone();
+                        let pos = pos.read().await.as_error_instance();
+                        Err(workflow::errors::ErrorFactory::new().service_unavailable(
+                            "Failed to execute streaming runner job by jobworkerp".to_string(),
+                            Some(pos),
+                            Some(format!("{e:?}")),
+                        ))
+                    }
+                }?;
+                task_context.set_raw_output(output);
+
+                task_context.remove_position().await;
+                task_context.remove_position().await;
+
+                Ok(task_context)
+            }
+            // Script configuration is not supported for streaming
+            workflow::RunTaskConfiguration::Script(_) => {
                 let pos = task_context.position.clone();
                 let pos = pos.read().await.as_error_instance();
                 Err(workflow::errors::ErrorFactory::new().not_implemented(
-                    "RunStreamTaskExecutor only supports Worker and WorkerFunction configurations"
-                        .to_string(),
+                    "RunStreamTaskExecutor does not support Script configurations".to_string(),
                     Some(pos),
-                    Some(format!(
-                        "Use RunTaskExecutor for Runner/Script configurations: {:?}",
-                        run
-                    )),
+                    Some("Use RunTaskExecutor for Script configurations".to_string()),
                 ))
             }
         }
@@ -806,115 +1119,5 @@ mod tests {
 
         assert_eq!(worker_data.queue_type, QueueType::Normal as i32);
         assert_eq!(worker_data.response_type, ResponseType::Direct as i32);
-    }
-}
-
-/// Unit tests for RunStreamTaskExecutor (no backend required)
-#[cfg(test)]
-mod run_stream_task_executor_tests {
-    use super::RunStreamTaskExecutor;
-    use crate::workflow::{
-        definition::{
-            workflow::{self, RunTaskConfiguration},
-            WorkflowLoader,
-        },
-        execute::{
-            context::{TaskContext, WorkflowContext, WorkflowStatus},
-            task::TaskExecutorTrait,
-        },
-    };
-    use app::app::job::execute::JobExecutorWrapper;
-    use app::module::test::create_hybrid_test_app;
-    use std::{collections::HashMap, sync::Arc, time::Duration};
-    use tokio::sync::{Mutex, RwLock};
-
-    /// Test: RunStreamTaskExecutor rejects unsupported configurations (Runner)
-    /// This test does not require a running backend as it tests error handling
-    #[test]
-    fn test_run_stream_task_executor_rejects_runner_config() {
-        infra_utils::infra::test::TEST_RUNTIME.block_on(async {
-            let app_module = Arc::new(create_hybrid_test_app().await.unwrap());
-            let job_executors = Arc::new(JobExecutorWrapper::new(app_module.clone()));
-
-            // Load a workflow for context
-            let loader = WorkflowLoader::new_local_only();
-            let flow = loader
-                .load_workflow(Some("test-files/ls-test.yaml"), None, false)
-                .await
-                .unwrap();
-
-            let workflow_context = Arc::new(RwLock::new(WorkflowContext::new(
-                &flow,
-                Arc::new(serde_json::json!({})),
-                Arc::new(serde_json::json!({})),
-                None,
-            )));
-            workflow_context.write().await.status = WorkflowStatus::Running;
-
-            // Create RunTask with Runner configuration (unsupported by RunStreamTaskExecutor)
-            let run_task = workflow::RunTask {
-                metadata: serde_json::Map::new(),
-                timeout: None,
-                run: RunTaskConfiguration::Runner(workflow::RunRunner {
-                    runner: workflow::RunJobRunner {
-                        name: "COMMAND".to_string(),
-                        settings: serde_json::Map::new(),
-                        arguments: {
-                            let mut args = serde_json::Map::new();
-                            args.insert("command".to_string(), serde_json::json!("echo"));
-                            args.insert("args".to_string(), serde_json::json!(["test"]));
-                            args
-                        },
-                        options: None,
-                        using: None,
-                    },
-                }),
-                export: None,
-                if_: None,
-                checkpoint: false,
-                input: None,
-                output: None,
-                then: None,
-                use_streaming: false,
-            };
-
-            let executor = RunStreamTaskExecutor::new(
-                workflow_context.clone(),
-                Duration::from_secs(60),
-                job_executors.clone(),
-                run_task,
-                Arc::new(HashMap::new()),
-            );
-
-            let task_context = TaskContext::new(
-                None,
-                Arc::new(serde_json::json!({})),
-                Arc::new(Mutex::new(Default::default())),
-            );
-
-            let cx = Arc::new(opentelemetry::Context::new());
-            let result = executor
-                .execute(cx, "test_unsupported_config", task_context)
-                .await;
-
-            // Should fail with NotImplemented error
-            assert!(result.is_err(), "Runner config should be rejected");
-            let err = result.unwrap_err();
-            assert!(
-                err.title
-                    .as_ref()
-                    .map(|t| t.contains("RunStreamTaskExecutor only supports"))
-                    .unwrap_or(false)
-                    || err
-                        .detail
-                        .as_ref()
-                        .map(|d| d.contains("Use RunTaskExecutor"))
-                        .unwrap_or(false),
-                "Error should indicate unsupported configuration: {:?}",
-                err
-            );
-
-            eprintln!("✅ test_run_stream_task_executor_rejects_runner_config passed");
-        });
     }
 }

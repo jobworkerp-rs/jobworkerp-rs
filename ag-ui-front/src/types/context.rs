@@ -151,8 +151,10 @@ mod tests {
         let workflow_context = serde_json::json!({
             "runnerMessages": [{"role": "USER", "content": {"text": "Hello"}}]
         });
-        let ctx =
-            Context::workflow_inline_with_context(workflow_schema.clone(), workflow_context.clone());
+        let ctx = Context::workflow_inline_with_context(
+            workflow_schema.clone(),
+            workflow_context.clone(),
+        );
         let json = serde_json::to_value(&ctx).unwrap();
 
         assert_eq!(json["type"], "workflow_inline");
