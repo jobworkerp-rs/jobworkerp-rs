@@ -209,15 +209,18 @@ impl TryTaskExecutor {
             .boxed();
 
         let mut last_context = None;
-        while let Some(task_context) = stream.next().await {
-            match task_context {
-                Ok(context) => {
-                    tracing::debug!(
-                        "Task executed successfully: {}: {:#?}",
-                        task_name,
-                        context.raw_output
-                    );
-                    last_context = Some(context);
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(event) => {
+                    // Extract context from completed events
+                    if let Some(context) = event.context() {
+                        tracing::debug!(
+                            "Task executed successfully: {}: {:#?}",
+                            task_name,
+                            context.raw_output
+                        );
+                        last_context = Some(context.clone());
+                    }
                 }
                 Err(e) => {
                     tracing::error!("Error executing task: {:?}", e);

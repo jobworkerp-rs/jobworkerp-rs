@@ -915,6 +915,296 @@ async fn test_hitl_tool_call_id_validation() {
     assert_ne!(stored_info.tool_call_id, wrong_tool_call_id);
 }
 
+// =============================================================================
+// Phase 6: WorkflowStreamEvent to AG-UI Event Conversion Tests
+// =============================================================================
+
+/// Test: WorkflowEventAdapter correctly converts task events to AG-UI step events
+/// Verifies: task_started -> STEP_STARTED, task_finished -> STEP_FINISHED mapping
+#[tokio::test]
+async fn test_workflow_stream_event_task_to_step_conversion() {
+    use ag_ui_front::events::WorkflowEventAdapter;
+    use ag_ui_front::types::ids::{RunId, ThreadId};
+
+    let mut adapter =
+        WorkflowEventAdapter::new(RunId::new("run_task_event"), ThreadId::new("thread_1"));
+
+    // Simulate TaskStarted event (corresponds to WorkflowStreamEvent::TaskStarted)
+    // task_type: "runTask", task_name: "fetch_data"
+    let step_start = adapter.task_started("fetch_data", Some("runTask"), Some("HTTP_REQUEST"));
+
+    match step_start {
+        AgUiEvent::StepStarted {
+            step_name,
+            metadata,
+            ..
+        } => {
+            assert_eq!(step_name, Some("fetch_data".to_string()));
+            let meta = metadata.unwrap();
+            assert_eq!(meta["taskType"], "runTask");
+            assert_eq!(meta["runnerType"], "HTTP_REQUEST");
+        }
+        _ => panic!("Expected StepStarted for TaskStarted event"),
+    }
+
+    // Simulate TaskCompleted event (corresponds to WorkflowStreamEvent::TaskCompleted)
+    let output = serde_json::json!({"status": "ok", "data": [1, 2, 3]});
+    let step_finish = adapter.task_finished(Some(output.clone()));
+
+    assert!(step_finish.is_some());
+    match step_finish.unwrap() {
+        AgUiEvent::StepFinished { result, .. } => {
+            assert_eq!(result.unwrap()["status"], "ok");
+        }
+        _ => panic!("Expected StepFinished for TaskCompleted event"),
+    }
+}
+
+/// Test: WorkflowEventAdapter correctly converts job events to AG-UI tool call events
+/// Verifies: JobStarted -> TOOL_CALL_START, JobCompleted -> TOOL_CALL_RESULT mapping
+#[tokio::test]
+async fn test_workflow_stream_event_job_to_tool_call_conversion() {
+    use ag_ui_front::events::WorkflowEventAdapter;
+    use ag_ui_front::types::ids::{RunId, ThreadId};
+
+    let mut adapter =
+        WorkflowEventAdapter::new(RunId::new("run_job_event"), ThreadId::new("thread_1"));
+
+    // Simulate JobStarted event (corresponds to WorkflowStreamEvent::JobStarted)
+    // job_id: 12345, runner_name: "COMMAND"
+    let tool_start = adapter.job_started(12345, "COMMAND");
+
+    match &tool_start {
+        AgUiEvent::ToolCallStart {
+            tool_call_id,
+            tool_call_name,
+            ..
+        } => {
+            assert!(tool_call_id.starts_with("call_"));
+            assert_eq!(tool_call_name, "COMMAND");
+        }
+        _ => panic!("Expected ToolCallStart for JobStarted event"),
+    }
+
+    // Job arguments (would be sent as WorkflowEvent stream data)
+    let args = adapter.job_args(r#"{"command":"echo","args":["hello"]}"#);
+    assert!(args.is_some());
+    match args.unwrap() {
+        AgUiEvent::ToolCallArgs { delta, .. } => {
+            let parsed: serde_json::Value = serde_json::from_str(&delta).unwrap();
+            assert_eq!(parsed["command"], "echo");
+        }
+        _ => panic!("Expected ToolCallArgs"),
+    }
+
+    // Job end
+    let end = adapter.job_end();
+    assert!(end.is_some());
+    match end.unwrap() {
+        AgUiEvent::ToolCallEnd { .. } => {}
+        _ => panic!("Expected ToolCallEnd"),
+    }
+
+    // Simulate JobCompleted event (corresponds to WorkflowStreamEvent::JobCompleted)
+    let result = serde_json::json!({"stdout": "hello\n", "exit_code": 0});
+    let tool_result = adapter.job_completed(result.clone());
+
+    assert!(tool_result.is_some());
+    match tool_result.unwrap() {
+        AgUiEvent::ToolCallResult { result: r, .. } => {
+            assert_eq!(r["exit_code"], 0);
+            assert_eq!(r["stdout"], "hello\n");
+        }
+        _ => panic!("Expected ToolCallResult for JobCompleted event"),
+    }
+}
+
+/// Test: WorkflowEventAdapter correctly converts streaming job events
+/// Verifies: StreamingJobStarted/Completed to appropriate AG-UI events
+#[tokio::test]
+async fn test_workflow_stream_event_streaming_job_conversion() {
+    use ag_ui_front::events::WorkflowEventAdapter;
+    use ag_ui_front::types::ids::{RunId, ThreadId};
+
+    let mut adapter = WorkflowEventAdapter::new(
+        RunId::new("run_streaming_job"),
+        ThreadId::new("thread_stream"),
+    );
+
+    // StreamingJobStarted (for LLM_COMPLETION or similar streaming runners)
+    // First starts as a tool call
+    let tool_start = adapter.job_started(98765, "LLM_COMPLETION");
+    match &tool_start {
+        AgUiEvent::ToolCallStart { tool_call_name, .. } => {
+            assert_eq!(tool_call_name, "LLM_COMPLETION");
+        }
+        _ => panic!("Expected ToolCallStart for StreamingJobStarted"),
+    }
+
+    // Streaming LLM output also includes text messages
+    let llm_start = adapter.llm_stream_start();
+    match llm_start {
+        AgUiEvent::TextMessageStart { role, .. } => {
+            assert_eq!(role, Role::Assistant);
+        }
+        _ => panic!("Expected TextMessageStart"),
+    }
+
+    // Stream chunks
+    let chunks = ["Hello", ", ", "I am", " Claude"];
+    for chunk in chunks {
+        let event = adapter.llm_stream_chunk(chunk);
+        assert!(event.is_some());
+        match event.unwrap() {
+            AgUiEvent::TextMessageContent { delta, .. } => {
+                assert_eq!(delta, chunk);
+            }
+            _ => panic!("Expected TextMessageContent"),
+        }
+    }
+
+    // End message
+    let msg_end = adapter.llm_stream_end();
+    assert!(msg_end.is_some());
+    match msg_end.unwrap() {
+        AgUiEvent::TextMessageEnd { .. } => {}
+        _ => panic!("Expected TextMessageEnd"),
+    }
+
+    // StreamingJobCompleted
+    let result = serde_json::json!({"content": "Hello, I am Claude", "usage": {"tokens": 10}});
+    let tool_result = adapter.job_completed(result);
+    assert!(tool_result.is_some());
+}
+
+/// Test: Full workflow event sequence simulation
+/// Verifies: Complete WorkflowStreamEvent sequence converts correctly to AG-UI events
+#[tokio::test]
+async fn test_full_workflow_stream_event_sequence() {
+    use ag_ui_front::events::WorkflowEventAdapter;
+    use ag_ui_front::types::ids::{RunId, ThreadId};
+    use ag_ui_front::types::state::{TaskState, WorkflowState, WorkflowStatus};
+
+    let mut adapter = WorkflowEventAdapter::new(
+        RunId::new("run_full_sequence"),
+        ThreadId::new("thread_full"),
+    );
+    let event_store = InMemoryEventStore::new(1000, 3600);
+    let run_id = "run_full_sequence";
+
+    // 1. RUN_STARTED (workflow begins)
+    let run_started = adapter.workflow_started("test-workflow", Some(1));
+    event_store
+        .store_event(run_id, 0, run_started.clone())
+        .await;
+    assert!(matches!(run_started, AgUiEvent::RunStarted { .. }));
+
+    // 2. TaskStarted for "setTask" (WorkflowStreamEvent::TaskStarted)
+    let step1_start = adapter.task_started("init_vars", Some("setTask"), None);
+    event_store
+        .store_event(run_id, 1, step1_start.clone())
+        .await;
+    assert!(matches!(step1_start, AgUiEvent::StepStarted { .. }));
+
+    // 3. TaskCompleted for "setTask" (WorkflowStreamEvent::TaskCompleted)
+    let step1_end = adapter.task_finished(Some(serde_json::json!({"initialized": true})));
+    assert!(step1_end.is_some());
+    event_store
+        .store_event(run_id, 2, step1_end.clone().unwrap())
+        .await;
+
+    // 4. TaskStarted for "runTask" (WorkflowStreamEvent::TaskStarted)
+    let step2_start = adapter.task_started("api_call", Some("runTask"), Some("HTTP_REQUEST"));
+    event_store.store_event(run_id, 3, step2_start).await;
+
+    // 5. JobStarted within runTask (WorkflowStreamEvent::JobStarted)
+    let job_start = adapter.job_started(100, "HTTP_REQUEST");
+    event_store.store_event(run_id, 4, job_start).await;
+
+    // 6. JobCompleted (WorkflowStreamEvent::JobCompleted)
+    let job_end = adapter.job_end();
+    event_store.store_event(run_id, 5, job_end.unwrap()).await;
+
+    let job_result = adapter.job_completed(serde_json::json!({"response": "OK"}));
+    event_store
+        .store_event(run_id, 6, job_result.unwrap())
+        .await;
+
+    // 7. TaskCompleted for "runTask"
+    let step2_end = adapter.task_finished(Some(serde_json::json!({"api_response": "OK"})));
+    event_store.store_event(run_id, 7, step2_end.unwrap()).await;
+
+    // 8. State snapshot
+    let state = WorkflowState::new("test-workflow")
+        .with_status(WorkflowStatus::Running)
+        .with_current_task(TaskState::new("api_call"));
+    let snapshot = adapter.state_snapshot(state);
+    event_store.store_event(run_id, 8, snapshot).await;
+
+    // 9. RUN_FINISHED (workflow completes)
+    let run_finished = adapter.workflow_completed(Some(serde_json::json!({"result": "success"})));
+    event_store.store_event(run_id, 9, run_finished).await;
+
+    // Verify event sequence was stored correctly
+    let all_events = event_store.get_all_events(run_id).await;
+    assert_eq!(all_events.len(), 10);
+
+    // Verify event types in order
+    assert!(matches!(&all_events[0].1, AgUiEvent::RunStarted { .. }));
+    assert!(matches!(&all_events[1].1, AgUiEvent::StepStarted { .. }));
+    assert!(matches!(&all_events[2].1, AgUiEvent::StepFinished { .. }));
+    assert!(matches!(&all_events[3].1, AgUiEvent::StepStarted { .. }));
+    assert!(matches!(&all_events[4].1, AgUiEvent::ToolCallStart { .. }));
+    assert!(matches!(&all_events[5].1, AgUiEvent::ToolCallEnd { .. }));
+    assert!(matches!(&all_events[6].1, AgUiEvent::ToolCallResult { .. }));
+    assert!(matches!(&all_events[7].1, AgUiEvent::StepFinished { .. }));
+    assert!(matches!(&all_events[8].1, AgUiEvent::StateSnapshot { .. }));
+    assert!(matches!(&all_events[9].1, AgUiEvent::RunFinished { .. }));
+}
+
+/// Test: WorkflowEventAdapter handles multiple task types correctly
+/// Verifies: Different task types (setTask, runTask, switchTask, etc.) convert appropriately
+#[tokio::test]
+async fn test_workflow_stream_event_multiple_task_types() {
+    use ag_ui_front::events::WorkflowEventAdapter;
+    use ag_ui_front::types::ids::{RunId, ThreadId};
+
+    let mut adapter =
+        WorkflowEventAdapter::new(RunId::new("run_multi_task"), ThreadId::new("thread_multi"));
+
+    // Task type list based on WorkflowStreamEvent implementations
+    let task_types = [
+        ("setTask", "set_variables", None),
+        ("runTask", "execute_command", Some("COMMAND")),
+        ("switchTask", "check_condition", None),
+        ("forTask", "iterate_items", None),
+        ("doTask", "nested_workflow", None),
+        ("forkTask", "parallel_exec", None),
+        ("tryTask", "try_catch", None),
+        ("waitTask", "wait_input", None),
+    ];
+
+    for (task_type, task_name, runner_type) in task_types {
+        let start = adapter.task_started(task_name, Some(task_type), runner_type);
+        match start {
+            AgUiEvent::StepStarted {
+                step_name,
+                metadata,
+                ..
+            } => {
+                assert_eq!(step_name, Some(task_name.to_string()));
+                if let Some(meta) = metadata {
+                    assert_eq!(meta["taskType"], task_type);
+                }
+            }
+            _ => panic!("Expected StepStarted for {}", task_type),
+        }
+
+        let end = adapter.task_finished(None);
+        assert!(end.is_some(), "Expected StepFinished for {}", task_type);
+    }
+}
+
 /// Test: Atomic resume_from_paused method
 /// Verifies: Both state change and HITL info clear happen atomically
 #[tokio::test]

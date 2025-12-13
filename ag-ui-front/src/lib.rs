@@ -53,6 +53,7 @@ pub mod config;
 pub mod error;
 pub mod events;
 pub mod handler;
+pub mod handler_async;
 pub mod pubsub;
 pub mod server;
 pub mod session;
@@ -70,6 +71,7 @@ pub use pubsub::{
     convert_result_stream_to_events, merge_workflow_and_llm_streams,
     subscribe_job_result_as_tool_call, subscribe_llm_stream,
 };
+pub use server::boot_embedded_server;
 pub use session::{
     EventStore, InMemoryEventStore, InMemorySessionManager, RedisEventStore, RedisSessionManager,
     Session, SessionManager, SessionState,

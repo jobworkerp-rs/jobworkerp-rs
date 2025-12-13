@@ -25,6 +25,7 @@ app-wrapper = { path = "../app-wrapper" }
 worker-app = { path = "../worker-app" }
 grpc-front = { path = "../grpc-front" }
 mcp-server = { path = "../mcp-server" }
+ag-ui-front = { path = "../ag-ui-front" }
 
 anyhow = { workspace = true }
 dotenvy = { workspace = true }

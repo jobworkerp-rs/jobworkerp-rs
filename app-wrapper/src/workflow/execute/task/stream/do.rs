@@ -5,7 +5,7 @@ use crate::workflow::{
         workflow::{self, tasks::TaskTrait, Task},
     },
     execute::{
-        context::{TaskContext, Then, WorkflowContext, WorkflowStatus},
+        context::{TaskContext, Then, WorkflowContext, WorkflowStatus, WorkflowStreamEvent},
         expression::UseExpression,
         task::{trace::TaskTracing, ExecutionId, TaskExecutor},
     },
@@ -133,8 +133,13 @@ impl DoTaskStreamExecutor {
         cx: Arc<opentelemetry::Context>,
         task_map: Arc<IndexMap<String, (u32, Arc<Task>)>>,
         parent_task_context: TaskContext,
-    ) -> Pin<Box<dyn futures::Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send + '_>>
-    {
+    ) -> Pin<
+        Box<
+            dyn futures::Stream<Item = Result<WorkflowStreamEvent, Box<workflow::Error>>>
+                + Send
+                + '_,
+        >,
+    > {
         let job_exec = self.job_executor_wrapper.clone();
         let req_meta = self.metadata.clone();
 
@@ -205,9 +210,12 @@ impl DoTaskStreamExecutor {
                 let mut last_ctx = None;
                 while let Some(item) = stream.next().await {
                     match item {
-                        Ok(ctx) => {
-                            last_ctx = Some(ctx.clone());
-                            yield Ok(ctx);
+                        Ok(event) => {
+                            // Extract context from completed events
+                            if let Some(ctx) = event.context() {
+                                last_ctx = Some(ctx.clone());
+                            }
+                            yield Ok(event);
                         }
                         Err(mut e) => {
                             let pos = prev.position.read().await;
@@ -376,7 +384,7 @@ impl StreamTaskExecutorTrait<'_> for DoTaskStreamExecutor {
         cx: Arc<opentelemetry::Context>,
         task_name: Arc<String>,
         task_context: TaskContext,
-    ) -> impl futures::Stream<Item = Result<TaskContext, Box<workflow::Error>>> + Send {
+    ) -> impl futures::Stream<Item = Result<WorkflowStreamEvent, Box<workflow::Error>>> + Send {
         let task_context = task_context.clone();
         tracing::debug!("DoTaskStreamExecutor: {}", task_name);
 
@@ -519,7 +527,11 @@ mod tests {
             }
 
             assert!(final_tc.is_some());
-            let prev_pos = final_tc.unwrap().prev_position(3).await;
+            let ctx = final_tc
+                .unwrap()
+                .into_context()
+                .expect("Expected TaskContext");
+            let prev_pos = ctx.prev_position(3).await;
             assert_eq!(
                 prev_pos.last().unwrap().as_str().unwrap(),
                 "task2".to_string()
@@ -658,7 +670,11 @@ mod tests {
             }
 
             assert!(final_tc.is_some());
-            let prev_pos = final_tc.unwrap().prev_position(3).await;
+            let ctx = final_tc
+                .unwrap()
+                .into_context()
+                .expect("Expected TaskContext");
+            let prev_pos = ctx.prev_position(3).await;
             assert_eq!(
                 prev_pos.last().unwrap().as_str().unwrap(),
                 "task4".to_string()
@@ -762,7 +778,11 @@ mod tests {
                 }
 
                 assert!(final_tc.is_some());
-                let prev_pos = final_tc.unwrap().prev_position(3).await;
+                let ctx = final_tc
+                    .unwrap()
+                    .into_context()
+                    .expect("Expected TaskContext");
+                let prev_pos = ctx.prev_position(3).await;
                 assert_eq!(
                     prev_pos.last().unwrap().as_str().unwrap(),
                     "exit_task".to_string()
@@ -836,7 +856,11 @@ mod tests {
                 }
 
                 assert!(final_tc.is_some());
-                let prev_pos = final_tc.unwrap().prev_position(3).await;
+                let ctx = final_tc
+                    .unwrap()
+                    .into_context()
+                    .expect("Expected TaskContext");
+                let prev_pos = ctx.prev_position(3).await;
                 assert_eq!(
                     prev_pos.last().unwrap().as_str().unwrap(),
                     "end_task".to_string()
@@ -972,7 +996,11 @@ mod tests {
             }
 
             assert!(final_tc.is_some());
-            let prev_pos = final_tc.unwrap().prev_position(3).await;
+            let ctx = final_tc
+                .unwrap()
+                .into_context()
+                .expect("Expected TaskContext");
+            let prev_pos = ctx.prev_position(3).await;
             assert_eq!(
                 prev_pos.last().unwrap().as_str().unwrap(),
                 "jump_target".to_string()

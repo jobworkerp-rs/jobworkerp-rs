@@ -978,7 +978,7 @@ async fn test_collect_stream_single_chunk() -> Result<()> {
     use crate::jobworkerp::runner::McpServerResult;
     use crate::runner::mcp::config::McpConfig;
     use crate::runner::mcp::McpServerRunnerImpl;
-    use crate::runner::RunnerTrait;
+    use crate::runner::RunnerSpec;
     use prost::Message;
     use proto::jobworkerp::data::result_output_item::Item;
     use proto::jobworkerp::data::ResultOutputItem;
@@ -1036,7 +1036,7 @@ async fn test_collect_stream_multiple_chunks_merges_text() -> Result<()> {
     use crate::jobworkerp::runner::McpServerResult;
     use crate::runner::mcp::config::McpConfig;
     use crate::runner::mcp::McpServerRunnerImpl;
-    use crate::runner::RunnerTrait;
+    use crate::runner::RunnerSpec;
     use prost::Message;
     use proto::jobworkerp::data::result_output_item::Item;
     use proto::jobworkerp::data::ResultOutputItem;
@@ -1102,7 +1102,7 @@ async fn test_collect_stream_propagates_error_flag() -> Result<()> {
     use crate::jobworkerp::runner::McpServerResult;
     use crate::runner::mcp::config::McpConfig;
     use crate::runner::mcp::McpServerRunnerImpl;
-    use crate::runner::RunnerTrait;
+    use crate::runner::RunnerSpec;
     use prost::Message;
     use proto::jobworkerp::data::result_output_item::Item;
     use proto::jobworkerp::data::ResultOutputItem;
@@ -1162,7 +1162,7 @@ async fn test_collect_stream_empty_chunks() -> Result<()> {
     use crate::jobworkerp::runner::McpServerResult;
     use crate::runner::mcp::config::McpConfig;
     use crate::runner::mcp::McpServerRunnerImpl;
-    use crate::runner::RunnerTrait;
+    use crate::runner::RunnerSpec;
     use prost::Message;
     use proto::jobworkerp::data::result_output_item::Item;
     use proto::jobworkerp::data::ResultOutputItem;

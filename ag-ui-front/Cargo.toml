@@ -13,6 +13,10 @@ license.workspace = true
 name = "ag-ui-http"
 path = "src/bin/ag_ui_http.rs"
 
+[[bin]]
+name = "ag-ui-http-async"
+path = "src/bin/ag_ui_http_async.rs"
+
 [dependencies]
 # Internal dependencies
 app = { path = "../app" }
@@ -53,6 +57,8 @@ chrono = { workspace = true, features = ["serde"] }
 rand = { workspace = true }
 opentelemetry = { workspace = true }
 pin-project-lite = "0.2"
+base64 = { workspace = true }
+prost = { workspace = true }
 
 [dev-dependencies]
 tokio-test = "0.4"

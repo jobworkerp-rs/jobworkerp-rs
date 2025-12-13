@@ -258,6 +258,56 @@ pub trait RunnerSpec: Send + Sync + Any {
     /// - MCP Server: returns "{}" (schemas in tools field)
     /// - Plugin with using: returns "{}" (schemas in tools field)
     fn settings_schema(&self) -> String;
+
+    /// Collect streaming output into a single result
+    ///
+    /// This method collects all items from a streaming output and combines them
+    /// into a single result. The default implementation concatenates all data chunks.
+    ///
+    /// # Arguments
+    /// * `stream` - BoxStream of ResultOutputItem from run_stream()
+    ///
+    /// # Returns
+    /// Tuple of (collected_bytes, metadata_from_trailer)
+    ///
+    /// # Override
+    /// Runners should override this method if they need custom collection logic:
+    /// - COMMAND: Merge stdout/stderr/exit_code from CommandResult chunks
+    /// - HTTP_REQUEST: Merge body chunks with final status/headers
+    /// - MCP_SERVER: Merge McpServerResult contents (TextContent concatenation)
+    /// - LLM: Merge text tokens with final tool_calls/usage
+    ///
+    /// Default implementation: keeps only the last Data item (memory efficient).
+    /// Override this method for runners that need to merge/concatenate stream data.
+    fn collect_stream(&self, stream: BoxStream<'static, ResultOutputItem>) -> CollectStreamFuture {
+        use futures::StreamExt;
+        use proto::jobworkerp::data::result_output_item;
+
+        Box::pin(async move {
+            let mut last_data: Option<Vec<u8>> = None;
+            let mut metadata = HashMap::new();
+            let mut stream = stream;
+
+            while let Some(item) = stream.next().await {
+                match item.item {
+                    Some(result_output_item::Item::Data(data)) => {
+                        // Keep only the last data (memory efficient for most runners)
+                        last_data = Some(data);
+                    }
+                    Some(result_output_item::Item::End(trailer)) => {
+                        metadata = trailer.metadata;
+                        break;
+                    }
+                    Some(result_output_item::Item::FinalCollected(data)) => {
+                        // FinalCollected already contains the collected data
+                        return Ok((data, metadata));
+                    }
+                    None => {}
+                }
+            }
+            Ok((last_data.unwrap_or_default(), metadata))
+        })
+    }
 }
 
 #[async_trait]
@@ -294,48 +344,6 @@ pub trait RunnerTrait: RunnerSpec + Send + Sync {
         metadata: HashMap<String, String>,
         using: Option<&str>,
     ) -> Result<BoxStream<'static, ResultOutputItem>>;
-
-    /// Collect streaming output into a single result
-    ///
-    /// This method collects all items from a streaming output and combines them
-    /// into a single result. The default implementation concatenates all data chunks.
-    ///
-    /// # Arguments
-    /// * `stream` - BoxStream of ResultOutputItem from run_stream()
-    ///
-    /// # Returns
-    /// Tuple of (collected_bytes, metadata_from_trailer)
-    ///
-    /// # Override
-    /// Runners should override this method if they need custom collection logic:
-    /// - COMMAND: Merge stdout/stderr/exit_code from CommandResult chunks
-    /// - HTTP_REQUEST: Merge body chunks with final status/headers
-    /// - MCP_SERVER: Merge McpServerResult contents (TextContent concatenation)
-    /// - LLM: Merge text tokens with final tool_calls/usage
-    fn collect_stream(&self, stream: BoxStream<'static, ResultOutputItem>) -> CollectStreamFuture {
-        use futures::StreamExt;
-        use proto::jobworkerp::data::result_output_item;
-
-        Box::pin(async move {
-            let mut collected_data = Vec::new();
-            let mut metadata = HashMap::new();
-            let mut stream = stream;
-
-            while let Some(item) = stream.next().await {
-                match item.item {
-                    Some(result_output_item::Item::Data(data)) => {
-                        collected_data.extend(data);
-                    }
-                    Some(result_output_item::Item::End(trailer)) => {
-                        metadata = trailer.metadata;
-                        break;
-                    }
-                    None => {}
-                }
-            }
-            Ok((collected_data, metadata))
-        })
-    }
 }
 
 // NOTE: UsingRunner trait has been removed.

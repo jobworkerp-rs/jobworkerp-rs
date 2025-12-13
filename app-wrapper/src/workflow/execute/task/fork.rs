@@ -2,7 +2,7 @@ use super::TaskExecutor;
 use crate::workflow::{
     definition::workflow::{tasks::TaskTrait, Task},
     execute::{
-        context::{TaskContext, WorkflowContext},
+        context::{TaskContext, WorkflowContext, WorkflowStreamEvent},
         task::{ExecutionId, Result, TaskExecutorTrait},
     },
 };
@@ -75,7 +75,8 @@ impl ForkTaskExecutor {
         default_task_timeout: Duration,
         metadata: Arc<HashMap<String, String>>,
         cx: Arc<opentelemetry::Context>,
-    ) -> futures::stream::BoxStream<'static, Result<TaskContext, Box<workflow::Error>>> {
+    ) -> futures::stream::BoxStream<'static, Result<WorkflowStreamEvent, Box<workflow::Error>>>
+    {
         let task_executor = TaskExecutor::new(
             workflow_context,
             default_task_timeout,
@@ -166,10 +167,14 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
                 // Poll streams until we get a success or all fail
                 while let Some((_, result)) = stream_map.next().await {
                     match result {
-                        Ok(context) => {
-                            // Found a successful task, return it immediately
-                            // (abandoning all other tasks)
-                            return Ok(context);
+                        Ok(event) => {
+                            // Extract context from completed events
+                            if let Some(context) = event.into_context() {
+                                // Found a successful task, return it immediately
+                                // (abandoning all other tasks)
+                                return Ok(context);
+                            }
+                            // Start events don't have context, continue polling
                         }
                         Err(e) => {
                             // Stream returned an error, log and continue with others
@@ -207,9 +212,12 @@ impl<'a> TaskExecutorTrait<'a> for ForkTaskExecutor {
 
                     for result in results {
                         match result {
-                            Ok(context) => {
-                                if !context.output.is_null() {
-                                    output.push((*context.output).clone());
+                            Ok(event) => {
+                                // Extract context from completed events
+                                if let Some(context) = event.into_context() {
+                                    if !context.output.is_null() {
+                                        output.push((*context.output).clone());
+                                    }
                                 }
                             }
                             Err(e) => {

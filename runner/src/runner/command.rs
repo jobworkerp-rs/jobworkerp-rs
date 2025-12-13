@@ -193,6 +193,82 @@ impl RunnerSpec for CommandRunnerImpl {
     fn settings_schema(&self) -> String {
         schema_to_json_string!(crate::jobworkerp::runner::Empty, "settings_schema")
     }
+
+    /// Collect streaming CommandResult chunks into a single CommandResult
+    ///
+    /// Strategy:
+    /// - Concatenate stdout strings from all chunks
+    /// - Concatenate stderr strings from all chunks
+    /// - Use the last chunk's exit_code, execution_time_ms, started_at, max_memory_usage_kb
+    fn collect_stream(
+        &self,
+        stream: BoxStream<'static, ResultOutputItem>,
+    ) -> super::CollectStreamFuture {
+        use prost::Message;
+        use proto::jobworkerp::data::result_output_item;
+
+        Box::pin(async move {
+            let mut stdout = String::new();
+            let mut stderr = String::new();
+            let mut exit_code: Option<i32> = None;
+            let mut execution_time_ms: Option<u64> = None;
+            let mut started_at: Option<u64> = None;
+            let mut max_memory_usage_kb: Option<u64> = None;
+            let mut metadata = HashMap::new();
+            let mut stream = stream;
+
+            while let Some(item) = futures::StreamExt::next(&mut stream).await {
+                match item.item {
+                    Some(result_output_item::Item::Data(data)) => {
+                        if let Ok(chunk) = CommandResult::decode(data.as_slice()) {
+                            if let Some(s) = chunk.stdout {
+                                stdout.push_str(&s);
+                            }
+                            if let Some(s) = chunk.stderr {
+                                stderr.push_str(&s);
+                            }
+                            if chunk.exit_code.is_some() {
+                                exit_code = chunk.exit_code;
+                            }
+                            if chunk.execution_time_ms.is_some() {
+                                execution_time_ms = chunk.execution_time_ms;
+                            }
+                            if chunk.started_at.is_some() {
+                                started_at = chunk.started_at;
+                            }
+                            if chunk.max_memory_usage_kb.is_some() {
+                                max_memory_usage_kb = chunk.max_memory_usage_kb;
+                            }
+                        }
+                    }
+                    Some(result_output_item::Item::End(trailer)) => {
+                        metadata = trailer.metadata;
+                        break;
+                    }
+                    Some(result_output_item::Item::FinalCollected(_)) | None => {}
+                }
+            }
+
+            let result = CommandResult {
+                stdout: if stdout.is_empty() {
+                    None
+                } else {
+                    Some(stdout)
+                },
+                stderr: if stderr.is_empty() {
+                    None
+                } else {
+                    Some(stderr)
+                },
+                exit_code,
+                execution_time_ms,
+                started_at,
+                max_memory_usage_kb,
+            };
+            let bytes = result.encode_to_vec();
+            Ok((bytes, metadata))
+        })
+    }
 }
 
 #[async_trait]
@@ -927,82 +1003,6 @@ impl RunnerTrait for CommandRunnerImpl {
 
         Ok(Box::pin(stream))
     }
-
-    /// Collect streaming CommandResult chunks into a single CommandResult
-    ///
-    /// Strategy:
-    /// - Concatenate stdout strings from all chunks
-    /// - Concatenate stderr strings from all chunks
-    /// - Use the last chunk's exit_code, execution_time_ms, started_at, max_memory_usage_kb
-    fn collect_stream(
-        &self,
-        stream: BoxStream<'static, ResultOutputItem>,
-    ) -> super::CollectStreamFuture {
-        use prost::Message;
-        use proto::jobworkerp::data::result_output_item;
-
-        Box::pin(async move {
-            let mut stdout = String::new();
-            let mut stderr = String::new();
-            let mut exit_code: Option<i32> = None;
-            let mut execution_time_ms: Option<u64> = None;
-            let mut started_at: Option<u64> = None;
-            let mut max_memory_usage_kb: Option<u64> = None;
-            let mut metadata = HashMap::new();
-            let mut stream = stream;
-
-            while let Some(item) = futures::StreamExt::next(&mut stream).await {
-                match item.item {
-                    Some(result_output_item::Item::Data(data)) => {
-                        if let Ok(chunk) = CommandResult::decode(data.as_slice()) {
-                            if let Some(s) = chunk.stdout {
-                                stdout.push_str(&s);
-                            }
-                            if let Some(s) = chunk.stderr {
-                                stderr.push_str(&s);
-                            }
-                            if chunk.exit_code.is_some() {
-                                exit_code = chunk.exit_code;
-                            }
-                            if chunk.execution_time_ms.is_some() {
-                                execution_time_ms = chunk.execution_time_ms;
-                            }
-                            if chunk.started_at.is_some() {
-                                started_at = chunk.started_at;
-                            }
-                            if chunk.max_memory_usage_kb.is_some() {
-                                max_memory_usage_kb = chunk.max_memory_usage_kb;
-                            }
-                        }
-                    }
-                    Some(result_output_item::Item::End(trailer)) => {
-                        metadata = trailer.metadata;
-                        break;
-                    }
-                    None => {}
-                }
-            }
-
-            let result = CommandResult {
-                stdout: if stdout.is_empty() {
-                    None
-                } else {
-                    Some(stdout)
-                },
-                stderr: if stderr.is_empty() {
-                    None
-                } else {
-                    Some(stderr)
-                },
-                exit_code,
-                execution_time_ms,
-                started_at,
-                max_memory_usage_kb,
-            };
-            let bytes = result.encode_to_vec();
-            Ok((bytes, metadata))
-        })
-    }
 }
 
 // CancelMonitoring implementation for CommandRunnerImpl
@@ -1282,7 +1282,7 @@ mod tests {
                     found_end = true;
                     break;
                 }
-                None => {}
+                Some(Item::FinalCollected(_)) | None => {}
             }
         }
 
@@ -1390,6 +1390,10 @@ mod tests {
                         io::stderr().flush().unwrap();
                         found_end = true;
                         break;
+                    }
+                    Some(Item::FinalCollected(_)) => {
+                        eprintln!("[{elapsed}ms] FinalCollected item received");
+                        io::stderr().flush().unwrap();
                     }
                     None => {
                         eprintln!("[{elapsed}ms] Empty item received");

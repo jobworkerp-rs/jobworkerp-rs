@@ -277,6 +277,13 @@ message ResultOutputItem {
     // # End of Stream
     // Marker indicating the end of the stream
     Trailer end = 2;
+
+    // # Final Collected Result
+    // Contains the final collected result for STREAMING_TYPE_INTERNAL mode.
+    // This is sent as the last item in the stream after all data chunks,
+    // containing the aggregated result from collect_stream().
+    // Workflow consumers should use this as the task output.
+    bytes final_collected = 3;
   }
 }
 
