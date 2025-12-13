@@ -634,12 +634,21 @@ impl WorkflowStreamEvent {
     }
 
     /// Create TaskCompleted event from TaskContext
+    ///
+    /// Note: This function uses try_read() which may fail under contention.
+    /// For critical position tracking, prefer task_completed_with_position() with pre-acquired position.
     pub fn task_completed(task_type: &str, task_name: &str, context: TaskContext) -> Self {
-        let position = context
-            .position
-            .try_read()
-            .map(|p| p.as_json_pointer())
-            .unwrap_or_default();
+        let position = match context.position.try_read() {
+            Ok(guard) => guard.as_json_pointer(),
+            Err(_) => {
+                tracing::warn!(
+                    "Failed to acquire position lock for task '{}' (type: {}), position info may be incomplete",
+                    task_name,
+                    task_type
+                );
+                String::new()
+            }
+        };
         let output = serde_json::to_vec(&context.output).unwrap_or_default();
         Self::TaskCompleted {
             event: TaskCompletedEvent {

@@ -83,6 +83,7 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
     /// - Collects all tool_calls (tool_calls takes precedence over text in final result)
     /// - Concatenates reasoning content from all chunks
     /// - Uses usage from the final chunk (done=true)
+    /// - Returns error if data items were received but all decodes failed
     fn collect_stream(
         &self,
         stream: BoxStream<'static, proto::jobworkerp::data::ResultOutputItem>,
@@ -99,12 +100,17 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
             let mut stream = stream;
             // Store FinalCollected data if received, to return after End(trailer)
             let mut final_collected: Option<Vec<u8>> = None;
+            let mut decode_failure_count = 0;
+            let mut data_item_count = 0;
+            let mut successful_decode_count = 0;
 
             while let Some(item) = stream.next().await {
                 match item.item {
                     Some(result_output_item::Item::Data(data)) => {
+                        data_item_count += 1;
                         match LlmChatResult::decode(data.as_slice()) {
                             Ok(chunk) => {
+                                successful_decode_count += 1;
                                 // Handle content (text, image, or tool_calls)
                                 if let Some(content) = chunk.content {
                                     match content.content {
@@ -136,8 +142,11 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
                                 }
                             }
                             Err(e) => {
-                                tracing::error!(
-                                    "Failed to decode LlmChatResult in collect_stream: {:?}",
+                                decode_failure_count += 1;
+                                tracing::warn!(
+                                    "Failed to decode LlmChatResult in collect_stream (chunk {}/{}): {:?}",
+                                    decode_failure_count,
+                                    data_item_count,
                                     e
                                 );
                             }
@@ -158,6 +167,14 @@ impl RunnerSpec for LLMChatRunnerSpecImpl {
             // If FinalCollected was received, return it with collected metadata
             if let Some(data) = final_collected {
                 return Ok((data, metadata));
+            }
+
+            // Return error if we received data items but all decodes failed
+            if data_item_count > 0 && successful_decode_count == 0 {
+                return Err(anyhow::anyhow!(
+                    "All {} LlmChatResult decode attempts failed in collect_stream",
+                    decode_failure_count
+                ));
             }
 
             // Determine final content type: tool_calls takes precedence if present

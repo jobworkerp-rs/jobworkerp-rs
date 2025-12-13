@@ -230,6 +230,14 @@ impl WorkflowExecutor {
                     }
                     Err(e) => {
                         tracing::error!("Failed to load checkpoint: {:#?}", e);
+                        // Mark workflow as Faulted before yielding error (consistent with other error paths)
+                        let mut wf = initial_wfc.write().await;
+                        wf.status = WorkflowStatus::Faulted;
+                        let error_output = Arc::new(serde_json::json!({"error": format!("{e:?}")}));
+                        Self::record_workflow_output(&span, &error_output, &wf.status);
+                        wf.output = Some(error_output);
+                        drop(wf);
+
                         yield Err(workflow::errors::ErrorFactory::new().service_unavailable(
                             format!("Failed to load checkpoint from execution_id: {}, workflow: {}, position: {}, error: {:#?}",
                               execution_id.value, workflow_name, &pos.as_json_pointer(), e),

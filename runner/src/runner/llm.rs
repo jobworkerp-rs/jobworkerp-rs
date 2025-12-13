@@ -99,6 +99,7 @@ impl RunnerSpec for LLMCompletionRunnerSpecImpl {
     /// - Concatenates text content from all chunks
     /// - Concatenates reasoning content from all chunks
     /// - Uses context and usage from the final chunk (done=true)
+    /// - Returns error if data items were received but all decodes failed
     fn collect_stream(&self, stream: BoxStream<'static, ResultOutputItem>) -> CollectStreamFuture {
         use crate::jobworkerp::runner::llm::llm_completion_result::{
             message_content, GenerationContext, MessageContent, Usage,
@@ -113,12 +114,17 @@ impl RunnerSpec for LLMCompletionRunnerSpecImpl {
             let mut metadata = HashMap::new();
             let mut stream = stream;
             let mut final_collected: Option<Vec<u8>> = None;
+            let mut decode_failure_count = 0;
+            let mut data_item_count = 0;
+            let mut successful_decode_count = 0;
 
             while let Some(item) = stream.next().await {
                 match item.item {
                     Some(result_output_item::Item::Data(data)) => {
+                        data_item_count += 1;
                         match LlmCompletionResult::decode(data.as_slice()) {
                             Ok(chunk) => {
+                                successful_decode_count += 1;
                                 // Concatenate text content
                                 if let Some(content) = chunk.content {
                                     if let Some(message_content::Content::Text(text)) =
@@ -140,8 +146,11 @@ impl RunnerSpec for LLMCompletionRunnerSpecImpl {
                                 }
                             }
                             Err(e) => {
-                                tracing::debug!(
-                                    "Failed to decode LlmCompletionResult in collect_stream: {:?}",
+                                decode_failure_count += 1;
+                                tracing::warn!(
+                                    "Failed to decode LlmCompletionResult in collect_stream (chunk {}/{}): {:?}",
+                                    decode_failure_count,
+                                    data_item_count,
                                     e
                                 );
                             }
@@ -160,6 +169,14 @@ impl RunnerSpec for LLMCompletionRunnerSpecImpl {
 
             if let Some(data) = final_collected {
                 return Ok((data, metadata));
+            }
+
+            // Return error if we received data items but all decodes failed
+            if data_item_count > 0 && successful_decode_count == 0 {
+                return Err(anyhow::anyhow!(
+                    "All {} LlmCompletionResult decode attempts failed in collect_stream",
+                    decode_failure_count
+                ));
             }
 
             // Build collected result
