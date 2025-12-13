@@ -17,9 +17,13 @@ use worker_app::WorkerModules;
 const MCP_DEFAULT_ADDR: &str = "127.0.0.1:8000";
 
 /// Check if AG-UI server is enabled via environment variable.
+/// Accepts "true" or "1" (case-insensitive, with whitespace trimmed).
 fn is_ag_ui_enabled() -> bool {
     std::env::var("AG_UI_ENABLED")
-        .map(|v| v == "true" || v == "1")
+        .map(|v| {
+            let v = v.trim().to_lowercase();
+            v == "true" || v == "1"
+        })
         .unwrap_or(false)
 }
 

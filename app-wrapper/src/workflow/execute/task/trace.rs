@@ -1,5 +1,5 @@
 use crate::workflow::definition::workflow::Error;
-use crate::workflow::execute::context::TaskContext;
+use crate::workflow::execute::context::{TaskContext, WorkflowStreamEvent};
 use command_utils::trace::Tracing;
 use opentelemetry::trace::SpanRef;
 use opentelemetry::KeyValue;
@@ -51,13 +51,15 @@ pub trait TaskTracing: Tracing {
         ]);
     }
     #[allow(clippy::borrowed_box)]
-    fn record_result(span: &SpanRef<'_>, result: Result<&TaskContext, &Box<Error>>) {
+    fn record_result(span: &SpanRef<'_>, result: Result<&WorkflowStreamEvent, &Box<Error>>) {
         match result {
-            Ok(task) => {
-                span.set_attributes(vec![KeyValue::new(
-                    "workflow.task.output",
-                    serde_json::to_string(&task.output).unwrap_or_default(),
-                )]);
+            Ok(event) => {
+                if let Some(task) = event.context() {
+                    span.set_attributes(vec![KeyValue::new(
+                        "workflow.task.output",
+                        serde_json::to_string(&task.output).unwrap_or_default(),
+                    )]);
+                }
                 span.set_status(opentelemetry::trace::Status::Ok);
             }
             Err(e) => {

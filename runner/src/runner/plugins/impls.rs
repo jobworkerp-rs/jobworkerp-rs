@@ -176,6 +176,8 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
                     let mut last_data: Option<Vec<u8>> = None;
                     let mut metadata = HashMap::new();
                     let mut stream = stream;
+                    // Store FinalCollected data if received, to return after End(trailer)
+                    let mut final_collected: Option<Vec<u8>> = None;
 
                     while let Some(item) = stream.next().await {
                         match item.item {
@@ -186,9 +188,19 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
                                 metadata = trailer.metadata;
                                 break;
                             }
-                            Some(result_output_item::Item::FinalCollected(_)) | None => {}
+                            Some(result_output_item::Item::FinalCollected(data)) => {
+                                // Store FinalCollected data and continue loop to capture End(trailer) metadata
+                                final_collected = Some(data);
+                            }
+                            None => {}
                         }
                     }
+
+                    // If FinalCollected was received, return it with collected metadata
+                    if let Some(data) = final_collected {
+                        return Ok((data, metadata));
+                    }
+
                     Ok((last_data.unwrap_or_default(), metadata))
                 }
                 PluginVariantType::MultiMethod => {

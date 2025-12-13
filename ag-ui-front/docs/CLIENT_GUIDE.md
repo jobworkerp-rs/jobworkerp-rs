@@ -20,7 +20,7 @@ AG-UI Front provides an HTTP API compliant with the [AG-UI protocol](https://doc
 
 ### Basic Flow
 
-```
+```text
 Client                         AG-UI Server
     |                              |
     |-- POST /ag-ui/run ---------->|  Start workflow execution
@@ -246,7 +246,7 @@ Authorization: Bearer <token>
 
 ### Event Format
 
-```
+```text
 event: EVENT_TYPE
 data: {"field": "value", ...}
 id: 1
@@ -302,7 +302,7 @@ id: 1
 | `TEXT_MESSAGE_END` | Message end |
 
 **Sequence Example:**
-```
+```text
 event: TEXT_MESSAGE_START
 data: {"type":"TEXT_MESSAGE_START","messageId":"msg-1","role":"assistant","timestamp":1702345678000}
 id: 5
@@ -344,7 +344,7 @@ HITL is a feature that pauses workflow execution to wait for user input.
 
 ### HITL Flow
 
-```
+```text
 Client                         AG-UI Server
     |                              |
     |-- POST /ag-ui/run ---------->|
@@ -399,7 +399,7 @@ Content-Type: application/json
 
 ### Events After HITL Resume
 
-```
+```text
 event: TOOL_CALL_RESULT
 data: {"type":"TOOL_CALL_RESULT","toolCallId":"wait_run-456","result":{"approved":true},"timestamp":...}
 
@@ -447,7 +447,7 @@ data: {"type":"STEP_STARTED","stepId":"task2","stepName":"next_task","timestamp"
 
 Delivered as `RUN_ERROR` events:
 
-```
+```text
 event: RUN_ERROR
 data: {"type":"RUN_ERROR","runId":"run-456","message":"Task failed","code":"TASK_FAILED","timestamp":...}
 ```

@@ -276,19 +276,23 @@ pub trait RunnerSpec: Send + Sync + Any {
     /// - HTTP_REQUEST: Merge body chunks with final status/headers
     /// - MCP_SERVER: Merge McpServerResult contents (TextContent concatenation)
     /// - LLM: Merge text tokens with final tool_calls/usage
+    ///
+    /// Default implementation: keeps only the last Data item (memory efficient).
+    /// Override this method for runners that need to merge/concatenate stream data.
     fn collect_stream(&self, stream: BoxStream<'static, ResultOutputItem>) -> CollectStreamFuture {
         use futures::StreamExt;
         use proto::jobworkerp::data::result_output_item;
 
         Box::pin(async move {
-            let mut collected_data = Vec::new();
+            let mut last_data: Option<Vec<u8>> = None;
             let mut metadata = HashMap::new();
             let mut stream = stream;
 
             while let Some(item) = stream.next().await {
                 match item.item {
                     Some(result_output_item::Item::Data(data)) => {
-                        collected_data.extend(data);
+                        // Keep only the last data (memory efficient for most runners)
+                        last_data = Some(data);
                     }
                     Some(result_output_item::Item::End(trailer)) => {
                         metadata = trailer.metadata;
@@ -301,7 +305,7 @@ pub trait RunnerSpec: Send + Sync + Any {
                     None => {}
                 }
             }
-            Ok((collected_data, metadata))
+            Ok((last_data.unwrap_or_default(), metadata))
         })
     }
 }

@@ -5,15 +5,19 @@
 use crate::config::AgUiServerConfig;
 use crate::error::{AgUiError, Result};
 use crate::events::{shared_adapter, AgUiEvent, EventEncoder, SharedWorkflowEventAdapter};
+use crate::pubsub::convert_result_stream_to_events;
 use crate::session::{EventStore, HitlWaitingInfo, Session, SessionManager, SessionState};
+use crate::types::ids::MessageId;
 use crate::types::{RunAgentInput, RunId, ThreadId, WorkflowState, WorkflowStatus};
 use app::module::AppModule;
 use app_wrapper::modules::AppWrapperModule;
 use app_wrapper::workflow::definition::workflow::WorkflowSchema;
 use app_wrapper::workflow::execute::checkpoint::CheckPointContext;
+use app_wrapper::workflow::execute::context::WorkflowStreamEvent;
 use app_wrapper::workflow::execute::workflow::WorkflowExecutor;
 use async_stream::stream;
 use futures::{Stream, StreamExt};
+use proto::jobworkerp::data::JobId;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -736,6 +740,7 @@ where
         let event_store = self.event_store.clone();
         let encoder = self.encoder.clone();
         let session_manager = self.session_manager.clone();
+        let app_module = self.app_module.clone();
 
         stream! {
             // Emit RUN_STARTED (skip for HITL resume to avoid duplicate)
@@ -753,151 +758,249 @@ where
             // Track previous position for STEP_STARTED/STEP_FINISHED detection
             let mut prev_position: Option<String> = None;
 
-            // Execute workflow and stream context updates
+            // Execute workflow with events (includes StreamingJobStarted for LLM streaming)
             let cx = Arc::new(opentelemetry::Context::current());
-            let workflow_stream = executor.execute_workflow(cx);
+            let workflow_stream = executor.execute_workflow_with_events(cx);
 
             // Pin the stream for iteration
             tokio::pin!(workflow_stream);
 
-            while let Some(result) = workflow_stream.next().await {
-                match result {
-                    Ok(context) => {
-                        // Detect position changes and emit STEP_STARTED/STEP_FINISHED events
-                        let current_position = context.position.as_json_pointer();
-                        let current_step_name = context.position.last_name();
+            // Track active LLM stream subscriptions (job_id -> stream)
+            // We use a channel to receive LLM events from spawned subscription tasks
+            let (llm_event_tx, mut llm_event_rx) = tokio::sync::mpsc::unbounded_channel::<AgUiEvent>();
 
-                        if prev_position.as_ref() != Some(&current_position) {
-                            // Position changed - emit STEP_FINISHED for previous step if exists
-                            if prev_position.is_some() {
-                                let mut adapter_lock = adapter.lock().await;
-                                if let Some(event) = adapter_lock.task_finished(None) {
+            // Track JoinHandles for LLM stream subscription tasks to await completion before draining
+            let mut llm_stream_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
+            while let Some(result) = workflow_stream.next().await {
+                // Check for any pending LLM stream events
+                while let Ok(llm_event) = llm_event_rx.try_recv() {
+                    let event_id = Self::encode_event_with_logging(&encoder, &llm_event);
+                    event_store.store_event(&run_id, event_id, llm_event.clone()).await;
+                    yield (event_id, llm_event);
+                }
+
+                match result {
+                    Ok(event) => {
+                        // Handle StreamingJobStarted: subscribe to LLM stream
+                        if let WorkflowStreamEvent::StreamingJobStarted { event: job_started } = &event {
+                            let job_id = JobId { value: job_started.job_id };
+                            let worker_name = job_started.worker_name.clone();
+                            let llm_event_tx = llm_event_tx.clone();
+                            let job_result_app = app_module.job_result_app.clone();
+
+                            tracing::info!(
+                                job_id = job_started.job_id,
+                                worker_name = %worker_name,
+                                position = %job_started.position,
+                                "StreamingJobStarted: subscribing to LLM stream"
+                            );
+
+                            // Spawn a task to subscribe to LLM stream and forward events
+                            let handle = tokio::spawn(async move {
+                                let message_id = MessageId::random();
+                                match job_result_app
+                                    .listen_result(&job_id, None, Some(&worker_name), None, true)
+                                    .await
+                                {
+                                    Ok((_job_result, Some(stream))) => {
+                                        let event_stream = convert_result_stream_to_events(stream, message_id);
+                                        tokio::pin!(event_stream);
+
+                                        while let Some(event) = event_stream.next().await {
+                                            if llm_event_tx.send(event).is_err() {
+                                                tracing::warn!(
+                                                    job_id = job_id.value,
+                                                    "LLM event receiver dropped, stopping stream"
+                                                );
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    Ok((_job_result, None)) => {
+                                        tracing::warn!(
+                                            job_id = job_id.value,
+                                            "No stream returned from listen_result for streaming job"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            job_id = job_id.value,
+                                            error = %e,
+                                            "Failed to subscribe to LLM stream"
+                                        );
+                                    }
+                                }
+                            });
+                            llm_stream_handles.push(handle);
+                        }
+
+                        // Extract context from completed events for workflow state updates
+                        if let Some(tc) = event.context() {
+                            // Read position from TaskContext
+                            let current_position = tc.position.read().await.as_json_pointer();
+                            let current_step_name = tc.position.read().await.last_name();
+
+                            if prev_position.as_ref() != Some(&current_position) {
+                                // Position changed - emit STEP_FINISHED for previous step if exists
+                                if prev_position.is_some() {
+                                    let mut adapter_lock = adapter.lock().await;
+                                    if let Some(event) = adapter_lock.task_finished(None) {
+                                        let event_id = Self::encode_event_with_logging(&encoder, &event);
+                                        event_store.store_event(&run_id, event_id, event.clone()).await;
+                                        yield (event_id, event);
+                                    }
+                                }
+
+                                // Emit STEP_STARTED for new step if we have a step name
+                                if let Some(step_name) = current_step_name.as_ref() {
+                                    let mut adapter_lock = adapter.lock().await;
+                                    let event = adapter_lock.task_started(step_name, None, None);
                                     let event_id = Self::encode_event_with_logging(&encoder, &event);
                                     event_store.store_event(&run_id, event_id, event.clone()).await;
                                     yield (event_id, event);
                                 }
+
+                                prev_position = Some(current_position.clone());
                             }
 
-                            // Emit STEP_STARTED for new step if we have a step name
-                            if let Some(step_name) = current_step_name.as_ref() {
-                                let mut adapter_lock = adapter.lock().await;
-                                let event = adapter_lock.task_started(step_name, None, None);
-                                let event_id = Self::encode_event_with_logging(&encoder, &event);
-                                event_store.store_event(&run_id, event_id, event.clone()).await;
-                                yield (event_id, event);
-                            }
+                            // Get workflow context for state snapshot
+                            let wfc = executor.workflow_context.read().await;
 
-                            prev_position = Some(current_position);
-                        }
-
-                        // Get context variables from tokio::sync::Mutex
-                        let context_vars = {
-                            let guard = context.context_variables.lock().await;
-                            guard
-                                .iter()
-                                .map(|(k, v)| (k.clone(), v.clone()))
-                                .collect::<HashMap<String, serde_json::Value>>()
-                        };
-
-                        // Check for HITL Waiting status
-                        let is_waiting = context.status == app_wrapper::workflow::execute::context::WorkflowStatus::Waiting;
-
-                        // Convert context to state snapshot event
-                        let state = WorkflowState::new(&context.name)
-                            .with_status(match context.status {
-                                app_wrapper::workflow::execute::context::WorkflowStatus::Pending => WorkflowStatus::Pending,
-                                app_wrapper::workflow::execute::context::WorkflowStatus::Running => WorkflowStatus::Running,
-                                app_wrapper::workflow::execute::context::WorkflowStatus::Completed => WorkflowStatus::Completed,
-                                app_wrapper::workflow::execute::context::WorkflowStatus::Faulted => WorkflowStatus::Faulted,
-                                app_wrapper::workflow::execute::context::WorkflowStatus::Cancelled => WorkflowStatus::Cancelled,
-                                app_wrapper::workflow::execute::context::WorkflowStatus::Waiting => WorkflowStatus::Running, // Waiting maps to Running for AG-UI protocol
-                            })
-                            .with_context_variables(context_vars);
-
-                        let adapter_lock = adapter.lock().await;
-                        let event = adapter_lock.state_snapshot(state);
-                        drop(adapter_lock);
-
-                        let event_id = Self::encode_event_with_logging(&encoder, &event);
-                        event_store.store_event(&run_id, event_id, event.clone()).await;
-                        yield (event_id, event);
-
-                        // HITL: If workflow is waiting for user input, emit TOOL_CALL events
-                        if is_waiting {
-                            tracing::info!("Workflow waiting for user input, emitting TOOL_CALL events");
-
-                            // Generate tool_call_id from run_id for consistency
-                            let tool_call_id = format!("wait_{}", run_id);
-
-                            // Get checkpoint position for later resume
-                            let checkpoint_position = context.position.as_json_pointer();
-
-                            // Emit TOOL_CALL_START event with canonical HUMAN_INPUT tool name
-                            let tool_call_start = AgUiEvent::tool_call_start(
-                                tool_call_id.clone(),
-                                "HUMAN_INPUT".to_string(),
-                            );
-                            let start_event_id = Self::encode_event_with_logging(&encoder, &tool_call_start);
-                            event_store.store_event(&run_id, start_event_id, tool_call_start.clone()).await;
-                            yield (start_event_id, tool_call_start);
-
-                            // Emit TOOL_CALL_ARGS event with current output
-                            let args = context.output
-                                .as_ref()
-                                .map(|o| serde_json::to_string(o.as_ref()).unwrap_or_default())
-                                .unwrap_or_else(|| "{}".to_string());
-                            let tool_call_args = AgUiEvent::tool_call_args(
-                                tool_call_id.clone(),
-                                args,
-                            );
-                            let args_event_id = Self::encode_event_with_logging(&encoder, &tool_call_args);
-                            event_store.store_event(&run_id, args_event_id, tool_call_args.clone()).await;
-                            yield (args_event_id, tool_call_args);
-
-                            // Update session state to Paused with HITL info for later resume
-                            let hitl_info = HitlWaitingInfo {
-                                tool_call_id: tool_call_id.clone(),
-                                checkpoint_position,
-                                workflow_name: workflow_name.clone(),
+                            // Get context variables from tokio::sync::Mutex
+                            let context_vars = {
+                                let guard = wfc.context_variables.lock().await;
+                                guard
+                                    .iter()
+                                    .map(|(k, v)| (k.clone(), v.clone()))
+                                    .collect::<HashMap<String, serde_json::Value>>()
                             };
-                            if !session_manager.set_paused_with_hitl_info(&session_id, hitl_info).await {
-                                // Failed to persist HITL state - emit RUN_ERROR and set session to Error
-                                tracing::error!(
-                                    session_id = %session_id,
-                                    run_id = %run_id,
-                                    "Failed to persist HITL waiting info, emitting RUN_ERROR"
+
+                            // Check for HITL Waiting status
+                            let is_waiting = wfc.status == app_wrapper::workflow::execute::context::WorkflowStatus::Waiting;
+
+                            // Convert context to state snapshot event
+                            let state = WorkflowState::new(&wfc.name)
+                                .with_status(match wfc.status {
+                                    app_wrapper::workflow::execute::context::WorkflowStatus::Pending => WorkflowStatus::Pending,
+                                    app_wrapper::workflow::execute::context::WorkflowStatus::Running => WorkflowStatus::Running,
+                                    app_wrapper::workflow::execute::context::WorkflowStatus::Completed => WorkflowStatus::Completed,
+                                    app_wrapper::workflow::execute::context::WorkflowStatus::Faulted => WorkflowStatus::Faulted,
+                                    app_wrapper::workflow::execute::context::WorkflowStatus::Cancelled => WorkflowStatus::Cancelled,
+                                    app_wrapper::workflow::execute::context::WorkflowStatus::Waiting => WorkflowStatus::Running, // Waiting maps to Running for AG-UI protocol
+                                })
+                                .with_context_variables(context_vars);
+
+                            let adapter_lock = adapter.lock().await;
+                            let event = adapter_lock.state_snapshot(state);
+                            drop(adapter_lock);
+                            drop(wfc);
+
+                            let event_id = Self::encode_event_with_logging(&encoder, &event);
+                            event_store.store_event(&run_id, event_id, event.clone()).await;
+                            yield (event_id, event);
+
+                            // HITL: If workflow is waiting for user input, emit TOOL_CALL events
+                            if is_waiting {
+                                tracing::info!("Workflow waiting for user input, emitting TOOL_CALL events");
+
+                                // Generate tool_call_id from run_id for consistency
+                                let tool_call_id = format!("wait_{}", run_id);
+
+                                // Get checkpoint position for later resume
+                                let checkpoint_position = current_position;
+
+                                // Emit TOOL_CALL_START event with canonical HUMAN_INPUT tool name
+                                let tool_call_start = AgUiEvent::tool_call_start(
+                                    tool_call_id.clone(),
+                                    "HUMAN_INPUT".to_string(),
                                 );
+                                let start_event_id = Self::encode_event_with_logging(&encoder, &tool_call_start);
+                                event_store.store_event(&run_id, start_event_id, tool_call_start.clone()).await;
+                                yield (start_event_id, tool_call_start);
 
-                                let adapter_lock = adapter.lock().await;
-                                let error_event = adapter_lock.workflow_error(
-                                    "Failed to persist HITL waiting state".to_string(),
-                                    "HITL_PERSISTENCE_ERROR",
-                                    None,
+                                // Emit TOOL_CALL_ARGS event with current output
+                                let args = tc.output
+                                    .as_ref()
+                                    .to_string();
+                                let tool_call_args = AgUiEvent::tool_call_args(
+                                    tool_call_id.clone(),
+                                    args,
                                 );
-                                drop(adapter_lock);
+                                let args_event_id = Self::encode_event_with_logging(&encoder, &tool_call_args);
+                                event_store.store_event(&run_id, args_event_id, tool_call_args.clone()).await;
+                                yield (args_event_id, tool_call_args);
 
-                                let error_event_id = Self::encode_event_with_logging(&encoder, &error_event);
-                                event_store.store_event(&run_id, error_event_id, error_event.clone()).await;
-                                yield (error_event_id, error_event);
+                                // Update session state to Paused with HITL info for later resume
+                                let hitl_info = HitlWaitingInfo {
+                                    tool_call_id: tool_call_id.clone(),
+                                    checkpoint_position,
+                                    workflow_name: workflow_name.clone(),
+                                };
+                                if !session_manager.set_paused_with_hitl_info(&session_id, hitl_info).await {
+                                    // Failed to persist HITL state - emit RUN_ERROR and set session to Error
+                                    tracing::error!(
+                                        session_id = %session_id,
+                                        run_id = %run_id,
+                                        "Failed to persist HITL waiting info, emitting RUN_ERROR"
+                                    );
 
-                                session_manager.set_session_state(&session_id, SessionState::Error).await;
+                                    let adapter_lock = adapter.lock().await;
+                                    let error_event = adapter_lock.workflow_error(
+                                        "Failed to persist HITL waiting state".to_string(),
+                                        "HITL_PERSISTENCE_ERROR",
+                                        None,
+                                    );
+                                    drop(adapter_lock);
+
+                                    let error_event_id = Self::encode_event_with_logging(&encoder, &error_event);
+                                    event_store.store_event(&run_id, error_event_id, error_event.clone()).await;
+                                    yield (error_event_id, error_event);
+
+                                    session_manager.set_session_state(&session_id, SessionState::Error).await;
+                                    return;
+                                }
+
+                                // Remove executor from registry so /stream does not treat the run as active
+                                {
+                                    let mut registry = executor_registry.write().await;
+                                    registry.remove(&run_id_for_cleanup);
+                                    tracing::debug!(
+                                        run_id = %run_id_for_cleanup,
+                                        "Removed executor from registry for paused HITL run"
+                                    );
+                                }
+
+                                // Spawn background task to drain and persist remaining LLM events
+                                // This ensures events are not lost when HITL pauses the workflow
+                                let drain_encoder = encoder.clone();
+                                let drain_event_store = event_store.clone();
+                                let drain_run_id = run_id.clone();
+                                tokio::spawn(async move {
+                                    // Wait for all LLM stream subscription tasks to complete
+                                    for handle in llm_stream_handles {
+                                        if let Err(e) = handle.await {
+                                            tracing::warn!(error = ?e, "LLM stream subscription task failed during HITL pause");
+                                        }
+                                    }
+
+                                    // Drain and persist any remaining LLM events
+                                    while let Ok(llm_event) = llm_event_rx.try_recv() {
+                                        let event_id = Self::encode_event_with_logging(&drain_encoder, &llm_event);
+                                        drain_event_store.store_event(&drain_run_id, event_id, llm_event).await;
+                                    }
+                                    tracing::debug!(
+                                        run_id = %drain_run_id,
+                                        "Completed draining LLM events during HITL pause"
+                                    );
+                                });
+
+                                // Exit stream without emitting RUN_FINISHED
+                                tracing::info!("Workflow paused for HITL, session {} is now Paused", session_id);
                                 return;
                             }
-
-                            // Remove executor from registry so /stream does not treat the run as active
-                            {
-                                let mut registry = executor_registry.write().await;
-                                registry.remove(&run_id_for_cleanup);
-                                tracing::debug!(
-                                    run_id = %run_id_for_cleanup,
-                                    "Removed executor from registry for paused HITL run"
-                                );
-                            }
-
-                            // Exit stream without emitting RUN_FINISHED
-                            tracing::info!("Workflow paused for HITL, session {} is now Paused", session_id);
-                            return;
                         }
+                        // Start events (StreamingJobStarted, JobStarted, TaskStarted) are handled above
                     }
                     Err(e) => {
                         // Emit STEP_FINISHED for current step before error
@@ -929,6 +1032,21 @@ where
                         break;
                     }
                 }
+            }
+
+            // Wait for all LLM stream subscription tasks to complete before draining
+            // This ensures no events are lost due to race conditions
+            for handle in llm_stream_handles {
+                if let Err(e) = handle.await {
+                    tracing::warn!(error = ?e, "LLM stream subscription task failed");
+                }
+            }
+
+            // Drain any remaining LLM stream events (all tasks completed, so channel has all events)
+            while let Ok(llm_event) = llm_event_rx.try_recv() {
+                let event_id = Self::encode_event_with_logging(&encoder, &llm_event);
+                event_store.store_event(&run_id, event_id, llm_event.clone()).await;
+                yield (event_id, llm_event);
             }
 
             // Emit STEP_FINISHED for final step if exists

@@ -483,6 +483,262 @@ impl From<jobworkerp_runner::jobworkerp::runner::workflow_result::WorkflowStatus
     }
 }
 
+// Re-export protobuf types for workflow events
+pub use proto::jobworkerp::data::{
+    workflow_event, JobCompletedEvent, JobStartedEvent, TaskCompletedEvent, TaskStartedEvent,
+    WorkflowCancelledEvent, WorkflowEvent,
+};
+
+/// Internal representation combining WorkflowEvent with TaskContext
+///
+/// protobuf's WorkflowEvent is serializable but doesn't contain TaskContext.
+/// This enum is used for internal processing, and can be converted to
+/// WorkflowEvent for external output (gRPC/serialization).
+#[derive(Debug, Clone)]
+pub enum WorkflowStreamEvent {
+    // Job execution tasks (RunTask)
+    StreamingJobStarted {
+        event: JobStartedEvent,
+    },
+    StreamingJobCompleted {
+        event: JobCompletedEvent,
+        context: TaskContext,
+    },
+    JobStarted {
+        event: JobStartedEvent,
+    },
+    JobCompleted {
+        event: JobCompletedEvent,
+        context: TaskContext,
+    },
+    // Generic tasks (ForTask, SwitchTask, DoTask, etc.)
+    TaskStarted {
+        event: TaskStartedEvent,
+    },
+    TaskCompleted {
+        event: TaskCompletedEvent,
+        context: TaskContext,
+    },
+    // Reserved for future use
+    // WorkflowCancelled { event: WorkflowCancelledEvent },
+}
+
+impl WorkflowStreamEvent {
+    /// Convert to protobuf WorkflowEvent (for gRPC/serialization)
+    pub fn to_proto(&self) -> WorkflowEvent {
+        match self {
+            Self::StreamingJobStarted { event } => WorkflowEvent {
+                event: Some(workflow_event::Event::StreamingJobStarted(event.clone())),
+            },
+            Self::StreamingJobCompleted { event, .. } => WorkflowEvent {
+                event: Some(workflow_event::Event::StreamingJobCompleted(event.clone())),
+            },
+            Self::JobStarted { event } => WorkflowEvent {
+                event: Some(workflow_event::Event::JobStarted(event.clone())),
+            },
+            Self::JobCompleted { event, .. } => WorkflowEvent {
+                event: Some(workflow_event::Event::JobCompleted(event.clone())),
+            },
+            Self::TaskStarted { event } => WorkflowEvent {
+                event: Some(workflow_event::Event::TaskStarted(event.clone())),
+            },
+            Self::TaskCompleted { event, .. } => WorkflowEvent {
+                event: Some(workflow_event::Event::TaskCompleted(event.clone())),
+            },
+        }
+    }
+
+    /// Get TaskContext reference (only for completed events)
+    pub fn context(&self) -> Option<&TaskContext> {
+        match self {
+            Self::StreamingJobCompleted { context, .. } => Some(context),
+            Self::JobCompleted { context, .. } => Some(context),
+            Self::TaskCompleted { context, .. } => Some(context),
+            _ => None,
+        }
+    }
+
+    /// Consume and get TaskContext (only for completed events)
+    pub fn into_context(self) -> Option<TaskContext> {
+        match self {
+            Self::StreamingJobCompleted { context, .. } => Some(context),
+            Self::JobCompleted { context, .. } => Some(context),
+            Self::TaskCompleted { context, .. } => Some(context),
+            _ => None,
+        }
+    }
+
+    /// Helper to collect final TaskContext from a stream
+    pub async fn collect_final_context<S>(
+        mut stream: S,
+    ) -> Result<TaskContext, Box<workflow::Error>>
+    where
+        S: futures::Stream<Item = Result<WorkflowStreamEvent, Box<workflow::Error>>> + Unpin,
+    {
+        use futures::StreamExt;
+        let mut last_context = None;
+        while let Some(result) = stream.next().await {
+            if let Some(ctx) = result?.into_context() {
+                last_context = Some(ctx);
+            }
+        }
+        last_context.ok_or_else(|| {
+            workflow::errors::ErrorFactory::create(
+                workflow::errors::ErrorCode::InternalError,
+                Some("No completed event found in stream".to_string()),
+                None,
+                None,
+            )
+        })
+    }
+
+    /// Check if this is a start event
+    pub fn is_start_event(&self) -> bool {
+        matches!(
+            self,
+            Self::StreamingJobStarted { .. } | Self::JobStarted { .. } | Self::TaskStarted { .. }
+        )
+    }
+
+    /// Check if this is a completed event
+    pub fn is_completed_event(&self) -> bool {
+        matches!(
+            self,
+            Self::StreamingJobCompleted { .. }
+                | Self::JobCompleted { .. }
+                | Self::TaskCompleted { .. }
+        )
+    }
+
+    /// Get position from the event
+    pub fn position(&self) -> &str {
+        match self {
+            Self::StreamingJobStarted { event } => &event.position,
+            Self::StreamingJobCompleted { event, .. } => &event.position,
+            Self::JobStarted { event } => &event.position,
+            Self::JobCompleted { event, .. } => &event.position,
+            Self::TaskStarted { event } => &event.position,
+            Self::TaskCompleted { event, .. } => &event.position,
+        }
+    }
+
+    /// Create TaskStarted event from task information
+    pub fn task_started(task_type: &str, task_name: &str, position: &str) -> Self {
+        Self::TaskStarted {
+            event: TaskStartedEvent {
+                task_type: task_type.to_string(),
+                task_name: task_name.to_string(),
+                position: position.to_string(),
+            },
+        }
+    }
+
+    /// Create TaskCompleted event from TaskContext
+    pub fn task_completed(task_type: &str, task_name: &str, context: TaskContext) -> Self {
+        let position = context
+            .position
+            .try_read()
+            .map(|p| p.as_json_pointer())
+            .unwrap_or_default();
+        let output = serde_json::to_vec(&context.output).unwrap_or_default();
+        Self::TaskCompleted {
+            event: TaskCompletedEvent {
+                task_type: task_type.to_string(),
+                task_name: task_name.to_string(),
+                position,
+                output,
+            },
+            context,
+        }
+    }
+
+    /// Create TaskCompleted event with explicit position
+    pub fn task_completed_with_position(
+        task_type: &str,
+        task_name: &str,
+        position: &str,
+        context: TaskContext,
+    ) -> Self {
+        let output = serde_json::to_vec(&context.output).unwrap_or_default();
+        Self::TaskCompleted {
+            event: TaskCompletedEvent {
+                task_type: task_type.to_string(),
+                task_name: task_name.to_string(),
+                position: position.to_string(),
+                output,
+            },
+            context,
+        }
+    }
+
+    /// Create StreamingJobStarted event
+    pub fn streaming_job_started(
+        job_id: i64,
+        runner_name: &str,
+        worker_name: &str,
+        position: &str,
+    ) -> Self {
+        Self::StreamingJobStarted {
+            event: JobStartedEvent {
+                job_id,
+                runner_name: runner_name.to_string(),
+                worker_name: worker_name.to_string(),
+                position: position.to_string(),
+            },
+        }
+    }
+
+    /// Create StreamingJobCompleted event
+    pub fn streaming_job_completed(
+        job_id: i64,
+        job_result_id: Option<i64>,
+        position: &str,
+        context: TaskContext,
+    ) -> Self {
+        let output = serde_json::to_vec(&context.output).unwrap_or_default();
+        Self::StreamingJobCompleted {
+            event: JobCompletedEvent {
+                job_id,
+                job_result_id,
+                position: position.to_string(),
+                output,
+            },
+            context,
+        }
+    }
+
+    /// Create JobStarted event (non-streaming)
+    pub fn job_started(job_id: i64, runner_name: &str, worker_name: &str, position: &str) -> Self {
+        Self::JobStarted {
+            event: JobStartedEvent {
+                job_id,
+                runner_name: runner_name.to_string(),
+                worker_name: worker_name.to_string(),
+                position: position.to_string(),
+            },
+        }
+    }
+
+    /// Create JobCompleted event (non-streaming)
+    pub fn job_completed(
+        job_id: i64,
+        job_result_id: Option<i64>,
+        position: &str,
+        context: TaskContext,
+    ) -> Self {
+        let output = serde_json::to_vec(&context.output).unwrap_or_default();
+        Self::JobCompleted {
+            event: JobCompletedEvent {
+                job_id,
+                job_result_id,
+                position: position.to_string(),
+                output,
+            },
+            context,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
