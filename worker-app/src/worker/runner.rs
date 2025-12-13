@@ -378,48 +378,28 @@ pub trait JobRunner:
                 )
             }
             StreamingType::Internal => {
-                // Internal streaming: run_stream, collect via collect_stream, return as single result
+                // Internal streaming: same as Response - return stream to caller
+                // App layer will call RunnerSpec::collect_stream for aggregation
                 tracing::debug!("start runner(stream internal): {}", &name);
-                let stream_res = self.run_and_stream(&job, runner_impl).await;
+                let res = self
+                    .run_and_stream(&job, runner_impl)
+                    .await
+                    .map(ResultOutputEnum::Stream);
                 let end = datetime::now_millis();
-
-                let res = match stream_res {
-                    Ok(stream) => {
-                        // Collect stream using runner's collect_stream method
-                        tracing::debug!(
-                            "collecting stream for internal streaming job {}",
-                            job_id.value
-                        );
-                        match runner_impl.collect_stream(stream).await {
-                            Ok((collected_bytes, metadata)) => {
-                                tracing::debug!(
-                                    "stream collected: {} bytes, {} metadata entries",
-                                    collected_bytes.len(),
-                                    metadata.len()
-                                );
-                                Ok(ResultOutputEnum::Normal(Ok(collected_bytes), metadata))
-                            }
-                            Err(e) => {
-                                tracing::error!("failed to collect stream: {:?}", e);
-                                Err(e)
-                            }
-                        }
-                    }
-                    Err(e) => Err(e),
-                };
-
                 tracing::debug!(
                     "end runner(stream internal: {}): {}, duration:{}(ms)",
                     if res.is_ok() { "success" } else { "error" },
                     &name,
                     end - start,
                 );
-
                 let (status, mes) = self.job_result_status(&worker_data.retry_policy, data, res);
 
-                // Cleanup cancellation monitoring for internal streaming
-                self.cleanup_cancellation_monitoring_if_supported(job_id, runner_impl)
-                    .await;
+                // For internal streaming jobs, keep cancellation monitoring active
+                // The stream continues and needs to receive cancellation signals
+                tracing::debug!(
+                    "Internal streaming job {} keeping cancellation monitoring active",
+                    job_id.value
+                );
 
                 (
                     self.job_result_data(
@@ -431,7 +411,7 @@ pub trait JobRunner:
                         end,
                         mes.metadata().cloned(),
                     ),
-                    None, // No stream returned to client for Internal type
+                    mes.stream(),
                 )
             }
             StreamingType::None => {
@@ -860,9 +840,12 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    /// Test StreamingType::Internal calls collect_stream and returns no stream
+    /// Test StreamingType::Internal returns stream (App layer calls collect_stream)
     #[test]
     fn test_run_job_streaming_internal() -> Result<()> {
+        use futures::StreamExt;
+        use proto::jobworkerp::data::result_output_item;
+
         infra_utils::infra::test::TEST_RUNTIME.block_on(async {
             static JOB_RUNNER: OnceCell<Box<MockJobRunner>> = OnceCell::const_new();
             JOB_RUNNER
@@ -915,10 +898,10 @@ pub(crate) mod tests {
                 .run_job(&runner_data, &worker_id, &worker, job.clone())
                 .await;
 
-            // Internal streaming should NOT return a stream (collect_stream merges it)
+            // Internal streaming now returns a stream (App layer calls collect_stream)
             assert!(
-                stream.is_none(),
-                "StreamingType::Internal should NOT return a stream (collected internally)"
+                stream.is_some(),
+                "StreamingType::Internal should return a stream for App layer to collect"
             );
 
             let res_data = result.data.unwrap();
@@ -929,21 +912,40 @@ pub(crate) mod tests {
                 "Result should preserve streaming_type"
             );
 
-            // Verify output contains collected result
-            let output = res_data
-                .output
-                .expect("Internal streaming should produce collected output");
-            let cmd_result =
-                ProstMessageCodec::deserialize_message::<CommandResult>(&output.items).unwrap();
-            assert!(
-                cmd_result
-                    .stdout
-                    .as_ref()
-                    .is_some_and(|s| s.contains("internal_streaming_test")),
-                "Collected output should contain test string"
-            );
+            // Consume stream and verify content
+            let mut stream = stream.unwrap();
+            let mut found_data = false;
+            let mut found_end = false;
 
-            tracing::info!("✅ StreamingType::Internal test passed - stream collected internally");
+            while let Some(item) = stream.next().await {
+                match item.item {
+                    Some(result_output_item::Item::Data(data)) => {
+                        let cmd_result =
+                            ProstMessageCodec::deserialize_message::<CommandResult>(&data);
+                        if let Ok(cmd_result) = cmd_result {
+                            if cmd_result
+                                .stdout
+                                .as_ref()
+                                .is_some_and(|s| s.contains("internal_streaming_test"))
+                            {
+                                found_data = true;
+                            }
+                        }
+                    }
+                    Some(result_output_item::Item::End(_)) => {
+                        found_end = true;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+
+            assert!(found_data, "Stream should contain test output data");
+            assert!(found_end, "Stream should have end marker");
+
+            tracing::info!(
+                "✅ StreamingType::Internal test passed - stream returned for App layer collection"
+            );
         });
         Ok(())
     }

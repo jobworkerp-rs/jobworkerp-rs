@@ -119,6 +119,70 @@ impl RunnerSpec for RequestRunner {
     fn settings_schema(&self) -> String {
         schema_to_json_string!(HttpRequestRunnerSettings, "settings_schema")
     }
+
+    /// Collect streaming HttpResponseResult chunks into a single HttpResponseResult
+    ///
+    /// Strategy:
+    /// - Concatenate chunk bytes from all stream items
+    /// - Use the last chunk's status_code and headers
+    /// - Convert final bytes to content string
+    fn collect_stream(
+        &self,
+        stream: BoxStream<'static, ResultOutputItem>,
+    ) -> super::CollectStreamFuture {
+        use prost::Message;
+        use proto::jobworkerp::data::result_output_item;
+
+        Box::pin(async move {
+            let mut body_chunks: Vec<u8> = Vec::new();
+            let mut status_code: u32 = 0;
+            let mut headers: Vec<http_response_result::KeyValue> = Vec::new();
+            let mut metadata = HashMap::new();
+            let mut stream = stream;
+
+            while let Some(item) = stream.next().await {
+                match item.item {
+                    Some(result_output_item::Item::Data(data)) => {
+                        if let Ok(chunk) = HttpResponseResult::decode(data.as_slice()) {
+                            // Update status_code and headers from the latest chunk
+                            if chunk.status_code > 0 {
+                                status_code = chunk.status_code;
+                            }
+                            if !chunk.headers.is_empty() {
+                                headers = chunk.headers;
+                            }
+                            // Collect response data
+                            match chunk.response_data {
+                                Some(http_response_result::ResponseData::Chunk(bytes)) => {
+                                    body_chunks.extend(bytes);
+                                }
+                                Some(http_response_result::ResponseData::Content(text)) => {
+                                    body_chunks.extend(text.as_bytes());
+                                }
+                                None => {}
+                            }
+                        }
+                    }
+                    Some(result_output_item::Item::End(trailer)) => {
+                        metadata = trailer.metadata;
+                        break;
+                    }
+                    Some(result_output_item::Item::FinalCollected(_)) | None => {}
+                }
+            }
+
+            // Convert collected bytes to string content
+            let content = String::from_utf8_lossy(&body_chunks).to_string();
+
+            let result = HttpResponseResult {
+                status_code,
+                headers,
+                response_data: Some(http_response_result::ResponseData::Content(content)),
+            };
+            let bytes = result.encode_to_vec();
+            Ok((bytes, metadata))
+        })
+    }
 }
 // arg: {headers:{<headers map>}, queries:[<query string array>], body: <body string or struct>}
 // res: vec![result_bytes]  (fixed size 1)
@@ -390,70 +454,6 @@ impl RunnerTrait for RequestRunner {
         // Keep cancellation token for potential mid-stream cancellation
         // Note: The token will be cleared when cancel() is called
         Ok(Box::pin(stream))
-    }
-
-    /// Collect streaming HttpResponseResult chunks into a single HttpResponseResult
-    ///
-    /// Strategy:
-    /// - Concatenate chunk bytes from all stream items
-    /// - Use the last chunk's status_code and headers
-    /// - Convert final bytes to content string
-    fn collect_stream(
-        &self,
-        stream: BoxStream<'static, ResultOutputItem>,
-    ) -> super::CollectStreamFuture {
-        use prost::Message;
-        use proto::jobworkerp::data::result_output_item;
-
-        Box::pin(async move {
-            let mut body_chunks: Vec<u8> = Vec::new();
-            let mut status_code: u32 = 0;
-            let mut headers: Vec<http_response_result::KeyValue> = Vec::new();
-            let mut metadata = HashMap::new();
-            let mut stream = stream;
-
-            while let Some(item) = stream.next().await {
-                match item.item {
-                    Some(result_output_item::Item::Data(data)) => {
-                        if let Ok(chunk) = HttpResponseResult::decode(data.as_slice()) {
-                            // Update status_code and headers from the latest chunk
-                            if chunk.status_code > 0 {
-                                status_code = chunk.status_code;
-                            }
-                            if !chunk.headers.is_empty() {
-                                headers = chunk.headers;
-                            }
-                            // Collect response data
-                            match chunk.response_data {
-                                Some(http_response_result::ResponseData::Chunk(bytes)) => {
-                                    body_chunks.extend(bytes);
-                                }
-                                Some(http_response_result::ResponseData::Content(text)) => {
-                                    body_chunks.extend(text.as_bytes());
-                                }
-                                None => {}
-                            }
-                        }
-                    }
-                    Some(result_output_item::Item::End(trailer)) => {
-                        metadata = trailer.metadata;
-                        break;
-                    }
-                    None => {}
-                }
-            }
-
-            // Convert collected bytes to string content
-            let content = String::from_utf8_lossy(&body_chunks).to_string();
-
-            let result = HttpResponseResult {
-                status_code,
-                headers,
-                response_data: Some(http_response_result::ResponseData::Content(content)),
-            };
-            let bytes = result.encode_to_vec();
-            Ok((bytes, metadata))
-        })
     }
 }
 

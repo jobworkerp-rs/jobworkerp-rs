@@ -240,7 +240,7 @@ impl MultiMethodPluginRunner for HelloPlugin {
                         metadata = trailer.metadata;
                         break;
                     }
-                    None => {}
+                    Some(result_output_item::Item::FinalCollected(_)) | None => {}
                 }
             }
 

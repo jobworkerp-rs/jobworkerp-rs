@@ -151,6 +151,62 @@ impl RunnerSpec for PluginRunnerWrapperImpl {
             super::PluginRunnerVariant::MultiMethod(plugin) => plugin.settings_schema(),
         }
     }
+
+    /// Collect streaming plugin output into a single result.
+    ///
+    /// For MultiMethod plugins, delegates to the plugin's collect_stream.
+    /// For Legacy plugins, keeps only the last data chunk (protobuf binary concatenation is invalid).
+    ///
+    /// Note: Uses cached variant_type to dispatch without locking.
+    /// For MultiMethod, we get the plugin's collect_stream future while briefly
+    /// holding the lock, then release the lock before awaiting. This allows the stream
+    /// (which needs write lock internally) to be processed without deadlock.
+    fn collect_stream(
+        &self,
+        stream: BoxStream<'static, ResultOutputItem>,
+    ) -> crate::runner::CollectStreamFuture {
+        let variant = self.variant.clone();
+        let variant_type = self.variant_type;
+
+        Box::pin(async move {
+            match variant_type {
+                PluginVariantType::Legacy => {
+                    // Legacy plugins: keep only the last chunk (no custom collect_stream)
+                    // Process stream without holding any lock
+                    let mut last_data: Option<Vec<u8>> = None;
+                    let mut metadata = HashMap::new();
+                    let mut stream = stream;
+
+                    while let Some(item) = stream.next().await {
+                        match item.item {
+                            Some(result_output_item::Item::Data(data)) => {
+                                last_data = Some(data);
+                            }
+                            Some(result_output_item::Item::End(trailer)) => {
+                                metadata = trailer.metadata;
+                                break;
+                            }
+                            Some(result_output_item::Item::FinalCollected(_)) | None => {}
+                        }
+                    }
+                    Ok((last_data.unwrap_or_default(), metadata))
+                }
+                PluginVariantType::MultiMethod => {
+                    // Get the collect_stream future from plugin (brief lock)
+                    let future = {
+                        let guard = variant.read().await;
+                        if let super::PluginRunnerVariant::MultiMethod(plugin) = &*guard {
+                            plugin.collect_stream(stream)
+                        } else {
+                            unreachable!("variant_type mismatch")
+                        }
+                    };
+                    // Lock released, now await the future which processes the stream
+                    future.await
+                }
+            }
+        })
+    }
 }
 #[async_trait]
 impl RunnerTrait for PluginRunnerWrapperImpl {
@@ -323,62 +379,6 @@ impl RunnerTrait for PluginRunnerWrapperImpl {
         }
         .boxed();
         Ok(st)
-    }
-
-    /// Collect streaming output for plugin runners
-    ///
-    /// For MultiMethod plugins, delegates to the plugin's collect_stream.
-    /// For Legacy plugins, keeps only the last data chunk (protobuf binary concatenation is invalid).
-    ///
-    /// Note: Uses cached variant_type to dispatch without locking.
-    /// For MultiMethod, we get the plugin's collect_stream future while briefly
-    /// holding the lock, then release the lock before awaiting. This allows the stream
-    /// (which needs write lock internally) to be processed without deadlock.
-    fn collect_stream(
-        &self,
-        stream: BoxStream<'static, ResultOutputItem>,
-    ) -> crate::runner::CollectStreamFuture {
-        let variant = self.variant.clone();
-        let variant_type = self.variant_type;
-
-        Box::pin(async move {
-            match variant_type {
-                PluginVariantType::Legacy => {
-                    // Legacy plugins: keep only the last chunk (no custom collect_stream)
-                    // Process stream without holding any lock
-                    let mut last_data: Option<Vec<u8>> = None;
-                    let mut metadata = HashMap::new();
-                    let mut stream = stream;
-
-                    while let Some(item) = stream.next().await {
-                        match item.item {
-                            Some(result_output_item::Item::Data(data)) => {
-                                last_data = Some(data);
-                            }
-                            Some(result_output_item::Item::End(trailer)) => {
-                                metadata = trailer.metadata;
-                                break;
-                            }
-                            None => {}
-                        }
-                    }
-                    Ok((last_data.unwrap_or_default(), metadata))
-                }
-                PluginVariantType::MultiMethod => {
-                    // Get the collect_stream future from plugin (brief lock)
-                    let future = {
-                        let guard = variant.read().await;
-                        if let super::PluginRunnerVariant::MultiMethod(plugin) = &*guard {
-                            plugin.collect_stream(stream)
-                        } else {
-                            unreachable!("variant_type mismatch")
-                        }
-                    };
-                    // Lock released, now await the future which processes the stream
-                    future.await
-                }
-            }
-        })
     }
 }
 

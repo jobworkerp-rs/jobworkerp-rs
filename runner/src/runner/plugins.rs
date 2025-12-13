@@ -334,7 +334,7 @@ pub trait MultiMethodPluginRunner: Send + Sync {
                         metadata = trailer.metadata;
                         break;
                     }
-                    None => {}
+                    Some(result_output_item::Item::FinalCollected(_)) | None => {}
                 }
             }
             Ok((last_data.unwrap_or_default(), metadata))

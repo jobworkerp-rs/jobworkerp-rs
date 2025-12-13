@@ -95,6 +95,113 @@ impl RunnerSpec for LLMChatRunnerImpl {
     fn settings_schema(&self) -> String {
         LLMChatRunnerSpec::settings_schema(self)
     }
+
+    /// Collect streaming LLM chat results into a single LlmChatResult
+    ///
+    /// Strategy:
+    /// - Concatenates text content from all chunks
+    /// - Collects all tool_calls (tool_calls takes precedence over text in final result)
+    /// - Concatenates reasoning content from all chunks
+    /// - Uses usage from the final chunk (done=true)
+    fn collect_stream(&self, stream: BoxStream<'static, ResultOutputItem>) -> CollectStreamFuture {
+        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::{
+            message_content, MessageContent, Usage,
+        };
+        use jobworkerp_runner::jobworkerp::runner::llm::LlmChatResult;
+
+        Box::pin(async move {
+            let mut combined_text = String::new();
+            let mut combined_reasoning = String::new();
+            let mut collected_tool_calls: Vec<message_content::ToolCall> = Vec::new();
+            let mut final_usage: Option<Usage> = None;
+            let mut metadata = HashMap::new();
+            let mut stream = stream;
+
+            while let Some(item) = stream.next().await {
+                match item.item {
+                    Some(result_output_item::Item::Data(data)) => {
+                        tracing::debug!(
+                            "collect_stream: received Data item, len={}",
+                            data.len()
+                        );
+                        match LlmChatResult::decode(data.as_slice()) {
+                            Ok(chunk) => {
+                                tracing::debug!(
+                                    "collect_stream: decoded LlmChatResult, content={:?}, done={}",
+                                    chunk.content.as_ref().map(|c| format!("{:?}", c.content)),
+                                    chunk.done
+                                );
+                                // Handle content (text, image, or tool_calls)
+                                if let Some(content) = chunk.content {
+                                match content.content {
+                                    Some(message_content::Content::Text(text)) => {
+                                        combined_text.push_str(&text);
+                                    }
+                                    Some(message_content::Content::ToolCalls(tc)) => {
+                                        collected_tool_calls.extend(tc.calls);
+                                    }
+                                    Some(message_content::Content::Image(_)) => {
+                                        // TODO: Image content cannot be meaningfully merged
+                                        tracing::error!("not implemented: image streaming response")
+                                    }
+                                    None => {
+                                        tracing::error!("no response?")
+                                    }
+                                }
+                            }
+
+                            // Concatenate reasoning content
+                            if let Some(reasoning) = chunk.reasoning_content {
+                                combined_reasoning.push_str(&reasoning);
+                            }
+
+                            // Use final chunk's usage
+                            if chunk.done {
+                                final_usage = chunk.usage;
+                            }
+                        }
+                    }
+                    Some(result_output_item::Item::End(trailer)) => {
+                        metadata = trailer.metadata;
+                        break;
+                    }
+                    Some(result_output_item::Item::FinalCollected(_)) | None => {}
+                }
+            }
+
+            // Determine final content type: tool_calls takes precedence if present
+            let final_content = if !collected_tool_calls.is_empty() {
+                Some(MessageContent {
+                    content: Some(message_content::Content::ToolCalls(
+                        message_content::ToolCalls {
+                            calls: collected_tool_calls,
+                        },
+                    )),
+                })
+            } else if !combined_text.is_empty() {
+                Some(MessageContent {
+                    content: Some(message_content::Content::Text(combined_text)),
+                })
+            } else {
+                None
+            };
+
+            // Build collected result
+            let result = LlmChatResult {
+                content: final_content,
+                reasoning_content: if combined_reasoning.is_empty() {
+                    None
+                } else {
+                    Some(combined_reasoning)
+                },
+                done: true,
+                usage: final_usage,
+            };
+
+            let bytes = result.encode_to_vec();
+            Ok((bytes, metadata))
+        })
+    }
 }
 
 #[async_trait]
@@ -315,103 +422,6 @@ impl RunnerTrait for LLMChatRunnerImpl {
         } else {
             Err(anyhow!("llm is not initialized"))
         }
-    }
-
-    /// Collect streaming LLM chat results into a single LlmChatResult
-    ///
-    /// Strategy:
-    /// - Concatenates text content from all chunks
-    /// - Collects all tool_calls (tool_calls takes precedence over text in final result)
-    /// - Concatenates reasoning content from all chunks
-    /// - Uses usage from the final chunk (done=true)
-    fn collect_stream(&self, stream: BoxStream<'static, ResultOutputItem>) -> CollectStreamFuture {
-        use jobworkerp_runner::jobworkerp::runner::llm::llm_chat_result::{
-            message_content, MessageContent, Usage,
-        };
-        use jobworkerp_runner::jobworkerp::runner::llm::LlmChatResult;
-
-        Box::pin(async move {
-            let mut combined_text = String::new();
-            let mut combined_reasoning = String::new();
-            let mut collected_tool_calls: Vec<message_content::ToolCall> = Vec::new();
-            let mut final_usage: Option<Usage> = None;
-            let mut metadata = HashMap::new();
-            let mut stream = stream;
-
-            while let Some(item) = stream.next().await {
-                match item.item {
-                    Some(result_output_item::Item::Data(data)) => {
-                        if let Ok(chunk) = LlmChatResult::decode(data.as_slice()) {
-                            // Handle content (text, image, or tool_calls)
-                            if let Some(content) = chunk.content {
-                                match content.content {
-                                    Some(message_content::Content::Text(text)) => {
-                                        combined_text.push_str(&text);
-                                    }
-                                    Some(message_content::Content::ToolCalls(tc)) => {
-                                        collected_tool_calls.extend(tc.calls);
-                                    }
-                                    Some(message_content::Content::Image(_)) => {
-                                        // TODO: Image content cannot be meaningfully merged
-                                        tracing::error!("not implemented: image streaming response")
-                                    }
-                                    None => {
-                                        tracing::error!("no response?")
-                                    }
-                                }
-                            }
-
-                            // Concatenate reasoning content
-                            if let Some(reasoning) = chunk.reasoning_content {
-                                combined_reasoning.push_str(&reasoning);
-                            }
-
-                            // Use final chunk's usage
-                            if chunk.done {
-                                final_usage = chunk.usage;
-                            }
-                        }
-                    }
-                    Some(result_output_item::Item::End(trailer)) => {
-                        metadata = trailer.metadata;
-                        break;
-                    }
-                    None => {}
-                }
-            }
-
-            // Determine final content type: tool_calls takes precedence if present
-            let final_content = if !collected_tool_calls.is_empty() {
-                Some(MessageContent {
-                    content: Some(message_content::Content::ToolCalls(
-                        message_content::ToolCalls {
-                            calls: collected_tool_calls,
-                        },
-                    )),
-                })
-            } else if !combined_text.is_empty() {
-                Some(MessageContent {
-                    content: Some(message_content::Content::Text(combined_text)),
-                })
-            } else {
-                None
-            };
-
-            // Build collected result
-            let result = LlmChatResult {
-                content: final_content,
-                reasoning_content: if combined_reasoning.is_empty() {
-                    None
-                } else {
-                    Some(combined_reasoning)
-                },
-                done: true,
-                usage: final_usage,
-            };
-
-            let bytes = result.encode_to_vec();
-            Ok((bytes, metadata))
-        })
     }
 }
 

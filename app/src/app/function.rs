@@ -344,6 +344,25 @@ pub trait FunctionApp:
                             });
                             break;
                         }
+                        Some(result_output_item::Item::FinalCollected(_)) => {
+                            // FinalCollected is for workflow internal use, treat as end
+                            let completed_at = chrono::Utc::now().timestamp_millis();
+
+                            yield Ok(FunctionResult {
+                                output: "".to_string(),
+                                status: Some(ResultStatus::Success as i32),
+                                error_message: None,
+                                error_code: None,
+                                last_info: Some(FunctionExecutionInfo {
+                                    job_id: job_id.clone(),
+                                    started_at,
+                                    completed_at: Some(completed_at),
+                                    execution_time_ms: Some(completed_at - started_at),
+                                    metadata: std::collections::HashMap::new(),
+                                }),
+                            });
+                            break;
+                        }
                         None => {
                             // Skip empty items
                         }
@@ -960,6 +979,7 @@ pub struct FunctionAppImpl {
     job_result_app: Arc<dyn crate::app::job_result::JobResultApp>,
     function_cache: memory_utils::cache::moka::MokaCacheImpl<Arc<String>, Vec<FunctionSpecs>>,
     descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
+    runner_factory: Arc<jobworkerp_runner::runner::factory::RunnerSpecFactory>,
     job_queue_config: infra::infra::JobQueueConfig,
     worker_config: crate::app::WorkerConfig,
     workflow_loader: Arc<infra::workflow::WorkflowLoader>, // Workflow definition loader (DI pattern)
@@ -973,6 +993,7 @@ impl FunctionAppImpl {
         job_app: Arc<dyn crate::app::job::JobApp>,
         job_result_app: Arc<dyn crate::app::job_result::JobResultApp>,
         descriptor_cache: Arc<MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor>>,
+        runner_factory: Arc<jobworkerp_runner::runner::factory::RunnerSpecFactory>,
         mc_config: &memory_utils::cache::stretto::MemoryCacheConfig,
         job_queue_config: infra::infra::JobQueueConfig,
         worker_config: crate::app::WorkerConfig,
@@ -992,6 +1013,7 @@ impl FunctionAppImpl {
             job_result_app,
             function_cache,
             descriptor_cache,
+            runner_factory,
             job_queue_config,
             worker_config,
             workflow_loader,
@@ -1032,6 +1054,11 @@ impl McpNameConverter for FunctionAppImpl {}
 impl UseRunnerParserWithCache for FunctionAppImpl {
     fn descriptor_cache(&self) -> &MokaCacheImpl<Arc<String>, RunnerDataWithDescriptor> {
         &self.descriptor_cache
+    }
+}
+impl crate::app::job::execute::UseRunnerSpecFactory for FunctionAppImpl {
+    fn runner_spec_factory(&self) -> &Arc<jobworkerp_runner::runner::factory::RunnerSpecFactory> {
+        &self.runner_factory
     }
 }
 impl UseJobExecutor for FunctionAppImpl {}
