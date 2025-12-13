@@ -736,7 +736,7 @@ impl TaskExecutorTrait<'_> for RunStreamTaskExecutor {
     async fn execute(
         &self,
         cx: Arc<opentelemetry::Context>,
-        _task_name: &str,
+        task_name: &str,
         mut task_context: TaskContext,
     ) -> Result<TaskContext, Box<workflow::Error>> {
         let workflow::RunTask {
@@ -952,7 +952,7 @@ impl TaskExecutorTrait<'_> for RunStreamTaskExecutor {
                         Some(transformed_settings),
                         options.clone(),
                         args,
-                        _task_name,
+                        task_name,
                         using.clone(),
                     )
                     .await
@@ -1026,7 +1026,7 @@ impl TaskExecutorTrait<'_> for RunStreamTaskExecutor {
                         Some(transformed_settings),
                         options.clone(),
                         args,
-                        _task_name,
+                        task_name,
                         using.clone(),
                     )
                     .await
