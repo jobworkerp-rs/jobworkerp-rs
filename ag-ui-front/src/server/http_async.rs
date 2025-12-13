@@ -121,12 +121,14 @@ where
         }
     };
 
-    axum::serve(listener, app)
+    let result = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_future)
-        .await?;
+        .await;
 
+    // Always unlock regardless of success or error
     lock.unlock();
-    Ok(())
+
+    result.map_err(Into::into)
 }
 
 /// Index handler - basic info page.
